@@ -5,6 +5,8 @@ import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { loadConfig } from "./config.js";
 import type { LlmConfig } from "./types.js";
+import { renderSessionBanner } from "./tui/banner.js";
+import { runLiveTuiSession } from "./tui/live-mode.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -13,6 +15,7 @@ async function main() {
   let sessionId: string | null = null;
   let resumeMode = false;
   let debug = false;
+  let liveTui = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--help" || args[i] === "-h") {
@@ -21,6 +24,10 @@ async function main() {
     }
     if (args[i] === "--debug" || args[i] === "-d") {
       debug = true;
+      continue;
+    }
+    if (args[i] === "--tui") {
+      liveTui = true;
       continue;
     }
     if (args[i] === "resume" && args[i + 1]) {
@@ -43,39 +50,55 @@ async function main() {
   let sessionEnded = false;
   try {
     if (resumeMode && sessionId) {
-      console.log(`Resuming session: ${sessionId}`);
+      if (!liveTui) {
+        console.log(`Resuming session: ${sessionId}`);
+      }
       session = await Session.resume(sessionId, cwd, config);
       session.debug = debug;
       
       // Print recent conversation for context
-      const recentEvents = session.eventLog.readLast(30);
-      const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
-      if (turns.length > 0) {
-        console.log(`\n${'─'.repeat(50)}`);
-        console.log(`  📜  Recent conversation (${Math.min(turns.length, 6)} of ${turns.length} messages)`);
-        console.log('─'.repeat(50));
-        const shown = turns.slice(-6);
-        for (const ev of shown) {
-          const prefix = ev.kind === "user_message" ? "You" : "ARIA";
-          const text = (ev.payload.text as string)?.trim() ?? "";
-          // Show first 2 lines, clean up
-          const lines = text.split("\n").slice(0, 2).join(" ");
-          const display = lines.length > 150 ? lines.slice(0, 147) + "..." : lines;
-          console.log(`  ${prefix}: ${display}`);
+      if (!liveTui) {
+        const recentEvents = session.eventLog.readLast(30);
+        const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
+        if (turns.length > 0) {
+          console.log(`\n${'─'.repeat(50)}`);
+          console.log(`  📜  Recent conversation (${Math.min(turns.length, 6)} of ${turns.length} messages)`);
+          console.log('─'.repeat(50));
+          const shown = turns.slice(-6);
+          for (const ev of shown) {
+            const prefix = ev.kind === "user_message" ? "You" : "ARIA";
+            const text = (ev.payload.text as string)?.trim() ?? "";
+            // Show first 2 lines, clean up
+            const lines = text.split("\n").slice(0, 2).join(" ");
+            const display = lines.length > 150 ? lines.slice(0, 147) + "..." : lines;
+            console.log(`  ${prefix}: ${display}`);
+          }
+          console.log('─'.repeat(50) + "\n");
         }
-        console.log('─'.repeat(50) + "\n");
       }
     } else {
       session = await Session.create(cwd, config);
       session.debug = debug;
-      console.log(`New session: ${session.id}`);
+      if (!liveTui) {
+        console.log(`New session: ${session.id}`);
+      }
     }
   } catch (err) {
     console.error("Failed to start session:", (err as Error).message);
     process.exit(1);
   }
 
-  printSessionBanner(session, cwd, currentModelOrDefault(session));
+  let showThinking = true;
+
+  if (liveTui) {
+    await runLiveTuiSession(session, cwd, currentModelOrDefault(session), {
+      showThinking,
+    });
+    printSessionEndSummary(session);
+    return;
+  }
+
+  await printSessionBanner(session, cwd, currentModelOrDefault(session));
   console.log('Type /help for commands, /exit to quit.');
   console.log();
 
@@ -102,14 +125,29 @@ async function main() {
     if (input.startsWith("/")) {
       await handleSlashCommand(input, session, rl, (m) => {
         currentModel = m;
-      });
+      }, (v) => {
+        showThinking = v;
+      }, () => showThinking);
       rl.prompt();
       return;
     }
 
     // Regular turn
     try {
-      await runTurn(session, input, currentModel);
+      let thinkingOpen = false;
+      await runTurn(session, input, currentModel, {
+        onThinkingDelta: (delta) => {
+          if (!showThinking) return;
+          if (!thinkingOpen) {
+            process.stdout.write("\n\x1b[2m[thinking] ");
+            thinkingOpen = true;
+          }
+          process.stdout.write(delta);
+        },
+      });
+      if (thinkingOpen) {
+        process.stdout.write("\x1b[0m\n");
+      }
     } catch (err) {
       console.error("\n[error]", (err as Error).message);
       session.eventLog.append({
@@ -145,7 +183,9 @@ async function handleSlashCommand(
   input: string,
   session: Session,
   rl: readline.Interface,
-  setModel: (m?: string) => void
+  setModel: (m?: string) => void,
+  setThinking: (v: boolean) => void,
+  getThinking: () => boolean
 ): Promise<void> {
   const parts = input.split(/\s+/);
   const cmd = parts[0].toLowerCase();
@@ -321,6 +361,25 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/thinking": {
+      const arg = (parts[1] ?? "").toLowerCase();
+      if (!arg) {
+        console.log(`Thinking: ${getThinking() ? "ON" : "OFF"}`);
+        console.log("Usage: /thinking <on|off>");
+        break;
+      }
+      if (arg === "on") {
+        setThinking(true);
+        console.log("Thinking enabled.");
+      } else if (arg === "off") {
+        setThinking(false);
+        console.log("Thinking disabled.");
+      } else {
+        console.log("Usage: /thinking <on|off>");
+      }
+      break;
+    }
+
     case "/help": {
       printHelp();
       break;
@@ -339,6 +398,7 @@ USAGE:
   aria                     Start new session in current directory
   aria resume <session_id> Resume an existing session
   aria --help              Show this help
+  aria --tui               Start in live TUI mode
 
 SLASH COMMANDS:
   /exit                    End session and save
@@ -350,6 +410,7 @@ SLASH COMMANDS:
   /model <name>            Switch LLM model (e.g., /model openai/gpt-4o)
   /sessions                List recent sessions (resume with npx tsx src/main.ts resume <id>)
   /debug                   Toggle debug mode (detailed tool blocks + saved prompts)
+  /thinking <on|off>       Toggle thinking stream visibility
   /help                    Show this help
 `);
 }
@@ -375,19 +436,10 @@ function currentModelOrDefault(session: Session): string {
   return session.getModelOverride() ?? session.config.llm.model;
 }
 
-function printSessionBanner(session: Session, cwd: string, model: string): void {
-  const memoryStats = session.getMemoryStats();
-  const digestLen = session.digest?.length ?? 0;
-  console.log(
-    `ARIA v0.1.0  |  session: ${session.id}  |  cwd: ${cwd}`
-  );
-  console.log(
-    `Memory: ${memoryStats.total} entries | Digest: ${digestLen} chars | Model: ${model}`
-  );
-  if (session.memoryEnabled) {
-    console.log(`Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
-  } else {
-    console.log("Memory: disabled");
+async function printSessionBanner(session: Session, cwd: string, model: string): Promise<void> {
+  const lines = await renderSessionBanner({ session, cwd, model });
+  for (const line of lines) {
+    console.log(line);
   }
 }
 

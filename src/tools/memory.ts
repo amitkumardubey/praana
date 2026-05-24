@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
@@ -23,7 +23,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
   };
 
   return {
-    create_task: tool({
+    create_task: defineTool({
       description: "Create a new task in working memory. Tasks track what you're working on.",
       parameters: z.object({
         title: z.string().describe("Task title"),
@@ -48,7 +48,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    complete_task: tool({
+    complete_task: defineTool({
       description: "Mark a task as done. Use when you've completed a task.",
       parameters: z.object({
         id: z.string().describe("Task ID to complete"),
@@ -78,7 +78,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    add_constraint: tool({
+    add_constraint: defineTool({
       description:
         "Add a constraint to working memory. Use for rules, limitations, or requirements to keep in mind.",
       parameters: z.object({
@@ -99,7 +99,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    decide: tool({
+    decide: defineTool({
       description:
         "Record a decision in working memory with its rationale.",
       parameters: z.object({
@@ -124,7 +124,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    add_note: tool({
+    add_note: defineTool({
       description:
         "Add a general note to working memory.",
       parameters: z.object({
@@ -145,7 +145,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    soft_unload: tool({
+    soft_unload: defineTool({
       description:
         "Demote a state object to the soft tier (shown as one-line stub in memory). Use when something is less relevant now.",
       parameters: z.object({
@@ -164,7 +164,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    hard_unload: tool({
+    hard_unload: defineTool({
       description:
         "Demote a state object to the hard tier (shown as minimal anchor in memory). Use when something is even less relevant.",
       parameters: z.object({
@@ -183,7 +183,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    hydrate: tool({
+    hydrate: defineTool({
       description:
         "Promote a peripheral (soft/hard) object back to active memory, restoring its full content.",
       parameters: z.object({
@@ -202,7 +202,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
-    list_state: tool({
+    list_state: defineTool({
       description: "List all state objects with their id, kind, tier, and summary.",
       parameters: z.object({}),
       execute: async () => {

@@ -12,15 +12,14 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.0.0",
-    "@opentui/react": "^0.2.15",
-    "ai": "^4.0.0",
+    "@earendil-works/pi-ai": "^0.75.5",
+    "@earendil-works/pi-tui": "^0.75.5",
     "better-sqlite3": "^11.0.0",
-    "react": "^19.2.6",
     "sqlite-vec": "^0.1.6",
     "toml": "^3.0.0",
     "ulid": "^2.3.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

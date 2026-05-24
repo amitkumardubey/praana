@@ -10,13 +10,36 @@ const CYAN = "\x1b[36m";
 const YELLOW = "\x1b[33m";
 const GREEN = "\x1b[32m";
 
+type UiWriters = {
+  stderr: (line: string) => void;
+  breakStdout: () => void;
+};
+
+const defaultWriters: UiWriters = {
+  stderr: (line: string) => process.stderr.write(line),
+  breakStdout: () => process.stdout.write("\n"),
+};
+
+let writers: UiWriters = defaultWriters;
+
 function stderr(line: string): void {
-  process.stderr.write(line);
+  writers.stderr(line);
 }
 
 /** Break the agent text flow on stdout before/after ancillary output. */
 function breakStdout(): void {
-  process.stdout.write("\n");
+  writers.breakStdout();
+}
+
+export function setUiWriters(overrides?: Partial<UiWriters>): void {
+  if (!overrides) {
+    writers = defaultWriters;
+    return;
+  }
+  writers = {
+    stderr: overrides.stderr ?? defaultWriters.stderr,
+    breakStdout: overrides.breakStdout ?? defaultWriters.breakStdout,
+  };
 }
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
@@ -77,14 +100,14 @@ function summarizeResult(result: unknown): string {
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
   breakStdout();
   const summary = summarizeArgs(toolName, args);
-  stderr(`\n${DIM}  → ${RESET}${CYAN}${toolName}${RESET}${summary ? ` ${DIM}${summary}${RESET}` : ""}\n`);
+  stderr(`\n${DIM}[tool]${RESET} ${CYAN}${toolName}${RESET}${summary ? ` ${DIM}:: ${summary}${RESET}` : ""}\n`);
   breakStdout();
 }
 
 /** Debug block header before a batch of tool calls in a step. */
 export function printToolBlockStart(stepIndex: number): void {
   breakStdout();
-  stderr(`\n${YELLOW}[debug]${RESET} ${DIM}── step ${stepIndex} tools ${"─".repeat(28)}${RESET}\n`);
+  stderr(`\n${YELLOW}[debug]${RESET} ${DIM}┌ step ${stepIndex} tool execution ${"─".repeat(18)}┐${RESET}\n`);
 }
 
 /** Debug tool call with full args. */
@@ -94,18 +117,18 @@ export function printToolCallDebug(
 ): void {
   const argsJson = JSON.stringify(args);
   const display = argsJson.length > 200 ? argsJson.slice(0, 197) + "..." : argsJson;
-  stderr(`  ${YELLOW}🔧${RESET} ${toolName}(${display})\n`);
+  stderr(`  ${YELLOW}>${RESET} ${toolName}(${display})\n`);
 }
 
 /** Debug tool result. */
 export function printToolResultDebug(toolName: string, result: unknown): void {
   const summary = summarizeResult(result);
-  stderr(`  ${GREEN}✓${RESET} ${toolName} → ${DIM}${summary}${RESET}\n`);
+  stderr(`  ${GREEN}<${RESET} ${toolName} ${DIM}${summary}${RESET}\n`);
 }
 
 /** Debug block footer. */
 export function printToolBlockEnd(): void {
-  stderr(`${DIM}  ${"─".repeat(44)}${RESET}\n`);
+  stderr(`${DIM}└${"─".repeat(46)}┘${RESET}\n`);
   breakStdout();
 }
 
@@ -139,5 +162,5 @@ export function printMemoryBanner(stats: {
   if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   if (stats.promptTokens && stats.promptTokens > 0) parts.push(`prompt ~${stats.promptTokens}t`);
   if (parts.length === 0) return;
-  stderr(`\n${DIM}  [${parts.join(" | ")}]${RESET}\n`);
+  stderr(`\n${DIM}[state] ${parts.join(" | ")}${RESET}\n`);
 }

@@ -1,6 +1,8 @@
-import { streamText } from "ai";
+import { stream as piStream, type Message } from "@earendil-works/pi-ai";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { zodToJsonSchema } from "zod-to-json-schema";
+import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
 import { compileWithMetrics } from "./compiler.js";
 import { createAllTools, describeTools } from "./tools/index.js";
@@ -18,7 +20,11 @@ import {
 export async function runTurn(
   session: Session,
   userInput: string,
-  modelOverride?: string
+  modelOverride?: string,
+  options?: {
+    onTextDelta?: (delta: string) => void;
+    onThinkingDelta?: (delta: string) => void;
+  }
 ): Promise<string> {
   // 1. Append user_message
   session.eventLog.append({
@@ -92,60 +98,135 @@ export async function runTurn(
   // 5. Stream response
   let fullResponse = "";
   let stepIndex = 0;
-
-  const result = streamText({
-    model,
-    system: compiledPrompt,
-    messages: [{ role: "user", content: userInput }],
-    tools,
-    maxSteps: 25,
-    onStepFinish: ({ toolCalls, toolResults }) => {
-      if (toolCalls) {
-        for (const tc of toolCalls) {
-          session.eventLog.append({
-            kind: "tool_call",
-            actor: "tool",
-            payload: { tool: tc.toolName, args: tc.args },
-          });
-        }
-      }
-      if (toolResults) {
-        for (const tr of toolResults) {
-          session.eventLog.append({
-            kind: "tool_result",
-            actor: "tool",
-            payload: { tool: tr.toolName, result: tr.result },
-          });
-        }
-      }
-
-      if (!toolCalls?.length) return;
-
-      stepIndex++;
-
-      if (session.debug) {
-        printToolBlockStart(stepIndex);
-        for (const tc of toolCalls) {
-          printToolCallDebug(tc.toolName, tc.args as Record<string, unknown>);
-        }
-        if (toolResults) {
-          for (const tr of toolResults) {
-            printToolResultDebug(tr.toolName, tr.result);
-          }
-        }
-        printToolBlockEnd();
-      } else {
-        for (const tc of toolCalls) {
-          printToolCall(tc.toolName, tc.args as Record<string, unknown>);
-        }
-      }
+  const history: Message[] = [
+    {
+      role: "user",
+      content: userInput,
+      timestamp: Date.now(),
     },
-  });
+  ];
+  const maxSteps = 25;
 
-  // Stream agent text to stdout only
-  for await (const delta of result.textStream) {
-    process.stdout.write(delta);
-    fullResponse += delta;
+  for (let step = 0; step < maxSteps; step++) {
+    const piTools = Object.entries(tools).map(([name, def]) => ({
+      name,
+      description: String((def as any).description ?? ""),
+      parameters: normalizeToolParameters((def as any).parameters),
+    }));
+
+    const modelOptions = (model as any).__piOptions ?? {};
+    const stream = piStream(
+      model as any,
+      {
+        systemPrompt: compiledPrompt,
+        messages: history,
+        tools: piTools,
+      },
+      modelOptions
+    );
+
+    const pendingToolCalls: Array<{
+      toolName: string;
+      args: Record<string, unknown>;
+      toolCallId: string;
+    }> = [];
+    let finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" =
+      "stop";
+    let finalMessage: Message | null = null;
+
+    for await (const event of stream) {
+      if (event.type === "text_delta" && typeof event.delta === "string") {
+        if (options?.onTextDelta) options.onTextDelta(event.delta);
+        else process.stdout.write(event.delta);
+        fullResponse += event.delta;
+      }
+      if (event.type === "thinking_delta" && typeof event.delta === "string") {
+        if (options?.onThinkingDelta) options.onThinkingDelta(event.delta);
+      }
+      if (event.type === "toolcall_end") {
+        pendingToolCalls.push({
+          toolName: event.toolCall.name,
+          args: (event.toolCall.arguments ?? {}) as Record<string, unknown>,
+          toolCallId: event.toolCall.id,
+        });
+      }
+      if (event.type === "done") {
+        finalReason = event.reason;
+        finalMessage = event.message as unknown as Message;
+      }
+      if (event.type === "error") {
+        finalReason = event.reason;
+        finalMessage = event.error as unknown as Message;
+      }
+    }
+
+    if (finalMessage) {
+      history.push(finalMessage);
+    }
+
+    if (!pendingToolCalls.length || finalReason !== "toolUse") {
+      break;
+    }
+
+    const toolResults: Array<{ toolName: string; result: unknown }> = [];
+    for (const tc of pendingToolCalls) {
+      session.eventLog.append({
+        kind: "tool_call",
+        actor: "tool",
+        payload: { tool: tc.toolName, args: tc.args },
+      });
+    }
+
+    for (const tc of pendingToolCalls) {
+      const toolDef = (tools as Record<string, any>)[tc.toolName];
+      let result: unknown;
+      let isError = false;
+
+      if (!toolDef || typeof toolDef.execute !== "function") {
+        isError = true;
+        result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
+      } else {
+        try {
+          result = await toolDef.execute(tc.args);
+        } catch (err: any) {
+          isError = true;
+          result = { ok: false, error: err?.message ?? "Tool execution failed" };
+        }
+      }
+
+      toolResults.push({ toolName: tc.toolName, result });
+
+      history.push({
+        role: "toolResult",
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        content: [{ type: "text", text: JSON.stringify(result) }],
+        isError,
+        timestamp: Date.now(),
+      });
+
+      session.eventLog.append({
+        kind: "tool_result",
+        actor: "tool",
+        payload: { tool: tc.toolName, result },
+      });
+    }
+
+    stepIndex++;
+    if (session.debug) {
+      printToolBlockStart(stepIndex);
+      for (const tc of pendingToolCalls) {
+        printToolCallDebug(tc.toolName, tc.args);
+      }
+      for (const tr of toolResults) {
+        printToolResultDebug(tr.toolName, tr.result);
+      }
+      printToolBlockEnd();
+    } else {
+      for (const tc of pendingToolCalls) {
+        printToolCall(tc.toolName, tc.args);
+      }
+    }
   }
 
   if (fullResponse && !fullResponse.endsWith("\n")) {
@@ -177,6 +258,29 @@ export async function runTurn(
   printMemoryBanner(stats);
 
   return fullResponse;
+}
+
+function isZodSchema(schema: unknown): schema is ZodTypeAny {
+  return !!schema && typeof schema === "object" && "_def" in (schema as Record<string, unknown>);
+}
+
+function normalizeToolParameters(schema: unknown): Record<string, unknown> {
+  if (isZodSchema(schema)) {
+    const json = zodToJsonSchema(schema, {
+      $refStrategy: "none",
+      target: "jsonSchema7",
+    }) as Record<string, unknown>;
+    delete json.$schema;
+    delete json.$ref;
+    delete json.definitions;
+    return json;
+  }
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {},
+  };
 }
 
 function applyTierManagement(session: Session): void {

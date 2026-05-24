@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
 import {
@@ -22,7 +22,7 @@ export function createSystemTools(ctx: SystemToolContext) {
   };
 
   return {
-    shell: tool({
+    shell: defineTool({
       description:
         "Execute a shell command in the working directory. Returns stdout, stderr, and exit code.",
       parameters: z.object({
@@ -80,7 +80,7 @@ export function createSystemTools(ctx: SystemToolContext) {
       },
     }),
 
-    read_file: tool({
+    read_file: defineTool({
       description:
         "Read contents of a file. Supports optional offset and limit for partial reads.",
       parameters: z.object({
@@ -118,7 +118,7 @@ export function createSystemTools(ctx: SystemToolContext) {
       },
     }),
 
-    write_file: tool({
+    write_file: defineTool({
       description:
         "Create or overwrite a file. Creates parent directories if needed.",
       parameters: z.object({
@@ -137,7 +137,7 @@ export function createSystemTools(ctx: SystemToolContext) {
       },
     }),
 
-    edit_file: tool({
+    edit_file: defineTool({
       description:
         "Replace a specific text block in a file. Finds the exact oldText and replaces with newText. Fails if oldText is not unique in the file.",
       parameters: z.object({

@@ -1,4 +1,4 @@
-import { tool } from "ai";
+import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
@@ -13,7 +13,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
   const { eventLog, memoryStore, memoryEnabled } = ctx;
 
   return {
-    recall: tool({
+    recall: defineTool({
       description:
         "Search your cross-session memory for past learnings, decisions, preferences, or patterns. Use when you need context from previous sessions.",
       parameters: z.object({
@@ -52,7 +52,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
       },
     }),
 
-    remember: tool({
+    remember: defineTool({
       description:
         "Store a fact, preference, decision, mistake, or pattern in your cross-session memory for future sessions.",
       parameters: z.object({
