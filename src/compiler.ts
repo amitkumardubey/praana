@@ -1,7 +1,5 @@
 import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.js";
 import type { StateGraph } from "./state-graph.js";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -160,47 +158,12 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
 
 // ---- Section builders ----
 
-function loadSystemPrompt(): string | null {
-  const paths = [
-    resolve(process.cwd(), "prompts/system.txt"),
-    resolve(process.cwd(), "../prompts/system.txt"),
-    resolve(import.meta.dirname ?? __dirname, "../../prompts/system.txt"),
-  ];
-  for (const p of paths) {
-    if (existsSync(p)) {
-      try {
-        return readFileSync(p, "utf-8");
-      } catch {
-        // fall through to next path
-      }
-    }
-  }
-  return null;
-}
-
 function buildSystemFrame(
   cwd: string,
   sessionId: string,
   toolSchemas: string[],
   stateSummary?: string
 ): string {
-  // Check for external override (power users / tuning experiments)
-  const custom = loadSystemPrompt();
-  if (custom) {
-    return custom
-      .replace(/\{\{cwd\}\}/g, cwd)
-      .replace(/\{\{sessionId\}\}/g, sessionId)
-      .replace(
-        /\{\{stateSummary\}\}/g,
-        stateSummary ?? "No active state."
-      )
-      .replace(
-        /\{\{toolSchemas\}\}/g,
-        toolSchemas.map((t) => `- ${t}`).join("\n")
-      );
-  }
-
-  // Default tuned prompt
   const lines = [
     "# System",
     "",

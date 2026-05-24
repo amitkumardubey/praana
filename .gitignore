@@ -13,6 +13,3 @@ eval/scoring-rubric.md
 eval/task-template.md
 eval/results*.jsonl
 eval/metrics.schema.json
-
-# Tuned prompts (competitive advantage — keep local)
-prompts/system.txt
