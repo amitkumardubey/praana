@@ -51,7 +51,7 @@ Most coding agents treat context as a flat window — everything competes for th
 
 Objects automatically demote after configurable idle thresholds. The result: your active objects get full representation, while stale context compresses to stubs. When you mention something related, ARIA auto-promotes matching peripherals back to active — no manual `hydrate()` calls needed.
 
-**Measured:** In a session with 100+ state objects, tiering saved ~12,700 tokens vs. flat rendering.
+**Measured:** In a session with 100+ state objects, tiering saved ~12,700 tokens vs. flat rendering. [See the benchmark.](./docs/benchmarks/token-benchmark.ts)
 
 **Adaptive Memory** — SQLite-backed, scored by relevance and recency, persists between sessions. At session start, ARIA generates a digest of what it knows. At session end, it optionally summarizes learnings and reinforces confidence for memories that proved useful. Scope filtering keeps global preferences separate from project-specific facts.
 
