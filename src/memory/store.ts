@@ -151,12 +151,17 @@ export class MemoryStore {
       candidates = getEntriesByScope(this.db, queryScopes);
     }
 
-    // Filter by scope: entry must share at least one scope with query
+    // Enforce strict scope isolation: entry must include ALL requested scopes.
+    // This keeps vector and fallback paths consistent.
     if (queryScopes.length > 0) {
       const queryScopeSet = new Set(queryScopes);
-      candidates = candidates.filter((e) =>
-        e.scopes.some((s) => queryScopeSet.has(s))
-      );
+      candidates = candidates.filter((e) => {
+        const entryScopeSet = new Set(e.scopes);
+        for (const scope of queryScopeSet) {
+          if (!entryScopeSet.has(scope)) return false;
+        }
+        return true;
+      });
     }
 
     // Filter by kind

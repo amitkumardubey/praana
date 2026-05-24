@@ -1,11 +1,13 @@
 import * as readline from "node:readline";
-import { existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig } from "./config.js";
 import type { LlmConfig } from "./types.js";
+
+const APP_VERSION = readAppVersion();
 
 async function main() {
   const args = process.argv.slice(2);
@@ -398,11 +400,21 @@ function currentModelOrDefault(session: Session): string {
   return session.getModelOverride() ?? session.config.llm.model;
 }
 
+function readAppVersion(): string {
+  try {
+    const pkgUrl = new URL("../package.json", import.meta.url);
+    const pkg = JSON.parse(readFileSync(pkgUrl, "utf-8")) as { version?: string };
+    return pkg.version ? `v${pkg.version}` : "v0.0.0";
+  } catch {
+    return "v0.0.0";
+  }
+}
+
 function printSessionBanner(session: Session, cwd: string, model: string): void {
   const memoryStats = session.getMemoryStats();
   const digestLen = session.digest?.length ?? 0;
   const content = [
-    `ARIA v0.1.0`,
+    `ARIA ${APP_VERSION}`,
     `session: ${session.id}`,
     `cwd: ${cwd}`,
     `model: ${model}`,

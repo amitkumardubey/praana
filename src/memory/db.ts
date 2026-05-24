@@ -104,8 +104,8 @@ export function getEntriesByScope(db: Database.Database, scopes: string[]): Memo
 
 export function deleteEntry(db: Database.Database, id: string): void {
   db.prepare("DELETE FROM entries WHERE id = ?").run(id);
-  // cascades to scopes and vec via FK + manual cleanup
-  db.prepare("DELETE FROM entries_vec WHERE rowid IN (SELECT rowid FROM entries_vec WHERE embedding MATCH (SELECT embedding FROM entries_vec WHERE rowid = (SELECT rowid FROM entries_vec WHERE embedding IS NOT NULL LIMIT 1)) AND k = 1)").run();
+  // entry_scopes cascades via FK; vector table needs explicit cleanup by entry_id.
+  db.prepare("DELETE FROM entries_vec WHERE entry_id = ?").run(id);
 }
 
 function rowToEntry(db: Database.Database, row: any): MemoryEntry {
