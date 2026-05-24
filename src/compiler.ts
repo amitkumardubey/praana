@@ -1,5 +1,7 @@
 import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.js";
 import type { StateGraph } from "./state-graph.js";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -158,12 +160,46 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
 
 // ---- Section builders ----
 
+function loadSystemPrompt(): string | null {
+  const paths = [
+    resolve(process.cwd(), "prompts/system.txt"),
+    resolve(process.cwd(), "../prompts/system.txt"),
+    resolve(import.meta.dirname ?? __dirname, "../../prompts/system.txt"),
+  ];
+  for (const p of paths) {
+    if (existsSync(p)) {
+      try {
+        return readFileSync(p, "utf-8");
+      } catch {
+        // fall through to next path
+      }
+    }
+  }
+  return null;
+}
+
 function buildSystemFrame(
   cwd: string,
   sessionId: string,
   toolSchemas: string[],
   stateSummary?: string
 ): string {
+  const custom = loadSystemPrompt();
+  if (custom) {
+    return custom
+      .replace(/\{\{cwd\}\}/g, cwd)
+      .replace(/\{\{sessionId\}\}/g, sessionId)
+      .replace(
+        /\{\{stateSummary\}\}/g,
+        stateSummary ?? "No active state."
+      )
+      .replace(
+        /\{\{toolSchemas\}\}/g,
+        toolSchemas.map((t) => `- ${t}`).join("\n")
+      );
+  }
+
+  // Fallback generic prompt (public, non-tuned)
   const lines = [
     "# System",
     "",
@@ -172,7 +208,6 @@ function buildSystemFrame(
     `Session ID: ${sessionId}`,
   ];
 
-  // Add state summary if provided
   if (stateSummary) {
     lines.push("", "## Working Memory Status", "", stateSummary);
   }
@@ -183,13 +218,12 @@ function buildSystemFrame(
     "",
     ...toolSchemas.map((t) => `- ${t}`),
     "",
-    "Use tools when needed to accomplish the user's request. Respond concisely.",
+    "Use tools when needed to accomplish the user's request.",
     "",
     "## Memory Management",
     "",
-    "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
-    "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
-    "See the Active State and Peripheral Memory sections below for your current working memory."
+    "You have working memory with three tiers: active, soft, and hard.",
+    "Manage your working memory to stay organized."
   );
 
   return lines.join("\n");

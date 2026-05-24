@@ -6,3 +6,13 @@ aria.config.json
 aria-knowledge.db*
 aria.config.toml
 refer/
+
+# Evaluation assets (competitive intelligence — keep local)
+eval/runbook.md
+eval/scoring-rubric.md
+eval/task-template.md
+eval/results*.jsonl
+eval/metrics.schema.json
+
+# Tuned prompts (competitive advantage — keep local)
+prompts/system.txt
