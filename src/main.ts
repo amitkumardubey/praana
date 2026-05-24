@@ -44,17 +44,22 @@ async function main() {
       session = await Session.resume(sessionId, cwd, config);
       
       // Print recent conversation for context
-      const recentEvents = session.eventLog.readLast(20);
+      const recentEvents = session.eventLog.readLast(30);
       const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
       if (turns.length > 0) {
-        console.log(`\n--- Recent conversation (last ${Math.min(turns.length, 6)} messages) ---`);
+        console.log(`\n${'─'.repeat(50)}`);
+        console.log(`  📜  Recent conversation (${Math.min(turns.length, 6)} of ${turns.length} messages)`);
+        console.log('─'.repeat(50));
         const shown = turns.slice(-6);
         for (const ev of shown) {
           const prefix = ev.kind === "user_message" ? "You" : "ARIA";
-          const text = (ev.payload.text as string)?.slice(0, 200) ?? "";
-          console.log(`${prefix}: ${text}`);
+          const text = (ev.payload.text as string)?.trim() ?? "";
+          // Show first 2 lines, clean up
+          const lines = text.split("\n").slice(0, 2).join(" ");
+          const display = lines.length > 150 ? lines.slice(0, 147) + "..." : lines;
+          console.log(`  ${prefix}: ${display}`);
         }
-        console.log("---\n");
+        console.log('─'.repeat(50) + "\n");
       }
     } else {
       session = await Session.create(cwd, config);

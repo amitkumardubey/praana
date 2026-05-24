@@ -77,7 +77,10 @@ export async function runTurn(
     onStepFinish: ({ toolCalls, toolResults }) => {
       if (session.debug && toolCalls?.length) {
         for (const tc of toolCalls) {
-          process.stderr.write(`[debug] 🔧 ${tc.toolName}(${JSON.stringify(tc.args).slice(0, 120)})\n`);
+          const argsSummary = Object.entries(tc.args as Record<string, unknown>)
+            .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 40)}`)
+            .join(" ");
+          process.stderr.write(`\n[tool] ${tc.toolName}(${argsSummary})\n`);
         }
       }
       // Log all tool calls and results automatically
