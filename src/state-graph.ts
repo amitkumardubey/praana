@@ -99,6 +99,27 @@ export class StateGraph {
   }
 
   /**
+   * Auto-promote peripheral objects whose payload matches keywords in the query.
+   * Returns IDs of objects that were hydrated.
+   */
+  autoHydrate(query: string): string[] {
+    const keywords = extractKeywords(query);
+    if (keywords.length === 0) return [];
+
+    const hydrated: string[] = [];
+    for (const obj of this.getPeripheral()) {
+      const text = payloadToSearchableText(obj).toLowerCase();
+      if (keywords.some((kw) => text.includes(kw))) {
+        obj.tier = "active";
+        obj.lastTouched = Date.now();
+        this.touchedTurn.set(obj.id, this.turnCount);
+        hydrated.push(obj.id);
+      }
+    }
+    return hydrated;
+  }
+
+  /**
    * Apply idle-timer tier management rules.
    * Returns list of objects that changed tier.
    */
@@ -229,4 +250,50 @@ function summarizePayload(obj: StateObject): string {
 
 export function summarizePayloadFn(obj: StateObject): string {
   return summarizePayload(obj);
+}
+
+// ---- Auto-hydrate helpers ----
+
+const STOP_WORDS = new Set([
+  "the","a","an","is","are","was","were","be","been","being",
+  "have","has","had","do","does","did","will","would","could",
+  "should","may","might","must","shall","can","need","ought",
+  "to","of","in","for","on","with","at","by","from","as",
+  "into","through","during","before","after","above","below",
+  "between","under","again","further","then","once","here",
+  "there","when","where","why","how","all","each","few","more",
+  "most","other","some","such","no","nor","not","only","own",
+  "same","so","than","too","very","just","and","but","if","or",
+  "because","until","while","what","which","who","whom","this",
+  "that","these","those","am","it","its","they","them","their",
+  "i","me","my","we","our","you","your","he","him","his","she",
+  "her","hers",
+]);
+
+function extractKeywords(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w));
+}
+
+function payloadToSearchableText(obj: StateObject): string {
+  switch (obj.kind) {
+    case "task": {
+      const p = obj.payload as TaskPayload;
+      return [p.title, p.description ?? ""].join(" ");
+    }
+    case "decision": {
+      const p = obj.payload as DecisionPayload;
+      return [p.summary, p.rationale].join(" ");
+    }
+    case "constraint": {
+      const p = obj.payload as ConstraintPayload;
+      return p.text;
+    }
+    case "note": {
+      const p = obj.payload as NotePayload;
+      return p.text;
+    }
+  }
 }

@@ -111,13 +111,10 @@ export interface LlmConfig {
   base_url?: string;
 }
 
-export interface BodhaConfig {
+export interface MemoryConfig {
   enabled: boolean;
   summarizer: string;
-}
-
-export interface MemoryConfig {
-  bodha_db_path?: string;
+  db_path?: string;
 }
 
 export interface CompilerConfig {
@@ -137,8 +134,7 @@ export interface SessionConfig {
 
 export interface AriaConfig {
   llm: LlmConfig;
-  bodha: BodhaConfig;
-  memory?: MemoryConfig;
+  memory: MemoryConfig;
   compiler: CompilerConfig;
   tiers: TiersConfig;
   session: SessionConfig;

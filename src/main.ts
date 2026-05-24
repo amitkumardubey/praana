@@ -42,6 +42,7 @@ async function main() {
     if (resumeMode && sessionId) {
       console.log(`Resuming session: ${sessionId}`);
       session = await Session.resume(sessionId, cwd, config);
+      session.debug = debug;
       
       // Print recent conversation for context
       const recentEvents = session.eventLog.readLast(30);
@@ -72,12 +73,15 @@ async function main() {
   }
 
   console.log(`Working directory: ${cwd}`);
-  if (session.bodhaEnabled && session.digest) {
+  if (session.memoryEnabled && session.digest) {
     console.log("Cross-session memory: active");
-  } else if (session.bodhaEnabled) {
+  } else if (session.memoryEnabled) {
     console.log("Cross-session memory: enabled (no prior knowledge)");
   } else {
     console.log("Cross-session memory: disabled");
+  }
+  if (session.memoryEnabled) {
+    console.log(`Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
   }
   console.log('Type /help for commands, /exit to quit.');
   console.log();
@@ -130,7 +134,8 @@ async function main() {
     if (!sessionEnded) {
       sessionEnded = true;
       console.log("\nShutting down...");
-      await session.end("clean");
+      const events = session.getTranscriptEvents();
+      await session.end("clean", events);
     }
     process.exit(0);
   });
@@ -155,7 +160,8 @@ async function handleSlashCommand(
     case "/exit":
     case "/quit": {
       console.log("Ending session...");
-      await session.end("clean");
+      const events = session.getTranscriptEvents();
+      await session.end("clean", events);
       rl.close();
       return;
     }
@@ -175,11 +181,29 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/stats": {
+      const stats = session.getMemoryStats();
+      console.log("\nMemory stats:");
+      console.log(`  Total: ${stats.total}`);
+      console.log(`  Active: ${stats.active}`);
+      console.log(`  Soft: ${stats.soft}`);
+      console.log(`  Hard: ${stats.hard}`);
+      const kindParts = Object.entries(stats.byKind)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([kind, count]) => `${kind}:${count}`);
+      console.log(`  By kind: ${kindParts.length ? kindParts.join(", ") : "(none)"}`);
+
+      if (session.memoryEnabled) {
+        console.log(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
+      }
+      break;
+    }
+
     case "/digest": {
       if (session.digest) {
         console.log("\n" + session.digest);
       } else {
-        console.log("No bodha digest available.");
+        console.log("No digest available.");
       }
       break;
     }
@@ -212,12 +236,12 @@ async function handleSlashCommand(
 
     case "/recall": {
       const query = parts.slice(1).join(" ");
-      if (!query || !session.bodhaEnabled || !session.bodhaClient) {
-        console.log("Usage: /recall <query> (requires bodha enabled)");
+      if (!query || !session.memoryEnabled || !session.memoryStore) {
+        console.log("Usage: /recall <query> (requires memory enabled)");
         break;
       }
       try {
-        const result = await session.bodhaClient.recall(query);
+        const result = await session.memoryStore.recall(query, { limit: 20 });
         if (result.entries.length === 0) {
           console.log("No results found.");
         } else {
@@ -316,12 +340,13 @@ USAGE:
 SLASH COMMANDS:
   /exit                    End session and save
   /state                   List all state objects
+  /stats                   Show memory tier counts and kind distribution
   /digest                  Print cross-session memory digest
   /events                  Show last 20 events
   /recall <query>          Search cross-session knowledge base
   /model <name>            Switch LLM model (e.g., /model openai/gpt-4o)
   /sessions                List recent sessions (resume with npx tsx src/main.ts resume <id>)
-  /debug                   Toggle debug mode (saves per-turn prompts)
+  /debug                   Toggle debug mode (detailed tool blocks + saved prompts)
   /help                    Show this help
 `);
 }

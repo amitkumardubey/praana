@@ -1,8 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import {
-  execSync,
-} from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   readFileSync,
   writeFileSync,
@@ -35,33 +33,50 @@ export function createSystemTools(ctx: SystemToolContext) {
           .describe("Timeout in milliseconds (default 30000)"),
       }),
       execute: async ({ command, timeout }) => {
-        try {
-          const result = execSync(command, {
+        const ms = timeout ?? 30000;
+        return new Promise((resolve) => {
+          const child = spawn(command, [], {
             cwd,
-            timeout: timeout ?? 30000,
-            encoding: "utf-8",
-            maxBuffer: 10 * 1024 * 1024, // 10MB
             shell: "/bin/bash",
+            stdio: ["ignore", "pipe", "pipe"],
           });
 
-          return {
-            ok: true,
-            stdout: result,
-            stderr: "",
-            exitCode: 0,
-          };
-        } catch (err: any) {
-          const stdout = err.stdout?.toString() ?? "";
-          const stderr = err.stderr?.toString() ?? "";
-          const exitCode = err.status ?? 1;
+          let stdout = "";
+          let stderr = "";
+          const maxBuf = 10 * 1024 * 1024; // 10MB
 
-          return {
-            ok: exitCode === 0,
-            stdout,
-            stderr,
-            exitCode,
-          };
-        }
+          const timer = setTimeout(() => {
+            child.kill("SIGTERM");
+            setTimeout(() => child.kill("SIGKILL"), 3000);
+          }, ms);
+
+          child.stdout?.on("data", (chunk: Buffer) => {
+            if (stdout.length < maxBuf) stdout += chunk.toString();
+          });
+          child.stderr?.on("data", (chunk: Buffer) => {
+            if (stderr.length < maxBuf) stderr += chunk.toString();
+          });
+
+          child.on("close", (code) => {
+            clearTimeout(timer);
+            resolve({
+              ok: code === 0,
+              stdout: stdout.slice(0, maxBuf),
+              stderr: stderr.slice(0, maxBuf),
+              exitCode: code ?? 1,
+            });
+          });
+
+          child.on("error", (err) => {
+            clearTimeout(timer);
+            resolve({
+              ok: false,
+              stdout,
+              stderr: err.message,
+              exitCode: 1,
+            });
+          });
+        });
       },
     }),
 
@@ -139,26 +154,23 @@ export function createSystemTools(ctx: SystemToolContext) {
 
           const content = readFileSync(absPath, "utf-8");
 
-          // Count occurrences of oldText
-          const escapedText = oldText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const regex = new RegExp(escapedText, "g");
-          const matches = content.match(regex);
-
-          if (!matches || matches.length === 0) {
+          // Exact match via indexOf — no regex, handles all special chars
+          const idx = content.indexOf(oldText);
+          if (idx === -1) {
             return {
               ok: false,
               error: "oldText not found in file. Make sure the text matches exactly.",
             };
           }
-
-          if (matches.length > 1) {
+          if (content.indexOf(oldText, idx + 1) !== -1) {
+            const count = content.split(oldText).length - 1;
             return {
               ok: false,
-              error: `oldText found ${matches.length} times in file. Must be unique. Provide more context to make it unique.`,
+              error: `oldText found ${count} times in file. Must be unique. Provide more context to make it unique.`,
             };
           }
 
-          const newContent = content.replace(oldText, newText);
+          const newContent = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
           writeFileSync(absPath, newContent);
           return { ok: true };
         } catch (err: any) {

@@ -2,21 +2,17 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ulid } from "ulid";
-import {
-  InProcessClient,
-  StubEmbeddingsProvider,
-  SqliteMemoryBackend,
-  openDatabase,
-  DisabledSummarizer,
-  OllamaSummarizer,
-  OpenAICompatibleSummarizer,
-  EMBEDDING_DIM,
-  type AgentKBClient,
-} from "bodha";
 import type { AriaConfig } from "./types.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { StateGraph } from "./state-graph.js";
 import { loadConfig } from "./config.js";
+import {
+  MemoryStore,
+  HashEmbedder,
+  OpenAISummarizer,
+  type MemoryEntry,
+  type SessionEvent,
+} from "./memory/index.js";
 
 export class Session {
   id: string;
@@ -24,8 +20,8 @@ export class Session {
   config: AriaConfig;
   eventLog: EventLog;
   stateGraph: StateGraph;
-  bodhaClient: AgentKBClient | null = null;
-  bodhaEnabled: boolean;
+  memoryStore: MemoryStore | null = null;
+  memoryEnabled: boolean;
   digest: string | null = null;
   debug = false;
   private ended = false;
@@ -40,19 +36,19 @@ export class Session {
     this.eventLog = new EventLog(id, logDir);
 
     this.stateGraph = new StateGraph();
-    this.bodhaEnabled = config.bodha.enabled;
+    this.memoryEnabled = config.memory.enabled;
   }
 
   static createNew(id: string, cwd: string, config: AriaConfig): Session {
     const session = new Session(id, cwd, config);
-    
+
     writeSessionMeta(config.session.log_dir, {
       session_id: id,
       started_at: Date.now(),
       cwd,
       agent: "aria",
     });
-    
+
     return session;
   }
 
@@ -64,27 +60,50 @@ export class Session {
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
 
-    if (session.bodhaEnabled) {
+    if (session.memoryEnabled) {
       try {
-        session.bodhaClient = session.initBodha();
-        const digest = await session.bodhaClient.sessionStart({
+        session.memoryStore = session.initMemoryStore();
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_start_begin",
+          },
+        });
+
+        const d = await session.memoryStore.sessionStart({
           agent: "aria",
           user_id: hashString(process.env.USER ?? "unknown"),
           time: Date.now(),
           context_id: hashString(cwd),
           context_label: basename(cwd),
-          working_context: {
-            repo: {
-              root: cwd,
-              name: basename(cwd),
-            },
+          working_context: { repo: { root: cwd, name: basename(cwd) } },
+        });
+
+        session.digest = d.markdown;
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_start_success",
+            digestLength: session.digest.length,
           },
         });
-        session.digest = digest.markdown;
       } catch (err) {
-        console.warn("[bodha] Failed to initialize bodha, continuing without cross-session memory:", (err as Error).message);
-        session.bodhaEnabled = false;
-        session.bodhaClient = null;
+        console.warn("[memory] Failed to initialize, continuing without:", (err as Error).message);
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_start_failure",
+            error: (err as Error).message,
+          },
+        });
+        session.memoryEnabled = false;
+        session.memoryStore = null;
         session.digest = null;
       }
     }
@@ -111,29 +130,51 @@ export class Session {
       session.stateGraph.replayAction(ev.payload);
     }
 
-    // Initialize bodha (no sessionStart for resumed — skip digest)
-    if (session.bodhaEnabled) {
+    if (session.memoryEnabled) {
       try {
-        session.bodhaClient = session.initBodha();
-        // For resumed sessions, re-generate digest
-        const digest = await session.bodhaClient.sessionStart({
+        session.memoryStore = session.initMemoryStore();
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "resume_session_start_begin",
+          },
+        });
+
+        // For resumed sessions, regenerate digest
+        const d = await session.memoryStore.sessionStart({
           agent: "aria",
           user_id: hashString(process.env.USER ?? "unknown"),
           time: Date.now(),
           context_id: hashString(cwd),
           context_label: basename(cwd),
-          working_context: {
-            repo: {
-              root: cwd,
-              name: basename(cwd),
-            },
+          working_context: { repo: { root: cwd, name: basename(cwd) } },
+        });
+
+        session.digest = d.markdown;
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "resume_session_start_success",
+            digestLength: session.digest.length,
           },
         });
-        session.digest = digest.markdown;
       } catch (err) {
-        console.warn("[bodha] Failed to initialize bodha for resumed session:", (err as Error).message);
-        session.bodhaEnabled = false;
-        session.bodhaClient = null;
+        console.warn("[memory] Failed to initialize for resumed session:", (err as Error).message);
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "resume_session_start_failure",
+            error: (err as Error).message,
+          },
+        });
+        session.memoryEnabled = false;
+        session.memoryStore = null;
       }
     }
 
@@ -145,100 +186,138 @@ export class Session {
     this.stateGraph.incrementTurn();
   }
 
-  get promptDir(): string {
-    return join(this.config.session.log_dir, this.id, "prompts");
-  }
-
   getTurnCount(): number {
     return this.turnCount;
   }
 
-  async end(reason: "clean" | "aborted" | "error"): Promise<void> {
+  get promptDir(): string {
+    return join(this.config.session.log_dir, this.id, "prompts");
+  }
+
+  getMemoryDbPath(): string | null {
+    const configuredPath = this.config.memory?.db_path;
+    if (configuredPath) {
+      const p = expandHome(configuredPath);
+      return p.startsWith("/") ? p : join(this.cwd, p);
+    }
+    return expandHome("~/.aria/memory.db");
+  }
+
+  getMemoryStats(): {
+    total: number;
+    active: number;
+    soft: number;
+    hard: number;
+    byKind: Record<string, number>;
+  } {
+    const snapshot = this.stateGraph.snapshot();
+    const byKind: Record<string, number> = {};
+    let active = 0;
+    let soft = 0;
+    let hard = 0;
+
+    for (const obj of snapshot) {
+      byKind[obj.kind] = (byKind[obj.kind] ?? 0) + 1;
+      if (obj.tier === "active") active++;
+      else if (obj.tier === "soft") soft++;
+      else hard++;
+    }
+
+    return { total: snapshot.length, active, soft, hard, byKind };
+  }
+
+  /** Build a transcript of user/agent/tool events for the summarizer. */
+  getTranscriptEvents(): SessionEvent[] {
+    const all = this.eventLog.readAll();
+    const out: SessionEvent[] = [];
+    for (const ev of all) {
+      if (ev.kind === "user_message" || ev.kind === "agent_message") {
+        out.push({ type: ev.kind, timestamp: ev.timestamp, content: (ev.payload.text as string) ?? "" });
+      } else if (ev.kind === "tool_call") {
+        out.push({ type: "tool_use", timestamp: ev.timestamp, tool_name: ev.payload.tool as string, args: ev.payload.args as Record<string, unknown> | undefined });
+      } else if (ev.kind === "tool_result") {
+        out.push({ type: "tool_result", timestamp: ev.timestamp, tool_name: ev.payload.tool as string, result: ev.payload.result });
+      }
+    }
+    return out;
+  }
+
+  async end(reason: "clean" | "aborted" | "error", events?: SessionEvent[]): Promise<void> {
     if (this.ended) return;
     this.ended = true;
-    if (this.bodhaEnabled && this.bodhaClient) {
+
+    if (this.memoryEnabled && this.memoryStore) {
       try {
-        await this.bodhaClient.sessionEnd(reason);
+        this.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_end_begin",
+            reason,
+          },
+        });
+        await this.memoryStore.sessionEnd(reason, events);
+        this.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_end_success",
+            reason,
+          },
+        });
       } catch (err) {
-        console.warn("[bodha] Error during session end:", (err as Error).message);
+        console.warn("[memory] Error during session end:", (err as Error).message);
+        this.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "memory_lifecycle",
+            phase: "session_end_failure",
+            reason,
+            error: (err as Error).message,
+          },
+        });
       }
     }
     this.eventLog.close();
   }
 
-  private initBodha(): AgentKBClient {
-    // Get the database path from config, or use default
-    const configuredPath = this.config.memory?.bodha_db_path;
+  private initMemoryStore(): MemoryStore {
+    const configuredPath = this.config.memory?.db_path;
     let dbPath: string;
-    
+
     if (configuredPath) {
-      // Expand home directory if needed
       dbPath = expandHome(configuredPath);
-      
-      // If relative path (doesn't start with / after home expansion), resolve relative to CWD
-      if (!dbPath.startsWith("/")) {
-        dbPath = join(this.cwd, dbPath);
+      if (!dbPath.startsWith("/")) dbPath = join(this.cwd, dbPath);
+    } else {
+      dbPath = expandHome("~/.aria/memory.db");
+    }
+
+    const embedder = new HashEmbedder();
+
+    // Build summarizer if configured
+    let summarizer = null;
+    if (this.config.memory.summarizer !== "disabled") {
+      const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+      const baseUrl = process.env.OPENROUTER_API_KEY
+        ? "https://openrouter.ai/api/v1"
+        : "https://api.openai.com/v1";
+      const model = process.env.BODHA_SUMMARIZER_MODEL ?? "google/gemini-2.5-flash";
+      if (apiKey) {
+        summarizer = new OpenAISummarizer({ baseUrl, apiKey, model });
       }
-    } else {
-      dbPath = expandHome("~/.bodha/kb.db");
-    }
-    
-    const db = openDatabase({
-      path: dbPath,
-      readonly: false,
-    });
-
-    const backend = new SqliteMemoryBackend(db);
-    const embeddings = new StubEmbeddingsProvider(EMBEDDING_DIM);
-
-    // Choose summarizer
-    const summarizerProvider = this.config.bodha.summarizer;
-    let summarizer;
-    if (summarizerProvider === "ollama") {
-      summarizer = new OllamaSummarizer({
-        baseUrl: "http://127.0.0.1:11434",
-        model: "qwen2.5:7b-instruct",
-      });
-    } else if (summarizerProvider === "openai") {
-      summarizer = new OpenAICompatibleSummarizer({
-        baseUrl: "https://api.openai.com/v1",
-        apiKey: process.env.OPENAI_API_KEY ?? "",
-        model: "gpt-4o-mini",
-      });
-    } else {
-      summarizer = new DisabledSummarizer();
     }
 
-    return new InProcessClient({
-      backend,
-      embeddings,
-      summarizer,
-      config: {
-        digest: {
-          token_budget: 1200,
-          diversity_cap: 0.5,
-          pinned_bonus: 0.1,
-          sticky_floor_bonus: 0.2,
-          adaptive_expansion: true,
-          kind_weight_core_fact: 1.3,
-          kind_weight_preference: 1.0,
-          kind_weight_pattern: 1.0,
-          kind_weight_context_fact: 1.0,
-          kind_weight_decision: 1.0,
-          kind_weight_mistake: 1.0,
-        },
-        confidence: {
-          reinforcement_alpha: 0.15,
-        },
-      },
-    });
+    return new MemoryStore({ dbPath, embedder, summarizer });
   }
 }
 
 // ---- Helpers ----
 
 function hashString(s: string): string {
-  return createHash("sha256").update(s).digest("hex").slice(0, 8);
+  return createHash("sha256").update(s).digest("hex").slice(0, 12);
 }
 
 function basename(p: string): string {

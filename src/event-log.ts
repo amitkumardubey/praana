@@ -39,22 +39,21 @@ export class EventLog {
   }
 
   readLast(n: number): Event[] {
-    try {
-      const content = readFileSync(this.logPath, "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean);
-      return lines.slice(-n).map((line) => JSON.parse(line) as Event);
-    } catch {
-      return [];
-    }
+    return this.internalRead().slice(-n);
+  }
+
+  readAll(): Event[] {
+    return this.internalRead();
   }
 
   replayContextActions(): Event[] {
+    return this.internalRead().filter((e) => e.kind === "context_action");
+  }
+
+  private internalRead(): Event[] {
     try {
       const content = readFileSync(this.logPath, "utf-8");
-      const lines = content.trim().split("\n").filter(Boolean);
-      return lines
-        .map((line) => JSON.parse(line) as Event)
-        .filter((e) => e.kind === "context_action");
+      return content.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Event);
     } catch {
       return [];
     }

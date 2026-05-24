@@ -8,9 +8,10 @@ const DEFAULT_CONFIG: AriaConfig = {
     provider: "openrouter",
     model: "anthropic/claude-sonnet-4",
   },
-  bodha: {
+  memory: {
     enabled: true,
-    summarizer: "disabled",
+    summarizer: "openrouter",
+    db_path: "~/.aria/memory.db",
   },
   compiler: {
     token_budget: 100_000,
@@ -119,14 +120,19 @@ export function loadConfig(configPath?: string): AriaConfig {
   }
 
   const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as AriaConfig;
-  
+
+  // Backward compat: map old [bodha] config to [memory]
+  if ((userConfig as any).bodha && !(userConfig as any).memory) {
+    merged.memory = { ...merged.memory, ...(userConfig as any).bodha };
+  }
+
   // Environment variable overrides
   if (process.env.ARIA_MODEL) merged.llm.model = process.env.ARIA_MODEL;
   
   // Expand paths
   merged.session.log_dir = expandHome(merged.session.log_dir);
-  if (merged.memory?.bodha_db_path) {
-    merged.memory.bodha_db_path = expandHome(merged.memory.bodha_db_path);
+  if (merged.memory?.db_path) {
+    merged.memory.db_path = expandHome(merged.memory.db_path);
   }
   
   return merged;

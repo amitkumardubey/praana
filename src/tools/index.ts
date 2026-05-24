@@ -1,6 +1,6 @@
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
-import type { AgentKBClient } from "bodha";
+import type { MemoryStore } from "../memory/index.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
@@ -8,8 +8,8 @@ import { createSystemTools } from "./system.js";
 export interface ToolRegistryContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
-  bodhaClient: AgentKBClient | null;
-  bodhaEnabled: boolean;
+  memoryStore: MemoryStore | null;
+  memoryEnabled: boolean;
   cwd: string;
 }
 
@@ -20,8 +20,9 @@ export function createAllTools(ctx: ToolRegistryContext) {
   });
 
   const knowledgeTools = createKnowledgeTools({
-    bodhaClient: ctx.bodhaClient,
-    bodhaEnabled: ctx.bodhaEnabled,
+    eventLog: ctx.eventLog,
+    memoryStore: ctx.memoryStore,
+    memoryEnabled: ctx.memoryEnabled,
   });
 
   const systemTools = createSystemTools({
@@ -47,8 +48,8 @@ export function describeTools(): string[] {
     "hard_unload(id) — Demote object to hard tier",
     "hydrate(id) — Promote object back to active",
     "list_state() — List all state objects",
-    "recall(query, mode?, kinds?) — Search cross-session knowledge base",
-    "remember(content, kind?, certainty?) — Store in cross-session knowledge base",
+    "recall(query, mode?, kinds?) — Search cross-session memory",
+    "remember(content, kind?, certainty?, scope?) — Store in cross-session memory",
     "shell(command, timeout?) — Execute a shell command",
     "read_file(path, offset?, limit?) — Read a file",
     "write_file(path, content) — Write or overwrite a file",

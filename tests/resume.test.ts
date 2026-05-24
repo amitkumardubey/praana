@@ -3,7 +3,17 @@ import { describe, it, expect, afterAll } from "vitest";
 import { Session } from "../src/session.js";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
+import type { AriaConfig } from "../src/types.js";
+
+const testLogDir = join(tmpdir(), "aria-test-sessions");
+const testConfig: AriaConfig = {
+  llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
+  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "aria-test-memory.db") },
+  compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
+  tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
+  session: { log_dir: testLogDir },
+};
 
 describe("Session resume", () => {
   let sessionId: string;
@@ -12,13 +22,13 @@ describe("Session resume", () => {
   afterAll(() => {
     // Clean up test session dirs
     try {
-      const dir = join(homedir(), ".aria", "sessions", sessionId);
+      const dir = join(testLogDir, sessionId);
       rmSync(dir, { recursive: true, force: true });
     } catch {}
   });
 
   it("creates session with state objects", async () => {
-    const s = await Session.create(process.cwd());
+    const s = await Session.create(process.cwd(), testConfig);
     sessionId = s.id;
 
     const t1 = s.stateGraph.create("task", { title: "Fix resume bug", status: "todo" });
@@ -57,7 +67,7 @@ describe("Session resume", () => {
   });
 
   it("resumes and rebuilds state correctly", async () => {
-    const s = await Session.resume(sessionId, process.cwd());
+    const s = await Session.resume(sessionId, process.cwd(), testConfig);
     
     const objects = s.stateGraph.list();
     expect(objects).toHaveLength(3);
@@ -76,7 +86,7 @@ describe("Session resume", () => {
   });
 
   it("resumes without crashing", async () => {
-    const s = await Session.resume(sessionId, process.cwd());
+    const s = await Session.resume(sessionId, process.cwd(), testConfig);
     expect(s.id).toBe(sessionId);
     expect(s.stateGraph.list().length).toBeGreaterThan(0);
     await s.end("clean");

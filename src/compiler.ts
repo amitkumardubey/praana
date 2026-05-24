@@ -13,6 +13,26 @@ export interface CompileInput {
   recentTurnsTokenBudget?: number; // Optional: token budget specifically for Recent Turns
 }
 
+/** Token-estimate metrics per section, emitted for eval / observability. */
+export interface CompileMetrics {
+  totalTokens: number;
+  systemFrameTokens: number;
+  crossSessionTokens: number;
+  activeStateTokens: number;
+  peripheralStubsTokens: number;
+  recentTurnsTokens: number;
+  currentInputTokens: number;
+  activeObjectCount: number;
+  peripheralObjectCount: number;
+  /** If true, some recent turns were truncated due to budget. */
+  recentTurnsTruncated: boolean;
+}
+
+/** Estimate token count from character count. 1 token ≈ 4 chars is rough but consistent. */
+function estTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 /** Build a deterministic prompt from structured state. */
 export function compile(input: CompileInput): string {
   const sections: string[] = [];
@@ -59,8 +79,8 @@ export function compile(input: CompileInput): string {
 
   const fullPrompt = sections.join("\n\n");
 
-  // Token budget check (rough: 1 token ≈ 4 chars)
-  const estimatedTokens = Math.ceil(fullPrompt.length / 4);
+  // Token budget check
+  const estimatedTokens = estTokens(fullPrompt);
   if (estimatedTokens > input.tokenBudget) {
     console.warn(
       `[compiler] Prompt estimated at ${estimatedTokens} tokens, exceeds budget of ${input.tokenBudget}. Consider trimming.`
@@ -68,6 +88,72 @@ export function compile(input: CompileInput): string {
   }
 
   return fullPrompt;
+}
+
+/** Compile with detailed token metrics per section. */
+export function compileWithMetrics(input: CompileInput): { prompt: string; metrics: CompileMetrics } {
+  const sections: string[] = [];
+  const metrics: Partial<CompileMetrics> = {};
+
+  const stateSummary = buildStateSummary(input.stateGraph);
+
+  // 1. SYSTEM FRAME
+  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary);
+  sections.push(frame);
+  metrics.systemFrameTokens = estTokens(frame);
+
+  // 2. CROSS-SESSION MEMORY
+  let crossSection = "";
+  if (input.bodhaDigest && input.bodhaDigest.trim()) {
+    crossSection = buildCrossSessionMemory(input.bodhaDigest);
+    sections.push(crossSection);
+    metrics.crossSessionTokens = estTokens(crossSection);
+  } else {
+    metrics.crossSessionTokens = 0;
+  }
+
+  // 3. ACTIVE STATE
+  const active = buildActiveState(input.stateGraph);
+  sections.push(active);
+  metrics.activeStateTokens = estTokens(active);
+  metrics.activeObjectCount = input.stateGraph.getActive().length;
+
+  // 4. PERIPHERAL STUBS
+  const peripheral = buildPeripheralStubs(input.stateGraph);
+  if (peripheral) {
+    sections.push(peripheral);
+    metrics.peripheralStubsTokens = estTokens(peripheral);
+    metrics.peripheralObjectCount = input.stateGraph.getPeripheral().length;
+  } else {
+    metrics.peripheralStubsTokens = 0;
+    metrics.peripheralObjectCount = 0;
+  }
+
+  // 5. RECENT TURNS
+  const recentTurnsBudget = input.recentTurnsTokenBudget ?? Math.floor(input.tokenBudget * 0.3);
+  const { text: recentText, truncated } = buildRecentTurnsWithTruncationFlag(input.recentEvents, recentTurnsBudget);
+  sections.push(recentText);
+  metrics.recentTurnsTokens = estTokens(recentText);
+  metrics.recentTurnsTruncated = truncated;
+
+  // 6. CURRENT INPUT
+  let currentSection = "";
+  if (input.userInput) {
+    currentSection = `## Current Input\n\nUser: ${input.userInput}`;
+    sections.push(currentSection);
+  }
+  metrics.currentInputTokens = estTokens(currentSection);
+
+  const fullPrompt = sections.join("\n\n");
+  metrics.totalTokens = estTokens(fullPrompt);
+
+  if (metrics.totalTokens > input.tokenBudget) {
+    console.warn(
+      `[compiler] Prompt estimated at ${metrics.totalTokens} tokens, exceeds budget of ${input.tokenBudget}.`
+    );
+  }
+
+  return { prompt: fullPrompt, metrics: metrics as CompileMetrics };
 }
 
 // ---- Section builders ----
@@ -159,9 +245,56 @@ function buildPeripheralStubs(stateGraph: StateGraph): string | null {
   return lines.join("\n");
 }
 
+/**
+ * Calculate token savings: compare compact peripheral stubs vs.
+ * rendering the same objects in full active form.
+ * Returns { compactTokens, fullTokens, savedTokens, savingsRatio }.
+ */
+export function calculateTokenSavings(stateGraph: StateGraph): {
+  compactTokens: number;
+  fullTokens: number;
+  savedTokens: number;
+  savingsRatio: number;
+} {
+  const peripheral = stateGraph.getPeripheral(); // soft + hard
+  if (peripheral.length === 0) {
+    return { compactTokens: 0, fullTokens: 0, savedTokens: 0, savingsRatio: 0 };
+  }
+
+  // Build how peripherals are actually rendered (stubs)
+  const compactLines: string[] = [];
+  for (const obj of peripheral) {
+    if (obj.tier === "soft") {
+      compactLines.push(`- ${obj.id} [${obj.kind}]: ${summarizeForStub(obj)}`);
+    } else {
+      compactLines.push(`- ${obj.id} [${obj.kind}]`);
+    }
+  }
+  const compact = compactLines.join("\n");
+  const compactTokens = estTokens(compact);
+
+  // Build what they would cost if all rendered in full active form
+  const fullLines: string[] = [];
+  for (const obj of peripheral) {
+    fullLines.push(renderActiveObject(obj));
+  }
+  const full = fullLines.join("\n");
+  const fullTokens = estTokens(full);
+
+  const savedTokens = Math.max(0, fullTokens - compactTokens);
+  const savingsRatio = fullTokens > 0 ? savedTokens / fullTokens : 0;
+
+  return { compactTokens, fullTokens, savedTokens, savingsRatio };
+}
+
 function buildRecentTurns(events: Event[], tokenBudget?: number): string {
+  const { text } = buildRecentTurnsWithTruncationFlag(events, tokenBudget);
+  return text;
+}
+
+function buildRecentTurnsWithTruncationFlag(events: Event[], tokenBudget?: number): { text: string; truncated: boolean } {
   if (events.length === 0) {
-    return "# Recent Turns\n\n(no recent events)";
+    return { text: "# Recent Turns\n\n(no recent events)", truncated: false };
   }
 
   const lines: string[] = ["# Recent Turns"];
@@ -169,10 +302,9 @@ function buildRecentTurns(events: Event[], tokenBudget?: number): string {
     (e) => e.kind !== "context_action" && e.kind !== "system_note"
   );
 
-  // Track the last tool call to know which tool produced each result
   let lastToolName: string | undefined;
-  let estimatedTokens = 0;
-  const headerTokens = Math.ceil("# Recent Turns".length / 4);
+  let estimatedTokens = Math.ceil("# Recent Turns".length / 4);
+  let truncated = false;
 
   for (const ev of filtered) {
     let line = "";
@@ -182,7 +314,7 @@ function buildRecentTurns(events: Event[], tokenBudget?: number): string {
         line = `User: ${ev.payload.text ?? ""}`;
         break;
       case "agent_message": {
-        const text = truncateText(ev.payload.text, 800); // Reduced from 2000 to 800
+        const text = truncateText(ev.payload.text, 800);
         line = `ARIA: ${text}`;
         break;
       }
@@ -193,7 +325,6 @@ function buildRecentTurns(events: Event[], tokenBudget?: number): string {
       case "tool_result": {
         const result = ev.payload.result;
         const resultStr = typeof result === "string" ? result : JSON.stringify(result);
-        // Apply different truncation based on tool
         const toolName = (ev.payload.tool as string | undefined) ?? lastToolName;
         const maxLen = getToolResultTruncation(toolName);
         line = `Result: ${truncateText(resultStr, maxLen)}`;
@@ -202,11 +333,11 @@ function buildRecentTurns(events: Event[], tokenBudget?: number): string {
     }
 
     if (line) {
-      // Check token budget if specified
       if (tokenBudget) {
         const lineTokens = Math.ceil(line.length / 4);
         if (estimatedTokens + lineTokens > tokenBudget) {
           lines.push("\n... (truncated due to token budget)");
+          truncated = true;
           break;
         }
         estimatedTokens += lineTokens;
@@ -215,7 +346,7 @@ function buildRecentTurns(events: Event[], tokenBudget?: number): string {
     }
   }
 
-  return lines.join("\n");
+  return { text: lines.join("\n"), truncated };
 }
 
 /** Get truncation limit for tool results based on tool name */

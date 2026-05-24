@@ -85,4 +85,38 @@ describe('StateGraph', () => {
     expect(obj).toBeTruthy();
     expect(obj?.kind).toBe('task');
   });
+
+  it('should auto-hydrate peripheral objects matching query keywords', () => {
+    const sg = new StateGraph();
+
+    // Create objects and demote them
+    const note1 = sg.create('note', { text: 'The staging API key is STAGE_7X9K2M' });
+    sg.setTier(note1.id, 'soft');
+
+    const note2 = sg.create('note', { text: 'Production deploy checklist' });
+    sg.setTier(note2.id, 'hard');
+
+    const task = sg.create('task', { title: 'Fix login bug', status: 'todo' });
+    sg.setTier(task.id, 'soft');
+
+    // Query matching note1
+    const hydrated1 = sg.autoHydrate('What is the staging API key?');
+    expect(hydrated1).toContain(note1.id);
+    expect(hydrated1).not.toContain(note2.id);
+    expect(hydrated1).not.toContain(task.id);
+    expect(sg.get(note1.id)?.tier).toBe('active');
+
+    // Re-demote for next test
+    sg.setTier(note1.id, 'soft');
+
+    // Query matching task title
+    const hydrated2 = sg.autoHydrate('Tell me about the login bug');
+    expect(hydrated2).toContain(task.id);
+    expect(sg.get(task.id)?.tier).toBe('active');
+
+    // Query with no meaningful keywords should hydrate nothing
+    sg.setTier(task.id, 'soft');
+    const hydrated3 = sg.autoHydrate('ok');
+    expect(hydrated3).toHaveLength(0);
+  });
 });
