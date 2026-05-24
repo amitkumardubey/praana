@@ -10,17 +10,22 @@ export interface CompileInput {
   cwd: string;
   sessionId: string;
   tokenBudget: number;
+  recentTurnsTokenBudget?: number; // Optional: token budget specifically for Recent Turns
 }
 
 /** Build a deterministic prompt from structured state. */
 export function compile(input: CompileInput): string {
   const sections: string[] = [];
 
+  // Generate state summary for system prompt
+  const stateSummary = buildStateSummary(input.stateGraph);
+
   // ---- 1. SYSTEM FRAME ----
   const frame = buildSystemFrame(
     input.cwd,
     input.sessionId,
-    input.toolSchemas
+    input.toolSchemas,
+    stateSummary
   );
   sections.push(frame);
 
@@ -41,7 +46,9 @@ export function compile(input: CompileInput): string {
   }
 
   // ---- 5. RECENT TURNS ----
-  const recent = buildRecentTurns(input.recentEvents);
+  // Use token-based limiting for Recent Turns if recentTurnsTokenBudget is provided
+  const recentTurnsBudget = input.recentTurnsTokenBudget ?? Math.floor(input.tokenBudget * 0.3); // Default: 30% of total budget
+  const recent = buildRecentTurns(input.recentEvents, recentTurnsBudget);
   sections.push(recent);
 
   // ---- 6. CURRENT INPUT ----
@@ -68,21 +75,38 @@ export function compile(input: CompileInput): string {
 function buildSystemFrame(
   cwd: string,
   sessionId: string,
-  toolSchemas: string[]
+  toolSchemas: string[],
+  stateSummary?: string
 ): string {
-  return [
+  const lines = [
     "# System",
     "",
     "You are ARIA, a coding agent with persistent memory.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
+  ];
+
+  // Add state summary if provided
+  if (stateSummary) {
+    lines.push("", "## Working Memory Status", "", stateSummary);
+  }
+
+  lines.push(
     "",
     "## Available Tools",
     "",
     ...toolSchemas.map((t) => `- ${t}`),
     "",
     "Use tools when needed to accomplish the user's request. Respond concisely.",
-  ].join("\n");
+    "",
+    "## Memory Management",
+    "",
+    "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
+    "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
+    "See the Active State and Peripheral Memory sections below for your current working memory."
+  );
+
+  return lines.join("\n");
 }
 
 function buildCrossSessionMemory(digest: string): string {
@@ -135,7 +159,7 @@ function buildPeripheralStubs(stateGraph: StateGraph): string | null {
   return lines.join("\n");
 }
 
-function buildRecentTurns(events: Event[]): string {
+function buildRecentTurns(events: Event[], tokenBudget?: number): string {
   if (events.length === 0) {
     return "# Recent Turns\n\n(no recent events)";
   }
@@ -145,34 +169,89 @@ function buildRecentTurns(events: Event[]): string {
     (e) => e.kind !== "context_action" && e.kind !== "system_note"
   );
 
+  // Track the last tool call to know which tool produced each result
+  let lastToolName: string | undefined;
+  let estimatedTokens = 0;
+  const headerTokens = Math.ceil("# Recent Turns".length / 4);
+
   for (const ev of filtered) {
+    let line = "";
+
     switch (ev.kind) {
       case "user_message":
-        lines.push(`User: ${ev.payload.text ?? ""}`);
+        line = `User: ${ev.payload.text ?? ""}`;
         break;
       case "agent_message": {
-        const text = truncateText(ev.payload.text, 2000);
-        lines.push(`ARIA: ${text}`);
+        const text = truncateText(ev.payload.text, 800); // Reduced from 2000 to 800
+        line = `ARIA: ${text}`;
         break;
       }
       case "tool_call":
-        lines.push(
-          `Tool call: ${ev.payload.tool ?? "unknown"}(${JSON.stringify(ev.payload.args ?? {})})`
-        );
+        lastToolName = ev.payload.tool as string | undefined;
+        line = `Tool call: ${lastToolName ?? "unknown"}(${JSON.stringify(ev.payload.args ?? {})})`;
         break;
       case "tool_result": {
         const result = ev.payload.result;
         const resultStr = typeof result === "string" ? result : JSON.stringify(result);
-        lines.push(`Result: ${truncateText(resultStr, 500)}`);
+        // Apply different truncation based on tool
+        const toolName = (ev.payload.tool as string | undefined) ?? lastToolName;
+        const maxLen = getToolResultTruncation(toolName);
+        line = `Result: ${truncateText(resultStr, maxLen)}`;
         break;
       }
+    }
+
+    if (line) {
+      // Check token budget if specified
+      if (tokenBudget) {
+        const lineTokens = Math.ceil(line.length / 4);
+        if (estimatedTokens + lineTokens > tokenBudget) {
+          lines.push("\n... (truncated due to token budget)");
+          break;
+        }
+        estimatedTokens += lineTokens;
+      }
+      lines.push(line);
     }
   }
 
   return lines.join("\n");
 }
 
+/** Get truncation limit for tool results based on tool name */
+function getToolResultTruncation(toolName?: string): number {
+  // Shell results can be longer (500 chars)
+  if (toolName === "shell") return 500;
+  // write_file and read_file (show) results should be shorter (200 chars)
+  if (toolName === "write_file" || toolName === "read_file" || toolName === "show") return 200;
+  // Default for other tools
+  return 500;
+}
+
 // ---- Helpers ----
+
+/** Build a brief summary of working memory state for the system prompt */
+function buildStateSummary(stateGraph: StateGraph): string {
+  const active = stateGraph.getActive();
+  const peripheral = stateGraph.getPeripheral();
+
+  const activeByKind = groupByKind(active);
+  const parts: string[] = [];
+
+  for (const [kind, objects] of Object.entries(activeByKind)) {
+    parts.push(`${objects.length} ${kind}(s)`);
+  }
+
+  if (peripheral.length > 0) {
+    parts.push(`${peripheral.length} in peripheral memory`);
+  }
+
+  if (parts.length === 0) {
+    return "No working memory objects yet.";
+  }
+
+  return `You have ${parts.join(", ")}. Use soft_unload/hard_unload to demote and hydrate to restore.`;
+}
 
 type KindGroup = Record<string, StateObject[]>;
 

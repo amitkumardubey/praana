@@ -2,13 +2,23 @@ import { createOpenAI } from "@ai-sdk/openai";
 import type { AriaConfig } from "./types.js";
 
 export function createProvider(config: AriaConfig["llm"]) {
+  // Ollama - OpenAI-compatible local API
+  if (config.provider === "ollama") {
+    return createOpenAI({
+      apiKey: "ollama", // Ollama doesn't need a real key
+      baseURL: config.base_url ?? "http://127.0.0.1:11434/v1",
+    });
+  }
+
   const apiKey =
     config.provider === "openrouter"
       ? process.env.OPENROUTER_API_KEY
       : process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
-    console.warn(`[llm] No API key found for provider "${config.provider}". Set OPENROUTER_API_KEY or other provider key.`);
+    console.warn(
+      `[llm] No API key found for provider "${config.provider}". Set OPENROUTER_API_KEY or other provider key.`
+    );
   }
 
   // OpenRouter uses OpenAI-compatible API

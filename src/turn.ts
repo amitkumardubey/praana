@@ -41,6 +41,7 @@ export async function runTurn(
     cwd: session.cwd,
     sessionId: session.id,
     tokenBudget: session.config.compiler.token_budget,
+    recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
   });
 
   // ---- DEBUG: save compiled prompt to session dir ----

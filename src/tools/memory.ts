@@ -67,6 +67,13 @@ export function createMemoryTools(ctx: MemoryToolContext) {
             lastTouched: updated.lastTouched,
           });
         }
+        // Auto-soft-unload on complete_task
+        stateGraph.setTier(id, "soft");
+        logAction("setTier", {
+          id,
+          tier: "soft",
+          lastTouched: stateGraph.get(id)!.lastTouched,
+        });
         return { ok: true };
       },
     }),

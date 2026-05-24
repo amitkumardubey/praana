@@ -119,6 +119,7 @@ export interface BodhaConfig {
 export interface CompilerConfig {
   token_budget: number;
   recent_turns: number;
+  recent_turns_token_budget?: number; // Optional: token budget specifically for Recent Turns section
 }
 
 export interface TiersConfig {

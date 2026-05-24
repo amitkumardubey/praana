@@ -15,6 +15,7 @@ const DEFAULT_CONFIG: AriaConfig = {
   compiler: {
     token_budget: 100_000,
     recent_turns: 10,
+    recent_turns_token_budget: 30_000, // 30% of default token_budget
   },
   tiers: {
     idle_soft_after_turns: 20,
