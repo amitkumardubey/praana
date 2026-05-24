@@ -26,6 +26,7 @@ export class Session {
   debug = false;
   private ended = false;
   private turnCount = 0;
+  private modelOverride: string | null = null;
 
   private constructor(id: string, cwd: string, config: AriaConfig) {
     this.id = id;
@@ -130,6 +131,20 @@ export class Session {
       session.stateGraph.replayAction(ev.payload);
     }
 
+    // Restore model override if one was set previously.
+    const allEvents = session.eventLog.readAll();
+    for (let i = allEvents.length - 1; i >= 0; i--) {
+      const ev = allEvents[i];
+      if (ev.kind !== "system_note" || ev.payload.type !== "model_override") continue;
+      const rawModel = ev.payload.model;
+      if (typeof rawModel === "string" && rawModel.trim()) {
+        session.modelOverride = rawModel.trim();
+      } else {
+        session.modelOverride = null;
+      }
+      break;
+    }
+
     if (session.memoryEnabled) {
       try {
         session.memoryStore = session.initMemoryStore();
@@ -190,6 +205,14 @@ export class Session {
     return this.turnCount;
   }
 
+  setModelOverride(model: string | null): void {
+    this.modelOverride = model && model.trim() ? model.trim() : null;
+  }
+
+  getModelOverride(): string | null {
+    return this.modelOverride;
+  }
+
   get promptDir(): string {
     return join(this.config.session.log_dir, this.id, "prompts");
   }
@@ -224,6 +247,28 @@ export class Session {
     }
 
     return { total: snapshot.length, active, soft, hard, byKind };
+  }
+
+  getSessionSummary(): {
+    turns: number;
+    stateObjects: number;
+    memoriesStored: number;
+  } {
+    const events = this.eventLog.readAll();
+    let turns = 0;
+    let memoriesStored = 0;
+    for (const ev of events) {
+      if (ev.kind === "user_message") turns++;
+      if (ev.kind !== "tool_result") continue;
+      if (ev.payload.tool !== "remember") continue;
+      const result = ev.payload.result as Record<string, unknown> | undefined;
+      if (result?.ok === true) memoriesStored++;
+    }
+    return {
+      turns,
+      stateObjects: this.stateGraph.snapshot().length,
+      memoriesStored,
+    };
   }
 
   /** Build a transcript of user/agent/tool events for the summarizer. */
@@ -304,7 +349,9 @@ export class Session {
       const baseUrl = process.env.OPENROUTER_API_KEY
         ? "https://openrouter.ai/api/v1"
         : "https://api.openai.com/v1";
-      const model = process.env.BODHA_SUMMARIZER_MODEL ?? "google/gemini-2.5-flash";
+      const model =
+        process.env.ARIA_SUMMARIZER_MODEL ??
+        "google/gemini-2.5-flash";
       if (apiKey) {
         summarizer = new OpenAISummarizer({ baseUrl, apiKey, model });
       }

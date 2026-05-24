@@ -2,7 +2,7 @@ import { streamText } from "ai";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "./session.js";
-import { compile } from "./compiler.js";
+import { compileWithMetrics } from "./compiler.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel } from "./llm.js";
 import {
@@ -64,7 +64,7 @@ export async function runTurn(
   );
   const toolDescs = describeTools();
 
-  const compiledPrompt = compile({
+  const { prompt: compiledPrompt, metrics: promptMetrics } = compileWithMetrics({
     stateGraph: session.stateGraph,
     bodhaDigest: session.digest,
     recentEvents,
@@ -173,6 +173,7 @@ export async function runTurn(
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   const stats = computeMemoryStats(session, autoHydrated.length);
+  stats.promptTokens = promptMetrics.totalTokens;
   printMemoryBanner(stats);
 
   return fullResponse;
@@ -214,6 +215,7 @@ function computeMemoryStats(
   recallCalls: number;
   recallHits: number;
   autoHydrated: number;
+  promptTokens?: number;
 } {
   const memStats = session.getMemoryStats();
   const recentEvents = session.eventLog.readLast(50);

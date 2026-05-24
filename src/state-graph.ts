@@ -119,69 +119,6 @@ export class StateGraph {
     return hydrated;
   }
 
-  /**
-   * Apply idle-timer tier management rules.
-   * Returns list of objects that changed tier.
-   */
-  applyTierManagement(
-    idleSoftAfterTurns: number,
-    idleHardAfterTurns: number,
-    tokenBudget: number,
-    compilerTokens: number
-  ): Array<{ id: string; from: StateTier; to: StateTier }> {
-    const changes: Array<{ id: string; from: StateTier; to: StateTier }> = [];
-    const now = Date.now();
-
-    // Rule 1: Idle timer demotion (simplified: use turn count as proxy)
-    // We track lastTouched as a turn counter proxy (incremented each turn)
-    // Actually, we'll just track lastTouched via update/setTier calls that bump it
-
-    // Rule 2: Token budget overflow demotion
-    if (compilerTokens > tokenBudget) {
-      const excess = compilerTokens - tokenBudget;
-      // Demote hard → drop, then soft → hard, then active → soft
-      // Least-recently-touched first
-
-      // Hard → drop (remove from state graph entirely)
-      const hardObjects = [...this.objects.values()]
-        .filter((o) => o.tier === "hard")
-        .sort((a, b) => a.lastTouched - b.lastTouched);
-
-      for (const o of hardObjects) {
-        if (excess <= 0) break;
-        const from = o.tier;
-        this.objects.delete(o.id);
-        changes.push({ id: o.id, from, to: "hard" }); // "dropped" but tracked as hard
-      }
-
-      // Soft → hard
-      const softObjects = [...this.objects.values()]
-        .filter((o) => o.tier === "soft")
-        .sort((a, b) => a.lastTouched - b.lastTouched);
-
-      for (const o of softObjects) {
-        if (excess <= 0) break;
-        const from = o.tier;
-        o.tier = "hard";
-        changes.push({ id: o.id, from, to: "hard" });
-      }
-
-      // Active → soft
-      const activeObjects = [...this.objects.values()]
-        .filter((o) => o.tier === "active")
-        .sort((a, b) => a.lastTouched - b.lastTouched);
-
-      for (const o of activeObjects) {
-        if (excess <= 0) break;
-        const from = o.tier;
-        o.tier = "soft";
-        changes.push({ id: o.id, from, to: "soft" });
-      }
-    }
-
-    return changes;
-  }
-
   /** Rebuild state from context_action events during resume. */
   replayAction(payload: Record<string, unknown>): void {
     const action = payload.action as string;

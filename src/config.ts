@@ -134,6 +134,41 @@ export function loadConfig(configPath?: string): AriaConfig {
   if (merged.memory?.db_path) {
     merged.memory.db_path = expandHome(merged.memory.db_path);
   }
-  
-  return merged;
+
+  return validateConfig(merged);
+}
+
+function validateConfig(config: AriaConfig): AriaConfig {
+  const out: AriaConfig = deepMerge(config, {});
+
+  if (!out.llm.model || !out.llm.model.trim()) {
+    console.warn("[config] Invalid llm.model, using default anthropic/claude-sonnet-4");
+    out.llm.model = DEFAULT_CONFIG.llm.model;
+  }
+
+  if (!Number.isFinite(out.compiler.token_budget) || out.compiler.token_budget <= 1000) {
+    console.warn("[config] Invalid compiler.token_budget, using default 100000");
+    out.compiler.token_budget = DEFAULT_CONFIG.compiler.token_budget;
+  }
+
+  if (
+    !Number.isFinite(out.compiler.recent_turns) ||
+    out.compiler.recent_turns < 1 ||
+    out.compiler.recent_turns > 100
+  ) {
+    console.warn("[config] Invalid compiler.recent_turns, using default 10");
+    out.compiler.recent_turns = DEFAULT_CONFIG.compiler.recent_turns;
+  }
+
+  if (
+    out.compiler.recent_turns_token_budget !== undefined &&
+    (!Number.isFinite(out.compiler.recent_turns_token_budget) ||
+      out.compiler.recent_turns_token_budget < 0)
+  ) {
+    console.warn("[config] Invalid compiler.recent_turns_token_budget, using default");
+    out.compiler.recent_turns_token_budget =
+      DEFAULT_CONFIG.compiler.recent_turns_token_budget;
+  }
+
+  return out;
 }

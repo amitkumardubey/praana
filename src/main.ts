@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { loadConfig } from "./config.js";
+import type { LlmConfig } from "./types.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -31,9 +32,11 @@ async function main() {
 
   const cwd = resolve(process.cwd());
   const config = loadConfig();
-
-  console.log("ARIA — coding agent with persistent memory");
-  console.log();
+  const keyError = getMissingApiKeyMessage(config.llm);
+  if (keyError) {
+    console.error(keyError);
+    process.exit(1);
+  }
 
   // Create or resume session
   let session: Session;
@@ -72,17 +75,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Working directory: ${cwd}`);
-  if (session.memoryEnabled && session.digest) {
-    console.log("Cross-session memory: active");
-  } else if (session.memoryEnabled) {
-    console.log("Cross-session memory: enabled (no prior knowledge)");
-  } else {
-    console.log("Cross-session memory: disabled");
-  }
-  if (session.memoryEnabled) {
-    console.log(`Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
-  }
+  printSessionBanner(session, cwd, currentModelOrDefault(session));
   console.log('Type /help for commands, /exit to quit.');
   console.log();
 
@@ -95,7 +88,7 @@ async function main() {
 
   rl.prompt();
 
-  let currentModel: string | undefined = undefined;
+  let currentModel: string | undefined = session.getModelOverride() ?? undefined;
 
   rl.on("line", async (line: string) => {
     const input = line.trim();
@@ -136,6 +129,7 @@ async function main() {
       console.log("\nShutting down...");
       const events = session.getTranscriptEvents();
       await session.end("clean", events);
+      printSessionEndSummary(session);
     }
     process.exit(0);
   });
@@ -162,6 +156,7 @@ async function handleSlashCommand(
       console.log("Ending session...");
       const events = session.getTranscriptEvents();
       await session.end("clean", events);
+      printSessionEndSummary(session);
       rl.close();
       return;
     }
@@ -298,13 +293,21 @@ async function handleSlashCommand(
     case "/model": {
       const model = parts[1];
       if (!model) {
-        console.log(
-          `Current model: ${session.config.llm.model}`
-        );
+        console.log(`Current model: ${session.getModelOverride() ?? session.config.llm.model}`);
         console.log("Usage: /model <provider/model> (e.g., /model openai/gpt-4o)");
         break;
       }
-      setModel(model);
+      const trimmed = model.trim();
+      setModel(trimmed);
+      session.setModelOverride(trimmed);
+      session.eventLog.append({
+        kind: "system_note",
+        actor: "kernel",
+        payload: {
+          type: "model_override",
+          model: trimmed,
+        },
+      });
       console.log(`Model switched to: ${model}`);
       break;
     }
@@ -349,6 +352,50 @@ SLASH COMMANDS:
   /debug                   Toggle debug mode (detailed tool blocks + saved prompts)
   /help                    Show this help
 `);
+}
+
+function getMissingApiKeyMessage(llm: LlmConfig): string | null {
+  if (llm.provider === "ollama") return null;
+  if (llm.provider === "openrouter") {
+    return process.env.OPENROUTER_API_KEY
+      ? null
+      : "Missing required environment variable: OPENROUTER_API_KEY";
+  }
+  if (llm.provider === "openai") {
+    return process.env.OPENAI_API_KEY
+      ? null
+      : "Missing required environment variable: OPENAI_API_KEY";
+  }
+  // Default provider compatibility path in llm.ts uses OpenAI-style auth.
+  if (process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY) return null;
+  return "Missing API key. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.";
+}
+
+function currentModelOrDefault(session: Session): string {
+  return session.getModelOverride() ?? session.config.llm.model;
+}
+
+function printSessionBanner(session: Session, cwd: string, model: string): void {
+  const memoryStats = session.getMemoryStats();
+  const digestLen = session.digest?.length ?? 0;
+  console.log(
+    `ARIA v0.1.0  |  session: ${session.id}  |  cwd: ${cwd}`
+  );
+  console.log(
+    `Memory: ${memoryStats.total} entries | Digest: ${digestLen} chars | Model: ${model}`
+  );
+  if (session.memoryEnabled) {
+    console.log(`Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
+  } else {
+    console.log("Memory: disabled");
+  }
+}
+
+function printSessionEndSummary(session: Session): void {
+  const summary = session.getSessionSummary();
+  console.log(
+    `Session ended: ${summary.turns} turns, ${summary.stateObjects} state objects, ${summary.memoriesStored} memories stored`
+  );
 }
 
 main().catch((err) => {

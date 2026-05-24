@@ -1,4 +1,4 @@
-import { mkdirSync, openSync, appendFileSync, closeSync, readFileSync } from "node:fs";
+import { mkdirSync, openSync, writeSync, fsyncSync, closeSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
@@ -34,7 +34,8 @@ export class EventLog {
       payload: event.payload,
     };
     const line = JSON.stringify(fullEvent) + "\n";
-    appendFileSync(this.fd, line);
+    writeSync(this.fd, line, undefined, "utf-8");
+    fsyncSync(this.fd);
     this.eventCount++;
   }
 
