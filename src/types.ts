@@ -116,6 +116,10 @@ export interface BodhaConfig {
   summarizer: string;
 }
 
+export interface MemoryConfig {
+  bodha_db_path?: string;
+}
+
 export interface CompilerConfig {
   token_budget: number;
   recent_turns: number;
@@ -134,6 +138,7 @@ export interface SessionConfig {
 export interface AriaConfig {
   llm: LlmConfig;
   bodha: BodhaConfig;
+  memory?: MemoryConfig;
   compiler: CompilerConfig;
   tiers: TiersConfig;
   session: SessionConfig;

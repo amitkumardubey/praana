@@ -50,16 +50,84 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
   return out as T;
 }
 
-export function loadConfig(configPath?: string): AriaConfig {
-  const path = configPath ?? expandHome("~/.aria/config.toml");
-  let user: Record<string, unknown> = {};
+function loadJsonConfig(path: string): Record<string, unknown> {
   if (existsSync(path)) {
-    user = toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    try {
+      return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    } catch (err) {
+      console.warn(`[config] Failed to parse JSON config ${path}:`, (err as Error).message);
+    }
   }
-  const merged = deepMerge(DEFAULT_CONFIG, user as any) as AriaConfig;
+  return {};
+}
+
+function loadTomlConfig(path: string): Record<string, unknown> {
+  if (existsSync(path)) {
+    try {
+      return toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    } catch (err) {
+      console.warn(`[config] Failed to parse TOML config ${path}:`, (err as Error).message);
+    }
+  }
+  return {};
+}
+
+export function loadConfig(configPath?: string): AriaConfig {
+  let userConfig: Record<string, unknown> = {};
+
+  if (configPath) {
+    // If explicit path provided, use it (try both .json and .toml)
+    if (configPath.endsWith('.json')) {
+      userConfig = loadJsonConfig(configPath);
+    } else if (configPath.endsWith('.toml')) {
+      userConfig = loadTomlConfig(configPath);
+    } else {
+      // Try both extensions
+      userConfig = loadJsonConfig(configPath + '.json');
+      if (Object.keys(userConfig).length === 0) {
+        userConfig = loadTomlConfig(configPath + '.toml');
+      }
+    }
+  } else {
+    // Load and merge configs from all sources in order
+    // Order: global JSON -> global TOML -> local JSON -> local TOML
+    // Later sources override earlier ones
+    
+    // Global configs (lower priority)
+    const globalJsonPath = expandHome("~/.aria/aria.config.json");
+    const globalTomlPath = expandHome("~/.aria/config.toml");
+    
+    // Local configs (higher priority)
+    const localJsonPath = "aria.config.json";
+    const localTomlPath = "aria.config.toml";
+    
+    // Collect all configs to merge
+    const configs = [
+      { path: globalJsonPath, loader: loadJsonConfig },
+      { path: globalTomlPath, loader: loadTomlConfig },
+      { path: localJsonPath, loader: loadJsonConfig },
+      { path: localTomlPath, loader: loadTomlConfig },
+    ];
+    
+    // Merge all configs in order (later overrides earlier)
+    for (const { path, loader } of configs) {
+      const config = loader(path);
+      if (Object.keys(config).length > 0) {
+        userConfig = deepMerge(userConfig as any, config) as Record<string, unknown>;
+      }
+    }
+  }
+
+  const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as AriaConfig;
+  
   // Environment variable overrides
   if (process.env.ARIA_MODEL) merged.llm.model = process.env.ARIA_MODEL;
+  
   // Expand paths
-  (merged as any).session.log_dir = expandHome(merged.session.log_dir);
+  merged.session.log_dir = expandHome(merged.session.log_dir);
+  if (merged.memory?.bodha_db_path) {
+    merged.memory.bodha_db_path = expandHome(merged.memory.bodha_db_path);
+  }
+  
   return merged;
 }

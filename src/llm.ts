@@ -16,8 +16,12 @@ export function createProvider(config: AriaConfig["llm"]) {
       : process.env.OPENAI_API_KEY ?? process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
-    console.warn(
-      `[llm] No API key found for provider "${config.provider}". Set OPENROUTER_API_KEY or other provider key.`
+    const envVar = config.provider === "openrouter" 
+      ? "OPENROUTER_API_KEY" 
+      : "OPENAI_API_KEY or ANTHROPIC_API_KEY";
+    throw new Error(
+      `[llm] No API key found for provider "${config.provider}". ` +
+      `Please set ${envVar} environment variable or configure a local API key.`
     );
   }
 

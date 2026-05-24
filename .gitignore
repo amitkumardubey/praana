@@ -3,3 +3,4 @@ dist/
 *.log
 .env
 aria.config.json
+aria-knowledge.db*

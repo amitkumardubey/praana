@@ -31,7 +31,7 @@ export class Session {
   private ended = false;
   private turnCount = 0;
 
-  constructor(id: string, cwd: string, config: AriaConfig) {
+  private constructor(id: string, cwd: string, config: AriaConfig) {
     this.id = id;
     this.cwd = cwd;
     this.config = config;
@@ -39,15 +39,21 @@ export class Session {
     const logDir = config.session.log_dir;
     this.eventLog = new EventLog(id, logDir);
 
-    writeSessionMeta(logDir, {
+    this.stateGraph = new StateGraph();
+    this.bodhaEnabled = config.bodha.enabled;
+  }
+
+  static createNew(id: string, cwd: string, config: AriaConfig): Session {
+    const session = new Session(id, cwd, config);
+    
+    writeSessionMeta(config.session.log_dir, {
       session_id: id,
       started_at: Date.now(),
       cwd,
       agent: "aria",
     });
-
-    this.stateGraph = new StateGraph();
-    this.bodhaEnabled = config.bodha.enabled;
+    
+    return session;
   }
 
   static async create(
@@ -56,7 +62,7 @@ export class Session {
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const id = ulid();
-    const session = new Session(id, cwd, cfg);
+    const session = Session.createNew(id, cwd, cfg);
 
     if (session.bodhaEnabled) {
       try {
@@ -161,8 +167,24 @@ export class Session {
   }
 
   private initBodha(): AgentKBClient {
+    // Get the database path from config, or use default
+    const configuredPath = this.config.memory?.bodha_db_path;
+    let dbPath: string;
+    
+    if (configuredPath) {
+      // Expand home directory if needed
+      dbPath = expandHome(configuredPath);
+      
+      // If relative path (doesn't start with / after home expansion), resolve relative to CWD
+      if (!dbPath.startsWith("/")) {
+        dbPath = join(this.cwd, dbPath);
+      }
+    } else {
+      dbPath = expandHome("~/.bodha/kb.db");
+    }
+    
     const db = openDatabase({
-      path: expandHome("~/.bodha/kb.db"),
+      path: dbPath,
       readonly: false,
     });
 
