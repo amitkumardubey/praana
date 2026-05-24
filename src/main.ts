@@ -42,6 +42,20 @@ async function main() {
     if (resumeMode && sessionId) {
       console.log(`Resuming session: ${sessionId}`);
       session = await Session.resume(sessionId, cwd, config);
+      
+      // Print recent conversation for context
+      const recentEvents = session.eventLog.readLast(20);
+      const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
+      if (turns.length > 0) {
+        console.log(`\n--- Recent conversation (last ${Math.min(turns.length, 6)} messages) ---`);
+        const shown = turns.slice(-6);
+        for (const ev of shown) {
+          const prefix = ev.kind === "user_message" ? "You" : "ARIA";
+          const text = (ev.payload.text as string)?.slice(0, 200) ?? "";
+          console.log(`${prefix}: ${text}`);
+        }
+        console.log("---\n");
+      }
     } else {
       session = await Session.create(cwd, config);
       session.debug = debug;
