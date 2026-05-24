@@ -3,7 +3,7 @@ import type { StateGraph } from "./state-graph.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
-  bodhaDigest: string | null;
+  memoryDigest: string | null;
   recentEvents: Event[];
   userInput?: string;
   toolSchemas: string[];
@@ -50,8 +50,8 @@ export function compile(input: CompileInput): string {
   sections.push(frame);
 
   // ---- 2. CROSS-SESSION MEMORY ----
-  if (input.bodhaDigest && input.bodhaDigest.trim()) {
-    const cs = buildCrossSessionMemory(input.bodhaDigest);
+  if (input.memoryDigest && input.memoryDigest.trim()) {
+    const cs = buildCrossSessionMemory(input.memoryDigest);
     sections.push(cs);
   }
 
@@ -104,8 +104,8 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
 
   // 2. CROSS-SESSION MEMORY
   let crossSection = "";
-  if (input.bodhaDigest && input.bodhaDigest.trim()) {
-    crossSection = buildCrossSessionMemory(input.bodhaDigest);
+  if (input.memoryDigest && input.memoryDigest.trim()) {
+    crossSection = buildCrossSessionMemory(input.memoryDigest);
     sections.push(crossSection);
     metrics.crossSessionTokens = estTokens(crossSection);
   } else {

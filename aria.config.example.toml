@@ -52,7 +52,7 @@ model = "deepseek/deepseek-v4-pro"
 #   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
-# Enable/disable cross-session persistent memory (SQLite-backed)
+# Enable/disable Adaptive Memory (SQLite-backed cross-session persistence)
 enabled = true
 
 # Provider for session-end summarization ("openrouter", "openai", or "disabled")

@@ -38,7 +38,7 @@ describe("Memory Learning Impact", () => {
         getActive: () => [],
         getPeripheral: () => [],
       } as any,
-      bodhaDigest: digestForPrompt,
+      memoryDigest: digestForPrompt,
       recentEvents: [],
       toolSchemas: [],
       cwd: "/tmp",

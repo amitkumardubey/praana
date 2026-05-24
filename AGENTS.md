@@ -4,14 +4,14 @@ This document describes the **actual ARIA MVP architecture currently implemented
 
 ## What ARIA Is
 
-ARIA is a single-process TypeScript CLI coding agent with two memory layers:
+ARIA is a single-process TypeScript CLI coding agent with two adaptive memory systems:
 
-1. **Within-session working memory**
+1. **Adaptive Context** — within-session working memory
 - In-memory state graph (`task`, `decision`, `constraint`, `note`)
 - Tiered retention (`active`, `soft`, `hard`)
 - Event-sourced via append-only JSONL (`context_action` events)
 
-2. **Cross-session persistent memory**
+2. **Adaptive Memory** — cross-session persistent memory
 - SQLite-backed memory store in `src/memory/`
 - Confidence/recency ranking + scope filtering
 - Session digest generation at session start
@@ -118,9 +118,9 @@ Append protocol is durable (`writeSync` + `fsyncSync` on open fd).
 
 `src/compiler.ts` builds deterministic prompt sections:
 1. System
-2. Cross-session memory digest (if present)
+2. Adaptive Memory digest (if present)
 3. Active State
-4. Peripheral Memory (if present)
+4. Peripheral State (if present)
 5. Recent Turns (skips `context_action`/`system_note`)
 6. Current Input (when passed)
 
@@ -133,13 +133,13 @@ Notes:
 
 Defined with Vercel AI SDK `tool()` + Zod schemas.
 
-Working-memory tools:
+Adaptive Context tools:
 - `create_task`, `complete_task`
 - `add_constraint`, `decide`, `add_note`
 - `soft_unload`, `hard_unload`, `hydrate`
 - `list_state`
 
-Cross-session memory tools:
+Adaptive Memory tools:
 - `recall`
 - `remember`
 
@@ -149,7 +149,7 @@ System tools:
 - `write_file`
 - `edit_file` (exact-match, unique replacement)
 
-## Cross-Session Memory (`src/memory`)
+## Adaptive Memory (`src/memory`)
 
 Implemented as internal ARIA module (not external Bodha dependency).
 

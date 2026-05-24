@@ -153,7 +153,7 @@ export interface SessionMeta {
 
 export interface CompilerOptions {
   stateGraph: any; // StateGraph instance (circular dep, typed loosely)
-  bodhaDigest: string | null;
+  memoryDigest: string | null;
   recentEvents: Event[];
   userInput: string;
   toolSchemas: string[];

@@ -72,7 +72,7 @@ export async function runTurn(
 
   const { prompt: compiledPrompt, metrics: promptMetrics } = compileWithMetrics({
     stateGraph: session.stateGraph,
-    bodhaDigest: session.digest,
+    memoryDigest: session.digest,
     recentEvents,
     toolSchemas: toolDescs,
     cwd: session.cwd,
