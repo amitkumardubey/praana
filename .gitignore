@@ -4,3 +4,4 @@ dist/
 .env
 aria.config.json
 aria-knowledge.db*
+refer/

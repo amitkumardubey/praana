@@ -13,7 +13,6 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.75.5",
-    "@earendil-works/pi-tui": "^0.75.5",
     "better-sqlite3": "^11.0.0",
     "sqlite-vec": "^0.1.6",
     "toml": "^3.0.0",

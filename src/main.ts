@@ -5,8 +5,6 @@ import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { loadConfig } from "./config.js";
 import type { LlmConfig } from "./types.js";
-import { renderSessionBanner } from "./tui/banner.js";
-import { runLiveTuiSession } from "./tui/live-mode.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -15,8 +13,6 @@ async function main() {
   let sessionId: string | null = null;
   let resumeMode = false;
   let debug = false;
-  let liveTui = false;
-
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--help" || args[i] === "-h") {
       printHelp();
@@ -24,10 +20,6 @@ async function main() {
     }
     if (args[i] === "--debug" || args[i] === "-d") {
       debug = true;
-      continue;
-    }
-    if (args[i] === "--tui") {
-      liveTui = true;
       continue;
     }
     if (args[i] === "resume" && args[i + 1]) {
@@ -50,38 +42,32 @@ async function main() {
   let sessionEnded = false;
   try {
     if (resumeMode && sessionId) {
-      if (!liveTui) {
-        console.log(`Resuming session: ${sessionId}`);
-      }
+      console.log(`Resuming session: ${sessionId}`);
       session = await Session.resume(sessionId, cwd, config);
       session.debug = debug;
       
       // Print recent conversation for context
-      if (!liveTui) {
-        const recentEvents = session.eventLog.readLast(30);
-        const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
-        if (turns.length > 0) {
-          console.log(`\n${'─'.repeat(50)}`);
-          console.log(`  📜  Recent conversation (${Math.min(turns.length, 6)} of ${turns.length} messages)`);
-          console.log('─'.repeat(50));
-          const shown = turns.slice(-6);
-          for (const ev of shown) {
-            const prefix = ev.kind === "user_message" ? "You" : "ARIA";
-            const text = (ev.payload.text as string)?.trim() ?? "";
-            // Show first 2 lines, clean up
-            const lines = text.split("\n").slice(0, 2).join(" ");
-            const display = lines.length > 150 ? lines.slice(0, 147) + "..." : lines;
-            console.log(`  ${prefix}: ${display}`);
-          }
-          console.log('─'.repeat(50) + "\n");
+      const recentEvents = session.eventLog.readLast(30);
+      const turns = recentEvents.filter(e => e.kind === "user_message" || e.kind === "agent_message");
+      if (turns.length > 0) {
+        console.log(`\n${'─'.repeat(50)}`);
+        console.log(`  📜  Recent conversation (${Math.min(turns.length, 6)} of ${turns.length} messages)`);
+        console.log('─'.repeat(50));
+        const shown = turns.slice(-6);
+        for (const ev of shown) {
+          const prefix = ev.kind === "user_message" ? "You" : "ARIA";
+          const text = (ev.payload.text as string)?.trim() ?? "";
+          // Show first 2 lines, clean up
+          const lines = text.split("\n").slice(0, 2).join(" ");
+          const display = lines.length > 150 ? lines.slice(0, 147) + "..." : lines;
+          console.log(`  ${prefix}: ${display}`);
         }
+        console.log('─'.repeat(50) + "\n");
       }
     } else {
       session = await Session.create(cwd, config);
       session.debug = debug;
-      if (!liveTui) {
-        console.log(`New session: ${session.id}`);
-      }
+      console.log(`New session: ${session.id}`);
     }
   } catch (err) {
     console.error("Failed to start session:", (err as Error).message);
@@ -89,14 +75,6 @@ async function main() {
   }
 
   let showThinking = true;
-
-  if (liveTui) {
-    await runLiveTuiSession(session, cwd, currentModelOrDefault(session), {
-      showThinking,
-    });
-    printSessionEndSummary(session);
-    return;
-  }
 
   await printSessionBanner(session, cwd, currentModelOrDefault(session));
   console.log('Type /help for commands, /exit to quit.');
@@ -398,7 +376,7 @@ USAGE:
   aria                     Start new session in current directory
   aria resume <session_id> Resume an existing session
   aria --help              Show this help
-  aria --tui               Start in live TUI mode
+
 
 SLASH COMMANDS:
   /exit                    End session and save
@@ -436,11 +414,26 @@ function currentModelOrDefault(session: Session): string {
   return session.getModelOverride() ?? session.config.llm.model;
 }
 
-async function printSessionBanner(session: Session, cwd: string, model: string): Promise<void> {
-  const lines = await renderSessionBanner({ session, cwd, model });
-  for (const line of lines) {
-    console.log(line);
+function printSessionBanner(session: Session, cwd: string, model: string): void {
+  const memoryStats = session.getMemoryStats();
+  const digestLen = session.digest?.length ?? 0;
+  const content = [
+    `ARIA v0.1.0`,
+    `session: ${session.id}`,
+    `cwd: ${cwd}`,
+    `model: ${model}`,
+    `memory entries: ${memoryStats.total}`,
+    `digest chars: ${digestLen}`,
+    session.memoryEnabled
+      ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
+      : "memory: disabled",
+  ];
+  const width = Math.max(...content.map((s) => s.length));
+  console.log(`┌${'─'.repeat(width + 2)}┐`);
+  for (const line of content) {
+    console.log(`│ ${line.padEnd(width)} │`);
   }
+  console.log(`└${'─'.repeat(width + 2)}┘`);
 }
 
 function printSessionEndSummary(session: Session): void {
