@@ -184,6 +184,7 @@ function buildSystemFrame(
   toolSchemas: string[],
   stateSummary?: string
 ): string {
+  // Check for external override (power users / tuning experiments)
   const custom = loadSystemPrompt();
   if (custom) {
     return custom
@@ -199,7 +200,7 @@ function buildSystemFrame(
       );
   }
 
-  // Fallback generic prompt (public, non-tuned)
+  // Default tuned prompt
   const lines = [
     "# System",
     "",
@@ -218,12 +219,13 @@ function buildSystemFrame(
     "",
     ...toolSchemas.map((t) => `- ${t}`),
     "",
-    "Use tools when needed to accomplish the user's request.",
+    "Use tools when needed to accomplish the user's request. Respond concisely.",
     "",
     "## Memory Management",
     "",
-    "You have working memory with three tiers: active, soft, and hard.",
-    "Manage your working memory to stay organized."
+    "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
+    "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
+    "See the Active State and Peripheral Memory sections below for your current working memory."
   );
 
   return lines.join("\n");
