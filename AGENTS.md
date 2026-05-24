@@ -1,251 +1,139 @@
-# AGENTS.md — ARIA MVP Handoff (Current Implementation)
+# AGENTS.md — ARIA
 
-This document describes the **actual ARIA MVP architecture currently implemented** in this repo.
+ARIA is a TypeScript CLI coding agent with two adaptive memory systems: Adaptive Context (tiered working memory) and Adaptive Memory (cross-session persistence).
 
-## What ARIA Is
+## Setup & Build
 
-ARIA is a single-process TypeScript CLI coding agent with two adaptive memory systems:
+```bash
+# Install dependencies
+npm install
 
-1. **Adaptive Context** — within-session working memory
-- In-memory state graph (`task`, `decision`, `constraint`, `note`)
-- Tiered retention (`active`, `soft`, `hard`)
-- Event-sourced via append-only JSONL (`context_action` events)
+# Build TypeScript
+npm run build
 
-2. **Adaptive Memory** — cross-session persistent memory
-- SQLite-backed memory store in `src/memory/`
-- Confidence/recency ranking + scope filtering
-- Session digest generation at session start
-- Optional summarizer-driven learning extraction at session end
-
-No daemon, no RPC server, no multi-process coordination.
-
-## Current Directory
-
-```text
-experiments/agent/
-  src/
-    main.ts
-    turn.ts
-    session.ts
-    compiler.ts
-    event-log.ts
-    state-graph.ts
-    tools/
-    memory/
+# Dev mode (no build step)
+npm run dev
 ```
 
-## Runtime Architecture
+Requires Node 22+. No other runtime dependencies.
 
-```text
-User input
-  → main.ts readline loop
-  → runTurn(session, input)
-      1) append user_message event
-      2) auto-hydrate matching peripheral state
-      3) compile prompt (compileWithMetrics)
-      4) streamText() with tools
-      5) log tool_call/tool_result + context actions
-      6) append agent_message event
-      7) apply tier demotion rules
-      8) print per-turn memory/prompt banner
+## Running
+
+```bash
+# Start a new session
+npm start
+
+# Resume a previous session
+npm start -- resume <session_id>
+
+# Debug mode (saves compiled prompts, verbose tool blocks)
+ARIA_DEBUG=true npm start
 ```
 
-## Session Boundary Flow
+### Configuration
 
-```text
-SESSION START:
-  Session.create()
-  → init EventLog + StateGraph
-  → init MemoryStore (if enabled)
-  → memory.sessionStart(context)
-  → cache digest markdown
-
-SESSION RESUME:
-  Session.resume(sessionId)
-  → replay context_action events into StateGraph
-  → restore model override from system_note
-  → re-init MemoryStore + regenerate digest
-
-SESSION END:
-  Session.end(reason, transcriptEvents)
-  → memory.sessionEnd(reason, events)
-  → optional summarizer extracts learnings
-  → close event log
-```
-
-## State Model
-
-```ts
-interface StateObject {
-  id: string;
-  kind: "task" | "decision" | "constraint" | "note";
-  tier: "active" | "soft" | "hard";
-  payload: Record<string, unknown>;
-  created: number;
-  updated: number;
-  lastTouched: number;
-}
-```
-
-Tier behavior in prompts:
-- `active`: full payload
-- `soft`: summarized one-liner
-- `hard`: minimal anchor
-
-Tier management in `turn.ts`:
-- active → soft after `idle_soft_after_turns`
-- active/soft → hard after `idle_hard_after_turns`
-
-## Event Log
-
-Location:
-
-```text
-~/.aria/sessions/<session_id>/events.log
-```
-
-Each line is one JSON event:
-- `user_message`
-- `agent_message`
-- `tool_call`
-- `tool_result`
-- `context_action`
-- `system_note`
-
-Append protocol is durable (`writeSync` + `fsyncSync` on open fd).
-
-## Compiler
-
-`src/compiler.ts` builds deterministic prompt sections:
-1. System
-2. Adaptive Memory digest (if present)
-3. Active State
-4. Peripheral State (if present)
-5. Recent Turns (skips `context_action`/`system_note`)
-6. Current Input (when passed)
-
-Notes:
-- Deterministic ordering (state by created/id)
-- Token estimation support via `compileWithMetrics()`
-- Recent-turns section has its own token budget (`recent_turns_token_budget`)
-
-## Tools
-
-Defined with Vercel AI SDK `tool()` + Zod schemas.
-
-Adaptive Context tools:
-- `create_task`, `complete_task`
-- `add_constraint`, `decide`, `add_note`
-- `soft_unload`, `hard_unload`, `hydrate`
-- `list_state`
-
-Adaptive Memory tools:
-- `recall`
-- `remember`
-
-System tools:
-- `shell` (async spawn with timeout handling)
-- `read_file`
-- `write_file`
-- `edit_file` (exact-match, unique replacement)
-
-## Adaptive Memory (`src/memory`)
-
-Implemented as internal ARIA module (not external Bodha dependency).
-
-Key components:
-- `MemoryStore` (`store.ts`)
-- SQLite layer (`db.ts`)
-- embedder (`embeddings.ts`)
-- summarizer adapter (`openai-summarizer.ts`)
-- extraction logic (`summarizer.ts`)
-
-Session lifecycle API:
-- `sessionStart(context) -> Digest`
-- `recall(query, options)`
-- `remember(content, options)`
-- `sessionEnd(reason, events?)`
-
-If memory init fails:
-- ARIA continues with memory disabled
-- digest is omitted
-- `recall`/`remember` return unavailable errors
-
-## Config
-
-Config files loaded (merge order, later overrides earlier):
+Config loaded from (later overrides earlier):
 1. `~/.aria/aria.config.json`
 2. `~/.aria/config.toml`
 3. `./aria.config.json`
 4. `./aria.config.toml`
 
-Main config shape:
+Key env vars:
+- `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, or provider-specific key
+- `ARIA_MODEL` — override model (e.g. `anthropic/claude-sonnet-4`)
+- `ARIA_SUMMARIZER_MODEL` — override summarizer model
 
-```toml
-[llm]
-provider = "openrouter"   # openrouter | openai | ollama
-model = "anthropic/claude-sonnet-4"
+### Slash Commands
 
-[memory]
-enabled = true
-summarizer = "openrouter" # or "disabled"
-db_path = "~/.aria/memory.db"
+| Command | Function |
+|---------|----------|
+| `/state` | List state objects |
+| `/digest` | Show memory digest |
+| `/recall <query>` | Search memory |
+| `/model <provider/model>` | Switch models |
+| `/stats` | Session stats |
+| `/sessions` | List past sessions |
+| `/debug` | Toggle debug mode |
+| `/thinking on\|off` | Toggle thinking visibility |
+| `/exit` | End session |
 
-[compiler]
-token_budget = 100000
-recent_turns = 10
-recent_turns_token_budget = 30000
+## Testing
 
-[tiers]
-idle_soft_after_turns = 20
-idle_hard_after_turns = 50
+```bash
+# Full suite
+npm test
 
-[session]
-log_dir = "~/.aria/sessions"
+# Single file
+npx vitest run tests/compiler.test.ts
+
+# Single test by name
+npx vitest run -t "should compile prompt with empty state"
+
+# Watch mode (development)
+npx vitest
 ```
 
-Backward-compat note:
-- Legacy `[bodha]` config is still mapped to `[memory]` if `[memory]` is missing.
+Test framework: Vitest. Tests live in `tests/`. Currently 23 tests across 6 files.
 
-## Environment Variables
+**Patterns:**
+- Add tests for any new functionality before committing.
+- Use in-memory DB (`:memory:`) for memory-layer tests.
+- Integration tests for session lifecycle go in `tests/resume.test.ts`.
+- State graph unit tests go in `tests/state-graph.test.ts`.
 
-- `OPENROUTER_API_KEY` (required for `provider=openrouter`)
-- `OPENAI_API_KEY` (required for `provider=openai`, also used by summarizer if OpenRouter key absent)
-- `ANTHROPIC_API_KEY` (accepted by generic provider path)
-- `ARIA_MODEL` (overrides configured model)
-- `ARIA_SUMMARIZER_MODEL` (summarizer model override)
+## Code Conventions
 
-No `BODHA_SUMMARIZER_MODEL` fallback anymore.
+- **Language:** TypeScript, strict mode
+- **Module system:** NodeNext (`import` with `.js` extensions, e.g. `import { Foo } from "./bar.js"`)
+- **Target:** ES2022
+- **Formatting:** No Prettier/eslint config yet — keep code clean manually
+- **Naming:**
+  - Files: `kebab-case.ts`
+  - Functions/variables: `camelCase`
+  - Types/interfaces: `PascalCase`
+  - Private methods: no `_` prefix, use TypeScript `#` private fields if needed
+- **Imports:** Prefer named exports. Default exports only for main entry points.
+- **Error handling:** Don't swallow errors silently. Log context, then rethrow or return gracefully.
+- **Async:** Use `async/await`. No raw `.then()` chains.
 
-## CLI Commands
+## Architecture
 
-Startup:
-- `aria`
-- `aria resume <session_id>`
-- `aria --help`
+For the full architecture deep-dive (state model, session lifecycle, event log, compiler, memory systems, tools), see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-Slash commands:
-- `/exit`, `/quit`
-- `/state`
-- `/stats`
-- `/digest`
-- `/events`
-- `/recall <query>`
-- `/model <provider/model>`
-- `/sessions`
-- `/debug`
-- `/help`
+Key source tree:
 
-## Key Operational Details
+```
+src/
+  main.ts        — CLI entry point, readline loop
+  turn.ts        — Per-turn orchestration (prompt → LLM → tools)
+  session.ts     — Session lifecycle (create/resume/end)
+  compiler.ts    — Deterministic prompt assembly
+  state-graph.ts — Tiered state management (active/soft/hard)
+  event-log.ts   — Append-only JSONL event persistence
+  llm.ts         — Provider connection via pi-ai
+  config.ts      — Multi-source config loading
+  tools/         — Tool definitions (shell, file, memory, context)
+  memory/        — Cross-session memory (SQLite, embeddings, summarizer)
+```
 
-- Session-start banner shows: session id, cwd, memory count, digest length, model.
-- Per-turn banner shows: state counts, digest chars, recall hits, auto-hydrates, prompt token estimate.
-- Session-end summary shows: turns, state object count, successful memory stores.
-- Model override is persisted to event log (`system_note`) and restored on resume.
+## Security
 
-## Build/Test
+- **Secrets:** The state graph stores arbitrary payloads. Avoid storing API keys, tokens, or secrets in state objects — they get logged to the event log.
+- **Shell tool:** `shell` commands run with the user's permissions. No sandboxing. Use `timeout` field to prevent runaway processes.
+- **Memory DB:** SQLite file at `~/.aria/memory.db` by default. Contains all stored memories in plaintext. No encryption at rest.
+- **Provider keys:** Read from environment variables. Never checked into the repo.
 
-- `npm run build`
-- `npm test`
+## Git Conventions
 
-Current baseline should pass with Node 22+ and valid provider keys.
+- **Commits:** Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`)
+- **Tags:** Releases follow semver (`v0.2.0`)
+- **Branch:** All work on `main` for now
+- **Before commit:** Run `npm test` and `npm run build` to verify
+
+## Common Gotchas
+
+- Event log uses `fsyncSync` on every write — affects performance for high-frequency tool calls.
+- Memory store uses hash embeddings (FNV-1a seeded) — deterministic but not semantic. Good for approximate dedup, bad for similarity search.
+- Config merge order: local `./aria.config.toml` overrides global `~/.aria/config.toml`.
+- Session resume replays `context_action` events — if the event log is missing or corrupted, state rebuilds empty.
+- `edit_file` tool requires exact unique text match — whitespace-sensitive.

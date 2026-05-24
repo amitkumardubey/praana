@@ -104,7 +104,7 @@ User input
   → print memory banner
 ```
 
-The full architecture is documented in [AGENTS.md](./AGENTS.md).
+The full architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Configuration
 
