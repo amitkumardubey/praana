@@ -8,6 +8,7 @@ export class EventLog {
   private logPath: string;
   private sessionId: string;
   private eventCount = 0;
+  private closed = false;
 
   constructor(sessionId: string, logDir: string) {
     this.sessionId = sessionId;
@@ -64,6 +65,8 @@ export class EventLog {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     closeSync(this.fd);
   }
 }

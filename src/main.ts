@@ -37,6 +37,7 @@ async function main() {
 
   // Create or resume session
   let session: Session;
+  let sessionEnded = false;
   try {
     if (resumeMode && sessionId) {
       console.log(`Resuming session: ${sessionId}`);
@@ -107,8 +108,11 @@ async function main() {
   });
 
   rl.on("close", async () => {
-    console.log("\nShutting down...");
-    await session.end("clean");
+    if (!sessionEnded) {
+      sessionEnded = true;
+      console.log("\nShutting down...");
+      await session.end("clean");
+    }
     process.exit(0);
   });
 

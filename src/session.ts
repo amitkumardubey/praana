@@ -28,6 +28,7 @@ export class Session {
   bodhaEnabled: boolean;
   digest: string | null = null;
   debug = false;
+  private ended = false;
   private turnCount = 0;
 
   constructor(id: string, cwd: string, config: AriaConfig) {
@@ -147,6 +148,8 @@ export class Session {
   }
 
   async end(reason: "clean" | "aborted" | "error"): Promise<void> {
+    if (this.ended) return;
+    this.ended = true;
     if (this.bodhaEnabled && this.bodhaClient) {
       try {
         await this.bodhaClient.sessionEnd(reason);
