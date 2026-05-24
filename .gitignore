@@ -7,9 +7,10 @@ aria-knowledge.db*
 aria.config.toml
 refer/
 
-# Evaluation assets (competitive intelligence — keep local)
+# Local eval files
 eval/runbook.md
 eval/scoring-rubric.md
 eval/task-template.md
 eval/results*.jsonl
 eval/metrics.schema.json
+TODO.md
