@@ -215,6 +215,43 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/sessions": {
+      const { readdirSync, readFileSync, existsSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      const logDir = session.config.session.log_dir;
+      if (!existsSync(logDir)) {
+        console.log("No sessions directory found.");
+        break;
+      }
+      const dirs = readdirSync(logDir, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .sort((a, b) => b.name.localeCompare(a.name))
+        .slice(0, 15);
+      if (dirs.length === 0) {
+        console.log("No sessions found.");
+        break;
+      }
+      console.log(`\nRecent sessions:`);
+      for (const d of dirs) {
+        const eventsPath = join(logDir, d.name, "events.log");
+        const metaPath = join(logDir, d.name, "meta.json");
+        let events = 0, cwd = "?", time = "?";
+        try {
+          const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+          cwd = meta.cwd?.split("/").pop() ?? meta.cwd ?? "?";
+          time = new Date(meta.started_at).toISOString().slice(0, 16).replace("T", " ");
+        } catch {}
+        try {
+          const content = readFileSync(eventsPath, "utf-8");
+          events = content.split("\n").filter(Boolean).length;
+        } catch {}
+        const marker = d.name === session.id ? " ← current" : "";
+        console.log(`  ${time}  ${d.name.slice(0, 12)}...  ${String(events).padStart(4)} events  ${cwd}${marker}`);
+      }
+      console.log(`\nResume with: npx tsx src/main.ts resume <session-id>`);
+      break;
+    }
+
     case "/model": {
       const model = parts[1];
       if (!model) {
@@ -264,6 +301,7 @@ SLASH COMMANDS:
   /events                  Show last 20 events
   /recall <query>          Search cross-session knowledge base
   /model <name>            Switch LLM model (e.g., /model openai/gpt-4o)
+  /sessions                List recent sessions (resume with npx tsx src/main.ts resume <id>)
   /debug                   Toggle debug mode (saves per-turn prompts)
   /help                    Show this help
 `);
