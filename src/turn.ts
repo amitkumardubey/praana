@@ -1,4 +1,6 @@
 import { streamText } from "ai";
+import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import type { Session } from "./session.js";
 import { compile } from "./compiler.js";
 import { createAllTools, describeTools } from "./tools/index.js";
@@ -35,12 +37,21 @@ export async function runTurn(
     stateGraph: session.stateGraph,
     bodhaDigest: session.digest,
     recentEvents,
-    // userInput passed as a separate message below, not in system prompt
     toolSchemas: toolDescs,
     cwd: session.cwd,
     sessionId: session.id,
     tokenBudget: session.config.compiler.token_budget,
   });
+
+  // ---- DEBUG: save compiled prompt to session dir ----
+  if (session.debug) {
+    const turnNum = session.getTurnCount() + 1;
+    const promptDir = session.promptDir;
+    if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
+    const promptFile = join(promptDir, `turn-${String(turnNum).padStart(3, "0")}.md`);
+    writeFileSync(promptFile, compiledPrompt, "utf-8");
+    process.stderr.write(`\n[debug] prompt saved → ${promptFile}\n`);
+  }
 
   // 4. Create LLM provider and model
   const provider = createProvider(session.config.llm);
@@ -63,6 +74,11 @@ export async function runTurn(
     tools,
     maxSteps: 25,
     onStepFinish: ({ toolCalls, toolResults }) => {
+      if (session.debug && toolCalls?.length) {
+        for (const tc of toolCalls) {
+          process.stderr.write(`[debug] 🔧 ${tc.toolName}(${JSON.stringify(tc.args).slice(0, 120)})\n`);
+        }
+      }
       // Log all tool calls and results automatically
       if (toolCalls) {
         for (const tc of toolCalls) {

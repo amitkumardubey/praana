@@ -11,11 +11,16 @@ async function main() {
   // Parse args
   let sessionId: string | null = null;
   let resumeMode = false;
+  let debug = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--help" || args[i] === "-h") {
       printHelp();
       process.exit(0);
+    }
+    if (args[i] === "--debug" || args[i] === "-d") {
+      debug = true;
+      continue;
     }
     if (args[i] === "resume" && args[i + 1]) {
       resumeMode = true;
@@ -38,6 +43,7 @@ async function main() {
       session = await Session.resume(sessionId, cwd, config);
     } else {
       session = await Session.create(cwd, config);
+      session.debug = debug;
       console.log(`New session: ${session.id}`);
     }
   } catch (err) {
@@ -219,6 +225,15 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/debug": {
+      session.debug = !session.debug;
+      console.log(
+        `Debug mode: ${session.debug ? "ON" : "OFF"}` +
+        ` (prompts saved to ${session.promptDir})`
+      );
+      break;
+    }
+
     case "/help": {
       printHelp();
       break;
@@ -245,6 +260,7 @@ SLASH COMMANDS:
   /events                  Show last 20 events
   /recall <query>          Search cross-session knowledge base
   /model <name>            Switch LLM model (e.g., /model openai/gpt-4o)
+  /debug                   Toggle debug mode (saves per-turn prompts)
   /help                    Show this help
 `);
 }

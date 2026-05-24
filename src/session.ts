@@ -27,6 +27,7 @@ export class Session {
   bodhaClient: AgentKBClient | null = null;
   bodhaEnabled: boolean;
   digest: string | null = null;
+  debug = false;
   private turnCount = 0;
 
   constructor(id: string, cwd: string, config: AriaConfig) {
@@ -135,6 +136,10 @@ export class Session {
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  get promptDir(): string {
+    return join(this.config.session.log_dir, this.id, "prompts");
   }
 
   getTurnCount(): number {
