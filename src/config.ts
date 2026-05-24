@@ -6,7 +6,7 @@ import type { AriaConfig } from "./types.js";
 const DEFAULT_CONFIG: AriaConfig = {
   llm: {
     provider: "openrouter",
-    model: "anthropic/claude-sonnet-4",
+    model: "deepseek/deepseek-v4-pro",
   },
   memory: {
     enabled: true,
@@ -142,7 +142,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
   const out: AriaConfig = deepMerge(config, {});
 
   if (!out.llm.model || !out.llm.model.trim()) {
-    console.warn("[config] Invalid llm.model, using default anthropic/claude-sonnet-4");
+    console.warn("[config] Invalid llm.model, using default deepseek/deepseek-v4-pro");
     out.llm.model = DEFAULT_CONFIG.llm.model;
   }
 

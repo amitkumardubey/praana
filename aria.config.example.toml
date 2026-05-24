@@ -1,0 +1,83 @@
+# ARIA Configuration — Example
+#
+# Copy this file to `aria.config.toml` in your project root and customize:
+#   cp aria.config.example.toml aria.config.toml
+#
+# All values shown are the built-in defaults. You only need to
+# override what you want to change. ARIA works with zero config.
+#
+# Config is loaded from (later overrides earlier):
+#   1. ~/.aria/aria.config.json
+#   2. ~/.aria/config.toml
+#   3. ./aria.config.json
+#   4. ./aria.config.toml
+
+[llm]
+# LLM provider. Supported values:
+#   openrouter   — OpenRouter (default). Works with 200+ models from any provider.
+#   openai       — OpenAI API (gpt-4o, o3, etc.)
+#   anthropic    — Anthropic API (claude-sonnet-4, claude-3.5, etc.)
+#   google       — Google Gemini API (gemini-2.5-flash, gemini-2.5-pro)
+#   deepseek     — DeepSeek API (deepseek-v4-pro, deepseek-chat)
+#   groq         — Groq API (fast inference on open models)
+#   mistral      — Mistral AI API
+#   xai          — xAI API (grok)
+#   fireworks    — Fireworks AI
+#   together     — Together AI
+#   ollama       — Local Ollama (no API key needed)
+#   amazon-bedrock — AWS Bedrock (uses AWS credentials, not an API key)
+provider = "openrouter"
+
+# Model name passed to the provider.
+# For OpenRouter: use "provider/model" format, e.g. "deepseek/deepseek-v4-pro"
+# For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
+# Override at runtime via ARIA_MODEL env var or /model command.
+model = "deepseek/deepseek-v4-pro"
+
+# Optional: Custom API base URL (e.g., for self-hosted or proxy)
+# base_url = "https://my-proxy.example.com/v1"
+
+# API keys are read from environment variables:
+#   openrouter    → OPENROUTER_API_KEY
+#   openai        → OPENAI_API_KEY
+#   anthropic     → ANTHROPIC_API_KEY
+#   google        → GOOGLE_GENERATIVE_AI_API_KEY
+#   deepseek      → DEEPSEEK_API_KEY
+#   groq          → GROQ_API_KEY
+#   mistral       → MISTRAL_API_KEY
+#   xai           → XAI_API_KEY
+#   fireworks     → FIREWORKS_API_KEY
+#   together      → TOGETHER_API_KEY
+#   ollama        → (none — runs locally)
+#   amazon-bedrock → (none — uses AWS credentials chain)
+
+[memory]
+# Enable/disable cross-session persistent memory (SQLite-backed)
+enabled = true
+
+# Provider for session-end summarization ("openrouter", "openai", or "disabled")
+summarizer = "openrouter"
+
+# Path to the SQLite memory database (~ is expanded to $HOME)
+db_path = "~/.aria/memory.db"
+
+[compiler]
+# Total estimated token budget for the compiled prompt
+token_budget = 100000
+
+# Number of recent user/agent turns to include in context
+recent_turns = 10
+
+# Token budget reserved specifically for the Recent Turns section
+recent_turns_token_budget = 30000
+
+[tiers]
+# Turns of inactivity before active → soft tier demotion
+idle_soft_after_turns = 20
+
+# Turns of inactivity before active/soft → hard tier demotion
+idle_hard_after_turns = 50
+
+[session]
+# Directory where session event logs are stored
+log_dir = "~/.aria/sessions"

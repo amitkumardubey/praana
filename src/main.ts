@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
+import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig } from "./config.js";
 import type { LlmConfig } from "./types.js";
 
@@ -31,7 +32,7 @@ async function main() {
 
   const cwd = resolve(process.cwd());
   const config = loadConfig();
-  const keyError = getMissingApiKeyMessage(config.llm);
+  const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
     console.error(keyError);
     process.exit(1);
@@ -391,23 +392,6 @@ SLASH COMMANDS:
   /thinking <on|off>       Toggle thinking stream visibility
   /help                    Show this help
 `);
-}
-
-function getMissingApiKeyMessage(llm: LlmConfig): string | null {
-  if (llm.provider === "ollama") return null;
-  if (llm.provider === "openrouter") {
-    return process.env.OPENROUTER_API_KEY
-      ? null
-      : "Missing required environment variable: OPENROUTER_API_KEY";
-  }
-  if (llm.provider === "openai") {
-    return process.env.OPENAI_API_KEY
-      ? null
-      : "Missing required environment variable: OPENAI_API_KEY";
-  }
-  // Default provider compatibility path in llm.ts uses OpenAI-style auth.
-  if (process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY) return null;
-  return "Missing API key. Set OPENAI_API_KEY or ANTHROPIC_API_KEY.";
 }
 
 function currentModelOrDefault(session: Session): string {

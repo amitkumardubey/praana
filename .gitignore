@@ -4,4 +4,5 @@ dist/
 .env
 aria.config.json
 aria-knowledge.db*
+aria.config.toml
 refer/
