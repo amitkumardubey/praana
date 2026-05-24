@@ -162,3 +162,5 @@ Requires Node 22+. Uses TypeScript throughout.
 ## License
 
 MIT — see [LICENSE](./LICENSE).
+
+See [CHANGELOG.md](./CHANGELOG.md) for version history.
