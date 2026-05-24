@@ -114,6 +114,13 @@ export async function runTurn(
     fullResponse += "\n";
   }
 
+  // Guard against empty LLM responses (some models intermittently return nothing)
+  if (!fullResponse.trim()) {
+    const fallback = "[no response from model — try again or switch models with /model]";
+    process.stdout.write(fallback + "\n");
+    fullResponse = fallback;
+  }
+
   // 6. Append agent_message
   session.eventLog.append({
     kind: "agent_message",
