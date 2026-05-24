@@ -29,13 +29,17 @@ Three commands to your first session. Drop-in config via `aria.config.toml` or u
 
 | Command | What it does |
 |---------|-------------|
+| `/exit` | End session (triggers learning extraction) |
 | `/state` | View working memory state |
+| `/stats` | Session statistics and memory tier counts |
 | `/digest` | Show adaptive memory digest |
+| `/events` | Show last 20 events in log |
 | `/recall <query>` | Search adaptive memory |
 | `/model <provider/model>` | Switch models mid-session |
-| `/stats` | Session statistics |
 | `/sessions` | List past sessions |
-| `/exit` | End session (triggers learning extraction) |
+| `/debug` | Toggle debug mode (traces tools/saves prompts) |
+| `/thinking <on\|off>` | Toggle thinking stream visibility |
+| `/help` | Show available slash commands |
 
 ## What Makes ARIA Different
 
@@ -53,21 +57,19 @@ Objects automatically demote after configurable idle thresholds. The result: you
 
 **Measured:** In a session with 100+ state objects, tiering saved ~12,700 tokens vs. flat rendering. [See the benchmark.](./docs/benchmarks/token-benchmark.ts)
 
-**Adaptive Memory** — SQLite-backed, scored by relevance and recency, persists between sessions. At session start, ARIA generates a digest of what it knows. At session end, it optionally summarizes learnings and reinforces confidence for memories that proved useful. Scope filtering keeps global preferences separate from project-specific facts.
+**Adaptive Memory** — SQLite-backed, isolated by scope (`user`, `agent`, `context`), scored by vector similarity and recency, persists between sessions. At session start, ARIA generates a digest of what it knows. At session end, it optionally summarizes learnings (using a separate LLM summarizer) and saves them as cross-session memories. Strict AND-scoping isolates project-specific memories.
 
 > **Honest note:** Both systems work today, but they're early. Adaptive Context uses basic idle thresholds and keyword matching for auto-hydrate — no semantic understanding yet. Adaptive Memory stores and recalls, but the reinforcement loop (updating confidence based on which memories actually helped) isn't wired yet. These are foundations, not finished products.
 
 ## Features
 
-- **Adaptive Context** — tiered working memory that compresses stale state automatically
-- **Adaptive Memory** — cross-session persistence with confidence scoring and reinforcement
 - **12+ LLM providers** — OpenRouter, OpenAI, Anthropic, Google Gemini, DeepSeek, Groq, Mistral, xAI, Fireworks, Together, Ollama, AWS Bedrock
-- **Deterministic prompt compilation** — every prompt is built from the same state, same order, same rules. No surprises in generated output.
-- **Auto-hydrate** — mentioning a peripheral object in conversation automatically promotes it to active. No LLM discipline required.
-- **Session resume** — pick up exactly where you left off, including model override.
-- **Tools** — shell (async, timeout-safe), file read/write, exact-match edit, Adaptive Context management, Adaptive Memory recall/remember.
-- **Event-sourced** — every turn logged as append-only JSONL. Debug, replay, or analyze session history.
-- **Tiered config** — `~/.aria/config.toml` → `./aria.config.toml`, later overrides earlier.
+- **Deterministic prompt compilation** — every prompt is built from the same state, same order, same rules. No surprises in generated output. Measures token statistics via `compileWithMetrics()`.
+- **Auto-hydrate** — mentioning a peripheral object in conversation automatically promotes it to active using stopword-filtered keyword matching. No LLM discipline required.
+- **Session resume** — pick up exactly where you left off, including model override restored from `system_note`.
+- **Tools** — shell (async, timeout-safe), file read/write (with line-based offsets/limits), exact-match edit, Adaptive Context management, Adaptive Memory recall/remember.
+- **Event-sourced** — every turn logged as append-only JSONL. Durably persisted with `fsyncSync`.
+- **Tiered config** — `~/.aria/aria.config.json` → `~/.aria/config.toml` → `./aria.config.json` → `./aria.config.toml`, later overrides earlier. Deep-merged.
 
 ## Provider Support
 
@@ -104,7 +106,7 @@ User input
   → print memory banner
 ```
 
-The full architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md).
+The full architecture is documented in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), and key terms are explained in [docs/concepts.md](./docs/concepts.md).
 
 ## Configuration
 

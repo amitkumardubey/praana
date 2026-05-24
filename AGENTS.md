@@ -47,15 +47,17 @@ Key env vars:
 
 | Command | Function |
 |---------|----------|
-| `/state` | List state objects |
-| `/digest` | Show memory digest |
-| `/recall <query>` | Search memory |
-| `/model <provider/model>` | Switch models |
-| `/stats` | Session stats |
+| `/exit` | End session (saves session and prints summary) |
+| `/state` | List state objects and their tiers |
+| `/stats` | Session stats and memory tier counts |
+| `/digest` | Show current cross-session memory digest |
+| `/events` | Show last 20 events |
+| `/recall <query>` | Search cross-session memory |
+| `/model <provider/model>` | Switch models mid-session |
 | `/sessions` | List past sessions |
 | `/debug` | Toggle debug mode |
-| `/thinking on\|off` | Toggle thinking visibility |
-| `/exit` | End session |
+| `/thinking <on\|off>` | Toggle thinking visibility |
+| `/help` | Show available slash commands |
 
 ## Testing
 
@@ -98,22 +100,24 @@ Test framework: Vitest. Tests live in `tests/`. Currently 23 tests across 6 file
 
 ## Architecture
 
-For the full architecture deep-dive (state model, session lifecycle, event log, compiler, memory systems, tools), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+For the full architecture deep-dive (state model, session lifecycle, event log, compiler, memory systems, tools), see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). For a glossary of key terms, see [docs/concepts.md](./docs/concepts.md).
 
 Key source tree:
 
 ```
 src/
-  main.ts        — CLI entry point, readline loop
-  turn.ts        — Per-turn orchestration (prompt → LLM → tools)
-  session.ts     — Session lifecycle (create/resume/end)
-  compiler.ts    — Deterministic prompt assembly
-  state-graph.ts — Tiered state management (active/soft/hard)
-  event-log.ts   — Append-only JSONL event persistence
-  llm.ts         — Provider connection via pi-ai
-  config.ts      — Multi-source config loading
-  tools/         — Tool definitions (shell, file, memory, context)
-  memory/        — Cross-session memory (SQLite, embeddings, summarizer)
+  main.ts        — CLI entry point, readline loop, and slash commands
+  turn.ts        — Per-turn orchestration (prompt → LLM → tools → banners)
+  session.ts     — Session lifecycle (create/resume/end) & memory init
+  compiler.ts    — Deterministic prompt assembly with token budgeting & metrics
+  state-graph.ts — Tiered state management (active/soft/hard) & keyword auto-hydrate
+  event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
+  llm.ts         — Provider connection and model building via pi-ai
+  config.ts      — Multi-source config loading (JSON/TOML) & deep-merge
+  types.ts       — Core shared TypeScript types
+  ui.ts          — CLI output formatting, banners, and text colors
+  tools/         — Tool definitions (shell, file, memory, knowledge)
+  memory/        — SQLite, HashEmbedder, and LLM summarizer logic
 ```
 
 ## Security
@@ -133,7 +137,7 @@ src/
 ## Common Gotchas
 
 - Event log uses `fsyncSync` on every write — affects performance for high-frequency tool calls.
-- Memory store uses hash embeddings (FNV-1a seeded) — deterministic but not semantic. Good for approximate dedup, bad for similarity search.
-- Config merge order: local `./aria.config.toml` overrides global `~/.aria/config.toml`.
+- Memory store uses offline 384-dimensional unit-sphere float32 vectors (`HashEmbedder`) — deterministic but not semantic. Good for approximate dedup, bad for similarity search.
+- Config merge order: local `./aria.config.toml` overrides global `~/.aria/config.toml`. Global JSON -> Global TOML -> Local JSON -> Local TOML.
 - Session resume replays `context_action` events — if the event log is missing or corrupted, state rebuilds empty.
 - `edit_file` tool requires exact unique text match — whitespace-sensitive.
