@@ -7,7 +7,27 @@ import {
   existsSync,
   mkdirSync,
 } from "node:fs";
-import { dirname, resolve, isAbsolute } from "node:path";
+import { dirname, resolve, isAbsolute, extname } from "node:path";
+import * as toml from "toml";
+
+/**
+ * Validate content for known structured formats.
+ * Returns a warning string if the content looks malformed, or null if fine.
+ */
+function validateStructuredContent(filePath: string, content: string): string | null {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".json") {
+    try { JSON.parse(content); } catch (e: any) {
+      return `Warning: content does not parse as valid JSON (${e.message}). File written anyway.`;
+    }
+  }
+  if (ext === ".toml") {
+    try { toml.parse(content); } catch (e: any) {
+      return `Warning: content does not parse as valid TOML (${e.message}). File written anyway.`;
+    }
+  }
+  return null;
+}
 
 export interface SystemToolContext {
   cwd: string;
@@ -130,7 +150,8 @@ export function createSystemTools(ctx: SystemToolContext) {
         try {
           mkdirSync(dirname(absPath), { recursive: true });
           writeFileSync(absPath, content);
-          return { ok: true };
+          const warning = validateStructuredContent(absPath, content);
+          return warning ? { ok: true, warning } : { ok: true };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to write file" };
         }
