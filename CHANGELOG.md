@@ -11,7 +11,7 @@ First public release. Initial launch after extensive iteration and evaluation.
 - Deterministic ordering for all state objects in prompt assembly
 - Tools: `create_task`, `complete_task`, `add_constraint`, `decide`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state`
 
-### Adaptive Memory (Cross-Session Persistence)
+### Cognitive Memory (Cross-Session Persistence)
 - SQLite-backed store with entry, scope, and embedding tables
 - Hash-based embedder (FNV-1a seeded, 384-dim) for MVP — deterministic, no external API calls
 - Session-scoped memory with AND-based scope isolation (no cross-project leakage)
@@ -81,4 +81,4 @@ First public release. Initial launch after extensive iteration and evaluation.
 
 ---
 
-> **Honest note:** Both adaptive systems work today, but they're early. Adaptive Context uses basic idle thresholds and keyword auto-hydrate — no semantic understanding yet. Adaptive Memory stores and recalls correctly, but the reinforcement loop (updating confidence based on which memories actually helped) isn't wired. These are foundations, not finished products.
+> **Honest note:** Both adaptive systems work today, but they're early. Adaptive Context uses basic idle thresholds and keyword auto-hydrate — no semantic understanding yet. Cognitive Memory stores and recalls correctly, but the reinforcement loop (updating confidence based on which memories actually helped) isn't wired. These are foundations, not finished products.

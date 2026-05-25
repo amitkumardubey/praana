@@ -1,9 +1,9 @@
 # ARIA Architecture
 
-ARIA is a single-process TypeScript CLI coding agent with two adaptive memory systems:
+ARIA is a single-process TypeScript CLI coding agent with two cognitive memory systems:
 
 1. **Adaptive Context** — within-session working memory
-2. **Adaptive Memory** — cross-session persistent memory
+2. **Cognitive Memory** — cross-session persistent memory
 
 No daemon, no RPC server, no multi-process coordination.
 
@@ -133,7 +133,7 @@ Writing uses `writeSync` followed by `fsyncSync` to guarantee durable persistenc
 `src/compiler.ts` constructs deterministic, token-budgeted prompt sections:
 
 1. **System Frame**: System prompt with current working directory, session ID, tool descriptions, and working memory stats.
-2. **Cross-Session Memory**: The active Adaptive Memory digest (rendered in markdown).
+2. **Cross-Session Memory**: The active Cognitive Memory digest (rendered in markdown).
 3. **Active State**: Full payloads grouped by kind (Tasks, Decisions, Constraints, Notes), sorted deterministically by creation time and ULID.
 4. **Peripheral Memory**: Lists soft-tier objects as one-line stubs and hard-tier objects as minimal anchors (IDs). Includes instructions on how to `hydrate` them.
 5. **Recent Turns**: Chronological transcript of recent events (filtering out `context_action` and `system_note`), truncated according to a specific budget (`recent_turns_token_budget`, defaulting to 30% of total budget).
@@ -162,7 +162,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `hydrate(id)` — promotes a peripheral object back to `active`
 - `list_state()` — lists all state objects with their IDs, kinds, tiers, and summaries
 
-### Adaptive Memory Tools (`src/tools/knowledge.ts`)
+### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
 - `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to cross-session memory
 
@@ -172,14 +172,25 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching
 
-## Adaptive Memory
+## Cognitive Memory
 
 ### Key Components
 - `MemoryStore` (`src/memory/store.ts`): Coordinates high-level cross-session memory operations, session starts, and session ends.
 - SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.aria/memory.db`.
-- Embedder (`src/memory/embeddings.ts`): `HashEmbedder` generates deterministic 384-dimension float32 unit-sphere vectors offline via seeded pseudo-random hash distribution.
+- Embedder (`src/memory/embeddings.ts`): `HashEmbedder` generates deterministic 384-dimension float32 unit-sphere vectors via a hash-seeded projection. Fast and dependency-free, but **not semantic** — similar phrases with different words produce different vectors. The `Embedder` interface is swappable; `OllamaEmbedder` is planned.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
-- Extraction Logic (`src/memory/summarizer.ts`): Formulates prompt asking the LLM to analyze transcript events and extract up to 5 concise structured learnings on session end.
+- Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the full transcript to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) that maps to an initial confidence score.
+
+### Memory Kinds
+
+| Kind | What it stores |
+|---|---|
+| `fact` | Verifiable project knowledge |
+| `preference` | Working style preferences |
+| `decision` | Architectural choices with rationale |
+| `pattern` | Recurring approaches that work |
+| `mistake` | A failure and the lesson extracted from it |
+| `constraint` | A rule that must always hold |
 
 ### Scope Isolation (Multi-Context Safety)
 To prevent cross-project context leaks, all memory queries and writes are isolated using scopes:
@@ -213,7 +224,7 @@ Config files are deep-merged from lower to higher precedence (later overrides ea
 ```toml
 [llm]
 provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | anthropic | google | mistral | amazon-bedrock
-model = "deepseek/deepseek-v4-pro"   # Override model
+model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
 
 [memory]
 enabled = true
