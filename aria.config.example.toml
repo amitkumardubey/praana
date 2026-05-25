@@ -32,7 +32,12 @@ provider = "openrouter"
 # For OpenRouter: use "provider/model" format, e.g. "deepseek/deepseek-v4-pro"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
 # Override at runtime via ARIA_MODEL env var or /model command.
-model = "deepseek/deepseek-v4-pro"
+model = "deepseek/deepseek-v4-flash:free"
+# Free tier — zero cost, good for getting started.
+# Upgrade to a paid model for better results on complex tasks:
+#   deepseek/deepseek-v4-pro
+#   anthropic/claude-sonnet-4-5
+#   openai/gpt-4o
 
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
@@ -52,7 +57,7 @@ model = "deepseek/deepseek-v4-pro"
 #   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
-# Enable/disable Adaptive Memory (SQLite-backed cross-session persistence)
+# Enable/disable Cognitive Memory (SQLite-backed cross-session persistence)
 enabled = true
 
 # Provider for session-end summarization ("openrouter", "openai", or "disabled")
@@ -60,6 +65,18 @@ summarizer = "openrouter"
 
 # Path to the SQLite memory database (~ is expanded to $HOME)
 db_path = "~/.aria/memory.db"
+
+# Embedder strategy for semantic recall:
+#   auto         — tries Ollama first, falls back to hash (default)
+#   ollama       — requires Ollama running (ollama pull nomic-embed-text)
+#   transformers — in-process ONNX, no daemon (npm install @huggingface/transformers)
+#   llama-cpp    — native bindings, fastest (npm install node-llama-cpp, needs build tools)
+#   hash         — deterministic, non-semantic, zero deps (current fallback)
+embedder = "auto"
+
+# Ollama settings (used when embedder = "auto" or "ollama")
+ollama_url = "http://localhost:11434"
+ollama_model = "nomic-embed-text"
 
 [compiler]
 # Total estimated token budget for the compiled prompt
