@@ -10,13 +10,15 @@ export interface CompileInput {
   cwd: string;
   sessionId: string;
   tokenBudget: number;
-  recentTurnsTokenBudget?: number; // Optional: token budget specifically for Recent Turns
+  recentTurnsTokenBudget?: number;
+  agentsContext?: string | null;  // content from AGENTS.md / CLAUDE.md
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
 export interface CompileMetrics {
   totalTokens: number;
   systemFrameTokens: number;
+  agentsContextTokens: number;  // tokens used by AGENTS.md / project context
   crossSessionTokens: number;
   activeStateTokens: number;
   peripheralStubsTokens: number;
@@ -45,7 +47,8 @@ export function compile(input: CompileInput): string {
     input.cwd,
     input.sessionId,
     input.toolSchemas,
-    stateSummary
+    stateSummary,
+    input.agentsContext
   );
   sections.push(frame);
 
@@ -98,9 +101,10 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   const stateSummary = buildStateSummary(input.stateGraph);
 
   // 1. SYSTEM FRAME
-  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary);
+  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, input.agentsContext);
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
+  metrics.agentsContextTokens = input.agentsContext ? estTokens(input.agentsContext) : 0;
 
   // 2. CROSS-SESSION MEMORY
   let crossSection = "";
@@ -162,7 +166,8 @@ function buildSystemFrame(
   cwd: string,
   sessionId: string,
   toolSchemas: string[],
-  stateSummary?: string
+  stateSummary?: string,
+  agentsContext?: string | null
 ): string {
   const lines = [
     "# System",
@@ -171,6 +176,10 @@ function buildSystemFrame(
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
   ];
+
+  if (agentsContext && agentsContext.trim()) {
+    lines.push("", "## Project Context", "", agentsContext.trim());
+  }
 
   if (stateSummary) {
     lines.push("", "## Working Memory Status", "", stateSummary);

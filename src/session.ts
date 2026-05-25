@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { ulid } from "ulid";
 import type { AriaConfig } from "./types.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
@@ -23,6 +25,7 @@ export class Session {
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
   digest: string | null = null;
+  agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
   debug = false;
   private ended = false;
   private turnCount = 0;
@@ -60,6 +63,11 @@ export class Session {
     const cfg = config ?? loadConfig();
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
+    session.agentsContext = loadAgentsContext(cwd);
+    if (session.agentsContext) {
+      const tokEst = Math.ceil(session.agentsContext.length / 4);
+      console.log(`[context] Loaded project context (~${tokEst} tokens)`);
+    }
 
     if (session.memoryEnabled) {
       try {
@@ -124,6 +132,11 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg);
+    session.agentsContext = loadAgentsContext(cwd);
+    if (session.agentsContext) {
+      const tokEst = Math.ceil(session.agentsContext.length / 4);
+      console.log(`[context] Loaded project context (~${tokEst} tokens)`);
+    }
 
     // Replay context actions to rebuild state
     const actions = session.eventLog.replayContextActions();
@@ -373,4 +386,72 @@ function basename(p: string): string {
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
+}
+
+/** Find git root of the given directory, or return the directory itself. */
+function findGitRoot(cwd: string): string {
+  try {
+    return execSync("git rev-parse --show-toplevel", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * Load project context from AGENTS.md / CLAUDE.md files.
+ *
+ * Load order (all non-empty results are merged):
+ *   1. ~/.aria/AGENTS.md       — global personal instructions
+ *   2. <git root>/AGENTS.md    — project-wide context
+ *   3. <cwd>/AGENTS.md         — subdirectory context (if cwd ≠ git root)
+ *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
+ *
+ * Combined content is capped at ~4000 tokens (16000 chars).
+ */
+export function loadAgentsContext(cwd: string): string | null {
+  const MAX_CHARS = 16_000; // ~4000 tokens
+  const parts: string[] = [];
+
+  const tryRead = (filePath: string, label: string): void => {
+    if (!existsSync(filePath)) return;
+    try {
+      const content = readFileSync(filePath, "utf-8").trim();
+      if (content) parts.push(`<!-- ${label} -->\n${content}`);
+    } catch { /* unreadable, skip */ }
+  };
+
+  // 1. Global personal instructions
+  tryRead(expandHome("~/.aria/AGENTS.md"), "~/.aria/AGENTS.md");
+
+  // 2. Project root AGENTS.md
+  const gitRoot = findGitRoot(cwd);
+  tryRead(join(gitRoot, "AGENTS.md"), "AGENTS.md");
+
+  // 3. Subdirectory AGENTS.md (only if cwd differs from git root)
+  if (cwd !== gitRoot) {
+    tryRead(join(cwd, "AGENTS.md"), `${basename(cwd)}/AGENTS.md`);
+  }
+
+  // 4. CLAUDE.md fallback — only if no AGENTS.md was found at project root
+  if (!existsSync(join(gitRoot, "AGENTS.md"))) {
+    tryRead(join(gitRoot, "CLAUDE.md"), "CLAUDE.md");
+    if (cwd !== gitRoot) {
+      tryRead(join(cwd, "CLAUDE.md"), `${basename(cwd)}/CLAUDE.md`);
+    }
+  }
+
+  if (parts.length === 0) return null;
+
+  const combined = parts.join("\n\n");
+  if (combined.length > MAX_CHARS) {
+    console.warn(
+      `[context] AGENTS.md content truncated to ~4000 tokens (was ${Math.ceil(combined.length / 4)} tokens)`
+    );
+    return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
+  }
+  return combined;
 }

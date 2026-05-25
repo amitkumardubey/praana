@@ -3,6 +3,13 @@ import { homedir } from "node:os";
 import * as toml from "toml";
 import type { AriaConfig } from "./types.js";
 
+/** Tracks which config files were loaded in the last loadConfig() call. */
+let _loadedSources: string[] = [];
+
+export function getLoadedConfigSources(): string[] {
+  return _loadedSources;
+}
+
 const DEFAULT_CONFIG: AriaConfig = {
   llm: {
     provider: "openrouter",
@@ -75,6 +82,7 @@ function loadTomlConfig(path: string): Record<string, unknown> {
 
 export function loadConfig(configPath?: string): AriaConfig {
   let userConfig: Record<string, unknown> = {};
+  _loadedSources = []; // reset on each call
 
   if (configPath) {
     // If explicit path provided, use it (try both .json and .toml)
@@ -115,6 +123,7 @@ export function loadConfig(configPath?: string): AriaConfig {
       const config = loader(path);
       if (Object.keys(config).length > 0) {
         userConfig = deepMerge(userConfig as any, config) as Record<string, unknown>;
+        _loadedSources.push(path);
       }
     }
   }

@@ -7,6 +7,10 @@ aria-knowledge.db*
 aria.config.toml
 refer/
 
+# Internal strategy — not for public repo
+PRODUCT_DOCUMENT.md
+ENGINEERING_PLAN.md
+
 # Local eval files
 eval/runbook.md
 eval/scoring-rubric.md
