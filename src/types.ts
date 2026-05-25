@@ -115,6 +115,9 @@ export interface MemoryConfig {
   enabled: boolean;
   summarizer: string;
   db_path?: string;
+  embedder?: string;
+  ollama_url?: string;
+  ollama_model?: string;
 }
 
 export interface CompilerConfig {
