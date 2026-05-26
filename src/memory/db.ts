@@ -146,6 +146,7 @@ export function reinforceEntry(db: Database.Database, id: string, alpha = 0.15):
   ).run(alpha, Date.now(), id);
 }
 
+// TODO: wire into a scheduled confidence-decay pass (not yet called from production code).
 export function weakenEntry(db: Database.Database, id: string, beta = 0.3): void {
   db.prepare(
     `UPDATE entries SET confidence = confidence * (1.0 - ?) WHERE id = ?`,

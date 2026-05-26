@@ -41,12 +41,17 @@ export class OllamaEmbedder implements Embedder {
     private model = "nomic-embed-text",
   ) {}
 
-  static async isAvailable(url: string): Promise<boolean> {
+  static async isAvailable(url: string, model?: string): Promise<boolean> {
     try {
       const res = await fetch(`${url}/api/tags`, {
         signal: AbortSignal.timeout(2000),
       });
-      return res.ok;
+      if (!res.ok) return false;
+      if (!model) return true;
+      const data = (await res.json()) as { models: { name: string }[] };
+      return data.models.some(
+        (m) => m.name === model || m.name.startsWith(`${model}:`),
+      );
     } catch {
       return false;
     }

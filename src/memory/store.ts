@@ -50,11 +50,17 @@ export class MemoryStore {
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
+  /** True while a background re-embed migration is running. */
+  private reembedding = false;
 
   constructor(opts: {
     dbPath: string;
     embedder: Embedder;
     summarizer?: SummarizerLLM | null;
+    /**
+     * Override the auto-detected needsReembed flag from openMemoryDb.
+     * Intended for tests that use :memory: DBs with explicit control.
+     */
     needsReembed?: boolean;
   }) {
     const opened = openMemoryDb(opts.dbPath, opts.embedder.dim);
@@ -141,6 +147,10 @@ export class MemoryStore {
     const queryScopes = opts.scope ?? this.defaultScopes;
     const now = Date.now();
 
+    if (this.reembedding) {
+      console.warn("[memory] Vector migration in progress — recall quality may be reduced until re-embed completes.");
+    }
+
     // Strategy: vector search for candidates, then filter + re-rank
     let candidates: MemoryEntry[] = [];
 
@@ -224,16 +234,26 @@ export class MemoryStore {
     return getAllEntries(this.db);
   }
 
-  /** Re-embed all entries after vector dimension migration. */
+  /** Re-embed all entries after vector dimension migration. Runs in the background. */
   async reembedAllEntries(): Promise<void> {
+    this.reembedding = true;
     const entries = getAllEntries(this.db);
+    console.log(`[memory] Re-embedding ${entries.length} entries after dimension migration…`);
+    let failed = 0;
     for (const e of entries) {
       try {
         const vec = await this.embedder.embed(e.content);
         upsertEmbedding(this.db, e.id, vec);
-      } catch {
-        /* non-fatal per entry */
+      } catch (err) {
+        failed++;
+        console.warn(`[memory] Failed to re-embed entry ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+    this.reembedding = false;
+    if (failed > 0) {
+      console.warn(`[memory] Re-embed migration complete — ${failed}/${entries.length} entries failed. Recall quality may be degraded.`);
+    } else {
+      console.log(`[memory] Re-embed migration complete — ${entries.length} entries updated.`);
     }
   }
 

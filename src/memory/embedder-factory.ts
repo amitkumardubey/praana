@@ -11,13 +11,16 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
   const ollamaUrl = config.ollama_url ?? "http://localhost:11434";
 
   if (strategy === "auto" || strategy === "ollama") {
-    if (await OllamaEmbedder.isAvailable(ollamaUrl)) {
-      const model = config.ollama_model ?? "nomic-embed-text";
+    const model = config.ollama_model ?? "nomic-embed-text";
+    if (await OllamaEmbedder.isAvailable(ollamaUrl, model)) {
       console.log(`[memory] Using Ollama embedder (${model})`);
       return new OllamaEmbedder(ollamaUrl, model);
     }
     if (strategy === "ollama") {
-      console.warn("[memory] Ollama not available — falling back to keyword recall");
+      console.warn(
+        `[memory] Ollama not available or model '${model}' not loaded — falling back to hash embedder.\n` +
+          `         Run: ollama pull ${model}`,
+      );
     }
   }
 
@@ -46,7 +49,7 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
     );
   } else if (strategy !== "hash") {
     console.warn(
-      "[memory] Semantic recall unavailable — using keyword fallback.\n" +
+      "[memory] Semantic recall unavailable — using hash embedder (non-semantic recall).\n" +
         '         Set embedder = "transformers" in config for local semantic embeddings (no daemon required).',
     );
   }
@@ -81,8 +84,11 @@ async function tryLlamaCppEmbedder(): Promise<Embedder | null> {
       "models/nomic-embed-text-v1.5.Q8_0.gguf";
     const model = await llama.loadModel({ modelPath });
     const ctx = await LlamaEmbeddingContext.create({ model });
+    // Probe actual output dimension rather than assuming 384.
+    const probe = await ctx.getEmbeddingFor("probe");
+    const dim = probe.vector.length;
     return {
-      dim: 384,
+      dim,
       async embed(text: string): Promise<Float32Array> {
         const { vector } = await ctx.getEmbeddingFor(text);
         return vector;
