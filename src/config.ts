@@ -158,6 +158,15 @@ function validateConfig(config: AriaConfig): AriaConfig {
     out.memory.embedder = DEFAULT_CONFIG.memory.embedder;
   }
 
+  const validSummarizers = new Set(["disabled", "ollama", "openrouter", "openai"]);
+  const summarizer = out.memory.summarizer?.toLowerCase();
+  if (summarizer && !validSummarizers.has(summarizer)) {
+    console.warn(
+      `[config] Invalid memory.summarizer '${out.memory.summarizer}', using 'disabled'`,
+    );
+    out.memory.summarizer = "disabled";
+  }
+
   if (!Number.isFinite(out.compiler.token_budget) || out.compiler.token_budget <= 1000) {
     console.warn("[config] Invalid compiler.token_budget, using default 100000");
     out.compiler.token_budget = DEFAULT_CONFIG.compiler.token_budget;

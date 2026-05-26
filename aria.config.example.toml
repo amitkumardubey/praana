@@ -57,21 +57,47 @@ model = "deepseek/deepseek-v4-flash:free"
 # Enable/disable Adaptive Memory (SQLite-backed cross-session persistence)
 enabled = true
 
-# Provider for session-end summarization ("openrouter", "openai", or "disabled")
+# Session-end learning extraction (runs on /exit):
+#   disabled    — no LLM call; no cross-session learnings saved
+#   ollama      — local Ollama chat API (no API key; see ollama_* below)
+#   openrouter  — OpenRouter (OPENROUTER_API_KEY)
+#   openai      — OpenAI API (OPENAI_API_KEY)
 summarizer = "openrouter"
 
 # Path to the SQLite memory database (~ is expanded to $HOME)
 db_path = "~/.aria/memory.db"
 
-# Embedding strategy for semantic recall:
+# --- Embeddings (semantic /recall) ---
 #   auto          — try Ollama, fall back to hash with a warning
 #   ollama        — require Ollama (fall back to hash if unavailable)
 #   transformers  — @huggingface/transformers (npm install, ~266MB)
 #   llama-cpp     — node-llama-cpp (native, requires build tools)
 #   hash          — deterministic offline vectors (non-semantic)
 embedder = "auto"
+
+# Ollama daemon URL (embeddings + summarizer when summarizer = "ollama")
 ollama_url = "http://localhost:11434"
+
+# Embedding model — must be installed: `ollama pull nomic-embed-text`
 ollama_model = "nomic-embed-text"
+
+# Chat model for summarizer = "ollama" (session-end learnings).
+# Must be a chat model from `ollama list`, not an embedding model.
+# Ways to set it (pick one):
+#   1. ollama_summarizer_model below (recommended)
+#   2. ARIA_SUMMARIZER_MODEL env var (e.g. export ARIA_SUMMARIZER_MODEL=qwen3.5:4b)
+#   3. Leave unset — auto-picks the first non-embedding model from `ollama list`
+# ollama_summarizer_model = "qwen3.5:4b"
+
+# --- Example: fully local memory (no OpenRouter for summarizer) ---
+# summarizer = "ollama"
+# embedder = "ollama"
+# ollama_url = "http://localhost:11434"
+# ollama_model = "nomic-embed-text"
+# ollama_summarizer_model = "qwen3.5:4b"
+
+# Summarizer model override for openrouter/openai (ignored when summarizer = "ollama"):
+#   export ARIA_SUMMARIZER_MODEL=google/gemini-2.5-flash
 
 [compiler]
 # Total estimated token budget for the compiled prompt

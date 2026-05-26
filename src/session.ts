@@ -9,7 +9,7 @@ import { loadConfig } from "./config.js";
 import {
   MemoryStore,
   createEmbedder,
-  OpenAISummarizer,
+  createSummarizer,
   type SessionEvent,
 } from "./memory/index.js";
 
@@ -340,20 +340,7 @@ export class Session {
     }
 
     const embedder = await createEmbedder(this.config.memory);
-
-    let summarizer = null;
-    if (this.config.memory.summarizer !== "disabled") {
-      const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
-      const baseUrl = process.env.OPENROUTER_API_KEY
-        ? "https://openrouter.ai/api/v1"
-        : "https://api.openai.com/v1";
-      const model =
-        process.env.ARIA_SUMMARIZER_MODEL ??
-        "google/gemini-2.5-flash";
-      if (apiKey) {
-        summarizer = new OpenAISummarizer({ baseUrl, apiKey, model });
-      }
-    }
+    const summarizer = await createSummarizer(this.config.memory);
 
     return new MemoryStore({ dbPath, embedder, summarizer });
   }

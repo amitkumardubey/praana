@@ -5,7 +5,13 @@
 export { MemoryStore } from "./store.js";
 export { HashEmbedder, OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export { createEmbedder } from "./embedder-factory.js";
+export { createSummarizer } from "./summarizer-factory.js";
 export { OpenAISummarizer } from "./openai-summarizer.js";
+export {
+  OllamaSummarizer,
+  listOllamaModelNames,
+  pickDefaultChatModel,
+} from "./ollama-summarizer.js";
 export { extractLearnings } from "./summarizer.js";
 export type {
   MemoryEntry,
