@@ -1,4 +1,7 @@
 import * as readline from "node:readline";
+import chalk from "chalk";
+import stripAnsi from "strip-ansi";
+import { startSpinner, stopSpinner } from "./ui.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
@@ -114,31 +117,43 @@ async function main() {
     }
 
     // Regular turn
+    startSpinner("thinking…");
+    let spinnerStopped = false;
+    const stopSpinnerOnce = () => {
+      if (spinnerStopped) return;
+      stopSpinner();
+      spinnerStopped = true;
+    };
+
+    let thinkingOpen = false;
+    const closeThinking = () => {
+      if (!thinkingOpen) return;
+      process.stdout.write("\n\n\n");
+      thinkingOpen = false;
+    };
+
     try {
-      let thinkingOpen = false;
-      const closeThinking = () => {
-        if (!thinkingOpen) return;
-        // Reset styling, end thinking line, then two blank lines before response
-        process.stdout.write("\x1b[0m\n\n\n");
-        thinkingOpen = false;
-      };
       await runTurn(session, input, currentModel, {
         onThinkingDelta: (delta) => {
+          stopSpinnerOnce();
           if (!showThinking) return;
           if (!thinkingOpen) {
-            // Two blank lines before thinking block
-            process.stdout.write("\n\n\x1b[2m[thinking] ");
+            process.stdout.write("\n\n" + chalk.dim("[thinking] "));
             thinkingOpen = true;
           }
-          process.stdout.write(delta);
+          process.stdout.write(chalk.dim(delta));
         },
         onTextDelta: (delta) => {
+          stopSpinnerOnce();
           closeThinking();
           process.stdout.write(delta);
         },
       });
       closeThinking();
+      stopSpinnerOnce(); // no deltas arrived (e.g. empty model response)
     } catch (err) {
+      stopSpinnerOnce();
+      closeThinking();
       console.error("\n[error]", (err as Error).message);
       session.eventLog.append({
         kind: "system_note",
@@ -433,7 +448,7 @@ function printSessionBanner(session: Session, cwd: string, model: string): void 
       ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
       : "memory: disabled",
   ];
-  const width = Math.max(...content.map((s) => s.length));
+  const width = Math.max(...content.map((s) => stripAnsi(s).length));
   console.log(`┌${'─'.repeat(width + 2)}┐`);
   for (const line of content) {
     console.log(`│ ${line.padEnd(width)} │`);

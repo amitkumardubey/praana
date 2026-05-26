@@ -15,6 +15,8 @@ import {
   printToolCall,
   printToolCallDebug,
   printToolResultDebug,
+  startSpinner,
+  stopSpinner,
 } from "./ui.js";
 
 export async function runTurn(
@@ -169,15 +171,16 @@ export async function runTurn(
     }
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
+
     for (const tc of pendingToolCalls) {
       session.eventLog.append({
         kind: "tool_call",
         actor: "tool",
         payload: { tool: tc.toolName, args: tc.args },
       });
-    }
 
-    for (const tc of pendingToolCalls) {
+      if (!session.debug) startSpinner(tc.toolName);
+
       const toolDef = (tools as Record<string, any>)[tc.toolName];
       let result: unknown;
       let isError = false;
@@ -192,6 +195,11 @@ export async function runTurn(
           isError = true;
           result = { ok: false, error: err?.message ?? "Tool execution failed" };
         }
+      }
+
+      if (!session.debug) {
+        stopSpinner();
+        printToolCall(tc.toolName, tc.args);
       }
 
       toolResults.push({ toolName: tc.toolName, result });
@@ -222,10 +230,6 @@ export async function runTurn(
         printToolResultDebug(tr.toolName, tr.result);
       }
       printToolBlockEnd();
-    } else {
-      for (const tc of pendingToolCalls) {
-        printToolCall(tc.toolName, tc.args);
-      }
     }
   }
 

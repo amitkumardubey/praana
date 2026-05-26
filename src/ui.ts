@@ -2,13 +2,13 @@
  * Terminal UI helpers for ARIA.
  * Tool/status output goes to stderr; stdout gets blank-line breaks so
  * agent text and debug blocks don't run together in the terminal.
+ *
+ * Color output is managed via chalk (respects NO_COLOR / non-TTY automatically).
+ * Spinner (ora) is only activated when stderr is a real TTY.
  */
 
-const DIM = "\x1b[2m";
-const RESET = "\x1b[0m";
-const CYAN = "\x1b[36m";
-const YELLOW = "\x1b[33m";
-const GREEN = "\x1b[32m";
+import chalk from "chalk";
+import ora, { type Ora } from "ora";
 
 type UiWriters = {
   stderr: (line: string) => void;
@@ -21,6 +21,8 @@ const defaultWriters: UiWriters = {
 };
 
 let writers: UiWriters = defaultWriters;
+
+let activeSpinner: Ora | null = null;
 
 function stderr(line: string): void {
   writers.stderr(line);
@@ -40,6 +42,26 @@ export function setUiWriters(overrides?: Partial<UiWriters>): void {
     stderr: overrides.stderr ?? defaultWriters.stderr,
     breakStdout: overrides.breakStdout ?? defaultWriters.breakStdout,
   };
+}
+
+/**
+ * Start a spinner on stderr with the given text.
+ * No-op when stderr is not a TTY (tests, CI, piped output).
+ */
+export function startSpinner(text: string): void {
+  if (!process.stderr.isTTY) return;
+  stopSpinner();
+  activeSpinner = ora({ text, stream: process.stderr }).start();
+}
+
+/**
+ * Stop and clear the active spinner.
+ * Safe to call when no spinner is running.
+ */
+export function stopSpinner(): void {
+  if (!activeSpinner) return;
+  activeSpinner.stop();
+  activeSpinner = null;
 }
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
@@ -100,14 +122,18 @@ function summarizeResult(result: unknown): string {
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
   breakStdout();
   const summary = summarizeArgs(toolName, args);
-  stderr(`\n${DIM}[tool]${RESET} ${CYAN}${toolName}${RESET}${summary ? ` ${DIM}:: ${summary}${RESET}` : ""}\n`);
+  stderr(
+    `\n${chalk.dim("[tool]")} ${chalk.cyan(toolName)}${summary ? ` ${chalk.dim(`:: ${summary}`)}` : ""}\n`
+  );
   breakStdout();
 }
 
 /** Debug block header before a batch of tool calls in a step. */
 export function printToolBlockStart(stepIndex: number): void {
   breakStdout();
-  stderr(`\n${YELLOW}[debug]${RESET} ${DIM}┌ step ${stepIndex} tool execution ${"─".repeat(18)}┐${RESET}\n`);
+  stderr(
+    `\n${chalk.yellow("[debug]")} ${chalk.dim(`┌ step ${stepIndex} tool execution ${"─".repeat(18)}┐`)}\n`
+  );
 }
 
 /** Debug tool call with full args. */
@@ -117,24 +143,24 @@ export function printToolCallDebug(
 ): void {
   const argsJson = JSON.stringify(args);
   const display = argsJson.length > 200 ? argsJson.slice(0, 197) + "..." : argsJson;
-  stderr(`  ${YELLOW}>${RESET} ${toolName}(${display})\n`);
+  stderr(`  ${chalk.yellow(">")} ${toolName}(${display})\n`);
 }
 
 /** Debug tool result. */
 export function printToolResultDebug(toolName: string, result: unknown): void {
   const summary = summarizeResult(result);
-  stderr(`  ${GREEN}<${RESET} ${toolName} ${DIM}${summary}${RESET}\n`);
+  stderr(`  ${chalk.green("<")} ${toolName} ${chalk.dim(summary)}\n`);
 }
 
 /** Debug block footer. */
 export function printToolBlockEnd(): void {
-  stderr(`${DIM}└${"─".repeat(46)}┘${RESET}\n`);
+  stderr(`${chalk.dim(`└${"─".repeat(46)}┘`)}\n`);
   breakStdout();
 }
 
 /** General debug message (prompt saved, etc.). */
 export function printDebug(message: string): void {
-  stderr(`\n${YELLOW}[debug]${RESET} ${message}\n`);
+  stderr(`\n${chalk.yellow("[debug]")} ${message}\n`);
   breakStdout();
 }
 
@@ -162,5 +188,5 @@ export function printMemoryBanner(stats: {
   if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   if (stats.promptTokens && stats.promptTokens > 0) parts.push(`prompt ~${stats.promptTokens}t`);
   if (parts.length === 0) return;
-  stderr(`\n${DIM}[state] ${parts.join(" | ")}${RESET}\n`);
+  stderr(`\n${chalk.dim(`[state] ${parts.join(" | ")}`)}\n`);
 }
