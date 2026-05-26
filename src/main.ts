@@ -116,19 +116,28 @@ async function main() {
     // Regular turn
     try {
       let thinkingOpen = false;
+      const closeThinking = () => {
+        if (!thinkingOpen) return;
+        // Reset styling, end thinking line, then two blank lines before response
+        process.stdout.write("\x1b[0m\n\n\n");
+        thinkingOpen = false;
+      };
       await runTurn(session, input, currentModel, {
         onThinkingDelta: (delta) => {
           if (!showThinking) return;
           if (!thinkingOpen) {
-            process.stdout.write("\n\x1b[2m[thinking] ");
+            // Two blank lines before thinking block
+            process.stdout.write("\n\n\x1b[2m[thinking] ");
             thinkingOpen = true;
           }
           process.stdout.write(delta);
         },
+        onTextDelta: (delta) => {
+          closeThinking();
+          process.stdout.write(delta);
+        },
       });
-      if (thinkingOpen) {
-        process.stdout.write("\x1b[0m\n");
-      }
+      closeThinking();
     } catch (err) {
       console.error("\n[error]", (err as Error).message);
       session.eventLog.append({
