@@ -1,7 +1,19 @@
 {
   "name": "aria",
   "version": "0.2.0",
+  "description": "Terminal coding agent with adaptive context and cross-session memory",
   "type": "module",
+  "bin": {
+    "aria": "./bin/aria.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "aria.config.example.toml"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",

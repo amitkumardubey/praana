@@ -17,11 +17,19 @@ npm run dev
 
 Requires Node 22+. No other runtime dependencies.
 
+### Global CLI (`npm link`)
+
+`package.json` exposes `aria` via `bin/aria.js`. After `npm run build`, run `npm link` and add `$(npm config get prefix)/bin` to your PATH (fnm/nvm users often need this explicitly).
+
 ## Running
 
 ```bash
 # Start a new session
 npm start
+
+# Global CLI (after npm run build && npm link)
+aria
+aria resume <session_id>
 
 # Resume a previous session
 npm start -- resume <session_id>
