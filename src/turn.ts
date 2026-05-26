@@ -9,12 +9,9 @@ import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel } from "./llm.js";
 import {
   printDebug,
+  printDebugBlock,
   printMemoryBanner,
-  printToolBlockEnd,
-  printToolBlockStart,
   printToolCall,
-  printToolCallDebug,
-  printToolResultDebug,
   startSpinner,
   stopSpinner,
 } from "./ui.js";
@@ -222,14 +219,7 @@ export async function runTurn(
 
     stepIndex++;
     if (session.debug) {
-      printToolBlockStart(stepIndex);
-      for (const tc of pendingToolCalls) {
-        printToolCallDebug(tc.toolName, tc.args);
-      }
-      for (const tr of toolResults) {
-        printToolResultDebug(tr.toolName, tr.result);
-      }
-      printToolBlockEnd();
+      printDebugBlock(stepIndex, pendingToolCalls, toolResults);
     }
   }
 

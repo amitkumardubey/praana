@@ -5,10 +5,15 @@
  *
  * Color output is managed via chalk (respects NO_COLOR / non-TTY automatically).
  * Spinner (ora) is only activated when stderr is a real TTY.
+ *
+ * Rich Markdown rendering is provided by marked + marked-terminal.
+ * Boxed layouts use boxen.
  */
 
 import chalk from "chalk";
 import ora, { type Ora } from "ora";
+import boxen, { type Options as BoxenOptions } from "boxen";
+import { renderMarkdown } from "./render.js";
 
 type UiWriters = {
   stderr: (line: string) => void;
@@ -118,12 +123,81 @@ function summarizeResult(result: unknown): string {
   return JSON.stringify(result).slice(0, 100);
 }
 
+/**
+ * Render content inside a styled box (using boxen).
+ * Output goes to stderr.
+ */
+export function printBox(
+  content: string,
+  options?: {
+    title?: string;
+    padding?: number;
+    borderColor?: "black" | "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white" | "gray";
+  }
+): void {
+  if (!content) return;
+  const opts: BoxenOptions = {
+    padding: options?.padding ?? 1,
+    margin: 0,
+    borderStyle: "round",
+    title: options?.title,
+    titleAlignment: "left",
+    ...(options?.borderColor ? { borderColor: options.borderColor } : {}),
+  };
+  stderr(boxen(content, opts) + "\n");
+}
+
+/**
+ * Render Markdown text to terminal (writes to stderr).
+ */
+export function printMarkdown(text: string): void {
+  if (!text) return;
+  const rendered = renderMarkdown(text);
+  stderr(rendered);
+  if (!rendered.endsWith("\n")) stderr("\n");
+}
+
 /** Compact tool indicator — shown in normal mode. */
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
   breakStdout();
   const summary = summarizeArgs(toolName, args);
   stderr(
     `\n${chalk.dim("[tool]")} ${chalk.cyan(toolName)}${summary ? ` ${chalk.dim(`:: ${summary}`)}` : ""}\n`
+  );
+  breakStdout();
+}
+
+/**
+ * Render a complete debug block with all tool calls and results in a single
+ * styled box (using boxen). This is the preferred debug display — replaces
+ * the manual start/content/end sequence for a polished look.
+ */
+export function printDebugBlock(
+  stepIndex: number,
+  toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>,
+  toolResults: Array<{ toolName: string; result: unknown }>
+): void {
+  breakStdout();
+  const lines: string[] = [];
+  for (const tc of toolCalls) {
+    const argsJson = JSON.stringify(tc.args);
+    const display = argsJson.length > 200 ? argsJson.slice(0, 197) + "..." : argsJson;
+    lines.push(`${chalk.yellow("▸")} ${chalk.cyan(tc.toolName)}(${chalk.dim(display)})`);
+  }
+  for (const tr of toolResults) {
+    const summary = summarizeResult(tr.result);
+    lines.push(`  ${chalk.green("◂")} ${chalk.cyan(tr.toolName)} ${chalk.dim(summary)}`);
+  }
+  if (lines.length === 0) return;
+  stderr(
+    boxen(lines.join("\n"), {
+      padding: { top: 0, bottom: 0, left: 1, right: 1 },
+      margin: 0,
+      borderStyle: "round",
+      borderColor: "yellow",
+      title: `step ${stepIndex} tools`,
+      titleAlignment: "left",
+    }) + "\n"
   );
   breakStdout();
 }
