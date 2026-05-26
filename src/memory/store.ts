@@ -8,12 +8,14 @@ import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import {
   endSessionRow,
+  flushReinforcements,
   getAllEntries,
   getEntriesByScope,
   getEntryById,
   insertEntry,
   openMemoryDb,
   searchByVector,
+  stampReinforcement,
   startSessionRow,
   touchEntry,
   upsertEmbedding,
@@ -53,10 +55,15 @@ export class MemoryStore {
     dbPath: string;
     embedder: Embedder;
     summarizer?: SummarizerLLM | null;
+    needsReembed?: boolean;
   }) {
-    this.db = openMemoryDb(opts.dbPath);
+    const opened = openMemoryDb(opts.dbPath, opts.embedder.dim);
+    this.db = opened.db;
     this.embedder = opts.embedder;
     this.summarizer = opts.summarizer ?? null;
+    if (opts.needsReembed ?? opened.needsReembed) {
+      void this.reembedAllEntries();
+    }
   }
 
   close(): void {
@@ -81,6 +88,8 @@ export class MemoryStore {
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
+    flushReinforcements(this.db, this.sessionId);
+
     const now = Date.now();
     endSessionRow(this.db, this.sessionId, now, reason);
 
@@ -188,6 +197,7 @@ export class MemoryStore {
     const top = scored.slice(0, limit);
     for (const s of top) {
       touchEntry(this.db, s.entry.id, now);
+      stampReinforcement(this.db, s.entry.id, this.sessionId);
     }
 
     return {
@@ -212,6 +222,19 @@ export class MemoryStore {
 
   getAllEntries(): MemoryEntry[] {
     return getAllEntries(this.db);
+  }
+
+  /** Re-embed all entries after vector dimension migration. */
+  async reembedAllEntries(): Promise<void> {
+    const entries = getAllEntries(this.db);
+    for (const e of entries) {
+      try {
+        const vec = await this.embedder.embed(e.content);
+        upsertEmbedding(this.db, e.id, vec);
+      } catch {
+        /* non-fatal per entry */
+      }
+    }
   }
 
   // ---- Internal ----

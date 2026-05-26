@@ -8,9 +8,8 @@ import { StateGraph } from "./state-graph.js";
 import { loadConfig } from "./config.js";
 import {
   MemoryStore,
-  HashEmbedder,
+  createEmbedder,
   OpenAISummarizer,
-  type MemoryEntry,
   type SessionEvent,
 } from "./memory/index.js";
 
@@ -63,7 +62,7 @@ export class Session {
 
     if (session.memoryEnabled) {
       try {
-        session.memoryStore = session.initMemoryStore();
+        session.memoryStore = await session.initMemoryStore();
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -147,7 +146,7 @@ export class Session {
 
     if (session.memoryEnabled) {
       try {
-        session.memoryStore = session.initMemoryStore();
+        session.memoryStore = await session.initMemoryStore();
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -329,7 +328,7 @@ export class Session {
     this.eventLog.close();
   }
 
-  private initMemoryStore(): MemoryStore {
+  private async initMemoryStore(): Promise<MemoryStore> {
     const configuredPath = this.config.memory?.db_path;
     let dbPath: string;
 
@@ -340,9 +339,8 @@ export class Session {
       dbPath = expandHome("~/.aria/memory.db");
     }
 
-    const embedder = new HashEmbedder();
+    const embedder = await createEmbedder(this.config.memory);
 
-    // Build summarizer if configured
     let summarizer = null;
     if (this.config.memory.summarizer !== "disabled") {
       const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.OPENAI_API_KEY ?? "";

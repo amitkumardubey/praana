@@ -32,7 +32,7 @@ provider = "openrouter"
 # For OpenRouter: use "provider/model" format, e.g. "deepseek/deepseek-v4-pro"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
 # Override at runtime via ARIA_MODEL env var or /model command.
-model = "deepseek/deepseek-v4-pro"
+model = "deepseek/deepseek-v4-flash:free"
 
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
@@ -60,6 +60,16 @@ summarizer = "openrouter"
 
 # Path to the SQLite memory database (~ is expanded to $HOME)
 db_path = "~/.aria/memory.db"
+
+# Embedding strategy for semantic recall:
+#   auto          — try Ollama, fall back to hash with a warning
+#   ollama        — require Ollama (fall back to hash if unavailable)
+#   transformers  — @huggingface/transformers (npm install, ~266MB)
+#   llama-cpp     — node-llama-cpp (native, requires build tools)
+#   hash          — deterministic offline vectors (non-semantic)
+embedder = "auto"
+ollama_url = "http://localhost:11434"
+ollama_model = "nomic-embed-text"
 
 [compiler]
 # Total estimated token budget for the compiled prompt

@@ -111,10 +111,20 @@ export interface LlmConfig {
   base_url?: string;
 }
 
+export type EmbedderStrategy =
+  | "auto"
+  | "ollama"
+  | "transformers"
+  | "llama-cpp"
+  | "hash";
+
 export interface MemoryConfig {
   enabled: boolean;
   summarizer: string;
   db_path?: string;
+  embedder?: EmbedderStrategy;
+  ollama_url?: string;
+  ollama_model?: string;
 }
 
 export interface CompilerConfig {

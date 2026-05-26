@@ -41,7 +41,7 @@ describe("Memory safety", () => {
   });
 
   it("deleteEntry removes only the target vector row", async () => {
-    const db = openMemoryDb(":memory:");
+    const { db } = openMemoryDb(":memory:");
     const now = Date.now();
 
     insertEntry(db, {
