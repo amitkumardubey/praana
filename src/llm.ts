@@ -71,6 +71,12 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: null, // local — no key needed
     baseUrl: "http://127.0.0.1:11434/v1",
   },
+  opencode: {
+    api: "openai-completions",
+    provider: "opencode",
+    envKey: "OPENCODE_API_KEY",
+    baseUrl: "https://opencode.ai/zen/v1",
+  },
 
   // ── Native API (different wire protocol) ──
   anthropic: {
@@ -103,7 +109,15 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
 
 /** Lookup a provider config. Falls back to openrouter for unknown values. */
 export function getProviderConfig(provider: string): ProviderConfig {
-  return PROVIDER_REGISTRY[provider] ?? PROVIDER_REGISTRY["openrouter"];
+  const entry = PROVIDER_REGISTRY[provider];
+  if (!entry) {
+    console.warn(
+      `[llm] Unknown provider "${provider}", falling back to openrouter. ` +
+        `Known providers: ${listKnownProviders().join(", ")}`
+    );
+    return PROVIDER_REGISTRY["openrouter"];
+  }
+  return entry;
 }
 
 /** Return all known provider IDs (for docs / help text). */

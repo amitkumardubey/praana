@@ -25,6 +25,7 @@
 #   fireworks    — Fireworks AI
 #   together     — Together AI
 #   ollama       — Local Ollama (no API key needed)
+#   opencode — OpenCode Zen (big-pickle, minimax-m2.5, etc.)
 #   amazon-bedrock — AWS Bedrock (uses AWS credentials, not an API key)
 provider = "openrouter"
 
@@ -49,6 +50,7 @@ model = "deepseek/deepseek-v4-flash:free"
 #   fireworks     → FIREWORKS_API_KEY
 #   together      → TOGETHER_API_KEY
 #   ollama        → (none — runs locally)
+#   opencode → OPENCODE_API_KEY (from https://opencode.ai/auth)
 #   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
