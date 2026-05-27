@@ -7,6 +7,8 @@ import * as sqliteVec from "sqlite-vec";
 import type { MemoryEntry, MemoryKind } from "./types.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 
+const REEMBED_NEEDED_KEY = "reembed_needed";
+
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS entries (
   id            TEXT PRIMARY KEY,
@@ -77,6 +79,9 @@ function ensureVectorTable(db: Database.Database, dim: number): boolean {
     .prepare("SELECT value FROM memory_meta WHERE key = 'embedding_dim'")
     .get() as { value: string } | undefined;
   const storedDim = row ? parseInt(row.value, 10) : EMBEDDING_DIM;
+  const reembedFlag = db
+    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
 
   const vecExists = db
     .prepare(
@@ -85,10 +90,11 @@ function ensureVectorTable(db: Database.Database, dim: number): boolean {
     .get();
 
   if (vecExists && storedDim === dim) {
-    return false;
+    return reembedFlag?.value === "1";
   }
 
   if (vecExists) {
+    markReembedNeeded(db);
     db.exec("DROP TABLE IF EXISTS entries_vec");
   }
 
@@ -103,7 +109,17 @@ function ensureVectorTable(db: Database.Database, dim: number): boolean {
     "INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('embedding_dim', ?)",
   ).run(String(dim));
 
-  return Boolean(vecExists);
+  return Boolean(vecExists) || reembedFlag?.value === "1";
+}
+
+export function markReembedNeeded(db: Database.Database): void {
+  db.prepare("INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, '1')").run(
+    REEMBED_NEEDED_KEY,
+  );
+}
+
+export function clearReembedNeeded(db: Database.Database): void {
+  db.prepare("DELETE FROM memory_meta WHERE key = ?").run(REEMBED_NEEDED_KEY);
 }
 
 // ---- Entry CRUD ----
