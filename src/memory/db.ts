@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS memory_meta (
   value TEXT NOT NULL
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts
+  USING fts5(content, entry_id UNINDEXED);
+
 CREATE TABLE IF NOT EXISTS pending_reinforcements (
   entry_id   TEXT NOT NULL,
   session_id TEXT NOT NULL,
@@ -69,9 +72,24 @@ export function openMemoryDb(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(BASE_SCHEMA);
+  ensureFtsBackfill(db);
 
   const needsReembed = ensureVectorTable(db, embeddingDim);
   return { db, needsReembed };
+}
+
+function ensureFtsBackfill(db: Database.Database): void {
+  db.exec(`
+    DELETE FROM entries_fts
+    WHERE entry_id NOT IN (SELECT id FROM entries);
+
+    INSERT INTO entries_fts (content, entry_id)
+    SELECT e.content, e.id
+    FROM entries e
+    WHERE NOT EXISTS (
+      SELECT 1 FROM entries_fts f WHERE f.entry_id = e.id
+    );
+  `);
 }
 
 function ensureVectorTable(db: Database.Database, dim: number): boolean {
@@ -146,6 +164,10 @@ export function insertEntry(db: Database.Database, e: MemoryEntry): void {
   for (const scope of e.scopes) {
     scopeStmt.run(e.id, scope);
   }
+
+  db.prepare(
+    "INSERT INTO entries_fts (content, entry_id) VALUES (?, ?)",
+  ).run(e.content, e.id);
 }
 
 export function touchEntry(db: Database.Database, id: string, now: number): void {
@@ -225,6 +247,7 @@ export function getEntriesByScope(db: Database.Database, scopes: string[]): Memo
 export function deleteEntry(db: Database.Database, id: string): void {
   db.prepare("DELETE FROM entries WHERE id = ?").run(id);
   db.prepare("DELETE FROM entries_vec WHERE entry_id = ?").run(id);
+  db.prepare("DELETE FROM entries_fts WHERE entry_id = ?").run(id);
 }
 
 function rowToEntry(db: Database.Database, row: Record<string, unknown>): MemoryEntry {
@@ -303,4 +326,59 @@ export function searchByVector(
      ORDER BY distance`,
     )
     .all(buf, k) as Array<{ entry_id: string; distance: number }>;
+}
+
+export function searchByFts(
+  db: Database.Database,
+  query: string,
+  k: number,
+  filters: { scopes?: string[]; kinds?: MemoryKind[] } = {},
+): Array<{ entry_id: string; rank: number }> {
+  const ftsQuery = buildFtsQuery(query);
+  if (!ftsQuery) return [];
+
+  const params: Array<string | number> = [ftsQuery];
+  const joins: string[] = [];
+  const wheres: string[] = ["entries_fts MATCH ?"];
+
+  if (filters.kinds && filters.kinds.length > 0) {
+    joins.push("JOIN entries e ON e.id = entries_fts.entry_id");
+    wheres.push(`e.kind IN (${filters.kinds.map(() => "?").join(",")})`);
+    params.push(...filters.kinds);
+  }
+
+  if (filters.scopes && filters.scopes.length > 0) {
+    wheres.push(`
+      entries_fts.entry_id IN (
+        SELECT entry_id
+        FROM entry_scopes
+        WHERE scope IN (${filters.scopes.map(() => "?").join(",")})
+        GROUP BY entry_id
+        HAVING COUNT(DISTINCT scope) = ${filters.scopes.length}
+      )
+    `);
+    params.push(...filters.scopes);
+  }
+
+  params.push(k);
+
+  return db
+    .prepare(
+      `SELECT entries_fts.entry_id, bm25(entries_fts) AS rank
+       FROM entries_fts
+       ${joins.join("\n       ")}
+       WHERE ${wheres.join(" AND ")}
+       ORDER BY rank
+       LIMIT ?`,
+    )
+    .all(...params) as Array<{ entry_id: string; rank: number }>;
+}
+
+function buildFtsQuery(query: string): string {
+  const terms = query
+    .toLowerCase()
+    .match(/[a-z0-9_]+/g);
+  if (!terms || terms.length === 0) return "";
+
+  return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ");
 }
