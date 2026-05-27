@@ -7,6 +7,7 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import {
+  clearReembedNeeded,
   endSessionRow,
   flushReinforcements,
   getAllEntries,
@@ -52,6 +53,7 @@ export class MemoryStore {
   private sessionId: string = "";
   /** True while a background re-embed migration is running. */
   private reembedding = false;
+  private reembedPromise: Promise<void> | null = null;
 
   constructor(opts: {
     dbPath: string;
@@ -68,7 +70,7 @@ export class MemoryStore {
     this.embedder = opts.embedder;
     this.summarizer = opts.summarizer ?? null;
     if (opts.needsReembed ?? opened.needsReembed) {
-      void this.reembedAllEntries();
+      this.reembedPromise = this.reembedAllEntries();
     }
   }
 
@@ -79,6 +81,8 @@ export class MemoryStore {
   // ---- Session lifecycle ----
 
   async sessionStart(ctx: SessionContext): Promise<Digest> {
+    await this.waitForReembed();
+
     this.sessionId = ulid();
     this.defaultScopes = this.buildDefaultScopes(ctx);
 
@@ -253,11 +257,19 @@ export class MemoryStore {
     if (failed > 0) {
       console.warn(`[memory] Re-embed migration complete — ${failed}/${entries.length} entries failed. Recall quality may be degraded.`);
     } else {
+      clearReembedNeeded(this.db);
       console.log(`[memory] Re-embed migration complete — ${entries.length} entries updated.`);
     }
   }
 
   // ---- Internal ----
+
+  private async waitForReembed(): Promise<void> {
+    if (this.reembedPromise) {
+      await this.reembedPromise;
+      this.reembedPromise = null;
+    }
+  }
 
   private buildDefaultScopes(ctx: SessionContext): string[] {
     return [
