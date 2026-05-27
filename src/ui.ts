@@ -2,13 +2,18 @@
  * Terminal UI helpers for ARIA.
  * Tool/status output goes to stderr; stdout gets blank-line breaks so
  * agent text and debug blocks don't run together in the terminal.
+ *
+ * Color output is managed via chalk (respects NO_COLOR / non-TTY automatically).
+ * Spinner (ora) is only activated when stderr is a real TTY.
+ *
+ * Rich Markdown rendering is provided by marked + marked-terminal.
+ * Boxed layouts use boxen.
  */
 
-const DIM = "\x1b[2m";
-const RESET = "\x1b[0m";
-const CYAN = "\x1b[36m";
-const YELLOW = "\x1b[33m";
-const GREEN = "\x1b[32m";
+import chalk from "chalk";
+import ora, { type Ora } from "ora";
+import boxen, { type Options as BoxenOptions } from "boxen";
+import { renderMarkdown } from "./render.js";
 
 type UiWriters = {
   stderr: (line: string) => void;
@@ -21,6 +26,8 @@ const defaultWriters: UiWriters = {
 };
 
 let writers: UiWriters = defaultWriters;
+
+let activeSpinner: Ora | null = null;
 
 function stderr(line: string): void {
   writers.stderr(line);
@@ -40,6 +47,26 @@ export function setUiWriters(overrides?: Partial<UiWriters>): void {
     stderr: overrides.stderr ?? defaultWriters.stderr,
     breakStdout: overrides.breakStdout ?? defaultWriters.breakStdout,
   };
+}
+
+/**
+ * Start a spinner on stderr with the given text.
+ * No-op when stderr is not a TTY (tests, CI, piped output).
+ */
+export function startSpinner(text: string): void {
+  if (!process.stderr.isTTY) return;
+  stopSpinner();
+  activeSpinner = ora({ text, stream: process.stderr }).start();
+}
+
+/**
+ * Stop and clear the active spinner.
+ * Safe to call when no spinner is running.
+ */
+export function stopSpinner(): void {
+  if (!activeSpinner) return;
+  activeSpinner.stop();
+  activeSpinner = null;
 }
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
@@ -96,18 +123,91 @@ function summarizeResult(result: unknown): string {
   return JSON.stringify(result).slice(0, 100);
 }
 
+/**
+ * Render content inside a styled box (using boxen).
+ * Output goes to stderr.
+ */
+export function printBox(
+  content: string,
+  options?: {
+    title?: string;
+    padding?: number;
+    borderColor?: "black" | "red" | "green" | "yellow" | "blue" | "magenta" | "cyan" | "white" | "gray";
+  }
+): void {
+  if (!content) return;
+  const opts: BoxenOptions = {
+    padding: options?.padding ?? 1,
+    margin: 0,
+    borderStyle: "round",
+    title: options?.title,
+    titleAlignment: "left",
+    ...(options?.borderColor ? { borderColor: options.borderColor } : {}),
+  };
+  stderr(boxen(content, opts) + "\n");
+}
+
+/**
+ * Render Markdown text to terminal (writes to stderr).
+ */
+export function printMarkdown(text: string): void {
+  if (!text) return;
+  const rendered = renderMarkdown(text);
+  stderr(rendered);
+  if (!rendered.endsWith("\n")) stderr("\n");
+}
+
 /** Compact tool indicator — shown in normal mode. */
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {
   breakStdout();
   const summary = summarizeArgs(toolName, args);
-  stderr(`\n${DIM}[tool]${RESET} ${CYAN}${toolName}${RESET}${summary ? ` ${DIM}:: ${summary}${RESET}` : ""}\n`);
+  stderr(
+    `\n${chalk.dim("[tool]")} ${chalk.cyan(toolName)}${summary ? ` ${chalk.dim(`:: ${summary}`)}` : ""}\n`
+  );
+  breakStdout();
+}
+
+/**
+ * Render a complete debug block with all tool calls and results in a single
+ * styled box (using boxen). This is the preferred debug display — replaces
+ * the manual start/content/end sequence for a polished look.
+ */
+export function printDebugBlock(
+  stepIndex: number,
+  toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>,
+  toolResults: Array<{ toolName: string; result: unknown }>
+): void {
+  breakStdout();
+  const lines: string[] = [];
+  for (const tc of toolCalls) {
+    const argsJson = JSON.stringify(tc.args);
+    const display = argsJson.length > 200 ? argsJson.slice(0, 197) + "..." : argsJson;
+    lines.push(`${chalk.yellow("▸")} ${chalk.cyan(tc.toolName)}(${chalk.dim(display)})`);
+  }
+  for (const tr of toolResults) {
+    const summary = summarizeResult(tr.result);
+    lines.push(`  ${chalk.green("◂")} ${chalk.cyan(tr.toolName)} ${chalk.dim(summary)}`);
+  }
+  if (lines.length === 0) return;
+  stderr(
+    boxen(lines.join("\n"), {
+      padding: { top: 0, bottom: 0, left: 1, right: 1 },
+      margin: 0,
+      borderStyle: "round",
+      borderColor: "yellow",
+      title: `step ${stepIndex} tools`,
+      titleAlignment: "left",
+    }) + "\n"
+  );
   breakStdout();
 }
 
 /** Debug block header before a batch of tool calls in a step. */
 export function printToolBlockStart(stepIndex: number): void {
   breakStdout();
-  stderr(`\n${YELLOW}[debug]${RESET} ${DIM}┌ step ${stepIndex} tool execution ${"─".repeat(18)}┐${RESET}\n`);
+  stderr(
+    `\n${chalk.yellow("[debug]")} ${chalk.dim(`┌ step ${stepIndex} tool execution ${"─".repeat(18)}┐`)}\n`
+  );
 }
 
 /** Debug tool call with full args. */
@@ -117,24 +217,24 @@ export function printToolCallDebug(
 ): void {
   const argsJson = JSON.stringify(args);
   const display = argsJson.length > 200 ? argsJson.slice(0, 197) + "..." : argsJson;
-  stderr(`  ${YELLOW}>${RESET} ${toolName}(${display})\n`);
+  stderr(`  ${chalk.yellow(">")} ${toolName}(${display})\n`);
 }
 
 /** Debug tool result. */
 export function printToolResultDebug(toolName: string, result: unknown): void {
   const summary = summarizeResult(result);
-  stderr(`  ${GREEN}<${RESET} ${toolName} ${DIM}${summary}${RESET}\n`);
+  stderr(`  ${chalk.green("<")} ${toolName} ${chalk.dim(summary)}\n`);
 }
 
 /** Debug block footer. */
 export function printToolBlockEnd(): void {
-  stderr(`${DIM}└${"─".repeat(46)}┘${RESET}\n`);
+  stderr(`${chalk.dim(`└${"─".repeat(46)}┘`)}\n`);
   breakStdout();
 }
 
 /** General debug message (prompt saved, etc.). */
 export function printDebug(message: string): void {
-  stderr(`\n${YELLOW}[debug]${RESET} ${message}\n`);
+  stderr(`\n${chalk.yellow("[debug]")} ${message}\n`);
   breakStdout();
 }
 
@@ -162,5 +262,5 @@ export function printMemoryBanner(stats: {
   if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   if (stats.promptTokens && stats.promptTokens > 0) parts.push(`prompt ~${stats.promptTokens}t`);
   if (parts.length === 0) return;
-  stderr(`\n${DIM}[state] ${parts.join(" | ")}${RESET}\n`);
+  stderr(`\n${chalk.dim(`[state] ${parts.join(" | ")}`)}\n`);
 }

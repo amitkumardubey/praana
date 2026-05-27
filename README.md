@@ -22,6 +22,39 @@ export OPENROUTER_API_KEY="sk-or-v1-..."
 node dist/main.js
 ```
 
+### Global install (`aria` on your PATH)
+
+From the repo after building:
+
+```bash
+npm run build
+npm link
+```
+
+Ensure npm’s global `bin` directory is on your PATH (required for [fnm](https://github.com/Schniz/fnm) and similar version managers):
+
+```bash
+export PATH="$(npm config get prefix)/bin:$PATH"
+# Add the line above to ~/.bashrc or ~/.zshrc
+```
+
+Verify:
+
+```bash
+which aria
+aria --help
+```
+
+If `aria` is still not found, use `~/.local/bin` instead:
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$(pwd)/bin/aria.js" ~/.local/bin/aria
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Three commands to your first session. Drop-in config via `aria.config.toml` or use zero config defaults.
+
 Or with any other supported provider — see [Provider Support](#provider-support).
 
 ---

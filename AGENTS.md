@@ -23,12 +23,25 @@ Requires Node 22+. Native dependencies are optional (see Embedder Config below).
 
 ---
 
+### Global CLI (`npm link`)
+
+`package.json` exposes `aria` via `bin/aria.js`. After `npm run build`, run `npm link` and add `$(npm config get prefix)/bin` to your PATH (fnm/nvm users often need this explicitly).
+
 ## Running
 
 ```bash
-npm start                          # New session
-npm start -- resume <session_id>   # Resume previous session
-ARIA_DEBUG=true npm start          # Debug mode
+# Start a new session
+npm start
+
+# Global CLI (after npm run build && npm link)
+aria
+aria resume <session_id>
+
+# Resume a previous session
+npm start -- resume <session_id>
+
+# Debug mode (saves compiled prompts, verbose tool blocks)
+ARIA_DEBUG=true npm start
 ```
 
 ### Configuration

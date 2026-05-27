@@ -111,13 +111,24 @@ export interface LlmConfig {
   base_url?: string;
 }
 
+export type EmbedderStrategy =
+  | "auto"
+  | "ollama"
+  | "transformers"
+  | "llama-cpp"
+  | "hash";
+
 export interface MemoryConfig {
   enabled: boolean;
+  /** disabled | ollama | openrouter | openai */
   summarizer: string;
   db_path?: string;
-  embedder?: string;
+  embedder?: EmbedderStrategy;
   ollama_url?: string;
+  /** Embedding model (e.g. nomic-embed-text) */
   ollama_model?: string;
+  /** Chat model for session-end learnings (e.g. qwen3.5:4b). Falls back to first non-embed model from `ollama list`. */
+  ollama_summarizer_model?: string;
 }
 
 export interface CompilerConfig {

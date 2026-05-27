@@ -1,8 +1,5 @@
 // ============================================================
 // ARIA Memory — Embeddings
-//
-// For MVP: deterministic hash-based vectors (StubEmbeddingsProvider).
-// Upgrade path: swap in OpenAI/Ollama/local embedder.
 // ============================================================
 
 import type { Embedder } from "./types.js";
@@ -17,19 +14,16 @@ export class HashEmbedder implements Embedder {
 
   async embed(text: string): Promise<Float32Array> {
     const vec = new Float32Array(this.dim);
-    // Simple hash-based embedding: distribute text hash across dimensions
     let h = 2166136261;
     for (let i = 0; i < text.length; i++) {
       h ^= text.charCodeAt(i);
       h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
     }
     const seed = Math.abs(h);
-    // Seeded pseudo-random fill
     for (let i = 0; i < this.dim; i++) {
       const x = Math.sin(seed * (i + 1) * 12.9898) * 43758.5453;
-      vec[i] = x - Math.floor(x); // [0,1)
+      vec[i] = x - Math.floor(x);
     }
-    // Normalize to unit sphere
     let norm = 0;
     for (let i = 0; i < this.dim; i++) norm += vec[i] * vec[i];
     norm = Math.sqrt(norm);
@@ -38,8 +32,39 @@ export class HashEmbedder implements Embedder {
   }
 }
 
-// Upgrade: OpenAI text-embedding-3-small (1536 dims)
-// export class OpenAIEmbedder implements Embedder { ... }
+/** Ollama nomic-embed-text — 768-dim semantic embeddings via local daemon. */
+export class OllamaEmbedder implements Embedder {
+  readonly dim = 768;
 
-// Upgrade: Ollama nomic-embed-text (768 dims)
-// export class OllamaEmbedder implements Embedder { ... }
+  constructor(
+    private url = "http://localhost:11434",
+    private model = "nomic-embed-text",
+  ) {}
+
+  static async isAvailable(url: string, model?: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${url}/api/tags`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (!res.ok) return false;
+      if (!model) return true;
+      const data = (await res.json()) as { models: { name: string }[] };
+      return data.models.some(
+        (m) => m.name === model || m.name.startsWith(`${model}:`),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async embed(text: string): Promise<Float32Array> {
+    const res = await fetch(`${this.url}/api/embeddings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: this.model, prompt: text }),
+    });
+    if (!res.ok) throw new Error(`Ollama embed failed: ${res.status}`);
+    const { embedding } = (await res.json()) as { embedding: number[] };
+    return new Float32Array(embedding);
+  }
+}

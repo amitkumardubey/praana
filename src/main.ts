@@ -1,4 +1,7 @@
 import * as readline from "node:readline";
+import chalk from "chalk";
+import boxen from "boxen";
+import { startSpinner, stopSpinner, printBox, printMarkdown } from "./ui.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
@@ -114,22 +117,43 @@ async function main() {
     }
 
     // Regular turn
+    startSpinner("thinking…");
+    let spinnerStopped = false;
+    const stopSpinnerOnce = () => {
+      if (spinnerStopped) return;
+      stopSpinner();
+      spinnerStopped = true;
+    };
+
+    let thinkingOpen = false;
+    const closeThinking = () => {
+      if (!thinkingOpen) return;
+      process.stdout.write("\n\n");
+      thinkingOpen = false;
+    };
+
     try {
-      let thinkingOpen = false;
       await runTurn(session, input, currentModel, {
         onThinkingDelta: (delta) => {
+          stopSpinnerOnce();
           if (!showThinking) return;
           if (!thinkingOpen) {
-            process.stdout.write("\n\x1b[2m[thinking] ");
+            process.stdout.write("\n\n" + chalk.dim("[thinking] "));
             thinkingOpen = true;
           }
+          process.stdout.write(chalk.dim(delta));
+        },
+        onTextDelta: (delta) => {
+          stopSpinnerOnce();
+          closeThinking();
           process.stdout.write(delta);
         },
       });
-      if (thinkingOpen) {
-        process.stdout.write("\x1b[0m\n");
-      }
+      closeThinking();
+      stopSpinnerOnce(); // no deltas arrived (e.g. empty model response)
     } catch (err) {
+      stopSpinnerOnce();
+      closeThinking();
       console.error("\n[error]", (err as Error).message);
       session.eventLog.append({
         kind: "system_note",
@@ -372,28 +396,45 @@ async function handleSlashCommand(
 }
 
 function printHelp(): void {
-  console.log(`
-ARIA — Agent with Retrieval, Intent, and Action
-
-USAGE:
-  aria                     Start new session in current directory
-  aria resume <session_id> Resume an existing session
-  aria --help              Show this help
-
-
-SLASH COMMANDS:
-  /exit                    End session and save
-  /state                   List all state objects
-  /stats                   Show memory tier counts and kind distribution
-  /digest                  Print cross-session memory digest
-  /events                  Show last 20 events
-  /recall <query>          Search cross-session knowledge base
-  /model <name>            Switch LLM model (e.g., /model openai/gpt-4o)
-  /sessions                List recent sessions (resume with npx tsx src/main.ts resume <id>)
-  /debug                   Toggle debug mode (detailed tool blocks + saved prompts)
-  /thinking <on|off>       Toggle thinking stream visibility
-  /help                    Show this help
-`);
+  const usage = [
+    "  aria                     Start new session in current directory",
+    "  aria resume <session>    Resume an existing session",
+    "  aria --debug             Start with debug mode enabled",
+    "  aria --help              Show this help",
+  ].join("\n");
+  const commands = [
+    "  /exit                    End session and save",
+    "  /state                   List all state objects",
+    "  /stats                   Show memory tier counts and kind distribution",
+    "  /digest                  Print cross-session memory digest",
+    "  /events                  Show last 20 events",
+    "  /recall <query>          Search cross-session knowledge base",
+    "  /model <name>            Switch LLM model (e.g., openai/gpt-4o)",
+    "  /sessions                List recent sessions",
+    "  /debug                   Toggle debug mode (tool blocks + saved prompts)",
+    "  /thinking <on|off>       Toggle thinking stream visibility",
+    "  /help                    Show this help",
+  ].join("\n");
+  console.log(
+    chalk.bold("  ARIA — Agent with Retrieval, Intent, and Action") +
+    "\n\n" +
+    boxen(usage, {
+      padding: { top: 0, bottom: 0, left: 0, right: 0 },
+      margin: { top: 0, bottom: 1, left: 0, right: 0 },
+      borderStyle: "round",
+      borderColor: "cyan",
+      title: "Usage",
+      titleAlignment: "left",
+    }) +
+    boxen(commands, {
+      padding: { top: 0, bottom: 0, left: 0, right: 0 },
+      margin: { top: 0, bottom: 1, left: 0, right: 0 },
+      borderStyle: "round",
+      borderColor: "green",
+      title: "Slash Commands",
+      titleAlignment: "left",
+    })
+  );
 }
 
 function currentModelOrDefault(session: Session): string {
@@ -414,7 +455,7 @@ function printSessionBanner(session: Session, cwd: string, model: string): void 
   const memoryStats = session.getMemoryStats();
   const digestLen = session.digest?.length ?? 0;
   const configSources = getLoadedConfigSources();
-  const content = [
+  const lines = [
     `ARIA ${APP_VERSION}`,
     `session: ${session.id}`,
     `cwd: ${cwd}`,
@@ -428,12 +469,15 @@ function printSessionBanner(session: Session, cwd: string, model: string): void 
       ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
       : "memory: disabled",
   ];
-  const width = Math.max(...content.map((s) => s.length));
-  console.log(`┌${'─'.repeat(width + 2)}┐`);
-  for (const line of content) {
-    console.log(`│ ${line.padEnd(width)} │`);
-  }
-  console.log(`└${'─'.repeat(width + 2)}┘`);
+  console.log(
+    boxen(lines.join("\n"), {
+      padding: 1,
+      borderStyle: "round",
+      borderColor: "cyan",
+      title: "ARIA",
+      titleAlignment: "left",
+    })
+  );
 }
 
 function printSessionEndSummary(session: Session): void {

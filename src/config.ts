@@ -13,12 +13,15 @@ export function getLoadedConfigSources(): string[] {
 const DEFAULT_CONFIG: AriaConfig = {
   llm: {
     provider: "openrouter",
-    model: "deepseek/deepseek-v4-pro",
+    model: "deepseek/deepseek-v4-flash:free",
   },
   memory: {
     enabled: true,
     summarizer: "openrouter",
     db_path: "~/.aria/memory.db",
+    embedder: "auto",
+    ollama_url: "http://localhost:11434",
+    ollama_model: "nomic-embed-text",
   },
   compiler: {
     token_budget: 100_000,
@@ -151,8 +154,26 @@ function validateConfig(config: AriaConfig): AriaConfig {
   const out: AriaConfig = deepMerge(config, {});
 
   if (!out.llm.model || !out.llm.model.trim()) {
-    console.warn("[config] Invalid llm.model, using default deepseek/deepseek-v4-pro");
+    console.warn("[config] Invalid llm.model, using default deepseek/deepseek-v4-flash:free");
     out.llm.model = DEFAULT_CONFIG.llm.model;
+  }
+
+  const validEmbedders = new Set(["auto", "ollama", "transformers", "llama-cpp", "hash"]);
+  if (out.memory.embedder && !validEmbedders.has(out.memory.embedder)) {
+    console.warn("[config] Invalid memory.embedder, using default 'auto'");
+    out.memory.embedder = DEFAULT_CONFIG.memory.embedder;
+  }
+  if (!out.memory.embedder) {
+    out.memory.embedder = DEFAULT_CONFIG.memory.embedder;
+  }
+
+  const validSummarizers = new Set(["disabled", "ollama", "openrouter", "openai"]);
+  const summarizer = out.memory.summarizer?.toLowerCase();
+  if (summarizer && !validSummarizers.has(summarizer)) {
+    console.warn(
+      `[config] Invalid memory.summarizer '${out.memory.summarizer}', using 'disabled'`,
+    );
+    out.memory.summarizer = "disabled";
   }
 
   if (!Number.isFinite(out.compiler.token_budget) || out.compiler.token_budget <= 1000) {

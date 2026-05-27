@@ -25,6 +25,7 @@
 #   fireworks    — Fireworks AI
 #   together     — Together AI
 #   ollama       — Local Ollama (no API key needed)
+#   opencode — OpenCode Zen (big-pickle, minimax-m2.5, etc.)
 #   amazon-bedrock — AWS Bedrock (uses AWS credentials, not an API key)
 provider = "openrouter"
 
@@ -54,29 +55,54 @@ model = "deepseek/deepseek-v4-flash:free"
 #   fireworks     → FIREWORKS_API_KEY
 #   together      → TOGETHER_API_KEY
 #   ollama        → (none — runs locally)
+#   opencode → OPENCODE_API_KEY (from https://opencode.ai/auth)
 #   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
 # Enable/disable Cognitive Memory (SQLite-backed cross-session persistence)
 enabled = true
 
-# Provider for session-end summarization ("openrouter", "openai", or "disabled")
+# Session-end learning extraction (runs on /exit):
+#   disabled    — no LLM call; no cross-session learnings saved
+#   ollama      — local Ollama chat API (no API key; see ollama_* below)
+#   openrouter  — OpenRouter (OPENROUTER_API_KEY)
+#   openai      — OpenAI API (OPENAI_API_KEY)
 summarizer = "openrouter"
 
 # Path to the SQLite memory database (~ is expanded to $HOME)
 db_path = "~/.aria/memory.db"
 
-# Embedder strategy for semantic recall:
-#   auto         — tries Ollama first, falls back to hash (default)
-#   ollama       — requires Ollama running (ollama pull nomic-embed-text)
-#   transformers — in-process ONNX, no daemon (npm install @huggingface/transformers)
-#   llama-cpp    — native bindings, fastest (npm install node-llama-cpp, needs build tools)
-#   hash         — deterministic, non-semantic, zero deps (current fallback)
+# --- Embeddings (semantic /recall) ---
+#   auto          — try Ollama, fall back to hash with a warning
+#   ollama        — require Ollama (fall back to hash if unavailable)
+#   transformers  — @huggingface/transformers (npm install, ~266MB)
+#   llama-cpp     — node-llama-cpp (native, requires build tools)
+#   hash          — deterministic offline vectors (non-semantic)
 embedder = "auto"
 
-# Ollama settings (used when embedder = "auto" or "ollama")
+# Ollama daemon URL (embeddings + summarizer when summarizer = "ollama")
 ollama_url = "http://localhost:11434"
+
+# Embedding model — must be installed: `ollama pull nomic-embed-text`
 ollama_model = "nomic-embed-text"
+
+# Chat model for summarizer = "ollama" (session-end learnings).
+# Must be a chat model from `ollama list`, not an embedding model.
+# Ways to set it (pick one):
+#   1. ollama_summarizer_model below (recommended)
+#   2. ARIA_SUMMARIZER_MODEL env var (e.g. export ARIA_SUMMARIZER_MODEL=qwen3.5:4b)
+#   3. Leave unset — auto-picks the first non-embedding model from `ollama list`
+# ollama_summarizer_model = "qwen3.5:4b"
+
+# --- Example: fully local memory (no OpenRouter for summarizer) ---
+# summarizer = "ollama"
+# embedder = "ollama"
+# ollama_url = "http://localhost:11434"
+# ollama_model = "nomic-embed-text"
+# ollama_summarizer_model = "qwen3.5:4b"
+
+# Summarizer model override for openrouter/openai (ignored when summarizer = "ollama"):
+#   export ARIA_SUMMARIZER_MODEL=google/gemini-2.5-flash
 
 [compiler]
 # Total estimated token budget for the compiled prompt

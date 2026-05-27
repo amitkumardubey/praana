@@ -7,13 +7,16 @@
 import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import {
+  clearReembedNeeded,
   endSessionRow,
+  flushReinforcements,
   getAllEntries,
   getEntriesByScope,
   getEntryById,
   insertEntry,
   openMemoryDb,
   searchByVector,
+  stampReinforcement,
   startSessionRow,
   touchEntry,
   upsertEmbedding,
@@ -48,15 +51,27 @@ export class MemoryStore {
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
+  /** True while a background re-embed migration is running. */
+  private reembedding = false;
+  private reembedPromise: Promise<void> | null = null;
 
   constructor(opts: {
     dbPath: string;
     embedder: Embedder;
     summarizer?: SummarizerLLM | null;
+    /**
+     * Override the auto-detected needsReembed flag from openMemoryDb.
+     * Intended for tests that use :memory: DBs with explicit control.
+     */
+    needsReembed?: boolean;
   }) {
-    this.db = openMemoryDb(opts.dbPath);
+    const opened = openMemoryDb(opts.dbPath, opts.embedder.dim);
+    this.db = opened.db;
     this.embedder = opts.embedder;
     this.summarizer = opts.summarizer ?? null;
+    if (opts.needsReembed ?? opened.needsReembed) {
+      this.reembedPromise = this.reembedAllEntries();
+    }
   }
 
   close(): void {
@@ -66,6 +81,8 @@ export class MemoryStore {
   // ---- Session lifecycle ----
 
   async sessionStart(ctx: SessionContext): Promise<Digest> {
+    await this.waitForReembed();
+
     this.sessionId = ulid();
     this.defaultScopes = this.buildDefaultScopes(ctx);
 
@@ -81,6 +98,8 @@ export class MemoryStore {
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
+    flushReinforcements(this.db, this.sessionId);
+
     const now = Date.now();
     endSessionRow(this.db, this.sessionId, now, reason);
 
@@ -131,6 +150,10 @@ export class MemoryStore {
     const limit = opts.limit ?? 10;
     const queryScopes = opts.scope ?? this.defaultScopes;
     const now = Date.now();
+
+    if (this.reembedding) {
+      console.warn("[memory] Vector migration in progress — recall quality may be reduced until re-embed completes.");
+    }
 
     // Strategy: vector search for candidates, then filter + re-rank
     let candidates: MemoryEntry[] = [];
@@ -188,6 +211,7 @@ export class MemoryStore {
     const top = scored.slice(0, limit);
     for (const s of top) {
       touchEntry(this.db, s.entry.id, now);
+      stampReinforcement(this.db, s.entry.id, this.sessionId);
     }
 
     return {
@@ -214,7 +238,38 @@ export class MemoryStore {
     return getAllEntries(this.db);
   }
 
+  /** Re-embed all entries after vector dimension migration. Runs in the background. */
+  async reembedAllEntries(): Promise<void> {
+    this.reembedding = true;
+    const entries = getAllEntries(this.db);
+    console.log(`[memory] Re-embedding ${entries.length} entries after dimension migration…`);
+    let failed = 0;
+    for (const e of entries) {
+      try {
+        const vec = await this.embedder.embed(e.content);
+        upsertEmbedding(this.db, e.id, vec);
+      } catch (err) {
+        failed++;
+        console.warn(`[memory] Failed to re-embed entry ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    this.reembedding = false;
+    if (failed > 0) {
+      console.warn(`[memory] Re-embed migration complete — ${failed}/${entries.length} entries failed. Recall quality may be degraded.`);
+    } else {
+      clearReembedNeeded(this.db);
+      console.log(`[memory] Re-embed migration complete — ${entries.length} entries updated.`);
+    }
+  }
+
   // ---- Internal ----
+
+  private async waitForReembed(): Promise<void> {
+    if (this.reembedPromise) {
+      await this.reembedPromise;
+      this.reembedPromise = null;
+    }
+  }
 
   private buildDefaultScopes(ctx: SessionContext): string[] {
     return [
