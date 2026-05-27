@@ -59,6 +59,12 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: "FIREWORKS_API_KEY",
     baseUrl: "https://api.fireworks.ai/inference/v1",
   },
+  opencode: {
+    api: "openai-completions",
+    provider: "opencode",
+    envKey: "OPENCODE_API_KEY",
+    baseUrl: "https://opencode.ai/zen/v1",
+  },
   together: {
     api: "openai-completions",
     provider: "together",
@@ -70,12 +76,6 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     provider: "openai",
     envKey: null, // local — no key needed
     baseUrl: "http://127.0.0.1:11434/v1",
-  },
-  opencode: {
-    api: "openai-completions",
-    provider: "opencode",
-    envKey: "OPENCODE_API_KEY",
-    baseUrl: "https://opencode.ai/zen/v1",
   },
 
   // ── Native API (different wire protocol) ──

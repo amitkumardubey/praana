@@ -34,6 +34,11 @@ provider = "openrouter"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
 # Override at runtime via ARIA_MODEL env var or /model command.
 model = "deepseek/deepseek-v4-flash:free"
+# Free tier — zero cost, good for getting started.
+# Upgrade to a paid model for better results on complex tasks:
+#   deepseek/deepseek-v4-pro
+#   anthropic/claude-sonnet-4-5
+#   openai/gpt-4o
 
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
@@ -54,7 +59,7 @@ model = "deepseek/deepseek-v4-flash:free"
 #   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
-# Enable/disable Adaptive Memory (SQLite-backed cross-session persistence)
+# Enable/disable Cognitive Memory (SQLite-backed cross-session persistence)
 enabled = true
 
 # Session-end learning extraction (runs on /exit):

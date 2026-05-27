@@ -78,6 +78,7 @@ export async function runTurn(
     sessionId: session.id,
     tokenBudget: session.config.compiler.token_budget,
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
+    agentsContext: session.agentsContext,
   });
 
   if (session.debug) {

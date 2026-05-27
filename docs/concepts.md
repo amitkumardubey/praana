@@ -1,51 +1,118 @@
 # Core Concepts in ARIA
 
-This document explains the key terms and concepts that make ARIA a unique and powerful coding agent.
-
-## Adaptive Context
-
-**Adaptive Context** is ARIA's within-session working memory system. Unlike traditional coding agents that treat all context as a flat list, ARIA organizes its working memory into three tiers. This allows it to manage a large amount of state efficiently, keeping the most relevant information in full view while compressing older, less-relevant information to save tokens.
-
-### Tiers
-
-State objects in Adaptive Context exist in one of three tiers:
-
--   **`active`**: The "working set." Objects in this tier are rendered in full detail in the prompt. This tier is for information directly relevant to the current task.
--   **`soft`**: "Recent history." Objects in this tier are demoted after a period of inactivity (`idle_soft_after_turns`). They are represented as a concise one-line summary in the prompt, providing a hint of their content without consuming many tokens.
--   **`hard`**: "Long-term history." After further inactivity (`idle_hard_after_turns`), objects are demoted to this tier. They are represented by only their ID, acting as a minimal anchor.
-
-This tiered system can save **70-88% on context tokens** for peripheral state compared to a flat context window.
-
-### Auto-Hydration
-
-**Auto-Hydration** is the process that automatically promotes `soft` or `hard` tier objects back to `active`. Before compiling a prompt, ARIA analyzes the user's input for keywords. It filters out common English stop words and matches the remaining keywords against the content of peripheral state objects. If a match is found, the object is immediately promoted to the `active` tier, ensuring its full content is available for the LLM.
-
-This mechanism makes context management feel effortless. You don't need to manually tell the agent to "remember" or "hydrate" a specific piece of information; it happens automatically as you converse.
-
-## Adaptive Memory
-
-**Adaptive Memory** is ARIA's cross-session persistence layer. It allows ARIA to learn and carry knowledge from one session to the next, building a long-term understanding of projects, user preferences, and common patterns. It is backed by a local SQLite database.
-
-### Scopes and Multi-Context Safety
-
-To prevent information from one project from leaking into another, Adaptive Memory uses a strict **scoping** system. Every memory is tagged with scopes, typically including:
-
--   `user:<hashed_username>`
--   `agent:aria`
--   `context:<hashed_cwd_path>`
-
-When recalling memories, ARIA enforces **AND-scoping**. This means that a memory will only be retrieved if it matches *all* of the scopes in the current query. This ensures that you only get context relevant to your current working directory.
-
-### Memory Lifecycle
-
--   **Session Start**: ARIA generates a "digest"—a markdown summary of the most relevant memories for the current scope—and includes it in the prompt.
--   **Session End**: ARIA can optionally use a summarizer model to analyze the transcript of the entire session. It extracts key learnings (facts, decisions, patterns, mistakes) and stores them as new entries in its Adaptive Memory for future use.
-
-### Embeddings and Ranking
-
--   **Embeddings**: To enable semantic search, ARIA uses an offline `HashEmbedder`. This creates a deterministic 384-dimension vector for each memory entry without needing an internet connection. It's fast and effective for approximate nearest-neighbor search.
--   **Ranking**: Recall results are scored based on a fusion of vector similarity, confidence (which decays over time), recency, and a bonus for "pinned" memories.
+This document explains the key ideas behind ARIA's two adaptive systems.
 
 ---
 
-By combining Adaptive Context for short-term working memory and Adaptive Memory for long-term knowledge, ARIA can maintain a deep understanding of your work across multiple sessions, making it a more effective and intelligent partner.
+## Adaptive Context
+
+**Adaptive Context** is ARIA's within-session working memory. Rather than treating all prior state equally, ARIA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
+
+### State Objects
+
+State objects are the units of working memory. Four kinds:
+
+| Kind | What it tracks |
+|---|---|
+| `task` | A piece of work: title, description, status |
+| `decision` | An architectural or design choice with rationale |
+| `constraint` | A rule that must always hold |
+| `note` | A general observation or reference |
+
+### Tiers
+
+Every state object lives in one of three tiers:
+
+| Tier | What the model sees | When |
+|---|---|---|
+| **Active** | Full payload | Currently relevant |
+| **Soft** | One-line summary | Idle for N turns (default: 20) |
+| **Hard** | ID only — minimal anchor | Idle for N turns (default: 50) |
+
+Demotion happens automatically at the end of each turn based on how many turns have passed since the object was last touched. The thresholds are configurable (`idle_soft_after_turns`, `idle_hard_after_turns`).
+
+Promotion (`hard` or `soft` → `active`) happens in two ways:
+- **Automatic** — before each prompt, ARIA extracts keywords from your input and matches them against peripheral objects. Matches promote automatically.
+- **Manual** — the agent can call `hydrate(id)` to explicitly promote an object.
+
+### Why This Matters
+
+A session with 50 state objects, rendered flat, would consume thousands of tokens on every turn. With tiering, only the active objects (typically 5–15) get full representation. The rest exist as stubs or anchors — still accessible, but not burning tokens. Measured token savings on peripheral state: **70–88%** compared to flat rendering.
+
+---
+
+## Cognitive Memory
+
+**Cognitive Memory** is ARIA's cross-session persistence layer. At session end, ARIA analyses the full conversation transcript and extracts structured learnings. At the next session start, the most relevant learnings are ranked and injected into the prompt as a digest.
+
+### Memory Kinds
+
+Six kinds of knowledge, each with distinct semantics:
+
+| Kind | What it stores | Example |
+|---|---|---|
+| `fact` | Verifiable project knowledge | `"Uses Vitest for testing"` |
+| `preference` | Working style preferences | `"Prefers functional components over classes"` |
+| `decision` | Architectural choices made | `"JWT over session cookies — simpler for this API"` |
+| `pattern` | Recurring approaches that work | `"Zod validation before every DB write"` |
+| `mistake` | A failure and the lesson extracted | `"Forgot await on verify() → 401s on all routes"` |
+| `constraint` | A rule that must always hold | `"Never commit .env files"` |
+
+`pattern`, `mistake`, and `constraint` are particularly valuable — they encode *what was learned from experience*, not just what happened.
+
+### Memory Levels
+
+Entries exist at two levels:
+
+**Project-level** — scoped to the current working directory. Only visible in sessions started from that project. Most `fact`, `decision`, and `pattern` entries belong here.
+
+> `"Uses Vitest for testing"` · `"JWT over session cookies for this API"` · `"Auth middleware lives in src/lib/auth"`
+
+**Global** — scoped to the user across all projects. Preferences, personal constraints, and universal working patterns that apply everywhere.
+
+> `"Always write tests before implementation"` · `"Never use any in TypeScript"` · `"Prefer functional over class-based components"`
+
+At session start, both levels are queried and merged — global knowledge forms the base, project-specific knowledge sits on top.
+
+### Scoping
+
+Every memory entry carries scope labels: `user:<hash>`, `agent:aria`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
+
+Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. The recall pipeline queries both levels and merges results, global entries forming the base layer of the digest.
+
+### Ranking and Confidence
+
+Recalled memories are ranked by a fusion of three signals:
+- **Vector similarity** — how close the query is to the stored content
+- **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays at 5% per day
+- **Recency** — entries accessed recently receive a small boost
+- **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
+
+### Embeddings — Honest Note
+
+The current embedder (`HashEmbedder`) generates deterministic 384-dimension vectors using a hash-seeded projection. This is fast and requires no external API calls or local models.
+
+The trade-off: the vectors are **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce completely different vectors. Recall quality depends on keyword overlap. When vector search returns nothing useful, ARIA falls back to a full scope-based scan.
+
+Semantic embedding support (Ollama `nomic-embed-text`) is planned and the embedder interface is already swappable — `HashEmbedder` and a future `OllamaEmbedder` implement the same `Embedder` interface.
+
+### Session Lifecycle
+
+**Session start:** ARIA queries the memory store for all entries in scope, ranks them, and builds a markdown digest. This digest is included in the system prompt on every turn.
+
+**Session end** (`/exit`): ARIA sends the full transcript to a summariser model. The summariser extracts up to 5 learnings and returns them as structured JSON. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
+
+---
+
+## How the Two Systems Relate
+
+Adaptive Context and Cognitive Memory are complementary but distinct:
+
+| | Adaptive Context | Cognitive Memory |
+|---|---|---|
+| Scope | Within a session | Across sessions |
+| Storage | In-memory (StateGraph) | SQLite on disk |
+| Managed by | Agent tools + automatic demotion | Session end extraction + agent tools |
+| Purpose | Curate what the model sees *right now* | Preserve what was learned *over time* |
+
+At session start, the memory digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns.

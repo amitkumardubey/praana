@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { getMissingKeyMessage } from "./llm.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, getLoadedConfigSources } from "./config.js";
 import type { LlmConfig } from "./types.js";
 
 const APP_VERSION = readAppVersion();
@@ -454,11 +454,15 @@ function readAppVersion(): string {
 function printSessionBanner(session: Session, cwd: string, model: string): void {
   const memoryStats = session.getMemoryStats();
   const digestLen = session.digest?.length ?? 0;
+  const configSources = getLoadedConfigSources();
   const lines = [
     `ARIA ${APP_VERSION}`,
     `session: ${session.id}`,
     `cwd: ${cwd}`,
     `model: ${model}`,
+    ...(configSources.length > 0
+      ? [`config: ${configSources.join(" → ")}`]
+      : [`config: defaults`]),
     `memory entries: ${memoryStats.total}`,
     `digest chars: ${digestLen}`,
     session.memoryEnabled
