@@ -56,7 +56,7 @@ export function setUiWriters(overrides?: Partial<UiWriters>): void {
 export function startSpinner(text: string): void {
   if (!process.stderr.isTTY) return;
   stopSpinner();
-  activeSpinner = ora({ text, stream: process.stderr }).start();
+  activeSpinner = ora({ text, stream: process.stderr, discardStdin: false }).start();
 }
 
 /**

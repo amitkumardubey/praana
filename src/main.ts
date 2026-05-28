@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
+import { TurnAbortedError, TurnController, EscInterruptListener } from "./turn-control.js";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getLoadedConfigSources } from "./config.js";
 import type { LlmConfig } from "./types.js";
@@ -83,7 +84,7 @@ async function main() {
   let showThinking = true;
 
   await printSessionBanner(session, cwd, currentModelOrDefault(session));
-  console.log('Type /help for commands, /exit to quit.');
+  console.log('Type /help for commands, /exit to quit. Esc Esc (or Ctrl+C) interrupts a running turn.');
   console.log();
 
   // Create readline interface
@@ -96,6 +97,29 @@ async function main() {
   rl.prompt();
 
   let currentModel: string | undefined = session.getModelOverride() ?? undefined;
+  const turnController = new TurnController();
+  const escListener = new EscInterruptListener();
+  let interruptHandling = false;
+
+  const handleUserInterrupt = (): void => {
+    if (interruptHandling) return;
+    interruptHandling = true;
+    setImmediate(() => {
+      interruptHandling = false;
+    });
+
+    if (turnController.isActive()) {
+      turnController.abort();
+      return;
+    }
+
+    console.log("\nUse /exit to save and quit.");
+    rl.prompt();
+  };
+
+  // Process-level handler prevents the default SIGINT exit (130).
+  // Ora re-emits SIGINT via process.kill while stdin is in raw mode.
+  process.on("SIGINT", handleUserInterrupt);
 
   rl.on("line", async (line: string) => {
     const input = line.trim();
@@ -132,8 +156,14 @@ async function main() {
       thinkingOpen = false;
     };
 
+    const signal = turnController.begin();
+    escListener.start(() => {
+      turnController.abort();
+    }, rl);
+
     try {
       await runTurn(session, input, currentModel, {
+        signal,
         onThinkingDelta: (delta) => {
           stopSpinnerOnce();
           if (!showThinking) return;
@@ -154,12 +184,19 @@ async function main() {
     } catch (err) {
       stopSpinnerOnce();
       closeThinking();
-      console.error("\n[error]", (err as Error).message);
-      session.eventLog.append({
-        kind: "system_note",
-        actor: "kernel",
-        payload: { type: "error", message: (err as Error).message },
-      });
+      if (err instanceof TurnAbortedError) {
+        console.log(chalk.yellow("\n[interrupted]"));
+      } else {
+        console.error("\n[error]", (err as Error).message);
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: { type: "error", message: (err as Error).message },
+        });
+      }
+    } finally {
+      escListener.stop();
+      turnController.end();
     }
 
     console.log();
@@ -177,11 +214,8 @@ async function main() {
     process.exit(0);
   });
 
-  // Handle Ctrl+C
-  process.on("SIGINT", () => {
-    console.log("\nUse /exit to save and quit.");
-    rl.prompt();
-  });
+  // Keep readline open — without this listener Ctrl+C closes the interface.
+  rl.on("SIGINT", handleUserInterrupt);
 }
 
 async function handleSlashCommand(
@@ -413,6 +447,7 @@ function printHelp(): void {
     "  /sessions                List recent sessions",
     "  /debug                   Toggle debug mode (tool blocks + saved prompts)",
     "  /thinking <on|off>       Toggle thinking stream visibility",
+    "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
     "  /help                    Show this help",
   ].join("\n");
   console.log(

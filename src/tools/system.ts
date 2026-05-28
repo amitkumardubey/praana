@@ -31,10 +31,11 @@ function validateStructuredContent(filePath: string, content: string): string | 
 
 export interface SystemToolContext {
   cwd: string;
+  getAbortSignal?: () => AbortSignal | undefined;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd } = ctx;
+  const { cwd, getAbortSignal } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -53,6 +54,11 @@ export function createSystemTools(ctx: SystemToolContext) {
           .describe("Timeout in milliseconds (default 30000)"),
       }),
       execute: async ({ command, timeout }) => {
+        const signal = getAbortSignal?.();
+        if (signal?.aborted) {
+          return { ok: false, stdout: "", stderr: "Interrupted", exitCode: 130 };
+        }
+
         const ms = timeout ?? 30000;
         return new Promise((resolve) => {
           const child = spawn(command, [], {
@@ -63,7 +69,28 @@ export function createSystemTools(ctx: SystemToolContext) {
 
           let stdout = "";
           let stderr = "";
+          let settled = false;
           const maxBuf = 10 * 1024 * 1024; // 10MB
+
+          const finish = (result: {
+            ok: boolean;
+            stdout: string;
+            stderr: string;
+            exitCode: number;
+          }) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", onAbort);
+            resolve(result);
+          };
+
+          const onAbort = () => {
+            child.kill("SIGTERM");
+            setTimeout(() => child.kill("SIGKILL"), 3000);
+          };
+
+          signal?.addEventListener("abort", onAbort, { once: true });
 
           const timer = setTimeout(() => {
             child.kill("SIGTERM");
@@ -78,8 +105,16 @@ export function createSystemTools(ctx: SystemToolContext) {
           });
 
           child.on("close", (code) => {
-            clearTimeout(timer);
-            resolve({
+            if (signal?.aborted) {
+              finish({
+                ok: false,
+                stdout: stdout.slice(0, maxBuf),
+                stderr: stderr.slice(0, maxBuf) || "Interrupted",
+                exitCode: 130,
+              });
+              return;
+            }
+            finish({
               ok: code === 0,
               stdout: stdout.slice(0, maxBuf),
               stderr: stderr.slice(0, maxBuf),
@@ -88,8 +123,7 @@ export function createSystemTools(ctx: SystemToolContext) {
           });
 
           child.on("error", (err) => {
-            clearTimeout(timer);
-            resolve({
+            finish({
               ok: false,
               stdout,
               stderr: err.message,

@@ -15,6 +15,7 @@ import {
   startSpinner,
   stopSpinner,
 } from "./ui.js";
+import { TurnAbortedError } from "./turn-control.js";
 
 export async function runTurn(
   session: Session,
@@ -23,6 +24,7 @@ export async function runTurn(
   options?: {
     onTextDelta?: (delta: string) => void;
     onThinkingDelta?: (delta: string) => void;
+    signal?: AbortSignal;
   }
 ): Promise<string> {
   // 1. Append user_message
@@ -61,6 +63,7 @@ export async function runTurn(
     memoryStore: session.memoryStore,
     memoryEnabled: session.memoryEnabled,
     cwd: session.cwd,
+    getAbortSignal: () => options?.signal,
   });
 
   // 3. Compile prompt (system only, user input passed as message)
@@ -106,15 +109,24 @@ export async function runTurn(
     },
   ];
   const maxSteps = 25;
+  let interrupted = false;
 
   for (let step = 0; step < maxSteps; step++) {
+    if (options?.signal?.aborted) {
+      interrupted = true;
+      break;
+    }
+
     const piTools = Object.entries(tools).map(([name, def]) => ({
       name,
       description: String((def as any).description ?? ""),
       parameters: normalizeToolParameters((def as any).parameters),
     }));
 
-    const modelOptions = (model as any).__piOptions ?? {};
+    const modelOptions = {
+      ...((model as any).__piOptions ?? {}),
+      ...(options?.signal ? { signal: options.signal } : {}),
+    };
     const stream = piStream(
       model as any,
       {
@@ -135,6 +147,10 @@ export async function runTurn(
     let finalMessage: Message | null = null;
 
     for await (const event of stream) {
+      if (options?.signal?.aborted) {
+        interrupted = true;
+        break;
+      }
       if (event.type === "text_delta" && typeof event.delta === "string") {
         if (options?.onTextDelta) options.onTextDelta(event.delta);
         else process.stdout.write(event.delta);
@@ -157,8 +173,14 @@ export async function runTurn(
       if (event.type === "error") {
         finalReason = event.reason;
         finalMessage = event.error as unknown as Message;
+        if (finalReason === "aborted") {
+          interrupted = true;
+          break;
+        }
       }
     }
+
+    if (interrupted) break;
 
     if (finalMessage) {
       history.push(finalMessage);
@@ -171,6 +193,11 @@ export async function runTurn(
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
 
     for (const tc of pendingToolCalls) {
+      if (options?.signal?.aborted) {
+        interrupted = true;
+        break;
+      }
+
       session.eventLog.append({
         kind: "tool_call",
         actor: "tool",
@@ -216,12 +243,23 @@ export async function runTurn(
         actor: "tool",
         payload: { tool: tc.toolName, result },
       });
+
+      if (options?.signal?.aborted) {
+        interrupted = true;
+        break;
+      }
     }
+
+    if (interrupted) break;
 
     stepIndex++;
     if (session.debug) {
       printDebugBlock(stepIndex, pendingToolCalls, toolResults);
     }
+  }
+
+  if (interrupted) {
+    return finalizeInterruptedTurn(session, fullResponse, autoHydrated.length, promptMetrics.totalTokens);
   }
 
   if (fullResponse && !fullResponse.endsWith("\n")) {
@@ -253,6 +291,39 @@ export async function runTurn(
   printMemoryBanner(stats);
 
   return fullResponse;
+}
+
+function finalizeInterruptedTurn(
+  session: Session,
+  partialResponse: string,
+  autoHydrated: number,
+  promptTokens: number
+): never {
+  const trimmed = partialResponse.trim();
+  const messageText = trimmed
+    ? `${trimmed}\n\n[interrupted]`
+    : "[interrupted]";
+
+  session.eventLog.append({
+    kind: "system_note",
+    actor: "kernel",
+    payload: { type: "turn_interrupted", partial: trimmed.length > 0 },
+  });
+
+  session.eventLog.append({
+    kind: "agent_message",
+    actor: "agent",
+    payload: { text: messageText },
+  });
+
+  session.incrementTurn();
+  applyTierManagement(session);
+
+  const stats = computeMemoryStats(session, autoHydrated);
+  stats.promptTokens = promptTokens;
+  printMemoryBanner(stats);
+
+  throw new TurnAbortedError(trimmed);
 }
 
 function isZodSchema(schema: unknown): schema is ZodTypeAny {

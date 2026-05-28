@@ -11,6 +11,7 @@ export interface ToolRegistryContext {
   memoryStore: MemoryStore | null;
   memoryEnabled: boolean;
   cwd: string;
+  getAbortSignal?: () => AbortSignal | undefined;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -27,6 +28,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
 
   const systemTools = createSystemTools({
     cwd: ctx.cwd,
+    getAbortSignal: ctx.getAbortSignal,
   });
 
   return {
