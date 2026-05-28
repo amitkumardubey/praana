@@ -56,8 +56,9 @@ export interface RecallResult {
     kind: MemoryKind;
     content: string;
     confidence: number;
+    match: number;         // query-match score (higher means more relevant)
     scopes: string[];
-    score: number;         // fusion of vector sim + confidence + recency
+    score: number;         // final ranking score (currently equals match)
   }>;
 }
 

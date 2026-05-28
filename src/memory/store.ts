@@ -45,6 +45,24 @@ function effectiveConfidence(entry: MemoryEntry, now: number): number {
   return entry.confidence * decay;
 }
 
+function tokenize(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter(Boolean);
+}
+
+function lexicalMatchScore(content: string, query: string): number {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0) return 0;
+  const contentTokenSet = new Set(tokenize(content));
+  let hits = 0;
+  for (const token of queryTokens) {
+    if (contentTokenSet.has(token)) hits++;
+  }
+  return hits / queryTokens.length;
+}
+
 export class MemoryStore {
   private db: Database.Database;
   private embedder: Embedder;
@@ -158,12 +176,17 @@ export class MemoryStore {
     // Strategy: vector search for candidates, then filter + re-rank
     let candidates: MemoryEntry[] = [];
 
+    const vectorDistanceById = new Map<string, number>();
+
     try {
       const qvec = await this.embedder.embed(query);
       const hits = searchByVector(this.db, qvec, limit * 4);
       for (const h of hits) {
         const e = getEntryById(this.db, h.entry_id);
-        if (e) candidates.push(e);
+        if (e) {
+          candidates.push(e);
+          vectorDistanceById.set(e.id, h.distance);
+        }
       }
     } catch {
       // Vector search failed — fall back to scope-only
@@ -193,19 +216,24 @@ export class MemoryStore {
       candidates = candidates.filter((e) => kindSet.has(e.kind));
     }
 
-    // Score & rank
+    // Score & rank by true query match while preserving pin priority.
     const scored = candidates.map((e) => {
+      const distance = vectorDistanceById.get(e.id);
+      const vectorMatch = distance !== undefined ? 1 / (1 + distance) : undefined;
+      const lexicalMatch = lexicalMatchScore(e.content, query);
+      const match = vectorMatch !== undefined
+        ? Math.max(vectorMatch, lexicalMatch)
+        : lexicalMatch;
+      const pinBoost = e.pinned ? 0.3 : 0;
+      const score = match + pinBoost;
       const conf = effectiveConfidence(e, now);
-      // Recency bonus: 0–0.2 based on days since last seen (max at 0 days)
-      const daysSince = (now - e.last_seen_at) / (1000 * 60 * 60 * 24);
-      const recency = Math.max(0, 0.2 - daysSince * 0.02);
-      // Pin bonus
-      const pin = e.pinned ? 0.3 : 0;
-      const score = conf + recency + pin;
-      return { entry: e, score };
+      return { entry: e, score, match, conf, pinBoost };
     });
 
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.conf - a.conf;
+    });
 
     // Touch recalled entries
     const top = scored.slice(0, limit);
@@ -220,6 +248,7 @@ export class MemoryStore {
         kind: s.entry.kind,
         content: s.entry.content,
         confidence: s.entry.confidence,
+        match: Math.round(s.match * 1000) / 1000,
         scopes: s.entry.scopes,
         score: Math.round(s.score * 1000) / 1000,
       })),
