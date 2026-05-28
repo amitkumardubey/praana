@@ -2,6 +2,7 @@ import * as readline from "node:readline";
 import chalk from "chalk";
 import boxen from "boxen";
 import { startSpinner, stopSpinner, printBox, printMarkdown } from "./ui.js";
+import { buildStatusBarInput, renderStatusBar } from "./status-bar.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Session } from "./session.js";
@@ -94,6 +95,17 @@ async function main() {
     prompt: "> ",
   });
 
+  const refreshStatusBar = () => {
+    renderStatusBar(
+      buildStatusBarInput(session, {
+        model: currentModelOrDefault(session),
+        debug: session.debug,
+        thinking: showThinking,
+      })
+    );
+  };
+
+  refreshStatusBar();
   rl.prompt();
 
   let currentModel: string | undefined = session.getModelOverride() ?? undefined;
@@ -136,6 +148,10 @@ async function main() {
       }, (v) => {
         showThinking = v;
       }, () => showThinking);
+      const slashCmd = input.split(/\s+/)[0].toLowerCase();
+      if (slashCmd === "/model" || slashCmd === "/debug" || slashCmd === "/thinking") {
+        refreshStatusBar();
+      }
       rl.prompt();
       return;
     }
@@ -200,6 +216,7 @@ async function main() {
     }
 
     console.log();
+    refreshStatusBar();
     rl.prompt();
   });
 
@@ -447,6 +464,8 @@ function printHelp(): void {
     "  /sessions                List recent sessions",
     "  /debug                   Toggle debug mode (tool blocks + saved prompts)",
     "  /thinking <on|off>       Toggle thinking stream visibility",
+    "",
+    "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
     "  /help                    Show this help",
   ].join("\n");

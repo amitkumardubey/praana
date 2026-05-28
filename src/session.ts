@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ulid } from "ulid";
+import type { CompileMetrics } from "./compiler.js";
 import type { AriaConfig } from "./types.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { StateGraph } from "./state-graph.js";
@@ -29,6 +30,7 @@ export class Session {
   private ended = false;
   private turnCount = 0;
   private modelOverride: string | null = null;
+  private lastCompileMetrics: CompileMetrics | null = null;
 
   private constructor(id: string, cwd: string, config: AriaConfig) {
     this.id = id;
@@ -236,6 +238,18 @@ export class Session {
       return p.startsWith("/") ? p : join(this.cwd, p);
     }
     return expandHome("~/.aria/memory.db");
+  }
+
+  getRepoRoot(): string {
+    return findGitRoot(this.cwd);
+  }
+
+  setLastCompileMetrics(metrics: CompileMetrics): void {
+    this.lastCompileMetrics = metrics;
+  }
+
+  getLastCompileMetrics(): CompileMetrics | null {
+    return this.lastCompileMetrics;
   }
 
   getMemoryStats(): {

@@ -83,6 +83,7 @@ export async function runTurn(
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
     agentsContext: session.agentsContext,
   });
+  session.setLastCompileMetrics(promptMetrics);
 
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
