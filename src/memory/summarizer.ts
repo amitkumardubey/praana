@@ -5,6 +5,7 @@
 // No extract→consolidate→gate pipeline. Just ask.
 // ============================================================
 
+import { isMemoryKind } from "./types.js";
 import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
@@ -60,12 +61,10 @@ export async function extractLearnings(
     }>;
     if (!Array.isArray(parsed)) return [];
 
-    const validKinds = new Set<MemoryKind>(["fact", "preference", "decision", "pattern", "mistake", "constraint"]);
-
     return parsed
-      .filter((p) => validKinds.has(p.kind as MemoryKind))
+      .filter((p): p is typeof p & { kind: MemoryKind } => isMemoryKind(p.kind))
       .map((p) => ({
-        kind: p.kind as MemoryKind,
+        kind: p.kind,
         content: p.content.slice(0, 200),
         certainty: (p.certainty === "high" || p.certainty === "medium" || p.certainty === "low")
           ? p.certainty

@@ -8,6 +8,29 @@ import {
 } from "../src/memory/db.js";
 
 describe("Memory safety", () => {
+  it("rejects invalid memory kinds at write time", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx-a",
+      context_label: "test",
+    });
+
+    await expect(
+      store.remember("invalid kind write", {
+        kind: "bug" as any,
+      }),
+    ).rejects.toThrow("Invalid memory kind");
+
+    store.close();
+  });
+
   it("does not recall memories from a different context by default", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
@@ -26,9 +49,6 @@ describe("Memory safety", () => {
       kind: "fact",
       certainty: "high",
     });
-
-    // Ensure fire-and-forget embedding write has completed.
-    await new Promise((r) => setTimeout(r, 5));
 
     await store.sessionStart({ ...base, context_id: "ctx-b" });
     const result = await store.recall("migrate the checkout schema", { limit: 10 });
