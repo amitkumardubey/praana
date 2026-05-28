@@ -14,16 +14,19 @@ What's being worked on and what's coming next. This covers the near term — rou
 
 - **Semantic embeddings** — replacing the hash-based embedder with a local semantic model so recall actually works. Auto-detects Ollama; falls back gracefully.
 - **Global memory** — memories that apply across all projects (preferences, personal constraints, universal patterns) alongside project-scoped memories.
+- **Global + project recall merge** — query both global (`user+agent`) and project (`user+agent+context`) scopes, merge the result set, and make project-specific memories override global ones when they conflict.
 
 ---
 
 ## Up Next
 
+- **Planner task graph** — upgrade tasks from flat objects to a goal-directed execution graph with dependencies (`depends_on`), blocked state/reasons, and explicit statuses (`todo`, `in_progress`, `blocked`, `done`) so long-running work does not drift.
 - **Confidence reinforcement** — recalled memories that prove useful get stronger; unused ones fade faster. Completes the learning loop.
 - **Duplicate and contradiction detection** — when the same pattern is confirmed across sessions, reinforce rather than duplicate. When new evidence contradicts an old belief, reduce its confidence.
 - **Multi-file operations** — create or edit multiple files in one turn instead of sequential single-file calls.
 - **Diff preview** — show a unified diff before applying `edit_file`. Silent file writes are too risky.
 - **Project context auto-load** — read `package.json`, `tsconfig.json`, `README.md` on session start so the agent knows your stack before you explain it.
+- **Skill context auto-load** — load and inject `skills/*.md` (project-local skill instructions), not only `AGENTS.md`/`CLAUDE.md`, with deterministic ordering and token-capped merge behavior.
 - **Evaluation framework** — a 30-task benchmark against a stateless baseline to measure whether Cognitive Memory actually improves outcomes.
 
 ---
