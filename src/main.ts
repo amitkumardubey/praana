@@ -288,7 +288,7 @@ async function handleSlashCommand(
           console.log(`\nRecall results for "${query}":`);
           for (const e of result.entries) {
             console.log(
-              `  - [${e.kind}] ${e.content.slice(0, 100)} (conf: ${e.confidence.toFixed(2)})`
+              `  - [${e.kind}] ${e.content.slice(0, 100)} (match: ${e.match.toFixed(2)} | conf: ${e.confidence.toFixed(2)})`
             );
           }
         }

@@ -279,16 +279,20 @@ export class MemoryStore {
     // Score & rank
     const scored = candidates.map(({ entry: e, matchScore }) => {
       const conf = effectiveConfidence(e, now);
+      const match = matchScore;
       // Recency bonus: 0–0.2 based on days since last seen (max at 0 days)
       const daysSince = (now - e.last_seen_at) / (1000 * 60 * 60 * 24);
       const recency = Math.max(0, 0.2 - daysSince * 0.02);
       // Pin bonus
       const pin = e.pinned ? 0.3 : 0;
       const score = matchScore + conf * 0.2 + recency + pin;
-      return { entry: e, score };
+      return { entry: e, score, match, conf };
     });
 
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.conf - a.conf;
+    });
 
     // Touch recalled entries
     const top = scored.slice(0, limit);
@@ -303,6 +307,7 @@ export class MemoryStore {
         kind: s.entry.kind,
         content: s.entry.content,
         confidence: s.entry.confidence,
+        match: Math.round(s.match * 1000) / 1000,
         scopes: s.entry.scopes,
         score: Math.round(s.score * 1000) / 1000,
       })),
