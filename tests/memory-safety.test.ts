@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { MemoryStore, HashEmbedder, type Embedder } from "../src/memory/index.js";
 import {
   openMemoryDb,
   insertEntry,
@@ -7,7 +7,69 @@ import {
   deleteEntry,
 } from "../src/memory/db.js";
 
+class ThrowingEmbedder implements Embedder {
+  dim = 384;
+
+  async embed(): Promise<Float32Array> {
+    throw new Error("embedding unavailable");
+  }
+}
+
 describe("Memory safety", () => {
+  it("rejects invalid memory kinds at write time", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx-a",
+      context_label: "test",
+    });
+
+    await expect(
+      store.remember("invalid kind write", {
+        kind: "bug" as any,
+      }),
+    ).rejects.toThrow("Invalid memory kind");
+
+    store.close();
+  });
+
+  it("prioritizes keyword matches over unrelated vector candidates", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx-a",
+      context_label: "test",
+    });
+
+    await store.remember("User's name is Amit", {
+      kind: "fact",
+      certainty: "medium",
+    });
+    await store.remember("Deployment pipeline uses GitHub Actions", {
+      kind: "fact",
+      certainty: "high",
+    });
+
+    const result = await store.recall("name", { limit: 1 });
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.content).toBe("User's name is Amit");
+
+    store.close();
+  });
+
   it("does not recall memories from a different context by default", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
@@ -27,15 +89,83 @@ describe("Memory safety", () => {
       certainty: "high",
     });
 
-    // Ensure fire-and-forget embedding write has completed.
-    await new Promise((r) => setTimeout(r, 5));
-
     await store.sessionStart({ ...base, context_id: "ctx-b" });
     const result = await store.recall("migrate the checkout schema", { limit: 10 });
 
     expect(
       result.entries.some((e) => e.content.includes("ctx-a only"))
     ).toBe(false);
+
+    store.close();
+  });
+
+  it("finds scoped FTS matches even when unscoped matches exceed the candidate limit", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new ThrowingEmbedder(),
+    });
+
+    const base = {
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_label: "test",
+    };
+
+    await store.sessionStart({ ...base, context_id: "ctx-noise" });
+    for (let i = 0; i < 45; i++) {
+      await store.remember(`noise ${i}: name`, {
+        kind: "fact",
+        certainty: "high",
+      });
+    }
+
+    await store.sessionStart({ ...base, context_id: "ctx-target" });
+    await store.remember("target context: name is Amit", {
+      kind: "fact",
+      certainty: "medium",
+    });
+
+    const result = await store.recall("name", { limit: 10 });
+
+    expect(result.entries.map((e) => e.content)).toContain(
+      "target context: name is Amit",
+    );
+    expect(result.entries.every((e) => e.content.startsWith("target context"))).toBe(
+      true,
+    );
+
+    store.close();
+  });
+
+  it("ranks fuller FTS matches above partial matches with higher confidence", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new ThrowingEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx-a",
+      context_label: "test",
+    });
+
+    await store.remember("checkout uses a legacy job", {
+      kind: "fact",
+      certainty: "high",
+    });
+    await store.remember("checkout schema migration requires a rollback plan", {
+      kind: "fact",
+      certainty: "medium",
+    });
+
+    const result = await store.recall("checkout schema migration", { limit: 2 });
+
+    expect(result.entries[0]?.content).toBe(
+      "checkout schema migration requires a rollback plan",
+    );
 
     store.close();
   });

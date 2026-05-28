@@ -5,6 +5,15 @@
 // Replaces bodha dependency with ~600 lines of focused code.
 // ============================================================
 
+export const MEMORY_KINDS = [
+  "fact",
+  "preference",
+  "decision",
+  "pattern",
+  "mistake",
+  "constraint",
+] as const;
+
 export type MemoryKind =
   | "fact"        // verifiable: "project uses Vitest"
   | "preference"  // user/agent preference: "prefers dark mode"
@@ -12,6 +21,10 @@ export type MemoryKind =
   | "pattern"     // recurring approach: "use zod for validation"
   | "mistake"     // failure + lesson: "forgot to await promise → 401s"
   | "constraint"; // must-follow: "never commit .env files"
+
+export function isMemoryKind(value: string): value is MemoryKind {
+  return MEMORY_KINDS.includes(value as MemoryKind);
+}
 
 export type Certainty = "high" | "medium" | "low";
 
