@@ -35,6 +35,7 @@ import type {
   SessionEvent,
   SummarizerLLM,
 } from "./types.js";
+import { isMemoryKind, MEMORY_KINDS } from "./types.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -139,6 +140,11 @@ export class MemoryStore {
     const id = ulid();
     const now = Date.now();
     const kind = opts.kind ?? "fact";
+    if (!isMemoryKind(kind)) {
+      throw new Error(
+        `Invalid memory kind: '${kind}'. Valid kinds: ${MEMORY_KINDS.join(", ")}`,
+      );
+    }
     const confidence = certaintyToConfidence(opts.certainty ?? "medium");
     const scopes = opts.scope ?? this.defaultScopes;
 

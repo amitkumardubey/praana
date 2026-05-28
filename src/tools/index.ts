@@ -49,7 +49,7 @@ export function describeTools(): string[] {
     "hydrate(id) — Promote object back to active",
     "list_state() — List all state objects",
     "recall(query, mode?, kinds?) — Search cross-session memory",
-    "remember(content, kind?, certainty?, scope?) — Store in cross-session memory",
+    "remember(content, kind?, certainty?, scope?) — Store in cross-session memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
     "shell(command, timeout?) — Execute a shell command",
     "read_file(path, offset?, limit?) — Read a file",
     "write_file(path, content) — Write or overwrite a file",
