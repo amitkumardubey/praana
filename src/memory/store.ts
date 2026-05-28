@@ -15,6 +15,7 @@ import {
   getEntryById,
   insertEntry,
   openMemoryDb,
+  searchByFts,
   searchByVector,
   stampReinforcement,
   startSessionRow,
@@ -44,6 +45,23 @@ function effectiveConfidence(entry: MemoryEntry, now: number): number {
   const days = (now - entry.created_at) / (1000 * 60 * 60 * 24);
   const decay = Math.pow(0.95, days);          // 5% per day
   return entry.confidence * decay;
+}
+
+function queryTerms(query: string): string[] {
+  return query.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
+}
+
+function lexicalMatchScore(
+  entry: MemoryEntry,
+  terms: string[],
+  rankScore: number,
+): number {
+  if (terms.length === 0) return 0;
+
+  const content = entry.content.toLowerCase();
+  const matched = terms.filter((term) => content.includes(term)).length;
+  const coverage = matched / terms.length;
+  return 0.6 + coverage * 0.3 + rankScore * 0.1;
 }
 
 export class MemoryStore {
@@ -161,31 +179,77 @@ export class MemoryStore {
       console.warn("[memory] Vector migration in progress — recall quality may be reduced until re-embed completes.");
     }
 
-    // Strategy: vector search for candidates, then filter + re-rank
-    let candidates: MemoryEntry[] = [];
+    // Strategy: merge reliable keyword hits with vector candidates, then filter + re-rank.
+    const candidateScores = new Map<string, { entry: MemoryEntry; matchScore: number }>();
+    const terms = queryTerms(query);
+
+    const addCandidate = (entry: MemoryEntry, matchScore: number) => {
+      const existing = candidateScores.get(entry.id);
+      if (!existing || matchScore > existing.matchScore) {
+        candidateScores.set(entry.id, { entry, matchScore });
+      }
+    };
+    const matchesRequestedFilters = (entry: MemoryEntry): boolean => {
+      if (queryScopes.length > 0) {
+        const entryScopeSet = new Set(entry.scopes);
+        for (const scope of queryScopes) {
+          if (!entryScopeSet.has(scope)) return false;
+        }
+      }
+
+      if (opts.kinds && opts.kinds.length > 0 && !opts.kinds.includes(entry.kind)) {
+        return false;
+      }
+
+      return true;
+    };
+
+    const ftsHits = searchByFts(this.db, query, limit * 4, {
+      scopes: queryScopes,
+      kinds: opts.kinds,
+    });
+    const ftsRanks = ftsHits.map((h) => h.rank);
+    const bestFtsRank = Math.min(...ftsRanks);
+    const worstFtsRank = Math.max(...ftsRanks);
+    for (const h of ftsHits) {
+      const e = getEntryById(this.db, h.entry_id);
+      if (e) {
+        const rankScore = bestFtsRank === worstFtsRank
+          ? 1
+          : 1 - ((h.rank - bestFtsRank) / (worstFtsRank - bestFtsRank));
+        addCandidate(e, lexicalMatchScore(e, terms, rankScore));
+      }
+    }
 
     try {
       const qvec = await this.embedder.embed(query);
       const hits = searchByVector(this.db, qvec, limit * 4);
       for (const h of hits) {
         const e = getEntryById(this.db, h.entry_id);
-        if (e) candidates.push(e);
+        if (e) {
+          const similarity = Math.max(0, 1 - h.distance);
+          addCandidate(e, Math.min(similarity, 0.75));
+        }
       }
     } catch {
       // Vector search failed — fall back to scope-only
     }
 
-    // If vector returned nothing useful, fall back to all entries in scope
-    if (candidates.length === 0) {
-      candidates = getEntriesByScope(this.db, queryScopes);
+    // If neither search path returned candidates, fall back to all entries in scope.
+    if (candidateScores.size === 0) {
+      for (const e of getEntriesByScope(this.db, queryScopes)) {
+        addCandidate(e, 0);
+      }
     }
+
+    let candidates = Array.from(candidateScores.values());
 
     // Enforce strict scope isolation: entry must include ALL requested scopes.
     // This keeps vector and fallback paths consistent.
     if (queryScopes.length > 0) {
       const queryScopeSet = new Set(queryScopes);
-      candidates = candidates.filter((e) => {
-        const entryScopeSet = new Set(e.scopes);
+      candidates = candidates.filter(({ entry }) => {
+        const entryScopeSet = new Set(entry.scopes);
         for (const scope of queryScopeSet) {
           if (!entryScopeSet.has(scope)) return false;
         }
@@ -196,18 +260,31 @@ export class MemoryStore {
     // Filter by kind
     if (opts.kinds && opts.kinds.length > 0) {
       const kindSet = new Set(opts.kinds);
-      candidates = candidates.filter((e) => kindSet.has(e.kind));
+      candidates = candidates.filter(({ entry }) => kindSet.has(entry.kind));
+    }
+
+    // Vector search is limited before scope filtering by sqlite-vec. If its top
+    // hits are outside the requested scopes, preserve the old scoped fallback.
+    if (candidates.length === 0 && candidateScores.size > 0) {
+      for (const e of getEntriesByScope(this.db, queryScopes)) {
+        if (!opts.kinds || opts.kinds.includes(e.kind)) {
+          addCandidate(e, 0);
+        }
+      }
+      candidates = Array.from(candidateScores.values()).filter(({ entry }) => {
+        return matchesRequestedFilters(entry);
+      });
     }
 
     // Score & rank
-    const scored = candidates.map((e) => {
+    const scored = candidates.map(({ entry: e, matchScore }) => {
       const conf = effectiveConfidence(e, now);
       // Recency bonus: 0–0.2 based on days since last seen (max at 0 days)
       const daysSince = (now - e.last_seen_at) / (1000 * 60 * 60 * 24);
       const recency = Math.max(0, 0.2 - daysSince * 0.02);
       // Pin bonus
       const pin = e.pinned ? 0.3 : 0;
-      const score = conf + recency + pin;
+      const score = matchScore + conf * 0.2 + recency + pin;
       return { entry: e, score };
     });
 
