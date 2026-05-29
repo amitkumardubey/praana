@@ -327,11 +327,11 @@ function finalizeInterruptedTurn(
   throw new TurnAbortedError(trimmed);
 }
 
-function isZodSchema(schema: unknown): schema is ZodTypeAny {
+export function isZodSchema(schema: unknown): schema is ZodTypeAny {
   return !!schema && typeof schema === "object" && "_def" in (schema as Record<string, unknown>);
 }
 
-function normalizeToolParameters(schema: unknown): Record<string, unknown> {
+export function normalizeToolParameters(schema: unknown): Record<string, unknown> {
   if (isZodSchema(schema)) {
     const json = zodToJsonSchema(schema, {
       $refStrategy: "none",
@@ -350,7 +350,7 @@ function normalizeToolParameters(schema: unknown): Record<string, unknown> {
   };
 }
 
-function applyTierManagement(session: Session): void {
+export function applyTierManagement(session: Session): void {
   const { idle_soft_after_turns, idle_hard_after_turns } =
     session.config.tiers;
   const sg = session.stateGraph;
@@ -376,7 +376,7 @@ function applyTierManagement(session: Session): void {
   }
 }
 
-function computeMemoryStats(
+export function computeMemoryStats(
   session: Session,
   autoHydrated: number
 ): {
