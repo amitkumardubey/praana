@@ -197,6 +197,9 @@ function buildSystemFrame(
     "",
     "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
+    "To recover earlier content from this session (reviews, findings, tool output), use search_session_log — not recall (recall is cross-session SQLite only).",
+    "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
+    "Session event log file: ~/.aria/sessions/<session_id>/events.jsonl",
     "See the Active State and Peripheral Memory sections below for your current working memory."
   );
 

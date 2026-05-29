@@ -50,6 +50,7 @@ export function describeTools(): string[] {
     "hard_unload(id) — Demote object to hard tier",
     "hydrate(id) — Promote object back to active",
     "list_state() — List all state objects",
+    "search_session_log(query, kinds?, limit?) — Search current session event log (not cross-session recall)",
     "recall(query, mode?, kinds?) — Search cross-session memory",
     "remember(content, kind?, certainty?, scope?) — Store in cross-session memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
     "shell(command, timeout?) — Execute a shell command",

@@ -144,14 +144,14 @@ src/
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
   compiler.ts    — Deterministic prompt compiler, 5 sections, per-section token budgets
   state-graph.ts — Tiered state (active/soft/hard), auto-demotion, auto-hydrate
-  event-log.ts   — Append-only JSONL event log, fsyncSync durability
+  event-log.ts   — Append-only events.jsonl, fsyncSync durability
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
   ui.ts          — Terminal output, banners, formatting
   tools/
     index.ts     — Tool registry
-    memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, etc.)
+    memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
     system.ts    — System tools (shell, read_file, write_file, edit_file)
   memory/
@@ -201,7 +201,8 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* reque
 ## Security
 
 - **Shell tool:** Runs arbitrary commands with user's permissions. No sandboxing. Respect the `timeout` field.
-- **Event log:** Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
+- **Event log:** `~/.aria/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
+- **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
 - **Memory DB:** `~/.aria/memory.db` — plaintext SQLite. No encryption at rest.
 - **Provider keys:** Read from env vars only. Never hardcode or log.
 
@@ -211,6 +212,8 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* reque
 
 - `edit_file` requires exact unique text match — whitespace-sensitive. Will fail on duplicate code blocks or trailing whitespace differences.
 - Event log `fsyncSync` on every write — intentional for durability, affects throughput on fast tool loops.
+- Session log path is `events.jsonl` under `~/.aria/sessions/<session_id>/`. Legacy `events.log` files are migrated automatically on session open.
+- After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
 - Config merge order is global-first, local-last. A `./aria.config.toml` always wins over `~/.aria/config.toml`.
 - The embedder dimension matters for the vector table schema. Switching from `hash` (384-dim) to `ollama`/`transformers` (768-dim) requires a schema migration in `openMemoryDb()`. A migration is needed before shipping embedder switching.

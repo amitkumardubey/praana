@@ -90,6 +90,7 @@ function summarizeArgs(toolName: string, args: Record<string, unknown>): string 
     case "decide":
       return String(args.summary ?? "").slice(0, 60);
     case "recall":
+    case "search_session_log":
       return String(args.query ?? "").slice(0, 60);
     case "remember":
       return String(args.content ?? "").slice(0, 60);

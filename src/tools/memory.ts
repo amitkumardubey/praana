@@ -126,7 +126,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
 
     add_note: defineTool({
       description:
-        "Add a general note to working memory.",
+        "Add a general note to working memory. After significant analysis (code reviews, audits, multi-issue findings), add notes immediately so findings survive context truncation.",
       parameters: z.object({
         text: z.string().describe("The note text"),
       }),
@@ -208,6 +208,56 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       execute: async () => {
         const objects = stateGraph.list();
         return { ok: true, objects };
+      },
+    }),
+
+    search_session_log: defineTool({
+      description:
+        "Search the current session's event log for earlier messages, tool calls, and results. " +
+        "Use this to recover in-session context (e.g. a code review from earlier turns) — not recall, which only searches cross-session memory. " +
+        "Session log path: events.jsonl",
+      parameters: z.object({
+        query: z
+          .string()
+          .describe(
+            "Search terms (ANDed, case-insensitive). Use | for OR, e.g. 'issue|review'"
+          ),
+        kinds: z
+          .array(
+            z.enum([
+              "user_message",
+              "agent_message",
+              "tool_call",
+              "tool_result",
+              "context_action",
+              "system_note",
+            ])
+          )
+          .optional()
+          .describe("Optional event kinds to filter"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Max matches to return (default 20)"),
+      }),
+      execute: async ({ query, kinds, limit }) => {
+        const matches = eventLog.search(query, { kinds, limit });
+        return {
+          ok: true,
+          logPath: eventLog.getLogPath(),
+          query,
+          matchCount: matches.length,
+          matches: matches.map(({ event, excerpt }) => ({
+            event_id: event.event_id,
+            kind: event.kind,
+            actor: event.actor,
+            timestamp: event.timestamp,
+            excerpt,
+          })),
+        };
       },
     }),
   };

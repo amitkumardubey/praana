@@ -116,7 +116,7 @@ Before a turn prompt is compiled, `stateGraph.autoHydrate(userInput)` extracts k
 
 ## Event Log
 
-Location: `~/.aria/sessions/<session_id>/events.log`
+Location: `~/.aria/sessions/<session_id>/events.jsonl`
 
 Each line is a single JSON line representing an `Event`:
 - `user_message`
@@ -127,6 +127,8 @@ Each line is a single JSON line representing an `Event`:
 - `system_note`
 
 Writing uses `writeSync` followed by `fsyncSync` to guarantee durable persistence on every event. Rebuilding state on session resume replays `context_action` events.
+
+Agents can search the full log in-session via the `search_session_log` tool (keyword AND/OR search). This is distinct from `recall`, which queries cross-session Cognitive Memory in SQLite.
 
 ## Compiler
 
