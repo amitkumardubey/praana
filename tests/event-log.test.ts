@@ -180,4 +180,175 @@ describe('EventLog', () => {
     expect(actions.length).toBe(1);
     expect(actions[0].payload.action).toBe('create');
   });
+
+  it('should return empty for empty query', () => {
+    eventLog.append({
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'Hello' },
+    });
+
+    expect(eventLog.search('')).toEqual([]);
+    expect(eventLog.search('   ')).toEqual([]);
+  });
+
+  it('should respect limit parameter', () => {
+    for (let i = 0; i < 10; i++) {
+      eventLog.append({
+        kind: 'user_message',
+        actor: 'user',
+        payload: { text: `Message ${i}` },
+      });
+    }
+
+    const matches = eventLog.search('Message', { limit: 3 });
+    expect(matches.length).toBe(3);
+  });
+
+  it('should truncate excerpt at max length', () => {
+    const longText = 'x'.repeat(1000);
+    eventLog.append({
+      kind: 'agent_message',
+      actor: 'agent',
+      payload: { text: longText },
+    });
+
+    const matches = eventLog.search('xxx', { limit: 1 });
+    expect(matches.length).toBe(1);
+    expect(matches[0].excerpt.length).toBeLessThanOrEqual(403); // 400 + '...'
+    expect(matches[0].excerpt).toMatch(/\.\.\.$/);
+  });
+
+  it('should search tool_call and tool_result events', () => {
+    eventLog.append({
+      kind: 'tool_call',
+      actor: 'tool',
+      payload: { tool: 'read_file', args: { path: 'bug.ts' } },
+    });
+    eventLog.append({
+      kind: 'tool_result',
+      actor: 'tool',
+      payload: { tool: 'read_file', result: { ok: true, content: 'code' } },
+    });
+
+    const callMatches = eventLog.search('bug.ts');
+    expect(callMatches.length).toBe(1);
+    expect(callMatches[0].event.kind).toBe('tool_call');
+
+    const resultMatches = eventLog.search('code');
+    expect(resultMatches.length).toBe(1);
+    expect(resultMatches[0].event.kind).toBe('tool_result');
+  });
+
+  it('should return empty for no matches', () => {
+    eventLog.append({
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'Hello world' },
+    });
+
+    const matches = eventLog.search('nonexistent');
+    expect(matches).toEqual([]);
+  });
+});
+
+describe('migrateLegacyEventLog', () => {
+  const testDir = '/tmp/aria-test-migrate';
+
+  beforeEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+    mkdirSync(testDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) {
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should merge legacy content with non-empty events.jsonl', () => {
+    const existingLine = JSON.stringify({
+      event_id: 'existing-1',
+      session_id: 'merge-session',
+      timestamp: 1,
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'existing event' },
+    }) + '\n';
+    writeFileSync(join(testDir, 'events.jsonl'), existingLine);
+
+    const legacyLine = JSON.stringify({
+      event_id: 'legacy-1',
+      session_id: 'merge-session',
+      timestamp: 2,
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'legacy event' },
+    }) + '\n';
+    writeFileSync(join(testDir, 'events.log'), legacyLine);
+
+    migrateLegacyEventLog(testDir);
+
+    expect(existsSync(join(testDir, 'events.log'))).toBe(false);
+    const content = readFileSync(join(testDir, 'events.jsonl'), 'utf-8');
+    const lines = content.trim().split('\n');
+    expect(lines.length).toBe(2);
+    expect(content).toContain('existing event');
+    expect(content).toContain('legacy event');
+  });
+
+  it('should handle newline edge case when events.jsonl has no trailing newline', () => {
+    // Write events.jsonl WITHOUT trailing newline
+    const existingLine = JSON.stringify({
+      event_id: 'existing-1',
+      session_id: 'newline-session',
+      timestamp: 1,
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'no newline at end' },
+    });
+    writeFileSync(join(testDir, 'events.jsonl'), existingLine);
+
+    const legacyLine = JSON.stringify({
+      event_id: 'legacy-1',
+      session_id: 'newline-session',
+      timestamp: 2,
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'legacy appended' },
+    }) + '\n';
+    writeFileSync(join(testDir, 'events.log'), legacyLine);
+
+    migrateLegacyEventLog(testDir);
+
+    const content = readFileSync(join(testDir, 'events.jsonl'), 'utf-8');
+    // Should have two valid JSON lines (not merged into one line)
+    const lines = content.trim().split('\n');
+    expect(lines.length).toBe(2);
+    // Both should parse as valid JSON
+    expect(() => JSON.parse(lines[0])).not.toThrow();
+    expect(() => JSON.parse(lines[1])).not.toThrow();
+    expect(JSON.parse(lines[1]).payload.text).toBe('legacy appended');
+  });
+
+  it('should do nothing if only events.jsonl exists', () => {
+    const line = JSON.stringify({
+      event_id: 'only-1',
+      session_id: 'only-session',
+      timestamp: 1,
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'only event' },
+    }) + '\n';
+    writeFileSync(join(testDir, 'events.jsonl'), line);
+
+    migrateLegacyEventLog(testDir);
+
+    expect(existsSync(join(testDir, 'events.jsonl'))).toBe(true);
+    expect(existsSync(join(testDir, 'events.log'))).toBe(false);
+    const content = readFileSync(join(testDir, 'events.jsonl'), 'utf-8');
+    expect(content).toContain('only event');
+  });
 });

@@ -55,8 +55,11 @@ export function migrateLegacyEventLog(sessionDir: string): void {
 
   const legacyContent = readFileSync(legacyPath, "utf-8");
   if (legacyContent.trim()) {
+    // Ensure events.jsonl ends with newline before appending
+    const jsonlContent = readFileSync(jsonlPath, "utf-8");
+    const prefix = jsonlContent.endsWith("\n") ? "" : "\n";
     const suffix = legacyContent.endsWith("\n") ? legacyContent : legacyContent + "\n";
-    appendFileSync(jsonlPath, suffix);
+    appendFileSync(jsonlPath, prefix + suffix);
   }
   unlinkSync(legacyPath);
 }

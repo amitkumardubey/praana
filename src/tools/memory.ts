@@ -240,14 +240,13 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           .int()
           .min(1)
           .max(50)
-          .optional()
-          .describe("Max matches to return (default 20)"),
+          .default(20)
+          .describe("Max matches to return"),
       }),
       execute: async ({ query, kinds, limit }) => {
         const matches = eventLog.search(query, { kinds, limit });
         return {
           ok: true,
-          logPath: eventLog.getLogPath(),
           query,
           matchCount: matches.length,
           matches: matches.map(({ event, excerpt }) => ({
