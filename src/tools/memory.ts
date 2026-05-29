@@ -244,7 +244,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           .describe("Max matches to return"),
       }),
       execute: async ({ query, kinds, limit }) => {
-        const matches = eventLog.search(query, { kinds, limit });
+        const matches = eventLog.search(query, { kinds, limit: limit ?? 20 });
         return {
           ok: true,
           query,
