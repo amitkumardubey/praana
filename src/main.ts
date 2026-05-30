@@ -11,35 +11,21 @@ import { runTurn } from "./turn.js";
 import { TurnAbortedError, TurnController, EscInterruptListener } from "./turn-control.js";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getLoadedConfigSources } from "./config.js";
+import { parseCliArgs } from "./cli-args.js";
 import type { LlmConfig } from "./types.js";
 
 const APP_VERSION = readAppVersion();
 
 async function main() {
-  const args = process.argv.slice(2);
-
-  // Parse args
-  let sessionId: string | null = null;
-  let resumeMode = false;
-  let debug = false;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--help" || args[i] === "-h") {
-      printHelp();
-      process.exit(0);
-    }
-    if (args[i] === "--debug" || args[i] === "-d") {
-      debug = true;
-      continue;
-    }
-    if (args[i] === "resume" && args[i + 1]) {
-      resumeMode = true;
-      sessionId = args[i + 1];
-      i++;
-    }
+  const parsed = parseCliArgs(process.argv.slice(2));
+  if (parsed.showHelp) {
+    printHelp();
+    process.exit(0);
   }
 
   const cwd = resolve(process.cwd());
-  const config = loadConfig();
+  const config = loadConfig(parsed.configPath);
+  const { sessionId, resumeMode, debug } = parsed;
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
     console.error(keyError);
@@ -465,6 +451,7 @@ function printHelp(): void {
     "  aria                     Start new session in current directory",
     "  aria resume <session>    Resume an existing session",
     "  aria --debug             Start with debug mode enabled",
+    "  aria --config <path>     Load config from specific .json/.toml path",
     "  aria --help              Show this help",
   ].join("\n");
   const commands = [
