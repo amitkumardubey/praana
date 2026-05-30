@@ -25,13 +25,21 @@ export interface EventSearchMatch {
   excerpt: string;
 }
 
-const EVENT_LOG_FILENAME = "events.jsonl";
-const LEGACY_EVENT_LOG_FILENAME = "events.log";
+export const EVENT_LOG_FILENAME = "events.jsonl";
+export const LEGACY_EVENT_LOG_FILENAME = "events.log";
+
+export function getEventLogPath(sessionDir: string): string {
+  return join(sessionDir, EVENT_LOG_FILENAME);
+}
+
+export function getLegacyEventLogPath(sessionDir: string): string {
+  return join(sessionDir, LEGACY_EVENT_LOG_FILENAME);
+}
 
 /** Rename or merge legacy events.log into events.jsonl when opening a session. */
 export function migrateLegacyEventLog(sessionDir: string): void {
-  const jsonlPath = join(sessionDir, EVENT_LOG_FILENAME);
-  const legacyPath = join(sessionDir, LEGACY_EVENT_LOG_FILENAME);
+  const jsonlPath = getEventLogPath(sessionDir);
+  const legacyPath = getLegacyEventLogPath(sessionDir);
 
   if (!existsSync(legacyPath)) return;
 
@@ -76,7 +84,7 @@ export class EventLog {
     const sessionDir = join(logDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
     migrateLegacyEventLog(sessionDir);
-    this.logPath = join(sessionDir, EVENT_LOG_FILENAME);
+    this.logPath = getEventLogPath(sessionDir);
     this.fd = openSync(this.logPath, "a");
   }
 
