@@ -16,7 +16,7 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 npm install
 npm run build    # TypeScript compile → dist/
 npm run dev      # Run with tsx (no build step)
-npm test         # 23 tests, <500ms
+npm test         # 19 files, 226 tests, ~<1s
 ```
 
 Requires Node 22+. Native dependencies are optional (see Embedder Config below).
@@ -42,6 +42,9 @@ npm start -- resume <session_id>
 
 # Debug mode (saves compiled prompts, verbose tool blocks)
 ARIA_DEBUG=true npm start
+
+# Explicit config file
+aria --config /path/to/aria.config.toml
 ```
 
 ### Configuration
@@ -100,8 +103,8 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | Command | Function |
 |---|---|
 | `/exit` | End session cleanly (triggers summariser, prints summary) |
-| `/state` | List all state objects and their tiers |
-| `/stats` | Session stats and memory tier counts |
+| `/state` | List state objects and tiers, or show empty-state guidance |
+| `/stats` | Session metadata + working-memory + persistent-memory stats |
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
@@ -122,7 +125,7 @@ npx vitest run -t "should compile prompt"         # Single test
 npx vitest                                        # Watch mode
 ```
 
-Tests live in `tests/`. 23 tests across 6 files. All must pass before committing.
+Tests live in `tests/`. Keep the full suite passing before committing.
 
 **Conventions:**
 - Add tests for any new logic before committing.
