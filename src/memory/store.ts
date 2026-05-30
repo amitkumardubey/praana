@@ -97,6 +97,10 @@ export class MemoryStore {
     this.db.close();
   }
 
+  getEntryCount(): number {
+    return getAllEntries(this.db).length;
+  }
+
   // ---- Session lifecycle ----
 
   async sessionStart(ctx: SessionContext): Promise<Digest> {

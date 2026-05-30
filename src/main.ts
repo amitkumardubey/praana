@@ -261,7 +261,7 @@ async function handleSlashCommand(
     case "/state": {
       const objects = session.stateGraph.list();
       if (objects.length === 0) {
-        console.log("No state objects.");
+        console.log("No state objects yet this session. Use remember() or create_task() to start tracking.");
       } else {
         console.log(`\nState objects (${objects.length}):`);
         for (const o of objects) {
@@ -275,7 +275,16 @@ async function handleSlashCommand(
 
     case "/stats": {
       const stats = session.getMemoryStats();
-      console.log("\nMemory stats:");
+      const startedAt = new Date(session.getStartedAt()).toISOString();
+      const uptimeSec = Math.floor(session.getUptimeMs() / 1000);
+      const persistentCount = session.getPersistentMemoryEntryCount();
+      console.log("\nSession:");
+      console.log(`  Session ID: ${session.id}`);
+      console.log(`  Turns: ${session.getTurnCount()}`);
+      console.log(`  Started at: ${startedAt}`);
+      console.log(`  Uptime: ${uptimeSec}s`);
+
+      console.log("\nWorking memory (this session):");
       console.log(`  Total: ${stats.total}`);
       console.log(`  Active: ${stats.active}`);
       console.log(`  Soft: ${stats.soft}`);
@@ -286,6 +295,8 @@ async function handleSlashCommand(
       console.log(`  By kind: ${kindParts.length ? kindParts.join(", ") : "(none)"}`);
 
       if (session.memoryEnabled) {
+        console.log("\nPersistent memory (SQLite):");
+        console.log(`  Total memories: ${persistentCount ?? "(unavailable)"}`);
         console.log(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
       }
       break;
@@ -458,8 +469,8 @@ function printHelp(): void {
   ].join("\n");
   const commands = [
     "  /exit                    End session and save",
-    "  /state                   List all state objects",
-    "  /stats                   Show memory tier counts and kind distribution",
+    "  /state                   List all state objects for this session",
+    "  /stats                   Show session, working-memory, and persistent-memory stats",
     "  /digest                  Print cross-session memory digest",
     "  /events                  Show last 20 events",
     "  /recall <query>          Search cross-session knowledge base",
