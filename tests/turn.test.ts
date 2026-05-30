@@ -480,6 +480,37 @@ describe("runTurn", () => {
     expect(toolResults.length).toBeGreaterThan(0);
   });
 
+  it("calls onToolCallsStart before tool execution", async () => {
+    const toolCallGenerator = (async function* () {
+      yield { type: "text_delta", delta: "Thinking..." };
+      yield { type: "thinking_delta", delta: "hmm" };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo hi" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Thinking..." },
+            { type: "toolUse", toolUse: { id: "call-1", name: "shell", arguments: { command: "echo hi" } } },
+          ],
+        },
+      };
+    })();
+
+    vi.mocked(piStream).mockReturnValue(toolCallGenerator as any);
+
+    const session = makeMockSession();
+    const onToolCallsStart = vi.fn();
+
+    await runTurn(session, "do something", undefined, { onToolCallsStart });
+
+    expect(onToolCallsStart).toHaveBeenCalledTimes(1);
+  });
+
   it("calls incrementTurn and prints memory banner on success", async () => {
     const session = makeMockSession();
     const { printMemoryBanner } = await import("../src/ui.js");

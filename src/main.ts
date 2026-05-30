@@ -195,6 +195,9 @@ async function main() {
           closeThinking();
           process.stdout.write(delta);
         },
+        onToolCallsStart: () => {
+          closeThinking();
+        },
       });
       closeThinking();
       stopSpinnerOnce(); // no deltas arrived (e.g. empty model response)

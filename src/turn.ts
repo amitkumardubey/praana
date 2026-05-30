@@ -24,6 +24,7 @@ export async function runTurn(
   options?: {
     onTextDelta?: (delta: string) => void;
     onThinkingDelta?: (delta: string) => void;
+    onToolCallsStart?: () => void;
     signal?: AbortSignal;
   }
 ): Promise<string> {
@@ -192,6 +193,9 @@ export async function runTurn(
     }
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
+
+    // Notify caller that tool calls are about to execute (e.g. close thinking block)
+    if (options?.onToolCallsStart) options.onToolCallsStart();
 
     for (const tc of pendingToolCalls) {
       if (options?.signal?.aborted) {
