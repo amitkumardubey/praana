@@ -28,14 +28,16 @@ export class Session {
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
   debug = false;
   private ended = false;
+  private readonly startedAt: number;
   private turnCount = 0;
   private modelOverride: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
 
-  private constructor(id: string, cwd: string, config: AriaConfig) {
+  private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
     this.cwd = cwd;
     this.config = config;
+    this.startedAt = startedAt;
 
     const logDir = config.session.log_dir;
     this.eventLog = new EventLog(id, logDir);
@@ -45,11 +47,12 @@ export class Session {
   }
 
   static createNew(id: string, cwd: string, config: AriaConfig): Session {
-    const session = new Session(id, cwd, config);
+    const startedAt = Date.now();
+    const session = new Session(id, cwd, config, startedAt);
 
     writeSessionMeta(config.session.log_dir, {
       session_id: id,
-      started_at: Date.now(),
+      started_at: startedAt,
       cwd,
       agent: "aria",
     });
@@ -132,7 +135,7 @@ export class Session {
       throw new Error(`Session ${sessionId} not found.`);
     }
 
-    const session = new Session(sessionId, cwd, cfg);
+    const session = new Session(sessionId, cwd, cfg, meta.started_at);
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
@@ -219,6 +222,14 @@ export class Session {
     return this.turnCount;
   }
 
+  getStartedAt(): number {
+    return this.startedAt;
+  }
+
+  getUptimeMs(): number {
+    return Math.max(0, Date.now() - this.startedAt);
+  }
+
   setModelOverride(model: string | null): void {
     this.modelOverride = model && model.trim() ? model.trim() : null;
   }
@@ -273,6 +284,11 @@ export class Session {
     }
 
     return { total: snapshot.length, active, soft, hard, byKind };
+  }
+
+  getPersistentMemoryEntryCount(): number | null {
+    if (!this.memoryEnabled || !this.memoryStore) return null;
+    return this.memoryStore.getEntryCount();
   }
 
   getSessionSummary(): {
