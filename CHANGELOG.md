@@ -4,19 +4,42 @@
 
 ## [0.3.0] — 2026-05-30
 
-Phase-0 stabilization and documentation alignment release.
+Phase-0 foundation, stabilization, and UX release.
 
-### Fixes
-- Session-end lifecycle now tolerates summarizer aborts on clean `/exit` without logging false failures (#4).
-- `/stats` now clearly separates session metadata, working memory, and persistent memory details; `/state` has actionable empty-state guidance (#9).
-- CLI now honors `--config` / `-c` explicit config paths during startup and displays loaded config source correctly.
+### CLI & UX
+- Added global `aria` CLI installation flow via `npm link` / `bin/aria.js`.
+- Added session status bar above the prompt for faster context awareness.
+- Added turn interruption support via `Esc Esc` and `Ctrl+C`.
+- Separated thinking stream from response text rendering for cleaner output.
+- Added polished terminal rendering with `chalk`, `ora`, `boxen`, and markdown rendering support.
+- Added in-session event log search and legacy log migration handling.
+- `/stats` now separates session metadata, working memory, and persistent memory details; `/state` now has actionable empty-state guidance (#9).
+- CLI startup now honors explicit `--config` / `-c` path selection and reports the loaded config source.
 
 ### Memory & Recall
-- Semantic embedder auto strategy shipped and documented: probe Ollama first, fall back gracefully to hash embedder when unavailable (#18).
+- Added semantic embedding strategy foundation with `auto` behavior (Ollama probe → hash fallback).
+- Added Ollama summarizer support for session-end learnings.
+- Improved recall quality with hybrid FTS + vector candidate retrieval.
+- Separated recall match scoring from confidence and added runtime memory kind validation.
+- Hardened vector re-embedding migration behavior with retry safety.
+- Session-end flow now tolerates summarizer abort errors and avoids false failure logs on clean `/exit` (#4).
+- Added timeout-safe session end behavior to avoid blocking shutdown on long summarizer calls.
+
+### LLM / Provider Support
+- Added OpenCode Zen provider support and provider-registry test coverage.
+
+### Reliability & Tooling
+- Fixed default limit behavior for `search_session_log`.
+- Fixed thinking block state reset before tool-call output.
+- Added stricter JSON/TOML content validation in `write_file`.
+
+### Testing
+- Expanded automated coverage substantially across turn orchestration, rendering/UI, memory behavior, status bar, event log, interrupt handling, embedder/summarizer factories, and CLI argument parsing.
 
 ### Documentation
-- Completed Phase-0 consistency pass across `README.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/concepts.md`, and `ROADMAP.md`.
-- Roadmap now records Phase-0 completion items with concrete issue/PR references.
+- Added and evolved `ROADMAP.md` for phase tracking and priorities.
+- Updated `README.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`, and `docs/concepts.md` for current behavior.
+- Marked semantic embedder auto strategy status and recorded Phase-0 completion items (`#4`, `#9`, `#18`).
 
 ## [0.2.0] — 2026-05-24
 
