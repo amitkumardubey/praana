@@ -313,11 +313,16 @@ export class Session {
     return out;
   }
 
-  async end(reason: "clean" | "aborted" | "error", events?: SessionEvent[]): Promise<void> {
+  async end(
+    reason: "clean" | "aborted" | "error",
+    events?: SessionEvent[],
+    opts?: { memoryTimeoutMs?: number }
+  ): Promise<void> {
     if (this.ended) return;
     this.ended = true;
 
     if (this.memoryEnabled && this.memoryStore) {
+      const memoryTimeoutMs = opts?.memoryTimeoutMs ?? 0;
       try {
         this.eventLog.append({
           kind: "system_note",
@@ -328,16 +333,49 @@ export class Session {
             reason,
           },
         });
-        await this.memoryStore.sessionEnd(reason, events);
-        this.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_end_success",
-            reason,
-          },
-        });
+        const finish = this.memoryStore.sessionEnd(reason, events);
+
+        if (memoryTimeoutMs > 0) {
+          const completed = await waitForCompletion(finish, memoryTimeoutMs);
+          if (completed) {
+            this.eventLog.append({
+              kind: "system_note",
+              actor: "kernel",
+              payload: {
+                type: "memory_lifecycle",
+                phase: "session_end_success",
+                reason,
+              },
+            });
+          } else {
+            // Ensure late failures are not unhandled after we stop waiting.
+            void finish.catch((err: unknown) => {
+              console.warn("[memory] Background session-end task failed:", (err as Error).message);
+            });
+            console.warn("[memory] Session-end summarization is continuing in background.");
+            this.eventLog.append({
+              kind: "system_note",
+              actor: "kernel",
+              payload: {
+                type: "memory_lifecycle",
+                phase: "session_end_background",
+                reason,
+                timeoutMs: memoryTimeoutMs,
+              },
+            });
+          }
+        } else {
+          await finish;
+          this.eventLog.append({
+            kind: "system_note",
+            actor: "kernel",
+            payload: {
+              type: "memory_lifecycle",
+              phase: "session_end_success",
+              reason,
+            },
+          });
+        }
       } catch (err) {
         console.warn("[memory] Error during session end:", (err as Error).message);
         this.eventLog.append({
@@ -385,6 +423,14 @@ function basename(p: string): string {
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
+}
+
+async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  const timeout = new Promise<boolean>((resolve) => {
+    setTimeout(() => resolve(false), timeoutMs);
+  });
+  const done = promise.then(() => true);
+  return Promise.race([done, timeout]);
 }
 
 /** Find git root of the given directory, or return the directory itself. */
