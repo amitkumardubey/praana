@@ -91,13 +91,20 @@ export function loadConfig(configPath?: string): AriaConfig {
     // If explicit path provided, use it (try both .json and .toml)
     if (configPath.endsWith('.json')) {
       userConfig = loadJsonConfig(configPath);
+      if (Object.keys(userConfig).length > 0) _loadedSources.push(configPath);
     } else if (configPath.endsWith('.toml')) {
       userConfig = loadTomlConfig(configPath);
+      if (Object.keys(userConfig).length > 0) _loadedSources.push(configPath);
     } else {
       // Try both extensions
-      userConfig = loadJsonConfig(configPath + '.json');
-      if (Object.keys(userConfig).length === 0) {
-        userConfig = loadTomlConfig(configPath + '.toml');
+      const jsonPath = configPath + '.json';
+      userConfig = loadJsonConfig(jsonPath);
+      if (Object.keys(userConfig).length > 0) {
+        _loadedSources.push(jsonPath);
+      } else {
+        const tomlPath = configPath + '.toml';
+        userConfig = loadTomlConfig(tomlPath);
+        if (Object.keys(userConfig).length > 0) _loadedSources.push(tomlPath);
       }
     }
   } else {
