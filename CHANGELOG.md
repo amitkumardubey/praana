@@ -2,9 +2,21 @@
 
 ## [Unreleased]
 
-### Docs
-- Mark issue #18 as shipped on `main`: semantic embedder auto strategy (Ollama → Hash fallback) is implemented.
-- Update roadmap and README status to reflect current embedder capabilities and remaining recall work.
+## [0.3.0] — 2026-05-30
+
+Phase-0 stabilization and documentation alignment release.
+
+### Fixes
+- Session-end lifecycle now tolerates summarizer aborts on clean `/exit` without logging false failures (#4).
+- `/stats` now clearly separates session metadata, working memory, and persistent memory details; `/state` has actionable empty-state guidance (#9).
+- CLI now honors `--config` / `-c` explicit config paths during startup and displays loaded config source correctly.
+
+### Memory & Recall
+- Semantic embedder auto strategy shipped and documented: probe Ollama first, fall back gracefully to hash embedder when unavailable (#18).
+
+### Documentation
+- Completed Phase-0 consistency pass across `README.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/concepts.md`, and `ROADMAP.md`.
+- Roadmap now records Phase-0 completion items with concrete issue/PR references.
 
 ## [0.2.0] — 2026-05-24
 

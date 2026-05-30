@@ -1,6 +1,6 @@
 {
   "name": "aria",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Terminal coding agent with adaptive context and cross-session memory",
   "type": "module",
   "bin": {

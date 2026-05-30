@@ -4,7 +4,7 @@
 
 ARIA organises working state into three tiers that compress automatically as a session grows — keeping what matters in full view without blowing up the context window. Between sessions it learns from transcripts: extracting decisions, patterns, and mistakes so the next session starts informed instead of blank.
 
-> **Status:** v0.2.0 — experimental. The core systems work. Expect rough edges on long or complex tasks.
+> **Status:** v0.3.0 — experimental. The core systems work. Expect rough edges on long or complex tasks.
 
 ---
 
