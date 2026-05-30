@@ -45,9 +45,23 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             },
           });
 
+          if (result.entries.length === 0) {
+            return {
+              ok: true,
+              entries: [],
+              note:
+                "No cross-session matches. If this was discussed earlier in this same session, use search_session_log(query, kinds?, limit?) to recover it from events.jsonl.",
+            };
+          }
+
           return { ok: true, entries: result.entries };
         } catch (err: any) {
-          return { ok: false, error: err?.message ?? "Recall failed" };
+          const message = err?.message ?? "Recall failed";
+          return {
+            ok: false,
+            error:
+              `${message}. For same-session history, use search_session_log(query, kinds?, limit?) instead of recall.`,
+          };
         }
       },
     }),

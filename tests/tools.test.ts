@@ -294,11 +294,12 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
 
     it('should pass kinds filter', async () => {
       (memoryStore.recall as any).mockResolvedValue({ entries: [] });
-      await tools.recall.execute({ query: 'test', kinds: ['fact', 'decision'] });
+      const result = await tools.recall.execute({ query: 'test', kinds: ['fact', 'decision'] });
       expect(memoryStore.recall).toHaveBeenCalledWith('test', {
         limit: 10,
         kinds: ['fact', 'decision'],
       });
+      expect((result as any).note).toContain('search_session_log');
     });
 
     it('should return error when memory is disabled', async () => {
@@ -318,6 +319,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
       const result = await tools.recall.execute({ query: 'test' });
       expect(result.ok).toBe(false);
       expect((result as any).error).toContain('DB error');
+      expect((result as any).error).toContain('search_session_log');
     });
 
     it('should log recall event', async () => {
