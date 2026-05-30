@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
 import { compile } from "../src/compiler.js";
+import type { SummarizerLLM } from "../src/memory/index.js";
 
 describe("Memory Learning Impact", () => {
   it("should carry remembered preference into a later session digest and prompt", async () => {
@@ -47,5 +48,33 @@ describe("Memory Learning Impact", () => {
     });
     expect(prompt).toContain("# Cross-Session Memory");
     expect(prompt).toContain(learned);
+  });
+
+  it("does not fail session end when summarizer aborts", async () => {
+    const abortingSummarizer: SummarizerLLM = {
+      name: "test-abort",
+      available: async () => true,
+      complete: async () => {
+        throw new Error("This operation was aborted");
+      },
+    };
+
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+      summarizer: abortingSummarizer,
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    });
+
+    await expect(
+      store.sessionEnd("clean", [{ type: "user_message", timestamp: Date.now(), content: "hello" }]),
+    ).resolves.toBeUndefined();
   });
 });
