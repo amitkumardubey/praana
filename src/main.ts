@@ -5,7 +5,7 @@ import { startSpinner, stopSpinner, printBox, printMarkdown } from "./ui.js";
 import { buildStatusBarInput, renderStatusBar } from "./status-bar.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { migrateLegacyEventLog } from "./event-log.js";
+import { EVENT_LOG_FILENAME, migrateLegacyEventLog } from "./event-log.js";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { TurnAbortedError, TurnController, EscInterruptListener } from "./turn-control.js";
@@ -367,7 +367,7 @@ async function handleSlashCommand(
       for (const d of dirs) {
         const sessionDir = join(logDir, d.name);
         migrateLegacyEventLog(sessionDir);
-        const eventsPath = join(sessionDir, "events.jsonl");
+        const eventsPath = join(sessionDir, EVENT_LOG_FILENAME);
         const metaPath = join(logDir, d.name, "meta.json");
         let events = 0, cwd = "?", time = "?";
         try {
