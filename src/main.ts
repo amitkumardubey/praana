@@ -229,7 +229,7 @@ async function main() {
       sessionEnded = true;
       console.log("\nShutting down...");
       const events = session.getTranscriptEvents();
-      await session.end("clean", events);
+      await session.end("clean", events, { memoryTimeoutMs: 5_000 });
       printSessionEndSummary(session);
     }
     process.exit(0);
@@ -254,9 +254,6 @@ async function handleSlashCommand(
     case "/exit":
     case "/quit": {
       console.log("Ending session...");
-      const events = session.getTranscriptEvents();
-      await session.end("clean", events);
-      printSessionEndSummary(session);
       rl.close();
       return;
     }
