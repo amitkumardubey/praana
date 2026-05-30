@@ -97,7 +97,7 @@ Memories exist at two levels:
 
 At session start, both levels are ranked and merged into the digest — global knowledge first, then project-specific on top of it.
 
-**Honest note on current state:** The scoping architecture supports both levels, but the high-level global/project distinction in the recall pipeline is still being built. The recall system also uses a deterministic hash-based embedder — fast, zero dependencies, but not semantic. "Fix login bug" and "repair authentication defect" won't surface the same memories. Both are on the near-term roadmap.
+**Honest note on current state:** The scoping architecture supports both levels, but the high-level global/project distinction in the recall pipeline is still being built. Semantic recall is now available via `embedder` strategies (`auto`, `ollama`, `transformers`, `llama-cpp`) with graceful fallback to hash when semantic backends are unavailable.
 
 ### Project Context — AGENTS.md
 
@@ -239,7 +239,7 @@ Node 22+. TypeScript throughout.
 
 The core works. What needs to come next, in order:
 
-- **Semantic embeddings** — replace the hash embedder with a local model (Ollama `nomic-embed-text`) so recall is actually semantic
+- **Global + project recall merge** — query both scopes and combine results with project-aware precedence
 - **Confidence reinforcement** — wire the feedback loop so recalled memories that help get stronger; unused ones fade faster
 - **Multi-file operations** — create multiple files in one turn instead of three
 - **Diff preview** — show a unified diff before applying `edit_file`
