@@ -179,7 +179,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Key Components
 - `MemoryStore` (`src/memory/store.ts`): Coordinates high-level cross-session memory operations, session starts, and session ends.
 - SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.aria/memory.db`.
-- Embedder (`src/memory/embeddings.ts`): `HashEmbedder` generates deterministic 384-dimension float32 unit-sphere vectors via a hash-seeded projection. Fast and dependency-free, but **not semantic** — similar phrases with different words produce different vectors. The `Embedder` interface is swappable; `OllamaEmbedder` is planned.
+- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts`): supports `auto`, `ollama`, `transformers`, `llama-cpp`, and `hash`. `auto` probes Ollama first and falls back to hash with a warning.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
 - Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the full transcript to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) that maps to an initial confidence score.
 
@@ -255,8 +255,8 @@ log_dir = "~/.aria/sessions"
 
 The interactive terminal (`src/main.ts`) runs a readline loop supporting slash commands:
 - `/exit` — ends session, triggers summarizer, saves and quits
-- `/state` — lists all state objects and their tiers
-- `/stats` — lists memory tier distribution and DB paths
+- `/state` — lists all state objects and tiers, or prints an empty-state guidance message
+- `/stats` — prints session metadata plus working-memory and persistent-memory stats
 - `/digest` — prints the current cross-session markdown digest
 - `/events` — lists the last 20 events in the event log
 - `/recall <query>` — performs manual vector recall query

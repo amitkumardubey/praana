@@ -95,9 +95,9 @@ Memories exist at two levels:
 - **Project-level** — scoped to the current codebase. `fact`, `decision`, and most `pattern` entries live here. "This API uses JWT." "The auth middleware is in `src/lib/auth`." Invisible to other projects.
 - **Global** — applies across every project you work on. Preferences, personal constraints, universal patterns. "Always write tests before implementation." "Never use `any` in TypeScript." These follow you into every session.
 
-At session start, both levels are ranked and merged into the digest — global knowledge first, then project-specific on top of it.
+At session start, ARIA builds a ranked digest from memory in scope for the current session.
 
-**Honest note on current state:** The scoping architecture supports both levels, but the high-level global/project distinction in the recall pipeline is still being built. Semantic recall is now available via `embedder` strategies (`auto`, `ollama`, `transformers`, `llama-cpp`) with graceful fallback to hash when semantic backends are unavailable.
+**Honest note on current state:** Semantic recall is available via `embedder` strategies (`auto`, `ollama`, `transformers`, `llama-cpp`) with graceful fallback to hash when semantic backends are unavailable. Global+project recall merging is still in progress.
 
 ### Project Context — AGENTS.md
 
@@ -119,10 +119,10 @@ The agent can create or update `AGENTS.md` via `write_file` as it discovers usef
 
 | Command | What it does |
 |---|---|
-| `/state` | List all working memory objects and their tiers |
+| `/state` | List session state objects (or explain how to start tracking) |
 | `/digest` | Show the cross-session memory digest |
 | `/recall <query>` | Search memory manually |
-| `/stats` | Token counts, tier distribution, session stats |
+| `/stats` | Session metadata plus working/persistent memory stats |
 | `/events` | Last 20 events in the session log |
 | `/model <name>` | Switch models mid-session |
 | `/sessions` | List past sessions for resuming |

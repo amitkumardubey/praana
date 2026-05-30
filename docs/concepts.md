@@ -72,13 +72,13 @@ Entries exist at two levels:
 
 > `"Always write tests before implementation"` · `"Never use any in TypeScript"` · `"Prefer functional over class-based components"`
 
-At session start, both levels are queried and merged — global knowledge forms the base, project-specific knowledge sits on top.
+At session start, ARIA builds a ranked digest from memory in scope for the current session.
 
 ### Scoping
 
 Every memory entry carries scope labels: `user:<hash>`, `agent:aria`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
 
-Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. The recall pipeline queries both levels and merges results, global entries forming the base layer of the digest.
+Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. Recall enforces AND-scoping in all cases; cross-scope merge behavior is still being completed.
 
 ### Ranking and Confidence
 
@@ -90,11 +90,9 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-The current embedder (`HashEmbedder`) generates deterministic 384-dimension vectors using a hash-seeded projection. This is fast and requires no external API calls or local models.
+ARIA supports multiple embedders: `auto` (Ollama probe then fallback), `ollama`, `transformers`, `llama-cpp`, and `hash`.
 
-The trade-off: the vectors are **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce completely different vectors. Recall quality depends on keyword overlap. When vector search returns nothing useful, ARIA falls back to a full scope-based scan.
-
-Semantic embedding support (Ollama `nomic-embed-text`) is planned and the embedder interface is already swappable — `HashEmbedder` and a future `OllamaEmbedder` implement the same `Embedder` interface.
+When `hash` is used, vectors are deterministic but **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce different vectors. When vector search returns nothing useful, ARIA falls back to scope-based retrieval.
 
 ### Session Lifecycle
 
