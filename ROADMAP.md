@@ -6,6 +6,11 @@ What's being worked on and what's coming next. This covers the near term — rou
 
 ## Shipped
 
+- **Phase-0 stabilization completed (2026-05-30)** — closed issues:
+  - `#4` Session-end abort handling on clean `/exit`
+  - `#9` `/stats` and `/state` clarity + persistent memory counts
+  - `#18` Semantic embedder auto strategy docs/status alignment
+  - CLI `--config` startup path handling fix (PR #68)
 - **AGENTS.md support** — ARIA reads `AGENTS.md` (and `CLAUDE.md` as fallback) from the project root and global `~/.aria/AGENTS.md`, merging them into the system prompt on every session.
 - **Semantic embeddings (auto strategy)** — `embedder = "auto"` now probes Ollama (`nomic-embed-text`) and falls back to HashEmbedder with warnings when unavailable. Opt-in `transformers` and `llama-cpp` strategies are also supported.
 
