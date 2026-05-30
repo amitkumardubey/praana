@@ -51,6 +51,12 @@ function queryTerms(query: string): string[] {
   return query.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
 }
 
+function isAbortLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "AbortError") return true;
+  return /\babort(ed)?\b/i.test(err.message);
+}
+
 function lexicalMatchScore(
   entry: MemoryEntry,
   terms: string[],
@@ -123,13 +129,21 @@ export class MemoryStore {
     endSessionRow(this.db, this.sessionId, now, reason);
 
     if (events && events.length > 0 && this.summarizer) {
-      const learnings = await extractLearnings(this.summarizer, events);
-      for (const l of learnings) {
-        await this.remember(l.content, {
-          kind: l.kind,
-          certainty: l.certainty,
-          scope: l.scope_hints ?? this.defaultScopes,
-        });
+      try {
+        const learnings = await extractLearnings(this.summarizer, events);
+        for (const l of learnings) {
+          await this.remember(l.content, {
+            kind: l.kind,
+            certainty: l.certainty,
+            scope: l.scope_hints ?? this.defaultScopes,
+          });
+        }
+      } catch (err) {
+        if (isAbortLikeError(err)) {
+          console.warn("[memory] Session-end summarizer aborted; skipping learnings for this session.");
+          return;
+        }
+        throw err;
       }
     }
   }
