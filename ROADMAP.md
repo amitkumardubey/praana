@@ -7,12 +7,12 @@ What's being worked on and what's coming next. This covers the near term — rou
 ## Shipped
 
 - **AGENTS.md support** — ARIA reads `AGENTS.md` (and `CLAUDE.md` as fallback) from the project root and global `~/.aria/AGENTS.md`, merging them into the system prompt on every session.
+- **Semantic embeddings (auto strategy)** — `embedder = "auto"` now probes Ollama (`nomic-embed-text`) and falls back to HashEmbedder with warnings when unavailable. Opt-in `transformers` and `llama-cpp` strategies are also supported.
 
 ---
 
 ## In Progress
 
-- **Semantic embeddings** — replacing the hash-based embedder with a local semantic model so recall actually works. Auto-detects Ollama; falls back gracefully.
 - **Global memory** — memories that apply across all projects (preferences, personal constraints, universal patterns) alongside project-scoped memories.
 - **Global + project recall merge** — query both global (`user+agent`) and project (`user+agent+context`) scopes, merge the result set, and make project-specific memories override global ones when they conflict.
 

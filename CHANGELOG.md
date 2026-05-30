@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Docs
+- Mark issue #18 as shipped on `main`: semantic embedder auto strategy (Ollama → Hash fallback) is implemented.
+- Update roadmap and README status to reflect current embedder capabilities and remaining recall work.
+
 ## [0.2.0] — 2026-05-24
 
 First public release. Initial launch after extensive iteration and evaluation.
