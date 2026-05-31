@@ -99,6 +99,66 @@ describe("Memory safety", () => {
     store.close();
   });
 
+  it("recalls both project and global memories in a project-scoped session", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    const base = {
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_label: "test",
+    };
+
+    await store.sessionStart({ ...base, context_id: "ctx-a" });
+    await store.remember("global note: always prefer strict mode", {
+      kind: "fact",
+      certainty: "high",
+      scope: ["user:u1", "agent:aria-test"],
+    });
+    await store.remember("project note: checkout schema migration", {
+      kind: "fact",
+      certainty: "high",
+    });
+
+    const result = await store.recall("note", { limit: 10 });
+    const contents = result.entries.map((e) => e.content);
+
+    expect(contents).toContain("global note: always prefer strict mode");
+    expect(contents).toContain("project note: checkout schema migration");
+
+    store.close();
+  });
+
+  it("includes global memories in digest for project-scoped session start", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    const base = {
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_label: "test",
+    };
+
+    await store.sessionStart({ ...base, context_id: "ctx-a" });
+    await store.remember("global preference: keep answers concise", {
+      kind: "preference",
+      certainty: "high",
+      scope: ["user:u1", "agent:aria-test"],
+    });
+    await store.sessionEnd("clean");
+
+    const digest = await store.sessionStart({ ...base, context_id: "ctx-b" });
+    expect(digest.markdown).toContain("global preference: keep answers concise");
+
+    store.close();
+  });
+
   it("finds scoped FTS matches even when unscoped matches exceed the candidate limit", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",

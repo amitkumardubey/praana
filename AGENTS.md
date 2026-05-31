@@ -229,4 +229,5 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* reque
 - **Commits:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`
 - **Tags:** Semver — `v0.2.0`
 - **Branch:** `main`
+- **Issue work:** Create a dedicated branch for each GitHub issue before making code changes (example: `feat/phase1-issue-56`).
 - **Before commit:** `npm run build && npm test` — both must pass clean
