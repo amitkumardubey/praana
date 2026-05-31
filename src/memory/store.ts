@@ -191,6 +191,7 @@ export class MemoryStore {
   async recall(query: string, opts: RecallOptions = {}): Promise<RecallResult> {
     const limit = opts.limit ?? 10;
     const queryScopes = opts.scope ?? this.defaultScopes;
+    const scopeQueries = this.buildScopeQueries(queryScopes);
     const now = Date.now();
 
     if (this.reembedding) {
@@ -207,13 +208,13 @@ export class MemoryStore {
         candidateScores.set(entry.id, { entry, matchScore });
       }
     };
+    const matchesAnyScopeQuery = (entry: MemoryEntry): boolean => {
+      if (scopeQueries.length === 0) return true;
+      return scopeQueries.some((scopes) => this.entryMatchesScopeQuery(entry, scopes));
+    };
+
     const matchesRequestedFilters = (entry: MemoryEntry): boolean => {
-      if (queryScopes.length > 0) {
-        const entryScopeSet = new Set(entry.scopes);
-        for (const scope of queryScopes) {
-          if (!entryScopeSet.has(scope)) return false;
-        }
-      }
+      if (!matchesAnyScopeQuery(entry)) return false;
 
       if (opts.kinds && opts.kinds.length > 0 && !opts.kinds.includes(entry.kind)) {
         return false;
@@ -222,10 +223,12 @@ export class MemoryStore {
       return true;
     };
 
-    const ftsHits = searchByFts(this.db, query, limit * 4, {
-      scopes: queryScopes,
-      kinds: opts.kinds,
-    });
+    const ftsHits = scopeQueries.flatMap((scopes) =>
+      searchByFts(this.db, query, limit * 4, {
+        scopes,
+        kinds: opts.kinds,
+      }),
+    );
     const ftsRanks = ftsHits.map((h) => h.rank);
     const bestFtsRank = Math.min(...ftsRanks);
     const worstFtsRank = Math.max(...ftsRanks);
@@ -255,7 +258,7 @@ export class MemoryStore {
 
     // If neither search path returned candidates, fall back to all entries in scope.
     if (candidateScores.size === 0) {
-      for (const e of getEntriesByScope(this.db, queryScopes)) {
+      for (const e of this.getEntriesForScopeQueries(scopeQueries)) {
         addCandidate(e, 0);
       }
     }
@@ -264,16 +267,7 @@ export class MemoryStore {
 
     // Enforce strict scope isolation: entry must include ALL requested scopes.
     // This keeps vector and fallback paths consistent.
-    if (queryScopes.length > 0) {
-      const queryScopeSet = new Set(queryScopes);
-      candidates = candidates.filter(({ entry }) => {
-        const entryScopeSet = new Set(entry.scopes);
-        for (const scope of queryScopeSet) {
-          if (!entryScopeSet.has(scope)) return false;
-        }
-        return true;
-      });
-    }
+    candidates = candidates.filter(({ entry }) => matchesAnyScopeQuery(entry));
 
     // Filter by kind
     if (opts.kinds && opts.kinds.length > 0) {
@@ -284,7 +278,7 @@ export class MemoryStore {
     // Vector search is limited before scope filtering by sqlite-vec. If its top
     // hits are outside the requested scopes, preserve the old scoped fallback.
     if (candidates.length === 0 && candidateScores.size > 0) {
-      for (const e of getEntriesByScope(this.db, queryScopes)) {
+      for (const e of this.getEntriesForScopeQueries(scopeQueries)) {
         if (!opts.kinds || opts.kinds.includes(e.kind)) {
           addCandidate(e, 0);
         }
@@ -387,7 +381,9 @@ export class MemoryStore {
 
   private async buildDigest(ctx: SessionContext): Promise<Digest> {
     const now = Date.now();
-    const entries = getEntriesByScope(this.db, this.defaultScopes);
+    const entries = this.getEntriesForScopeQueries(
+      this.buildScopeQueries(this.defaultScopes),
+    );
 
     // Score all entries
     const scored = entries.map((e) => ({
@@ -423,5 +419,52 @@ export class MemoryStore {
       empty: included.length === 0,
       entriesIncluded: included,
     };
+  }
+
+  private buildScopeQueries(scopes: string[]): string[][] {
+    if (scopes.length === 0) return [scopes];
+
+    const queries: string[][] = [scopes];
+    const hasContextScope = scopes.some((scope) => scope.startsWith("context:"));
+    if (!hasContextScope) return queries;
+
+    const globalScopes = scopes.filter((scope) => !scope.startsWith("context:"));
+    if (globalScopes.length === scopes.length || globalScopes.length === 0) {
+      return queries;
+    }
+
+    queries.push(globalScopes);
+    return queries;
+  }
+
+  private getEntriesForScopeQueries(scopeQueries: string[][]): MemoryEntry[] {
+    const byId = new Map<string, MemoryEntry>();
+    for (const scopes of scopeQueries) {
+      const entries = scopes.length > 0
+        ? getEntriesByScope(this.db, scopes)
+        : getAllEntries(this.db);
+      for (const entry of entries) {
+        if (!this.entryMatchesScopeQuery(entry, scopes)) continue;
+        if (!byId.has(entry.id)) byId.set(entry.id, entry);
+      }
+    }
+    return Array.from(byId.values());
+  }
+
+  private entryMatchesScopeQuery(entry: MemoryEntry, scopes: string[]): boolean {
+    const entryScopeSet = new Set(entry.scopes);
+    for (const scope of scopes) {
+      if (!entryScopeSet.has(scope)) return false;
+    }
+
+    const queryHasContext = scopes.some((scope) => scope.startsWith("context:"));
+    if (!queryHasContext) {
+      const entryHasContext = entry.scopes.some((scope) =>
+        scope.startsWith("context:")
+      );
+      if (entryHasContext) return false;
+    }
+
+    return true;
   }
 }
