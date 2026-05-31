@@ -511,6 +511,67 @@ describe("runTurn", () => {
     expect(onToolCallsStart).toHaveBeenCalledTimes(1);
   });
 
+  it("reinforces recalled memories when a later tool succeeds in the same turn", async () => {
+    const firstStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "recall", arguments: { query: "streaming" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo ok" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [],
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      };
+    })();
+    vi.mocked(piStream)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const reinforceFromSuccessfulToolOutcome = vi.fn();
+    const session = makeMockSession({
+      memoryStore: { reinforceFromSuccessfulToolOutcome },
+      memoryEnabled: true,
+    });
+
+    vi.mocked(createAllTools).mockReturnValueOnce({
+      recall: {
+        description: "Search memory",
+        parameters: z.object({ query: z.string() }),
+        execute: vi.fn().mockResolvedValue({
+          ok: true,
+          entries: [{ id: "m1", content: "streaming is implemented" }],
+        }),
+      },
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: vi.fn().mockResolvedValue({ ok: true, stdout: "ok" }),
+      },
+    } as any);
+
+    await runTurn(session, "verify streaming");
+
+    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+  });
+
   it("calls incrementTurn and prints memory banner on success", async () => {
     const session = makeMockSession();
     const { printMemoryBanner } = await import("../src/ui.js");

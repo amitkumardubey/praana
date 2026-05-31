@@ -97,4 +97,32 @@ describe("Memory confidence reinforcement", () => {
     expect(rows.c).toBe(1);
     db.close();
   });
+
+  it("reinforceFromSuccessfulToolOutcome boosts confidence immediately", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "aria-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    });
+
+    const { id } = await store.remember("Use streaming when available", {
+      kind: "fact",
+      certainty: "medium",
+    });
+    await new Promise((r) => setTimeout(r, 5));
+
+    const before = store.getAllEntries().find((e) => e.id === id)!;
+    store.reinforceFromSuccessfulToolOutcome([id], 0.2);
+    const after = store.getAllEntries().find((e) => e.id === id)!;
+
+    expect(after.confidence).toBeGreaterThan(before.confidence);
+    store.close();
+  });
 });

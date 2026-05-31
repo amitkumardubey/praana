@@ -15,6 +15,7 @@ import {
   getEntryById,
   insertEntry,
   openMemoryDb,
+  reinforceEntry,
   searchByFts,
   searchByVector,
   stampReinforcement,
@@ -332,6 +333,15 @@ export class MemoryStore {
 
   async unpin(id: string): Promise<void> {
     this.db.prepare("UPDATE entries SET pinned = 0 WHERE id = ?").run(id);
+  }
+
+  reinforceFromSuccessfulToolOutcome(entryIds: string[], alpha = 0.08): void {
+    const uniqueIds = new Set(entryIds);
+    for (const id of uniqueIds) {
+      const entry = getEntryById(this.db, id);
+      if (!entry) continue;
+      reinforceEntry(this.db, id, alpha);
+    }
   }
 
   getAllEntries(): MemoryEntry[] {

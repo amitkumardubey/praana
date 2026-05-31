@@ -28,6 +28,14 @@ export async function runTurn(
     signal?: AbortSignal;
   }
 ): Promise<string> {
+  const successfulToolResult = (result: unknown, isError: boolean): boolean => {
+    if (isError) return false;
+    if (result && typeof result === "object" && "ok" in result) {
+      return (result as { ok?: unknown }).ok !== false;
+    }
+    return true;
+  };
+
   // 1. Append user_message
   session.eventLog.append({
     kind: "user_message",
@@ -193,6 +201,7 @@ export async function runTurn(
     }
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
+    const recalledEntryIdsThisTurn = new Set<string>();
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
     if (options?.onToolCallsStart) options.onToolCallsStart();
@@ -225,6 +234,25 @@ export async function runTurn(
           isError = true;
           result = { ok: false, error: err?.message ?? "Tool execution failed" };
         }
+      }
+
+      if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
+        const entries = (result as { entries?: Array<{ id?: string }> }).entries;
+        if (Array.isArray(entries)) {
+          for (const entry of entries) {
+            if (typeof entry?.id === "string" && entry.id) {
+              recalledEntryIdsThisTurn.add(entry.id);
+            }
+          }
+        }
+      } else if (
+        tc.toolName !== "recall" &&
+        successfulToolResult(result, isError) &&
+        recalledEntryIdsThisTurn.size > 0
+      ) {
+        session.memoryStore?.reinforceFromSuccessfulToolOutcome(
+          Array.from(recalledEntryIdsThisTurn),
+        );
       }
 
       if (!session.debug) {
