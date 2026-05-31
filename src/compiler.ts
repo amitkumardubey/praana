@@ -199,6 +199,9 @@ function buildSystemFrame(
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
     "To recover earlier content from this session (reviews, findings, tool output), use search_session_log — not recall (recall is cross-session SQLite only).",
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
+    "Before making any factual claim about code behavior or capabilities, verify evidence from Active State and Recent Turns first.",
+    "If evidence is missing or stale, check search_session_log for prior tool results and re-read the relevant file/tool output before asserting.",
+    "Do not make negative assertions (for example, 'not implemented') unless you have explicit evidence from the current repository context.",
     "Session event log file: ~/.aria/sessions/<session_id>/events.jsonl",
     "See the Active State and Peripheral Memory sections below for your current working memory."
   );
