@@ -23,11 +23,19 @@ import {
   startSessionRow,
   touchEntry,
   upsertEmbedding,
+  weakenEntry,
 } from "./db.js";
 import type { Embedder } from "./types.js";
 import { extractLearnings } from "./summarizer.js";
+import {
+  CONTRADICTION_MATCH_THRESHOLD,
+  DUPLICATE_MATCH_THRESHOLD,
+  isContradiction,
+  isNearDuplicate,
+} from "./dedup.js";
 import type {
   Digest,
+  ExtractedLearning,
   MemoryEntry,
   MemoryKind,
   RecallOptions,
@@ -138,11 +146,7 @@ export class MemoryStore {
       try {
         const learnings = await extractLearnings(this.summarizer, events);
         for (const l of learnings) {
-          await this.remember(l.content, {
-            kind: l.kind,
-            certainty: l.certainty,
-            scope: l.scope_hints ?? this.defaultScopes,
-          });
+          await this.storeLearning(l);
         }
       } catch (err) {
         if (isAbortLikeError(err)) {
@@ -190,6 +194,43 @@ export class MemoryStore {
     }).catch(() => { /* embedder failure is non-fatal */ });
 
     return { id };
+  }
+
+  private async storeLearning(learning: ExtractedLearning): Promise<void> {
+    const similar = await this.recall(learning.content, {
+      limit: 3,
+      kinds: [learning.kind],
+    });
+
+    const duplicate = similar.entries.find((e) => {
+      const existing = getEntryById(this.db, e.id);
+      if (!existing) return false;
+      return isNearDuplicate(existing.content, learning.content, Math.max(e.match, e.score));
+    });
+    if (duplicate) {
+      reinforceEntry(this.db, duplicate.id, 0.08);
+      this.db
+        .prepare("UPDATE entries SET confirmation_count = confirmation_count + 1 WHERE id = ?")
+        .run(duplicate.id);
+      return;
+    }
+
+    for (const candidate of similar.entries) {
+      if (candidate.match < CONTRADICTION_MATCH_THRESHOLD && candidate.score < CONTRADICTION_MATCH_THRESHOLD) {
+        continue;
+      }
+      const existing = getEntryById(this.db, candidate.id);
+      if (!existing) continue;
+      if (await isContradiction(existing.content, learning.content, this.summarizer)) {
+        weakenEntry(this.db, candidate.id, 0.15);
+      }
+    }
+
+    await this.remember(learning.content, {
+      kind: learning.kind,
+      certainty: learning.certainty,
+      scope: learning.scope_hints ?? this.defaultScopes,
+    });
   }
 
   async recall(query: string, opts: RecallOptions = {}): Promise<RecallResult> {
