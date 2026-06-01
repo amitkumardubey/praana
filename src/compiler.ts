@@ -450,22 +450,23 @@ function capitalizePlural(kind: string): string {
 }
 
 function renderActiveObject(obj: StateObject): string {
+  const focusTag = obj.focused ? "[FOCUS] " : "";
   const prefix = `- ${obj.id} `;
   switch (obj.kind) {
     case "task": {
       const p = obj.payload as TaskPayload;
-      let s = `${prefix}[${p.status}] ${p.title}`;
+      let s = `${prefix}${focusTag}[${p.status}] ${p.title}`;
       if (p.description) s += `\n  ${p.description}`;
       return s;
     }
     case "decision": {
       const p = obj.payload as DecisionPayload;
-      return `${prefix}${p.summary}\n  Rationale: ${p.rationale}`;
+      return `${prefix}${focusTag}${p.summary}\n  Rationale: ${p.rationale}`;
     }
     case "constraint":
     case "note": {
       const text = (obj.payload as { text: string }).text;
-      return `${prefix}${text}`;
+      return `${prefix}${focusTag}${text}`;
     }
   }
 }

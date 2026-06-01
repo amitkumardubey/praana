@@ -54,11 +54,28 @@ export class StateGraph {
     return this.objects.get(id);
   }
 
-  /** All active objects, sorted by created asc, then id asc (deterministic). */
+  /** All active objects; focused object first, then by created asc, id asc. */
   getActive(): StateObject[] {
     return [...this.objects.values()]
       .filter((o) => o.tier === "active")
-      .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1));
+      .sort((a, b) => {
+        const af = a.focused ? 1 : 0;
+        const bf = b.focused ? 1 : 0;
+        if (bf !== af) return bf - af;
+        return a.created - b.created || (a.id < b.id ? -1 : 1);
+      });
+  }
+
+  /** Pin one task/object as focused; clears focus on all others. */
+  setFocus(id: string): boolean {
+    const target = this.objects.get(id);
+    if (!target) return false;
+    for (const obj of this.objects.values()) {
+      obj.focused = obj.id === id;
+    }
+    target.lastTouched = Date.now();
+    this.touchedTurn.set(id, this.turnCount);
+    return true;
   }
 
   /** All soft + hard objects, sorted by updated desc. */
@@ -155,6 +172,17 @@ export class StateGraph {
         if (obj2) {
           obj2.tier = payload.tier as StateTier;
           obj2.lastTouched = payload.lastTouched as number;
+        }
+        break;
+      }
+
+      case "setFocus": {
+        const obj3 = this.objects.get(id);
+        if (obj3) {
+          for (const o of this.objects.values()) {
+            o.focused = o.id === id;
+          }
+          obj3.lastTouched = payload.lastTouched as number;
         }
         break;
       }
