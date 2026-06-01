@@ -150,6 +150,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     stateGraph,
     memoryStore: null,
     memoryEnabled: false,
+    incognito: false,
     digest: null,
     agentsContext: null,
     debug: false,
@@ -173,6 +174,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     },
     setLastCompileMetrics(m: any) { this._lastCompileMetrics = m; },
     getLastCompileMetrics() { return this._lastCompileMetrics; },
+    isIncognito() { return this.incognito ?? false; },
     ...overrides,
   };
 

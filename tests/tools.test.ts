@@ -276,7 +276,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
   beforeEach(() => {
     eventLog = mockEventLog();
     memoryStore = mockMemoryStore();
-    tools = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: true });
+    tools = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: true, incognito: false });
   });
 
   describe('recall', () => {
@@ -303,13 +303,13 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     });
 
     it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false });
+      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
       const result = await toolsDisabled.recall.execute({ query: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
 
     it('should return error when memory store is null', async () => {
-      const toolsNull = createKnowledgeTools({ eventLog, memoryStore: null, memoryEnabled: true });
+      const toolsNull = createKnowledgeTools({ eventLog, memoryStore: null, memoryEnabled: true, incognito: false });
       const result = await toolsNull.recall.execute({ query: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
@@ -376,7 +376,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     });
 
     it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false });
+      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
       const result = await toolsDisabled.remember.execute({ content: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });

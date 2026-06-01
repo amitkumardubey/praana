@@ -10,6 +10,7 @@ export interface ToolRegistryContext {
   stateGraph: StateGraph;
   memoryStore: MemoryStore | null;
   memoryEnabled: boolean;
+  incognito: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
 }
@@ -24,6 +25,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     eventLog: ctx.eventLog,
     memoryStore: ctx.memoryStore,
     memoryEnabled: ctx.memoryEnabled,
+    incognito: ctx.incognito,
   });
 
   const systemTools = createSystemTools({
@@ -50,6 +52,7 @@ export function describeTools(): string[] {
     "hard_unload(id) — Demote object to hard tier",
     "hydrate(id) — Promote object back to active",
     "list_state() — List all state objects",
+    "focus_task(id) — Pin a task/object as current focus",
     "search_session_log(query, kinds?, limit?) — Search current session event log (not cross-session recall)",
     "recall(query, mode?, kinds?) — Search cross-session memory",
     "remember(content, kind?, certainty?, scope?) — Store in cross-session memory (kinds: fact, preference, decision, pattern, mistake, constraint)",

@@ -7,10 +7,11 @@ export interface KnowledgeToolContext {
   eventLog: EventLog;
   memoryStore: MemoryStore | null;
   memoryEnabled: boolean;
+  incognito: boolean;
 }
 
 export function createKnowledgeTools(ctx: KnowledgeToolContext) {
-  const { eventLog, memoryStore, memoryEnabled } = ctx;
+  const { eventLog, memoryStore, memoryEnabled, incognito } = ctx;
 
   return {
     recall: defineTool({
@@ -29,7 +30,12 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
       }),
       execute: async ({ query, kinds }) => {
         if (!memoryEnabled || !memoryStore) {
-          return { ok: false, error: "Cross-session memory is not available." };
+          return {
+            ok: false,
+            error: incognito
+              ? "Incognito mode is active — cross-session memory is disabled for this session."
+              : "Cross-session memory is not available.",
+          };
         }
 
         try {
@@ -86,7 +92,12 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
       }),
       execute: async ({ content, kind, certainty, scope }) => {
         if (!memoryEnabled || !memoryStore) {
-          return { ok: false, error: "Cross-session memory is not available." };
+          return {
+            ok: false,
+            error: incognito
+              ? "Incognito mode is active — cross-session memory writes are disabled."
+              : "Cross-session memory is not available.",
+          };
         }
 
         try {

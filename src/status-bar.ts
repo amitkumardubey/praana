@@ -22,6 +22,7 @@ export interface StatusBarInput {
   debug: boolean;
   thinking: boolean;
   memoryEnabled: boolean;
+  incognito: boolean;
   contextUsedTokens: number;
   contextWindowTokens: number;
   memoryStats: { active: number; soft: number; hard: number };
@@ -137,6 +138,7 @@ export function buildStatusBarInput(
     debug: opts.debug,
     thinking: opts.thinking,
     memoryEnabled: session.memoryEnabled,
+    incognito: session.isIncognito(),
     contextUsedTokens: metrics?.totalTokens ?? 0,
     contextWindowTokens: opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
@@ -150,7 +152,11 @@ export function buildStatusBarInput(
 export function formatStatusBarLines(input: StatusBarInput): string[] {
   const ctx = `${formatTokenCount(input.contextUsedTokens)} / ${formatTokenCount(input.contextWindowTokens)}`;
   const repo = formatRepoLabel(input.repoPath, input.cwd);
-  const memFlag = input.memoryEnabled ? chalk.green("on") : chalk.dim("off");
+  const memFlag = input.incognito
+    ? chalk.magenta("incognito")
+    : input.memoryEnabled
+      ? chalk.green("on")
+      : chalk.dim("off");
   const agents = input.agentsContextLoaded ? chalk.dim("· AGENTS.md") : "";
 
   const line1 = [
