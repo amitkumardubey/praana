@@ -40,6 +40,7 @@ export interface StateObject {
   created: number; // unix ms
   updated: number; // unix ms
   lastTouched: number; // unix ms, for idle-timer tier management
+  focused?: boolean;
 }
 
 // ---- Event Log ----

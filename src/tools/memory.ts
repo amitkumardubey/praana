@@ -211,6 +211,24 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
+    focus_task: defineTool({
+      description:
+        "Pin a task (or any state object) as the current focus. Focused objects render first in active state.",
+      parameters: z.object({
+        id: z.string().describe("Object ID to focus"),
+      }),
+      execute: async ({ id }) => {
+        const obj = stateGraph.get(id);
+        if (!obj) return { ok: false, error: `Object ${id} not found` };
+        stateGraph.setFocus(id);
+        logAction("setFocus", {
+          id,
+          lastTouched: stateGraph.get(id)!.lastTouched,
+        });
+        return { ok: true, id };
+      },
+    }),
+
     search_session_log: defineTool({
       description:
         "Search the current session's event log for earlier messages, tool calls, and results. " +

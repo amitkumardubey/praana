@@ -119,4 +119,22 @@ describe('StateGraph', () => {
     const hydrated3 = sg.autoHydrate('ok');
     expect(hydrated3).toHaveLength(0);
   });
+
+  it('should enforce at-most-one focused object and render it first in getActive', () => {
+    const sg = new StateGraph();
+    const first = sg.create('task', { title: 'First task', status: 'todo' });
+    const second = sg.create('task', { title: 'Second task', status: 'todo' });
+
+    expect(sg.setFocus(second.id)).toBe(true);
+    expect(sg.get(first.id)?.focused).toBe(false);
+    expect(sg.get(second.id)?.focused).toBe(true);
+
+    const active = sg.getActive();
+    expect(active[0].id).toBe(second.id);
+
+    sg.setFocus(first.id);
+    expect(sg.get(first.id)?.focused).toBe(true);
+    expect(sg.get(second.id)?.focused).toBe(false);
+    expect(sg.getActive()[0].id).toBe(first.id);
+  });
 });
