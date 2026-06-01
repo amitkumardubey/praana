@@ -75,9 +75,11 @@ export function migrateLegacyEventLog(sessionDir: string): void {
 export class EventLog {
   private fd: number;
   private logPath: string;
+  private checkpointPath: string;
   private sessionId: string;
   private eventCount = 0;
   private closed = false;
+  private compressedIds: Set<string> = new Set();
 
   constructor(sessionId: string, logDir: string) {
     this.sessionId = sessionId;
@@ -85,7 +87,20 @@ export class EventLog {
     mkdirSync(sessionDir, { recursive: true });
     migrateLegacyEventLog(sessionDir);
     this.logPath = getEventLogPath(sessionDir);
+    this.checkpointPath = join(sessionDir, "compression_checkpoint.json");
     this.fd = openSync(this.logPath, "a");
+    this.loadCompressionCheckpoint();
+  }
+
+  private loadCompressionCheckpoint(): void {
+    try {
+      if (existsSync(this.checkpointPath)) {
+        const data = JSON.parse(readFileSync(this.checkpointPath, "utf-8"));
+        if (Array.isArray(data.compressed_ids)) {
+          this.compressedIds = new Set(data.compressed_ids);
+        }
+      }
+    } catch { /* ignore corrupted checkpoint */ }
   }
 
   append(event: {
@@ -166,6 +181,28 @@ export class EventLog {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /** Mark event IDs as compressed — they will be excluded from readLastUncompressed. */
+  markEventsAsCompressed(eventIds: string[]): void {
+    for (const id of eventIds) {
+      this.compressedIds.add(id);
+    }
+    const data = { compressed_ids: Array.from(this.compressedIds), timestamp: Date.now() };
+    writeFileSync(this.checkpointPath, JSON.stringify(data) + "\n", "utf-8");
+  }
+
+  /** Read last n events, excluding compressed ones. */
+  readLastUncompressed(n: number): Event[] {
+    const all = this.internalRead();
+    if (this.compressedIds.size === 0) return all.slice(-n);
+    const uncompressed = all.filter((e) => !this.compressedIds.has(e.event_id));
+    return uncompressed.slice(-n);
+  }
+
+  /** Get the number of compressed events. */
+  getCompressedCount(): number {
+    return this.compressedIds.size;
   }
 
   close(): void {

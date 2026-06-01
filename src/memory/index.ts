@@ -12,7 +12,7 @@ export {
   listOllamaModelNames,
   pickDefaultChatModel,
 } from "./ollama-summarizer.js";
-export { extractLearnings } from "./summarizer.js";
+export { extractLearnings, summarizeTurns } from "./summarizer.js";
 export type {
   MemoryEntry,
   MemoryKind,

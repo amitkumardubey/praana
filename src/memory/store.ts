@@ -26,7 +26,7 @@ import {
   weakenEntry,
 } from "./db.js";
 import type { Embedder } from "./types.js";
-import { extractLearnings } from "./summarizer.js";
+import { extractLearnings, summarizeTurns } from "./summarizer.js";
 import {
   CONTRADICTION_MATCH_THRESHOLD,
   DUPLICATE_MATCH_THRESHOLD,
@@ -108,6 +108,11 @@ export class MemoryStore {
     this.db.close();
   }
 
+  /** Get the summarizer LLM (may be null if summarizer is disabled). */
+  getSummarizer(): SummarizerLLM | null {
+    return this.summarizer;
+  }
+
   getEntryCount(): number {
     return getAllEntries(this.db).length;
   }
@@ -155,6 +160,31 @@ export class MemoryStore {
         }
         throw err;
       }
+    }
+  }
+
+  /**
+   * Compress a batch of old turns into episodic facts.
+   * Returns the number of facts stored.
+   */
+  async compressTurns(events: SessionEvent[]): Promise<number> {
+    if (!this.summarizer) return 0;
+    try {
+      const facts = await summarizeTurns(this.summarizer, events);
+      for (const fact of facts) {
+        await this.remember(fact.content, {
+          kind: fact.kind,
+          certainty: fact.certainty,
+          pinned: false,
+        });
+      }
+      return facts.length;
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        console.warn("[memory] Turn compression aborted; skipping.");
+        return 0;
+      }
+      throw err;
     }
   }
 
@@ -390,6 +420,16 @@ export class MemoryStore {
 
   getAllEntries(): MemoryEntry[] {
     return getAllEntries(this.db);
+  }
+
+  /** Promote an entry from Layer 1 to Layer 2 (deep memory). */
+  promoteToLayer2(id: string): void {
+    this.db.prepare("UPDATE entries SET layer = 2 WHERE id = ? AND layer = 1").run(id);
+  }
+
+  /** Weaken an entry's confidence by a beta factor (0–1). */
+  weakenEntry(id: string, beta = 0.3): void {
+    weakenEntry(this.db, id, beta);
   }
 
   /**

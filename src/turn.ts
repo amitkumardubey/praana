@@ -77,7 +77,7 @@ export async function runTurn(
   });
 
   // 3. Compile prompt (system only, user input passed as message)
-  const recentEvents = session.eventLog.readLast(
+  const recentEvents = session.eventLog.readLastUncompressed(
     session.config.compiler.recent_turns
   );
   const toolDescs = describeTools();
@@ -97,6 +97,11 @@ export async function runTurn(
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
   });
   session.setLastCompileMetrics(promptMetrics);
+
+  // 3b. Check if history compression is needed
+  if (session.memoryEnabled && session.memoryStore && promptMetrics.recentTurnsTruncated) {
+    await maybeCompressHistory(session);
+  }
 
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
@@ -384,6 +389,64 @@ export function normalizeToolParameters(schema: unknown): Record<string, unknown
     additionalProperties: false,
     properties: {},
   };
+}
+
+/**
+ * Compress old turns into episodic memories when history exceeds the watermark.
+ * This preserves context while reclaiming token budget.
+ */
+async function maybeCompressHistory(session: Session): Promise<void> {
+  const watermark = session.config.compiler.compression_watermark ?? 0.75;
+  const flushFraction = session.config.compiler.compression_flush_fraction ?? 0.30;
+  const recentTurnsBudget = session.config.compiler.recent_turns_token_budget ?? 30_000;
+
+  // Read all uncompressed events and estimate token usage
+  const allEvents = session.eventLog.readLastUncompressed(1000); // read a large batch to find all recent turns
+  if (allEvents.length === 0) return;
+
+  // Calculate token usage of the recent turns section
+  const filtered = allEvents.filter(
+    (e) => e.kind !== "context_action" && e.kind !== "system_note"
+  );
+  let estimatedTokens = Math.ceil("# Recent Turns".length / 4);
+  for (const ev of filtered) {
+    const text = ev.payload.text ?? JSON.stringify(ev.payload.result ?? ev.payload.args ?? "");
+    estimatedTokens += Math.ceil(String(text).length / 4);
+  }
+
+  // Check if we exceed the watermark
+  const usable = recentTurnsBudget;
+  if (estimatedTokens / usable < watermark) return;
+
+  // Determine which events to compress: oldest flush_fraction
+  const toCompressCount = Math.max(1, Math.floor(filtered.length * flushFraction));
+  const toCompress = filtered.slice(0, toCompressCount);
+  if (toCompress.length === 0) return;
+
+  if (session.debug) {
+    printDebug(`compressing ${toCompress.length} events (${Math.round(estimatedTokens)} tokens > ${Math.round(watermark * usable)} watermark)`);
+  }
+
+  // Convert to SessionEvent format for the summarizer
+  const sessionEvents = toCompress.map((ev) => ({
+    type: ev.kind as "user_message" | "agent_message" | "tool_use" | "tool_result",
+    timestamp: ev.timestamp,
+    content: (ev.payload.text as string) ?? undefined,
+    tool_name: (ev.payload.tool as string) ?? undefined,
+    args: (ev.payload.args as Record<string, unknown>) ?? undefined,
+    result: ev.payload.result,
+  }));
+
+  // Compress and store
+  const factsStored = await session.memoryStore!.compressTurns(sessionEvents);
+
+  // Mark events as compressed in the event log
+  const eventIds = toCompress.map((ev) => ev.event_id);
+  session.eventLog.markEventsAsCompressed(eventIds);
+
+  if (session.debug || factsStored > 0) {
+    printDebug(`compressed ${toCompress.length} events → ${factsStored} facts stored`);
+  }
 }
 
 export function applyTierManagement(session: Session): void {
