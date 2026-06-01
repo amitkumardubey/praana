@@ -35,6 +35,8 @@ function seedEntry(dbPath: string): void {
     content: "dimension migration must recover",
     confidence: 0.8,
     pinned: false,
+    layer: 1,
+    confirmation_count: 0,
     created_at: now,
     last_seen_at: now,
     session_id: "session-1",

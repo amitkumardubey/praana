@@ -28,12 +28,16 @@ export function isMemoryKind(value: string): value is MemoryKind {
 
 export type Certainty = "high" | "medium" | "low";
 
+export type MemoryLayer = 1 | 2;
+
 export interface MemoryEntry {
   id: string;              // ULID
   kind: MemoryKind;
   content: string;
   confidence: number;      // 0.0–1.0, starts at creation value
   pinned: boolean;         // never forget, always in digest
+  layer: MemoryLayer;      // 1 = working, 2 = consolidated/deep
+  confirmation_count: number; // sessions that confirmed this entry
   created_at: number;      // unix ms
   last_seen_at: number;    // unix ms, updated on recall touch
   session_id: string;      // which session created it
