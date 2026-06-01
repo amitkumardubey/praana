@@ -37,15 +37,10 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
+import { effectiveConfidence } from "./confidence.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
-}
-
-function effectiveConfidence(entry: MemoryEntry, now: number): number {
-  const days = (now - entry.created_at) / (1000 * 60 * 60 * 24);
-  const decay = Math.pow(0.95, days);          // 5% per day
-  return entry.confidence * decay;
 }
 
 function queryTerms(query: string): string[] {
@@ -173,6 +168,8 @@ export class MemoryStore {
       content: content.slice(0, 1000),
       confidence,
       pinned: opts.pinned ?? false,
+      layer: 1,
+      confirmation_count: 0,
       created_at: now,
       last_seen_at: now,
       session_id: this.sessionId,
@@ -395,12 +392,15 @@ export class MemoryStore {
       this.buildScopeQueries(this.defaultScopes),
     );
 
-    // Score all entries
+    // Score all entries — Layer 2 always ranks before Layer 1
     const scored = entries.map((e) => ({
       entry: e,
       score: effectiveConfidence(e, now) + (e.pinned ? 0.3 : 0),
     }));
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      if (a.entry.layer !== b.entry.layer) return b.entry.layer - a.entry.layer;
+      return b.score - a.score;
+    });
 
     // Build markdown
     const lines: string[] = [];

@@ -72,10 +72,27 @@ export function openMemoryDb(
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(BASE_SCHEMA);
+  ensureLayerColumns(db);
   ensureFtsBackfill(db);
 
   const needsReembed = ensureVectorTable(db, embeddingDim);
   return { db, needsReembed };
+}
+
+function ensureLayerColumns(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(entries)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+
+  if (!names.has("layer")) {
+    db.exec("ALTER TABLE entries ADD COLUMN layer INTEGER NOT NULL DEFAULT 1");
+  }
+  if (!names.has("confirmation_count")) {
+    db.exec(
+      "ALTER TABLE entries ADD COLUMN confirmation_count INTEGER NOT NULL DEFAULT 0",
+    );
+  }
 }
 
 function ensureFtsBackfill(db: Database.Database): void {
@@ -144,8 +161,8 @@ export function clearReembedNeeded(db: Database.Database): void {
 
 export function insertEntry(db: Database.Database, e: MemoryEntry): void {
   const stmt = db.prepare(
-    `INSERT INTO entries (id, kind, content, confidence, pinned, created_at, last_seen_at, session_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO entries (id, kind, content, confidence, pinned, layer, confirmation_count, created_at, last_seen_at, session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   stmt.run(
     e.id,
@@ -153,6 +170,8 @@ export function insertEntry(db: Database.Database, e: MemoryEntry): void {
     e.content,
     e.confidence,
     e.pinned ? 1 : 0,
+    e.layer,
+    e.confirmation_count,
     e.created_at,
     e.last_seen_at,
     e.session_id,
@@ -260,6 +279,8 @@ function rowToEntry(db: Database.Database, row: Record<string, unknown>): Memory
     content: row.content as string,
     confidence: row.confidence as number,
     pinned: row.pinned === 1,
+    layer: (row.layer as number | undefined) === 2 ? 2 : 1,
+    confirmation_count: (row.confirmation_count as number | undefined) ?? 0,
     created_at: row.created_at as number,
     last_seen_at: row.last_seen_at as number,
     session_id: row.session_id as string,
