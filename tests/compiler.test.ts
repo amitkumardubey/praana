@@ -160,6 +160,26 @@ describe('Compiler', () => {
     expect(prompt).toContain('Result: ' + 'W'.repeat(200) + '...');
   });
 
+  it('should include evidence-first assertion checklist in system frame', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).toContain('## Evidence-First Assertions');
+    expect(prompt).toContain('search_session_log or re-read the source');
+    expect(prompt).toContain('negative claims like "X is not implemented"');
+  });
+
   it('should include claim-verification guardrails in system frame', () => {
     const prompt = compile({
       stateGraph: {
@@ -175,12 +195,7 @@ describe('Compiler', () => {
       tokenBudget: 4000,
     });
 
-    expect(prompt).toContain(
-      'Before making any factual claim about code behavior or capabilities, verify evidence from Active State and Recent Turns first.',
-    );
-    expect(prompt).toContain(
-      "Do not make negative assertions (for example, 'not implemented') unless you have explicit evidence from the current repository context.",
-    );
+    expect(prompt).toContain('search_session_log');
   });
 
   it('should enforce per-section memory token ceiling in compileWithMetrics', () => {
