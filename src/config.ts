@@ -41,6 +41,11 @@ const DEFAULT_CONFIG: AriaConfig = {
   session: {
     log_dir: "~/.aria/sessions",
   },
+  consolidation: {
+    enabled: true,
+    promotion_threshold: 3,
+    run_delay_seconds: 30,
+  },
 };
 
 function expandHome(p: string): string {

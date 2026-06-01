@@ -417,6 +417,16 @@ export class MemoryStore {
     return getAllEntries(this.db);
   }
 
+  /** Promote an entry from Layer 1 to Layer 2 (deep memory). */
+  promoteToLayer2(id: string): void {
+    this.db.prepare("UPDATE entries SET layer = 2 WHERE id = ? AND layer = 1").run(id);
+  }
+
+  /** Weaken an entry's confidence by a beta factor (0–1). */
+  weakenEntry(id: string, beta = 0.3): void {
+    weakenEntry(this.db, id, beta);
+  }
+
   /**
    * Remove stale Layer 1 entries with effective confidence below 0.05
    * that have not been seen in 30+ days. Never prunes pinned or Layer 2 entries.

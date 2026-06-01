@@ -159,12 +159,24 @@ export interface SessionConfig {
   log_dir: string;
 }
 
+export interface ConsolidationConfig {
+  /** Enable/disable the background consolidation processor. */
+  enabled: boolean;
+  /** LLM model for consolidation (defaults to memory.summarizer). */
+  model?: string;
+  /** Number of confirmations needed to promote to Layer 2. Default: 3. */
+  promotion_threshold: number;
+  /** Delay in seconds after session end before running consolidation. Default: 30. */
+  run_delay_seconds: number;
+}
+
 export interface AriaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
   compiler: CompilerConfig;
   tiers: TiersConfig;
   session: SessionConfig;
+  consolidation: ConsolidationConfig;
 }
 
 // ---- Session Meta ----
