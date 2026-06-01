@@ -13,6 +13,20 @@ export const HALF_LIFE_DAYS: Record<MemoryKind, number | null> = {
 const LAYER2_HALF_LIFE_MULTIPLIER = 4;
 const MS_PER_DAY = 86_400_000;
 
+/** Per-kind weights when ranking digest entries. */
+export const KIND_WEIGHTS: Record<MemoryKind, number> = {
+  constraint: 1.3,
+  fact: 1.0,
+  preference: 1.2,
+  pattern: 1.1,
+  decision: 0.9,
+  mistake: 0.7,
+};
+
+export function digestScore(entry: MemoryEntry, now: number): number {
+  return effectiveConfidence(entry, now) * (KIND_WEIGHTS[entry.kind] ?? 1.0);
+}
+
 export function effectiveConfidence(entry: MemoryEntry, now: number): number {
   if (entry.pinned) return entry.confidence;
 
