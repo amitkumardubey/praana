@@ -31,6 +31,8 @@ const DEFAULT_CONFIG: AriaConfig = {
     memories_budget_ratio: 0.2,
     skills_budget_ratio: 0.3,
     reserved_output_tokens: 0,
+    compression_watermark: 0.75,
+    compression_flush_fraction: 0.30,
   },
   tiers: {
     idle_soft_after_turns: 20,
@@ -209,6 +211,26 @@ function validateConfig(config: AriaConfig): AriaConfig {
     console.warn("[config] Invalid compiler.recent_turns_token_budget, using default");
     out.compiler.recent_turns_token_budget =
       DEFAULT_CONFIG.compiler.recent_turns_token_budget;
+  }
+
+  // Compression config validation
+  if (
+    out.compiler.compression_watermark !== undefined &&
+    (!Number.isFinite(out.compiler.compression_watermark) ||
+      out.compiler.compression_watermark < 0.5 ||
+      out.compiler.compression_watermark > 1.0)
+  ) {
+    console.warn("[config] Invalid compiler.compression_watermark (must be 0.5–1.0), using default 0.75");
+    out.compiler.compression_watermark = DEFAULT_CONFIG.compiler.compression_watermark;
+  }
+  if (
+    out.compiler.compression_flush_fraction !== undefined &&
+    (!Number.isFinite(out.compiler.compression_flush_fraction) ||
+      out.compiler.compression_flush_fraction < 0.05 ||
+      out.compiler.compression_flush_fraction > 0.5)
+  ) {
+    console.warn("[config] Invalid compiler.compression_flush_fraction (must be 0.05–0.5), using default 0.30");
+    out.compiler.compression_flush_fraction = DEFAULT_CONFIG.compiler.compression_flush_fraction;
   }
 
   return out;

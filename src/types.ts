@@ -144,6 +144,10 @@ export interface CompilerConfig {
   skills_budget_ratio?: number;
   /** Tokens reserved for model output when computing section ceilings. */
   reserved_output_tokens?: number;
+  /** Token usage ratio (0–1) that triggers history compression. Default: 0.75. */
+  compression_watermark?: number;
+  /** Fraction (0–1) of oldest turns to compress when watermark is hit. Default: 0.30. */
+  compression_flush_fraction?: number;
 }
 
 export interface TiersConfig {

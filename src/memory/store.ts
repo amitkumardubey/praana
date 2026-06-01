@@ -26,7 +26,7 @@ import {
   weakenEntry,
 } from "./db.js";
 import type { Embedder } from "./types.js";
-import { extractLearnings } from "./summarizer.js";
+import { extractLearnings, summarizeTurns } from "./summarizer.js";
 import {
   CONTRADICTION_MATCH_THRESHOLD,
   DUPLICATE_MATCH_THRESHOLD,
@@ -155,6 +155,31 @@ export class MemoryStore {
         }
         throw err;
       }
+    }
+  }
+
+  /**
+   * Compress a batch of old turns into episodic facts.
+   * Returns the number of facts stored.
+   */
+  async compressTurns(events: SessionEvent[]): Promise<number> {
+    if (!this.summarizer) return 0;
+    try {
+      const facts = await summarizeTurns(this.summarizer, events);
+      for (const fact of facts) {
+        await this.remember(fact.content, {
+          kind: fact.kind,
+          certainty: fact.certainty,
+          pinned: false,
+        });
+      }
+      return facts.length;
+    } catch (err) {
+      if (isAbortLikeError(err)) {
+        console.warn("[memory] Turn compression aborted; skipping.");
+        return 0;
+      }
+      throw err;
     }
   }
 

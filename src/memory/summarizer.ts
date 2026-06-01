@@ -75,3 +75,54 @@ export async function extractLearnings(
     return [];
   }
 }
+
+const TURN_COMPRESSION_PROMPT = `You are a memory compressor for a coding agent.
+Given a batch of old conversation turns, extract 1-5 concise episodic facts.
+Output ONLY a JSON array. No prose outside the array.
+
+Each entry: { "kind": "fact" | "pattern" | "decision", "content": "...", "certainty": "high" | "medium" | "low" }
+
+Rules:
+- Focus on verifiable facts, patterns, and decisions — not activity logs.
+- Content should be one sentence, max 120 characters.
+- Be conservative. Skip vague or low-signal items.
+- These memories will replace the raw turns in the agent's context.`;
+
+/** Summarize a batch of old turns into episodic memories for history compression. */
+export async function summarizeTurns(
+  llm: SummarizerLLM,
+  events: SessionEvent[],
+): Promise<ExtractedLearning[]> {
+  if (events.length === 0) return [];
+  if (!(await llm.available())) return [];
+
+  const raw = await llm.complete({
+    system: TURN_COMPRESSION_PROMPT,
+    prompt: transcriptToPrompt(events),
+    temperature: 0.3,
+    maxTokens: 1000,
+    json: true,
+    timeoutMs: 30_000,
+  });
+
+  try {
+    const parsed = JSON.parse(raw) as Array<{
+      kind: string;
+      content: string;
+      certainty: string;
+    }>;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((p): p is typeof p & { kind: MemoryKind } => isMemoryKind(p.kind))
+      .map((p) => ({
+        kind: p.kind,
+        content: p.content.slice(0, 200),
+        certainty: (p.certainty === "high" || p.certainty === "medium" || p.certainty === "low")
+          ? p.certainty
+          : "medium",
+      }));
+  } catch {
+    return [];
+  }
+}

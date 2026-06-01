@@ -138,6 +138,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
       events.push(event);
     }),
     readLast: vi.fn((n: number) => events.slice(-n)),
+    readLastUncompressed: vi.fn((n: number) => events.slice(-n)),
     search: vi.fn(),
     clear: vi.fn(() => { events.length = 0; }),
   };
@@ -325,6 +326,7 @@ describe("computeMemoryStats", () => {
 
     const eventLog = {
       readLast: vi.fn(() => [] as Event[]),
+      readLastUncompressed: vi.fn(() => [] as Event[]),
     };
 
     const session: any = {
@@ -360,6 +362,12 @@ describe("computeMemoryStats", () => {
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
+      readLastUncompressed: vi.fn(() => [
+        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
+        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "system_note", payload: { type: "other" } },
+        { kind: "tool_call", payload: { tool: "recall" } },
+      ] as Event[]),
     };
 
     const session: any = {
@@ -380,6 +388,7 @@ describe("computeMemoryStats", () => {
     const sg = new StateGraph();
     const eventLog = {
       readLast: vi.fn(() => [] as Event[]),
+      readLastUncompressed: vi.fn(() => [] as Event[]),
     };
 
     const session: any = {
