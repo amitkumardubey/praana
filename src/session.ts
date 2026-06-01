@@ -15,6 +15,7 @@ import {
   createSummarizer,
   type SessionEvent,
 } from "./memory/index.js";
+import { runConsolidation, type ConsolidationConfig } from "./memory/consolidation.js";
 
 export class Session {
   id: string;
@@ -455,6 +456,41 @@ export class Session {
         });
       }
     }
+
+    // Spawn background consolidation processor if enabled
+    if (this.memoryEnabled && this.memoryStore && this.config.consolidation?.enabled) {
+      const consolidationConfig: ConsolidationConfig = {
+        enabled: true,
+        promotion_threshold: this.config.consolidation.promotion_threshold ?? 3,
+        run_delay_seconds: this.config.consolidation.run_delay_seconds ?? 30,
+      };
+      const sessionId = this.id;
+      const store = this.memoryStore;
+      const transcriptEvents = events ?? this.getTranscriptEvents();
+
+      setTimeout(async () => {
+        try {
+          const summarizer = store.getSummarizer();
+          if (!summarizer) return;
+          const result = await runConsolidation({
+            store,
+            llm: summarizer,
+            sessionId,
+            events: transcriptEvents,
+            config: consolidationConfig,
+          });
+          if (result.promotions > 0) {
+            console.log(`[memory] Consolidated: ${result.promotions} patterns promoted to deep memory`);
+          }
+          if (result.newEntries > 0 || result.confirmations > 0) {
+            console.log(`[memory] Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`);
+          }
+        } catch (err) {
+          console.warn("[memory] Background consolidation failed:", (err as Error).message);
+        }
+      }, consolidationConfig.run_delay_seconds * 1000);
+    }
+
     this.eventLog.close();
   }
 

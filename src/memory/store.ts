@@ -108,6 +108,11 @@ export class MemoryStore {
     this.db.close();
   }
 
+  /** Get the summarizer LLM (may be null if summarizer is disabled). */
+  getSummarizer(): SummarizerLLM | null {
+    return this.summarizer;
+  }
+
   getEntryCount(): number {
     return getAllEntries(this.db).length;
   }
