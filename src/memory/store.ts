@@ -46,7 +46,7 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
-import { effectiveConfidence } from "./confidence.js";
+import { effectiveConfidence, digestScore } from "./confidence.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -459,10 +459,10 @@ export class MemoryStore {
       this.buildScopeQueries(this.defaultScopes),
     );
 
-    // Score all entries — Layer 2 always ranks before Layer 1
+    // Score all entries — Layer 2 first, then digestScore within layer
     const scored = entries.map((e) => ({
       entry: e,
-      score: effectiveConfidence(e, now) + (e.pinned ? 0.3 : 0),
+      score: digestScore(e, now) + (e.pinned ? 0.3 : 0),
     }));
     scored.sort((a, b) => {
       if (a.entry.layer !== b.entry.layer) return b.entry.layer - a.entry.layer;
@@ -475,7 +475,9 @@ export class MemoryStore {
     const kindOrder: MemoryKind[] = ["constraint", "preference", "fact", "pattern", "decision", "mistake"];
 
     for (const kind of kindOrder) {
-      const bucket = scored.filter((s) => s.entry.kind === kind);
+      const bucket = scored
+        .filter((s) => s.entry.kind === kind)
+        .sort((a, b) => b.score - a.score);
       if (bucket.length === 0) continue;
       const title = kind.charAt(0).toUpperCase() + kind.slice(1) + (kind === "mistake" ? "s to avoid" : "s");
       lines.push(`## ${title}`);
