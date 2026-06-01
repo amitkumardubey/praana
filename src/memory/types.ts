@@ -52,6 +52,7 @@ export interface SessionContext {
   context_id: string;
   context_label: string;
   working_context?: Record<string, unknown>;
+  recall_min_score?: number;
 }
 
 export interface Digest {
