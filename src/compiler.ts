@@ -11,7 +11,10 @@ export interface CompileInput {
   sessionId: string;
   tokenBudget: number;
   recentTurnsTokenBudget?: number;
-  agentsContext?: string | null;  // content from AGENTS.md / CLAUDE.md
+  agentsContext?: string | null;
+  memoriesBudgetRatio?: number;
+  skillsBudgetRatio?: number;
+  reservedOutputTokens?: number;
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
@@ -28,6 +31,10 @@ export interface CompileMetrics {
   peripheralObjectCount: number;
   /** If true, some recent turns were truncated due to budget. */
   recentTurnsTruncated: boolean;
+  /** If true, cross-session memory was trimmed to section ceiling. */
+  memoryTruncated: boolean;
+  /** If true, project context was degraded to fit skills budget. */
+  agentsContextTruncated: boolean;
 }
 
 /** Estimate token count from character count. 1 token ≈ 4 chars is rough but consistent. */
@@ -98,22 +105,39 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   const sections: string[] = [];
   const metrics: Partial<CompileMetrics> = {};
 
+  const reservedOutput = input.reservedOutputTokens ?? 0;
+  const usable = Math.max(0, input.tokenBudget - reservedOutput);
+  const maxMemoryTokens = Math.floor(usable * (input.memoriesBudgetRatio ?? 0.2));
+  const maxSkillsTokens = Math.floor(usable * (input.skillsBudgetRatio ?? 0.3));
+
   const stateSummary = buildStateSummary(input.stateGraph);
 
+  const { text: agentsContext, truncated: agentsTruncated } = trimAgentsContext(
+    input.agentsContext,
+    maxSkillsTokens,
+  );
+  metrics.agentsContextTruncated = agentsTruncated;
+
   // 1. SYSTEM FRAME
-  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, input.agentsContext);
+  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, agentsContext);
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
-  metrics.agentsContextTokens = input.agentsContext ? estTokens(input.agentsContext) : 0;
+  metrics.agentsContextTokens = agentsContext ? estTokens(agentsContext) : 0;
 
   // 2. CROSS-SESSION MEMORY
   let crossSection = "";
   if (input.memoryDigest && input.memoryDigest.trim()) {
-    crossSection = buildCrossSessionMemory(input.memoryDigest);
+    const { text, truncated } = trimSectionToTokenBudget(
+      buildCrossSessionMemory(input.memoryDigest),
+      maxMemoryTokens,
+    );
+    crossSection = text;
+    metrics.memoryTruncated = truncated;
     sections.push(crossSection);
     metrics.crossSessionTokens = estTokens(crossSection);
   } else {
     metrics.crossSessionTokens = 0;
+    metrics.memoryTruncated = false;
   }
 
   // 3. ACTIVE STATE
@@ -464,4 +488,44 @@ function truncateText(text: unknown, maxLen: number): string {
   const s = typeof text === "string" ? text : JSON.stringify(text);
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen) + "...";
+}
+
+function trimSectionToTokenBudget(text: string, maxTokens: number): { text: string; truncated: boolean } {
+  if (maxTokens <= 0 || estTokens(text) <= maxTokens) {
+    return { text, truncated: false };
+  }
+
+  const lines = text.split("\n");
+  const kept: string[] = [];
+  let tokens = 0;
+  for (const line of lines) {
+    const lineTokens = estTokens(line + "\n");
+    if (kept.length > 0 && tokens + lineTokens > maxTokens) {
+      kept.push("... (memory section truncated to token budget)");
+      return { text: kept.join("\n"), truncated: true };
+    }
+    kept.push(line);
+    tokens += lineTokens;
+  }
+  return { text: kept.join("\n"), truncated: false };
+}
+
+function trimAgentsContext(
+  agentsContext: string | null | undefined,
+  maxTokens: number,
+): { text: string | null; truncated: boolean } {
+  if (!agentsContext?.trim()) return { text: null, truncated: false };
+  const trimmed = agentsContext.trim();
+  if (maxTokens <= 0 || estTokens(trimmed) <= maxTokens) {
+    return { text: trimmed, truncated: false };
+  }
+
+  const lines = trimmed.split("\n").map((l) => l.trim()).filter(Boolean);
+  const headings = lines.filter((l) => l.startsWith("#") || l.startsWith("<!--"));
+  const summary = headings.slice(0, 5).join("; ") || lines[0]?.slice(0, 120) || "project context";
+  const degraded = `[Project context truncated to fit budget] ${summary}`;
+  if (estTokens(degraded) <= maxTokens) {
+    return { text: degraded, truncated: true };
+  }
+  return { text: degraded.slice(0, maxTokens * 4), truncated: true };
 }

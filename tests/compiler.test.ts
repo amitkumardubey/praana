@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compile } from '../src/compiler.js';
+import { compile, compileWithMetrics } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -181,5 +181,27 @@ describe('Compiler', () => {
     expect(prompt).toContain(
       "Do not make negative assertions (for example, 'not implemented') unless you have explicit evidence from the current repository context.",
     );
+  });
+
+  it('should enforce per-section memory token ceiling in compileWithMetrics', () => {
+    const hugeDigest = ['## Facts', ...Array.from({ length: 200 }, (_, i) => `- Memory item ${i} ${'x'.repeat(80)}`)].join('\n');
+    const { prompt, metrics } = compileWithMetrics({
+      stateGraph: {
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: hugeDigest,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 10_000,
+      memoriesBudgetRatio: 0.05,
+      skillsBudgetRatio: 0.3,
+    });
+
+    expect(metrics.memoryTruncated).toBe(true);
+    expect(prompt).toContain('memory section truncated');
+    expect(metrics.crossSessionTokens).toBeLessThanOrEqual(Math.floor(10_000 * 0.05) + 5);
   });
 });
