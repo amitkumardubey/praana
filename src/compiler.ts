@@ -223,6 +223,8 @@ function buildSystemFrame(
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
     "To recover earlier content from this session (reviews, findings, tool output), use search_session_log — not recall (recall is cross-session SQLite only).",
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
+    "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
+    "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",
     "Before making any factual claim about code behavior or capabilities, verify evidence from Active State and Recent Turns first.",
     "If evidence is missing or stale, check search_session_log for prior tool results and re-read the relevant file/tool output before asserting.",
     "Do not make negative assertions (for example, 'not implemented') unless you have explicit evidence from the current repository context.",

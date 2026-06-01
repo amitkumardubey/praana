@@ -126,11 +126,12 @@ export function createMemoryTools(ctx: MemoryToolContext) {
 
     add_note: defineTool({
       description:
-        "Add a general note to working memory. After significant analysis (code reviews, audits, multi-issue findings), add notes immediately so findings survive context truncation.",
+        "Add a general note to working memory. Capture semantic findings (facts, behavior, decisions) — not activity logs or file lists. After significant analysis, add notes immediately so findings survive context truncation.",
       parameters: z.object({
-        text: z.string().describe("The note text"),
+        text: z.string().describe("The note text — a finding or fact, not a list of files read"),
       }),
       execute: async ({ text }) => {
+        const qualityWarning = detectActivityLogNote(text);
         const obj = stateGraph.create("note", { text });
         logAction("create", {
           id: obj.id,
@@ -141,7 +142,9 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        return { ok: true, id: obj.id };
+        return qualityWarning
+          ? { ok: true, id: obj.id, warning: qualityWarning }
+          : { ok: true, id: obj.id };
       },
     }),
 
@@ -278,4 +281,19 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
   };
+}
+
+/** Warn when a note looks like an activity log instead of a semantic finding. */
+export function detectActivityLogNote(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length < 20) return null;
+
+  const fileListPattern = /(?:read|analyzed|reviewed|checked).{0,40}(?:src\/|\b[\w.-]+\.(?:ts|js|tsx|jsx|py|go|rs)\b)/i;
+  const commaFileRun = /(?:src\/[\w./-]+(?:,\s*|\s+and\s+)){2,}/i;
+  const lacksFindingLanguage = !/\b(uses|implements|returns|calls|handles|because|found|decided|pattern|via|is a|are stored)\b/i.test(trimmed);
+
+  if ((fileListPattern.test(trimmed) || commaFileRun.test(trimmed)) && lacksFindingLanguage) {
+    return "This note looks like an activity log. Prefer a semantic finding (what you learned), not which files you read.";
+  }
+  return null;
 }
