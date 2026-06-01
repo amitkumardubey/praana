@@ -133,7 +133,7 @@ export class MemoryStore {
       started_at: ctx.time,
     });
 
-    return this.buildDigest(ctx);
+    return this.buildDigest(ctx, ctx.recall_min_score);
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
@@ -453,7 +453,7 @@ export class MemoryStore {
     ];
   }
 
-  private async buildDigest(ctx: SessionContext): Promise<Digest> {
+  private async buildDigest(ctx: SessionContext, minScore = 0.35): Promise<Digest> {
     const now = Date.now();
     const entries = this.getEntriesForScopeQueries(
       this.buildScopeQueries(this.defaultScopes),
@@ -469,13 +469,15 @@ export class MemoryStore {
       return b.score - a.score;
     });
 
+    const filtered = scored.filter((s) => s.score >= minScore);
+
     // Build markdown
     const lines: string[] = [];
     const included: string[] = [];
     const kindOrder: MemoryKind[] = ["constraint", "preference", "fact", "pattern", "decision", "mistake"];
 
     for (const kind of kindOrder) {
-      const bucket = scored
+      const bucket = filtered
         .filter((s) => s.entry.kind === kind)
         .sort((a, b) => b.score - a.score);
       if (bucket.length === 0) continue;

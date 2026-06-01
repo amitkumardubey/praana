@@ -134,7 +134,9 @@ export interface MemoryConfig {
 export interface CompilerConfig {
   token_budget: number;
   recent_turns: number;
-  recent_turns_token_budget?: number; // Optional: token budget specifically for Recent Turns section
+  recent_turns_token_budget?: number;
+  /** Minimum digest score for a memory entry to appear in the prompt. */
+  recall_min_score?: number;
 }
 
 export interface TiersConfig {

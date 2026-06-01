@@ -92,6 +92,7 @@ export class Session {
           context_id: hashString(cwd),
           context_label: basename(cwd),
           working_context: { repo: { root: cwd, name: basename(cwd) } },
+          recall_min_score: cfg.compiler.recall_min_score ?? 0.35,
         });
 
         session.digest = d.markdown;
@@ -182,6 +183,7 @@ export class Session {
           context_id: hashString(cwd),
           context_label: basename(cwd),
           working_context: { repo: { root: cwd, name: basename(cwd) } },
+          recall_min_score: cfg.compiler.recall_min_score ?? 0.35,
         });
 
         session.digest = d.markdown;
