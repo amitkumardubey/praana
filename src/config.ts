@@ -28,6 +28,9 @@ const DEFAULT_CONFIG: AriaConfig = {
     recent_turns: 10,
     recent_turns_token_budget: 30_000,
     recall_min_score: 0.35,
+    memories_budget_ratio: 0.2,
+    skills_budget_ratio: 0.3,
+    reserved_output_tokens: 0,
   },
   tiers: {
     idle_soft_after_turns: 20,

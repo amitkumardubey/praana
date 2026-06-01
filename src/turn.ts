@@ -91,6 +91,9 @@ export async function runTurn(
     tokenBudget: session.config.compiler.token_budget,
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
     agentsContext: session.agentsContext,
+    memoriesBudgetRatio: session.config.compiler.memories_budget_ratio,
+    skillsBudgetRatio: session.config.compiler.skills_budget_ratio,
+    reservedOutputTokens: session.config.compiler.reserved_output_tokens,
   });
   session.setLastCompileMetrics(promptMetrics);
 
