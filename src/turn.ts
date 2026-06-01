@@ -71,6 +71,7 @@ export async function runTurn(
     stateGraph: session.stateGraph,
     memoryStore: session.memoryStore,
     memoryEnabled: session.memoryEnabled,
+    incognito: session.isIncognito(),
     cwd: session.cwd,
     getAbortSignal: () => options?.signal,
   });

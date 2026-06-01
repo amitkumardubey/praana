@@ -49,6 +49,7 @@ describe("status-bar", () => {
       debug: false,
       thinking: true,
       memoryEnabled: true,
+      incognito: false,
       contextUsedTokens: 18400,
       contextWindowTokens: 128000,
       memoryStats: { active: 8, soft: 23, hard: 91 },
@@ -86,7 +87,10 @@ describe("status-bar", () => {
         activeObjectCount: 0,
         peripheralObjectCount: 0,
         recentTurnsTruncated: false,
+        memoryTruncated: false,
+        agentsContextTruncated: false,
       }),
+      isIncognito: () => false,
       stateGraph: new StateGraph(),
     } as unknown as Session;
 

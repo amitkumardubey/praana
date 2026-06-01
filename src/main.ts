@@ -25,7 +25,7 @@ async function main() {
 
   const cwd = resolve(process.cwd());
   const config = loadConfig(parsed.configPath);
-  const { sessionId, resumeMode, debug } = parsed;
+  const { sessionId, resumeMode, debug, incognito } = parsed;
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
     console.error(keyError);
@@ -60,7 +60,7 @@ async function main() {
         console.log('─'.repeat(50) + "\n");
       }
     } else {
-      session = await Session.create(cwd, config);
+      session = await Session.create(cwd, config, { incognito });
       session.debug = debug;
       console.log(`New session: ${session.id}`);
     }
@@ -436,6 +436,29 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/incognito": {
+      const arg = (parts[1] ?? "").toLowerCase();
+      if (!arg) {
+        console.log(`Incognito: ${session.isIncognito() ? "ON" : "OFF"}`);
+        console.log("Usage: /incognito <on|off>");
+        break;
+      }
+      if (arg === "on") {
+        await session.setIncognito(true);
+        console.log("Incognito enabled — cross-session memory disabled.");
+      } else if (arg === "off") {
+        await session.setIncognito(false);
+        console.log(
+          session.memoryEnabled
+            ? "Incognito disabled — cross-session memory enabled."
+            : "Incognito disabled — memory remains unavailable (check config.memory.enabled).",
+        );
+      } else {
+        console.log("Usage: /incognito <on|off>");
+      }
+      break;
+    }
+
     case "/help": {
       printHelp();
       break;
@@ -451,6 +474,8 @@ function printHelp(): void {
     "  aria                     Start new session in current directory",
     "  aria resume <session>    Resume an existing session",
     "  aria --debug             Start with debug mode enabled",
+    "  aria --incognito         Start without cross-session memory persistence",
+    "  aria -I                  Short alias for --incognito",
     "  aria --config <path>     Load config from specific .json/.toml path",
     "  aria --help              Show this help",
   ].join("\n");
@@ -465,6 +490,7 @@ function printHelp(): void {
     "  /sessions                List recent sessions",
     "  /debug                   Toggle debug mode (tool blocks + saved prompts)",
     "  /thinking <on|off>       Toggle thinking stream visibility",
+    "  /incognito <on|off>      Toggle cross-session memory persistence",
     "",
     "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
@@ -522,7 +548,9 @@ function printSessionBanner(session: Session, cwd: string, model: string): void 
     `digest chars: ${digestLen}`,
     session.memoryEnabled
       ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
-      : "memory: disabled",
+      : session.isIncognito()
+        ? "memory: incognito (disabled)"
+        : "memory: disabled",
   ];
   console.log(
     boxen(lines.join("\n"), {

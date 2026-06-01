@@ -18,6 +18,11 @@ describe("parseCliArgs", () => {
     expect(parsed.configPath).toBe("aria.config.toml");
   });
 
+  it("parses incognito flag", () => {
+    expect(parseCliArgs(["--incognito"]).incognito).toBe(true);
+    expect(parseCliArgs(["-I"]).incognito).toBe(true);
+  });
+
   it("parses resume mode and session id", () => {
     const parsed = parseCliArgs(["resume", "01ABC"]);
     expect(parsed.resumeMode).toBe(true);

@@ -24,6 +24,7 @@ export class Session {
   stateGraph: StateGraph;
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
+  incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
   debug = false;
@@ -62,15 +63,25 @@ export class Session {
 
   static async create(
     cwd: string,
-    config?: AriaConfig
+    config?: AriaConfig,
+    opts?: { incognito?: boolean }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
+    session.incognito = opts?.incognito ?? false;
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
       console.log(`[context] Loaded project context (~${tokEst} tokens)`);
+    }
+
+    if (session.incognito) {
+      session.memoryEnabled = false;
+      session.memoryStore = null;
+      session.digest = null;
+      console.log("[incognito] Cross-session memory persistence disabled.");
+      return session;
     }
 
     if (session.memoryEnabled) {
@@ -238,6 +249,42 @@ export class Session {
 
   getModelOverride(): string | null {
     return this.modelOverride;
+  }
+
+  isIncognito(): boolean {
+    return this.incognito;
+  }
+
+  async setIncognito(enabled: boolean): Promise<void> {
+    this.incognito = enabled;
+    if (enabled) {
+      this.memoryEnabled = false;
+      this.memoryStore = null;
+      this.digest = null;
+      return;
+    }
+
+    if (!this.config.memory.enabled) return;
+
+    try {
+      this.memoryStore = await this.initMemoryStore();
+      const d = await this.memoryStore.sessionStart({
+        agent: "aria",
+        user_id: hashString(process.env.USER ?? "unknown"),
+        time: Date.now(),
+        context_id: hashString(this.cwd),
+        context_label: basename(this.cwd),
+        working_context: { repo: { root: this.cwd, name: basename(this.cwd) } },
+        recall_min_score: this.config.compiler.recall_min_score ?? 0.35,
+      });
+      this.digest = d.markdown;
+      this.memoryEnabled = true;
+    } catch (err) {
+      console.warn("[memory] Failed to re-enable memory:", (err as Error).message);
+      this.memoryEnabled = false;
+      this.memoryStore = null;
+      this.digest = null;
+    }
   }
 
   get promptDir(): string {
