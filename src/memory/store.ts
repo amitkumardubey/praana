@@ -14,6 +14,7 @@ import {
   getEntriesByScope,
   getEntryById,
   insertEntry,
+  deleteEntry,
   openMemoryDb,
   reinforceEntry,
   searchByFts,
@@ -110,6 +111,11 @@ export class MemoryStore {
 
     this.sessionId = ulid();
     this.defaultScopes = this.buildDefaultScopes(ctx);
+
+    const pruned = await this.prune();
+    if (pruned > 0) {
+      console.log(`[memory] Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
+    }
 
     startSessionRow(this.db, {
       id: this.sessionId,
@@ -343,6 +349,26 @@ export class MemoryStore {
 
   getAllEntries(): MemoryEntry[] {
     return getAllEntries(this.db);
+  }
+
+  /**
+   * Remove stale Layer 1 entries with effective confidence below 0.05
+   * that have not been seen in 30+ days. Never prunes pinned or Layer 2 entries.
+   */
+  async prune(): Promise<number> {
+    const now = Date.now();
+    const minAgeMs = 30 * 86_400_000;
+    const toDelete = getAllEntries(this.db).filter((e) => {
+      if (e.pinned || e.layer === 2) return false;
+      const ageMs = now - e.last_seen_at;
+      if (ageMs <= minAgeMs) return false;
+      return effectiveConfidence(e, now) < 0.05;
+    });
+
+    for (const entry of toDelete) {
+      deleteEntry(this.db, entry.id);
+    }
+    return toDelete.length;
   }
 
   /** Re-embed all entries after vector dimension migration. Runs in the background. */
