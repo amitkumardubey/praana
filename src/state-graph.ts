@@ -15,6 +15,12 @@ export class StateGraph {
   private touchedTurn = new Map<string, number>(); // turn number when last touched
   private turnCount = 0;
 
+  clear(): void {
+    this.objects.clear();
+    this.touchedTurn.clear();
+    this.turnCount = 0;
+  }
+
   create(kind: StateObjectKind, payload: StatePayload): StateObject {
     const now = Date.now();
     const obj: StateObject = {

@@ -227,9 +227,15 @@ export class Session {
     return session;
   }
 
+
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  clearState(): void {
+    this.stateGraph.clear();
+    this.turnCount = 0;
   }
 
   getTurnCount(): number {

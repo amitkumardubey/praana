@@ -459,6 +459,33 @@ async function handleSlashCommand(
       break;
     }
 
+    case "/clear": {
+      session.clearState();
+      session.eventLog.append({
+        kind: "system_note",
+        actor: "kernel",
+        payload: {
+          type: "state_reset",
+          cleared: "all",
+        },
+      });
+      console.log("State cleared. Starting fresh.");
+      break;
+    }
+    case "/new": {
+      session.clearState();
+      session.eventLog.append({
+        kind: "system_note",
+        actor: "kernel",
+        payload: {
+          type: "state_reset",
+          cleared: "all",
+        },
+      });
+      console.log("State cleared. Starting fresh.");
+      break;
+    }
+
     case "/help": {
       printHelp();
       break;
