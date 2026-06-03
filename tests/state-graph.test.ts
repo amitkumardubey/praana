@@ -14,6 +14,27 @@ describe('StateGraph', () => {
     expect(obj.id).toBeTruthy();
   });
 
+  it('should clear objects and reset turn state', () => {
+    const sg = new StateGraph();
+    // Test clear on empty
+    expect(() => sg.clear()).not.toThrow();
+
+    const task = sg.create('task', { title: 'Test task', status: 'todo' });
+    sg.setTier(task.id, 'soft');
+    const note = sg.create('note', { text: 'Test note' });
+    
+    sg.incrementTurn();
+    sg.incrementTurn();
+
+    expect(sg.list().length).toBe(2);
+
+    sg.clear();
+
+    expect(sg.list().length).toBe(0);
+    expect(sg.getActive().length).toBe(0);
+    expect(sg.getPeripheral().length).toBe(0);
+  });
+
   it('should list objects', () => {
     const sg = new StateGraph();
     const task = sg.create('task', { title: 'Task 1', status: 'todo' });

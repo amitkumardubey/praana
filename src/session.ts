@@ -235,7 +235,6 @@ export class Session {
 
   clearState(): void {
     this.stateGraph.clear();
-    this.turnCount = 0;
   }
 
   getTurnCount(): number {
