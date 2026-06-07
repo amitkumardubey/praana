@@ -5,6 +5,7 @@ import { startSpinner, stopSpinner, printBox, printMarkdown } from "./ui.js";
 import { buildStatusBarInput, renderStatusBar } from "./status-bar.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { EVENT_LOG_FILENAME, migrateLegacyEventLog } from "./event-log.js";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
@@ -225,7 +226,7 @@ async function main() {
   rl.on("SIGINT", handleUserInterrupt);
 }
 
-async function handleSlashCommand(
+export async function handleSlashCommand(
   input: string,
   session: Session,
   rl: readline.Interface,
@@ -586,7 +587,13 @@ function printSessionEndSummary(session: Session): void {
   );
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1]
+  ? resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  : false;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}
