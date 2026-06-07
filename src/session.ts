@@ -155,14 +155,23 @@ export class Session {
       console.log(`[context] Loaded project context (~${tokEst} tokens)`);
     }
 
-    // Replay context actions to rebuild state
-    const actions = session.eventLog.replayContextActions();
-    for (const ev of actions) {
-      session.stateGraph.replayAction(ev.payload);
+    const allEvents = session.eventLog.readAll();
+
+    // Replay state mutations chronologically. Reset markers intentionally clear
+    // earlier context_action events so /clear remains effective after resume.
+    for (const ev of allEvents) {
+      if (ev.kind === "context_action") {
+        session.stateGraph.replayAction(ev.payload);
+      } else if (
+        ev.kind === "system_note" &&
+        ev.payload.type === "state_reset" &&
+        ev.payload.cleared === "all"
+      ) {
+        session.stateGraph.clear();
+      }
     }
 
     // Restore model override if one was set previously.
-    const allEvents = session.eventLog.readAll();
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
       if (ev.kind !== "system_note" || ev.payload.type !== "model_override") continue;
@@ -227,9 +236,14 @@ export class Session {
     return session;
   }
 
+
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  clearState(): void {
+    this.stateGraph.clear();
   }
 
   getTurnCount(): number {
