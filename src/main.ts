@@ -17,7 +17,7 @@ import type { LlmConfig } from "./types.js";
 
 const APP_VERSION = readAppVersion();
 
-async function main() {
+export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
   if (parsed.showHelp) {
     printHelp();
@@ -508,6 +508,8 @@ function printHelp(): void {
     "  /debug                   Toggle debug mode (tool blocks + saved prompts)",
     "  /thinking <on|off>       Toggle thinking stream visibility",
     "  /incognito <on|off>      Toggle cross-session memory persistence",
+    "  /clear                   Clear working-memory state",
+    "  /new                     Clear working-memory state",
     "",
     "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",

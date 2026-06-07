@@ -36,6 +36,39 @@ describe("Session.clearState", () => {
     expect(session.stateGraph.getTurnCount()).toBe(0);
     expect(session.getTurnCount()).toBe(2);
   });
+
+  it("does not restore cleared state when resuming the session", async () => {
+    const session = await Session.create(process.cwd(), testConfig);
+    const task = session.stateGraph.create("task", { title: "Clear me", status: "todo" });
+    session.eventLog.append({
+      kind: "context_action",
+      actor: "kernel",
+      payload: {
+        action: "create",
+        id: task.id,
+        kind: task.kind,
+        tier: task.tier,
+        statePayload: task.payload,
+        created: task.created,
+        updated: task.updated,
+        lastTouched: task.lastTouched,
+      },
+    });
+    session.clearState();
+    session.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "state_reset",
+        cleared: "all",
+        command: "/clear",
+      },
+    });
+
+    const resumed = await Session.resume(session.id, process.cwd(), testConfig);
+
+    expect(resumed.stateGraph.list()).toEqual([]);
+  });
 });
 
 describe("clear slash commands", () => {
