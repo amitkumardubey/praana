@@ -13,6 +13,7 @@ import { TurnAbortedError, TurnController, EscInterruptListener } from "./turn-c
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getLoadedConfigSources } from "./config.js";
 import { parseCliArgs } from "./cli-args.js";
+import { createThinkingState, onThinkingDelta, closeThinking as closeThinkingBlock, toggleThinking } from "./thinking-display.js";
 import type { LlmConfig } from "./types.js";
 
 const APP_VERSION = readAppVersion();
@@ -153,12 +154,27 @@ export async function main() {
       spinnerStopped = true;
     };
 
-    let thinkingOpen = false;
+    const thinking = createThinkingState(showThinking);
     const closeThinking = () => {
-      if (!thinkingOpen) return;
-      process.stdout.write("\n\n");
-      thinkingOpen = false;
+      const summary = closeThinkingBlock(thinking);
+      if (summary) {
+        process.stdout.write(chalk.dim(`\n${summary}\n`));
+      } else {
+        process.stdout.write("\n");
+      }
     };
+
+    // Toggle thinking visibility with 't' keypress during turn
+    const onKeypress = (_: string, key: { name?: string }) => {
+      if (key?.name === "t") {
+        const nowVisible = toggleThinking(thinking);
+        process.stdout.write(
+          chalk.dim(nowVisible ? "\n[thinking on]" : "\n[thinking off]")
+        );
+        refreshStatusBar();
+      }
+    };
+    process.stdin.on("keypress", onKeypress);
 
     const signal = turnController.begin();
     escListener.start(() => {
@@ -170,10 +186,10 @@ export async function main() {
         signal,
         onThinkingDelta: (delta) => {
           stopSpinnerOnce();
-          if (!showThinking) return;
-          if (!thinkingOpen) {
-            process.stdout.write("\n\n" + chalk.dim("[thinking] "));
-            thinkingOpen = true;
+          const { printHeader, printDelta } = onThinkingDelta(thinking, delta);
+          if (!printDelta) return;
+          if (printHeader) {
+            process.stdout.write(chalk.dim("\n\n[thinking]\n"));
           }
           process.stdout.write(chalk.dim(delta));
         },
@@ -202,6 +218,7 @@ export async function main() {
         });
       }
     } finally {
+      process.stdin.removeListener("keypress", onKeypress);
       escListener.stop();
       turnController.end();
     }
