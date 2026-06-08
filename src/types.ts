@@ -171,6 +171,10 @@ export interface ConsolidationConfig {
   run_delay_seconds: number;
 }
 
+export interface EditConfig {
+  confirm: boolean;
+}
+
 export interface AriaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -178,6 +182,7 @@ export interface AriaConfig {
   tiers: TiersConfig;
   session: SessionConfig;
   consolidation: ConsolidationConfig;
+  edit: EditConfig;
 }
 
 // ---- Session Meta ----

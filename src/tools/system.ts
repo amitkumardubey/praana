@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { dirname, resolve, isAbsolute, extname } from "node:path";
 import * as toml from "toml";
+import { createInterface } from "node:readline";
+import chalk from "chalk";
 
 /**
  * Validate content for known structured formats.
@@ -32,10 +34,11 @@ function validateStructuredContent(filePath: string, content: string): string | 
 export interface SystemToolContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
+  editConfirm?: boolean;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal } = ctx;
+  const { cwd, getAbortSignal, editConfirm } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -229,8 +232,32 @@ export function createSystemTools(ctx: SystemToolContext) {
               error: `oldText found ${count} times in file. Must be unique. Provide more context to make it unique.`,
             };
           }
-
           const newContent = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
+
+          // Show diff and prompt for confirmation if editConfirm is enabled
+          if (editConfirm) {
+            const matchLine = content.slice(0, idx).split("\n").length;
+            const oldLines = oldText.split("\n");
+            const newLines = newText.split("\n");
+            console.error(chalk.dim(`\n--- ${path}:${matchLine} (before)`));
+            for (const line of oldLines) console.error(chalk.red(`- ${line}`));
+            console.error(chalk.dim(`+++ ${path}:${matchLine} (after)`));
+            for (const line of newLines) console.error(chalk.green(`+ ${line}`));
+            const answer = await new Promise<string>((resolve) => {
+              const rl = createInterface({
+                input: process.stdin,
+                output: process.stderr,
+              });
+              rl.question("Apply edit? [y/N] ", (ans) => {
+                rl.close();
+                resolve(ans.trim().toLowerCase());
+              });
+            });
+            if (answer !== "y" && answer !== "yes") {
+              return { ok: false, error: "Edit cancelled by user" };
+            }
+          }
+
           writeFileSync(absPath, newContent);
           return { ok: true };
         } catch (err: any) {

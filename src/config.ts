@@ -46,6 +46,9 @@ const DEFAULT_CONFIG: AriaConfig = {
     promotion_threshold: 3,
     run_delay_seconds: 30,
   },
+  edit: {
+    confirm: false,
+  },
 };
 
 function expandHome(p: string): string {

@@ -631,6 +631,93 @@ describe('System Tools (createSystemTools)', () => {
       expect(result).toEqual({ ok: true });
       expect(readFileSync(join(testDir, 'special.txt'), 'utf-8')).toBe('price is $50.00 & more');
     });
+
+    it('should write file when editConfirm is true and user answers y', async () => {
+      writeFileSync(join(testDir, 'confirm.txt'), 'Hello World');
+      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+
+      // Mock stdin to emit 'y\n'
+      const { Readable } = await import('node:stream');
+      const mockStdin = Readable.from(['y\n']);
+      const originalStdin = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
+
+      try {
+        const result = await confirmTools.edit_file.execute({
+          path: 'confirm.txt',
+          oldText: 'World',
+          newText: 'ARIA',
+        });
+        expect(result).toEqual({ ok: true });
+        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello ARIA');
+      } finally {
+        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
+      }
+    });
+
+    it('should cancel edit when editConfirm is true and user answers n', async () => {
+      writeFileSync(join(testDir, 'confirm.txt'), 'Hello World');
+      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+
+      const { Readable } = await import('node:stream');
+      const mockStdin = Readable.from(['n\n']);
+      const originalStdin = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
+
+      try {
+        const result = await confirmTools.edit_file.execute({
+          path: 'confirm.txt',
+          oldText: 'World',
+          newText: 'ARIA',
+        });
+        expect(result).toEqual({ ok: false, error: 'Edit cancelled by user' });
+        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello World');
+      } finally {
+        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
+      }
+    });
+
+    it('should write file without prompt when editConfirm is false (default)', async () => {
+      writeFileSync(join(testDir, 'noconfirm.txt'), 'Hello World');
+      // Default tools have editConfirm undefined (falsy)
+      const result = await tools.edit_file.execute({
+        path: 'noconfirm.txt',
+        oldText: 'World',
+        newText: 'ARIA',
+      });
+      expect(result).toEqual({ ok: true });
+      expect(readFileSync(join(testDir, 'noconfirm.txt'), 'utf-8')).toBe('Hello ARIA');
+    });
+
+    it('should show line number in diff preview when editConfirm is enabled', async () => {
+      writeFileSync(join(testDir, 'linenum.txt'), 'line1\nline2\nHello World');
+      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+
+      const { Readable } = await import('node:stream');
+      const mockStdin = Readable.from(['y\n']);
+      const originalStdin = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
+
+      // Mock console.error to capture diff preview output
+      const stderrChunks: string[] = [];
+      const originalConsoleError = console.error;
+      console.error = (...args: any[]) => {
+        stderrChunks.push(args.join(' '));
+      };
+
+      try {
+        await confirmTools.edit_file.execute({
+          path: 'linenum.txt',
+          oldText: 'World',
+          newText: 'ARIA',
+        });
+        const stderrOutput = stderrChunks.join('');
+        expect(stderrOutput).toContain('linenum.txt:3');
+      } finally {
+        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
+        console.error = originalConsoleError;
+      }
+    });
   });
 
   describe('shell', () => {

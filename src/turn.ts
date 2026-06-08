@@ -74,6 +74,7 @@ export async function runTurn(
     incognito: session.isIncognito(),
     cwd: session.cwd,
     getAbortSignal: () => options?.signal,
+    editConfirm: session.config.edit?.confirm,
   });
 
   // 3. Compile prompt (system only, user input passed as message)

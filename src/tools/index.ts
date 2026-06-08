@@ -13,6 +13,7 @@ export interface ToolRegistryContext {
   incognito: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
+  editConfirm?: boolean;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -27,10 +28,10 @@ export function createAllTools(ctx: ToolRegistryContext) {
     memoryEnabled: ctx.memoryEnabled,
     incognito: ctx.incognito,
   });
-
   const systemTools = createSystemTools({
     cwd: ctx.cwd,
     getAbortSignal: ctx.getAbortSignal,
+    editConfirm: ctx.editConfirm,
   });
 
   return {
