@@ -181,6 +181,93 @@ export function createSystemTools(ctx: SystemToolContext) {
       },
     }),
 
+    read_and_summarize: defineTool({
+      description:
+        "Read a file and return a structured summary: key exports, imports/dependencies, and basic metrics. Use instead of read_file when you need an overview of a file.",
+      parameters: z.object({
+        path: z.string().describe("File path (relative to working dir or absolute)"),
+      }),
+      execute: async ({ path }) => {
+        const absPath = resolvePath(path);
+        try {
+          if (!existsSync(absPath)) {
+            return { ok: false, error: `File not found: ${path}` };
+          }
+
+          const content = readFileSync(absPath, "utf-8");
+          const lines = content.split("\n");
+
+          // Extract exports (declarations + named exports)
+          const exports: string[] = [];
+          const exportDeclPattern = /export\s+(?:default\s+)?(?:function|class|const|let|var|interface|type)\s+(\w+)/g;
+          let match;
+          while ((match = exportDeclPattern.exec(content)) !== null) {
+            exports.push(match[1]);
+          }
+          // Named exports: export { foo, bar } or export { foo } from './mod'
+          const exportNamedPattern = /export\s*\{([^}]+)\}/g;
+          while ((match = exportNamedPattern.exec(content)) !== null) {
+            const names = match[1].split(",").map(n => n.trim().split(/\s+as\s+/)[0].trim()).filter(Boolean);
+            exports.push(...names);
+          }
+
+          // Extract imports (import statements + require calls)
+          const imports: string[] = [];
+          const importFromPattern = /import\s+.*?\s+from\s+["']([^"']+)["']/g;
+          while ((match = importFromPattern.exec(content)) !== null) {
+            imports.push(match[1]);
+          }
+          // Side-effect imports: import "foo"
+          const sideEffectPattern = /^import\s+["']([^"']+)["']/gm;
+          while ((match = sideEffectPattern.exec(content)) !== null) {
+            imports.push(match[1]);
+          }
+          // require("foo")
+          const requirePattern = /require\s*\(\s*["']([^"']+)["']\s*\)/g;
+          while ((match = requirePattern.exec(content)) !== null) {
+            imports.push(match[1]);
+          }
+
+          // Extract function declarations (named functions + arrow functions)
+          const functions: string[] = [];
+          const funcPattern = /(?:async\s+)?function\s+(\w+)/g;
+          while ((match = funcPattern.exec(content)) !== null) {
+            functions.push(match[1]);
+          }
+          // Arrow functions: const name = async () =>
+          const arrowFuncPattern = /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/g;
+          while ((match = arrowFuncPattern.exec(content)) !== null) {
+            functions.push(match[1]);
+          }
+          // Function expressions: const name = async function
+          const funcExprPattern = /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?function/g;
+          while ((match = funcExprPattern.exec(content)) !== null) {
+            functions.push(match[1]);
+          }
+
+          // Check for concerns (large files, many TODOs, many exports)
+          const concerns: string[] = [];
+          if (lines.length > 500) concerns.push(`Large file: ${lines.length} lines`);
+          const todoCount = (content.match(/TODO|FIXME|HACK/gi) ?? []).length;
+          if (todoCount > 3) concerns.push(`Many TODOs/FIXMEs: ${todoCount}`);
+          if (exports.length > 15) concerns.push(`Many exports: ${exports.length}`);
+
+          return {
+            ok: true,
+            path,
+            lines: lines.length,
+            exports,
+            functions,
+            imports,
+            concerns,
+            contentPreview: lines.slice(0, 20).join("\n"),
+          };
+        } catch (err: any) {
+          return { ok: false, error: err?.message ?? "Failed to summarize file" };
+        }
+      },
+    }),
+
     write_file: defineTool({
       description:
         "Create or overwrite a file. Creates parent directories if needed.",

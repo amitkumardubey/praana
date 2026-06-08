@@ -995,4 +995,200 @@ describe('System Tools (createSystemTools)', () => {
       }
     });
   });
+
+  describe('read_and_summarize', () => {
+    it('should return error for missing file', async () => {
+      const result = await tools.read_and_summarize.execute({ path: 'nonexistent.ts' });
+      expect(result).toEqual({ ok: false, error: expect.stringContaining('File not found') });
+    });
+
+    it('should return basic file info', async () => {
+      writeFileSync(join(testDir, 'simple.txt'), 'line1\nline2\nline3');
+      const result = await tools.read_and_summarize.execute({ path: 'simple.txt' });
+      expect(result.ok).toBe(true);
+      expect((result as any).lines).toBe(3);
+      expect((result as any).contentPreview).toBe('line1\nline2\nline3');
+      expect((result as any).exports).toEqual([]);
+      expect((result as any).functions).toEqual([]);
+    });
+
+    it('should extract export declarations', async () => {
+      const code = `
+export function helper() {}
+export class MyClass {}
+export const CONST_VAL = 1;
+export interface MyInterface {}
+export type MyType = string;
+      `.trim();
+      writeFileSync(join(testDir, 'exports.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'exports.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).exports).toEqual(
+        expect.arrayContaining(['helper', 'MyClass', 'CONST_VAL', 'MyInterface', 'MyType'])
+      );
+    });
+
+    it('should extract default export', async () => {
+      writeFileSync(join(testDir, 'default.ts'), 'export default function main() {}');
+      const result = await tools.read_and_summarize.execute({ path: 'default.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).exports).toContain('main');
+    });
+
+    it('should extract named exports with destructuring', async () => {
+      writeFileSync(join(testDir, 'named.ts'), 'export { foo, bar, baz }');
+      const result = await tools.read_and_summarize.execute({ path: 'named.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).exports).toEqual(
+        expect.arrayContaining(['foo', 'bar', 'baz'])
+      );
+    });
+
+    it('should extract named exports with rename', async () => {
+      writeFileSync(join(testDir, 'rename.ts'), 'export { foo as myFoo, bar }');
+      const result = await tools.read_and_summarize.execute({ path: 'rename.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).exports).toEqual(
+        expect.arrayContaining(['foo', 'bar'])
+      );
+    });
+
+    it('should extract named exports from re-export', async () => {
+      writeFileSync(join(testDir, 'reexport.ts'), "export { foo, bar } from './module'");
+      const result = await tools.read_and_summarize.execute({ path: 'reexport.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).exports).toEqual(
+        expect.arrayContaining(['foo', 'bar'])
+      );
+    });
+
+    it('should extract imports', async () => {
+      const code = `
+import { readFile } from 'fs';
+import path from 'path';
+import * as utils from './utils';
+      `.trim();
+      writeFileSync(join(testDir, 'imports.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'imports.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).imports).toEqual(
+        expect.arrayContaining(['fs', 'path', './utils'])
+      );
+    });
+
+    it('should extract side-effect imports', async () => {
+      writeFileSync(join(testDir, 'sideeffect.ts'), "import './polyfills';");
+      const result = await tools.read_and_summarize.execute({ path: 'sideeffect.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).imports).toContain('./polyfills');
+    });
+
+    it('should extract require calls', async () => {
+      writeFileSync(join(testDir, 'require.js'), "const mod = require('my-module');");
+      const result = await tools.read_and_summarize.execute({ path: 'require.js' });
+      expect(result.ok).toBe(true);
+      expect((result as any).imports).toContain('my-module');
+    });
+
+    it('should extract function declarations', async () => {
+      const code = `
+function standalone() {}
+export function exported() {}
+async function asyncFn() {}
+      `.trim();
+      writeFileSync(join(testDir, 'funcs.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'funcs.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).functions).toEqual(
+        expect.arrayContaining(['standalone', 'exported', 'asyncFn'])
+      );
+    });
+
+    it('should extract arrow functions', async () => {
+      const code = `
+const handler = () => {};
+const asyncHandler = async () => {};
+let processor = (x) => x;
+      `.trim();
+      writeFileSync(join(testDir, 'arrows.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'arrows.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).functions).toEqual(
+        expect.arrayContaining(['handler', 'asyncHandler', 'processor'])
+      );
+    });
+
+    it('should extract function expressions', async () => {
+      const code = `
+const fn = function() {};
+const named = function compute() {};
+      `.trim();
+      writeFileSync(join(testDir, 'funcexpr.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'funcexpr.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).functions).toEqual(
+        expect.arrayContaining(['fn', 'named'])
+      );
+    });
+
+    it('should detect TODO/FIXME concerns', async () => {
+      const code = `
+// TODO: fix this
+// TODO: add tests
+// TODO: clean up
+// FIXME: broken
+const x = 1;
+      `.trim();
+      writeFileSync(join(testDir, 'todos.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'todos.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).concerns).toEqual(
+        expect.arrayContaining([expect.stringContaining('TODOs')])
+      );
+    });
+
+    it('should detect many exports concern', async () => {
+      // Generate 20 exports
+      const exports = Array.from({ length: 20 }, (_, i) => `export const item${i} = ${i};`).join('\n');
+      writeFileSync(join(testDir, 'many.ts'), exports);
+      const result = await tools.read_and_summarize.execute({ path: 'many.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).concerns).toEqual(
+        expect.arrayContaining([expect.stringContaining('Many exports')])
+      );
+    });
+
+    it('should detect large file concern', async () => {
+      const lines = Array.from({ length: 600 }, (_, i) => `// line ${i}`).join('\n');
+      writeFileSync(join(testDir, 'large.ts'), lines);
+      const result = await tools.read_and_summarize.execute({ path: 'large.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).concerns).toEqual(
+        expect.arrayContaining([expect.stringContaining('Large file')])
+      );
+    });
+
+    it('should extract imports from actual import statements', async () => {
+      const code = `
+import { readFile } from 'fs';
+import path from 'path';
+      `.trim();
+      writeFileSync(join(testDir, 'strings.ts'), code);
+      const result = await tools.read_and_summarize.execute({ path: 'strings.ts' });
+      expect(result.ok).toBe(true);
+      expect((result as any).imports).toContain('fs');
+      expect((result as any).imports).toContain('path');
+    });
+
+    it('should handle content preview limit', async () => {
+      const lines = Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join('\n');
+      writeFileSync(join(testDir, 'preview.ts'), lines);
+      const result = await tools.read_and_summarize.execute({ path: 'preview.ts' });
+      expect(result.ok).toBe(true);
+      const preview = (result as any).contentPreview.split('\n');
+      expect(preview.length).toBe(20);
+      expect(preview[0]).toBe('line 1');
+      expect(preview[19]).toBe('line 20');
+    });
+  });
 });

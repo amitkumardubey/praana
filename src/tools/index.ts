@@ -56,6 +56,7 @@ export function describeTools(): string[] {
     "list_state() — List all state objects",
     "focus_task(id) — Pin a task/object as current focus",
     "search_session_log(query, kinds?, limit?) — Search current session event log (not cross-session recall)",
+    "read_and_summarize(path) — Read file and return structured summary (exports, imports, metrics)",
     "recall(query, mode?, kinds?) — Search cross-session memory",
     "remember(content, kind?, certainty?, scope?) — Store in cross-session memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
     "forget_memory(id) — Retract a cross-session memory entry (tombstone)",
