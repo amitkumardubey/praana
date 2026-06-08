@@ -198,6 +198,27 @@ describe('Compiler', () => {
     expect(prompt).toContain('search_session_log');
   });
 
+  it('should include Tool Safety RULE in system frame', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).toContain('## Tool Safety');
+    expect(prompt).toContain('RULE: Never call write_file, edit_file');
+    expect(prompt).toContain('shell commands with file write side-effects');
+    expect(prompt).toContain('If unsure, ask first.');
+  });
+
   it('should enforce per-section memory token ceiling in compileWithMetrics', () => {
     const hugeDigest = ['## Facts', ...Array.from({ length: 200 }, (_, i) => `- Memory item ${i} ${'x'.repeat(80)}`)].join('\n');
     const { prompt, metrics } = compileWithMetrics({

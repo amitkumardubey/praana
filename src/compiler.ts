@@ -234,7 +234,11 @@ function buildSystemFrame(
     "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
     "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",
     "Session event log file: ~/.aria/sessions/<session_id>/events.jsonl",
-    "See the Active State and Peripheral Memory sections below for your current working memory."
+    "See the Active State and Peripheral Memory sections below for your current working memory.",
+    "",
+    "## Tool Safety",
+    "",
+    "RULE: Never call write_file, edit_file, or use shell commands with file write side-effects (e.g. `echo > file`, `sed -i`, `tee`) unless the user's message in THIS turn explicitly requests changes. Describing what you would change does not count. If unsure, ask first."
   );
 
   return lines.join("\n");
