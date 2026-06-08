@@ -673,5 +673,37 @@ describe('System Tools (createSystemTools)', () => {
       expect(result.ok).toBe(false);
       expect((result as any).stderr).toContain('Interrupted');
     });
+
+    it('should stream stdout to terminal in real time', async () => {
+      const written: string[] = [];
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: any) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      try {
+        const result = await tools.shell.execute({ command: 'echo streamed' });
+        expect(result.ok).toBe(true);
+        expect(written.some((s) => s.includes('streamed'))).toBe(true);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+    });
+
+    it('should stream stderr to terminal in real time', async () => {
+      const written: string[] = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: any) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      try {
+        const result = await tools.shell.execute({ command: 'echo errout >&2' });
+        expect(result.ok).toBe(true);
+        expect(written.some((s) => s.includes('errout'))).toBe(true);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    });
   });
 });

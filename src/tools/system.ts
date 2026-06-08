@@ -98,9 +98,14 @@ export function createSystemTools(ctx: SystemToolContext) {
           }, ms);
 
           child.stdout?.on("data", (chunk: Buffer) => {
+            // Stream raw output to terminal so long-running commands show progress.
+            // ANSI escape sequences from child processes pass through unmodified —
+            // this matches standard terminal multiplexer behavior (script(1), tee).
+            process.stdout.write(chunk);
             if (stdout.length < maxBuf) stdout += chunk.toString();
           });
           child.stderr?.on("data", (chunk: Buffer) => {
+            process.stderr.write(chunk);
             if (stderr.length < maxBuf) stderr += chunk.toString();
           });
 
