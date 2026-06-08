@@ -6,10 +6,13 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
+  realpathSync,
   rmSync,
 } from "node:fs";
-import { dirname, resolve, isAbsolute, extname } from "node:path";
+import { dirname, resolve, isAbsolute, extname, normalize } from "node:path";
+import { homedir } from "node:os";
 import * as toml from "toml";
+import type { SandboxConfig } from "../types.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 
@@ -35,11 +38,12 @@ function validateStructuredContent(filePath: string, content: string): string | 
 export interface SystemToolContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
+  sandbox?: SandboxConfig;
   editConfirm?: boolean;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, editConfirm } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -61,6 +65,65 @@ export function createSystemTools(ctx: SystemToolContext) {
         const signal = getAbortSignal?.();
         if (signal?.aborted) {
           return { ok: false, stdout: "", stderr: "Interrupted", exitCode: 130 };
+        }
+
+        // Sandbox validation
+        if (sandbox?.enabled) {
+          const dangerousPatterns = [
+            /\bsudo\b/,
+            /\brm\b.*-r.*\//,
+            /\brm\b.*-f.*\//,
+            /\bmkfs\b/,
+            /\bdd\b.*if=/,
+            /\bdd\b.*of=/,
+            /\bshutdown\b/,
+            /\breboot\b/,
+            /\bhalt\b/,
+            /\bpoweroff\b/,
+            /\bfdisk\b/,
+            /\bparted\b/,
+            /\bwipefs\b/,
+            /\bcryptsetup\b/,
+            /\bchmod\b.*-R.*777.*\//,
+            /\bchown\b.*-R.*\//,
+            /\>\s*\/dev\/sd[a-z]/,
+            /\:\(\)\{\s*:\|\&\s*\};/,
+          ];
+          for (const pattern of dangerousPatterns) {
+            if (pattern.test(command)) {
+              return { ok: false, stdout: "", stderr: "Blocked by sandbox: dangerous command detected", exitCode: 1 };
+            }
+          }
+          if (sandbox.allowed_paths.length > 0) {
+            const pathPattern = /(?:["']([^"']+)["']|(\/[\w./-]+|~\/[\w./-]+))/g;
+            let match: RegExpExecArray | null;
+            while ((match = pathPattern.exec(command)) !== null) {
+              const rawPath = match[1] ?? match[2];
+              if (!rawPath) continue;
+              const expanded = rawPath.replace(/^~/, homedir());
+              const normalized = normalize(expanded);
+              let resolved: string;
+              try {
+                resolved = existsSync(normalized) ? realpathSync(normalized) : normalized;
+              } catch {
+                resolved = normalized;
+              }
+              const isAllowed = sandbox.allowed_paths.some(ap => {
+                const apExpanded = ap.replace(/^~/, homedir());
+                const apNormalized = normalize(apExpanded);
+                let apResolved: string;
+                try {
+                  apResolved = existsSync(apNormalized) ? realpathSync(apNormalized) : apNormalized;
+                } catch {
+                  apResolved = apNormalized;
+                }
+                return resolved === apResolved || resolved.startsWith(apResolved + "/");
+              });
+              if (!isAllowed) {
+                return { ok: false, stdout: "", stderr: `Blocked by sandbox: path not in allowed list: ${rawPath}`, exitCode: 1 };
+              }
+            }
+          }
         }
 
         const ms = timeout ?? 30000;

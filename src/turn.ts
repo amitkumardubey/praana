@@ -74,6 +74,7 @@ export async function runTurn(
     incognito: session.isIncognito(),
     cwd: session.cwd,
     getAbortSignal: () => options?.signal,
+    sandbox: session.config.shell,
     editConfirm: session.config.edit?.confirm,
   });
 

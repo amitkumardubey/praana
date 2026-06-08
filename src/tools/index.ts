@@ -1,6 +1,7 @@
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
 import type { MemoryStore } from "../memory/index.js";
+import type { SandboxConfig } from "../types.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
@@ -13,6 +14,7 @@ export interface ToolRegistryContext {
   incognito: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
+  sandbox?: SandboxConfig;
   editConfirm?: boolean;
 }
 
@@ -31,6 +33,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const systemTools = createSystemTools({
     cwd: ctx.cwd,
     getAbortSignal: ctx.getAbortSignal,
+    sandbox: ctx.sandbox,
     editConfirm: ctx.editConfirm,
   });
 

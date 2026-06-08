@@ -46,6 +46,10 @@ const DEFAULT_CONFIG: AriaConfig = {
     promotion_threshold: 3,
     run_delay_seconds: 30,
   },
+  shell: {
+    enabled: false,
+    allowed_paths: [],
+  },
   edit: {
     confirm: false,
   },
@@ -239,6 +243,18 @@ function validateConfig(config: AriaConfig): AriaConfig {
   ) {
     console.warn("[config] Invalid compiler.compression_flush_fraction (must be 0.05–0.5), using default 0.30");
     out.compiler.compression_flush_fraction = DEFAULT_CONFIG.compiler.compression_flush_fraction;
+  }
+
+  // Shell sandbox config validation
+  if (out.shell) {
+    if (typeof out.shell.enabled !== 'boolean') {
+      console.warn("[config] shell.enabled must be boolean, defaulting to false");
+      out.shell.enabled = false;
+    }
+    if (!Array.isArray(out.shell.allowed_paths)) {
+      console.warn("[config] shell.allowed_paths must be string array, defaulting to []");
+      (out.shell as { allowed_paths: readonly string[] }).allowed_paths = [];
+    }
   }
 
   return out;

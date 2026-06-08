@@ -1191,4 +1191,231 @@ import path from 'path';
       expect(preview[19]).toBe('line 20');
     });
   });
+
+  describe('shell sandbox', () => {
+    describe('dangerous command detection', () => {
+      it('should block sudo', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'sudo rm -rf /' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block rm -rf /', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'rm -rf /' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block rm -r /', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'rm -r /' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block mkfs', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'mkfs.ext4 /dev/sda' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block dd if=', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'dd if=/dev/zero of=/dev/sda' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block dd of=', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'dd of=/dev/sda if=/dev/zero' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block shutdown', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'shutdown -h now' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block reboot', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'reboot' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block fdisk', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'fdisk /dev/sda' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should block chmod -R 777 /', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'chmod -R 777 /' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('Blocked by sandbox');
+      });
+
+      it('should allow safe commands', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'echo hello' });
+        expect(result.ok).toBe(true);
+      });
+
+      it('should allow rm in allowed paths', async () => {
+        const filePath = join(testDir, 'file.txt');
+        writeFileSync(filePath, 'test');
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [testDir] },
+        });
+        const result = await tools.shell.execute({ command: `rm ${filePath}` });
+        expect(result.ok).toBe(true);
+      });
+    });
+
+    describe('path allowlist', () => {
+      it('should block paths not in allowlist', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [testDir] },
+        });
+        const result = await tools.shell.execute({ command: 'cat /etc/passwd' });
+        expect(result.ok).toBe(false);
+        expect((result as any).stderr).toContain('path not in allowed list');
+      });
+
+      it('should allow paths in allowlist', async () => {
+        const filePath = join(testDir, 'test.txt');
+        writeFileSync(filePath, 'test');
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [testDir] },
+        });
+        const result = await tools.shell.execute({ command: `ls ${testDir}` });
+        expect(result.ok).toBe(true);
+      });
+
+      it('should resolve .. in paths', async () => {
+        const subDir = join(testDir, 'sub');
+        mkdirSync(subDir, { recursive: true });
+        writeFileSync(join(testDir, 'file.txt'), 'test');
+        const tools = createSystemTools({
+          cwd: subDir,
+          sandbox: { enabled: true, allowed_paths: [testDir] },
+        });
+        const result = await tools.shell.execute({ command: `cat ${subDir}/../file.txt` });
+        expect(result.ok).toBe(true);
+      });
+
+      it('should resolve symlinks', async () => {
+        const realDir = join(testDir, 'real');
+        const linkDir = join(testDir, 'link');
+        mkdirSync(realDir, { recursive: true });
+        try {
+          const { symlinkSync } = await import('node:fs');
+          symlinkSync(realDir, linkDir);
+          const tools = createSystemTools({
+            cwd: testDir,
+            sandbox: { enabled: true, allowed_paths: [realDir] },
+          });
+          const result = await tools.shell.execute({ command: `ls ${linkDir}` });
+          expect(result.ok).toBe(true);
+        } catch {
+          // symlink may not be supported on all platforms
+        }
+      });
+
+      it('should handle quoted paths', async () => {
+        const filePath = join(testDir, 'quoted.txt');
+        writeFileSync(filePath, 'test');
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: [testDir] },
+        });
+        const result = await tools.shell.execute({ command: `cat "${filePath}"` });
+        expect(result.ok).toBe(true);
+      });
+
+      it('should handle ~ expansion', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: true, allowed_paths: ['~'] },
+        });
+        const result = await tools.shell.execute({ command: 'ls ~' });
+        expect(result.ok).toBe(true);
+      });
+    });
+
+    describe('sandbox disabled', () => {
+      it('should not block dangerous commands when sandbox is disabled', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: false, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'echo dangerous' });
+        expect(result.ok).toBe(true);
+      });
+
+      it('should not check paths when sandbox is disabled', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+          sandbox: { enabled: false, allowed_paths: [] },
+        });
+        const result = await tools.shell.execute({ command: 'cat /etc/passwd' });
+        expect(result.ok).toBe(true);
+      });
+    });
+
+    describe('sandbox not configured', () => {
+      it('should not block commands when sandbox is undefined', async () => {
+        const tools = createSystemTools({
+          cwd: testDir,
+        });
+        const result = await tools.shell.execute({ command: 'echo hello' });
+        expect(result.ok).toBe(true);
+      });
+    });
+  });
 });

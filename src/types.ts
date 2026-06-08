@@ -171,6 +171,11 @@ export interface ConsolidationConfig {
   run_delay_seconds: number;
 }
 
+export interface SandboxConfig {
+  enabled: boolean;
+  readonly allowed_paths: readonly string[];
+}
+
 export interface EditConfig {
   confirm: boolean;
 }
@@ -182,6 +187,18 @@ export interface AriaConfig {
   tiers: TiersConfig;
   session: SessionConfig;
   consolidation: ConsolidationConfig;
+  shell: SandboxConfig;
+  edit: EditConfig;
+}
+
+export interface AriaConfig {
+  llm: LlmConfig;
+  memory: MemoryConfig;
+  compiler: CompilerConfig;
+  tiers: TiersConfig;
+  session: SessionConfig;
+  consolidation: ConsolidationConfig;
+  shell: SandboxConfig;
   edit: EditConfig;
 }
 
