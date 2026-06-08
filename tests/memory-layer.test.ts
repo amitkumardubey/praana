@@ -17,6 +17,7 @@ function makeEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
     last_seen_at: now,
     session_id: "s1",
     scopes: [],
+    retracted: false,
     ...overrides,
   };
 }
@@ -41,6 +42,7 @@ describe("memory layer schema and half-life decay", () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].layer).toBe(1);
     expect(entries[0].confirmation_count).toBe(0);
+    expect(entries[0].retracted).toBe(false);
   });
 
   it("constraints never decay", () => {

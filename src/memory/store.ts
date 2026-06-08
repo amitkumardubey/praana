@@ -215,6 +215,7 @@ export class MemoryStore {
       last_seen_at: now,
       session_id: this.sessionId,
       scopes,
+      retracted: false,
     };
 
     insertEntry(this.db, entry);
