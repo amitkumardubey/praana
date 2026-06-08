@@ -3,6 +3,7 @@
 // ============================================================
 
 export { MemoryStore } from "./store.js";
+export { retractMemory } from "./db.js";
 export { HashEmbedder, OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export { createEmbedder } from "./embedder-factory.js";
 export { createSummarizer } from "./summarizer-factory.js";

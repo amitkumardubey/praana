@@ -93,6 +93,9 @@ function ensureLayerColumns(db: Database.Database): void {
       "ALTER TABLE entries ADD COLUMN confirmation_count INTEGER NOT NULL DEFAULT 0",
     );
   }
+  if (!names.has("retracted")) {
+    db.exec("ALTER TABLE entries ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 function ensureFtsBackfill(db: Database.Database): void {
@@ -269,6 +272,10 @@ export function deleteEntry(db: Database.Database, id: string): void {
   db.prepare("DELETE FROM entries_fts WHERE entry_id = ?").run(id);
 }
 
+export function retractMemory(db: Database.Database, id: string): void {
+  db.prepare("UPDATE entries SET retracted = 1 WHERE id = ?").run(id);
+}
+
 function rowToEntry(db: Database.Database, row: Record<string, unknown>): MemoryEntry {
   const scopes = db
     .prepare("SELECT scope FROM entry_scopes WHERE entry_id = ?")
@@ -285,6 +292,7 @@ function rowToEntry(db: Database.Database, row: Record<string, unknown>): Memory
     last_seen_at: row.last_seen_at as number,
     session_id: row.session_id as string,
     scopes: scopes.map((s) => s.scope),
+    retracted: (row.retracted as number | undefined) === 1,
   };
 }
 

@@ -42,6 +42,7 @@ export interface MemoryEntry {
   last_seen_at: number;    // unix ms, updated on recall touch
   session_id: string;      // which session created it
   scopes: string[];        // explicit scope labels, e.g. ["context:proj-a"]
+  retracted: boolean;      // tombstone flag — excluded from recall
   embedding?: Buffer;      // 384-dim float32 buffer
 }
 

@@ -39,11 +39,20 @@ Promotion (`hard` or `soft` → `active`) happens in two ways:
 
 A session with 50 state objects, rendered flat, would consume thousands of tokens on every turn. With tiering, only the active objects (typically 5–15) get full representation. The rest exist as stubs or anchors — still accessible, but not burning tokens. Measured token savings on peripheral state: **70–88%** compared to flat rendering.
 
+### Retraction (Tombstone Semantics)
+
+When the agent or user wants an object gone from working memory — a stale task, a wrong decision, a duplicate — the `retract_task(id)` tool tombstones it instead of deleting it. The object is hidden from all reads (`getActive`, `getPeripheral`, `list`, prompt compilation), but the row stays in the event log and in-memory map so:
+
+- `aria resume <id>` can replay history faithfully.
+- The action is auditable: a `retract` `context_action` event is logged with the object ID and kind.
+
+The same tombstone pattern applies in Cognitive Memory via `forget_memory(id)` — the `retracted` column is set to 1, the row is excluded from recall and digest, and it remains in the database for audit.
+
 ---
 
 ## Cognitive Memory
 
-**Cognitive Memory** is ARIA's cross-session persistence layer. At session end, ARIA analyses the full conversation transcript and extracts structured learnings. At the next session start, the most relevant learnings are ranked and injected into the prompt as a digest.
+**Cognitive Memory** is ARIA's cross-session persistence layer.
 
 ### Memory Kinds
 

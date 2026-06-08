@@ -41,6 +41,7 @@ export interface StateObject {
   updated: number; // unix ms
   lastTouched: number; // unix ms, for idle-timer tier management
   focused?: boolean;
+  retracted?: boolean;
 }
 
 // ---- Event Log ----

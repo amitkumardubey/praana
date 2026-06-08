@@ -15,6 +15,7 @@ import {
   getEntryById,
   insertEntry,
   deleteEntry,
+  retractMemory as retractMemoryDb,
   openMemoryDb,
   reinforceEntry,
   searchByFts,
@@ -339,6 +340,8 @@ export class MemoryStore {
     }
 
     let candidates = Array.from(candidateScores.values());
+    // Filter out retracted (tombstoned) entries
+    candidates = candidates.filter(({ entry }) => !entry.retracted);
 
     // Enforce strict scope isolation: entry must include ALL requested scopes.
     // This keeps vector and fallback paths consistent.
@@ -565,6 +568,7 @@ export class MemoryStore {
         ? getEntriesByScope(this.db, scopes)
         : getAllEntries(this.db);
       for (const entry of entries) {
+        if (entry.retracted) continue;
         if (!this.entryMatchesScopeQuery(entry, scopes)) continue;
         if (!byId.has(entry.id)) byId.set(entry.id, entry);
       }
@@ -587,5 +591,13 @@ export class MemoryStore {
     }
 
     return true;
+  }
+
+  retractMemory(id: string): void {
+    retractMemoryDb(this.db, id);
+  }
+
+  hasEntry(id: string): boolean {
+    return getEntryById(this.db, id) !== undefined;
   }
 }

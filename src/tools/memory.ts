@@ -78,6 +78,24 @@ export function createMemoryTools(ctx: MemoryToolContext) {
       },
     }),
 
+    retract_task: defineTool({
+      description: "Retract a task from working memory. The task is tombstoned (not deleted) so it won't appear in prompts or state listings.",
+      parameters: z.object({
+        id: z.string().describe("Task/object ID to retract"),
+      }),
+      execute: async ({ id }) => {
+        const obj = stateGraph.get(id);
+        if (!obj) {
+          return { ok: false, error: `Object ${id} not found` };
+        }
+        const retracted = stateGraph.retractObject(id);
+        if (retracted) {
+          logAction("retract", { id, kind: obj.kind });
+        }
+        return { ok: true, retracted };
+      },
+    }),
+
     add_constraint: defineTool({
       description:
         "Add a constraint to working memory. Use for rules, limitations, or requirements to keep in mind.",

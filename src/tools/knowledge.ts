@@ -118,5 +118,40 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
         }
       },
     }),
+
+    forget_memory: defineTool({
+      description: "Retract (tombstone) a cross-session memory entry. The memory is excluded from future recall and digest, but retained for audit.",
+      parameters: z.object({
+        id: z.string().describe("Memory entry ID to retract"),
+      }),
+      execute: async ({ id }) => {
+        if (incognito) {
+          return {
+            ok: false,
+            error: "Memory is disabled in incognito mode.",
+          };
+        }
+        if (!memoryEnabled || !memoryStore) {
+          return {
+            ok: false,
+            error: "Cross-session memory is not available.",
+          };
+        }
+        try {
+          if (!memoryStore.hasEntry(id)) {
+            return { ok: false, error: `Memory ${id} not found` };
+          }
+          memoryStore.retractMemory(id);
+          eventLog.append({
+            kind: "system_note",
+            actor: "kernel",
+            payload: { type: "memory_forget", id },
+          });
+          return { ok: true, id };
+        } catch (err: any) {
+          return { ok: false, error: err?.message ?? "Forget failed" };
+        }
+      },
+    }),
   };
 }

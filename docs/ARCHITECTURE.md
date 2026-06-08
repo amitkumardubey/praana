@@ -156,6 +156,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Adaptive Context Tools (`src/tools/memory.ts`)
 - `create_task(title, description?)` — creates a task in working memory
 - `complete_task(id)` — marks a task as done, auto-demoting it to the `soft` tier
+- `retract_task(id)` — tombstones a state object (any kind). The object is hidden from `getActive`/`getPeripheral`/`list` and from prompts, but is retained in the event log for audit and replay.
 - `add_constraint(text)` — records a constraint rule/limitation
 - `decide(summary, rationale)` — records an architectural/design decision
 - `add_note(text)` — records a general note
@@ -167,6 +168,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
 - `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to cross-session memory
+- `forget_memory(id)` — tombstones a cross-session memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s)
@@ -214,6 +216,9 @@ The memory retrieval system fuses multiple signals into a unified search score:
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
+
+### Schema Migrations
+The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
 
 ## Configuration
 

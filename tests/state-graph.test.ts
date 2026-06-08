@@ -162,4 +162,94 @@ describe('StateGraph', () => {
     expect(sg.get(second.id)?.focused).toBe(false);
     expect(sg.getActive()[0].id).toBe(first.id);
   });
+
+  describe('retract (tombstone semantics)', () => {
+    it('should set retracted flag on retractObject', () => {
+      const sg = new StateGraph();
+      const obj = sg.create('task', { title: 'To retract', status: 'todo' });
+
+      const result = sg.retractObject(obj.id);
+      expect(result).toBe(true);
+      expect(sg.get(obj.id)?.retracted).toBe(true);
+    });
+
+    it('should return false when retracting non-existent object', () => {
+      const sg = new StateGraph();
+      const result = sg.retractObject('non-existent-id');
+      expect(result).toBe(false);
+    });
+
+    it('should filter retracted objects from getActive', () => {
+      const sg = new StateGraph();
+      const active1 = sg.create('task', { title: 'Active 1', status: 'todo' });
+      const active2 = sg.create('task', { title: 'Active 2', status: 'todo' });
+
+      sg.retractObject(active1.id);
+
+      const active = sg.getActive();
+      expect(active.length).toBe(1);
+      expect(active[0].id).toBe(active2.id);
+    });
+
+    it('should filter retracted objects from getPeripheral', () => {
+      const sg = new StateGraph();
+      const soft1 = sg.create('task', { title: 'Soft 1', status: 'todo' });
+      const soft2 = sg.create('task', { title: 'Soft 2', status: 'todo' });
+      sg.setTier(soft1.id, 'soft');
+      sg.setTier(soft2.id, 'soft');
+
+      sg.retractObject(soft1.id);
+
+      const peripheral = sg.getPeripheral();
+      expect(peripheral.length).toBe(1);
+      expect(peripheral[0].id).toBe(soft2.id);
+    });
+
+    it('should filter retracted objects from list', () => {
+      const sg = new StateGraph();
+      const obj1 = sg.create('task', { title: 'Task 1', status: 'todo' });
+      const obj2 = sg.create('task', { title: 'Task 2', status: 'todo' });
+
+      sg.retractObject(obj1.id);
+
+      const list = sg.list();
+      expect(list.length).toBe(1);
+      expect(list[0].id).toBe(obj2.id);
+    });
+
+    it('should replay retract action during session resume', () => {
+      const sg = new StateGraph();
+
+      // First create the object
+      sg.replayAction({
+        action: 'create',
+        id: 'obj-1',
+        kind: 'task',
+        tier: 'active',
+        statePayload: { title: 'Resumed task', status: 'todo' },
+        created: Date.now(),
+        updated: Date.now(),
+        lastTouched: Date.now(),
+      });
+
+      // Then retract it
+      sg.replayAction({
+        action: 'retract',
+        id: 'obj-1',
+        updated: Date.now(),
+      });
+
+      const obj = sg.get('obj-1');
+      expect(obj).toBeTruthy();
+      expect(obj?.retracted).toBe(true);
+
+      // Should not appear in getActive
+      const active = sg.getActive();
+      expect(active.find(o => o.id === 'obj-1')).toBeUndefined();
+
+      // Should not appear in list
+      const list = sg.list();
+      expect(list.find(o => o.id === 'obj-1')).toBeUndefined();
+    });
+  });
 });

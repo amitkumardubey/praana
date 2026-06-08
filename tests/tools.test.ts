@@ -58,6 +58,13 @@ function mockStateGraph(): StateGraph {
       obj.lastTouched = Date.now();
       return true;
     }),
+    retractObject: vi.fn((id: string) => {
+      const obj = store.get(id);
+      if (!obj) return false;
+      obj.retracted = true;
+      obj.updated = Date.now();
+      return true;
+    }),
     list: vi.fn(() => Array.from(store.values())),
     getActive: vi.fn(() => Array.from(store.values()).filter((o: any) => o.tier === 'active')),
     getPeripheral: vi.fn(() => Array.from(store.values()).filter((o: any) => o.tier !== 'active')),
@@ -66,13 +73,23 @@ function mockStateGraph(): StateGraph {
 }
 
 function mockMemoryStore(): MemoryStore {
+  const store = new Map<string, any>();
+  
   return {
     recall: vi.fn().mockResolvedValue({ entries: [] }),
-    remember: vi.fn().mockResolvedValue({ id: 'mem-1' }),
+    remember: vi.fn().mockImplementation((content: string, opts?: any) => {
+      const id = 'mem-' + (store.size + 1);
+      store.set(id, { id, content, ...opts });
+      return Promise.resolve({ id });
+    }),
     digest: vi.fn().mockResolvedValue(null),
     sessionStart: vi.fn().mockResolvedValue(undefined),
     sessionEnd: vi.fn().mockResolvedValue(undefined),
     close: vi.fn(),
+    hasEntry: vi.fn((id: string) => store.has(id)),
+    retractMemory: vi.fn((id: string) => {
+      store.delete(id);
+    }),
   } as unknown as MemoryStore;
 }
 
@@ -236,6 +253,22 @@ describe('Memory Tools (createMemoryTools)', () => {
     });
   });
 
+  describe('retract_task', () => {
+    it('should retract a task and return retracted status', async () => {
+      const created = await tools.create_task.execute({ title: 'To retract' });
+      const id = (created as any).id;
+
+      const result = await tools.retract_task.execute({ id });
+      expect(result).toEqual({ ok: true, retracted: true });
+      expect(eventLog.append).toHaveBeenCalled();
+    });
+
+    it('should return error for missing object', async () => {
+      const result = await tools.retract_task.execute({ id: 'nonexistent' });
+      expect(result).toEqual({ ok: false, error: 'Object nonexistent not found' });
+    });
+  });
+
   describe('search_session_log', () => {
     it('should search the event log', async () => {
       const mockResult = [
@@ -386,6 +419,35 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
       const result = await tools.remember.execute({ content: 'test' });
       expect(result.ok).toBe(false);
       expect((result as any).error).toContain('Storage error');
+    });
+  });
+
+  describe('forget_memory', () => {
+    it('should retract a memory entry', async () => {
+      // First create a memory
+      await tools.remember.execute({ content: 'To forget' });
+      
+      const result = await tools.forget_memory.execute({ id: 'mem-1' });
+      expect(result).toEqual({ ok: true, id: 'mem-1' });
+      expect(memoryStore.retractMemory).toHaveBeenCalledWith('mem-1');
+      expect(eventLog.append).toHaveBeenCalled();
+    });
+
+    it('should return error for non-existent memory', async () => {
+      const result = await tools.forget_memory.execute({ id: 'nonexistent' });
+      expect(result).toEqual({ ok: false, error: 'Memory nonexistent not found' });
+    });
+
+    it('should return error when memory is disabled', async () => {
+      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
+      const result = await toolsDisabled.forget_memory.execute({ id: 'test' });
+      expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
+    });
+
+    it('should return incognito error when incognito mode', async () => {
+      const toolsIncognito = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: true, incognito: true });
+      const result = await toolsIncognito.forget_memory.execute({ id: 'test' });
+      expect(result).toEqual({ ok: false, error: 'Memory is disabled in incognito mode.' });
     });
   });
 });

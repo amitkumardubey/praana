@@ -56,6 +56,16 @@ export class StateGraph {
     return true;
   }
 
+  retractObject(id: string): boolean {
+    const obj = this.objects.get(id);
+    if (!obj) return false;
+    obj.retracted = true;
+    obj.updated = Date.now();
+    obj.lastTouched = Date.now();
+    this.touchedTurn.set(id, this.turnCount);
+    return true;
+  }
+
   get(id: string): StateObject | undefined {
     return this.objects.get(id);
   }
@@ -63,7 +73,7 @@ export class StateGraph {
   /** All active objects; focused object first, then by created asc, id asc. */
   getActive(): StateObject[] {
     return [...this.objects.values()]
-      .filter((o) => o.tier === "active")
+      .filter((o) => o.tier === "active" && !o.retracted)
       .sort((a, b) => {
         const af = a.focused ? 1 : 0;
         const bf = b.focused ? 1 : 0;
@@ -87,13 +97,14 @@ export class StateGraph {
   /** All soft + hard objects, sorted by updated desc. */
   getPeripheral(): StateObject[] {
     return [...this.objects.values()]
-      .filter((o) => o.tier === "soft" || o.tier === "hard")
+      .filter((o) => (o.tier === "soft" || o.tier === "hard") && !o.retracted)
       .sort((a, b) => b.updated - a.updated);
   }
 
   /** All objects with summary. */
   list(): Array<{ id: string; kind: StateObjectKind; tier: StateTier; summary: string }> {
     return [...this.objects.values()]
+      .filter((o) => !o.retracted)
       .sort((a, b) => a.created - b.created || (a.id < b.id ? -1 : 1))
       .map((o) => ({
         id: o.id,
@@ -103,7 +114,7 @@ export class StateGraph {
       }));
   }
 
-  /** Full snapshot of all objects (for event logging). */
+  /** Full snapshot including retracted objects — for event logging and audit. */
   snapshot(): StateObject[] {
     return [...this.objects.values()].sort(
       (a, b) => a.created - b.created || (a.id < b.id ? -1 : 1)
@@ -189,6 +200,15 @@ export class StateGraph {
             o.focused = o.id === id;
           }
           obj3.lastTouched = payload.lastTouched as number;
+        }
+        break;
+      }
+
+      case "retract": {
+        const obj4 = this.objects.get(id);
+        if (obj4) {
+          obj4.retracted = true;
+          obj4.updated = payload.updated as number;
         }
         break;
       }
