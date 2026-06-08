@@ -6,6 +6,7 @@ import {
   writeFileSync,
   existsSync,
   mkdirSync,
+  rmSync,
 } from "node:fs";
 import { dirname, resolve, isAbsolute, extname } from "node:path";
 import * as toml from "toml";
@@ -262,6 +263,109 @@ export function createSystemTools(ctx: SystemToolContext) {
           return { ok: true };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to edit file" };
+        }
+      },
+    }),
+
+    batch_write: defineTool({
+      description:
+        "Write multiple files atomically. All files are written or none. Creates parent directories as needed. Use for creating multi-file components in one call.",
+      parameters: z.object({
+        files: z.array(z.object({
+          path: z.string().describe("File path"),
+          content: z.string().describe("File content"),
+        })).describe("Array of files to write"),
+      }),
+      execute: async ({ files }) => {
+        // Validate all paths first (all must resolve)
+        const resolved: Array<{ absPath: string; content: string; relPath: string }> = [];
+        for (const f of files) {
+          const absPath = resolvePath(f.path);
+          resolved.push({ absPath, content: f.content, relPath: f.path });
+        }
+
+        // Write all files, tracking what was written for rollback
+        const written: string[] = [];
+        const originals = new Map<string, string>();
+        try {
+          for (const { absPath, content, relPath } of resolved) {
+            // Save original if file exists (for rollback)
+            if (existsSync(absPath)) {
+              originals.set(absPath, readFileSync(absPath, "utf-8"));
+            }
+            mkdirSync(dirname(absPath), { recursive: true });
+            writeFileSync(absPath, content);
+            written.push(relPath);
+          }
+          return { ok: true, files: written };
+        } catch (err: any) {
+          // Rollback: restore originals, delete newly created files
+          for (const { absPath } of resolved) {
+            if (originals.has(absPath)) {
+              try { writeFileSync(absPath, originals.get(absPath)!); } catch { /* best-effort */ }
+            } else if (written.some((r) => resolvePath(r) === absPath)) {
+              try { rmSync(absPath); } catch { /* best-effort */ }
+            }
+          }
+          return { ok: false, error: err?.message ?? "Batch write failed", written };
+        }
+      },
+    }),
+
+    batch_edit: defineTool({
+      description:
+        "Edit multiple files atomically. All edits are applied or none. Use for multi-file refactors in one call.",
+      parameters: z.object({
+        edits: z.array(z.object({
+          path: z.string().describe("File path"),
+          oldText: z.string().describe("Exact text to find"),
+          newText: z.string().describe("Replacement text"),
+        })).describe("Array of edits to apply"),
+      }),
+      execute: async ({ edits }) => {
+        // Validate all edits first (all must have unique matches)
+        const validated: Array<{ absPath: string; idx: number; oldText: string; newText: string; relPath: string }> = [];
+        for (const e of edits) {
+          const absPath = resolvePath(e.path);
+          if (!existsSync(absPath)) {
+            return { ok: false, error: `File not found: ${e.path}` };
+          }
+          const content = readFileSync(absPath, "utf-8");
+          const idx = content.indexOf(e.oldText);
+          if (idx === -1) {
+            return { ok: false, error: `oldText not found in ${e.path}` };
+          }
+          if (content.indexOf(e.oldText, idx + 1) !== -1) {
+            return { ok: false, error: `oldText not unique in ${e.path}` };
+          }
+          validated.push({ absPath, idx, oldText: e.oldText, newText: e.newText, relPath: e.path });
+        }
+
+        // Snapshot original contents for rollback
+        const snapshots = new Map<string, string>();
+        for (const { absPath } of validated) {
+          snapshots.set(absPath, readFileSync(absPath, "utf-8"));
+        }
+
+        // Apply all edits
+        const edited: string[] = [];
+        try {
+          for (const { absPath, idx, oldText, newText, relPath } of validated) {
+            const content = readFileSync(absPath, "utf-8");
+            const newContent = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
+            writeFileSync(absPath, newContent);
+            edited.push(relPath);
+          }
+          return { ok: true, files: edited };
+        } catch (err: any) {
+          // Rollback: restore all files to their original content
+          for (const { absPath } of validated) {
+            const original = snapshots.get(absPath);
+            if (original !== undefined) {
+              try { writeFileSync(absPath, original); } catch { /* best-effort */ }
+            }
+          }
+          return { ok: false, error: err?.message ?? "Batch edit failed", edited };
         }
       },
     }),

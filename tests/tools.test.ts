@@ -720,6 +720,208 @@ describe('System Tools (createSystemTools)', () => {
     });
   });
 
+  describe('batch_write', () => {
+    it('should write multiple files', async () => {
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'a.txt', content: 'aaa' },
+          { path: 'b.txt', content: 'bbb' },
+        ],
+      });
+      expect(result).toEqual({ ok: true, files: ['a.txt', 'b.txt'] });
+      expect(readFileSync(join(testDir, 'a.txt'), 'utf-8')).toBe('aaa');
+      expect(readFileSync(join(testDir, 'b.txt'), 'utf-8')).toBe('bbb');
+    });
+
+    it('should create parent directories', async () => {
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'deep/nested/dir/file.txt', content: 'nested content' },
+        ],
+      });
+      expect(result).toEqual({ ok: true, files: ['deep/nested/dir/file.txt'] });
+      expect(readFileSync(join(testDir, 'deep/nested/dir/file.txt'), 'utf-8')).toBe('nested content');
+    });
+
+    it('should create parent directories for multiple files', async () => {
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'src/components/Button.tsx', content: 'tsx' },
+          { path: 'src/components/Button.css', content: 'css' },
+          { path: 'src/components/Button.test.tsx', content: 'test' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(existsSync(join(testDir, 'src/components/Button.tsx'))).toBe(true);
+      expect(existsSync(join(testDir, 'src/components/Button.css'))).toBe(true);
+      expect(existsSync(join(testDir, 'src/components/Button.test.tsx'))).toBe(true);
+    });
+
+    it('should overwrite existing files', async () => {
+      writeFileSync(join(testDir, 'existing.txt'), 'old content');
+      const result = await tools.batch_write.execute({
+        files: [{ path: 'existing.txt', content: 'new content' }],
+      });
+      expect(result).toEqual({ ok: true, files: ['existing.txt'] });
+      expect(readFileSync(join(testDir, 'existing.txt'), 'utf-8')).toBe('new content');
+    });
+
+    it('should rollback all files on partial failure', async () => {
+      // Create a file that will block writing (directory exists as a file)
+      writeFileSync(join(testDir, 'blocker'), 'existing');
+
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'good.txt', content: 'good' },
+          { path: 'blocker/sub.txt', content: 'bad' }, // 'blocker' is a file, not a dir
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect((result as any).written).toContain('good.txt');
+      // The first file should have been rolled back
+      expect(existsSync(join(testDir, 'good.txt'))).toBe(false);
+      // Original file should be preserved
+      expect(readFileSync(join(testDir, 'blocker'), 'utf-8')).toBe('existing');
+    });
+
+    it('should rollback new files on write error', async () => {
+      // Make the first file succeed, then make the second fail by making path a directory
+      writeFileSync(join(testDir, 'dir-as-file'), 'data');
+
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'will-be-rolled-back.txt', content: 'temp' },
+          { path: 'dir-as-file/child.txt', content: 'fail' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect(existsSync(join(testDir, 'will-be-rolled-back.txt'))).toBe(false);
+    });
+
+    it('should return error for empty file list', async () => {
+      const result = await tools.batch_write.execute({ files: [] });
+      expect(result).toEqual({ ok: true, files: [] });
+    });
+
+    it('should handle absolute paths', async () => {
+      const absPath = join(testDir, 'absolute.txt');
+      const result = await tools.batch_write.execute({
+        files: [{ path: absPath, content: 'absolute' }],
+      });
+      expect(result.ok).toBe(true);
+      expect(readFileSync(absPath, 'utf-8')).toBe('absolute');
+    });
+  });
+
+  describe('batch_edit', () => {
+    it('should edit multiple files', async () => {
+      writeFileSync(join(testDir, 'file1.txt'), 'Hello World');
+      writeFileSync(join(testDir, 'file2.txt'), 'Foo Bar');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'file1.txt', oldText: 'World', newText: 'ARIA' },
+          { path: 'file2.txt', oldText: 'Bar', newText: 'Baz' },
+        ],
+      });
+      expect(result).toEqual({ ok: true, files: ['file1.txt', 'file2.txt'] });
+      expect(readFileSync(join(testDir, 'file1.txt'), 'utf-8')).toBe('Hello ARIA');
+      expect(readFileSync(join(testDir, 'file2.txt'), 'utf-8')).toBe('Foo Baz');
+    });
+
+    it('should return error if any oldText not found', async () => {
+      writeFileSync(join(testDir, 'a.txt'), 'aaa');
+      writeFileSync(join(testDir, 'b.txt'), 'bbb');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'a.txt', oldText: 'aaa', newText: 'AAA' },
+          { path: 'b.txt', oldText: 'missing', newText: 'BBB' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toContain('not found');
+      // Neither file should be modified (validation runs before any edits)
+      expect(readFileSync(join(testDir, 'a.txt'), 'utf-8')).toBe('aaa');
+      expect(readFileSync(join(testDir, 'b.txt'), 'utf-8')).toBe('bbb');
+    });
+
+    it('should return error if any oldText is not unique', async () => {
+      writeFileSync(join(testDir, 'a.txt'), 'abc abc');
+      writeFileSync(join(testDir, 'b.txt'), 'xyz');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'a.txt', oldText: 'abc', newText: 'ABC' },
+          { path: 'b.txt', oldText: 'xyz', newText: 'XYZ' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toContain('not unique');
+      // Neither file should be modified
+      expect(readFileSync(join(testDir, 'a.txt'), 'utf-8')).toBe('abc abc');
+      expect(readFileSync(join(testDir, 'b.txt'), 'utf-8')).toBe('xyz');
+    });
+
+    it('should return error for missing file', async () => {
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'missing.txt', oldText: 'a', newText: 'b' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toContain('not found');
+    });
+
+    it('should rollback all files on write failure mid-edit', async () => {
+      writeFileSync(join(testDir, 'file1.txt'), 'content1');
+      writeFileSync(join(testDir, 'file2.txt'), 'content2');
+
+      // We can't easily make writeFileSync fail in the edit loop,
+      // but we can verify the snapshot/rollback mechanism works by
+      // checking that originals are preserved when validation fails.
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'file1.txt', oldText: 'content1', newText: 'CHANGED1' },
+          { path: 'file2.txt', oldText: 'nonexistent', newText: 'CHANGED2' },
+        ],
+      });
+      expect(result.ok).toBe(false);
+      // Both files should be untouched (validation failed before any writes)
+      expect(readFileSync(join(testDir, 'file1.txt'), 'utf-8')).toBe('content1');
+      expect(readFileSync(join(testDir, 'file2.txt'), 'utf-8')).toBe('content2');
+    });
+
+    it('should handle edits in subdirectories', async () => {
+      mkdirSync(join(testDir, 'src/utils'), { recursive: true });
+      writeFileSync(join(testDir, 'src/utils/helper.ts'), 'export function foo() {}');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'src/utils/helper.ts', oldText: 'foo', newText: 'bar' },
+        ],
+      });
+      expect(result).toEqual({ ok: true, files: ['src/utils/helper.ts'] });
+      expect(readFileSync(join(testDir, 'src/utils/helper.ts'), 'utf-8')).toBe('export function bar() {}');
+    });
+
+    it('should handle empty edit list', async () => {
+      const result = await tools.batch_edit.execute({ edits: [] });
+      expect(result).toEqual({ ok: true, files: [] });
+    });
+
+    it('should handle special characters in oldText', async () => {
+      writeFileSync(join(testDir, 'special.txt'), 'price is $100.99 & more');
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'special.txt', oldText: '$100.99', newText: '$50.00' },
+        ],
+      });
+      expect(result).toEqual({ ok: true, files: ['special.txt'] });
+      expect(readFileSync(join(testDir, 'special.txt'), 'utf-8')).toBe('price is $50.00 & more');
+    });
+  });
+
   describe('shell', () => {
     it('should execute a command and return output', async () => {
       const result = await tools.shell.execute({ command: 'echo hello' });

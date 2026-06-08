@@ -63,5 +63,7 @@ export function describeTools(): string[] {
     "read_file(path, offset?, limit?) — Read a file",
     "write_file(path, content) — Write or overwrite a file",
     "edit_file(path, oldText, newText) — Replace text in a file",
+    "batch_write(files) — Write multiple files atomically",
+    "batch_edit(edits) — Edit multiple files atomically",
   ];
 }
