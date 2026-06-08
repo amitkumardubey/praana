@@ -79,6 +79,18 @@ export class Session {
       console.log(`[context] Loaded project context (~${tokEst} tokens)`);
     }
 
+    // Auto-load project context (stack fingerprint)
+    const projectContext = buildProjectContext(cwd);
+    if (projectContext) {
+      session.stateGraph.create("constraint", { text: projectContext });
+      session.eventLog.append({
+        kind: "system_note",
+        actor: "kernel",
+        payload: { type: "project_context_loaded", summary: projectContext.slice(0, 100) },
+      });
+      console.log(`[context] Loaded project stack fingerprint (~${Math.ceil(projectContext.length / 4)} tokens)`);
+    }
+
     if (session.incognito) {
       session.memoryEnabled = false;
       session.memoryStore = null;
@@ -632,4 +644,67 @@ export function loadAgentsContext(cwd: string): string | null {
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
   }
   return combined;
+}
+/**
+ * Scan the project directory for common config files and build a compact
+ * project context summary (package name, key deps, scripts, config type).
+ * Returns null if nothing meaningful found.
+ */
+export function buildProjectContext(cwd: string): string | null {
+  const parts: string[] = [];
+
+  // package.json
+  try {
+    const raw = readFileSync(join(cwd, "package.json"), "utf-8");
+    const pkg = JSON.parse(raw);
+    if (pkg.name) parts.push(`Project: ${pkg.name}`);
+    if (pkg.description) parts.push(`Description: ${pkg.description}`);
+    if (pkg.scripts && typeof pkg.scripts === "object") {
+      const scripts = Object.keys(pkg.scripts).join(", ");
+      parts.push(`Scripts: ${scripts}`);
+    }
+    if (pkg.dependencies && typeof pkg.dependencies === "object") {
+      const deps = Object.keys(pkg.dependencies).slice(0, 10).join(", ");
+      parts.push(`Dependencies: ${deps}${Object.keys(pkg.dependencies).length > 10 ? "..." : ""}`);
+    }
+  } catch (e) {
+    console.warn(`[context] Failed to parse package.json: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // Config files — first match wins (polyglot projects get primary language only)
+  const configFiles = [
+    ["tsconfig.json", "TypeScript"],
+    ["pyproject.toml", "Python"],
+    ["go.mod", "Go"],
+    ["Cargo.toml", "Rust"],
+    ["Gemfile", "Ruby"],
+  ];
+  for (const [file, lang] of configFiles) {
+    if (existsSync(join(cwd, file))) {
+      parts.push(`Language: ${lang}`);
+      break;
+    }
+  }
+
+  // .gitignore existence
+  if (existsSync(join(cwd, ".gitignore"))) {
+    parts.push("Has .gitignore");
+  }
+
+  // README.md — first 50 lines
+  try {
+    const readmeRaw = readFileSync(join(cwd, "README.md"), "utf-8");
+    const lines = readmeRaw.split("\n").slice(0, 50).join("\n").trim();
+    if (lines.length > 0) {
+      parts.push(`README: ${lines}`);
+    }
+  } catch {
+    // README.md is optional, no warning needed
+  }
+
+  if (parts.length === 0) return null;
+
+  const summary = parts.join("\n");
+  // Cap at ~500 chars
+  return summary.length > 500 ? summary.slice(0, 500) + "..." : summary;
 }
