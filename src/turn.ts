@@ -98,6 +98,9 @@ export async function runTurn(
   });
   session.setLastCompileMetrics(promptMetrics);
 
+  // Track input tokens
+  session.recordInputTokens(promptMetrics.totalTokens);
+
   // 3b. Check if history compression is needed
   if (session.memoryEnabled && session.memoryStore && promptMetrics.recentTurnsTruncated) {
     await maybeCompressHistory(session);
@@ -323,13 +326,16 @@ export async function runTurn(
     payload: { text: fullResponse },
   });
 
+  // Track output tokens (estimate from response)
+  const outputTokens = estimateTokens(fullResponse);
+  session.recordOutputTokens(outputTokens);
+
   // 7. Increment turn and run tier management
   session.incrementTurn();
   applyTierManagement(session);
 
   // 8. Memory banner — count recall calls & hits from this turn's events
-  const stats = computeMemoryStats(session, autoHydrated.length);
-  stats.promptTokens = promptMetrics.totalTokens;
+  const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
   printMemoryBanner(stats);
 
   return fullResponse;
@@ -361,11 +367,19 @@ function finalizeInterruptedTurn(
   session.incrementTurn();
   applyTierManagement(session);
 
-  const stats = computeMemoryStats(session, autoHydrated);
-  stats.promptTokens = promptTokens;
+  const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
   printMemoryBanner(stats);
 
   throw new TurnAbortedError(trimmed);
+}
+
+/**
+ * Heuristic for estimating output tokens from response text length.
+ * Note: this is a rough estimate that degrades for non-ASCII text.
+ * Ideally we'd get `usage` from the provider directly in the future.
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
 }
 
 export function isZodSchema(schema: unknown): schema is ZodTypeAny {
@@ -477,7 +491,9 @@ export function applyTierManagement(session: Session): void {
 
 export function computeMemoryStats(
   session: Session,
-  autoHydrated: number
+  autoHydrated: number,
+  promptTokens?: number,
+  outputTokens?: number
 ): {
   activeState: number;
   totalState: number;
@@ -485,7 +501,8 @@ export function computeMemoryStats(
   recallCalls: number;
   recallHits: number;
   autoHydrated: number;
-  promptTokens?: number;
+  promptTokens: number;
+  outputTokens: number;
 } {
   const memStats = session.getMemoryStats();
   const recentEvents = session.eventLog.readLast(50);
@@ -504,5 +521,7 @@ export function computeMemoryStats(
     recallCalls,
     recallHits,
     autoHydrated,
+    promptTokens: promptTokens ?? 0,
+    outputTokens: outputTokens ?? 0,
   };
 }

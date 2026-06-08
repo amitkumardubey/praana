@@ -34,6 +34,8 @@ export class Session {
   private turnCount = 0;
   private modelOverride: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
+  private sessionInputTokens = 0;
+  private sessionOutputTokens = 0;
 
   private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
@@ -268,6 +270,22 @@ export class Session {
 
   isIncognito(): boolean {
     return this.incognito;
+  }
+
+  recordInputTokens(count: number): void {
+    this.sessionInputTokens += count;
+  }
+
+  recordOutputTokens(count: number): void {
+    this.sessionOutputTokens += count;
+  }
+
+  getInputTokens(): number {
+    return this.sessionInputTokens;
+  }
+
+  getOutputTokens(): number {
+    return this.sessionOutputTokens;
   }
 
   async setIncognito(enabled: boolean): Promise<void> {

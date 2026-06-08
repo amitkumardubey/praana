@@ -271,6 +271,12 @@ export async function handleSlashCommand(
       console.log(`  Started at: ${startedAt}`);
       console.log(`  Uptime: ${uptimeSec}s`);
 
+      const inTokens = session.getInputTokens();
+      const outTokens = session.getOutputTokens();
+      if (inTokens > 0 || outTokens > 0) {
+        console.log(`  Tokens (this boot): ${inTokens.toLocaleString()} in / ${outTokens.toLocaleString()} out`);
+      }
+
       console.log("\nWorking memory (this session):");
       console.log(`  Total: ${stats.total}`);
       console.log(`  Active: ${stats.active}`);

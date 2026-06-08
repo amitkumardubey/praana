@@ -176,6 +176,12 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     setLastCompileMetrics(m: any) { this._lastCompileMetrics = m; },
     getLastCompileMetrics() { return this._lastCompileMetrics; },
     isIncognito() { return this.incognito ?? false; },
+    _inputTokens: 0,
+    _outputTokens: 0,
+    recordInputTokens(count: number) { this._inputTokens += count; },
+    recordOutputTokens(count: number) { this._outputTokens += count; },
+    getInputTokens() { return this._inputTokens; },
+    getOutputTokens() { return this._outputTokens; },
     ...overrides,
   };
 
@@ -455,6 +461,48 @@ describe("runTurn", () => {
     const session = makeMockSession();
     const response = await runTurn(session, "hello");
     expect(response).toContain("no response from model");
+  });
+
+  it("accumulates input and output tokens during the turn", async () => {
+    const responseText = "Hello world this is a response";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: responseText }] } };
+    })();
+    vi.mocked(piStream).mockReturnValue(generator as any);
+    vi.mocked(compileWithMetrics).mockReturnValue({
+      prompt: "mock prompt",
+      metrics: {
+        totalTokens: 150,
+        activeStateTokens: 10,
+        peripheralStateTokens: 20,
+        recentTurnsTokens: 30,
+        toolSchemasTokens: 40,
+        systemFrameTokens: 50,
+        recentTurnsTruncated: false,
+      }
+    } as any);
+
+    const session = makeMockSession();
+
+    // Initial should be 0
+    expect(session.getInputTokens()).toBe(0);
+    expect(session.getOutputTokens()).toBe(0);
+
+    const spyIn = vi.spyOn(session, 'recordInputTokens');
+    const spyOut = vi.spyOn(session, 'recordOutputTokens');
+
+    await runTurn(session, "hello");
+
+    // Input tokens come from promptMetrics.totalTokens
+    expect(spyIn).toHaveBeenCalledWith(150);
+    expect(session.getInputTokens()).toBe(150);
+
+    // Output tokens: called exactly once with a positive value
+    expect(spyOut).toHaveBeenCalledTimes(1);
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(session.getOutputTokens()).toBe(outArg);
   });
 
   it("processes tool calls and returns results", async () => {

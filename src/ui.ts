@@ -247,14 +247,16 @@ export function printMemoryBanner(stats: {
   recallCalls: number;
   recallHits: number;
   autoHydrated: number;
-  promptTokens?: number;
+  promptTokens: number;
+  outputTokens: number;
 }): void {
   if (
     stats.activeState === 0 &&
     stats.recallCalls === 0 &&
     stats.autoHydrated === 0 &&
     stats.digestLen === 0 &&
-    !stats.promptTokens
+    !stats.promptTokens &&
+    !stats.outputTokens
   ) return;
   const parts: string[] = [];
   if (stats.activeState > 0 || stats.totalState > 0) parts.push(`${stats.activeState}/${stats.totalState} state`);
@@ -262,6 +264,7 @@ export function printMemoryBanner(stats: {
   if (stats.recallCalls > 0) parts.push(`recall ${stats.recallHits}h`);
   if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   if (stats.promptTokens && stats.promptTokens > 0) parts.push(`prompt ~${stats.promptTokens}t`);
+  if (stats.outputTokens && stats.outputTokens > 0) parts.push(`out ~${stats.outputTokens}t`);
   if (parts.length === 0) return;
   stderr(`\n${chalk.dim(`[state] ${parts.join(" | ")}`)}\n`);
 }
