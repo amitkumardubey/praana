@@ -78,11 +78,21 @@ export async function runTurn(
     editConfirm: session.config.edit?.confirm,
   });
 
+  // 2b. Match skills against user input (budget base must be set before promotion)
+  const tokenBudget = session.config.compiler.token_budget;
+  session.skillRuntime?.setBudgetBase(tokenBudget);
+  session.skillRuntime?.processUserInput(userInput);
+
   // 3. Compile prompt (system only, user input passed as message)
   const recentEvents = session.eventLog.readLastUncompressed(
     session.config.compiler.recent_turns
   );
   const toolDescs = describeTools();
+
+  // Build skills prompt section from runtime
+  const skillsSection = session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
+  const agentsBudgetRatio =
+    session.config.compiler.agents_budget_ratio ?? session.config.compiler.skills_budget_ratio;
 
   const { prompt: compiledPrompt, metrics: promptMetrics } = compileWithMetrics({
     stateGraph: session.stateGraph,
@@ -91,11 +101,13 @@ export async function runTurn(
     toolSchemas: toolDescs,
     cwd: session.cwd,
     sessionId: session.id,
-    tokenBudget: session.config.compiler.token_budget,
+    tokenBudget,
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
     agentsContext: session.agentsContext,
+    skillsPromptSection: skillsSection,
     memoriesBudgetRatio: session.config.compiler.memories_budget_ratio,
-    skillsBudgetRatio: session.config.compiler.skills_budget_ratio,
+    agentsBudgetRatio,
+    skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
   });
   session.setLastCompileMetrics(promptMetrics);
@@ -216,6 +228,7 @@ export async function runTurn(
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
     const recalledEntryIdsThisTurn = new Set<string>();
+    let executionHydrated = false;
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
     if (options?.onToolCallsStart) options.onToolCallsStart();
@@ -238,6 +251,11 @@ export async function runTurn(
       let result: unknown;
       let isError = false;
 
+      if (!executionHydrated) {
+        session.skillRuntime?.hydrateExecutionForHotSkills();
+        executionHydrated = true;
+      }
+
       if (!toolDef || typeof toolDef.execute !== "function") {
         isError = true;
         result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
@@ -248,6 +266,10 @@ export async function runTurn(
           isError = true;
           result = { ok: false, error: err?.message ?? "Tool execution failed" };
         }
+      }
+
+      if (isError) {
+        session.skillRuntime?.hydrateRecoveryForHotSkills();
       }
 
       if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
@@ -335,6 +357,8 @@ export async function runTurn(
   // 7. Increment turn and run tier management
   session.incrementTurn();
   applyTierManagement(session);
+  session.skillRuntime?.endTurn();
+  flushSkillTelemetry(session);
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
@@ -368,11 +392,26 @@ function finalizeInterruptedTurn(
 
   session.incrementTurn();
   applyTierManagement(session);
+  session.skillRuntime?.endTurn();
+  flushSkillTelemetry(session);
 
   const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
   printMemoryBanner(stats);
 
   throw new TurnAbortedError(trimmed);
+}
+
+function flushSkillTelemetry(session: Session): void {
+  const events = session.skillRuntime?.drainEvents();
+  if (!events?.length) return;
+
+  for (const event of events) {
+    session.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: { type: "skill_telemetry", event },
+    });
+  }
 }
 
 /**

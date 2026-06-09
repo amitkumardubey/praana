@@ -142,6 +142,8 @@ export interface CompilerConfig {
   /** Max share of usable prompt budget for cross-session memory section. */
   memories_budget_ratio?: number;
   /** Max share of usable prompt budget for project context (AGENTS.md). */
+  agents_budget_ratio?: number;
+  /** @deprecated Use agents_budget_ratio */
   skills_budget_ratio?: number;
   /** Tokens reserved for model output when computing section ceilings. */
   reserved_output_tokens?: number;
@@ -176,6 +178,18 @@ export interface SandboxConfig {
   readonly allowed_paths: readonly string[];
 }
 
+// ---- Skills ----
+
+export type { SkillMetadata, SkillRecord } from "./skills/types.js";
+
+export interface SkillsConfig {
+  enabled: boolean;
+  max_token_budget_ratio: number;
+  active_skill_idle_turns: number;
+  warm_skill_eviction_turns: number;
+  max_depth: number;
+}
+
 export interface EditConfig {
   confirm: boolean;
 }
@@ -189,17 +203,7 @@ export interface AriaConfig {
   consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
-}
-
-export interface AriaConfig {
-  llm: LlmConfig;
-  memory: MemoryConfig;
-  compiler: CompilerConfig;
-  tiers: TiersConfig;
-  session: SessionConfig;
-  consolidation: ConsolidationConfig;
-  shell: SandboxConfig;
-  edit: EditConfig;
+  skills: SkillsConfig;
 }
 
 // ---- Session Meta ----

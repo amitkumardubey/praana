@@ -12,8 +12,10 @@ export interface CompileInput {
   tokenBudget: number;
   recentTurnsTokenBudget?: number;
   agentsContext?: string | null;
+  skillsPromptSection?: string | null;
   memoriesBudgetRatio?: number;
-  skillsBudgetRatio?: number;
+  agentsBudgetRatio?: number;
+  skillsSectionBudgetRatio?: number;
   reservedOutputTokens?: number;
 }
 
@@ -22,6 +24,7 @@ export interface CompileMetrics {
   totalTokens: number;
   systemFrameTokens: number;
   agentsContextTokens: number;  // tokens used by AGENTS.md / project context
+  skillsCatalogTokens: number;  // tokens used by skills section in prompt
   crossSessionTokens: number;
   activeStateTokens: number;
   peripheralStubsTokens: number;
@@ -33,8 +36,10 @@ export interface CompileMetrics {
   recentTurnsTruncated: boolean;
   /** If true, cross-session memory was trimmed to section ceiling. */
   memoryTruncated: boolean;
-  /** If true, project context was degraded to fit skills budget. */
+  /** If true, project context was degraded to fit agents budget. */
   agentsContextTruncated: boolean;
+  /** If true, skills section was trimmed to section ceiling. */
+  skillsTruncated: boolean;
 }
 
 /** Estimate token count from character count. 1 token ≈ 4 chars is rough but consistent. */
@@ -58,6 +63,11 @@ export function compile(input: CompileInput): string {
     input.agentsContext
   );
   sections.push(frame);
+
+  // ---- 1b. SKILLS ----
+  if (input.skillsPromptSection) {
+    sections.push(input.skillsPromptSection);
+  }
 
   // ---- 2. CROSS-SESSION MEMORY ----
   if (input.memoryDigest && input.memoryDigest.trim()) {
@@ -108,13 +118,14 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   const reservedOutput = input.reservedOutputTokens ?? 0;
   const usable = Math.max(0, input.tokenBudget - reservedOutput);
   const maxMemoryTokens = Math.floor(usable * (input.memoriesBudgetRatio ?? 0.2));
-  const maxSkillsTokens = Math.floor(usable * (input.skillsBudgetRatio ?? 0.3));
+  const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
+  const maxSkillsSectionTokens = Math.floor(usable * (input.skillsSectionBudgetRatio ?? 0.2));
 
   const stateSummary = buildStateSummary(input.stateGraph);
 
   const { text: agentsContext, truncated: agentsTruncated } = trimAgentsContext(
     input.agentsContext,
-    maxSkillsTokens,
+    maxAgentsTokens,
   );
   metrics.agentsContextTruncated = agentsTruncated;
 
@@ -123,6 +134,22 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
   metrics.agentsContextTokens = agentsContext ? estTokens(agentsContext) : 0;
+
+  // 1b. SKILLS (progressive disclosure)
+  let skillsSection = "";
+  if (input.skillsPromptSection) {
+    const { text, truncated } = trimSectionToTokenBudget(
+      input.skillsPromptSection,
+      maxSkillsSectionTokens,
+      "skills section truncated to token budget",
+    );
+    skillsSection = text;
+    metrics.skillsTruncated = truncated;
+    sections.push(skillsSection);
+  } else {
+    metrics.skillsTruncated = false;
+  }
+  metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
 
   // 2. CROSS-SESSION MEMORY
   let crossSection = "";
@@ -502,7 +529,11 @@ function truncateText(text: unknown, maxLen: number): string {
   return s.slice(0, maxLen) + "...";
 }
 
-function trimSectionToTokenBudget(text: string, maxTokens: number): { text: string; truncated: boolean } {
+function trimSectionToTokenBudget(
+  text: string,
+  maxTokens: number,
+  truncationNote = "memory section truncated to token budget",
+): { text: string; truncated: boolean } {
   if (maxTokens <= 0 || estTokens(text) <= maxTokens) {
     return { text, truncated: false };
   }
@@ -513,7 +544,7 @@ function trimSectionToTokenBudget(text: string, maxTokens: number): { text: stri
   for (const line of lines) {
     const lineTokens = estTokens(line + "\n");
     if (kept.length > 0 && tokens + lineTokens > maxTokens) {
-      kept.push("... (memory section truncated to token budget)");
+      kept.push(`... (${truncationNote})`);
       return { text: kept.join("\n"), truncated: true };
     }
     kept.push(line);

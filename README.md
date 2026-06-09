@@ -113,6 +113,25 @@ Combined content is capped at ~4000 tokens. ARIA prints `[context] Loaded projec
 
 The agent can create or update `AGENTS.md` via `write_file` as it discovers useful project knowledge.
 
+### Skills — progressive agent capabilities
+
+ARIA discovers [Agent Skills](https://agentskills.io/) (`SKILL.md` files) from standard locations and loads them progressively so the prompt stays within budget:
+
+| Tier | What the model sees | When |
+|---|---|---|
+| **Hot** | Planner section (full body if no sections) | Matched to your query |
+| **Warm** | One-line stub | Recently relevant, standing by |
+| **Cold** | Name + description in catalog | Discovered but not active |
+
+Search paths (project overrides user when names collide):
+
+- `<git root>/.agents/skills`, `.aria/skills`, `.cursor/skills`, `skills/`
+- `~/.agents/skills`, `~/.aria/skills`, `~/.claude/skills`
+
+Skills are ranked per turn with BM25 + synonym expansion. Execution and recovery sections hydrate when tools run or fail. The status bar shows residency counts (`HOT · WARM · COLD`). Residency resets on session resume — skills are re-discovered, not persisted.
+
+Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, triggers, neighbors, per-skill token budgets, custom section headings.
+
 ---
 
 ## Slash Commands
@@ -184,6 +203,13 @@ db_path = "~/.aria/memory.db"
 token_budget = 100000
 recent_turns = 10
 recent_turns_token_budget = 30000
+agents_budget_ratio = 0.3   # AGENTS.md section ceiling (share of token_budget)
+
+[skills]
+enabled = true
+max_token_budget_ratio = 0.2   # skills section ceiling (share of token_budget)
+active_skill_idle_turns = 5    # hot → warm after N idle turns
+warm_skill_eviction_turns = 20  # warm → cold after N idle turns
 
 [tiers]
 idle_soft_after_turns = 20
@@ -203,8 +229,9 @@ Config is merged from four locations, lowest to highest precedence:
 ```
 User input
   → auto-hydrate peripheral objects matching query keywords
+  → match skills (BM25) and update hot/warm/cold residency
   → compile deterministic prompt:
-      system frame · memory digest · active state · peripheral stubs · recent turns
+      system frame · skills · memory digest · active state · peripheral stubs · recent turns
   → stream LLM response with tool calls
   → log all events to append-only JSONL
   → apply tier demotion (idle objects compress)

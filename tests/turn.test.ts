@@ -24,6 +24,7 @@ vi.mock("../src/compiler.js", () => ({
       totalTokens: 500,
       systemFrameTokens: 100,
       agentsContextTokens: 0,
+      skillsCatalogTokens: 0,
       crossSessionTokens: 50,
       activeStateTokens: 50,
       peripheralStubsTokens: 30,
@@ -32,6 +33,9 @@ vi.mock("../src/compiler.js", () => ({
       activeObjectCount: 2,
       peripheralObjectCount: 1,
       recentTurnsTruncated: false,
+      memoryTruncated: false,
+      agentsContextTruncated: false,
+      skillsTruncated: false,
     },
   })),
 }));
@@ -116,6 +120,20 @@ function makeConfig(overrides?: Partial<AriaConfig>): AriaConfig {
     },
     session: {
       log_dir: "/tmp/aria-test",
+    },
+    consolidation: {
+      enabled: false,
+      promotion_threshold: 3,
+      run_delay_seconds: 30,
+    },
+    shell: { enabled: false, allowed_paths: [] },
+    edit: { confirm: false },
+    skills: {
+      enabled: true,
+      max_token_budget_ratio: 0.2,
+      active_skill_idle_turns: 5,
+      warm_skill_eviction_turns: 20,
+      max_depth: 6,
     },
     ...overrides,
   };
@@ -742,6 +760,31 @@ describe("runTurn", () => {
     expect(userMsgs.length).toBeGreaterThanOrEqual(1);
     expect(agentMsgs.length).toBeGreaterThanOrEqual(1);
     expect(userMsgs[0].payload).toMatchObject({ text: "record this" });
+  });
+
+  it("passes the full compiler token budget to skill prompt building", async () => {
+    const buildPromptSection = vi.fn(() => "## Loaded Skills\n\n(no skills loaded)");
+    const processUserInput = vi.fn();
+    const setBudgetBase = vi.fn();
+    const endTurn = vi.fn();
+    const drainEvents = vi.fn(() => []);
+    const session = makeMockSession({
+      skillRuntime: {
+        setBudgetBase,
+        processUserInput,
+        buildPromptSection,
+        endTurn,
+        drainEvents,
+      },
+    });
+
+    await runTurn(session, "use a skill");
+
+    expect(setBudgetBase).toHaveBeenCalledWith(100_000);
+    expect(processUserInput).toHaveBeenCalledWith("use a skill");
+    expect(buildPromptSection).toHaveBeenCalledWith(100_000);
+    expect(endTurn).toHaveBeenCalled();
+    expect(drainEvents).toHaveBeenCalled();
   });
 
   it("triggers auto-hydrate on matching user input", async () => {

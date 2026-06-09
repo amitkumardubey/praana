@@ -3,9 +3,7 @@
  * Surfaces model, context usage, mode, repo, memory tiers, skills, and current task.
  */
 
-import { existsSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
-import { execSync } from "node:child_process";
+import { basename } from "node:path";
 import chalk from "chalk";
 import type { CompileMetrics } from "./compiler.js";
 import type { Session } from "./session.js";
@@ -27,6 +25,7 @@ export interface StatusBarInput {
   contextWindowTokens: number;
   memoryStats: { active: number; soft: number; hard: number };
   skills: string[];
+  skillResidency: { hot: number; warm: number; total: number } | null;
   currentTask: string | null;
   agentsContextLoaded: boolean;
 }
@@ -78,47 +77,6 @@ export function getCurrentTaskTitle(stateGraph: StateGraph): string | null {
   return todo?.title ?? null;
 }
 
-/**
- * Discover project-local skill names for display (not yet injected into prompts).
- * Scans skills/*.md and .cursor/skills/<name>/SKILL.md under git root.
- */
-export function discoverLoadedSkills(cwd: string): string[] {
-  const gitRoot = findGitRoot(cwd);
-  const names = new Set<string>();
-
-  const skillsDir = join(gitRoot, "skills");
-  if (existsSync(skillsDir)) {
-    try {
-      for (const ent of readdirSync(skillsDir, { withFileTypes: true })) {
-        if (ent.isFile() && ent.name.endsWith(".md")) {
-          names.add(ent.name.replace(/\.md$/i, ""));
-        }
-        if (ent.isDirectory()) {
-          const skillFile = join(skillsDir, ent.name, "SKILL.md");
-          if (existsSync(skillFile)) names.add(ent.name);
-        }
-      }
-    } catch {
-      /* unreadable */
-    }
-  }
-
-  const cursorSkills = join(gitRoot, ".cursor", "skills");
-  if (existsSync(cursorSkills)) {
-    try {
-      for (const ent of readdirSync(cursorSkills, { withFileTypes: true })) {
-        if (!ent.isDirectory()) continue;
-        const skillFile = join(cursorSkills, ent.name, "SKILL.md");
-        if (existsSync(skillFile)) names.add(ent.name);
-      }
-    } catch {
-      /* unreadable */
-    }
-  }
-
-  return [...names].sort((a, b) => a.localeCompare(b)).slice(0, 8);
-}
-
 export function buildStatusBarInput(
   session: Session,
   opts: {
@@ -131,6 +89,7 @@ export function buildStatusBarInput(
 ): StatusBarInput {
   const mem = session.getMemoryStats();
   const metrics = opts.compileMetrics ?? session.getLastCompileMetrics();
+  const skillResidency = session.skillRuntime?.getResidencyCounts();
   return {
     model: opts.model,
     repoPath: session.getRepoRoot(),
@@ -142,7 +101,10 @@ export function buildStatusBarInput(
     contextUsedTokens: metrics?.totalTokens ?? 0,
     contextWindowTokens: opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
-    skills: discoverLoadedSkills(session.cwd),
+    skills: (session.skills ?? []).map((s) => s.name),
+    skillResidency: skillResidency
+      ? { hot: skillResidency.hot, warm: skillResidency.warm, total: skillResidency.hot + skillResidency.warm + skillResidency.cold }
+      : null,
     currentTask: getCurrentTaskTitle(session.stateGraph),
     agentsContextLoaded: !!session.agentsContext,
   };
@@ -178,9 +140,9 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
 
   const skillsLabel =
     input.skills.length > 0
-      ? input.skills.join(", ")
-      : chalk.dim("(none — add skills/*.md or .cursor/skills/)");
-  const line4 = [chalk.bold("Loaded skills:"), skillsLabel].join(" ");
+      ? `${input.skills.length} skills (${input.skillResidency ? `${input.skillResidency.hot} HOT · ${input.skillResidency.warm} WARM · ${input.skillResidency.total - input.skillResidency.hot - input.skillResidency.warm} COLD` : "?/?/? loaded"})`
+      : chalk.dim("(none — add skills/*.md to project root)");
+  const line4 = [chalk.bold("Skills:"), skillsLabel].join(" ");
 
   const taskLabel = input.currentTask
     ? chalk.white(input.currentTask)
@@ -221,16 +183,4 @@ function truncateAnsiLine(line: string, maxWidth: number): string {
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function findGitRoot(cwd: string): string {
-  try {
-    return execSync("git rev-parse --show-toplevel", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return cwd;
-  }
 }

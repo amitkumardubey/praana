@@ -152,6 +152,9 @@ src/
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
   ui.ts          — Terminal output, banners, formatting
+  skills/
+    index.ts     — SkillRuntime: discovery, BM25 matching, hot/warm/cold residency
+    types.ts     — Skill metadata, runtime state, telemetry types
   tools/
     index.ts     — Tool registry
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
@@ -165,12 +168,17 @@ src/
     types.ts     — Memory-specific types
 ```
 
+### Skills (issue #57)
+
+On session start, `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.aria/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `aria.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
+
 ### Turn flow (per turn)
 
 ```
 User input
   → auto-hydrate matching peripheral state (keyword matching)
-  → compile prompt: system frame | memory digest | active state | stubs | recent turns
+  → skill matching (BM25) + residency promotion/demotion
+  → compile prompt: system frame | skills | memory digest | active state | stubs | recent turns
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
   → increment turn count, run applyTierManagement()

@@ -29,7 +29,7 @@ const DEFAULT_CONFIG: AriaConfig = {
     recent_turns_token_budget: 30_000,
     recall_min_score: 0.35,
     memories_budget_ratio: 0.2,
-    skills_budget_ratio: 0.3,
+    agents_budget_ratio: 0.3,
     reserved_output_tokens: 0,
     compression_watermark: 0.75,
     compression_flush_fraction: 0.30,
@@ -52,6 +52,13 @@ const DEFAULT_CONFIG: AriaConfig = {
   },
   edit: {
     confirm: false,
+  },
+  skills: {
+    enabled: true,
+    max_token_budget_ratio: 0.2,
+    active_skill_idle_turns: 5,
+    warm_skill_eviction_turns: 20,
+    max_depth: 6,
   },
 };
 
@@ -157,6 +164,12 @@ export function loadConfig(configPath?: string): AriaConfig {
   }
 
   const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as AriaConfig;
+
+  // Backward compat: skills_budget_ratio → agents_budget_ratio
+  const compiler = (userConfig as { compiler?: { skills_budget_ratio?: number; agents_budget_ratio?: number } }).compiler;
+  if (compiler?.skills_budget_ratio !== undefined && compiler.agents_budget_ratio === undefined) {
+    merged.compiler.agents_budget_ratio = compiler.skills_budget_ratio;
+  }
 
   // Backward compat: map old [bodha] config to [memory]
   if ((userConfig as any).bodha && !(userConfig as any).memory) {

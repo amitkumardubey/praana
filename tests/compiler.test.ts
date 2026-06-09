@@ -233,7 +233,7 @@ describe('Compiler', () => {
       sessionId: 'test-1',
       tokenBudget: 10_000,
       memoriesBudgetRatio: 0.05,
-      skillsBudgetRatio: 0.3,
+      agentsBudgetRatio: 0.3,
     });
 
     expect(metrics.memoryTruncated).toBe(true);

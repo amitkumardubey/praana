@@ -5,7 +5,9 @@ import { readFileSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
-import type { AriaConfig } from "./types.js";
+import type { AriaConfig, SkillRecord } from "./types.js";
+import type { SkillTelemetryEvent } from "./skills/types.js";
+import { SkillRuntime } from "./skills/index.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { StateGraph } from "./state-graph.js";
 import { loadConfig } from "./config.js";
@@ -28,6 +30,8 @@ export class Session {
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
+  skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
+  skillRuntime: SkillRuntime | null = null;
   debug = false;
   private ended = false;
   private readonly startedAt: number;
@@ -78,6 +82,8 @@ export class Session {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
       console.log(`[context] Loaded project context (~${tokEst} tokens)`);
     }
+
+    await initSkillRuntime(session, cfg, cwd);
 
     // Auto-load project context (stack fingerprint)
     const projectContext = buildProjectContext(cwd);
@@ -168,6 +174,8 @@ export class Session {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
       console.log(`[context] Loaded project context (~${tokEst} tokens)`);
     }
+
+    await initSkillRuntime(session, cfg, cwd);
 
     const allEvents = session.eventLog.readAll();
 
@@ -707,4 +715,24 @@ export function buildProjectContext(cwd: string): string | null {
   const summary = parts.join("\n");
   // Cap at ~500 chars
   return summary.length > 500 ? summary.slice(0, 500) + "..." : summary;
+}
+
+/** Discover skills and attach SkillRuntime to the session (residency resets on resume). */
+async function initSkillRuntime(session: Session, cfg: AriaConfig, cwd: string): Promise<void> {
+  session.skillRuntime = new SkillRuntime(cfg.skills, cwd);
+  if (!cfg.skills?.enabled) return;
+
+  await session.skillRuntime.initialize();
+  session.skills = session.skillRuntime.getIndex().map((e) => ({
+    name: e.name,
+    description: e.description,
+    location: "",
+    directory: "",
+    body: "",
+    metadata: { name: e.name, description: e.description },
+  }));
+
+  if (session.skills.length > 0) {
+    console.log(`[skills] Discovered ${session.skills.length} skill(s)`);
+  }
 }

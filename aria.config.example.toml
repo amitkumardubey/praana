@@ -114,6 +114,25 @@ recent_turns = 10
 # Token budget reserved specifically for the Recent Turns section
 recent_turns_token_budget = 30000
 
+# Max share of token_budget for AGENTS.md / project context in the system frame
+agents_budget_ratio = 0.3
+
+[skills]
+# Discover and load SKILL.md files (https://agentskills.io/)
+enabled = true
+
+# Max share of token_budget for the skills section in the compiled prompt
+max_token_budget_ratio = 0.2
+
+# Residency: hot skills demote to warm after this many idle turns
+active_skill_idle_turns = 5
+
+# Warm skills evict to cold after this many idle turns
+warm_skill_eviction_turns = 20
+
+# Max directory depth when scanning skill search paths
+max_depth = 6
+
 [tiers]
 # Turns of inactivity before active → soft tier demotion
 idle_soft_after_turns = 20

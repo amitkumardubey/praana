@@ -63,7 +63,7 @@ describe("status-bar", () => {
     expect(lines[1]).toContain("91 hard");
     expect(lines[2]).toContain("18.4k");
     expect(lines[2]).toContain("128k");
-    expect(lines[3]).toContain("git");
+    expect(lines[3]).toContain("2 skills");
     expect(lines[4]).toContain("implement auth middleware");
   });
 
@@ -89,8 +89,10 @@ describe("status-bar", () => {
         recentTurnsTruncated: false,
         memoryTruncated: false,
         agentsContextTruncated: false,
+        skillsTruncated: false,
       }),
       isIncognito: () => false,
+      skills: [],
       stateGraph: new StateGraph(),
     } as unknown as Session;
 
