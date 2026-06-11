@@ -60,6 +60,10 @@ const DEFAULT_CONFIG: AriaConfig = {
     warm_skill_eviction_turns: 20,
     max_depth: 6,
   },
+  ui: {
+    mode: "tui",
+    screen: "preserve",
+  },
 };
 
 function expandHome(p: string): string {

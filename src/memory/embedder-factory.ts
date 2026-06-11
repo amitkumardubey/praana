@@ -2,6 +2,7 @@
 // ARIA Memory — Embedder factory (auto / ollama / opt-in backends)
 // ============================================================
 
+import chalk from "chalk";
 import type { MemoryConfig } from "../types.js";
 import { HashEmbedder, OllamaEmbedder } from "./embeddings.js";
 import type { Embedder } from "./types.js";
@@ -13,7 +14,7 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
   if (strategy === "auto" || strategy === "ollama") {
     const model = config.ollama_model ?? "nomic-embed-text";
     if (await OllamaEmbedder.isAvailable(ollamaUrl, model)) {
-      console.log(`[memory] Using Ollama embedder (${model})`);
+      console.log(chalk.green(`💾 memory   ${model}`));
       return new OllamaEmbedder(ollamaUrl, model);
     }
     if (strategy === "ollama") {

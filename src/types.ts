@@ -194,6 +194,14 @@ export interface EditConfig {
   confirm: boolean;
 }
 
+export type UiMode = "readline" | "tui";
+export type UiScreenMode = "preserve" | "alternate";
+
+export interface UiConfig {
+  mode: UiMode;
+  screen: UiScreenMode;
+}
+
 export interface AriaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -204,6 +212,7 @@ export interface AriaConfig {
   shell: SandboxConfig;
   edit: EditConfig;
   skills: SkillsConfig;
+  ui: UiConfig;
 }
 
 // ---- Session Meta ----

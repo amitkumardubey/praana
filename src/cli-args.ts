@@ -1,3 +1,5 @@
+import type { UiMode, UiScreenMode } from "./types.js";
+
 export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
@@ -5,6 +7,8 @@ export interface CliArgs {
   incognito: boolean;
   configPath: string | undefined;
   showHelp: boolean;
+  uiMode: UiMode | undefined;
+  screenMode: UiScreenMode | undefined;
 }
 
 export function parseCliArgs(args: string[]): CliArgs {
@@ -14,6 +18,8 @@ export function parseCliArgs(args: string[]): CliArgs {
   let incognito = false;
   let configPath: string | undefined;
   let showHelp = false;
+  let uiMode: UiMode | undefined;
+  let screenMode: UiScreenMode | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--help" || args[i] === "-h") {
@@ -33,6 +39,22 @@ export function parseCliArgs(args: string[]): CliArgs {
       i++;
       continue;
     }
+    if (args[i] === "--ui" && args[i + 1]) {
+      const mode = args[i + 1].toLowerCase();
+      if (mode === "tui" || mode === "readline") {
+        uiMode = mode;
+      }
+      i++;
+      continue;
+    }
+    if (args[i] === "--screen" && args[i + 1]) {
+      const screen = args[i + 1].toLowerCase();
+      if (screen === "preserve" || screen === "alternate") {
+        screenMode = screen;
+      }
+      i++;
+      continue;
+    }
     if (args[i] === "resume" && args[i + 1]) {
       resumeMode = true;
       sessionId = args[i + 1];
@@ -40,5 +62,31 @@ export function parseCliArgs(args: string[]): CliArgs {
     }
   }
 
-  return { sessionId, resumeMode, debug, incognito, configPath, showHelp };
+  return {
+    sessionId,
+    resumeMode,
+    debug,
+    incognito,
+    configPath,
+    showHelp,
+    uiMode,
+    screenMode,
+  };
+}
+
+export function resolveUiMode(
+  configMode: UiMode,
+  cliMode: UiMode | undefined,
+  isInteractive: boolean
+): UiMode {
+  const mode = cliMode ?? configMode;
+  if (mode === "tui" && !isInteractive) return "readline";
+  return mode;
+}
+
+export function resolveScreenMode(
+  configScreen: UiScreenMode,
+  cliScreen: UiScreenMode | undefined
+): UiScreenMode {
+  return cliScreen ?? configScreen;
 }

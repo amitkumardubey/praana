@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type * as readline from "node:readline";
 import { Session } from "../src/session.js";
-import { handleSlashCommand } from "../src/main.js";
+import { executeSlashCommand } from "../src/slash-commands.js";
 import type { AriaConfig } from "../src/types.js";
 
 const testLogDir = join(tmpdir(), "aria-test-session-clear-state");
@@ -14,6 +13,7 @@ const testConfig: AriaConfig = {
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },
+  ui: { mode: "readline", screen: "preserve" },
 };
 
 describe("Session.clearState", () => {
@@ -85,17 +85,11 @@ describe("clear slash commands", () => {
         append: vi.fn((event: unknown) => appended.push(event)),
       },
     } as unknown as Session;
-    const rl = { close: vi.fn() } as unknown as readline.Interface;
-    const log = vi.spyOn(console, "log").mockImplementation(() => {});
-
-    await handleSlashCommand(
-      command,
-      session,
-      rl,
-      vi.fn(),
-      vi.fn(),
-      () => true,
-    );
+    const result = await executeSlashCommand(command, session, {
+      setModel: vi.fn(),
+      setThinking: vi.fn(),
+      getThinking: () => true,
+    });
 
     expect(clearState).toHaveBeenCalledOnce();
     expect(appended).toEqual([
@@ -109,6 +103,6 @@ describe("clear slash commands", () => {
         },
       },
     ]);
-    expect(log).toHaveBeenCalledWith("State cleared. Starting fresh.");
+    expect(result.lines).toContain("State cleared. Starting fresh.");
   });
 });

@@ -2,6 +2,7 @@
 // ARIA Memory — Summarizer factory
 // ============================================================
 
+import chalk from "chalk";
 import type { MemoryConfig } from "../types.js";
 import { OllamaEmbedder } from "./embeddings.js";
 import {
@@ -31,7 +32,7 @@ export async function createSummarizer(
       model = pickDefaultChatModel(names) ?? "";
       if (model) {
         console.log(
-          `[memory] ollama_summarizer_model unset — using installed chat model: ${model}`,
+          chalk.green(`💾 memory   summarizer model unset — using: ${model}`),
         );
       }
     }
@@ -52,7 +53,7 @@ export async function createSummarizer(
       return null;
     }
 
-    console.log(`[memory] Using Ollama summarizer (${model})`);
+    console.log(chalk.green(`💾 memory   ${model}`));
     return new OllamaSummarizer(url, model);
   }
 

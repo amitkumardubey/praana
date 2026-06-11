@@ -7,27 +7,21 @@ import type { Session } from "./session.js";
 import { compileWithMetrics } from "./compiler.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel } from "./llm.js";
-import {
-  printDebug,
-  printDebugBlock,
-  printMemoryBanner,
-  printToolCall,
-  startSpinner,
-  stopSpinner,
-} from "./ui.js";
 import { TurnAbortedError } from "./turn-control.js";
+import type { TurnUiSink } from "./ui-events.js";
+import { createDefaultTurnSink } from "./ui-events.js";
 
 export async function runTurn(
   session: Session,
   userInput: string,
   modelOverride?: string,
   options?: {
-    onTextDelta?: (delta: string) => void;
-    onThinkingDelta?: (delta: string) => void;
-    onToolCallsStart?: () => void;
     signal?: AbortSignal;
+    sink?: TurnUiSink;
   }
 ): Promise<string> {
+  /* Always have a sink — default routes to legacy stdout/stderr helpers. */
+  const s = options?.sink ?? createDefaultTurnSink();
   const successfulToolResult = (result: unknown, isError: boolean): boolean => {
     if (isError) return false;
     if (result && typeof result === "object" && "ok" in result) {
@@ -61,7 +55,7 @@ export async function runTurn(
       });
     }
     if (session.debug) {
-      printDebug(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.join(", ")}`);
+      s.onDebug?.(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.join(", ")}`);
     }
   }
 
@@ -126,7 +120,7 @@ export async function runTurn(
     if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
     const promptFile = join(promptDir, `turn-${String(turnNum).padStart(3, "0")}.md`);
     writeFileSync(promptFile, compiledPrompt, "utf-8");
-    printDebug(`prompt saved → ${promptFile}`);
+    s.onDebug?.(`prompt saved → ${promptFile}`);
   }
 
   // 4. Create LLM provider and model
@@ -188,12 +182,11 @@ export async function runTurn(
         break;
       }
       if (event.type === "text_delta" && typeof event.delta === "string") {
-        if (options?.onTextDelta) options.onTextDelta(event.delta);
-        else process.stdout.write(event.delta);
+        s.onTextDelta?.(event.delta);
         fullResponse += event.delta;
       }
       if (event.type === "thinking_delta" && typeof event.delta === "string") {
-        if (options?.onThinkingDelta) options.onThinkingDelta(event.delta);
+        s.onThinkingDelta?.(event.delta);
       }
       if (event.type === "toolcall_end") {
         pendingToolCalls.push({
@@ -231,7 +224,7 @@ export async function runTurn(
     let executionHydrated = false;
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
-    if (options?.onToolCallsStart) options.onToolCallsStart();
+    s.onToolCallsStart?.();
 
     for (const tc of pendingToolCalls) {
       if (options?.signal?.aborted) {
@@ -245,7 +238,7 @@ export async function runTurn(
         payload: { tool: tc.toolName, args: tc.args },
       });
 
-      if (!session.debug) startSpinner(tc.toolName);
+      if (!session.debug) s.onSpinnerStart?.(tc.toolName);
 
       const toolDef = (tools as Record<string, any>)[tc.toolName];
       let result: unknown;
@@ -292,8 +285,8 @@ export async function runTurn(
       }
 
       if (!session.debug) {
-        stopSpinner();
-        printToolCall(tc.toolName, tc.args);
+        s.onSpinnerStop?.();
+        s.onToolCall?.(tc.toolName, tc.args);
       }
 
       toolResults.push({ toolName: tc.toolName, result });
@@ -323,23 +316,29 @@ export async function runTurn(
 
     stepIndex++;
     if (session.debug) {
-      printDebugBlock(stepIndex, pendingToolCalls, toolResults);
+      s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
     }
   }
 
   if (interrupted) {
-    return finalizeInterruptedTurn(session, fullResponse, autoHydrated.length, promptMetrics.totalTokens);
+    return finalizeInterruptedTurn(
+      session,
+      fullResponse,
+      autoHydrated.length,
+      promptMetrics.totalTokens,
+      s
+    );
   }
 
   if (fullResponse && !fullResponse.endsWith("\n")) {
-    process.stdout.write("\n");
+    s.onNewline?.();
     fullResponse += "\n";
   }
 
   if (!fullResponse.trim()) {
     const fallback =
       "[no response from model — try again or switch models with /model]";
-    process.stdout.write(fallback + "\n");
+    s.onFallback?.(fallback);
     fullResponse = fallback;
   }
 
@@ -362,7 +361,7 @@ export async function runTurn(
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
-  printMemoryBanner(stats);
+  s.onMemoryBanner?.(stats);
 
   return fullResponse;
 }
@@ -371,7 +370,8 @@ function finalizeInterruptedTurn(
   session: Session,
   partialResponse: string,
   autoHydrated: number,
-  promptTokens: number
+  promptTokens: number,
+  sink?: TurnUiSink
 ): never {
   const trimmed = partialResponse.trim();
   const messageText = trimmed
@@ -396,7 +396,8 @@ function finalizeInterruptedTurn(
   flushSkillTelemetry(session);
 
   const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
-  printMemoryBanner(stats);
+  if (sink) sink.onMemoryBanner?.(stats);
+  else printMemoryBanner(stats);
 
   throw new TurnAbortedError(trimmed);
 }
@@ -479,7 +480,9 @@ async function maybeCompressHistory(session: Session): Promise<void> {
   if (toCompress.length === 0) return;
 
   if (session.debug) {
-    printDebug(`compressing ${toCompress.length} events (${Math.round(estimatedTokens)} tokens > ${Math.round(watermark * usable)} watermark)`);
+    printDebug(
+      `compressing ${toCompress.length} events (${Math.round(estimatedTokens)} tokens > ${Math.round(watermark * usable)} watermark)`
+    );
   }
 
   // Convert to SessionEvent format for the summarizer

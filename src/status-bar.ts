@@ -162,6 +162,38 @@ export function renderStatusBar(input: StatusBarInput): void {
   }
 }
 
+/** One-line emoji status bar — compact with pipe separators. */
+export function formatEmojiStatusLine(input: StatusBarInput): string {
+  const modelShort = input.model.split("/").pop() ?? input.model;
+  const pct = input.contextWindowTokens > 0
+    ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
+    : 0;
+  const memStr = input.incognito ? "incognito" : input.memoryEnabled ? "on" : "off";
+  const skillsCount = input.skills.length;
+  let stateStr = "";
+  if (input.memoryStats && (input.memoryStats.active > 0 || input.memoryStats.soft > 0 || input.memoryStats.hard > 0)) {
+    const parts: string[] = [];
+    if (input.memoryStats.active > 0) parts.push(`${input.memoryStats.active}A`);
+    if (input.memoryStats.soft > 0) parts.push(`${input.memoryStats.soft}S`);
+    if (input.memoryStats.hard > 0) parts.push(`${input.memoryStats.hard}H`);
+    stateStr = parts.join("/");
+  }
+  const parts = [
+    chalk.cyan(`📦 model: ${input.model}`),
+    pct > 90 ? chalk.red(`🧠 ctx: ${pct}%`) : pct > 70 ? chalk.yellow(`🧠 ctx: ${pct}%`) : chalk.dim(`🧠 ctx: ${pct}%`),
+    memStr === "on" ? chalk.green(`💾 mem: ${memStr}`) : chalk.dim(`💾 mem: ${memStr}`),
+  ];
+  if (skillsCount > 0) {
+    parts.push(chalk.magenta(`🛠️  ${skillsCount}sk${stateStr ? ` [${stateStr}]` : ""}`));
+  } else if (stateStr) {
+    parts.push(chalk.magenta(`🛠️  [${stateStr}]`));
+  }
+  if (input.currentTask) {
+    parts.push(chalk.dim(`🎯 ${input.currentTask}`));
+  }
+  return parts.join(chalk.dim("  |  "));
+}
+
 function truncateAnsiLine(line: string, maxWidth: number): string {
   const visible = stripAnsi(line);
   if (visible.length <= maxWidth) return line;

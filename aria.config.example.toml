@@ -143,3 +143,9 @@ idle_hard_after_turns = 50
 [session]
 # Directory where session event logs are stored
 log_dir = "~/.aria/sessions"
+
+[ui]
+# Terminal interface: "tui" (Ink chat shell) or "readline" (classic CLI)
+mode = "tui"
+# Screen mode for TUI: "preserve" keeps scrollback (default), "alternate" uses full-screen buffer
+screen = "preserve"

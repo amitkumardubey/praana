@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -80,7 +81,7 @@ export class Session {
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
-      console.log(`[context] Loaded project context (~${tokEst} tokens)`);
+      console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
     }
 
     await initSkillRuntime(session, cfg, cwd);
@@ -94,7 +95,7 @@ export class Session {
         actor: "kernel",
         payload: { type: "project_context_loaded", summary: projectContext.slice(0, 100) },
       });
-      console.log(`[context] Loaded project stack fingerprint (~${Math.ceil(projectContext.length / 4)} tokens)`);
+      console.log(chalk.cyan(`🔑 fingerprint  ${Math.ceil(projectContext.length / 4)} tok`));
     }
 
     if (session.incognito) {
@@ -172,7 +173,7 @@ export class Session {
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
-      console.log(`[context] Loaded project context (~${tokEst} tokens)`);
+      console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
     }
 
     await initSkillRuntime(session, cfg, cwd);
@@ -733,6 +734,6 @@ async function initSkillRuntime(session: Session, cfg: AriaConfig, cwd: string):
   }));
 
   if (session.skills.length > 0) {
-    console.log(`[skills] Discovered ${session.skills.length} skill(s)`);
+    console.log(chalk.magenta(`⚡ skills  ${session.skills.length} skill(s)`));
   }
 }

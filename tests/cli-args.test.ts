@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCliArgs } from "../src/cli-args.js";
+import { parseCliArgs, resolveUiMode, resolveScreenMode } from "../src/cli-args.js";
 
 describe("parseCliArgs", () => {
   it("parses help flag", () => {
@@ -27,5 +27,21 @@ describe("parseCliArgs", () => {
     const parsed = parseCliArgs(["resume", "01ABC"]);
     expect(parsed.resumeMode).toBe(true);
     expect(parsed.sessionId).toBe("01ABC");
+  });
+
+  it("parses ui and screen flags", () => {
+    const parsed = parseCliArgs(["--ui", "tui", "--screen", "alternate"]);
+    expect(parsed.uiMode).toBe("tui");
+    expect(parsed.screenMode).toBe("alternate");
+  });
+
+  it("falls back to readline when tui is not interactive", () => {
+    expect(resolveUiMode("tui", undefined, false)).toBe("readline");
+    expect(resolveUiMode("tui", undefined, true)).toBe("tui");
+  });
+
+  it("resolves screen mode with CLI override", () => {
+    expect(resolveScreenMode("preserve", "alternate")).toBe("alternate");
+    expect(resolveScreenMode("preserve", undefined)).toBe("preserve");
   });
 });
