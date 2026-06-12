@@ -64,6 +64,7 @@ export class Session {
   private lastUserInput = "";
   private compactionArmed = false;
   private sessionLogger: AriaLogger | null = null;
+  private noticeCapture?: (line: string) => void;
 
   private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
@@ -95,12 +96,13 @@ export class Session {
   static async create(
     cwd: string,
     config?: AriaConfig,
-    opts?: { incognito?: boolean }
+    opts?: { incognito?: boolean; captureNotice?: (line: string) => void }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
     session.incognito = opts?.incognito ?? false;
+    session.noticeCapture = opts?.captureNotice;
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
@@ -190,7 +192,8 @@ export class Session {
   static async resume(
     sessionId: string,
     cwd: string,
-    config?: AriaConfig
+    config?: AriaConfig,
+    opts?: { captureNotice?: (line: string) => void }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const meta = readSessionMeta(cfg.session.log_dir, sessionId);
@@ -199,6 +202,7 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    session.noticeCapture = opts?.captureNotice;
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
@@ -344,6 +348,7 @@ export class Session {
       sessionId: this.id,
       sessionLogDir: this.config.session.log_dir,
       debug: this.debug,
+      captureNotice: this.noticeCapture,
     });
   }
 

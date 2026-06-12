@@ -15,7 +15,6 @@ import ora, { type Ora } from "ora";
 import boxen, { type Options as BoxenOptions } from "boxen";
 import { renderMarkdown } from "./render.js";
 import { summarizeArgs, summarizeResult } from "./tool-summary.js";
-
 type UiWriters = {
   stderr: (line: string) => void;
   breakStdout: () => void;

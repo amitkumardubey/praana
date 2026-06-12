@@ -492,7 +492,7 @@ export async function runTurn(
       });
 
       // Notify UI sink of tool result for distinct rendering (e.g. TUI)
-      s.onToolResult?.(tc.toolName, promptResultText);
+      s.onToolResult?.(tc.toolName, promptResultText, isError);
 
       if (options?.signal?.aborted) {
         interrupted = true;

@@ -31,33 +31,30 @@ describe("transcriptReducer", () => {
     expect(state.completed[0]?.text).toBe("Hi there");
   });
 
-  it("keeps assistant live entry alive during tool calls to prevent flash", () => {
+  it("drops short pre-tool narration but keeps placeholder for flash prevention", () => {
     let state = createInitialTranscriptState();
-    // Start assistant streaming
     state = transcriptReducer(state, { type: "assistant_delta", delta: "Let me check" });
-    expect(state.live?.role).toBe("assistant");
     expect(state.live?.text).toBe("Let me check");
 
-    // Tool call should NOT freeze the assistant live entry
     state = transcriptReducer(state, {
       type: "tool_call",
       toolName: "read_file",
       args: { path: "/tmp/foo.txt" },
     });
     expect(state.live?.role).toBe("assistant");
-    expect(state.live?.text).toBe("Let me check");
+    expect(state.live?.text).toBe("");
     expect(state.completed).toHaveLength(1);
     expect(state.completed[0]?.role).toBe("tool");
 
-    // Next assistant delta appends to existing live entry
-    state = transcriptReducer(state, { type: "assistant_delta", delta: " the file..." });
-    expect(state.live?.text).toBe("Let me check the file...");
+    state = transcriptReducer(state, { type: "assistant_delta", delta: "The file shows " });
+    expect(state.live?.text).toBe("The file shows ");
   });
 
   it("thinking_close creates assistant placeholder to prevent flash before tools", () => {
     let state = createInitialTranscriptState();
     state = transcriptReducer(state, { type: "thinking_delta", delta: "thinking..." });
     expect(state.live?.role).toBe("thinking");
+    expect(state.live?.thinkingStartedAt).toBeTypeOf("number");
 
     // Real flow: thinking_close fires first (from onToolCallsStart)
     state = transcriptReducer(state, { type: "thinking_close" });
@@ -66,6 +63,7 @@ describe("transcriptReducer", () => {
     expect(state.live?.text).toBe("");
     expect(state.completed).toHaveLength(1);
     expect(state.completed[0]?.role).toBe("thinking");
+    expect(state.completed[0]?.durationMs).toBeTypeOf("number");
 
     // Then tool_call adds entry without disrupting live placeholder
     state = transcriptReducer(state, {
@@ -83,53 +81,107 @@ describe("transcriptReducer", () => {
     expect(state.live?.text).toBe("The file shows ");
   });
 
-  it("records compact tool calls", () => {
+  it("does not freeze empty assistant placeholder when thinking starts after tools", () => {
+    let state = createInitialTranscriptState();
+    state = transcriptReducer(state, {
+      type: "tool_call",
+      toolName: "shell",
+      args: { command: "ls" },
+    });
+    expect(state.live?.role).toBe("assistant");
+    expect(state.live?.text).toBe("");
+
+    state = transcriptReducer(state, { type: "thinking_delta", delta: "planning..." });
+    expect(state.live?.role).toBe("thinking");
+    expect(state.completed).toHaveLength(1);
+    expect(state.completed[0]?.role).toBe("tool");
+    expect(state.completed.some((e) => e.role === "assistant")).toBe(false);
+  });
+
+  it("records compact tool calls with display metadata", () => {
     const state = transcriptReducer(createInitialTranscriptState(), {
       type: "tool_call",
       toolName: "read_file",
       args: { path: "/tmp/foo.txt" },
     });
     expect(state.completed[0]?.role).toBe("tool");
-    expect(state.completed[0]?.text).toContain("read_file");
-    expect(state.completed[0]?.text).toContain("foo.txt");
+    expect(state.completed[0]?.toolIcon).toBe("→");
+    expect(state.completed[0]?.toolLabel).toContain("Read");
+    expect(state.completed[0]?.toolLabel).toContain("foo.txt");
   });
 
-  it("appends tool_result as a distinct completed entry", () => {
+  it("attaches tool_result summary to the matching tool entry", () => {
     let state = createInitialTranscriptState();
+    state = transcriptReducer(state, {
+      type: "tool_call",
+      toolName: "read_file",
+      args: { path: "/tmp/foo.txt" },
+    });
     state = transcriptReducer(state, {
       type: "tool_result",
       toolName: "read_file",
       resultText: "line 1\nline 2\nline 3",
     });
     expect(state.completed).toHaveLength(1);
-    expect(state.completed[0]?.role).toBe("tool_result");
-    expect(state.completed[0]?.toolName).toBe("read_file");
-    expect(state.completed[0]?.text).toBe("line 1\nline 2\nline 3");
-    // Live entry should be unaffected
-    expect(state.live).toBeNull();
+    expect(state.completed[0]?.role).toBe("tool");
+    expect(state.completed[0]?.resultSummary).toContain("3 lines");
+    expect(state.live?.role).toBe("assistant");
   });
 
-  it("does not freeze assistant when inserting tool_result between deltas", () => {
+  it("falls back to orphan tool_result when no matching tool call exists", () => {
+    const state = transcriptReducer(createInitialTranscriptState(), {
+      type: "tool_result",
+      toolName: "read_file",
+      resultText: "orphan output",
+    });
+    expect(state.completed).toHaveLength(1);
+    expect(state.completed[0]?.role).toBe("tool_result");
+    expect(state.completed[0]?.resultSummary).toContain("orphan output");
+  });
+
+  it("records turn footer with merged stats", () => {
+    const state = transcriptReducer(createInitialTranscriptState(), {
+      type: "turn_footer",
+      model: "openrouter/big-pickle",
+      durationMs: 1500,
+      stats: {
+        activeState: 1,
+        totalState: 1,
+        digestLen: 0,
+        recallCalls: 0,
+        recallHits: 0,
+        autoHydrated: 0,
+        promptTokens: 1000,
+        outputTokens: 211,
+      },
+    });
+    expect(state.completed[0]?.role).toBe("turn_footer");
+    expect(state.completed[0]?.text).toBe(
+      "▣ ARIA · big-pickle · 1.5s · prompt ~1.0k · out ~211"
+    );
+  });
+
+  it("does not freeze substantial assistant text when inserting tool_result between deltas", () => {
     let state = createInitialTranscriptState();
-    state = transcriptReducer(state, { type: "assistant_delta", delta: "Here is " });
+    const preamble =
+      "Here is a longer explanation of what I found in the codebase before running the next command to verify the output. ";
+    state = transcriptReducer(state, { type: "assistant_delta", delta: preamble });
     state = transcriptReducer(state, {
       type: "tool_call",
       toolName: "shell",
       args: { command: "ls" },
     });
-    expect(state.live?.text).toBe("Here is ");
+    expect(state.live?.text).toBe(preamble);
 
-    // Tool result doesn't affect live entry
     state = transcriptReducer(state, {
       type: "tool_result",
       toolName: "shell",
       resultText: "file1\nfile2",
     });
-    expect(state.live?.text).toBe("Here is ");
+    expect(state.live?.text).toBe(preamble);
 
-    // Assistant continues
-    state = transcriptReducer(state, { type: "assistant_delta", delta: "the result" });
-    expect(state.live?.text).toBe("Here is the result");
+    state = transcriptReducer(state, { type: "assistant_delta", delta: "The result follows." });
+    expect(state.live?.text).toBe(`${preamble}The result follows.`);
   });
 
   it("formats memory banner line", () => {

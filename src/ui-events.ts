@@ -18,7 +18,7 @@ export interface TurnUiSink {
   onToolCallsStart?(): void;
   onToolCall?(toolName: string, args: Record<string, unknown>): void;
   /** Notify UI of the raw tool result text for rendering as a distinct block. */
-  onToolResult?(toolName: string, resultText: string): void;
+  onToolResult?(toolName: string, resultText: string, isError?: boolean): void;
   onDebug?(message: string): void;
   onDebugBlock?(
     stepIndex: number,
@@ -35,6 +35,8 @@ export interface TurnUiSink {
   /** Flush any buffered text before dispatching terminal actions (e.g. assistant_complete).
    *  Used by throttled sinks to ensure no text is lost. */
   flushText?(): void;
+  /** Take buffered turn stats for the combined turn footer line. */
+  consumeTurnStats?(): MemoryBannerStats | null;
 }
 
 /** Default sink: streaming callbacks + legacy terminal helpers. */

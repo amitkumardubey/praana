@@ -3,23 +3,21 @@ import { Box, Text } from "ink";
 import stripAnsi from "strip-ansi";
 import type { TranscriptEntry } from "./reducer.js";
 import { PALETTE } from "./palette.js";
-import { RoleLabel } from "./role-label.js";
 import { MarkdownRender } from "./markdown-render.js";
-
-/** Produce a compact one-line summary of a tool result for display. */
-function summarizeResultForDisplay(text: string): string {
-  if (!text) return "(empty)";
-  const lines = text.split("\n").length;
-  const chars = text.length;
-  const truncated = text.length > 200;
-  const preview = text.slice(0, 200).split("\n")[0]!;
-  const previewText = truncated ? preview.slice(0, 80) + "…" : preview.slice(0, 80);
-  const size = lines > 1 ? `${lines} lines, ${chars} chars` : `${chars} chars`;
-  return `${size} — ${previewText}`;
-}
+import { needsTopMargin } from "./tool-display.js";
+import { UserBlock } from "./components/user-block.js";
+import { CompletedThinkingBlock, ThinkingBlock } from "./components/thinking-block.js";
+import { InlineToolRow } from "./components/inline-tool-row.js";
+import { ToolResultLine } from "./components/tool-result-line.js";
+import { TurnFooter } from "./components/turn-footer.js";
+import { SystemLine } from "./components/system-line.js";
 
 export interface TranscriptLineProps {
   entry: TranscriptEntry;
+  prevRole?: TranscriptEntry["role"];
+  live?: boolean;
+  showThinking?: boolean;
+  thoughtsExpanded?: boolean;
   markdownRendering?: boolean;
   syntaxHighlighting?: boolean;
   syntaxTheme?: string;
@@ -27,61 +25,111 @@ export interface TranscriptLineProps {
 
 export const TranscriptLine = React.memo(function TranscriptLine({
   entry,
+  prevRole,
+  live = false,
+  showThinking = false,
+  thoughtsExpanded = false,
   markdownRendering = true,
   syntaxHighlighting = true,
   syntaxTheme = "solarized-dark",
 }: TranscriptLineProps) {
   const plain = stripAnsi(entry.text);
-  const isTool = entry.role === "tool";
-  const isToolResult = entry.role === "tool_result";
-  const isUser = entry.role === "user";
-  const isThinking = entry.role === "thinking";
-  const isGrouped = entry.group > 0 && !isUser && !isToolResult;
-  const isAssistant = entry.role === "assistant" && !isThinking;
-  const useMarkdown = markdownRendering && isAssistant && plain;
+  const marginTop = needsTopMargin(entry.role, prevRole);
 
-  return (
-    <Box flexDirection="column" marginBottom={isTool ? 0 : isToolResult ? 0 : 1}>
-      {/* Role label — only for non-tool entries */}
-      {!isTool && !isToolResult && (
-        <Box>
-          {isGrouped ? (
-            <Text color={PALETTE.gutter}>│ </Text>
-          ) : (
-            <Text>  </Text>
-          )}
-          <RoleLabel role={entry.role} />
-        </Box>
-      )}
+  if (entry.role === "user") {
+    return (
+      <UserBlock
+        text={plain}
+        marginTop={marginTop}
+        showTurnBreak={prevRole === "turn_footer"}
+      />
+    );
+  }
 
-      {/* Content — indented for tool calls, dimmed block for results */}
-      <Box>
-        {isTool ? (
-          <Text>
-            <Text color={PALETTE.gutter}>  ╰ </Text>
-            <Text color={PALETTE.tool} dimColor wrap="wrap">{plain || " "}</Text>
-          </Text>
-        ) : isToolResult ? (
-          <Text>
-            <Text color={PALETTE.gutter}>  ╰ </Text>
-            <Text color={PALETTE.muted} dimColor wrap="wrap">
-              [result] {summarizeResultForDisplay(plain)}
-            </Text>
-          </Text>
-        ) : useMarkdown ? (
-          <Box paddingLeft={isGrouped ? 2 : 0}>
-            <MarkdownRender
-              text={plain}
-              syntaxHighlighting={syntaxHighlighting}
-              syntaxTheme={syntaxTheme}
-            />
-          </Box>
+  if (entry.role === "thinking") {
+    if (!showThinking) return null;
+    if (live) {
+      return (
+        <ThinkingBlock
+          text={plain}
+          live
+          showBody
+          expanded={thoughtsExpanded}
+          markdownRendering={markdownRendering}
+          syntaxHighlighting={syntaxHighlighting}
+          syntaxTheme={syntaxTheme}
+        />
+      );
+    }
+    return (
+      <CompletedThinkingBlock
+        text={plain}
+        durationMs={entry.durationMs}
+        expanded={thoughtsExpanded}
+        markdownRendering={markdownRendering}
+        syntaxHighlighting={syntaxHighlighting}
+        syntaxTheme={syntaxTheme}
+      />
+    );
+  }
+
+  if (entry.role === "tool") {
+    return (
+      <Box flexDirection="column">
+        <InlineToolRow
+          icon={entry.toolIcon ?? "⚙"}
+          label={entry.toolLabel ?? plain}
+          pending={entry.toolPending}
+          complete={entry.resultSummary !== undefined}
+          isError={entry.isError}
+          marginTop={marginTop}
+        />
+        {entry.resultSummary ? (
+          <ToolResultLine summary={entry.resultSummary} isError={entry.isError} />
+        ) : null}
+      </Box>
+    );
+  }
+
+  if (entry.role === "tool_result") {
+    const summary = entry.resultSummary ?? plain;
+    return (
+      <Box flexDirection="column" marginTop={marginTop ? 1 : 0} paddingLeft={1}>
+        <ToolResultLine summary={summary} isError={entry.isError} />
+      </Box>
+    );
+  }
+
+  if (entry.role === "turn_footer") {
+    return <TurnFooter text={plain} marginTop />;
+  }
+
+  if (entry.role === "system") {
+    return <SystemLine text={plain} marginTop={marginTop} />;
+  }
+
+  if (entry.role === "assistant") {
+    if (!plain.trim()) return null;
+    const useMarkdown = markdownRendering;
+
+    return (
+      <Box flexDirection="column" marginTop={marginTop ? 1 : 0} paddingLeft={1}>
+        {useMarkdown ? (
+          <MarkdownRender
+            text={plain}
+            syntaxHighlighting={syntaxHighlighting}
+            syntaxTheme={syntaxTheme}
+          />
         ) : (
-          <Box paddingLeft={isGrouped ? 2 : 0}>
-            <Text wrap="wrap" color={isThinking ? PALETTE.muted : PALETTE.user} italic={isThinking ? true : false}>{plain || " "}</Text>
-          </Box>
+          <Text wrap="wrap" color={PALETTE.text}>{plain || " "}</Text>
         )}
       </Box>
+    );
+  }
+
+  return (
+    <Box marginTop={marginTop ? 1 : 0} paddingLeft={1}>
+      <Text wrap="wrap">{plain || " "}</Text>
     </Box>
   );
 });

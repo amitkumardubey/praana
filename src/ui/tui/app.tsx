@@ -1,6 +1,6 @@
 import React, { useReducer, useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Box, Text, useApp, useInput } from "ink";
-import TextInput from "ink-text-input";
+import { PromptInput } from "./components/prompt-input.js";
 import type { AppController } from "../../app-controller.js";
 import { TurnAbortedError } from "../../turn-control.js";
 import type { TranscriptEntry } from "./reducer.js";
@@ -14,11 +14,14 @@ import { TranscriptLine } from "./transcript-line.js";
 import { BusyIndicator } from "./busy-indicator.js";
 import { LogoBanner } from "./logo-banner.js";
 import { StatusBarView } from "./status-bar-view.js";
+import { ToastLine } from "./components/toast-line.js";
 
 export interface TuiAppProps {
   controller: AppController;
   initialStatus: import("../../status-bar.js").StatusBarInput;
   recentLines: string[];
+  transcriptBootstrap?: import("./reducer.js").TranscriptEntry[];
+  bootSummary?: string;
   markdownRendering?: boolean;
   syntaxHighlighting?: boolean;
   syntaxTheme?: string;
@@ -28,6 +31,8 @@ export function TuiApp({
   controller,
   initialStatus,
   recentLines,
+  transcriptBootstrap = [],
+  bootSummary,
   markdownRendering = true,
   syntaxHighlighting = true,
   syntaxTheme = "solarized-dark",
@@ -35,9 +40,24 @@ export function TuiApp({
   const { exit } = useApp();
   const [input, setInput] = useState("");
   const [status, setStatus] = useState(initialStatus);
+  const [toast, setToast] = useState("");
+  const [thoughtsExpanded, setThoughtsExpanded] = useState(false);
+  const [showBusy, setShowBusy] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const atBottomRef = useRef(true);
   const SCROLL_WINDOW = 30;
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => {
+      setToast("");
+      toastTimerRef.current = null;
+    }, 4000);
+  }, []);
 
   const bootLenRef = useRef(0);
 
@@ -52,6 +72,17 @@ export function TuiApp({
       };
       if (recentLines.length > 0) {
         for (const line of recentLines) add("system", line);
+      }
+      if (transcriptBootstrap.length > 0) {
+        return {
+          ...createInitialTranscriptState(),
+          completed: transcriptBootstrap,
+          nextId: transcriptBootstrap.length + 1,
+          groupCounter: transcriptBootstrap.reduce(
+            (max, e) => Math.max(max, e.group),
+            0
+          ),
+        };
       }
       bootLenRef.current = bootstrap.length;
       return {
@@ -68,31 +99,55 @@ export function TuiApp({
     setStatus(controller.getStatusBarInput());
   }, [controller]);
 
-  /* ── Scrolling window ─────────────────────────────────────── */
+  const showLogo =
+    transcriptBootstrap.length === 0 && transcript.completed.length <= bootLenRef.current;
+
+  /* ── Scrolling window (entry-based — preserves terminal scrollback) ── */
   const totalCompleted = transcript.completed.length;
   const showScrolling = totalCompleted > SCROLL_WINDOW;
-
-  const visibleEntries = useMemo(() => {
-    if (!showScrolling) return transcript.completed;
+  const visibleSlice = useMemo(() => {
+    if (!showScrolling) {
+      return { entries: transcript.completed, startIndex: 0 };
+    }
     const end = Math.max(0, totalCompleted - scrollOffset);
     const start = Math.max(0, end - SCROLL_WINDOW);
-    return transcript.completed.slice(start, end);
+    return { entries: transcript.completed.slice(start, end), startIndex: start };
   }, [transcript.completed, scrollOffset, showScrolling, totalCompleted]);
+  const visibleEntries = visibleSlice.entries;
+  const liveAssistantEmpty =
+    transcript.live?.role === "assistant" && !transcript.live.text.trim();
 
-  /* Auto-scroll: when new entries arrive and we're at the bottom, keep the view there */
   useEffect(() => {
     if (totalCompleted > 0 && atBottomRef.current) {
       setScrollOffset(0);
     }
   }, [totalCompleted]);
 
+  useEffect(() => {
+    if (!transcript.busy) {
+      setShowBusy(false);
+      return;
+    }
+    const waitingForOutput =
+      !transcript.live ||
+      (transcript.live.role === "assistant" && !transcript.live.text.trim());
+    if (!waitingForOutput) {
+      setShowBusy(false);
+      return;
+    }
+    const t = setTimeout(() => setShowBusy(true), 450);
+    return () => {
+      clearTimeout(t);
+      setShowBusy(false);
+    };
+  }, [transcript.busy, transcript.live]);
+
   const scrollUp = useCallback((amount: number) => {
     setScrollOffset((prev) => {
-      const next = prev + amount;
       const maxOffset = Math.max(0, totalCompleted - SCROLL_WINDOW);
-      const clamped = Math.min(next, maxOffset);
-      atBottomRef.current = clamped === 0;
-      return clamped;
+      const next = Math.min(prev + amount, maxOffset);
+      atBottomRef.current = next === 0;
+      return next;
     });
   }, [totalCompleted]);
 
@@ -128,23 +183,48 @@ export function TuiApp({
       if (trimmed.startsWith("/")) {
         const result = await controller.executeSlashCommand(trimmed);
         if (result.lines.length > 0) {
-          dispatch({ type: "system_lines", lines: result.lines });
+          if (result.display === "toast") {
+            showToast(result.lines.join(" "));
+          } else {
+            dispatch({ type: "system_lines", lines: result.lines });
+          }
         }
         if (result.action === "refresh_status") refreshStatus();
         if (result.action === "exit") exit();
         return;
       }
 
+      inputHistoryRef.current = [
+        trimmed,
+        ...inputHistoryRef.current.filter((h) => h !== trimmed),
+      ].slice(0, 50);
+      historyIndexRef.current = -1;
+
       dispatch({ type: "user_message", text: trimmed });
       dispatch({ type: "set_busy", busy: true });
+      const turnStartedAt = Date.now();
 
       try {
         await controller.runUserTurn(trimmed, sink);
         sink.flushText?.();
         dispatch({ type: "assistant_complete" });
+        const bar = controller.getStatusBarInput();
+        dispatch({
+          type: "turn_footer",
+          model: bar.model,
+          durationMs: Date.now() - turnStartedAt,
+          stats: sink.consumeTurnStats?.() ?? undefined,
+        });
       } catch (err) {
         if (err instanceof TurnAbortedError) {
-          dispatch({ type: "interrupted" });
+          showToast("Turn interrupted");
+          const bar = controller.getStatusBarInput();
+          dispatch({
+            type: "turn_footer",
+            model: bar.model,
+            durationMs: Date.now() - turnStartedAt,
+            stats: sink.consumeTurnStats?.() ?? undefined,
+          });
         } else {
           const message = (err as Error).message;
           controller.session.getLogger().error("Turn failed", {
@@ -158,50 +238,67 @@ export function TuiApp({
         refreshStatus();
       }
     },
-    [controller, sink, refreshStatus, exit]
+    [controller, sink, refreshStatus, exit, showToast]
   );
 
-  useInput((_inputKey, key) => {
-    /* Turn abort on Escape */
-    if (transcript.busy && key.escape) {
-      controller.abortTurn();
-      return;
-    }
-
-    /* Scroll controls (only when there are enough entries) */
-    if (!transcript.busy && showScrolling) {
-      if (key.pageUp) {
-        scrollUp(Math.floor(SCROLL_WINDOW * 0.4));
-      } else if (key.pageDown) {
-        scrollDown(Math.floor(SCROLL_WINDOW * 0.4));
-      } else if (key.home) {
-        scrollToTop();
-      } else if (key.end) {
-        scrollToBottom();
+  const handleNavigationKey = useCallback(
+    (key: import("ink").Key, input: string): boolean => {
+      if (transcript.busy && key.escape) {
+        controller.abortTurn();
+        return true;
       }
+      if (key.ctrl && input === "t" && status.thinking) {
+        setThoughtsExpanded((v) => {
+          const next = !v;
+          showToast(next ? "Thoughts expanded." : "Thoughts collapsed.");
+          return next;
+        });
+        return true;
+      }
+      return false;
+    },
+    [transcript.busy, controller, status.thinking, showToast]
+  );
+
+  useInput((input, key) => {
+    if (transcript.busy && key.escape) return;
+    if (!showScrolling) return;
+    if (key.pageUp) {
+      scrollUp(Math.floor(SCROLL_WINDOW * 0.4));
+    } else if (key.pageDown) {
+      scrollDown(Math.floor(SCROLL_WINDOW * 0.4));
+    } else if (input === "" && key.upArrow) {
+      scrollUp(1);
+    } else if (input === "" && key.downArrow) {
+      scrollDown(1);
+    } else if (key.home) {
+      scrollToTop();
+    } else if (key.end) {
+      scrollToBottom();
     }
   });
 
   useEffect(() => {
     const onSigint = () => {
       controller.handleUserInterrupt(() => {
-        dispatch({
-          type: "system_lines",
-          lines: ["Use /exit to save and quit."],
-        });
+        showToast("Use /exit to save and quit.");
       });
     };
     process.on("SIGINT", onSigint);
     return () => {
       process.removeListener("SIGINT", onSigint);
     };
-  }, [controller]);
+  }, [controller, showToast]);
 
-  const showLogo = totalCompleted <= bootLenRef.current;
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   return (
     <Box flexDirection="column" height="100%" padding={1} gap={1}>
-      {showLogo && <LogoBanner />}
+      {showLogo && <LogoBanner bootSummary={bootSummary} />}
       <Box flexDirection="column" flexGrow={1}>
         {/* Scroll indicator when viewing older messages */}
         {showScrolling && scrollOffset > 0 && (
@@ -211,12 +308,20 @@ export function TuiApp({
             </Text>
           </Box>
         )}
-
         {/* Visible transcript window */}
-        {visibleEntries.map((entry) => (
+        {visibleEntries.map((entry, index) => (
           <TranscriptLine
             key={entry.id}
             entry={entry}
+            prevRole={
+              index > 0
+                ? visibleEntries[index - 1]?.role
+                : visibleSlice.startIndex > 0
+                  ? transcript.completed[visibleSlice.startIndex - 1]?.role
+                  : undefined
+            }
+            showThinking={status.thinking}
+            thoughtsExpanded={thoughtsExpanded}
             markdownRendering={markdownRendering}
             syntaxHighlighting={syntaxHighlighting}
             syntaxTheme={syntaxTheme}
@@ -226,26 +331,68 @@ export function TuiApp({
         {/* Live entry — placeholder keeps live non-null during tool transitions,
             so BusyIndicator only shows during the initial loading gap at turn start. */}
         {transcript.live ? (
-          <TranscriptLine
-            entry={transcript.live}
-            markdownRendering={markdownRendering}
-            syntaxHighlighting={syntaxHighlighting}
-            syntaxTheme={syntaxTheme}
-          />
-        ) : transcript.busy ? (
+          <>
+            <TranscriptLine
+              entry={transcript.live}
+              prevRole={
+                visibleEntries.length > 0
+                  ? visibleEntries[visibleEntries.length - 1]?.role
+                  : undefined
+              }
+              live
+              showThinking={status.thinking}
+              thoughtsExpanded={thoughtsExpanded}
+              markdownRendering={markdownRendering}
+              syntaxHighlighting={syntaxHighlighting}
+              syntaxTheme={syntaxTheme}
+            />
+            {transcript.busy && liveAssistantEmpty && showBusy ? (
+              <BusyIndicator />
+            ) : null}
+          </>
+        ) : transcript.busy && showBusy ? (
           <BusyIndicator />
         ) : null}
       </Box>
-      <StatusBarView status={status} />
+      {toast ? <ToastLine message={toast} /> : null}
       <Box padding={1} gap={1}>
         <Text color={PALETTE.assistant}>❯ </Text>
-        <TextInput
+        <PromptInput
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
           placeholder={transcript.busy ? "running…" : "message or /command"}
+          onEmptyShortcut={(key) => {
+            if (key !== "t" || transcript.busy) return false;
+            controller.showThinking = !controller.showThinking;
+            refreshStatus();
+            showToast(
+              controller.showThinking ? "Thinking enabled." : "Thinking disabled."
+            );
+            return true;
+          }}
+          onNavigationKey={handleNavigationKey}
+          onHistoryPrev={() => {
+            const history = inputHistoryRef.current;
+            if (history.length === 0) return null;
+            const nextIndex = Math.min(
+              historyIndexRef.current + 1,
+              history.length - 1
+            );
+            historyIndexRef.current = nextIndex;
+            return history[nextIndex] ?? null;
+          }}
+          onHistoryNext={() => {
+            if (historyIndexRef.current <= 0) {
+              historyIndexRef.current = -1;
+              return "";
+            }
+            historyIndexRef.current -= 1;
+            return inputHistoryRef.current[historyIndexRef.current] ?? "";
+          }}
         />
       </Box>
+      <StatusBarView status={status} />
     </Box>
   );
 }

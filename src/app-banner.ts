@@ -56,6 +56,11 @@ export function formatSessionEndSummary(session: Session): string {
   return `Session ended: ${summary.turns} turns, ${summary.stateObjects} state objects, ${summary.memoriesStored} memories stored`;
 }
 
+/** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
+export function formatSessionEpilogue(sessionId: string): string[] {
+  return ["", `  aria resume ${sessionId}`, ""];
+}
+
 export function printSessionEndSummary(session: Session): void {
   console.log(formatSessionEndSummary(session));
 }

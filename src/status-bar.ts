@@ -89,6 +89,9 @@ export function buildStatusBarInput(
 ): StatusBarInput {
   const mem = session.getMemoryStats();
   const metrics = opts.compileMetrics ?? session.getLastCompileMetrics();
+  const agentsContextTokens = session.agentsContext
+    ? Math.ceil(session.agentsContext.length / 4)
+    : 0;
   const skillResidency = session.skillRuntime?.getResidencyCounts();
   return {
     model: opts.model,
@@ -98,7 +101,7 @@ export function buildStatusBarInput(
     thinking: opts.thinking,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
-    contextUsedTokens: metrics?.totalTokens ?? 0,
+    contextUsedTokens: metrics?.totalTokens ?? agentsContextTokens,
     contextWindowTokens: opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
     skills: (session.skills ?? []).map((s) => s.name),

@@ -105,4 +105,27 @@ describe("status-bar", () => {
     expect(input.memoryEnabled).toBe(false);
     expect(input.memoryStats).toEqual({ active: 1, soft: 2, hard: 3 });
   });
+
+  it("falls back to agents context token estimate before first compile", () => {
+    const session = {
+      cwd: "/tmp/aria",
+      debug: false,
+      memoryEnabled: false,
+      agentsContext: "x".repeat(4000),
+      getRepoRoot: () => "/tmp/aria",
+      getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
+      getLastCompileMetrics: () => null,
+      isIncognito: () => false,
+      skills: [],
+      stateGraph: new StateGraph(),
+    } as unknown as Session;
+
+    const input = buildStatusBarInput(session, {
+      model: "openrouter/big-pickle",
+      debug: false,
+      thinking: false,
+      contextWindowTokens: 200_000,
+    });
+    expect(input.contextUsedTokens).toBe(1000);
+  });
 });

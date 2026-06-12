@@ -2,7 +2,11 @@ import React from "react";
 import { render } from "ink";
 import type { UiScreenMode } from "../../types.js";
 import type { AppController, StartupInfo } from "../../app-controller.js";
-import { formatSessionEndSummary } from "../../app-banner.js";
+import {
+  formatSessionEndSummary,
+  formatSessionEpilogue,
+} from "../../app-banner.js";
+import { formatTuiBootSummary } from "./tool-display.js";
 import { TuiApp } from "./app.js";
 
 export async function runTui(
@@ -11,11 +15,25 @@ export async function runTui(
   screen: UiScreenMode
 ): Promise<void> {
   const config = controller.config;
+  const session = controller.session;
+  const bootSummary = formatTuiBootSummary({
+    sessionId: session.id,
+    contextTokens: session.agentsContext
+      ? Math.ceil(session.agentsContext.length / 4)
+      : undefined,
+    engineEnabled: session.isContextEngineEnabled(),
+    skillCount: session.skills.length,
+    memoryEnabled: session.memoryEnabled,
+    incognito: session.isIncognito(),
+  });
+
   const { waitUntilExit, unmount } = render(
     React.createElement(TuiApp, {
       controller,
       initialStatus: controller.getStatusBarInput(),
-      recentLines: info.recentConversationLines,
+      recentLines: info.isResume ? [] : info.recentConversationLines,
+      transcriptBootstrap: info.transcriptBootstrap,
+      bootSummary,
       markdownRendering: config.ui.markdown_rendering,
       syntaxHighlighting: config.ui.syntax_highlighting,
       syntaxTheme: config.ui.syntax_theme,
@@ -30,5 +48,8 @@ export async function runTui(
   await waitUntilExit();
   unmount();
   await controller.shutdown();
+  for (const line of formatSessionEpilogue(controller.session.id)) {
+    console.log(line);
+  }
   console.log(formatSessionEndSummary(controller.session));
 }

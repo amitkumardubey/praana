@@ -8,9 +8,13 @@ import { resolveContextEngineConfig } from "./context-engine/index.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status";
 
+/** toast = ephemeral feedback below input; transcript = scrollback (default). */
+export type SlashCommandDisplay = "transcript" | "toast";
+
 export interface SlashCommandResult {
   action: SlashCommandAction;
   lines: string[];
+  display?: SlashCommandDisplay;
 }
 
 export async function executeSlashCommand(
@@ -26,16 +30,20 @@ export async function executeSlashCommand(
   const cmd = parts[0].toLowerCase();
   const lines: string[] = [];
 
-  const result = (action: SlashCommandAction = "none"): SlashCommandResult => ({
+  const result = (
+    action: SlashCommandAction = "none",
+    display: SlashCommandDisplay = "transcript",
+  ): SlashCommandResult => ({
     action,
     lines,
+    display,
   });
 
   switch (cmd) {
     case "/exit":
     case "/quit": {
       lines.push("Ending session...");
-      return result("exit");
+      return result("exit", "toast");
     }
 
     case "/state": {
@@ -231,7 +239,7 @@ export async function executeSlashCommand(
         },
       });
       lines.push(`Model switched to: ${model} (${contextWindow.toLocaleString()} ctx)`);
-      return result("refresh_status");
+      return result("refresh_status", "toast");
     }
 
     case "/debug": {
@@ -241,7 +249,7 @@ export async function executeSlashCommand(
           ` (prompts saved to ${session.promptDir}` +
           `${session.isContextEngineEnabled() ? ", scores to scores.jsonl" : ""})`
       );
-      return result("refresh_status");
+      return result("refresh_status", "toast");
     }
 
     case "/thinking": {
@@ -260,7 +268,7 @@ export async function executeSlashCommand(
       } else {
         lines.push("Usage: /thinking <on|off>");
       }
-      return result("refresh_status");
+      return result("refresh_status", "toast");
     }
 
     case "/incognito": {
@@ -268,7 +276,7 @@ export async function executeSlashCommand(
       if (!arg) {
         lines.push(`Incognito: ${session.isIncognito() ? "ON" : "OFF"}`);
         lines.push("Usage: /incognito <on|off>");
-        break;
+        return result("none", "toast");
       }
       if (arg === "on") {
         await session.setIncognito(true);
@@ -282,8 +290,9 @@ export async function executeSlashCommand(
         );
       } else {
         lines.push("Usage: /incognito <on|off>");
+        break;
       }
-      break;
+      return result("refresh_status", "toast");
     }
 
     case "/clear":
@@ -299,7 +308,7 @@ export async function executeSlashCommand(
         },
       });
       lines.push("State cleared. Starting fresh.");
-      break;
+      return result("none", "toast");
     }
 
     case "/why": {
@@ -347,6 +356,7 @@ export async function executeSlashCommand(
 
     default:
       lines.push(`Unknown command: ${cmd}. Type /help for available commands.`);
+      return result("none", "toast");
   }
 
   return result();

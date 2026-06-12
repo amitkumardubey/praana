@@ -1,14 +1,42 @@
 import { summarizeArgs } from "../../tool-summary.js";
+import type { MemoryBannerStats } from "../../ui-events.js";
+import {
+  formatToolDisplay,
+  formatTurnFooter,
+  summarizeResultForDisplay,
+} from "./tool-display.js";
 
-export type TranscriptRole = "user" | "assistant" | "system" | "tool" | "thinking" | "tool_result";
+export type TranscriptRole =
+  | "user"
+  | "assistant"
+  | "system"
+  | "tool"
+  | "thinking"
+  | "tool_result"
+  | "turn_footer";
 
 export interface TranscriptEntry {
   id: string;
   role: TranscriptRole;
   text: string;
   toolName?: string;
+  /** Compact result summary attached to a tool entry */
+  resultSummary?: string;
+  isError?: boolean;
+  /** Raw result text for error detail */
+  resultText?: string;
+  /** Display icon for tool rows */
+  toolIcon?: string;
+  /** Human-readable tool label */
+  toolLabel?: string;
+  /** Pending verb while tool is running */
+  toolPending?: string;
   /** Group ID for visual turn grouping — increments on each user message */
   group: number;
+  /** Epoch ms when live thinking started */
+  thinkingStartedAt?: number;
+  /** Elapsed thinking time once completed */
+  durationMs?: number;
 }
 
 export interface TranscriptState {
@@ -28,7 +56,8 @@ export type TranscriptAction =
   | { type: "thinking_delta"; delta: string }
   | { type: "thinking_close" }
   | { type: "tool_call"; toolName: string; args: Record<string, unknown> }
-  | { type: "tool_result"; toolName: string; resultText: string }
+  | { type: "tool_result"; toolName: string; resultText: string; isError?: boolean }
+  | { type: "turn_footer"; model: string; durationMs: number; stats?: MemoryBannerStats }
   | { type: "system_lines"; lines: string[] }
   | { type: "memory_banner"; text: string }
   | { type: "interrupted" }
@@ -69,6 +98,34 @@ function freezeLive(state: TranscriptState): TranscriptState {
     completed: [...state.completed, state.live],
     live: null,
     liveKind: null,
+  };
+}
+
+/** Drop a live assistant entry without pushing empty rows into completed. */
+function clearEmptyAssistantLive(state: TranscriptState): TranscriptState {
+  if (state.liveKind !== "assistant" || !state.live || state.live.text.trim()) {
+    return state;
+  }
+  return { ...state, live: null, liveKind: null };
+}
+
+/** Drop brief pre-tool narration ("Let me check…") that clutters tool loops. */
+export const SHORT_PRE_TOOL_NARRATION_MAX = 100;
+
+function clearShortAssistantLive(state: TranscriptState): TranscriptState {
+  if (state.liveKind !== "assistant" || !state.live) return state;
+  const text = state.live.text.trim();
+  if (!text || text.length >= SHORT_PRE_TOOL_NARRATION_MAX) return state;
+  return { ...state, live: null, liveKind: null };
+}
+
+function ensureAssistantPlaceholder(state: TranscriptState): TranscriptState {
+  if (state.live) return state;
+  const [id, s] = nextId(state);
+  return {
+    ...s,
+    liveKind: "assistant",
+    live: { id, role: "assistant", text: "", group: state.groupCounter },
   };
 }
 
@@ -131,12 +188,21 @@ export function transcriptReducer(
           live: { ...state.live, text: state.live.text + action.delta },
         };
       }
-      const base = state.liveKind === "assistant" ? freezeLive(state) : state;
+      let base = state;
+      if (state.liveKind === "assistant" && state.live) {
+        base = state.live.text.trim() ? freezeLive(state) : clearEmptyAssistantLive(state);
+      }
       const [id, s] = nextId(base);
       return {
         ...s,
         liveKind: "thinking",
-        live: { id, role: "thinking", text: action.delta, group: state.groupCounter },
+        live: {
+          id,
+          role: "thinking",
+          text: action.delta,
+          group: state.groupCounter,
+          thinkingStartedAt: Date.now(),
+        },
       };
     }
 
@@ -146,11 +212,20 @@ export function transcriptReducer(
       if (!text) {
         return { ...state, live: null, liveKind: null };
       }
+      const durationMs =
+        state.live.thinkingStartedAt !== undefined
+          ? Date.now() - state.live.thinkingStartedAt
+          : undefined;
+      const completedThinking: TranscriptEntry = {
+        ...state.live,
+        text: state.live.text,
+        durationMs,
+      };
       // Freeze thinking to completed and immediately create an empty assistant
       // placeholder so the live area is never null (prevents flash when tools start).
       const frozen = {
         ...state,
-        completed: [...state.completed, state.live],
+        completed: [...state.completed, completedThinking],
         live: null,
         liveKind: null,
       };
@@ -163,32 +238,54 @@ export function transcriptReducer(
     }
 
     case "tool_call": {
+      const display = formatToolDisplay(action.toolName, action.args);
+      let base = clearShortAssistantLive(state);
+      base = ensureAssistantPlaceholder(base);
       const summary = summarizeArgs(action.toolName, action.args);
-      // thinking_close already handles freezing thinking + creating placeholder.
-      // But if live is still null (no thinking was active), create placeholder here.
-      let base = state;
-      if (!base.live) {
-        const [id, s] = nextId(base);
-        base = {
-          ...s,
-          liveKind: "assistant",
-          live: { id, role: "assistant", text: "", group: state.groupCounter },
-        };
-      }
       return pushCompleted(base, {
         role: "tool",
         toolName: action.toolName,
         text: summary ? `${action.toolName} :: ${summary}` : action.toolName,
+        toolIcon: display.icon,
+        toolLabel: display.label,
+        toolPending: display.pending,
       });
     }
 
     case "tool_result": {
+      const summary = summarizeResultForDisplay(action.resultText);
+      const completed = [...state.completed];
+      for (let i = completed.length - 1; i >= 0; i--) {
+        const entry = completed[i];
+        if (
+          entry?.role === "tool" &&
+          entry.toolName === action.toolName &&
+          entry.resultSummary === undefined
+        ) {
+          completed[i] = {
+            ...entry,
+            resultSummary: summary,
+            resultText: action.resultText,
+            isError: action.isError ?? false,
+          };
+          return { ...state, completed };
+        }
+      }
       return pushCompleted(state, {
         role: "tool_result",
         toolName: action.toolName,
         text: action.resultText,
+        resultSummary: summary,
+        resultText: action.resultText,
+        isError: action.isError ?? false,
       });
     }
+
+    case "turn_footer":
+      return pushCompleted(state, {
+        role: "turn_footer",
+        text: formatTurnFooter(action.model, action.durationMs, action.stats),
+      });
 
     case "system_lines": {
       const text = action.lines.filter(Boolean).join("\n");
@@ -254,5 +351,5 @@ export function formatMemoryBannerLine(stats: {
   if (stats.promptTokens > 0) parts.push(`prompt ~${fmtToken(stats.promptTokens)}`);
   if (stats.outputTokens > 0) parts.push(`out ~${fmtToken(stats.outputTokens)}`);
   if (parts.length === 0) return "";
-  return `state: ${parts.join(" · ")}`;
+  return parts.join(" · ");
 }

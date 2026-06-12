@@ -1,5 +1,14 @@
 /** Compact summaries for tool call / result display in terminal and TUI. */
 
+export function formatToolResultRawText(result: unknown): string {
+  if (typeof result === "string") return result;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
+
 export function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
     case "read_file":

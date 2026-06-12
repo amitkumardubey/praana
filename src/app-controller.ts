@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { AriaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
+import type { UiMode } from "./types.js";
 import { Session } from "./session.js";
 import { runTurn } from "./turn.js";
 import { TurnController } from "./turn-control.js";
@@ -13,6 +14,7 @@ import {
   formatRecentConversationLines,
   formatSessionBannerLines,
 } from "./app-banner.js";
+import { buildTranscriptFromEvents } from "./ui/tui/transcript-replay.js";
 
 export interface StartupInfo {
   session: Session;
@@ -20,6 +22,8 @@ export interface StartupInfo {
   model: string;
   bannerLines: string[];
   recentConversationLines: string[];
+  /** Full transcript entries rebuilt from event log on resume (TUI). */
+  transcriptBootstrap: import("./ui/tui/reducer.js").TranscriptEntry[];
   isResume: boolean;
 }
 
@@ -28,7 +32,7 @@ export class AppController {
   readonly cwd: string;
   readonly config: AriaConfig;
   readonly parsed: CliArgs;
-  showThinking = true;
+  showThinking = false;
   currentModel?: string;
   sessionEnded = false;
 
@@ -41,15 +45,20 @@ export class AppController {
     this.parsed = opts.parsed;
   }
 
-  async start(): Promise<StartupInfo> {
+  async start(opts?: { uiMode?: UiMode }): Promise<StartupInfo> {
     const { sessionId, resumeMode, debug } = this.parsed;
+    const captureNotice =
+      opts?.uiMode === "tui" ? (_line: string) => {} : undefined;
 
     if (resumeMode && sessionId) {
-      this.session = await Session.resume(sessionId, this.cwd, this.config);
+      this.session = await Session.resume(sessionId, this.cwd, this.config, {
+        captureNotice,
+      });
       this.session.debug = debug;
     } else {
       this.session = await Session.create(this.cwd, this.config, {
         incognito: this.parsed.incognito,
+        captureNotice,
       });
       this.session.debug = debug;
     }
@@ -64,6 +73,9 @@ export class AppController {
       bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
       recentConversationLines: resumeMode
         ? formatRecentConversationLines(this.session)
+        : [],
+      transcriptBootstrap: resumeMode
+        ? buildTranscriptFromEvents(this.session.eventLog.readAll())
         : [],
       isResume: !!resumeMode,
     };

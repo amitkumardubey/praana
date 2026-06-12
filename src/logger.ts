@@ -50,6 +50,8 @@ export interface LoggerOptions {
   sessionFileStream?: DestinationStream;
   /** Test hook — capture formatted log lines instead of stderr/files. */
   writeLine?: (line: string) => void;
+  /** TUI boot — capture notice lines instead of writing to stderr. */
+  captureNotice?: (line: string) => void;
 }
 
 /** Daily rotated logs; symlink at `current.log` points to today's file. */
@@ -202,6 +204,7 @@ export class AriaLogger {
       appFileStream: options.appFileStream,
       sessionFileStream: options.sessionFileStream,
       writeLine: options.writeLine,
+      captureNotice: options.captureNotice,
     };
     this.pino = createPinoLogger(this.options).child({ domain: this.options.domain });
   }
@@ -283,7 +286,9 @@ export class AriaLogger {
   notice(message: string, opts?: { domain?: LogDomain; details?: Record<string, unknown> }): void {
     const domain = opts?.domain ?? this.options.domain;
     const line = `[${domain}] ${message}`;
-    if (this.options.writeLine) {
+    if (this.options.captureNotice) {
+      this.options.captureNotice(line);
+    } else if (this.options.writeLine) {
       this.options.writeLine(line);
     } else if (!isTestEnv()) {
       process.stderr.write(line + "\n");
@@ -328,6 +333,7 @@ export async function createSessionLogger(opts: {
   sessionId: string;
   sessionLogDir: string;
   debug?: boolean;
+  captureNotice?: (line: string) => void;
 }): Promise<AriaLogger> {
   if (isTestEnv()) {
     return new AriaLogger({
@@ -351,6 +357,7 @@ export async function createSessionLogger(opts: {
     sessionLogDir: opts.sessionLogDir,
     appFileStream: appStream,
     sessionFileStream: sessionStream,
+    captureNotice: opts.captureNotice,
   });
 }
 

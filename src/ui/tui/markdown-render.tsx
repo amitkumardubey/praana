@@ -4,6 +4,7 @@ import { marked, type Token, type Tokens } from "marked";
 import { highlight as cliHighlight } from "cli-highlight";
 import stripAnsi from "strip-ansi";
 import { PALETTE } from "./palette.js";
+import { getTerminalWidth } from "./terminal-width.js";
 
 interface MarkdownRenderProps {
   text: string;
@@ -26,24 +27,56 @@ function InlineToken({ token }: { token: Token | string }): React.ReactNode {
   }
 
   switch (token.type) {
-    case "text":
-      return <Text>{(token as Tokens.Text).raw}</Text>;
-    case "strong":
-      return <Text bold>{(token as Tokens.Strong).text}</Text>;
-    case "em":
-      return <Text italic>{(token as Tokens.Em).text}</Text>;
+    case "text": {
+      const t = token as Tokens.Text;
+      if (t.tokens && t.tokens.length > 0) {
+        return <InlineTokens tokens={t.tokens} />;
+      }
+      return <Text>{t.text}</Text>;
+    }
+    case "strong": {
+      const t = token as Tokens.Strong;
+      return (
+        <Text bold>
+          {t.tokens?.length ? <InlineTokens tokens={t.tokens} /> : t.text}
+        </Text>
+      );
+    }
+    case "em": {
+      const t = token as Tokens.Em;
+      return (
+        <Text italic>
+          {t.tokens?.length ? <InlineTokens tokens={t.tokens} /> : t.text}
+        </Text>
+      );
+    }
+    case "del": {
+      const t = token as Tokens.Del;
+      return (
+        <Text strikethrough dimColor>
+          {t.tokens?.length ? <InlineTokens tokens={t.tokens} /> : t.text}
+        </Text>
+      );
+    }
     case "codespan":
       return (
         <Text color={PALETTE.tool} backgroundColor="#2d2d2d">
           {" "}{(token as Tokens.Codespan).text}{" "}
         </Text>
       );
-    case "link":
+    case "link": {
+      const t = token as Tokens.Link;
+      const label = t.text || t.href;
+      const showHref = t.href && t.href !== t.text;
       return (
         <Text color={PALETTE.assistant} underline>
-          {(token as Tokens.Link).text}
+          {label}
+          {showHref ? (
+            <Text dimColor>{` (${t.href})`}</Text>
+          ) : null}
         </Text>
       );
+    }
     case "br":
       return <Text>{"\n"}</Text>;
     case "escape":
@@ -63,18 +96,188 @@ function InlineTokens({ tokens }: { tokens: (Token | string)[] }): React.ReactNo
   );
 }
 
-export function extractCellText(cell: { text: string; tokens: (Token | string)[] }): string {
-  return typeof cell.text === "string"
-    ? cell.text
-    : cell.tokens.map((tk) => (typeof tk === "string" ? tk : tk.raw ?? "")).join("");
+function MarkdownList({
+  token,
+  depth = 0,
+}: {
+  token: Tokens.List;
+  depth?: number;
+}): React.ReactNode {
+  return (
+    <Box
+      flexDirection="column"
+      marginBottom={depth === 0 ? 1 : 0}
+      paddingLeft={depth > 0 ? 2 : 2}
+    >
+      {token.items.map((item, i) => {
+        const bullet = token.ordered ? `${i + 1}. ` : "• ";
+        return (
+          <Box key={i} flexDirection="row">
+            <Text color={PALETTE.gutter}>{bullet}</Text>
+            <Text wrap="wrap">
+              <ListItemTokens tokens={item.tokens} depth={depth} />
+            </Text>
+          </Box>
+        );
+      })}
+    </Box>
+  );
 }
 
-export function computeColWidths(headerTexts: string[], bodyTexts: string[][]): number[] {
+function ListItemTokens({
+  tokens,
+  depth = 0,
+}: {
+  tokens: Token[];
+  depth?: number;
+}): React.ReactNode {
+  return (
+    <>
+      {tokens.map((token, i) => {
+        if (token.type === "space") {
+          return <Text key={i}>{"\n"}</Text>;
+        }
+        if (token.type === "paragraph") {
+          const p = token as Tokens.Paragraph;
+          return (
+            <Text key={i} wrap="wrap">
+              <InlineTokens tokens={p.tokens} />
+            </Text>
+          );
+        }
+        if (token.type === "list") {
+          return (
+            <MarkdownList key={i} token={token as Tokens.List} depth={depth + 1} />
+          );
+        }
+        return <InlineToken key={i} token={token} />;
+      })}
+    </>
+  );
+}
+
+/** Flatten inline tokens to plain text (used in tests). */
+export function plainTextFromInlineTokens(tokens: (Token | string)[]): string {
+  return tokens
+    .map((token) => {
+      if (typeof token === "string") return token;
+      switch (token.type) {
+        case "text": {
+          const t = token as Tokens.Text;
+          if (t.tokens?.length) return plainTextFromInlineTokens(t.tokens);
+          return t.text ?? t.raw ?? "";
+        }
+        case "strong":
+          return (token as Tokens.Strong).text;
+        case "em":
+          return (token as Tokens.Em).text;
+        case "del": {
+          const t = token as Tokens.Del;
+          if (t.tokens?.length) return plainTextFromInlineTokens(t.tokens);
+          return t.text ?? "";
+        }
+        case "codespan":
+          return (token as Tokens.Codespan).text;
+        case "link":
+          return (token as Tokens.Link).text;
+        case "br":
+          return "\n";
+        case "escape":
+          return (token as Tokens.Escape).text;
+        default:
+          return token.raw ?? "";
+      }
+    })
+    .join("");
+}
+
+export function extractCellText(cell: { text: string; tokens: (Token | string)[] }): string {
+  if (cell.tokens && cell.tokens.length > 0) {
+    return plainTextFromInlineTokens(cell.tokens);
+  }
+  return cell.text ?? "";
+}
+
+type TableCellData = { text: string; tokens: (Token | string)[] };
+
+function truncatePlain(text: string, width: number): string {
+  if (text.length <= width) return text;
+  return width <= 1 ? "…" : `${text.slice(0, width - 1)}…`;
+}
+
+function TableCellContent({
+  cell,
+  width,
+  bold,
+}: {
+  cell: TableCellData;
+  width: number;
+  bold?: boolean;
+}) {
+  const plain = extractCellText(cell);
+  const truncated = plain.length > width;
+
+  if (truncated) {
+    return (
+      <Text bold={bold} wrap="truncate">
+        {truncatePlain(plain, width)}
+      </Text>
+    );
+  }
+
+  const pad = " ".repeat(Math.max(0, width - plain.length));
+  return (
+    <Text bold={bold}>
+      <InlineTokens tokens={cell.tokens} />
+      {pad}
+    </Text>
+  );
+}
+
+function TableRow({
+  cells,
+  colWidths,
+  header,
+}: {
+  cells: TableCellData[];
+  colWidths: number[];
+  header?: boolean;
+}) {
+  return (
+    <Box flexDirection="row">
+      <Text color={header ? PALETTE.assistant : undefined} bold={header}>
+        │
+      </Text>
+      {cells.map((cell, i) => (
+        <Box key={i} flexDirection="row">
+          <Text> </Text>
+          <TableCellContent cell={cell} width={colWidths[i]!} bold={header} />
+          <Text> </Text>
+          <Text color={PALETTE.gutter}>│</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+export function computeColWidths(
+  headerTexts: string[],
+  bodyTexts: string[][],
+  terminalWidth = getTerminalWidth()
+): number[] {
   const colCount = headerTexts.length;
+  const gutter = 2 + colCount * 3;
+  const perColMax = Math.max(
+    8,
+    Math.min(48, Math.floor((terminalWidth - gutter) / Math.max(colCount, 1)))
+  );
   return Array.from({ length: colCount }, (_, ci) => {
     const headerLen = stripAnsi(headerTexts[ci] ?? "").length;
-    const maxBodyLen = bodyTexts.reduce((max, row) => Math.max(max, stripAnsi(row[ci] ?? "").length), 0);
-    return Math.min(Math.max(headerLen, maxBodyLen, 4), 40);
+    const maxBodyLen = bodyTexts.reduce(
+      (max, row) => Math.max(max, stripAnsi(row[ci] ?? "").length),
+      0
+    );
+    return Math.min(Math.max(headerLen, maxBodyLen, 4), perColMax);
   });
 }
 
@@ -137,47 +340,22 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
       return renderCodeBlock(t, syntaxHighlighting, syntaxTheme);
     }
 
-    case "list": {
-      const t = token as Tokens.List;
-      return (
-        <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
-          {t.items.map((item, i) => {
-            const bullet = t.ordered ? `${i + 1}. ` : "• ";
-            return (
-              <Box key={i} flexDirection="row">
-                <Text color={PALETTE.gutter}>{bullet}</Text>
-                <Text wrap="wrap">
-                  <InlineTokens tokens={item.tokens} />
-                </Text>
-              </Box>
-            );
-          })}
-        </Box>
-      );
-    }
+    case "list":
+      return <MarkdownList token={token as Tokens.List} />;
 
     case "table": {
       const t = token as Tokens.Table;
       const headerTexts = t.header.map(extractCellText);
       const bodyTexts = t.rows.map((row) => row.map(extractCellText));
-      const colCount = headerTexts.length;
       const colWidths = computeColWidths(headerTexts, bodyTexts);
-      const pad = (text: string, width: number) => {
-        const plain = stripAnsi(text);
-        if (plain.length > width) {
-          return plain.slice(0, width - 1) + "…";
-        }
-        return text + " ".repeat(width - plain.length);
-      };
-      const headerCells = headerTexts.map((h, i) => pad(h, colWidths[i]));
       const separator = colWidths.map((w) => "─".repeat(w));
 
       return (
         <Box flexDirection="column" marginBottom={1}>
-          <Text color={PALETTE.assistant} bold>│ {headerCells.join(" │ ")}</Text>
+          <TableRow cells={t.header} colWidths={colWidths} header />
           <Text color={PALETTE.gutter}>├─{separator.join("─┼─")}─┤</Text>
-          {bodyTexts.map((row, i) => (
-            <Text key={i}>│ {row.map((c, ci) => pad(c, colWidths[ci])).join(" │ ")}</Text>
+          {t.rows.map((row, i) => (
+            <TableRow key={i} cells={row} colWidths={colWidths} />
           ))}
         </Box>
       );
@@ -187,19 +365,21 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
       const t = token as Tokens.Blockquote;
       return (
         <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
-          <Text color={PALETTE.gutter}>
-            {t.tokens.map((tk, i) => {
-              if (tk.type === "paragraph") {
-                const p = tk as Tokens.Paragraph;
-                return p.tokens.map((itk, j) => (
-                  <Text key={`${i}-${j}`} italic color={PALETTE.muted}>
-                    {typeof itk === "string" ? itk : itk.raw ?? ""}
-                  </Text>
-                ));
-              }
-              return <Text key={i}>{typeof tk === "string" ? tk : tk.raw ?? ""}</Text>;
-            })}
-          </Text>
+          {t.tokens.map((tk, i) => {
+            if (tk.type === "paragraph") {
+              const p = tk as Tokens.Paragraph;
+              return (
+                <Text key={i} wrap="wrap" color={PALETTE.muted} italic>
+                  <InlineTokens tokens={p.tokens} />
+                </Text>
+              );
+            }
+            return (
+              <Text key={i} color={PALETTE.muted}>
+                {typeof tk === "string" ? tk : tk.raw ?? ""}
+              </Text>
+            );
+          })}
         </Box>
       );
     }
@@ -207,7 +387,9 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
     case "hr":
       return (
         <Box marginBottom={1}>
-          <Text color={PALETTE.gutter}>{"─".repeat(60)}</Text>
+          <Text color={PALETTE.gutter}>
+            {"─".repeat(Math.max(20, getTerminalWidth() - 4))}
+          </Text>
         </Box>
       );
 

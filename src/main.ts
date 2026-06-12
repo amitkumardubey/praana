@@ -37,7 +37,7 @@ export async function main() {
   const controller = new AppController({ cwd, config, parsed });
 
   try {
-    const info = await controller.start();
+    const info = await controller.start({ uiMode });
 
     if (uiMode === "tui") {
       await runTui(controller, info, screenMode);

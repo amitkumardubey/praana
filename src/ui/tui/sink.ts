@@ -1,8 +1,6 @@
 import type { Dispatch } from "react";
-import type { TurnUiSink } from "../../ui-events.js";
+import type { TurnUiSink, MemoryBannerStats } from "../../ui-events.js";
 import type { TranscriptAction } from "./reducer.js";
-import { formatMemoryBannerLine } from "./reducer.js";
-
 const THROTTLE_MS = 50;
 
 /**
@@ -44,6 +42,7 @@ export function createTuiTurnSink(
   dispatch: Dispatch<TranscriptAction>
 ): TurnUiSink {
   const text = createThrottledDispatcher(dispatch);
+  let pendingStats: MemoryBannerStats | null = null;
 
   return {
     onTextDelta: (delta) => text.onDelta(delta),
@@ -62,12 +61,18 @@ export function createTuiTurnSink(
       dispatch({ type: "tool_call", toolName, args });
     },
 
-    onToolResult: (toolName, resultText) => {
+    onToolResult: (toolName, resultText, isError) => {
       text.flush();
-      dispatch({ type: "tool_result", toolName, resultText });
+      dispatch({ type: "tool_result", toolName, resultText, isError });
     },
 
     flushText: () => text.flush(),
+
+    consumeTurnStats: () => {
+      const stats = pendingStats;
+      pendingStats = null;
+      return stats;
+    },
 
     onDebug: (message) => {
       dispatch({ type: "system_lines", lines: [`[debug] ${message}`] });
@@ -85,8 +90,7 @@ export function createTuiTurnSink(
     },
 
     onMemoryBanner: (stats) => {
-      const text = formatMemoryBannerLine(stats);
-      if (text) dispatch({ type: "memory_banner", text });
+      pendingStats = stats;
     },
 
     onSpinnerStart: () => {
