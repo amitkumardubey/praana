@@ -89,6 +89,9 @@ const DEFAULT_CONFIG: AriaConfig = {
       emergency_at: 0.85,
     },
   },
+  project_detection: {
+    enabled: true,
+  },
 };
 
 function expandHome(p: string): string {

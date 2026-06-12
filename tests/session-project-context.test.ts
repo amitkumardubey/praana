@@ -46,6 +46,7 @@ function makeConfig(overrides: Partial<AriaConfig> = {}): AriaConfig {
       promotion_threshold: 3,
       run_delay_seconds: 30,
     },
+    project_detection: { enabled: true },
     ...overrides,
   };
 }

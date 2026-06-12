@@ -249,6 +249,14 @@ export interface ContextEngineConfig {
   pressure: ContextEnginePressureConfig;
 }
 
+export interface ProjectDetectionConfig {
+  enabled: boolean;
+  /** Override auto-detected languages (e.g. ["TypeScript", "Python"]) */
+  manual_languages?: string[];
+  /** Override auto-detected frameworks (e.g. ["React", "FastAPI"]) */
+  manual_frameworks?: string[];
+}
+
 export interface AriaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -261,6 +269,7 @@ export interface AriaConfig {
   skills: SkillsConfig;
   ui: UiConfig;
   context_engine: ContextEngineConfig;
+  project_detection: ProjectDetectionConfig;
 }
 
 // ---- Session Meta ----
