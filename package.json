@@ -2,9 +2,15 @@
   "name": "aria",
   "version": "0.3.0",
   "description": "Terminal coding agent with adaptive context and cross-session memory",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amitkumardubey/aria.git"
+  },
+  "keywords": ["cli", "ai", "coding-agent", "terminal", "assistant", "llm"],
   "type": "module",
   "bin": {
-    "aria": "./bin/aria.js"
+    "aria": "bin/aria.js"
   },
   "files": [
     "bin",
@@ -16,6 +22,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "rm -rf dist && tsc",
     "start": "node dist/main.js",
     "dev": "tsx src/main.ts",
     "test": "vitest run",
