@@ -19,12 +19,18 @@ export interface TuiAppProps {
   controller: AppController;
   initialStatus: import("../../status-bar.js").StatusBarInput;
   recentLines: string[];
+  markdownRendering?: boolean;
+  syntaxHighlighting?: boolean;
+  syntaxTheme?: string;
 }
 
 export function TuiApp({
   controller,
   initialStatus,
   recentLines,
+  markdownRendering = true,
+  syntaxHighlighting = true,
+  syntaxTheme = "solarized-dark",
 }: TuiAppProps) {
   const { exit } = useApp();
   const [input, setInput] = useState("");
@@ -208,13 +214,24 @@ export function TuiApp({
 
         {/* Visible transcript window */}
         {visibleEntries.map((entry) => (
-          <TranscriptLine key={entry.id} entry={entry} />
+          <TranscriptLine
+            key={entry.id}
+            entry={entry}
+            markdownRendering={markdownRendering}
+            syntaxHighlighting={syntaxHighlighting}
+            syntaxTheme={syntaxTheme}
+          />
         ))}
 
         {/* Live entry — placeholder keeps live non-null during tool transitions,
             so BusyIndicator only shows during the initial loading gap at turn start. */}
         {transcript.live ? (
-          <TranscriptLine entry={transcript.live} />
+          <TranscriptLine
+            entry={transcript.live}
+            markdownRendering={markdownRendering}
+            syntaxHighlighting={syntaxHighlighting}
+            syntaxTheme={syntaxTheme}
+          />
         ) : transcript.busy ? (
           <BusyIndicator />
         ) : null}

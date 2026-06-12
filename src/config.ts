@@ -67,6 +67,9 @@ const DEFAULT_CONFIG: AriaConfig = {
   ui: {
     mode: "tui",
     screen: "preserve",
+    markdown_rendering: true,
+    syntax_highlighting: true,
+    syntax_theme: "solarized-dark",
   },
   context_engine: {
     enabled: true,
@@ -408,6 +411,39 @@ function validateConfig(config: AriaConfig): AriaConfig {
     if (!Array.isArray(out.shell.allowed_paths)) {
       console.warn("[config] shell.allowed_paths must be string array, defaulting to []");
       (out.shell as { allowed_paths: readonly string[] }).allowed_paths = [];
+    }
+  }
+
+  // UI config validation
+  if (out.ui) {
+    if (typeof out.ui.markdown_rendering !== 'boolean') {
+      out.ui.markdown_rendering = DEFAULT_CONFIG.ui.markdown_rendering;
+    }
+    if (typeof out.ui.syntax_highlighting !== 'boolean') {
+      out.ui.syntax_highlighting = DEFAULT_CONFIG.ui.syntax_highlighting;
+    }
+    // Dynamic lookup of theme via cli-highlight if theme doesn't exist, fallback to solarized-dark
+    // cli-highlight themes are usually packaged under its theme directory, but let's check safety.
+    // If cli-highlight throws a parse error on a test piece of code, it means the theme is invalid.
+    if (typeof out.ui.syntax_theme !== 'string' || !out.ui.syntax_theme.trim()) {
+      console.warn("[config] Invalid ui.syntax_theme, using default 'solarized-dark'");
+      out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
+    } else {
+      try {
+        // cli-highlight is direct CJS dependency, so we require it or dynamically load safely.
+        // Since we are in ESM, we can either check synchronously from standard node pathing or do:
+        import("cli-highlight").then(({ highlight }) => {
+          try {
+            highlight("const x = 1;", { theme: out.ui.syntax_theme });
+          } catch {
+            console.warn(`[config] Theme '${out.ui.syntax_theme}' not found or invalid. Falling back to 'solarized-dark'`);
+            out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
+          }
+        }).catch(() => {});
+      } catch {
+        // If any error occurs, default back safely
+        out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
+      }
     }
   }
 

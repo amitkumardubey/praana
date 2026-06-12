@@ -210,6 +210,9 @@ export type UiScreenMode = "preserve" | "alternate";
 export interface UiConfig {
   mode: UiMode;
   screen: UiScreenMode;
+  markdown_rendering: boolean;
+  syntax_highlighting: boolean;
+  syntax_theme: string;
 }
 
 export type DistillerIntensity = "lite" | "full";

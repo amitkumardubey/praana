@@ -12,6 +12,7 @@ import {
   toggleThinking,
 } from "../thinking-display.js";
 import { startSpinner, stopSpinner } from "../ui.js";
+import { writeMarkdown } from "../render.js";
 
 export async function runReadlineUi(
   controller: AppController,
@@ -107,6 +108,23 @@ export async function runReadlineUi(
       }
     };
 
+    const markdownRendering = controller.config.ui.markdown_rendering;
+    const syntaxTheme = controller.config.ui.syntax_theme;
+    let textBuffer = "";
+    const flushMarkdown = () => {
+      if (textBuffer) {
+        if (markdownRendering) {
+          // Strip trailing \n before rendering — marked adds its own paragraph breaks.
+          // Leaving it causes double newlines when successive deltas flush at \n boundaries.
+          const text = textBuffer.replace(/\n$/, "");
+          if (text) writeMarkdown(text, process.stdout);
+        } else {
+          process.stdout.write(textBuffer);
+        }
+        textBuffer = "";
+      }
+    };
+
     const sink = createDefaultTurnSink({
       onThinkingDelta: (delta) => {
         stopSpinnerOnce();
@@ -120,18 +138,31 @@ export async function runReadlineUi(
       onTextDelta: (delta) => {
         stopSpinnerOnce();
         closeThinking();
-        process.stdout.write(delta);
+        if (!markdownRendering) {
+          process.stdout.write(delta);
+          return;
+        }
+        textBuffer += delta;
+        const lastNewline = textBuffer.lastIndexOf("\n");
+        if (lastNewline >= 0) {
+          const toFlush = textBuffer.slice(0, lastNewline);
+          textBuffer = textBuffer.slice(lastNewline + 1);
+          if (toFlush) writeMarkdown(toFlush, process.stdout);
+        }
       },
       onToolCallsStart: () => {
+        flushMarkdown();
         closeThinking();
       },
     });
+    sink.flushText = flushMarkdown;
 
     process.stdin.on("keypress", onKeypress);
     escListener.start(() => controller.abortTurn(), rl);
 
     try {
       await controller.runUserTurn(input, sink);
+      flushMarkdown();
       closeThinking();
       stopSpinnerOnce();
     } catch (err) {

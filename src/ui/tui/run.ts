@@ -10,11 +10,15 @@ export async function runTui(
   info: StartupInfo,
   screen: UiScreenMode
 ): Promise<void> {
+  const config = controller.config;
   const { waitUntilExit, unmount } = render(
     React.createElement(TuiApp, {
       controller,
       initialStatus: controller.getStatusBarInput(),
       recentLines: info.recentConversationLines,
+      markdownRendering: config.ui.markdown_rendering,
+      syntaxHighlighting: config.ui.syntax_highlighting,
+      syntaxTheme: config.ui.syntax_theme,
     }),
     {
       alternateScreen: screen === "alternate",

@@ -4,6 +4,7 @@ import stripAnsi from "strip-ansi";
 import type { TranscriptEntry } from "./reducer.js";
 import { PALETTE } from "./palette.js";
 import { RoleLabel } from "./role-label.js";
+import { MarkdownRender } from "./markdown-render.js";
 
 /** Produce a compact one-line summary of a tool result for display. */
 function summarizeResultForDisplay(text: string): string {
@@ -17,13 +18,27 @@ function summarizeResultForDisplay(text: string): string {
   return `${size} — ${previewText}`;
 }
 
-export const TranscriptLine = React.memo(function TranscriptLine({ entry }: { entry: TranscriptEntry }) {
+export interface TranscriptLineProps {
+  entry: TranscriptEntry;
+  markdownRendering?: boolean;
+  syntaxHighlighting?: boolean;
+  syntaxTheme?: string;
+}
+
+export const TranscriptLine = React.memo(function TranscriptLine({
+  entry,
+  markdownRendering = true,
+  syntaxHighlighting = true,
+  syntaxTheme = "solarized-dark",
+}: TranscriptLineProps) {
   const plain = stripAnsi(entry.text);
   const isTool = entry.role === "tool";
   const isToolResult = entry.role === "tool_result";
   const isUser = entry.role === "user";
   const isThinking = entry.role === "thinking";
   const isGrouped = entry.group > 0 && !isUser && !isToolResult;
+  const isAssistant = entry.role === "assistant" && !isThinking;
+  const useMarkdown = markdownRendering && isAssistant && plain;
 
   return (
     <Box flexDirection="column" marginBottom={isTool ? 0 : isToolResult ? 0 : 1}>
@@ -53,6 +68,14 @@ export const TranscriptLine = React.memo(function TranscriptLine({ entry }: { en
               [result] {summarizeResultForDisplay(plain)}
             </Text>
           </Text>
+        ) : useMarkdown ? (
+          <Box paddingLeft={isGrouped ? 2 : 0}>
+            <MarkdownRender
+              text={plain}
+              syntaxHighlighting={syntaxHighlighting}
+              syntaxTheme={syntaxTheme}
+            />
+          </Box>
         ) : (
           <Box paddingLeft={isGrouped ? 2 : 0}>
             <Text wrap="wrap" color={isThinking ? PALETTE.muted : PALETTE.user} italic={isThinking ? true : false}>{plain || " "}</Text>
