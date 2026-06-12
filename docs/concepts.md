@@ -50,6 +50,29 @@ The same tombstone pattern applies in Cognitive Memory via `forget_memory(id)` �
 
 ---
 
+## Session Checkpoint (Context Engine)
+
+When `context_engine.enabled = true`, ARIA maintains a **SessionCheckpoint** — a structured within-session summary reconciled after every turn from a deterministic `TurnDigest`. Unlike Adaptive Context (tiered state objects the agent manages via tools), the checkpoint is assembled automatically and pinned in the prompt so it survives when older turns fall out of the verbatim window.
+
+### Checkpoint sections
+
+| Section | What it preserves |
+|---|---|
+| Active request | The latest user intent |
+| Session narrative | A rolling prose "story so far" from meaningful turns (decisions, file writes, errors, intent changes) |
+| Plan | Current plan plus superseded plans with completion hints |
+| Constraints | Append-only rules — never dropped. Includes auto-extracted "not X, Y" corrections. Other preferences ("let's use", "we use") rely on the system prompt nudge directing the LLM to call `add_constraint` |
+| Decisions | Architectural choices with rationale (rationale survives age-based compaction) |
+| Files / findings / errors / activity | Structured operational state |
+
+### Conversational context
+
+Turns 0–2 appear verbatim in the prompt. Turns 3–6 appear as scored digests. From turn 7 onward, information only survives if the checkpoint captured it. The narrative, plan history, retained decision rationale, and implicit constraint extraction address the most common gaps where conversational knowledge was previously lost.
+
+The checkpoint is written from `TurnDigest` data only — never by the LLM — to prevent summarisation drift. For deep reasoning chains or full exploration history, the agent should still use `search_turn_events` or `retrieve_artifact`.
+
+---
+
 ## Cognitive Memory
 
 **Cognitive Memory** is ARIA's cross-session persistence layer.

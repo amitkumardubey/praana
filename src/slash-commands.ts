@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { EVENT_LOG_FILENAME, migrateLegacyEventLog } from "./event-log.js";
 import type { Session } from "./session.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
+import { explainUnitScore } from "./context-engine/engine-compiler.js";
+import { resolveContextEngineConfig } from "./context-engine/index.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status";
 
@@ -86,6 +88,18 @@ export async function executeSlashCommand(
         lines.push("", "Persistent memory (SQLite):");
         lines.push(`  Total memories: ${persistentCount ?? "(unavailable)"}`);
         lines.push(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
+      }
+
+      if (session.isContextEngineEnabled() && session.contextEngine) {
+        const telemetry = session.contextEngine.finalizeTelemetry(session.getTurnCount());
+        lines.push("", "Context engine telemetry:");
+        lines.push(`  Artifacts: ${telemetry.artifactsProduced}`);
+        lines.push(
+          `  Retrievals: ${telemetry.stats.artifactRetrievals} (${(telemetry.retrievalRate * 100).toFixed(1)}%)`,
+        );
+        lines.push(`  Distiller savings: ${Math.round(telemetry.stats.totalDistillerSavings)} tokens`);
+        lines.push(`  Pressure events: ${telemetry.stats.pressureEvents}`);
+        lines.push(`  Compaction triggers: ${telemetry.stats.compactionTriggers}`);
       }
       break;
     }
@@ -220,7 +234,8 @@ export async function executeSlashCommand(
       session.debug = !session.debug;
       lines.push(
         `Debug mode: ${session.debug ? "ON" : "OFF"}` +
-          ` (prompts saved to ${session.promptDir})`
+          ` (prompts saved to ${session.promptDir}` +
+          `${session.isContextEngineEnabled() ? ", scores to scores.jsonl" : ""})`
       );
       return result("refresh_status");
     }
@@ -280,6 +295,45 @@ export async function executeSlashCommand(
         },
       });
       lines.push("State cleared. Starting fresh.");
+      break;
+    }
+
+    case "/why": {
+      const unitId = parts.slice(1).join(" ").trim();
+      if (!unitId) {
+        lines.push("Usage: /why <unit-id> (e.g. /why art_abc123 or /why turn_3)");
+        break;
+      }
+      if (!session.isContextEngineEnabled()) {
+        lines.push("Context engine is disabled. Enable it to use /why.");
+        break;
+      }
+      const record = session.getCompileScoreRecord(unitId);
+      if (!record) {
+        lines.push(`No score record for "${unitId}" on the last compile.`);
+        lines.push("Run a turn with context_engine.scoring_enabled=true and debug mode for scores.jsonl.");
+        break;
+      }
+      const engineConfig = resolveContextEngineConfig(session.config);
+      const bandBudget = record.band <= 4 ? 3000 : 2000;
+      const bandUsed = session
+        .getLastCompileScoreRecords()
+        .filter((r) => r.band === record.band && r.included)
+        .reduce((sum, r) => sum + r.tokens, 0);
+      lines.push(
+        ...explainUnitScore(
+          unitId,
+          session.getLastCompileScoreRecords(),
+          session.getTurnCount(),
+          session.getLastUserInput(),
+          engineConfig.scoring,
+          bandBudget,
+          bandUsed,
+        ),
+      );
+      lines.push(
+        `Pressure: ${(session.getLastPressureRatio() * 100).toFixed(1)}% (${session.getLastPressureMode()})`,
+      );
       break;
     }
 

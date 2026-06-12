@@ -1,15 +1,22 @@
 import { stream as piStream, type Message } from "@earendil-works/pi-ai";
-import { writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
 import { compileWithMetrics } from "./compiler.js";
+import {
+  compileEngineWithMetrics,
+  resolveContextEngineConfig,
+} from "./context-engine/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel } from "./llm.js";
+import type { ContextEngine } from "./context-engine/index.js";
+import { TurnRecorder } from "./context-engine/turn-recorder.js";
 import { TurnAbortedError } from "./turn-control.js";
 import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
+import { printDebug, printMemoryBanner } from "./ui.js";
 
 export async function runTurn(
   session: Session,
@@ -30,12 +37,18 @@ export async function runTurn(
     return true;
   };
 
+  const turnRecorder = new TurnRecorder(userInput);
+  const stateBeforeTurn = session.contextEngine?.captureStateSnapshot(
+    session.stateGraph,
+  );
+
   // 1. Append user_message
   session.eventLog.append({
     kind: "user_message",
     actor: "user",
     payload: { text: userInput },
   });
+  session.setLastUserInput(userInput);
 
   // 1b. Auto-hydrate peripheral objects matching user query keywords
   const autoHydrated = session.stateGraph.autoHydrate(userInput);
@@ -66,10 +79,12 @@ export async function runTurn(
     memoryStore: session.memoryStore,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
+    contextEngine: session.contextEngine,
     cwd: session.cwd,
     getAbortSignal: () => options?.signal,
     sandbox: session.config.shell,
     editConfirm: session.config.edit?.confirm,
+    getCurrentTurn: () => session.getTurnCount(),
   });
 
   // 2b. Match skills against user input (budget base must be set before promotion)
@@ -81,17 +96,26 @@ export async function runTurn(
   const recentEvents = session.eventLog.readLastUncompressed(
     session.config.compiler.recent_turns
   );
-  const toolDescs = describeTools();
+  const contextEngineEnabled =
+    session.isContextEngineEnabled?.() ?? session.config.context_engine?.enabled ?? false;
+  const toolDescs = describeTools({ contextEngineEnabled });
 
   // Build skills prompt section from runtime
   const skillsSection = session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
   const agentsBudgetRatio =
     session.config.compiler.agents_budget_ratio ?? session.config.compiler.skills_budget_ratio;
 
-  const { prompt: compiledPrompt, metrics: promptMetrics } = compileWithMetrics({
+  const engineConfig = resolveContextEngineConfig(session.config);
+  const checkpointSection =
+    contextEngineEnabled && session.contextEngine
+      ? session.contextEngine.renderCheckpointSection()
+      : null;
+
+  const compileInput = {
     stateGraph: session.stateGraph,
     memoryDigest: session.digest,
     recentEvents,
+    userInput,
     toolSchemas: toolDescs,
     cwd: session.cwd,
     sessionId: session.id,
@@ -99,18 +123,63 @@ export async function runTurn(
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
     agentsContext: session.agentsContext,
     skillsPromptSection: skillsSection,
+    checkpointSection,
     memoriesBudgetRatio: session.config.compiler.memories_budget_ratio,
     agentsBudgetRatio,
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
-  });
+  };
+
+  const useScoredCompiler =
+    contextEngineEnabled && engineConfig.scoring_enabled && session.contextEngine;
+
+  let compiledPrompt: string;
+  let promptMetrics: ReturnType<typeof compileWithMetrics>["metrics"];
+
+  if (useScoredCompiler) {
+    const engineResult = compileEngineWithMetrics({
+      ...compileInput,
+      currentTurn: session.getTurnCount(),
+      turnRecords: session.contextEngine!.ledger.list(),
+      activityEntries: session.contextEngine!.getRecentActivity(),
+      engineConfig,
+    });
+    compiledPrompt = engineResult.prompt;
+    promptMetrics = engineResult.metrics;
+    session.setLastCompileScoreRecords(
+      engineResult.scoreRecords,
+      engineResult.pressureMode,
+      engineResult.pressureRatio,
+    );
+    session.contextEngine!.recordCompileTelemetry({
+      turn: session.getTurnCount(),
+      pressureMode: engineResult.pressureMode,
+      excludedScoredUnits: engineResult.excludedScoredUnits,
+    });
+    if (session.debug && engineResult.scoreRecords.length > 0) {
+      const scoresPath = join(session.promptDir, "scores.jsonl");
+      if (!existsSync(session.promptDir)) {
+        mkdirSync(session.promptDir, { recursive: true });
+      }
+      appendFileSync(
+        scoresPath,
+        engineResult.scoreRecords.map((r) => JSON.stringify(r)).join("\n") + "\n",
+      );
+    }
+  } else {
+    const classic = compileWithMetrics(compileInput);
+    compiledPrompt = classic.prompt;
+    promptMetrics = classic.metrics;
+    session.setLastCompileScoreRecords([], "normal", 0);
+  }
+
   session.setLastCompileMetrics(promptMetrics);
 
   // Track input tokens
   session.recordInputTokens(promptMetrics.totalTokens);
 
-  // 3b. Check if history compression is needed
-  if (session.memoryEnabled && session.memoryStore && promptMetrics.recentTurnsTruncated) {
+  // 3b. Check if history compression is needed (only in non-engine mode — engine uses checkpoint + scoring)
+  if (!contextEngineEnabled && session.memoryEnabled && session.memoryStore && promptMetrics.recentTurnsTruncated) {
     await maybeCompressHistory(session);
   }
 
@@ -291,11 +360,32 @@ export async function runTurn(
 
       toolResults.push({ toolName: tc.toolName, result });
 
+      let promptResultText = toolResultRawText(result);
+      let artifactId: string | undefined;
+      if (session.contextEngine) {
+        const ingested = session.contextEngine.ingestToolResult({
+          sourceTool: tc.toolName,
+          command: toolCommandFromArgs(tc.toolName, tc.args as Record<string, unknown>),
+          rawText: promptResultText,
+          createdTurn: session.getTurnCount(),
+        });
+        promptResultText = ingested.promptText;
+        artifactId = ingested.artifactId;
+      }
+
+      turnRecorder.recordToolCall({
+        tool: tc.toolName,
+        args: tc.args as Record<string, unknown>,
+        result,
+        isError,
+        artifactId,
+      });
+
       history.push({
         role: "toolResult",
         toolCallId: tc.toolCallId,
         toolName: tc.toolName,
-        content: [{ type: "text", text: JSON.stringify(result) }],
+        content: [{ type: "text", text: promptResultText }],
         isError,
         timestamp: Date.now(),
       });
@@ -326,7 +416,10 @@ export async function runTurn(
       fullResponse,
       autoHydrated.length,
       promptMetrics.totalTokens,
-      s
+      turnRecorder,
+      userInput,
+      stateBeforeTurn,
+      s,
     );
   }
 
@@ -353,6 +446,23 @@ export async function runTurn(
   const outputTokens = estimateTokens(fullResponse);
   session.recordOutputTokens(outputTokens);
 
+  // 6b. Backfill deferred distillations and persist ledger + turn digest
+  if (session.contextEngine && stateBeforeTurn) {
+    await session.contextEngine.flushDeferredDistillation();
+    const turnRecord = turnRecorder.toRecord(
+      fullResponse,
+      session.getTurnCount(),
+      promptMetrics.totalTokens + outputTokens,
+    );
+    session.contextEngine.appendTurn(turnRecord);
+    session.contextEngine.processTurnExtraction({
+      userMessage: userInput,
+      record: turnRecord,
+      stateBefore: stateBeforeTurn,
+      stateGraph: session.stateGraph,
+    });
+  }
+
   // 7. Increment turn and run tier management
   session.incrementTurn();
   applyTierManagement(session);
@@ -371,6 +481,9 @@ function finalizeInterruptedTurn(
   partialResponse: string,
   autoHydrated: number,
   promptTokens: number,
+  turnRecorder: TurnRecorder,
+  userInput: string,
+  stateBeforeTurn: ReturnType<ContextEngine["captureStateSnapshot"]> | undefined,
   sink?: TurnUiSink
 ): never {
   const trimmed = partialResponse.trim();
@@ -389,6 +502,22 @@ function finalizeInterruptedTurn(
     actor: "agent",
     payload: { text: messageText },
   });
+
+  if (session.contextEngine && stateBeforeTurn) {
+    void session.contextEngine.flushDeferredDistillation();
+    const turnRecord = turnRecorder.toRecord(
+      messageText,
+      session.getTurnCount(),
+      promptTokens + estimateTokens(trimmed),
+    );
+    session.contextEngine.appendTurn(turnRecord);
+    session.contextEngine.processTurnExtraction({
+      userMessage: userInput,
+      record: turnRecord,
+      stateBefore: stateBeforeTurn,
+      stateGraph: session.stateGraph,
+    });
+  }
 
   session.incrementTurn();
   applyTierManagement(session);
@@ -568,4 +697,20 @@ export function computeMemoryStats(
     promptTokens: promptTokens ?? 0,
     outputTokens: outputTokens ?? 0,
   };
+}
+
+function toolResultRawText(result: unknown): string {
+  if (typeof result === "string") return result;
+  return JSON.stringify(result);
+}
+
+function toolCommandFromArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  if (typeof args.command === "string") return args.command;
+  if (typeof args.path === "string") return args.path;
+  if (typeof args.query === "string") return args.query;
+  if (toolName === "shell" && typeof args.command === "string") return args.command;
+  return undefined;
 }

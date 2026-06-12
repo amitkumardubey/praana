@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMemoryTools } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
+import { ContextEngine } from '../src/context-engine/index.js';
 import { createSystemTools } from '../src/tools/system.js';
 import type { EventLog } from '../src/event-log.js';
 import type { StateGraph } from '../src/state-graph.js';
@@ -301,15 +302,28 @@ describe('Memory Tools (createMemoryTools)', () => {
 // Knowledge Tools Tests
 // ---------------------------------------------------------------------------
 
+function knowledgeToolCtx(overrides: Partial<Parameters<typeof createKnowledgeTools>[0]> = {}) {
+  return {
+    eventLog: mockEventLog(),
+    memoryStore: mockMemoryStore(),
+    memoryEnabled: true,
+    incognito: false,
+    contextEngine: null,
+    getCurrentTurn: () => 0,
+    ...overrides,
+  };
+}
+
 describe('Knowledge Tools (createKnowledgeTools)', () => {
   let eventLog: EventLog;
   let memoryStore: MemoryStore;
   let tools: ReturnType<typeof createKnowledgeTools>;
 
   beforeEach(() => {
-    eventLog = mockEventLog();
-    memoryStore = mockMemoryStore();
-    tools = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: true, incognito: false });
+    const ctx = knowledgeToolCtx();
+    eventLog = ctx.eventLog;
+    memoryStore = ctx.memoryStore!;
+    tools = createKnowledgeTools(ctx);
   });
 
   describe('recall', () => {
@@ -336,13 +350,13 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     });
 
     it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
+      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.recall.execute({ query: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
 
     it('should return error when memory store is null', async () => {
-      const toolsNull = createKnowledgeTools({ eventLog, memoryStore: null, memoryEnabled: true, incognito: false });
+      const toolsNull = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore: null }));
       const result = await toolsNull.recall.execute({ query: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
@@ -409,7 +423,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     });
 
     it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
+      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.remember.execute({ content: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
@@ -419,6 +433,40 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
       const result = await tools.remember.execute({ content: 'test' });
       expect(result.ok).toBe(false);
       expect((result as any).error).toContain('Storage error');
+    });
+  });
+
+  describe('retrieve_artifact', () => {
+    it('retrieves stored artifact content when context engine is enabled', async () => {
+      const engine = ContextEngine.open(':memory:', 'sess-tools', {
+        enabled: true,
+        measurement_mode: false,
+        artifact_inline_threshold: 10,
+        artifact_ttl_turns: 50,
+        distiller: { default_intensity: 'full' },
+        llm_digest: false,
+        activity_log_max_entries: 15,
+        checkpoint_enabled: true,
+        scoring_enabled: true,
+        scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
+        pressure: { compact_at: 0.7, emergency_at: 0.85 },
+      });
+      const ingested = engine.ingestToolResult({
+        sourceTool: 'shell',
+        rawText: 'x'.repeat(500),
+        createdTurn: 1,
+      });
+      const artifactTools = createKnowledgeTools(
+        knowledgeToolCtx({
+          contextEngine: engine,
+          getCurrentTurn: () => 2,
+        }),
+      );
+      const result = await artifactTools.retrieve_artifact.execute({
+        id: ingested.artifactId!,
+      });
+      engine.close();
+      expect(result).toEqual({ ok: true, id: ingested.artifactId, content: 'x'.repeat(500) });
     });
   });
 
@@ -439,13 +487,13 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     });
 
     it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: false, incognito: false });
+      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.forget_memory.execute({ id: 'test' });
       expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
     });
 
     it('should return incognito error when incognito mode', async () => {
-      const toolsIncognito = createKnowledgeTools({ eventLog, memoryStore, memoryEnabled: true, incognito: true });
+      const toolsIncognito = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, incognito: true }));
       const result = await toolsIncognito.forget_memory.execute({ id: 'test' });
       expect(result).toEqual({ ok: false, error: 'Memory is disabled in incognito mode.' });
     });

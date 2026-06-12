@@ -2,14 +2,16 @@ import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
+import type { TurnSearchMatch } from "../context-engine/types.js";
 
 export interface MemoryToolContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
+  searchTurnEvents?: (query: string, limit?: number, currentTurn?: number) => TurnSearchMatch[];
 }
 
 export function createMemoryTools(ctx: MemoryToolContext) {
-  const { eventLog, stateGraph } = ctx;
+  const { eventLog, stateGraph, searchTurnEvents } = ctx;
 
   const logAction = (
     action: string,
@@ -283,10 +285,22 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           .describe("Max matches to return"),
       }),
       execute: async ({ query, kinds, limit }) => {
+        if (searchTurnEvents && !kinds?.length) {
+          const ledgerMatches = searchTurnEvents(query, limit ?? 20);
+          return {
+            ok: true,
+            query,
+            source: "turn_ledger",
+            matchCount: ledgerMatches.length,
+            matches: ledgerMatches,
+          };
+        }
+
         const matches = eventLog.search(query, { kinds, limit: limit ?? 20 });
         return {
           ok: true,
           query,
+          source: "event_log",
           matchCount: matches.length,
           matches: matches.map(({ event, excerpt }) => ({
             event_id: event.event_id,

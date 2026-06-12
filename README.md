@@ -1,8 +1,8 @@
 # ARIA
 
-**A terminal coding agent with adaptive context and persistent memory.**
+**A terminal coding agent with adaptive context, structured checkpoints, and persistent memory.**
 
-ARIA organises working state into three tiers that compress automatically as a session grows — keeping what matters in full view without blowing up the context window. Between sessions it learns from transcripts: extracting decisions, patterns, and mistakes so the next session starts informed instead of blank.
+ARIA organises working state into three tiers that compress automatically as a session grows. A multi-resolution context engine distills tool outputs, tracks decisions and errors across turns, and compiles a scored prompt that keeps what matters in full view without blowing up the context window. Between sessions it learns from transcripts: extracting decisions, patterns, and mistakes so the next session starts informed instead of blank.
 
 > **Status:** v0.3.0 — experimental. The core systems work. Expect rough edges on long or complex tasks.
 
@@ -60,6 +60,20 @@ Or with any other supported provider — see [Provider Support](#provider-suppor
 ---
 
 ## What Makes It Different
+
+### Context Engine — distillation, checkpoint, and scored compilation
+
+Most agents treat context as a flat window. Every tool output, every decision, every error competes equally for the same tokens. As a session grows, the model drowns in history.
+
+ARIA's context engine (enabled via `context_engine.enabled = true`) replaces naive truncation with a multi-resolution approach:
+
+**Distillation** — Tool outputs are compressed at the boundary by specialised distillers (git diff, npm test, tsc errors, ripgrep results, logs). Raw content is stored in an artifact store and retrievable via `retrieve_artifact`. Errors are never compressed.
+
+**Checkpoint** — A structured `SessionCheckpoint` is reconciled after every turn from a deterministic `TurnDigest`. Sections include: active request, session narrative (rolling prose of meaningful turns), plan history (current + superseded with completion hints), constraints (append-only, never dropped), decisions (rationale retained even after age-based compaction), errors (open → full detail, fixed → one-liner), files in play, findings, and recent activity. Casual user preferences matching correction patterns (e.g. "not npm, pnpm") are auto-extracted into constraints. Written from `TurnDigest` — never by the LLM — to prevent drift.
+
+**Scored compilation** — Context units are scored with a 3-term model (pin + recency + relevance) and compiled against budget bands. Pinned content (system frame, checkpoint, last 2 verbatim turns) always fits. Scored content (turn digests, artifact cards, activity entries) fills remaining budget by score. Pressure monitoring triggers compaction or emergency mode when the prompt exceeds thresholds.
+
+When the context engine is disabled, ARIA runs in **classic mode** — full verbatim conversation history, no StateGraph tools, skills loaded as a metadata catalog only. This is the same way other agents like Claude Code and pi work, and serves as the baseline for A/B measurement.
 
 ### Adaptive Context — three-tier working memory
 
@@ -143,6 +157,7 @@ Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, tri
 | `/recall <query>` | Search memory manually |
 | `/stats` | Session metadata plus working/persistent memory stats |
 | `/events` | Last 20 events in the session log |
+| `/why <id>` | Explain why a context unit was included or excluded (requires engine mode) |
 | `/model <name>` | Switch models mid-session |
 | `/sessions` | List past sessions for resuming |
 | `/debug` | Toggle verbose tool tracing (saves compiled prompts to disk) |
@@ -159,6 +174,9 @@ Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, tri
 
 **Cognitive Memory** (cross-session knowledge):
 `recall` · `remember`
+
+**Context Engine** (artifact retrieval and session navigation — engine mode only):
+`retrieve_artifact` · `context_summary` · `search_turn_events` · `event_lineage`
 
 **System** (filesystem and shell):
 `shell` · `read_file` · `write_file` · `edit_file`
@@ -215,6 +233,26 @@ warm_skill_eviction_turns = 20  # warm → cold after N idle turns
 idle_soft_after_turns = 20
 idle_hard_after_turns = 50
 
+[context_engine]
+enabled = false                    # true = engine mode (checkpoint, distillation, scoring)
+measurement_mode = false           # write telemetry in classic mode for A/B comparison
+artifact_inline_threshold = 400    # tokens; below this, output appears verbatim
+artifact_ttl_turns = 50           # turns before artifact eviction
+checkpoint_enabled = true          # SessionCheckpoint: narrative, plan, constraints, decisions w/ rationale
+scoring_enabled = true             # scored multi-resolution compiler
+
+[context_engine.distiller]
+default_intensity = "full"         # lite | full
+
+[context_engine.scoring]
+w_pin = 1.0                        # pinned unit boost
+w_recency = 0.5                    # recency decay weight
+w_relevance = 0.3                  # BM25 relevance weight
+
+[context_engine.pressure]
+compact_at = 0.70                  # pressure ratio for compaction
+emergency_at = 0.85                # pressure ratio for emergency mode
+
 [session]
 log_dir = "~/.aria/sessions"
 ```
@@ -222,18 +260,32 @@ log_dir = "~/.aria/sessions"
 Config is merged from four locations, lowest to highest precedence:
 `~/.aria/aria.config.json` → `~/.aria/config.toml` → `./aria.config.json` → `./aria.config.toml`
 
+**Environment variable overrides:**
+
+| Variable | Overrides |
+|---|---|
+| `ARIA_MODEL` | `llm.model` |
+| `ARIA_SUMMARIZER_MODEL` | summarizer model |
+| `ARIA_CONTEXT_ENGINE` | `context_engine.enabled` |
+| `ARIA_MEASUREMENT_MODE` | `context_engine.measurement_mode` |
+
 ---
 
 ## How It Works
+
+**Engine mode** (`context_engine.enabled = true`):
 
 ```
 User input
   → auto-hydrate peripheral objects matching query keywords
   → match skills (BM25) and update hot/warm/cold residency
-  → compile deterministic prompt:
-      system frame · skills · memory digest · active state · peripheral stubs · recent turns
+  → ingest tool results through distillers (compressed at boundary, raw to artifact store)
+  → compile prompt from budget bands:
+      system frame · skills · checkpoint · verbatim recent turns · scored context · active state · memory digest
   → stream LLM response with tool calls
   → log all events to append-only JSONL
+  → extract TurnDigest (deterministic, no LLM)
+  → reconcile SessionCheckpoint from digest
   → apply tier demotion (idle objects compress)
   → print session banner
 
@@ -241,7 +293,18 @@ Session end (/exit)
   → send transcript to summariser
   → extract learnings (facts, decisions, patterns, mistakes, constraints)
   → store to SQLite with confidence scores
-  → close event log
+  → close event log + context engine
+```
+
+**Classic mode** (`context_engine.enabled = false`):
+
+```
+User input
+  → compile prompt with full verbatim conversation history
+  → stream LLM response with tool calls
+  → log all events to append-only JSONL
+  → apply tier demotion
+  → print session banner
 ```
 
 The context and memory systems are domain-agnostic at their core. Coding is the first application.
@@ -266,6 +329,7 @@ Node 22+. TypeScript throughout.
 
 The core works. What needs to come next, in order:
 
+- **Classic mode implementation** — full verbatim conversation history, no StateGraph, skills as metadata catalog. The A/B measurement baseline.
 - **Global + project recall merge** — query both scopes and combine results with project-aware precedence
 - **Confidence reinforcement** — wire the feedback loop so recalled memories that help get stronger; unused ones fade faster
 - **Multi-file operations** — create multiple files in one turn instead of three

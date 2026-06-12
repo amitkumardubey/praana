@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Context Engine
+- Session checkpoint now retains decision rationale after age-based compaction.
+- Added session narrative section (rolling prose from TurnDigest, replaces volatile).
+- Added plan history with superseded plans and completion hints.
+- Auto-extract implicit constraints from user correction/preference patterns.
+- System frame nudges agent to capture preferences via `add_constraint` / `add_note`.
+
 ## [0.3.0] — 2026-05-30
 
 Phase-0 foundation, stabilization, and UX release.

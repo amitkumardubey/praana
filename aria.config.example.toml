@@ -144,6 +144,63 @@ idle_hard_after_turns = 50
 # Directory where session event logs are stored
 log_dir = "~/.aria/sessions"
 
+[context_engine]
+# Context engine: structured checkpoint, distillation, and scored compilation.
+# When disabled (false), ARIA runs in classic mode — full verbatim conversation
+# history, no StateGraph tools, skills loaded as metadata catalog only.
+#
+# When enabled, SessionCheckpoint is reconciled after every turn from a
+# deterministic TurnDigest (never by the LLM). Checkpoint sections:
+#   - Active request (latest user intent)
+#   - Session narrative (rolling prose from digest data, max 20 entries)
+#   - Plan (current + superseded plans with completion hints)
+#   - Constraints (append-only, never dropped)
+#   - Decisions (rationale retained even after age-based compaction)
+#   - Files in play, findings, errors, recent activity
+# Casual user preferences ("we use pnpm", "let's use JWT") are NOT captured by regex —
+# the system prompt nudge directs the LLM to call add_constraint for those.
+# Only the unambiguous "not X, Y" correction pattern is regex-captured.
+enabled = true
+
+# Write telemetry even when engine is off (for A/B comparison measurement)
+measurement_mode = false
+
+# Tool outputs at or below this token count appear verbatim in the prompt
+artifact_inline_threshold = 400
+
+# Turns without access before an artifact is eligible for eviction
+artifact_ttl_turns = 50
+
+# Enable structured SessionCheckpoint in the prompt (see section list above).
+# Section token budgets are fixed in code: narrative/plan 400 each, decisions 800,
+# findings 300. No per-section config yet.
+checkpoint_enabled = true
+
+# Use scored multi-resolution compiler (engine mode)
+scoring_enabled = true
+
+# Use LLM for ambiguous userIntent extraction (default: first 120 chars)
+llm_digest = false
+
+# Max rolling activity entries kept for checkpoint preview
+activity_log_max_entries = 15
+
+[context_engine.distiller]
+# Distiller compression intensity: "lite" (conservative) or "full" (aggressive)
+default_intensity = "full"
+
+[context_engine.scoring]
+# Scoring weights for context unit selection (3-term model: pin + recency + relevance)
+w_pin = 1.0
+w_recency = 0.5
+w_relevance = 0.3
+
+[context_engine.pressure]
+# Prompt pressure ratio triggers compaction
+compact_at = 0.70
+# Emergency: drop all turn digests, keep checkpoint + verbatim last 2 turns
+emergency_at = 0.85
+
 [ui]
 # Terminal interface: "tui" (Ink chat shell) or "readline" (classic CLI)
 mode = "tui"

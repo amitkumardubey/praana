@@ -1,6 +1,7 @@
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
 import type { MemoryStore } from "../memory/index.js";
+import type { ContextEngine } from "../context-engine/index.js";
 import type { SandboxConfig } from "../types.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
@@ -12,16 +13,26 @@ export interface ToolRegistryContext {
   memoryStore: MemoryStore | null;
   memoryEnabled: boolean;
   incognito: boolean;
+  contextEngine: ContextEngine | null;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
+  getCurrentTurn?: () => number;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
   const memoryTools = createMemoryTools({
     eventLog: ctx.eventLog,
     stateGraph: ctx.stateGraph,
+    searchTurnEvents: ctx.contextEngine
+      ? (query, limit, currentTurn) =>
+          ctx.contextEngine!.searchTurnEvents(
+            query,
+            limit,
+            currentTurn ?? ctx.getCurrentTurn?.() ?? 0,
+          )
+      : undefined,
   });
 
   const knowledgeTools = createKnowledgeTools({
@@ -29,6 +40,8 @@ export function createAllTools(ctx: ToolRegistryContext) {
     memoryStore: ctx.memoryStore,
     memoryEnabled: ctx.memoryEnabled,
     incognito: ctx.incognito,
+    contextEngine: ctx.contextEngine,
+    getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const systemTools = createSystemTools({
     cwd: ctx.cwd,
@@ -44,9 +57,13 @@ export function createAllTools(ctx: ToolRegistryContext) {
   };
 }
 
+export interface DescribeToolsOptions {
+  contextEngineEnabled?: boolean;
+}
+
 /** Build a human-readable list of tool descriptions for the system prompt. */
-export function describeTools(): string[] {
-  return [
+export function describeTools(options?: DescribeToolsOptions): string[] {
+  const tools = [
     "create_task(title, description?) — Create a new task",
     "complete_task(id) — Mark a task as done",
     "retract_task(id) — Retract a task/object from working memory (tombstone)",
@@ -70,4 +87,15 @@ export function describeTools(): string[] {
     "batch_write(files) — Write multiple files atomically",
     "batch_edit(edits) — Edit multiple files atomically",
   ];
+
+  if (options?.contextEngineEnabled) {
+    tools.push(
+      "search_turn_events(query, limit?) — BM25 search over structured turn ledger",
+      'retrieve_artifact(id, grep?, lineStart?, lineEnd?, jsonPath?) — Retrieve full raw content for a stored tool-output artifact',
+      "context_summary() — Current session checkpoint, open errors, and recent activity",
+      "event_lineage(artifactId) — Trace artifact provenance, related decisions, and linked artifacts/files",
+    );
+  }
+
+  return tools;
 }

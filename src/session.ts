@@ -2,7 +2,7 @@ import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
@@ -19,6 +19,14 @@ import {
   type SessionEvent,
 } from "./memory/index.js";
 import { runConsolidation, type ConsolidationConfig } from "./memory/consolidation.js";
+import {
+  ContextEngine,
+  isContextEngineEnabled,
+  renderSessionTelemetrySummary,
+  resolveContextDbPath,
+  resolveContextEngineConfig,
+} from "./context-engine/index.js";
+import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 
 export class Session {
   id: string;
@@ -33,14 +41,19 @@ export class Session {
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
+  contextEngine: ContextEngine | null = null;
   debug = false;
   private ended = false;
   private readonly startedAt: number;
   private turnCount = 0;
   private modelOverride: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
+  private lastCompileScoreRecords: CompileScoreRecord[] = [];
+  private lastPressureMode: PressureMode = "normal";
+  private lastPressureRatio = 0;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
+  private lastUserInput = "";
 
   private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
@@ -85,6 +98,7 @@ export class Session {
     }
 
     await initSkillRuntime(session, cfg, cwd);
+    initContextEngine(session);
 
     // Auto-load project context (stack fingerprint)
     const projectContext = buildProjectContext(cwd);
@@ -177,6 +191,7 @@ export class Session {
     }
 
     await initSkillRuntime(session, cfg, cwd);
+    initContextEngine(session);
 
     const allEvents = session.eventLog.readAll();
 
@@ -260,6 +275,14 @@ export class Session {
   }
 
 
+  isContextEngineEnabled(): boolean {
+    return isContextEngineEnabled(this.config);
+  }
+
+  getTurnCount(): number {
+    return this.turnCount;
+  }
+
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
@@ -267,10 +290,6 @@ export class Session {
 
   clearState(): void {
     this.stateGraph.clear();
-  }
-
-  getTurnCount(): number {
-    return this.turnCount;
   }
 
   getStartedAt(): number {
@@ -364,6 +383,40 @@ export class Session {
 
   getLastCompileMetrics(): CompileMetrics | null {
     return this.lastCompileMetrics;
+  }
+
+  setLastCompileScoreRecords(
+    records: CompileScoreRecord[],
+    pressureMode: PressureMode,
+    pressureRatio: number,
+  ): void {
+    this.lastCompileScoreRecords = records;
+    this.lastPressureMode = pressureMode;
+    this.lastPressureRatio = pressureRatio;
+  }
+
+  getLastCompileScoreRecords(): CompileScoreRecord[] {
+    return this.lastCompileScoreRecords;
+  }
+
+  getCompileScoreRecord(unitId: string): CompileScoreRecord | undefined {
+    return this.lastCompileScoreRecords.find((r) => r.unitId === unitId);
+  }
+
+  getLastPressureMode(): PressureMode {
+    return this.lastPressureMode;
+  }
+
+  getLastPressureRatio(): number {
+    return this.lastPressureRatio;
+  }
+
+  setLastUserInput(input: string): void {
+    this.lastUserInput = input;
+  }
+
+  getLastUserInput(): string {
+    return this.lastUserInput;
   }
 
   getMemoryStats(): {
@@ -544,6 +597,22 @@ export class Session {
       }, consolidationConfig.run_delay_seconds * 1000);
     }
 
+    if (this.contextEngine) {
+      try {
+        const engineConfig = resolveContextEngineConfig(this.config);
+        if (this.debug || engineConfig.measurement_mode) {
+          const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
+          console.log(chalk.cyan(renderSessionTelemetrySummary(summary)));
+        }
+        this.contextEngine.runShutdownMaintenance(this.getTurnCount());
+      } catch (err) {
+        console.warn("[context-engine] Shutdown maintenance failed:", (err as Error).message);
+      } finally {
+        this.contextEngine.close();
+        this.contextEngine = null;
+      }
+    }
+
     this.eventLog.close();
   }
 
@@ -566,6 +635,37 @@ export class Session {
 }
 
 // ---- Helpers ----
+
+function initContextEngine(session: Session): void {
+  if (!session.isContextEngineEnabled()) return;
+
+  try {
+    const dbPath = resolveContextDbPath(session.config, session.cwd);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    session.contextEngine = ContextEngine.open(
+      dbPath,
+      session.id,
+      resolveContextEngineConfig(session.config),
+    );
+    const evicted = session.contextEngine.runStartupMaintenance(session.getTurnCount());
+    const migrated = session.contextEngine.migrateLedgerFromEvents(
+      session.eventLog.readAll(),
+    );
+    if (evicted > 0) {
+      console.log(chalk.cyan(`⚙️  context engine  evicted ${evicted} stale artifact(s)`));
+    } else if (migrated > 0) {
+      console.log(chalk.cyan(`⚙️  context engine  migrated ${migrated} turn(s) to ledger`));
+    } else {
+      console.log(chalk.cyan("⚙️  context engine  enabled"));
+    }
+  } catch (err) {
+    console.warn(
+      "[context-engine] Failed to initialize, continuing without:",
+      (err as Error).message,
+    );
+    session.contextEngine = null;
+  }
+}
 
 function hashString(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 12);

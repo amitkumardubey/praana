@@ -174,16 +174,21 @@ On session start, `SkillRuntime` discovers `SKILL.md` files from project and use
 
 ### Turn flow (per turn)
 
+Engine mode (`context_engine.enabled = true`):
+
 ```
 User input
   → auto-hydrate matching peripheral state (keyword matching)
   → skill matching (BM25) + residency promotion/demotion
-  → compile prompt: system frame | skills | memory digest | active state | stubs | recent turns
+  → compile prompt: system frame | skills | checkpoint | verbatim turns | scored context | active state | memory digest
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
+  → extract TurnDigest (deterministic) + reconcile SessionCheckpoint (narrative, plan, constraints, decisions w/ rationale)
   → increment turn count, run applyTierManagement()
   → print memory banner
 ```
+
+Classic mode uses `compiler.ts` with full recent-turns history instead of checkpoint/scoring.
 
 ### Memory scopes
 

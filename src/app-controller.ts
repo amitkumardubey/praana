@@ -129,21 +129,25 @@ export class AppController {
       spinnerStopped = true;
     };
 
+    const wrappedSink: TurnUiSink = {
+      ...uiSink,
+      onTextDelta: (delta) => {
+        stopSpinnerOnce();
+        uiSink.onTextDelta?.(delta);
+      },
+      onThinkingDelta: (delta) => {
+        stopSpinnerOnce();
+        uiSink.onThinkingDelta?.(delta);
+      },
+      onToolCallsStart: () => {
+        uiSink.onToolCallsStart?.();
+      },
+    };
+
     try {
       await runTurn(this.session, input, this.currentModel, {
         signal,
-        sink: uiSink,
-        onTextDelta: (delta) => {
-          stopSpinnerOnce();
-          uiSink.onTextDelta?.(delta);
-        },
-        onThinkingDelta: (delta) => {
-          stopSpinnerOnce();
-          uiSink.onThinkingDelta?.(delta);
-        },
-        onToolCallsStart: () => {
-          uiSink.onToolCallsStart?.();
-        },
+        sink: wrappedSink,
       });
       stopSpinnerOnce();
     } finally {

@@ -202,6 +202,45 @@ export interface UiConfig {
   screen: UiScreenMode;
 }
 
+export type DistillerIntensity = "lite" | "full";
+
+export interface ContextEngineDistillerConfig {
+  default_intensity: DistillerIntensity;
+}
+
+export interface ContextEngineScoringConfig {
+  w_pin: number;
+  w_recency: number;
+  w_relevance: number;
+}
+
+export interface ContextEnginePressureConfig {
+  compact_at: number;
+  emergency_at: number;
+}
+
+export interface ContextEngineConfig {
+  /** false = classic mode (full verbatim history, no StateGraph, skill metadata only). */
+  enabled: boolean;
+  /** Write context-engine telemetry when engine is off (A/B comparison). */
+  measurement_mode: boolean;
+  /** Tool outputs at or below this token count appear verbatim in the prompt. */
+  artifact_inline_threshold: number;
+  /** Turns without access before an artifact is eligible for eviction. */
+  artifact_ttl_turns: number;
+  distiller: ContextEngineDistillerConfig;
+  /** Use LLM for ambiguous userIntent extraction (default: first 120 chars). */
+  llm_digest: boolean;
+  /** Max rolling activity entries kept for checkpoint preview. */
+  activity_log_max_entries: number;
+  /** Enable structured SessionCheckpoint in the prompt. */
+  checkpoint_enabled: boolean;
+  /** Use scored multi-resolution compiler (engine mode). */
+  scoring_enabled: boolean;
+  scoring: ContextEngineScoringConfig;
+  pressure: ContextEnginePressureConfig;
+}
+
 export interface AriaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -213,6 +252,7 @@ export interface AriaConfig {
   edit: EditConfig;
   skills: SkillsConfig;
   ui: UiConfig;
+  context_engine: ContextEngineConfig;
 }
 
 // ---- Session Meta ----

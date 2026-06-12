@@ -64,6 +64,28 @@ const DEFAULT_CONFIG: AriaConfig = {
     mode: "tui",
     screen: "preserve",
   },
+  context_engine: {
+    enabled: true,
+    measurement_mode: false,
+    artifact_inline_threshold: 400,
+    artifact_ttl_turns: 50,
+    distiller: {
+      default_intensity: "full",
+    },
+    llm_digest: false,
+    activity_log_max_entries: 15,
+    checkpoint_enabled: true,
+    scoring_enabled: true,
+    scoring: {
+      w_pin: 1.0,
+      w_recency: 0.5,
+      w_relevance: 0.3,
+    },
+    pressure: {
+      compact_at: 0.7,
+      emergency_at: 0.85,
+    },
+  },
 };
 
 function expandHome(p: string): string {
@@ -182,6 +204,16 @@ export function loadConfig(configPath?: string): AriaConfig {
 
   // Environment variable overrides
   if (process.env.ARIA_MODEL) merged.llm.model = process.env.ARIA_MODEL;
+  if (process.env.ARIA_CONTEXT_ENGINE !== undefined) {
+    merged.context_engine.enabled =
+      process.env.ARIA_CONTEXT_ENGINE === "true" ||
+      process.env.ARIA_CONTEXT_ENGINE === "1";
+  }
+  if (process.env.ARIA_MEASUREMENT_MODE !== undefined) {
+    merged.context_engine.measurement_mode =
+      process.env.ARIA_MEASUREMENT_MODE === "true" ||
+      process.env.ARIA_MEASUREMENT_MODE === "1";
+  }
   
   // Expand paths
   merged.session.log_dir = expandHome(merged.session.log_dir);
@@ -260,6 +292,76 @@ function validateConfig(config: AriaConfig): AriaConfig {
   ) {
     console.warn("[config] Invalid compiler.compression_flush_fraction (must be 0.05–0.5), using default 0.30");
     out.compiler.compression_flush_fraction = DEFAULT_CONFIG.compiler.compression_flush_fraction;
+  }
+
+  if (!out.context_engine) {
+    out.context_engine = { ...DEFAULT_CONFIG.context_engine };
+  }
+  if (typeof out.context_engine.enabled !== "boolean") {
+    out.context_engine.enabled = DEFAULT_CONFIG.context_engine.enabled;
+  }
+  if (typeof out.context_engine.measurement_mode !== "boolean") {
+    out.context_engine.measurement_mode = DEFAULT_CONFIG.context_engine.measurement_mode;
+  }
+  if (
+    !Number.isFinite(out.context_engine.artifact_inline_threshold) ||
+    out.context_engine.artifact_inline_threshold < 0
+  ) {
+    out.context_engine.artifact_inline_threshold =
+      DEFAULT_CONFIG.context_engine.artifact_inline_threshold;
+  }
+  if (
+    !Number.isFinite(out.context_engine.artifact_ttl_turns) ||
+    out.context_engine.artifact_ttl_turns < 1
+  ) {
+    out.context_engine.artifact_ttl_turns = DEFAULT_CONFIG.context_engine.artifact_ttl_turns;
+  }
+  if (!out.context_engine.distiller) {
+    out.context_engine.distiller = { ...DEFAULT_CONFIG.context_engine.distiller };
+  }
+  const intensity = out.context_engine.distiller.default_intensity;
+  if (intensity !== "lite" && intensity !== "full") {
+    out.context_engine.distiller.default_intensity =
+      DEFAULT_CONFIG.context_engine.distiller.default_intensity;
+  }
+  if (typeof out.context_engine.llm_digest !== "boolean") {
+    out.context_engine.llm_digest = DEFAULT_CONFIG.context_engine.llm_digest;
+  }
+  if (
+    !Number.isFinite(out.context_engine.activity_log_max_entries) ||
+    out.context_engine.activity_log_max_entries < 1
+  ) {
+    out.context_engine.activity_log_max_entries =
+      DEFAULT_CONFIG.context_engine.activity_log_max_entries;
+  }
+  if (typeof out.context_engine.checkpoint_enabled !== "boolean") {
+    out.context_engine.checkpoint_enabled =
+      DEFAULT_CONFIG.context_engine.checkpoint_enabled;
+  }
+  if (typeof out.context_engine.scoring_enabled !== "boolean") {
+    out.context_engine.scoring_enabled =
+      DEFAULT_CONFIG.context_engine.scoring_enabled;
+  }
+  if (!out.context_engine.scoring) {
+    out.context_engine.scoring = { ...DEFAULT_CONFIG.context_engine.scoring };
+  } else {
+    for (const key of ["w_pin", "w_recency", "w_relevance"] as const) {
+      if (!Number.isFinite(out.context_engine.scoring[key])) {
+        out.context_engine.scoring[key] = DEFAULT_CONFIG.context_engine.scoring[key];
+      }
+    }
+  }
+  if (!out.context_engine.pressure) {
+    out.context_engine.pressure = { ...DEFAULT_CONFIG.context_engine.pressure };
+  } else {
+    if (!Number.isFinite(out.context_engine.pressure.compact_at)) {
+      out.context_engine.pressure.compact_at =
+        DEFAULT_CONFIG.context_engine.pressure.compact_at;
+    }
+    if (!Number.isFinite(out.context_engine.pressure.emergency_at)) {
+      out.context_engine.pressure.emergency_at =
+        DEFAULT_CONFIG.context_engine.pressure.emergency_at;
+    }
   }
 
   // Shell sandbox config validation

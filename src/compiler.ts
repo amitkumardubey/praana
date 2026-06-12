@@ -13,6 +13,7 @@ export interface CompileInput {
   recentTurnsTokenBudget?: number;
   agentsContext?: string | null;
   skillsPromptSection?: string | null;
+  checkpointSection?: string | null;
   memoriesBudgetRatio?: number;
   agentsBudgetRatio?: number;
   skillsSectionBudgetRatio?: number;
@@ -25,6 +26,7 @@ export interface CompileMetrics {
   systemFrameTokens: number;
   agentsContextTokens: number;  // tokens used by AGENTS.md / project context
   skillsCatalogTokens: number;  // tokens used by skills section in prompt
+  checkpointTokens: number;
   crossSessionTokens: number;
   activeStateTokens: number;
   peripheralStubsTokens: number;
@@ -151,6 +153,14 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
 
+  // 1c. SESSION CHECKPOINT
+  let checkpointSection = "";
+  if (input.checkpointSection?.trim()) {
+    checkpointSection = input.checkpointSection.trim();
+    sections.push(checkpointSection);
+  }
+  metrics.checkpointTokens = checkpointSection ? estTokens(checkpointSection) : 0;
+
   // 2. CROSS-SESSION MEMORY
   let crossSection = "";
   if (input.memoryDigest && input.memoryDigest.trim()) {
@@ -213,7 +223,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
 
 // ---- Section builders ----
 
-function buildSystemFrame(
+export function buildSystemFrame(
   cwd: string,
   sessionId: string,
   toolSchemas: string[],
@@ -252,6 +262,19 @@ function buildSystemFrame(
     "3. If evidence is missing or stale, call search_session_log or re-read the source.",
     "4. Only assert after you have explicit evidence from this repository context.",
     "",
+    "## Implicit Knowledge Capture",
+    "",
+    "When the user mentions a preference, convention, or project fact without explicitly",
+    "requesting a state object, capture it proactively. This is critical for long sessions",
+    "where casual remarks get lost after a few turns. Examples:",
+    "- User says \"let's use pnpm\" → call add_constraint(\"Use pnpm for package management\")",
+    "- User says \"not npm, pnpm\" → call add_constraint(\"Use pnpm, not npm\")",
+    "- User corrects you → call add_note(\"User corrected X to Y\")",
+    "- User mentions a convention → call add_constraint",
+    "- User says \"I prefer\" / \"let's do\" / \"how about\" / \"we always\" → call add_constraint",
+    "- User says \"never\" / \"don't\" / \"make sure\" → call add_constraint",
+    "Don't over-capture trivial remarks. Capture anything that would prevent a future mistake.",
+    "",
     "## Memory Management",
     "",
     "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
@@ -271,7 +294,7 @@ function buildSystemFrame(
   return lines.join("\n");
 }
 
-function buildCrossSessionMemory(digest: string): string {
+export function buildCrossSessionMemory(digest: string): string {
   return [
     "# Cross-Session Memory",
     "",
@@ -281,7 +304,7 @@ function buildCrossSessionMemory(digest: string): string {
   ].join("\n");
 }
 
-function buildActiveState(stateGraph: StateGraph): string {
+export function buildActiveState(stateGraph: StateGraph): string {
   const active = stateGraph.getActive();
   if (active.length === 0) {
     return "# Active State\n\nNo active state.";
@@ -302,7 +325,7 @@ function buildActiveState(stateGraph: StateGraph): string {
   return lines.join("\n");
 }
 
-function buildPeripheralStubs(stateGraph: StateGraph): string | null {
+export function buildPeripheralStubs(stateGraph: StateGraph): string | null {
   const peripheral = stateGraph.getPeripheral();
   if (peripheral.length === 0) return null;
 
@@ -438,7 +461,7 @@ function getToolResultTruncation(toolName?: string): number {
 // ---- Helpers ----
 
 /** Build a brief summary of working memory state for the system prompt */
-function buildStateSummary(stateGraph: StateGraph): string {
+export function buildStateSummary(stateGraph: StateGraph): string {
   const active = stateGraph.getActive();
   const peripheral = stateGraph.getPeripheral();
 
@@ -529,7 +552,7 @@ function truncateText(text: unknown, maxLen: number): string {
   return s.slice(0, maxLen) + "...";
 }
 
-function trimSectionToTokenBudget(
+export function trimSectionToTokenBudget(
   text: string,
   maxTokens: number,
   truncationNote = "memory section truncated to token budget",
@@ -553,7 +576,7 @@ function trimSectionToTokenBudget(
   return { text: kept.join("\n"), truncated: false };
 }
 
-function trimAgentsContext(
+export function trimAgentsContext(
   agentsContext: string | null | undefined,
   maxTokens: number,
 ): { text: string | null; truncated: boolean } {

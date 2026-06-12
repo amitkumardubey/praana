@@ -135,6 +135,20 @@ function makeConfig(overrides?: Partial<AriaConfig>): AriaConfig {
       warm_skill_eviction_turns: 20,
       max_depth: 6,
     },
+    ui: { mode: "readline", screen: "preserve" },
+    context_engine: {
+      enabled: false,
+      measurement_mode: false,
+      artifact_inline_threshold: 400,
+      artifact_ttl_turns: 50,
+      distiller: { default_intensity: "full" },
+      llm_digest: false,
+      activity_log_max_entries: 15,
+      checkpoint_enabled: true,
+      scoring_enabled: true,
+      scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
+      pressure: { compact_at: 0.7, emergency_at: 0.85 },
+    },
     ...overrides,
   };
 }
@@ -170,6 +184,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     memoryStore: null,
     memoryEnabled: false,
     incognito: false,
+    contextEngine: null,
     digest: null,
     agentsContext: null,
     debug: false,
@@ -193,7 +208,15 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     },
     setLastCompileMetrics(m: any) { this._lastCompileMetrics = m; },
     getLastCompileMetrics() { return this._lastCompileMetrics; },
+    setLastCompileScoreRecords() {},
+    getLastCompileScoreRecords() { return []; },
+    getCompileScoreRecord() { return undefined; },
+    getLastPressureMode() { return "normal"; },
+    getLastPressureRatio() { return 0; },
+    setLastUserInput() {},
+    getLastUserInput() { return ""; },
     isIncognito() { return this.incognito ?? false; },
+    isContextEngineEnabled() { return this.config.context_engine?.enabled ?? false; },
     _inputTokens: 0,
     _outputTokens: 0,
     recordInputTokens(count: number) { this._inputTokens += count; },
@@ -583,7 +606,9 @@ describe("runTurn", () => {
     const session = makeMockSession();
     const onToolCallsStart = vi.fn();
 
-    await runTurn(session, "do something", undefined, { onToolCallsStart });
+    await runTurn(session, "do something", undefined, {
+      sink: { onToolCallsStart },
+    });
 
     expect(onToolCallsStart).toHaveBeenCalledTimes(1);
   });
