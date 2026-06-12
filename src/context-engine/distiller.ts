@@ -8,7 +8,7 @@ export interface Distiller {
   readonly name: string;
   readonly contentTypes: ContentType[];
   readonly mode: DistillerMode;
-  distill(input: string, intensity: DistillerIntensity): string;
+  distill(input: string, intensity: DistillerIntensity, contentType?: ContentType): string;
 }
 
 export interface DistillResult {
@@ -70,7 +70,7 @@ export class DistillerRegistry {
         deferred: false,
       };
     }
-    const summary = distiller.distill(input, intensity);
+    const summary = distiller.distill(input, intensity, contentType);
     return {
       summary,
       distillerName: distiller.name,
@@ -95,7 +95,7 @@ export class DistillerRegistry {
         distillerName: distiller.name,
         backfill: async () => {
           const start = performance.now();
-          const summary = distiller.distill(input, intensity);
+          const summary = distiller.distill(input, intensity, contentType);
           return {
             summary,
             distillerName: distiller.name,

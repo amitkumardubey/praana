@@ -15,6 +15,14 @@ export class DiffDistiller implements Distiller {
     let inHunk = false;
     let hunkBuffer: string[] = [];
     let hunkHasChange = false;
+    let metadataBuffer: string[] = [];
+
+    const flushMetadata = () => {
+      if (metadataBuffer.length > 0) {
+        out.push(...metadataBuffer);
+        metadataBuffer = [];
+      }
+    };
 
     const flushHunk = () => {
       if (!hunkHasChange) {
@@ -22,6 +30,7 @@ export class DiffDistiller implements Distiller {
         hunkBuffer = [];
         return;
       }
+      flushMetadata();
       const compact = compactHunk(hunkBuffer, context);
       if (compact.length > 0) out.push(...compact);
       inHunk = false;
@@ -32,11 +41,14 @@ export class DiffDistiller implements Distiller {
     for (const line of lines) {
       if (line.startsWith("diff --git ")) {
         flushHunk();
+        flushMetadata();
         out.push(line);
+        metadataBuffer = [];
         continue;
       }
       if (line.startsWith("@@")) {
         flushHunk();
+        flushMetadata();
         inHunk = true;
         hunkBuffer = [line];
         hunkHasChange = false;
@@ -50,13 +62,35 @@ export class DiffDistiller implements Distiller {
       }
       if (intensity !== "full") {
         out.push(line);
+      } else if (isDiffMetadata(line)) {
+        metadataBuffer.push(line);
       }
     }
     flushHunk();
+    flushMetadata();
 
     if (out.length === 0) return input.slice(0, 1200);
     return out.join("\n");
   }
+}
+
+function isDiffMetadata(line: string): boolean {
+  return (
+    line.startsWith("index ") ||
+    line.startsWith("old mode ") ||
+    line.startsWith("new mode ") ||
+    line.startsWith("deleted file mode ") ||
+    line.startsWith("new file mode ") ||
+    line.startsWith("similarity index ") ||
+    line.startsWith("dissimilarity index ") ||
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ") ||
+    line.startsWith("copy from ") ||
+    line.startsWith("copy to ") ||
+    line.startsWith("Binary files ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ")
+  );
 }
 
 function compactHunk(lines: string[], context: number): string[] {

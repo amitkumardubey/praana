@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import { createDefaultDistillerRegistry } from "../distillers/index.js";
 import { classifyContentType } from "./classify.js";
+import { buildPendingSummary } from "./distiller.js";
 import type { DistillerRegistry, DistillDeferredResult, DistillResult } from "./distiller.js";
 import {
   evictStaleArtifacts,
@@ -59,6 +60,43 @@ function extractJsonPath(text: string, jsonPath: string): string {
 function savingsPct(inputTokens: number, outputTokens: number): number {
   if (inputTokens <= 0) return 0;
   return Math.max(0, (1 - outputTokens / inputTokens) * 100);
+}
+
+function inferContentTypeFromTool(
+  sourceTool: string,
+  command: string | undefined,
+): ContentType | null {
+  if (!command) return null;
+  const normalized = command.trim();
+  if (!normalized) return null;
+
+  if (
+    sourceTool === "shell" &&
+    /(^|\s)(rg|grep|ag|ack)(\s|$)/.test(normalized)
+  ) {
+    return "search_results";
+  }
+  if (sourceTool === "shell" && /(^|\s)git\s+(diff|show)(\s|$)/.test(normalized)) {
+    return "diff";
+  }
+  if (
+    sourceTool === "shell" &&
+    /(^|\s)(npm|pnpm|yarn|bun)\s+(run\s+)?(test|vitest|jest)(\s|$|:)/.test(
+      normalized,
+    )
+  ) {
+    return "test_output";
+  }
+  if (
+    sourceTool === "shell" &&
+    /(^|\s)(tsc|vue-tsc|npm\s+run\s+(build|typecheck)|pnpm\s+(build|typecheck))(\s|$)/.test(
+      normalized,
+    )
+  ) {
+    return "build_output";
+  }
+
+  return null;
 }
 
 interface PendingBackfill {
@@ -119,7 +157,17 @@ export class ArtifactStore {
   async flushDeferredDistillation(): Promise<number> {
     const jobs = this.pendingBackfills.splice(0);
     for (const job of jobs) {
-      const result = await job.backfill();
+      let result: DistillResult;
+      try {
+        result = await job.backfill();
+      } catch (err) {
+        result = {
+          summary: `[compression failed: ${(err as Error).message ?? "unknown error"}]\n${buildPendingSummary()}`,
+          distillerName: "failed-deferred",
+          execTimeMs: 0,
+          deferred: true,
+        };
+      }
       updateArtifactSummary(this.db, job.artifactId, result.summary);
       this.recordDistillerStat({
         sourceTool: job.sourceTool,
@@ -135,7 +183,10 @@ export class ArtifactStore {
   }
 
   ingestToolResult(input: IngestToolResultInput): IngestToolResultOutput {
-    const contentType = input.contentType ?? classifyContentType(input.rawText);
+    const contentType =
+      input.contentType ??
+      inferContentTypeFromTool(input.sourceTool, input.command) ??
+      classifyContentType(input.rawText);
     const rawTokens = estimateTokens(input.rawText);
     const inlineThreshold = this.config.artifact_inline_threshold;
 
