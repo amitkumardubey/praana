@@ -449,6 +449,9 @@ export async function runTurn(
         payload: { tool: tc.toolName, result },
       });
 
+      // Notify UI sink of tool result for distinct rendering (e.g. TUI)
+      s.onToolResult?.(tc.toolName, promptResultText);
+
       if (options?.signal?.aborted) {
         interrupted = true;
         break;

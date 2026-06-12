@@ -1,6 +1,6 @@
 import { summarizeArgs } from "../../tool-summary.js";
 
-export type TranscriptRole = "user" | "assistant" | "system" | "tool" | "thinking";
+export type TranscriptRole = "user" | "assistant" | "system" | "tool" | "thinking" | "tool_result";
 
 export interface TranscriptEntry {
   id: string;
@@ -28,6 +28,7 @@ export type TranscriptAction =
   | { type: "thinking_delta"; delta: string }
   | { type: "thinking_close" }
   | { type: "tool_call"; toolName: string; args: Record<string, unknown> }
+  | { type: "tool_result"; toolName: string; resultText: string }
   | { type: "system_lines"; lines: string[] }
   | { type: "memory_banner"; text: string }
   | { type: "interrupted" }
@@ -109,7 +110,12 @@ export function transcriptReducer(
     }
 
     case "assistant_complete": {
+      // If there's no live entry or a thinking entry, no-op
       if (!state.live || state.liveKind !== "assistant") return state;
+      // If the live assistant entry has no text, silently drop it
+      if (!state.live.text.trim()) {
+        return { ...state, live: null, liveKind: null };
+      }
       return {
         ...state,
         completed: [...state.completed, state.live],
@@ -140,20 +146,47 @@ export function transcriptReducer(
       if (!text) {
         return { ...state, live: null, liveKind: null };
       }
-      return {
+      // Freeze thinking to completed and immediately create an empty assistant
+      // placeholder so the live area is never null (prevents flash when tools start).
+      const frozen = {
         ...state,
         completed: [...state.completed, state.live],
         live: null,
         liveKind: null,
       };
+      const [id, s] = nextId(frozen);
+      return {
+        ...s,
+        liveKind: "assistant",
+        live: { id, role: "assistant", text: "", group: state.groupCounter },
+      };
     }
 
     case "tool_call": {
       const summary = summarizeArgs(action.toolName, action.args);
-      return pushCompleted(freezeLive(state), {
+      // thinking_close already handles freezing thinking + creating placeholder.
+      // But if live is still null (no thinking was active), create placeholder here.
+      let base = state;
+      if (!base.live) {
+        const [id, s] = nextId(base);
+        base = {
+          ...s,
+          liveKind: "assistant",
+          live: { id, role: "assistant", text: "", group: state.groupCounter },
+        };
+      }
+      return pushCompleted(base, {
         role: "tool",
         toolName: action.toolName,
         text: summary ? `${action.toolName} :: ${summary}` : action.toolName,
+      });
+    }
+
+    case "tool_result": {
+      return pushCompleted(state, {
+        role: "tool_result",
+        toolName: action.toolName,
+        text: action.resultText,
       });
     }
 

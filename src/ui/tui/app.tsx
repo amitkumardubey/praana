@@ -134,6 +134,7 @@ export function TuiApp({
 
       try {
         await controller.runUserTurn(trimmed, sink);
+        sink.flushText?.();
         dispatch({ type: "assistant_complete" });
       } catch (err) {
         if (err instanceof TurnAbortedError) {
@@ -210,9 +211,13 @@ export function TuiApp({
           <TranscriptLine key={entry.id} entry={entry} />
         ))}
 
-        {/* Live entry and busy indicator follow the window */}
-        {transcript.live && <TranscriptLine entry={transcript.live} />}
-        {transcript.busy && !transcript.live && <BusyIndicator />}
+        {/* Live entry — placeholder keeps live non-null during tool transitions,
+            so BusyIndicator only shows during the initial loading gap at turn start. */}
+        {transcript.live ? (
+          <TranscriptLine entry={transcript.live} />
+        ) : transcript.busy ? (
+          <BusyIndicator />
+        ) : null}
       </Box>
       <StatusBarView status={status} />
       <Box padding={1} gap={1}>

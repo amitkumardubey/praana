@@ -16,6 +16,8 @@ export interface TurnUiSink {
   onThinkingDelta?(delta: string): void;
   onToolCallsStart?(): void;
   onToolCall?(toolName: string, args: Record<string, unknown>): void;
+  /** Notify UI of the raw tool result text for rendering as a distinct block. */
+  onToolResult?(toolName: string, resultText: string): void;
   onDebug?(message: string): void;
   onDebugBlock?(
     stepIndex: number,
@@ -27,6 +29,9 @@ export interface TurnUiSink {
   onSpinnerStop?(): void;
   onNewline?(): void;
   onFallback?(text: string): void;
+  /** Flush any buffered text before dispatching terminal actions (e.g. assistant_complete).
+   *  Used by throttled sinks to ensure no text is lost. */
+  flushText?(): void;
 }
 
 /** Default sink: streaming callbacks + legacy terminal helpers. */
@@ -43,6 +48,9 @@ export function createDefaultTurnSink(options?: {
     onThinkingDelta: (delta) => options?.onThinkingDelta?.(delta),
     onToolCallsStart: () => options?.onToolCallsStart?.(),
     onToolCall: (toolName, args) => printToolCall(toolName, args),
+    onToolResult: () => {
+      /* terminal mode doesn't need a separate result block; it streams naturally */
+    },
     onDebug: (message) => printDebug(message),
     onDebugBlock: (stepIndex, toolCalls, toolResults) =>
       printDebugBlock(stepIndex, toolCalls, toolResults),
