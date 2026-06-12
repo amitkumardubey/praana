@@ -48,6 +48,7 @@ import type {
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
 import { effectiveConfidence, digestScore } from "./confidence.js";
+import { getAppLogger } from "../logger.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -128,7 +129,7 @@ export class MemoryStore {
 
     const pruned = await this.prune();
     if (pruned > 0) {
-      console.log(`[memory] Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
+      getAppLogger().child("memory").info(`Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
     }
 
     startSessionRow(this.db, {
@@ -156,7 +157,7 @@ export class MemoryStore {
         }
       } catch (err) {
         if (isAbortLikeError(err)) {
-          console.warn("[memory] Session-end summarizer aborted; skipping learnings for this session.");
+          getAppLogger().child("memory").warn("Session-end summarizer aborted; skipping learnings for this session");
           return;
         }
         throw err;
@@ -182,7 +183,7 @@ export class MemoryStore {
       return facts.length;
     } catch (err) {
       if (isAbortLikeError(err)) {
-        console.warn("[memory] Turn compression aborted; skipping.");
+        getAppLogger().child("memory").warn("Turn compression aborted; skipping");
         return 0;
       }
       throw err;
@@ -272,7 +273,9 @@ export class MemoryStore {
     const now = Date.now();
 
     if (this.reembedding) {
-      console.warn("[memory] Vector migration in progress — recall quality may be reduced until re-embed completes.");
+      getAppLogger().child("memory").warn(
+        "Vector migration in progress — recall quality may be reduced until re-embed completes",
+      );
     }
 
     // Strategy: merge reliable keyword hits with vector candidates, then filter + re-rank.
@@ -460,7 +463,8 @@ export class MemoryStore {
   async reembedAllEntries(): Promise<void> {
     this.reembedding = true;
     const entries = getAllEntries(this.db);
-    console.log(`[memory] Re-embedding ${entries.length} entries after dimension migration…`);
+    const log = getAppLogger().child("memory");
+    log.info(`Re-embedding ${entries.length} entries after dimension migration…`);
     let failed = 0;
     for (const e of entries) {
       try {
@@ -468,15 +472,19 @@ export class MemoryStore {
         upsertEmbedding(this.db, e.id, vec);
       } catch (err) {
         failed++;
-        console.warn(`[memory] Failed to re-embed entry ${e.id}: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`Failed to re-embed entry ${e.id}`, {
+          cause: err instanceof Error ? err : new Error(String(err)),
+        });
       }
     }
     this.reembedding = false;
     if (failed > 0) {
-      console.warn(`[memory] Re-embed migration complete — ${failed}/${entries.length} entries failed. Recall quality may be degraded.`);
+      log.warn(
+        `Re-embed migration complete — ${failed}/${entries.length} entries failed. Recall quality may be degraded`,
+      );
     } else {
       clearReembedNeeded(this.db);
-      console.log(`[memory] Re-embed migration complete — ${entries.length} entries updated.`);
+      log.info(`Re-embed migration complete — ${entries.length} entries updated`);
     }
   }
 

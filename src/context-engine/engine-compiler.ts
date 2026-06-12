@@ -13,6 +13,7 @@ import {
   trimSectionToTokenBudget,
 } from "../compiler.js";
 import { buildArtifactCard } from "./summarize.js";
+import { getAppLogger } from "../logger.js";
 import { estimateTokens } from "./summarize.js";
 import {
   rankContextUnits,
@@ -403,8 +404,8 @@ export function compileEngineWithMetrics(
   pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
 
   if (metrics.totalTokens > usable) {
-    console.warn(
-      `[engine-compiler] Prompt estimated at ${metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
+    getAppLogger().child("compiler").warn(
+      `Prompt estimated at ${metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
     );
   }
 

@@ -103,5 +103,12 @@ export function createTuiTurnSink(
     onFallback: (text) => {
       dispatch({ type: "assistant_delta", delta: text + "\n" });
     },
+
+    onError: (entry) => {
+      dispatch({
+        type: "system_lines",
+        lines: [`[${entry.level}] ${entry.domain}: ${entry.message}`],
+      });
+    },
   };
 }

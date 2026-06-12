@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig } from "./config.js";
+import { getAppLogger, initAppLogFile } from "./logger.js";
 import {
   parseCliArgs,
   resolveUiMode,
@@ -19,11 +20,13 @@ export async function main() {
     process.exit(0);
   }
 
+  await initAppLogFile();
+
   const cwd = resolve(process.cwd());
   const config = loadConfig(parsed.configPath);
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
-    console.error(keyError);
+    getAppLogger().error(keyError, { code: "SESSION_START_FAILED" });
     process.exit(1);
   }
 
@@ -42,7 +45,10 @@ export async function main() {
       await runReadlineUi(controller, info);
     }
   } catch (err) {
-    console.error("Failed to start session:", (err as Error).message);
+    getAppLogger().error("Failed to start session", {
+      code: "SESSION_START_FAILED",
+      cause: err as Error,
+    });
     process.exit(1);
   }
 }
@@ -53,7 +59,7 @@ const isDirectRun = process.argv[1]
 
 if (isDirectRun) {
   main().catch((err) => {
-    console.error("Fatal error:", err);
+    getAppLogger().error("Fatal error", { cause: err as Error });
     process.exit(1);
   });
 }

@@ -7,6 +7,10 @@ aria-knowledge.db*
 aria.config.toml
 refer/
 
+# SQLite :memory: spill files from in-memory db tests
+:memory:
+:memory:-*
+
 # Internal strategy — not for public repo
 PRODUCT_DOCUMENT.md
 ENGINEERING_PLAN.md

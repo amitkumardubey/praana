@@ -132,7 +132,10 @@ export async function executeSlashCommand(
                     ? `Result: ${JSON.stringify(ev.payload.result)?.slice(0, 60)}`
                     : ev.kind === "context_action"
                       ? `Context: ${ev.payload.action}`
-                      : ev.kind;
+                      : ev.kind === "system_note" &&
+                          ev.payload.type === "error"
+                        ? `Error: ${String(ev.payload.message).slice(0, 60)}`
+                        : ev.kind;
           lines.push(`  ${time} ${ev.kind.padEnd(16)} ${summary}`);
         }
       }

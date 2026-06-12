@@ -171,11 +171,9 @@ export async function runReadlineUi(
       if (err instanceof TurnAbortedError) {
         console.log(chalk.yellow("\n[interrupted]"));
       } else {
-        console.error("\n[error]", (err as Error).message);
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: { type: "error", message: (err as Error).message },
+        session.getLogger().error("Turn failed", {
+          code: "TURN_FAILED",
+          cause: err as Error,
         });
       }
     } finally {

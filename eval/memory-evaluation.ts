@@ -6,6 +6,7 @@
  */
 
 import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { getAppLogger } from "../src/logger.js";
 
 interface EvalResult {
   test: string;
@@ -169,4 +170,7 @@ async function main() {
   console.log(`${"═".repeat(65)}\n`);
 }
 
-main().catch((err) => { console.error("Fatal error:", err); process.exit(1); });
+main().catch((err) => {
+  getAppLogger().error("Fatal error", { cause: err as Error });
+  process.exit(1);
+});

@@ -9,6 +9,7 @@
 import type { MemoryEntry, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
 import type { MemoryStore } from "./store.js";
 import { effectiveConfidence } from "./confidence.js";
+import { getAppLogger } from "../logger.js";
 
 export interface ConsolidationConfig {
   enabled: boolean;
@@ -205,7 +206,9 @@ export async function runConsolidation(opts: {
       }
     }
   } catch (err) {
-    console.warn("[consolidation] Error during consolidation:", (err as Error).message);
+    getAppLogger().child("memory").warn("Error during consolidation", {
+      cause: err as Error,
+    });
   }
 
   result.duration_ms = Date.now() - startTime;

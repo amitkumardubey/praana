@@ -2,8 +2,8 @@
 // ARIA Memory — Summarizer factory
 // ============================================================
 
-import chalk from "chalk";
 import type { MemoryConfig } from "../types.js";
+import { getAppLogger } from "../logger.js";
 import { OllamaEmbedder } from "./embeddings.js";
 import {
   OllamaSummarizer,
@@ -16,6 +16,7 @@ import type { SummarizerLLM } from "./types.js";
 export async function createSummarizer(
   config: MemoryConfig,
 ): Promise<SummarizerLLM | null> {
+  const log = getAppLogger().child("memory");
   const mode = (config.summarizer ?? "openrouter").toLowerCase();
   if (mode === "disabled") return null;
 
@@ -31,29 +32,25 @@ export async function createSummarizer(
       const names = await listOllamaModelNames(url);
       model = pickDefaultChatModel(names) ?? "";
       if (model) {
-        console.log(
-          chalk.green(`💾 memory   summarizer model unset — using: ${model}`),
-        );
+        log.notice(`summarizer model unset — using: ${model}`);
       }
     }
 
     if (!model) {
-      console.warn(
-        "[memory] Ollama summarizer enabled but no chat model found.\n" +
-          "         Set memory.ollama_summarizer_model or run: ollama pull <model>",
+      log.warn(
+        "Ollama summarizer enabled but no chat model found. Set memory.ollama_summarizer_model or run: ollama pull <model>",
       );
       return null;
     }
 
     if (!(await OllamaEmbedder.isAvailable(url, model))) {
-      console.warn(
-        `[memory] Ollama model '${model}' is not available at ${url}.\n` +
-          `         Run: ollama pull ${model.split(":")[0]}`,
+      log.warn(
+        `Ollama model '${model}' is not available at ${url}. Run: ollama pull ${model.split(":")[0]}`,
       );
       return null;
     }
 
-    console.log(chalk.green(`💾 memory   ${model}`));
+    log.notice(`summarizer: ${model}`);
     return new OllamaSummarizer(url, model);
   }
 
@@ -62,7 +59,7 @@ export async function createSummarizer(
     const model =
       process.env.ARIA_SUMMARIZER_MODEL ?? "gpt-4o-mini";
     if (!apiKey) {
-      console.warn("[memory] summarizer=openai but OPENAI_API_KEY is not set");
+      log.warn("summarizer=openai but OPENAI_API_KEY is not set");
       return null;
     }
     return new OpenAISummarizer({
@@ -83,16 +80,12 @@ export async function createSummarizer(
     const model =
       process.env.ARIA_SUMMARIZER_MODEL ?? "google/gemini-2.5-flash";
     if (!apiKey) {
-      console.warn(
-        "[memory] summarizer=openrouter but OPENROUTER_API_KEY / OPENAI_API_KEY is not set",
-      );
+      log.warn("summarizer=openrouter but OPENROUTER_API_KEY / OPENAI_API_KEY is not set");
       return null;
     }
     return new OpenAISummarizer({ baseUrl, apiKey, model });
   }
 
-  console.warn(
-    `[memory] Unknown memory.summarizer '${config.summarizer}' — session-end summarization disabled`,
-  );
+  log.warn(`Unknown memory.summarizer '${config.summarizer}' — session-end summarization disabled`);
   return null;
 }

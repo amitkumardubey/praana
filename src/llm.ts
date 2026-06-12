@@ -1,5 +1,6 @@
 import type { AriaConfig } from "./types.js";
 import { resolveContextWindowSync } from "./model-context.js";
+import { getAppLogger } from "./logger.js";
 
 export {
   resolveContextWindowSync,
@@ -118,9 +119,8 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
 export function getProviderConfig(provider: string): ProviderConfig {
   const entry = PROVIDER_REGISTRY[provider];
   if (!entry) {
-    console.warn(
-      `[llm] Unknown provider "${provider}", falling back to openrouter. ` +
-        `Known providers: ${listKnownProviders().join(", ")}`
+    getAppLogger().child("llm").warn(
+      `Unknown provider "${provider}", falling back to openrouter. Known providers: ${listKnownProviders().join(", ")}`,
     );
     return PROVIDER_REGISTRY["openrouter"];
   }

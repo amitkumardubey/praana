@@ -600,6 +600,22 @@ describe("runTurn", () => {
     expect(response).toContain("no response from model");
   });
 
+  it("surfaces LLM stream errors and logs them to the event log", async () => {
+    const errorGenerator = (async function* () {
+      yield {
+        type: "error",
+        reason: "error",
+        error: { role: "assistant", errorMessage: "401 Unauthorized", content: [] },
+      };
+    })();
+
+    vi.mocked(piStream).mockReturnValue(errorGenerator as any);
+
+    const session = makeMockSession();
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("[LLM error: 401 Unauthorized]");
+  });
+
   it("accumulates input and output tokens during the turn", async () => {
     const responseText = "Hello world this is a response";
     const generator = (async function* () {

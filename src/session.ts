@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -32,6 +31,7 @@ import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
 } from "./model-context.js";
+import { createSessionLogger, getAppLogger, type AriaLogger } from "./logger.js";
 
 export class Session {
   id: string;
@@ -63,6 +63,7 @@ export class Session {
   private sessionOutputTokens = 0;
   private lastUserInput = "";
   private compactionArmed = false;
+  private sessionLogger: AriaLogger | null = null;
 
   private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
@@ -100,10 +101,11 @@ export class Session {
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
     session.incognito = opts?.incognito ?? false;
+    await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
-      console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
+      session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
     }
 
     initContextEngine(session);
@@ -115,12 +117,11 @@ export class Session {
       session.memoryEnabled = false;
       session.memoryStore = null;
       session.digest = null;
-      console.log("[incognito] Cross-session memory persistence disabled.");
+      session.getLogger().notice("Cross-session memory persistence disabled (incognito)");
       await session.refreshModelContextWindow().catch((err) => {
-        console.warn(
-          "[model] Failed to prefetch context window:",
-          (err as Error).message,
-        );
+        session.getLogger().child("session").warn("Failed to prefetch context window", {
+          cause: err as Error,
+        });
       });
       return session;
     }
@@ -158,7 +159,10 @@ export class Session {
           },
         });
       } catch (err) {
-        console.warn("[memory] Failed to initialize, continuing without:", (err as Error).message);
+        session.getLogger().child("memory").warn("Failed to initialize, continuing without memory", {
+          code: "MEMORY_INIT_FAILED",
+          cause: err as Error,
+        });
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -175,10 +179,9 @@ export class Session {
     }
 
     await session.refreshModelContextWindow().catch((err) => {
-      console.warn(
-        "[model] Failed to prefetch context window:",
-        (err as Error).message,
-      );
+      session.getLogger().child("session").warn("Failed to prefetch context window", {
+        cause: err as Error,
+      });
     });
 
     return session;
@@ -196,10 +199,11 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
       const tokEst = Math.ceil(session.agentsContext.length / 4);
-      console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
+      session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
     }
 
     initContextEngine(session);
@@ -270,7 +274,10 @@ export class Session {
           },
         });
       } catch (err) {
-        console.warn("[memory] Failed to initialize for resumed session:", (err as Error).message);
+        session.getLogger().child("memory").warn("Failed to initialize for resumed session", {
+          code: "MEMORY_INIT_FAILED",
+          cause: err as Error,
+        });
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -286,10 +293,9 @@ export class Session {
     }
 
     await session.refreshModelContextWindow().catch((err) => {
-      console.warn(
-        "[model] Failed to prefetch context window:",
-        (err as Error).message,
-      );
+      session.getLogger().child("session").warn("Failed to prefetch context window", {
+        cause: err as Error,
+      });
     });
 
     return session;
@@ -323,6 +329,22 @@ export class Session {
 
   getActiveModelId(): string {
     return this.modelOverride ?? this.config.llm.model;
+  }
+
+  getLogger(): AriaLogger {
+    if (!this.sessionLogger) {
+      return getAppLogger().child("session");
+    }
+    return this.sessionLogger;
+  }
+
+  async initLogger(): Promise<void> {
+    if (this.sessionLogger) return;
+    this.sessionLogger = await createSessionLogger({
+      sessionId: this.id,
+      sessionLogDir: this.config.session.log_dir,
+      debug: this.debug,
+    });
   }
 
   getContextWindowTokens(modelId?: string): number {
@@ -414,7 +436,10 @@ export class Session {
       this.digest = d.markdown;
       this.memoryEnabled = true;
     } catch (err) {
-      console.warn("[memory] Failed to re-enable memory:", (err as Error).message);
+      this.getLogger().child("memory").warn("Failed to re-enable memory", {
+        code: "MEMORY_INIT_FAILED",
+        cause: err as Error,
+      });
       this.memoryEnabled = false;
       this.memoryStore = null;
       this.digest = null;
@@ -591,9 +616,11 @@ export class Session {
           } else {
             // Ensure late failures are not unhandled after we stop waiting.
             void finish.catch((err: unknown) => {
-              console.warn("[memory] Background session-end task failed:", (err as Error).message);
+              this.getLogger().child("memory").warn("Background session-end task failed", {
+                cause: err as Error,
+              });
             });
-            console.warn("[memory] Session-end summarization is continuing in background.");
+            this.getLogger().child("memory").warn("Session-end summarization is continuing in background");
             this.eventLog.append({
               kind: "system_note",
               actor: "kernel",
@@ -618,7 +645,9 @@ export class Session {
           });
         }
       } catch (err) {
-        console.warn("[memory] Error during session end:", (err as Error).message);
+        this.getLogger().child("memory").warn("Error during session end", {
+          cause: err as Error,
+        });
         this.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -655,13 +684,19 @@ export class Session {
             config: consolidationConfig,
           });
           if (result.promotions > 0) {
-            console.log(`[memory] Consolidated: ${result.promotions} patterns promoted to deep memory`);
+            this.getLogger().child("memory").info(
+              `Consolidated: ${result.promotions} patterns promoted to deep memory`,
+            );
           }
           if (result.newEntries > 0 || result.confirmations > 0) {
-            console.log(`[memory] Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`);
+            this.getLogger().child("memory").info(
+              `Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`,
+            );
           }
         } catch (err) {
-          console.warn("[memory] Background consolidation failed:", (err as Error).message);
+          this.getLogger().child("memory").warn("Background consolidation failed", {
+            cause: err as Error,
+          });
         }
       }, consolidationConfig.run_delay_seconds * 1000);
     }
@@ -671,11 +706,13 @@ export class Session {
         const engineConfig = resolveContextEngineConfig(this.config);
         if (this.debug || engineConfig.measurement_mode) {
           const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
-          console.log(chalk.cyan(renderSessionTelemetrySummary(summary)));
+          this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(summary));
         }
         this.contextEngine.runShutdownMaintenance(this.getTurnCount());
       } catch (err) {
-        console.warn("[context-engine] Shutdown maintenance failed:", (err as Error).message);
+        this.getLogger().child("context_engine").warn("Shutdown maintenance failed", {
+          cause: err as Error,
+        });
       } finally {
         this.contextEngine.close();
         this.contextEngine = null;
@@ -720,18 +757,18 @@ function initContextEngine(session: Session): void {
     const migrated = session.contextEngine.migrateLedgerFromEvents(
       session.eventLog.readAll(),
     );
+    const ceLog = session.getLogger().child("context_engine");
     if (evicted > 0) {
-      console.log(chalk.cyan(`⚙️  context engine  evicted ${evicted} stale artifact(s)`));
+      ceLog.notice(`context engine evicted ${evicted} stale artifact(s)`);
     } else if (migrated > 0) {
-      console.log(chalk.cyan(`⚙️  context engine  migrated ${migrated} turn(s) to ledger`));
+      ceLog.notice(`context engine migrated ${migrated} turn(s) to ledger`);
     } else {
-      console.log(chalk.cyan("⚙️  context engine  enabled"));
+      ceLog.notice("context engine enabled");
     }
   } catch (err) {
-    console.warn(
-      "[context-engine] Failed to initialize, continuing without:",
-      (err as Error).message,
-    );
+    session.getLogger().child("context_engine").warn("Failed to initialize, continuing without context engine", {
+      cause: err as Error,
+    });
     session.contextEngine = null;
   }
 }
@@ -816,9 +853,9 @@ export function loadAgentsContext(cwd: string): string | null {
 
   const combined = parts.join("\n\n");
   if (combined.length > MAX_CHARS) {
-    console.warn(
-      `[context] AGENTS.md content truncated to ~4000 tokens (was ${Math.ceil(combined.length / 4)} tokens)`
-    );
+    getAppLogger().child("session").warn("AGENTS.md content truncated to ~4000 tokens", {
+      details: { tokenEstimate: Math.ceil(combined.length / 4) },
+    });
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
   }
   return combined;
@@ -851,7 +888,9 @@ function applyProjectContext(session: Session, cwd: string): void {
       summary: projectContext.slice(0, 100),
     },
   });
-  console.log(chalk.cyan(`🔑 fingerprint  ${Math.ceil(projectContext.length / 4)} tok`));
+  session.getLogger().notice(`fingerprint ${Math.ceil(projectContext.length / 4)} tok`, {
+    domain: "session",
+  });
 
   const engineActive =
     session.isContextEngineEnabled() && session.contextEngine !== null;
@@ -873,8 +912,8 @@ async function initSkills(session: Session, cfg: AriaConfig, cwd: string): Promi
   session.skills = discoverSkills(cwd, cfg.skills.max_depth);
 
   if (session.skills.length > 0) {
-    console.log(
-      chalk.magenta(`⚡ skills  ${session.skills.length} skill(s) (classic catalog)`),
+    session.getLogger().child("skills").notice(
+      `${session.skills.length} skill(s) (classic catalog)`,
     );
   }
 }
@@ -895,6 +934,6 @@ async function initSkillRuntime(session: Session, cfg: AriaConfig, cwd: string):
   }));
 
   if (session.skills.length > 0) {
-    console.log(chalk.magenta(`⚡ skills  ${session.skills.length} skill(s)`));
+    session.getLogger().child("skills").notice(`${session.skills.length} skill(s)`);
   }
 }

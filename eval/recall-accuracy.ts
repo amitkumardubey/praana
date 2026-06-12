@@ -13,6 +13,7 @@
  */
 
 import { StateGraph } from "../src/state-graph.js";
+import { getAppLogger } from "../src/logger.js";
 import { compile } from "../src/compiler.js";
 import { createProvider, resolveModel } from "../src/llm.js";
 import { generateText } from "ai";
@@ -231,6 +232,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err);
+  getAppLogger().error("Fatal error", { cause: err as Error });
   process.exit(1);
 });

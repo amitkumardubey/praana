@@ -4,6 +4,7 @@
  */
 
 import { MemoryStore, HashEmbedder, OpenAISummarizer } from "../src/memory/index.js";
+import { getAppLogger } from "../src/logger.js";
 
 type SessionEvent = import("../src/memory/index.js").SessionEvent;
 
@@ -71,4 +72,7 @@ async function main() {
   console.log(`Has Vitest pref:   ${hasVitest ? "✅" : "❌"}`);
 }
 
-main().catch((err) => { console.error("Fatal error:", err); process.exit(1); });
+main().catch((err) => {
+  getAppLogger().error("Fatal error", { cause: err as Error });
+  process.exit(1);
+});

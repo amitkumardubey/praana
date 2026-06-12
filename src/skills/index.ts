@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import yaml from "js-yaml";
+import { getAppLogger } from "../logger.js";
 import type {
   SkillMetadata,
   SkillRecord,
@@ -191,7 +192,9 @@ function scanSkillsDir(skillsDir: string, maxDepth: number): SkillRecord[] {
         const skill = parseSkillMdFile(skillFile);
         if (skill) {
           if (skill.name !== entry) {
-            console.warn(`[skills] Name mismatch: "${skill.name}" in ${skillFile}, directory is "${entry}"`);
+            getAppLogger().child("skills").warn(
+              `Name mismatch: "${skill.name}" in ${skillFile}, directory is "${entry}"`,
+            );
           }
           results.push(skill);
         }
@@ -247,7 +250,7 @@ export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): Sk
   const merged = new Map<string, SkillRecord>(userSkills);
   for (const [name, skill] of projectSkills) {
     if (merged.has(name)) {
-      console.warn(`[skills] "${name}" from project overrides user-level skill`);
+      getAppLogger().child("skills").warn(`"${name}" from project overrides user-level skill`);
     }
     merged.set(name, skill);
   }

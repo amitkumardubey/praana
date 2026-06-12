@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import type { Event } from "./types.js";
 import type { Session } from "./session.js";
 import type { SessionEvent } from "./memory/types.js";
@@ -7,6 +6,7 @@ import {
   resolveCompactionConfig,
   shouldTriggerAutoCompact,
 } from "./context-pressure.js";
+import { getAppLogger } from "./logger.js";
 
 export interface ClassicCompactionResult {
   compacted: boolean;
@@ -123,11 +123,9 @@ export async function maybeAutoCompactClassic(
   });
 
   if (session.debug) {
-    console.log(
-      chalk.yellow(
-        `[compact] ${toCompress.length} event(s) → ${factsStored} memory fact(s) ` +
-          `(pressure ${(pressureRatio * 100).toFixed(0)}%)`,
-      ),
+    getAppLogger().child("session").debug(
+      `${toCompress.length} event(s) → ${factsStored} memory fact(s) (pressure ${(pressureRatio * 100).toFixed(0)}%)`,
+      { details: { events: toCompress.length, factsStored, pressureRatio } },
     );
   }
 

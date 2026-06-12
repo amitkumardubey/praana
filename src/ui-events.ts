@@ -6,6 +6,7 @@ import {
   startSpinner,
   stopSpinner,
 } from "./ui.js";
+import type { LogEntry } from "./logger.js";
 import type { computeMemoryStats } from "./turn.js";
 
 export type MemoryBannerStats = ReturnType<typeof computeMemoryStats>;
@@ -29,6 +30,8 @@ export interface TurnUiSink {
   onSpinnerStop?(): void;
   onNewline?(): void;
   onFallback?(text: string): void;
+  /** Structured error for UI display (LLM failures, etc.). */
+  onError?(entry: LogEntry): void;
   /** Flush any buffered text before dispatching terminal actions (e.g. assistant_complete).
    *  Used by throttled sinks to ensure no text is lost. */
   flushText?(): void;
@@ -59,6 +62,11 @@ export function createDefaultTurnSink(options?: {
     onSpinnerStop: () => stopSpinner(),
     onNewline: () => process.stdout.write("\n"),
     onFallback: (text) => process.stdout.write(text + "\n"),
+    onError: (entry) => {
+      if (entry.level === "error" || entry.level === "warn") {
+        process.stderr.write(`[${entry.domain}] ${entry.message}\n`);
+      }
+    },
   };
 }
 

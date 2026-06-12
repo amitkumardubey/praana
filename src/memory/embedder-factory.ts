@@ -2,25 +2,25 @@
 // ARIA Memory — Embedder factory (auto / ollama / opt-in backends)
 // ============================================================
 
-import chalk from "chalk";
 import type { MemoryConfig } from "../types.js";
+import { getAppLogger } from "../logger.js";
 import { HashEmbedder, OllamaEmbedder } from "./embeddings.js";
 import type { Embedder } from "./types.js";
 
 export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
+  const log = getAppLogger().child("memory");
   const strategy = config.embedder ?? "auto";
   const ollamaUrl = config.ollama_url ?? "http://localhost:11434";
 
   if (strategy === "auto" || strategy === "ollama") {
     const model = config.ollama_model ?? "nomic-embed-text";
     if (await OllamaEmbedder.isAvailable(ollamaUrl, model)) {
-      console.log(chalk.green(`💾 memory   ${model}`));
+      log.notice(`embedder: ${model}`);
       return new OllamaEmbedder(ollamaUrl, model);
     }
     if (strategy === "ollama") {
-      console.warn(
-        `[memory] Ollama not available or model '${model}' not loaded — falling back to hash embedder.\n` +
-          `         Run: ollama pull ${model}`,
+      log.warn(
+        `Ollama not available or model '${model}' not loaded — falling back to hash embedder. Run: ollama pull ${model}`,
       );
     }
   }
@@ -28,30 +28,26 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
   if (strategy === "transformers") {
     const embedder = await tryTransformersEmbedder();
     if (embedder) return embedder;
-    console.warn(
-      "[memory] @huggingface/transformers not available — falling back to hash embedder.\n" +
-        "         Install with: npm install @huggingface/transformers",
+    log.warn(
+      "@huggingface/transformers not available — falling back to hash embedder. Install with: npm install @huggingface/transformers",
     );
   }
 
   if (strategy === "llama-cpp") {
     const embedder = await tryLlamaCppEmbedder();
     if (embedder) return embedder;
-    console.warn(
-      "[memory] node-llama-cpp not available — falling back to hash embedder.\n" +
-        "         Install with: npm install node-llama-cpp",
+    log.warn(
+      "node-llama-cpp not available — falling back to hash embedder. Install with: npm install node-llama-cpp",
     );
   }
 
   if (strategy === "auto") {
-    console.warn(
-      "[memory] Ollama unavailable — using hash embedder (non-semantic recall).\n" +
-        "         Run `ollama pull nomic-embed-text` for semantic embeddings.",
+    log.warn(
+      "Ollama unavailable — using hash embedder (non-semantic recall). Run `ollama pull nomic-embed-text` for semantic embeddings.",
     );
   } else if (strategy !== "hash") {
-    console.warn(
-      "[memory] Semantic recall unavailable — using hash embedder (non-semantic recall).\n" +
-        '         Set embedder = "transformers" in config for local semantic embeddings (no daemon required).',
+    log.warn(
+      'Semantic recall unavailable — using hash embedder (non-semantic recall). Set embedder = "transformers" in config for local semantic embeddings (no daemon required).',
     );
   }
 

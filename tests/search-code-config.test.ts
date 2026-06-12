@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadConfig } from '../src/config.js';
+import { createTestLogger, setAppLogger } from '../src/logger.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,22 +42,15 @@ describe('loadConfig: [search_code]', () => {
   });
 
   it('warns and ignores rg_path when it is the wrong type', () => {
-    const orig = console.warn;
     const captured: string[] = [];
-    console.warn = (...args: unknown[]) => {
-      captured.push(args.join(' '));
-    };
+    setAppLogger(createTestLogger((line) => captured.push(line)));
     try {
-      // TOML coerces numbers — a number would not actually parse as a string,
-      // but a quoted number string should also be tolerated. The real test is
-      // that loadConfig never throws on bad input.
       writeCfg(`[search_code]\nrg_path = 12345\n`);
       const cfg = loadConfig(configPath);
-      // After validation, rg_path should be cleared back to undefined.
       expect(cfg.search_code?.rg_path).toBeUndefined();
       expect(captured.some((l) => l.includes('search_code.rg_path'))).toBe(true);
     } finally {
-      console.warn = orig;
+      setAppLogger(createTestLogger(() => {}));
     }
   });
 });

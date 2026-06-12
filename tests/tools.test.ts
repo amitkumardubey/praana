@@ -746,12 +746,14 @@ describe('System Tools (createSystemTools)', () => {
       const originalStdin = process.stdin;
       Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
 
-      // Mock console.error to capture diff preview output
+      // Capture diff preview output via UI stderr channel
       const stderrChunks: string[] = [];
-      const originalConsoleError = console.error;
-      console.error = (...args: any[]) => {
-        stderrChunks.push(args.join(' '));
-      };
+      const { setUiWriters } = await import("../../src/ui.js");
+      setUiWriters({
+        stderr: (line) => {
+          stderrChunks.push(line);
+        },
+      });
 
       try {
         await confirmTools.edit_file.execute({
@@ -763,7 +765,7 @@ describe('System Tools (createSystemTools)', () => {
         expect(stderrOutput).toContain('linenum.txt:3');
       } finally {
         Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
-        console.error = originalConsoleError;
+        setUiWriters();
       }
     });
   });

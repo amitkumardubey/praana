@@ -1,6 +1,7 @@
 import { stream as piStream, type Message } from "@earendil-works/pi-ai";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
@@ -22,6 +23,12 @@ import { TurnRecorder } from "./context-engine/turn-recorder.js";
 import { TurnAbortedError } from "./turn-control.js";
 import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
+import {
+  createSessionLogger,
+  extractLlmErrorMessage,
+  formatUserFacingLlmError,
+  type LogEntry,
+} from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
 
 export async function runTurn(
@@ -247,12 +254,22 @@ export async function runTurn(
   }
 
   // 4. Create LLM provider and model
-  const provider = createProvider(session.config.llm, contextWindowTokens);
-  const model = provider(resolveModel(modelName));
+  const providerFn = createProvider(session.config.llm, contextWindowTokens);
+  const model = providerFn(resolveModel(modelName));
+
+  const logger = await createSessionLogger({
+    sessionId: session.id,
+    sessionLogDir: session.config.session?.log_dir ?? join(homedir(), ".aria", "sessions"),
+    debug: session.debug,
+  });
+  const llmLogger = logger.child("llm");
+  const providerName = session.config.llm.provider;
 
   // 5. Stream response
   let fullResponse = "";
   let stepIndex = 0;
+  let lastStreamReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop";
+  let lastLlmErrorMessage: string | undefined;
   const history: Message[] = [
     {
       role: "user",
@@ -324,11 +341,36 @@ export async function runTurn(
       if (event.type === "error") {
         finalReason = event.reason;
         finalMessage = event.error as unknown as Message;
+        const llmMessage = extractLlmErrorMessage(finalMessage);
+        lastStreamReason = finalReason;
+        lastLlmErrorMessage = llmMessage;
         if (finalReason === "aborted") {
+          llmLogger.warn("LLM stream aborted", {
+            code: "LLM_ABORTED",
+            details: { model: modelName, provider: providerName, message: llmMessage },
+          });
           interrupted = true;
           break;
         }
+        llmLogger.error("LLM stream error", {
+          code: "LLM_STREAM_ERROR",
+          details: { model: modelName, provider: providerName, reason: finalReason, message: llmMessage },
+        });
+        const errorEntry: LogEntry = {
+          level: "error",
+          domain: "llm",
+          message: llmMessage ?? "LLM stream error",
+          code: "LLM_STREAM_ERROR",
+          details: { model: modelName, provider: providerName, reason: finalReason },
+        };
+        s.onError?.(errorEntry);
       }
+    }
+
+    lastStreamReason = finalReason;
+    if (finalReason === "error" || finalReason === "aborted") {
+      lastLlmErrorMessage =
+        extractLlmErrorMessage(finalMessage) ?? lastLlmErrorMessage;
     }
 
     if (interrupted) break;
@@ -486,8 +528,34 @@ export async function runTurn(
   }
 
   if (!fullResponse.trim()) {
-    const fallback =
-      "[no response from model — try again or switch models with /model]";
+    const code =
+      lastStreamReason === "error"
+        ? "LLM_STREAM_ERROR"
+        : lastStreamReason === "aborted"
+          ? "LLM_ABORTED"
+          : "LLM_EMPTY_RESPONSE";
+    if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
+      llmLogger.warn("LLM returned no text content", {
+        code: "LLM_EMPTY_RESPONSE",
+        details: { model: modelName, provider: providerName, reason: lastStreamReason },
+      });
+    }
+    const fallback = formatUserFacingLlmError({
+      reason: lastStreamReason,
+      llmMessage: lastLlmErrorMessage,
+      model: modelName,
+      provider: providerName,
+    });
+    const errorEntry: LogEntry = {
+      level: lastStreamReason === "error" ? "error" : "warn",
+      domain: "llm",
+      message: lastLlmErrorMessage ?? "No text content in LLM response",
+      code,
+      details: { model: modelName, provider: providerName, reason: lastStreamReason },
+    };
+    if (lastStreamReason !== "error") {
+      s.onError?.(errorEntry);
+    }
     s.onFallback?.(fallback);
     fullResponse = fallback;
   }

@@ -50,6 +50,11 @@ export function setUiWriters(overrides?: Partial<UiWriters>): void {
   };
 }
 
+/** Write a line to the UI stderr channel (tool diffs, ancillary output). */
+export function writeUiStderr(line: string): void {
+  writers.stderr(line.endsWith("\n") ? line : line + "\n");
+}
+
 /**
  * Start a spinner on stderr with the given text.
  * No-op when stderr is not a TTY (tests, CI, piped output).

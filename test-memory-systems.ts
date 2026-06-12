@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { StateGraph } from './src/state-graph.js';
+import { getAppLogger } from './src/logger.js';
 import { InProcessClient, StubEmbeddingsProvider, SqliteMemoryBackend, openDatabase, DisabledSummarizer } from 'bodha';
 
 async function testAdaptiveContext() {
@@ -281,8 +282,7 @@ async function main() {
     
     process.exit(0);
   } catch (error) {
-    console.error('\n❌ TEST FAILED!');
-    console.error(error);
+    getAppLogger().error("Memory systems test failed", { cause: error as Error });
     process.exit(1);
   }
 }

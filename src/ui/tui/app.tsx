@@ -146,12 +146,12 @@ export function TuiApp({
         if (err instanceof TurnAbortedError) {
           dispatch({ type: "interrupted" });
         } else {
-          dispatch({ type: "error", message: (err as Error).message });
-          controller.session.eventLog.append({
-            kind: "system_note",
-            actor: "kernel",
-            payload: { type: "error", message: (err as Error).message },
+          const message = (err as Error).message;
+          controller.session.getLogger().error("Turn failed", {
+            code: "TURN_FAILED",
+            cause: err as Error,
           });
+          dispatch({ type: "error", message });
         }
       } finally {
         dispatch({ type: "set_busy", busy: false });

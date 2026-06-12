@@ -15,6 +15,7 @@ import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
+import { writeUiStderr } from "../ui.js";
 
 /**
  * Validate content for known structured formats.
@@ -390,10 +391,10 @@ export function createSystemTools(ctx: SystemToolContext) {
             const matchLine = content.slice(0, idx).split("\n").length;
             const oldLines = oldText.split("\n");
             const newLines = newText.split("\n");
-            console.error(chalk.dim(`\n--- ${path}:${matchLine} (before)`));
-            for (const line of oldLines) console.error(chalk.red(`- ${line}`));
-            console.error(chalk.dim(`+++ ${path}:${matchLine} (after)`));
-            for (const line of newLines) console.error(chalk.green(`+ ${line}`));
+            writeUiStderr(chalk.dim(`\n--- ${path}:${matchLine} (before)`));
+            for (const line of oldLines) writeUiStderr(chalk.red(`- ${line}`));
+            writeUiStderr(chalk.dim(`+++ ${path}:${matchLine} (after)`));
+            for (const line of newLines) writeUiStderr(chalk.green(`+ ${line}`));
             const answer = await new Promise<string>((resolve) => {
               const rl = createInterface({
                 input: process.stdin,

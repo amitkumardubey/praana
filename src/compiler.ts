@@ -1,5 +1,6 @@
 import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.js";
 import type { StateGraph } from "./state-graph.js";
+import { getAppLogger } from "./logger.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -104,8 +105,8 @@ export function compile(input: CompileInput): string {
   // Token budget check
   const estimatedTokens = estTokens(fullPrompt);
   if (estimatedTokens > input.tokenBudget) {
-    console.warn(
-      `[compiler] Prompt estimated at ${estimatedTokens} tokens, exceeds budget of ${input.tokenBudget}. Consider trimming.`
+    getAppLogger().child("compiler").warn(
+      `Prompt estimated at ${estimatedTokens} tokens, exceeds budget of ${input.tokenBudget}. Consider trimming.`,
     );
   }
 
@@ -213,8 +214,8 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   metrics.totalTokens = estTokens(fullPrompt);
 
   if (metrics.totalTokens > input.tokenBudget) {
-    console.warn(
-      `[compiler] Prompt estimated at ${metrics.totalTokens} tokens, exceeds budget of ${input.tokenBudget}.`
+    getAppLogger().child("compiler").warn(
+      `Prompt estimated at ${metrics.totalTokens} tokens, exceeds budget of ${input.tokenBudget}.`,
     );
   }
 

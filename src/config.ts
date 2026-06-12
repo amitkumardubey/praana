@@ -2,6 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as toml from "toml";
 import type { AriaConfig } from "./types.js";
+import { getAppLogger } from "./logger.js";
+
+function configWarn(message: string, cause?: Error): void {
+  getAppLogger().child("config").warn(message, {
+    code: "CONFIG_INVALID",
+    ...(cause ? { cause } : {}),
+  });
+}
 
 /** Tracks which config files were loaded in the last loadConfig() call. */
 let _loadedSources: string[] = [];
@@ -126,7 +134,7 @@ function loadJsonConfig(path: string): Record<string, unknown> {
     try {
       return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
     } catch (err) {
-      console.warn(`[config] Failed to parse JSON config ${path}:`, (err as Error).message);
+      configWarn(`Failed to parse JSON config ${path}`, err as Error);
     }
   }
   return {};
@@ -137,7 +145,7 @@ function loadTomlConfig(path: string): Record<string, unknown> {
     try {
       return toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
     } catch (err) {
-      console.warn(`[config] Failed to parse TOML config ${path}:`, (err as Error).message);
+      configWarn(`Failed to parse TOML config ${path}`, err as Error);
     }
   }
   return {};
@@ -237,13 +245,13 @@ function validateConfig(config: AriaConfig): AriaConfig {
   const out: AriaConfig = deepMerge(config, {});
 
   if (!out.llm.model || !out.llm.model.trim()) {
-    console.warn("[config] Invalid llm.model, using default deepseek/deepseek-v4-flash:free");
+    configWarn("Invalid llm.model, using default deepseek/deepseek-v4-flash:free");
     out.llm.model = DEFAULT_CONFIG.llm.model;
   }
 
   const validEmbedders = new Set(["auto", "ollama", "transformers", "llama-cpp", "hash"]);
   if (out.memory.embedder && !validEmbedders.has(out.memory.embedder)) {
-    console.warn("[config] Invalid memory.embedder, using default 'auto'");
+    configWarn("Invalid memory.embedder, using default 'auto'");
     out.memory.embedder = DEFAULT_CONFIG.memory.embedder;
   }
   if (!out.memory.embedder) {
@@ -253,14 +261,12 @@ function validateConfig(config: AriaConfig): AriaConfig {
   const validSummarizers = new Set(["disabled", "ollama", "openrouter", "openai"]);
   const summarizer = out.memory.summarizer?.toLowerCase();
   if (summarizer && !validSummarizers.has(summarizer)) {
-    console.warn(
-      `[config] Invalid memory.summarizer '${out.memory.summarizer}', using 'disabled'`,
-    );
+    configWarn(`Invalid memory.summarizer '${out.memory.summarizer}', using 'disabled'`);
     out.memory.summarizer = "disabled";
   }
 
   if (!Number.isFinite(out.compiler.token_budget) || out.compiler.token_budget <= 1000) {
-    console.warn("[config] Invalid compiler.token_budget, using default 100000");
+    configWarn("Invalid compiler.token_budget, using default 100000");
     out.compiler.token_budget = DEFAULT_CONFIG.compiler.token_budget;
   }
 
@@ -269,7 +275,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     out.compiler.recent_turns < 1 ||
     out.compiler.recent_turns > 100
   ) {
-    console.warn("[config] Invalid compiler.recent_turns, using default 10");
+    configWarn("Invalid compiler.recent_turns, using default 10");
     out.compiler.recent_turns = DEFAULT_CONFIG.compiler.recent_turns;
   }
 
@@ -278,7 +284,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     (!Number.isFinite(out.compiler.recent_turns_token_budget) ||
       out.compiler.recent_turns_token_budget < 0)
   ) {
-    console.warn("[config] Invalid compiler.recent_turns_token_budget, using default");
+    configWarn("Invalid compiler.recent_turns_token_budget, using default");
     out.compiler.recent_turns_token_budget =
       DEFAULT_CONFIG.compiler.recent_turns_token_budget;
   }
@@ -290,7 +296,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     compactAt !== undefined &&
     (!Number.isFinite(compactAt) || compactAt < 0.5 || compactAt > 1.0)
   ) {
-    console.warn("[config] Invalid compiler.auto_compact_at (must be 0.5–1.0), using default 0.75");
+    configWarn("Invalid compiler.auto_compact_at (must be 0.5–1.0), using default 0.75");
     out.compiler.auto_compact_at = DEFAULT_CONFIG.compiler.auto_compact_at;
   } else if (out.compiler.auto_compact_at === undefined && compactAt !== undefined) {
     out.compiler.auto_compact_at = compactAt;
@@ -304,7 +310,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
       out.compiler.auto_compact_clear_at < 0.1 ||
       out.compiler.auto_compact_clear_at >= (out.compiler.auto_compact_at ?? 0.75))
   ) {
-    console.warn("[config] Invalid compiler.auto_compact_clear_at, using default 0.55");
+    configWarn("Invalid compiler.auto_compact_clear_at, using default 0.55");
     out.compiler.auto_compact_clear_at = DEFAULT_CONFIG.compiler.auto_compact_clear_at;
   } else if (out.compiler.auto_compact_clear_at === undefined) {
     out.compiler.auto_compact_clear_at = DEFAULT_CONFIG.compiler.auto_compact_clear_at;
@@ -316,7 +322,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     chunkFraction !== undefined &&
     (!Number.isFinite(chunkFraction) || chunkFraction < 0.05 || chunkFraction > 0.5)
   ) {
-    console.warn("[config] Invalid compiler.compact_chunk_fraction (must be 0.05–0.5), using default 0.25");
+    configWarn("Invalid compiler.compact_chunk_fraction (must be 0.05–0.5), using default 0.25");
     out.compiler.compact_chunk_fraction = DEFAULT_CONFIG.compiler.compact_chunk_fraction;
   } else if (out.compiler.compact_chunk_fraction === undefined && chunkFraction !== undefined) {
     out.compiler.compact_chunk_fraction = chunkFraction;
@@ -332,7 +338,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     out.llm.context_window !== undefined &&
     (!Number.isFinite(out.llm.context_window) || out.llm.context_window <= 1000)
   ) {
-    console.warn("[config] Invalid llm.context_window, ignoring override");
+    configWarn("Invalid llm.context_window, ignoring override");
     delete out.llm.context_window;
   }
 
@@ -405,11 +411,11 @@ function validateConfig(config: AriaConfig): AriaConfig {
   // Shell sandbox config validation
   if (out.shell) {
     if (typeof out.shell.enabled !== 'boolean') {
-      console.warn("[config] shell.enabled must be boolean, defaulting to false");
+      configWarn("shell.enabled must be boolean, defaulting to false");
       out.shell.enabled = false;
     }
     if (!Array.isArray(out.shell.allowed_paths)) {
-      console.warn("[config] shell.allowed_paths must be string array, defaulting to []");
+      configWarn("shell.allowed_paths must be string array, defaulting to []");
       (out.shell as { allowed_paths: readonly string[] }).allowed_paths = [];
     }
   }
@@ -420,7 +426,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
       typeof out.search_code.rg_path !== "string" &&
       out.search_code.rg_path !== undefined
     ) {
-      console.warn("[config] search_code.rg_path must be a string, ignoring");
+      configWarn("search_code.rg_path must be a string, ignoring");
       out.search_code.rg_path = undefined;
     } else if (typeof out.search_code.rg_path === "string") {
       out.search_code.rg_path = expandHome(out.search_code.rg_path);
@@ -438,7 +444,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
     // cli-highlight themes are usually packaged under its theme directory, but let's check safety.
     // If cli-highlight throws a parse error on a test piece of code, it means the theme is invalid.
     if (typeof out.ui.syntax_theme !== 'string' || !out.ui.syntax_theme.trim()) {
-      console.warn("[config] Invalid ui.syntax_theme, using default 'solarized-dark'");
+      configWarn("Invalid ui.syntax_theme, using default 'solarized-dark'");
       out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
     } else {
       try {
@@ -448,7 +454,7 @@ function validateConfig(config: AriaConfig): AriaConfig {
           try {
             highlight("const x = 1;", { theme: out.ui.syntax_theme });
           } catch {
-            console.warn(`[config] Theme '${out.ui.syntax_theme}' not found or invalid. Falling back to 'solarized-dark'`);
+            configWarn(`Theme '${out.ui.syntax_theme}' not found or invalid. Falling back to 'solarized-dark'`);
             out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
           }
         }).catch(() => {});
