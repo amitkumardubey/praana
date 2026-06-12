@@ -17,21 +17,66 @@ vi.mock("zod-to-json-schema", () => ({
   })),
 }));
 
-vi.mock("../src/compiler.js", () => ({
-  compileWithMetrics: vi.fn(() => ({
-    prompt: "compiled system prompt",
+vi.mock("../src/compiler.js", () => ({}));
+
+vi.mock("../src/context-engine/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/context-engine/index.js")>();
+  return {
+    ...actual,
+    compileEngineWithMetrics: vi.fn(() => ({
+      prompt: "engine compiled prompt",
+      metrics: {
+        totalTokens: 600,
+        systemFrameTokens: 100,
+        agentsContextTokens: 0,
+        skillsCatalogTokens: 0,
+        checkpointTokens: 50,
+        crossSessionTokens: 0,
+        activeStateTokens: 40,
+        peripheralStubsTokens: 0,
+        recentTurnsTokens: 300,
+        currentInputTokens: 70,
+        activeObjectCount: 0,
+        peripheralObjectCount: 0,
+        recentTurnsTruncated: false,
+        memoryTruncated: false,
+        agentsContextTruncated: false,
+        skillsTruncated: false,
+      },
+      scoreRecords: [],
+      pressureRatio: 0.2,
+      pressureMode: "normal" as const,
+      excludedScoredUnits: 0,
+    })),
+  };
+});
+
+vi.mock("../src/auto-compact.js", () => ({
+  maybeAutoCompactClassic: vi.fn(async () => ({
+    compacted: false,
+    eventsCompacted: 0,
+    factsStored: 0,
+    pressureRatio: 0,
+  })),
+  formatCompactionBanner: vi.fn(() => null),
+}));
+
+vi.mock("../src/compile-classic.js", () => ({
+  compileClassicWithMetrics: vi.fn(() => ({
+    prompt: "classic compiled prompt",
     metrics: {
-      totalTokens: 500,
-      systemFrameTokens: 100,
+      totalTokens: 800,
+      systemFrameTokens: 120,
       agentsContextTokens: 0,
-      skillsCatalogTokens: 0,
+      skillsCatalogTokens: 40,
+      checkpointTokens: 0,
       crossSessionTokens: 50,
-      activeStateTokens: 50,
-      peripheralStubsTokens: 30,
-      recentTurnsTokens: 200,
+      activeStateTokens: 0,
+      peripheralStubsTokens: 0,
+      recentTurnsTokens: 500,
       currentInputTokens: 70,
-      activeObjectCount: 2,
-      peripheralObjectCount: 1,
+      activeObjectCount: 0,
+      peripheralObjectCount: 0,
       recentTurnsTruncated: false,
       memoryTruncated: false,
       agentsContextTruncated: false,
@@ -81,7 +126,8 @@ vi.mock("../src/ui.js", () => ({
 // ── Import after mocks ─────────────────────────────────────────────
 
 import { stream as piStream } from "@earendil-works/pi-ai";
-import { compileWithMetrics } from "../src/compiler.js";
+import { compileClassicWithMetrics } from "../src/compile-classic.js";
+import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
 import { createProvider, resolveModel } from "../src/llm.js";
 
@@ -145,7 +191,6 @@ function makeConfig(overrides?: Partial<AriaConfig>): AriaConfig {
       llm_digest: false,
       activity_log_max_entries: 15,
       checkpoint_enabled: true,
-      scoring_enabled: true,
       scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
       pressure: { compact_at: 0.7, emergency_at: 0.85 },
     },
@@ -171,6 +216,8 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     }),
     readLast: vi.fn((n: number) => events.slice(-n)),
     readLastUncompressed: vi.fn((n: number) => events.slice(-n)),
+    readAll: vi.fn(() => events.slice()),
+    readAllUncompressed: vi.fn(() => events.slice()),
     search: vi.fn(),
     clear: vi.fn(() => { events.length = 0; }),
   };
@@ -217,12 +264,17 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getLastUserInput() { return ""; },
     isIncognito() { return this.incognito ?? false; },
     isContextEngineEnabled() { return this.config.context_engine?.enabled ?? false; },
+    skills: [],
     _inputTokens: 0,
     _outputTokens: 0,
     recordInputTokens(count: number) { this._inputTokens += count; },
     recordOutputTokens(count: number) { this._outputTokens += count; },
     getInputTokens() { return this._inputTokens; },
     getOutputTokens() { return this._outputTokens; },
+    ensureModelContextWindow: vi.fn(async () => 128_000),
+    getContextWindowTokens: vi.fn(() => 128_000),
+    isCompactionArmed: vi.fn(() => false),
+    setCompactionArmed: vi.fn(),
     ...overrides,
   };
 
@@ -479,10 +531,54 @@ describe("runTurn", () => {
     const response = await runTurn(session, "hello");
 
     expect(response).toContain("Hello from AI");
-    expect(compileWithMetrics).toHaveBeenCalled();
+    expect(compileClassicWithMetrics).toHaveBeenCalled();
+    expect(compileEngineWithMetrics).not.toHaveBeenCalled();
     expect(createAllTools).toHaveBeenCalled();
     expect(createProvider).toHaveBeenCalled();
     expect(resolveModel).toHaveBeenCalled();
+  });
+
+  it("uses the engine compiler when context engine is enabled", async () => {
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ledger: { list: vi.fn(() => []) },
+        getRecentActivity: vi.fn(() => []),
+        renderCheckpointSection: vi.fn(() => null),
+        recordCompileTelemetry: vi.fn(),
+        captureStateSnapshot: vi.fn(),
+      },
+    });
+
+    await runTurn(session, "hello");
+
+    expect(compileEngineWithMetrics).toHaveBeenCalled();
+    expect(compileClassicWithMetrics).not.toHaveBeenCalled();
+  });
+
+  it("falls back to classic compiler when context engine is enabled but unavailable", async () => {
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: null,
+    });
+
+    await runTurn(session, "hello");
+
+    expect(compileClassicWithMetrics).toHaveBeenCalled();
+    expect(compileEngineWithMetrics).not.toHaveBeenCalled();
+    expect(describeTools).toHaveBeenCalledWith(
+      expect.objectContaining({ contextEngineEnabled: true, classicMode: true }),
+    );
   });
 
   it("passes modelOverride to resolveModel", async () => {
@@ -511,18 +607,27 @@ describe("runTurn", () => {
       yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: responseText }] } };
     })();
     vi.mocked(piStream).mockReturnValue(generator as any);
-    vi.mocked(compileWithMetrics).mockReturnValue({
+    vi.mocked(compileClassicWithMetrics).mockReturnValue({
       prompt: "mock prompt",
       metrics: {
         totalTokens: 150,
-        activeStateTokens: 10,
-        peripheralStateTokens: 20,
-        recentTurnsTokens: 30,
-        toolSchemasTokens: 40,
         systemFrameTokens: 50,
+        agentsContextTokens: 0,
+        skillsCatalogTokens: 0,
+        checkpointTokens: 0,
+        crossSessionTokens: 0,
+        activeStateTokens: 0,
+        peripheralStubsTokens: 0,
+        recentTurnsTokens: 30,
+        currentInputTokens: 20,
+        activeObjectCount: 0,
+        peripheralObjectCount: 0,
         recentTurnsTruncated: false,
-      }
-    } as any);
+        memoryTruncated: false,
+        agentsContextTruncated: false,
+        skillsTruncated: false,
+      },
+    });
 
     const session = makeMockSession();
 
@@ -794,6 +899,19 @@ describe("runTurn", () => {
     const endTurn = vi.fn();
     const drainEvents = vi.fn(() => []);
     const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ledger: { list: vi.fn(() => []) },
+        getRecentActivity: vi.fn(() => []),
+        renderCheckpointSection: vi.fn(() => null),
+        recordCompileTelemetry: vi.fn(),
+        captureStateSnapshot: vi.fn(),
+      },
       skillRuntime: {
         setBudgetBase,
         processUserInput,

@@ -31,6 +31,10 @@ const DEFAULT_CONFIG: AriaConfig = {
     memories_budget_ratio: 0.2,
     agents_budget_ratio: 0.3,
     reserved_output_tokens: 0,
+    auto_compact_at: 0.75,
+    auto_compact_clear_at: 0.55,
+    compact_chunk_fraction: 0.25,
+    verbatim_only: false,
     compression_watermark: 0.75,
     compression_flush_fraction: 0.30,
   },
@@ -75,7 +79,6 @@ const DEFAULT_CONFIG: AriaConfig = {
     llm_digest: false,
     activity_log_max_entries: 15,
     checkpoint_enabled: true,
-    scoring_enabled: true,
     scoring: {
       w_pin: 1.0,
       w_recency: 0.5,
@@ -274,24 +277,57 @@ function validateConfig(config: AriaConfig): AriaConfig {
       DEFAULT_CONFIG.compiler.recent_turns_token_budget;
   }
 
-  // Compression config validation
+  // Auto-compaction config validation
+  const compactAt =
+    out.compiler.auto_compact_at ?? out.compiler.compression_watermark;
   if (
-    out.compiler.compression_watermark !== undefined &&
-    (!Number.isFinite(out.compiler.compression_watermark) ||
-      out.compiler.compression_watermark < 0.5 ||
-      out.compiler.compression_watermark > 1.0)
+    compactAt !== undefined &&
+    (!Number.isFinite(compactAt) || compactAt < 0.5 || compactAt > 1.0)
   ) {
-    console.warn("[config] Invalid compiler.compression_watermark (must be 0.5–1.0), using default 0.75");
-    out.compiler.compression_watermark = DEFAULT_CONFIG.compiler.compression_watermark;
+    console.warn("[config] Invalid compiler.auto_compact_at (must be 0.5–1.0), using default 0.75");
+    out.compiler.auto_compact_at = DEFAULT_CONFIG.compiler.auto_compact_at;
+  } else if (out.compiler.auto_compact_at === undefined && compactAt !== undefined) {
+    out.compiler.auto_compact_at = compactAt;
+  } else if (out.compiler.auto_compact_at === undefined) {
+    out.compiler.auto_compact_at = DEFAULT_CONFIG.compiler.auto_compact_at;
   }
+
   if (
-    out.compiler.compression_flush_fraction !== undefined &&
-    (!Number.isFinite(out.compiler.compression_flush_fraction) ||
-      out.compiler.compression_flush_fraction < 0.05 ||
-      out.compiler.compression_flush_fraction > 0.5)
+    out.compiler.auto_compact_clear_at !== undefined &&
+    (!Number.isFinite(out.compiler.auto_compact_clear_at) ||
+      out.compiler.auto_compact_clear_at < 0.1 ||
+      out.compiler.auto_compact_clear_at >= (out.compiler.auto_compact_at ?? 0.75))
   ) {
-    console.warn("[config] Invalid compiler.compression_flush_fraction (must be 0.05–0.5), using default 0.30");
-    out.compiler.compression_flush_fraction = DEFAULT_CONFIG.compiler.compression_flush_fraction;
+    console.warn("[config] Invalid compiler.auto_compact_clear_at, using default 0.55");
+    out.compiler.auto_compact_clear_at = DEFAULT_CONFIG.compiler.auto_compact_clear_at;
+  } else if (out.compiler.auto_compact_clear_at === undefined) {
+    out.compiler.auto_compact_clear_at = DEFAULT_CONFIG.compiler.auto_compact_clear_at;
+  }
+
+  const chunkFraction =
+    out.compiler.compact_chunk_fraction ?? out.compiler.compression_flush_fraction;
+  if (
+    chunkFraction !== undefined &&
+    (!Number.isFinite(chunkFraction) || chunkFraction < 0.05 || chunkFraction > 0.5)
+  ) {
+    console.warn("[config] Invalid compiler.compact_chunk_fraction (must be 0.05–0.5), using default 0.25");
+    out.compiler.compact_chunk_fraction = DEFAULT_CONFIG.compiler.compact_chunk_fraction;
+  } else if (out.compiler.compact_chunk_fraction === undefined && chunkFraction !== undefined) {
+    out.compiler.compact_chunk_fraction = chunkFraction;
+  } else if (out.compiler.compact_chunk_fraction === undefined) {
+    out.compiler.compact_chunk_fraction = DEFAULT_CONFIG.compiler.compact_chunk_fraction;
+  }
+
+  if (typeof out.compiler.verbatim_only !== "boolean") {
+    out.compiler.verbatim_only = DEFAULT_CONFIG.compiler.verbatim_only;
+  }
+
+  if (
+    out.llm.context_window !== undefined &&
+    (!Number.isFinite(out.llm.context_window) || out.llm.context_window <= 1000)
+  ) {
+    console.warn("[config] Invalid llm.context_window, ignoring override");
+    delete out.llm.context_window;
   }
 
   if (!out.context_engine) {
@@ -337,10 +373,6 @@ function validateConfig(config: AriaConfig): AriaConfig {
   if (typeof out.context_engine.checkpoint_enabled !== "boolean") {
     out.context_engine.checkpoint_enabled =
       DEFAULT_CONFIG.context_engine.checkpoint_enabled;
-  }
-  if (typeof out.context_engine.scoring_enabled !== "boolean") {
-    out.context_engine.scoring_enabled =
-      DEFAULT_CONFIG.context_engine.scoring_enabled;
   }
   if (!out.context_engine.scoring) {
     out.context_engine.scoring = { ...DEFAULT_CONFIG.context_engine.scoring };

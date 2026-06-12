@@ -6,7 +6,9 @@ This document explains the key ideas behind ARIA's two adaptive systems.
 
 ## Adaptive Context
 
-**Adaptive Context** is ARIA's within-session working memory. Rather than treating all prior state equally, ARIA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
+**Adaptive Context** is ARIA's within-session working memory, active in **engine mode only**. Rather than treating all prior state equally, ARIA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
+
+In **classic mode**, Adaptive Context is not exposed — no StateGraph tools, no tier sections in the prompt. The full event log serves as working memory instead.
 
 ### State Objects
 
@@ -70,6 +72,22 @@ When `context_engine.enabled = true`, ARIA maintains a **SessionCheckpoint** —
 Turns 0–2 appear verbatim in the prompt. Turns 3–6 appear as scored digests. From turn 7 onward, information only survives if the checkpoint captured it. The narrative, plan history, retained decision rationale, and implicit constraint extraction address the most common gaps where conversational knowledge was previously lost.
 
 The checkpoint is written from `TurnDigest` data only — never by the LLM — to prevent summarisation drift. For deep reasoning chains or full exploration history, the agent should still use `search_turn_events` or `retrieve_artifact`.
+
+---
+
+## Classic Mode
+
+When `context_engine.enabled = false` (or enabled but the engine fails to initialize), ARIA runs in **classic mode** via `src/compile-classic.ts`.
+
+Classic mode is intentionally simple:
+
+- **Full verbatim history** — every user message, agent reply, and tool result from the session event log, with no token-budget truncation.
+- **No Adaptive Context** — no `create_task`, `decide`, tier demotion, or auto-hydrate. Working memory is the transcript itself.
+- **No context engine** — no distillers, artifact store, checkpoint, turn ledger, or scored compilation.
+- **Skills as catalog** — discovered skill names and paths are listed in the prompt; the agent reads `SKILL.md` files with `read_file` when needed. No BM25 matching or hot/warm/cold residency.
+- **Cognitive Memory unchanged** — cross-session `recall` / `remember` and the session-start digest still work.
+
+Classic mode is the A/B baseline against the context engine. Set `measurement_mode = true` to record engine telemetry while running classic for comparison experiments.
 
 ---
 
@@ -145,4 +163,4 @@ Adaptive Context and Cognitive Memory are complementary but distinct:
 | Managed by | Agent tools + automatic demotion | Session end extraction + agent tools |
 | Purpose | Curate what the model sees *right now* | Preserve what was learned *over time* |
 
-At session start, the memory digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns.
+At session start, the memory digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns (engine mode), or alongside the full verbatim transcript (classic mode).

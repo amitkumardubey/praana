@@ -11,6 +11,8 @@ vi.mock("../src/session.js", () => ({
       debug: false,
       config: { llm: { model: "test/model" } },
       getModelOverride: () => null,
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: vi.fn(async () => 128_000),
       getMemoryStats: () => ({
         total: 0,
         active: 0,

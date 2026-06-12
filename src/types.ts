@@ -111,6 +111,8 @@ export interface LlmConfig {
   provider: string;
   model: string;
   base_url?: string;
+  /** Override model context window (input tokens) for pressure and compaction. */
+  context_window?: number;
 }
 
 export type EmbedderStrategy =
@@ -147,9 +149,17 @@ export interface CompilerConfig {
   skills_budget_ratio?: number;
   /** Tokens reserved for model output when computing section ceilings. */
   reserved_output_tokens?: number;
-  /** Token usage ratio (0–1) that triggers history compression. Default: 0.75. */
+  /** Context fill ratio (0–1) that triggers auto-compaction. Default: 0.75. */
+  auto_compact_at?: number;
+  /** Disarm compaction hysteresis below this ratio. Default: 0.55. */
+  auto_compact_clear_at?: number;
+  /** Fraction (0–1) of oldest transcript events to compact per trigger. Default: 0.25. */
+  compact_chunk_fraction?: number;
+  /** Classic mode: never auto-compact (A/B verbatim baseline). Default: false. */
+  verbatim_only?: boolean;
+  /** @deprecated Use auto_compact_at */
   compression_watermark?: number;
-  /** Fraction (0–1) of oldest turns to compress when watermark is hit. Default: 0.30. */
+  /** @deprecated Use compact_chunk_fraction */
   compression_flush_fraction?: number;
 }
 
@@ -235,8 +245,6 @@ export interface ContextEngineConfig {
   activity_log_max_entries: number;
   /** Enable structured SessionCheckpoint in the prompt. */
   checkpoint_enabled: boolean;
-  /** Use scored multi-resolution compiler (engine mode). */
-  scoring_enabled: boolean;
   scoring: ContextEngineScoringConfig;
   pressure: ContextEnginePressureConfig;
 }

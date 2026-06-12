@@ -4,13 +4,19 @@ import { join } from "node:path";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
-import { compileWithMetrics } from "./compiler.js";
+import type { CompileMetrics } from "./compiler.js";
+import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
   compileEngineWithMetrics,
   resolveContextEngineConfig,
 } from "./context-engine/index.js";
+import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel } from "./llm.js";
+import {
+  formatCompactionBanner,
+  maybeAutoCompactClassic,
+} from "./auto-compact.js";
 import type { ContextEngine } from "./context-engine/index.js";
 import { TurnRecorder } from "./context-engine/turn-recorder.js";
 import { TurnAbortedError } from "./turn-control.js";
@@ -50,25 +56,37 @@ export async function runTurn(
   });
   session.setLastUserInput(userInput);
 
-  // 1b. Auto-hydrate peripheral objects matching user query keywords
-  const autoHydrated = session.stateGraph.autoHydrate(userInput);
-  if (autoHydrated.length > 0) {
-    for (const id of autoHydrated) {
-      const obj = session.stateGraph.get(id)!;
-      session.eventLog.append({
-        kind: "context_action",
-        actor: "kernel",
-        payload: {
-          action: "setTier",
-          id,
-          tier: "active",
-          lastTouched: obj.lastTouched,
-          reason: "auto_hydrate",
-        },
-      });
-    }
-    if (session.debug) {
-      s.onDebug?.(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.join(", ")}`);
+  // 1b. Auto-hydrate peripheral objects matching user query keywords (engine mode only)
+  const contextEngineEnabled =
+    session.isContextEngineEnabled?.() ?? session.config.context_engine?.enabled ?? false;
+  const useEngineCompiler = contextEngineEnabled && !!session.contextEngine;
+  const classicMode = !useEngineCompiler;
+
+  if (contextEngineEnabled && !session.contextEngine && session.debug) {
+    s.onDebug?.("context engine unavailable — falling back to classic compiler");
+  }
+
+  let autoHydrated: string[] = [];
+  if (!classicMode) {
+    autoHydrated = session.stateGraph.autoHydrate(userInput);
+    if (autoHydrated.length > 0) {
+      for (const id of autoHydrated) {
+        const obj = session.stateGraph.get(id)!;
+        session.eventLog.append({
+          kind: "context_action",
+          actor: "kernel",
+          payload: {
+            action: "setTier",
+            id,
+            tier: "active",
+            lastTouched: obj.lastTouched,
+            reason: "auto_hydrate",
+          },
+        });
+      }
+      if (session.debug) {
+        s.onDebug?.(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.join(", ")}`);
+      }
     }
   }
 
@@ -80,6 +98,7 @@ export async function runTurn(
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
     contextEngine: session.contextEngine,
+    classicMode,
     cwd: session.cwd,
     getAbortSignal: () => options?.signal,
     sandbox: session.config.shell,
@@ -87,21 +106,26 @@ export async function runTurn(
     getCurrentTurn: () => session.getTurnCount(),
   });
 
-  // 2b. Match skills against user input (budget base must be set before promotion)
+  const modelName = modelOverride ?? session.config.llm.model;
+  const contextWindowTokens = await session.ensureModelContextWindow(modelName);
+  const reservedOutputTokens = session.config.compiler.reserved_output_tokens ?? 0;
+
+  // 2b. Match skills against user input (engine mode only)
   const tokenBudget = session.config.compiler.token_budget;
-  session.skillRuntime?.setBudgetBase(tokenBudget);
-  session.skillRuntime?.processUserInput(userInput);
+  if (!classicMode) {
+    session.skillRuntime?.setBudgetBase(tokenBudget);
+    session.skillRuntime?.processUserInput(userInput);
+  }
 
   // 3. Compile prompt (system only, user input passed as message)
   const recentEvents = session.eventLog.readLastUncompressed(
     session.config.compiler.recent_turns
   );
-  const contextEngineEnabled =
-    session.isContextEngineEnabled?.() ?? session.config.context_engine?.enabled ?? false;
-  const toolDescs = describeTools({ contextEngineEnabled });
+  const toolDescs = describeTools({ contextEngineEnabled, classicMode });
 
-  // Build skills prompt section from runtime
-  const skillsSection = session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
+  const skillsSection = classicMode
+    ? buildSkillMetadataCatalog(session.skills) || null
+    : session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
   const agentsBudgetRatio =
     session.config.compiler.agents_budget_ratio ?? session.config.compiler.skills_budget_ratio;
 
@@ -130,19 +154,17 @@ export async function runTurn(
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
   };
 
-  const useScoredCompiler =
-    contextEngineEnabled && engineConfig.scoring_enabled && session.contextEngine;
-
   let compiledPrompt: string;
-  let promptMetrics: ReturnType<typeof compileWithMetrics>["metrics"];
+  let promptMetrics: CompileMetrics;
 
-  if (useScoredCompiler) {
+  if (useEngineCompiler) {
     const engineResult = compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
       turnRecords: session.contextEngine!.ledger.list(),
       activityEntries: session.contextEngine!.getRecentActivity(),
       engineConfig,
+      contextWindowTokens,
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = engineResult.metrics;
@@ -167,9 +189,46 @@ export async function runTurn(
       );
     }
   } else {
-    const classic = compileWithMetrics(compileInput);
-    compiledPrompt = classic.prompt;
-    promptMetrics = classic.metrics;
+    let classicResult = compileClassicWithMetrics({
+      cwd: session.cwd,
+      sessionId: session.id,
+      toolSchemas: toolDescs,
+      agentsContext: session.agentsContext,
+      projectContext: session.projectContext,
+      skillsCatalog: skillsSection,
+      memoryDigest: session.digest,
+      events: session.eventLog.readAllUncompressed(),
+      userInput,
+    });
+    compiledPrompt = classicResult.prompt;
+    promptMetrics = classicResult.metrics;
+
+    const compaction = await maybeAutoCompactClassic(
+      session,
+      promptMetrics.totalTokens,
+      modelName,
+    );
+    const compactionBanner = formatCompactionBanner(compaction);
+    if (compactionBanner) {
+      s.onDebug?.(compactionBanner);
+      if (!session.debug) printDebug(compactionBanner);
+    }
+    if (compaction.compacted) {
+      classicResult = compileClassicWithMetrics({
+        cwd: session.cwd,
+        sessionId: session.id,
+        toolSchemas: toolDescs,
+        agentsContext: session.agentsContext,
+        projectContext: session.projectContext,
+        skillsCatalog: skillsSection,
+        memoryDigest: session.digest,
+        events: session.eventLog.readAllUncompressed(),
+        userInput,
+      });
+      compiledPrompt = classicResult.prompt;
+      promptMetrics = classicResult.metrics;
+    }
+
     session.setLastCompileScoreRecords([], "normal", 0);
   }
 
@@ -177,11 +236,6 @@ export async function runTurn(
 
   // Track input tokens
   session.recordInputTokens(promptMetrics.totalTokens);
-
-  // 3b. Check if history compression is needed (only in non-engine mode — engine uses checkpoint + scoring)
-  if (!contextEngineEnabled && session.memoryEnabled && session.memoryStore && promptMetrics.recentTurnsTruncated) {
-    await maybeCompressHistory(session);
-  }
 
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
@@ -193,8 +247,7 @@ export async function runTurn(
   }
 
   // 4. Create LLM provider and model
-  const provider = createProvider(session.config.llm);
-  const modelName = modelOverride ?? session.config.llm.model;
+  const provider = createProvider(session.config.llm, contextWindowTokens);
   const model = provider(resolveModel(modelName));
 
   // 5. Stream response
@@ -313,7 +366,7 @@ export async function runTurn(
       let result: unknown;
       let isError = false;
 
-      if (!executionHydrated) {
+      if (!executionHydrated && !classicMode) {
         session.skillRuntime?.hydrateExecutionForHotSkills();
         executionHydrated = true;
       }
@@ -330,7 +383,7 @@ export async function runTurn(
         }
       }
 
-      if (isError) {
+      if (isError && !classicMode) {
         session.skillRuntime?.hydrateRecoveryForHotSkills();
       }
 
@@ -419,6 +472,7 @@ export async function runTurn(
       turnRecorder,
       userInput,
       stateBeforeTurn,
+      classicMode,
       s,
     );
   }
@@ -463,11 +517,13 @@ export async function runTurn(
     });
   }
 
-  // 7. Increment turn and run tier management
+  // 7. Increment turn and run tier management (engine mode only)
   session.incrementTurn();
-  applyTierManagement(session);
-  session.skillRuntime?.endTurn();
-  flushSkillTelemetry(session);
+  if (!classicMode) {
+    applyTierManagement(session);
+    session.skillRuntime?.endTurn();
+    flushSkillTelemetry(session);
+  }
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
@@ -484,6 +540,7 @@ function finalizeInterruptedTurn(
   turnRecorder: TurnRecorder,
   userInput: string,
   stateBeforeTurn: ReturnType<ContextEngine["captureStateSnapshot"]> | undefined,
+  classicMode: boolean,
   sink?: TurnUiSink
 ): never {
   const trimmed = partialResponse.trim();
@@ -520,9 +577,11 @@ function finalizeInterruptedTurn(
   }
 
   session.incrementTurn();
-  applyTierManagement(session);
-  session.skillRuntime?.endTurn();
-  flushSkillTelemetry(session);
+  if (!classicMode) {
+    applyTierManagement(session);
+    session.skillRuntime?.endTurn();
+    flushSkillTelemetry(session);
+  }
 
   const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
   if (sink) sink.onMemoryBanner?.(stats);
@@ -574,66 +633,6 @@ export function normalizeToolParameters(schema: unknown): Record<string, unknown
     additionalProperties: false,
     properties: {},
   };
-}
-
-/**
- * Compress old turns into episodic memories when history exceeds the watermark.
- * This preserves context while reclaiming token budget.
- */
-async function maybeCompressHistory(session: Session): Promise<void> {
-  const watermark = session.config.compiler.compression_watermark ?? 0.75;
-  const flushFraction = session.config.compiler.compression_flush_fraction ?? 0.30;
-  const recentTurnsBudget = session.config.compiler.recent_turns_token_budget ?? 30_000;
-
-  // Read all uncompressed events and estimate token usage
-  const allEvents = session.eventLog.readLastUncompressed(1000); // read a large batch to find all recent turns
-  if (allEvents.length === 0) return;
-
-  // Calculate token usage of the recent turns section
-  const filtered = allEvents.filter(
-    (e) => e.kind !== "context_action" && e.kind !== "system_note"
-  );
-  let estimatedTokens = Math.ceil("# Recent Turns".length / 4);
-  for (const ev of filtered) {
-    const text = ev.payload.text ?? JSON.stringify(ev.payload.result ?? ev.payload.args ?? "");
-    estimatedTokens += Math.ceil(String(text).length / 4);
-  }
-
-  // Check if we exceed the watermark
-  const usable = recentTurnsBudget;
-  if (estimatedTokens / usable < watermark) return;
-
-  // Determine which events to compress: oldest flush_fraction
-  const toCompressCount = Math.max(1, Math.floor(filtered.length * flushFraction));
-  const toCompress = filtered.slice(0, toCompressCount);
-  if (toCompress.length === 0) return;
-
-  if (session.debug) {
-    printDebug(
-      `compressing ${toCompress.length} events (${Math.round(estimatedTokens)} tokens > ${Math.round(watermark * usable)} watermark)`
-    );
-  }
-
-  // Convert to SessionEvent format for the summarizer
-  const sessionEvents = toCompress.map((ev) => ({
-    type: ev.kind as "user_message" | "agent_message" | "tool_use" | "tool_result",
-    timestamp: ev.timestamp,
-    content: (ev.payload.text as string) ?? undefined,
-    tool_name: (ev.payload.tool as string) ?? undefined,
-    args: (ev.payload.args as Record<string, unknown>) ?? undefined,
-    result: ev.payload.result,
-  }));
-
-  // Compress and store
-  const factsStored = await session.memoryStore!.compressTurns(sessionEvents);
-
-  // Mark events as compressed in the event log
-  const eventIds = toCompress.map((ev) => ev.event_id);
-  session.eventLog.markEventsAsCompressed(eventIds);
-
-  if (session.debug || factsStored > 0) {
-    printDebug(`compressed ${toCompress.length} events → ${factsStored} facts stored`);
-  }
 }
 
 export function applyTierManagement(session: Session): void {

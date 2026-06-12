@@ -22,6 +22,7 @@ describe("executeSlashCommand", () => {
     const setModel = vi.fn();
     const session = {
       setModelOverride: vi.fn(),
+      refreshModelContextWindow: vi.fn(async () => 128_000),
       getModelOverride: vi.fn(() => null),
       config: { llm: { model: "test/model" } },
       eventLog: { append: vi.fn() },

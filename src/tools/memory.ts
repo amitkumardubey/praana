@@ -8,10 +8,13 @@ export interface MemoryToolContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
   searchTurnEvents?: (query: string, limit?: number, currentTurn?: number) => TurnSearchMatch[];
+  /** false in classic mode — StateGraph tools are not registered. */
+  includeWorkingMemoryTools?: boolean;
 }
 
 export function createMemoryTools(ctx: MemoryToolContext) {
   const { eventLog, stateGraph, searchTurnEvents } = ctx;
+  const includeWorkingMemory = ctx.includeWorkingMemoryTools !== false;
 
   const logAction = (
     action: string,
@@ -24,7 +27,8 @@ export function createMemoryTools(ctx: MemoryToolContext) {
     });
   };
 
-  return {
+  const workingMemoryTools = includeWorkingMemory
+    ? {
     create_task: defineTool({
       description: "Create a new task in working memory. Tasks track what you're working on.",
       parameters: z.object({
@@ -251,7 +255,11 @@ export function createMemoryTools(ctx: MemoryToolContext) {
         return { ok: true, id };
       },
     }),
+  }
+    : {};
 
+  return {
+    ...workingMemoryTools,
     search_session_log: defineTool({
       description:
         "Search the current session's event log for earlier messages, tool calls, and results. " +

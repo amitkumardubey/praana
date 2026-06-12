@@ -39,6 +39,8 @@ export interface EngineCompileInput extends CompileInput {
   turnRecords: TurnRecord[];
   activityEntries?: ActivityEntry[];
   engineConfig: ContextEngineConfig;
+  /** Model input context window; pressure is measured against this when set. */
+  contextWindowTokens?: number;
 }
 
 export interface EngineCompileResult {
@@ -223,7 +225,12 @@ export function compileEngineWithMetrics(
   const scoreRecords: CompileScoreRecord[] = [];
 
   const reservedOutput = input.reservedOutputTokens ?? 0;
-  const usable = Math.max(0, input.tokenBudget - reservedOutput);
+  const contextWindow = input.contextWindowTokens ?? input.tokenBudget;
+  const usable = Math.max(
+    0,
+    Math.min(input.tokenBudget, contextWindow) - reservedOutput,
+  );
+  const pressureDenominator = Math.max(1, contextWindow - reservedOutput);
   const maxMemoryTokens = Math.floor(usable * (input.memoriesBudgetRatio ?? 0.2));
   const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const maxSkillsSectionTokens = Math.floor(
@@ -279,7 +286,7 @@ export function compileEngineWithMetrics(
     estTokens(sections.join("\n\n")) +
     (input.userInput ? estTokens(`## Current Input\n\nUser: ${input.userInput}`) : 0);
 
-  let pressureRatio = pinnedTokens / usable;
+  let pressureRatio = pinnedTokens / pressureDenominator;
   let pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
 
   const activityEntries = input.activityEntries ?? [];
@@ -392,12 +399,12 @@ export function compileEngineWithMetrics(
 
   const fullPrompt = sections.join("\n\n");
   metrics.totalTokens = estTokens(fullPrompt);
-  pressureRatio = metrics.totalTokens / usable;
+  pressureRatio = metrics.totalTokens / pressureDenominator;
   pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
 
-  if (metrics.totalTokens > input.tokenBudget) {
+  if (metrics.totalTokens > usable) {
     console.warn(
-      `[engine-compiler] Prompt estimated at ${metrics.totalTokens} tokens, exceeds budget of ${input.tokenBudget}.`,
+      `[engine-compiler] Prompt estimated at ${metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
     );
   }
 

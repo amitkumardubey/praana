@@ -74,10 +74,12 @@ export class AppController {
   }
 
   getStatusBarInput(): StatusBarInput {
+    const model = this.currentModelOrDefault();
     return buildStatusBarInput(this.session, {
-      model: this.currentModelOrDefault(),
+      model,
       debug: this.session.debug,
       thinking: this.showThinking,
+      contextWindowTokens: this.session.getContextWindowTokens(model),
     });
   }
 

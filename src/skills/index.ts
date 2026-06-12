@@ -255,6 +255,24 @@ export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): Sk
   return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** Metadata-only skill catalog for classic mode (no residency or BM25). */
+export function buildSkillMetadataCatalog(records: SkillRecord[]): string {
+  if (records.length === 0) return "";
+
+  const lines = [
+    "## Available Skills",
+    "",
+    "Read a skill with read_file when it is relevant:",
+    "",
+  ];
+
+  for (const skill of records) {
+    lines.push(`- **${skill.name}**: ${skill.description} (\`${skill.location}\`)`);
+  }
+
+  return lines.join("\n");
+}
+
 // ========================================================================
 // Section Boundary Detection
 // ========================================================================

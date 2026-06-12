@@ -13,7 +13,6 @@ const ENGINE_CONFIG: ContextEngineConfig = {
   llm_digest: false,
   activity_log_max_entries: 15,
   checkpoint_enabled: true,
-  scoring_enabled: true,
   scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };

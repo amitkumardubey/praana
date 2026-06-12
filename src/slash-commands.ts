@@ -218,6 +218,7 @@ export async function executeSlashCommand(
       const trimmed = model.trim();
       handlers.setModel(trimmed);
       session.setModelOverride(trimmed);
+      const contextWindow = await session.refreshModelContextWindow(trimmed);
       session.eventLog.append({
         kind: "system_note",
         actor: "kernel",
@@ -226,7 +227,7 @@ export async function executeSlashCommand(
           model: trimmed,
         },
       });
-      lines.push(`Model switched to: ${model}`);
+      lines.push(`Model switched to: ${model} (${contextWindow.toLocaleString()} ctx)`);
       return result("refresh_status");
     }
 
@@ -311,7 +312,7 @@ export async function executeSlashCommand(
       const record = session.getCompileScoreRecord(unitId);
       if (!record) {
         lines.push(`No score record for "${unitId}" on the last compile.`);
-        lines.push("Run a turn with context_engine.scoring_enabled=true and debug mode for scores.jsonl.");
+        lines.push("Run a turn with context_engine.enabled=true and debug mode for scores.jsonl.");
         break;
       }
       const engineConfig = resolveContextEngineConfig(session.config);

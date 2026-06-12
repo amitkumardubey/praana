@@ -14,7 +14,8 @@ src/
   main.ts        — CLI entry point, readline loop, slash commands
   turn.ts        — Per-turn orchestration (prompt → LLM → tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
-  compiler.ts    — Legacy prompt assembly (used in classic mode)
+  compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
+  compiler.ts    — Legacy budget-band compiler (unit tests and benchmarks only)
   state-graph.ts — Tiered state management (active/soft/hard) & keyword auto-hydrate
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
   llm.ts         — Provider registry and model building via pi-ai
@@ -72,20 +73,24 @@ User input
   → main.ts readline loop
   → runTurn(session, input) in turn.ts
       1) append user_message event
-      2) auto-hydrate matching peripheral state (keyword matching)
-      3) capture StateGraph snapshot (for post-turn diff)
-      4) ingest tool results through distillers (engine mode) or pass through
-      5) compile prompt:
-         Engine mode:  compileEngineWithMetrics (budget bands + scored units + checkpoint)
-         Classic mode: compileWithMetrics (legacy 5-section fixed allocator)
-      6) piStream() with tools
-      7) log tool_call / tool_result + context_action events
-      8) append agent_message event
-      9) flush deferred distillations, append turn record to ledger
-     10) extract TurnDigest (deterministic, no LLM)
-     11) reconcile SessionCheckpoint from digest
-     12) apply tier demotion rules
-     13) print per-turn memory/prompt banner
+      2) select mode:
+         Engine: context_engine.enabled=true AND ContextEngine initialized
+         Classic: everything else (disabled, or enabled but init failed)
+      3) [engine only] auto-hydrate matching peripheral state (keyword matching)
+      4) [engine only] capture StateGraph snapshot (for post-turn diff)
+      5) [engine only] ingest tool results through distillers; classic passes through
+      6) compile prompt:
+         Engine:  compileEngineWithMetrics (budget bands + scored units + checkpoint)
+         Classic: compileClassicWithMetrics (system frame + skill catalog + full history)
+      7) piStream() with tools (tool set varies by mode — see Tools)
+      8) log tool_call / tool_result + context_action events
+      9) append agent_message event
+     10) [engine only] flush deferred distillations, append turn record to ledger
+     11) [engine only] extract TurnDigest (deterministic, no LLM)
+     12) [engine only] reconcile SessionCheckpoint from digest
+     13) increment turn count
+     14) [engine only] apply tier demotion rules + skill residency endTurn
+     15) print per-turn memory/prompt banner
 ```
 
 ## Session Boundary Flow
@@ -167,7 +172,19 @@ Agents can search the full log in-session via the `search_session_log` tool (key
 
 ## Compiler
 
-### Engine mode (`context_engine.enabled = true`)
+ARIA has two runtime compile paths. Selection happens in `turn.ts`:
+
+```ts
+const useEngineCompiler = contextEngineEnabled && !!session.contextEngine;
+const classicMode = !useEngineCompiler;
+```
+
+- **Engine mode** — `context_engine.enabled = true` and `ContextEngine` initialized successfully at session start.
+- **Classic mode** — engine disabled, or enabled but initialization failed (falls back to full classic behaviour).
+
+`src/compiler.ts` (`compileWithMetrics`) is retained for unit tests and benchmarks only; it is not used at runtime.
+
+### Engine mode (`context_engine.enabled = true`, engine initialized)
 
 `src/context-engine/engine-compiler.ts` constructs a multi-resolution prompt from budget bands:
 
@@ -202,57 +219,68 @@ Score logging: in debug mode, `scores.jsonl` records every context unit's score 
 
 Implicit knowledge capture has two layers: (1) the system frame nudges the agent to call `add_constraint` / `add_note` for preferences and corrections — this is the **primary** mechanism because the LLM is the language-understanding component, not regex; (2) `extractImplicitConstraints()` in `turn-digest.ts` is a **minimal safety net** that only captures the syntactically unambiguous "not X, Y" correction pattern. Patterns like "let's use", "we use", "I prefer", "how about" are NOT regex-matched because natural language is too variable — those are the LLM's responsibility via the nudge.
 
-### Classic mode (`context_engine.enabled = false`)
+### Classic mode (`compile-classic.ts`)
 
-`src/compiler.ts` constructs the prompt with the legacy 5-section fixed allocator:
+When classic mode is active, `src/compile-classic.ts` builds a flat prompt with **no token-budget truncation** and **no Adaptive Context sections**:
 
-1. **System Frame**: System prompt with current working directory, session ID, tool descriptions, working memory stats, and implicit-knowledge-capture guidance (preferences/conventions → `add_constraint`).
-2. **Cross-Session Memory**: The active Cognitive Memory digest (rendered in markdown).
-3. **Active State**: Full payloads grouped by kind (Tasks, Decisions, Constraints, Notes), sorted deterministically by creation time and ULID.
-4. **Peripheral Memory**: Lists soft-tier objects as one-line stubs and hard-tier objects as minimal anchors (IDs). Includes instructions on how to `hydrate` them.
-5. **Recent Turns**: Chronological transcript of recent events (filtering out `context_action` and `system_note`), truncated according to a specific budget (`recent_turns_token_budget`, defaulting to 30% of total budget).
-6. **Current Input**: User's latest input message.
+1. **System frame** — cwd, session ID, tool descriptions, AGENTS.md project context, skills guidance (read `SKILL.md` via `read_file` when relevant).
+2. **Skills catalog** — name + path metadata only (no BM25 residency, no hot/warm/cold sections).
+3. **Cross-session memory** — Cognitive Memory digest (if enabled).
+4. **Conversation history** — **full verbatim** event log (`readAll()`), excluding `context_action` and `system_note`. Tool results are not truncated.
+5. **Current input** — latest user message.
 
-**Properties:**
-- **Deterministic**: Sorted order for state objects (`created` then `id`).
-- **Token Budgeting**: Characters are mapped to tokens roughly ($1 \text{ token} \approx 4 \text{ characters}$). `compileWithMetrics()` measures and exposes precise token metrics per section.
-- **Truncation Limits**: To prevent context blow-up, tool outputs in the recent-turns list are truncated:
-  - `shell` output is truncated to 500 characters.
-  - `read_file`, `write_file`, and `show` outputs are truncated to 200 characters.
-  - Other tool results are truncated to 500 characters.
+**Runtime differences from engine mode:**
+
+| | Engine mode | Classic mode |
+|---|---|---|
+| Compiler | `compileEngineWithMetrics` | `compileClassicWithMetrics` |
+| History | Budget bands + checkpoint + scored digests | Full verbatim log |
+| StateGraph tools | Available | Hidden from tool list |
+| Engine tools | Available | Hidden |
+| SkillRuntime | BM25 match + hot/warm/cold | Static metadata catalog |
+| Auto-hydrate / tier demotion | Yes | Skipped |
+| TurnDigest / checkpoint | Yes | Skipped |
+| `/why` scores | Available (debug) | N/A |
+
+Classic mode matches how agents like Claude Code and pi operate — a growing transcript with no working-memory tiering — and serves as the A/B baseline against the context engine. Set `measurement_mode = true` to write engine telemetry even while running classic mode for comparison.
+
+### Legacy compiler (`compiler.ts`)
+
+The original 5-section budget-band allocator (`compileWithMetrics`) remains in the tree for regression tests and token benchmarks. It applied per-section token budgets, truncated recent turns, and included Adaptive Context active/peripheral sections. Runtime no longer uses this path.
 
 ## Tools
 
-Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema`.
+Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema`. The registered tool set depends on compile mode (`describeTools({ contextEngineEnabled, classicMode })`).
 
-### Adaptive Context Tools (`src/tools/memory.ts`)
-- `create_task(title, description?)` — creates a task in working memory
-- `complete_task(id)` — marks a task as done, auto-demoting it to the `soft` tier
-- `retract_task(id)` — tombstones a state object (any kind). The object is hidden from `getActive`/`getPeripheral`/`list` and from prompts, but is retained in the event log for audit and replay.
-- `add_constraint(text)` — records a constraint rule/limitation
-- `decide(summary, rationale)` — records an architectural/design decision
-- `add_note(text)` — records a general note
-- `soft_unload(id)` — demotes a state object to `soft`
-- `hard_unload(id)` — demotes a state object to `hard`
-- `hydrate(id)` — promotes a peripheral object back to `active`
-- `list_state()` — lists all state objects with their IDs, kinds, tiers, and summaries
-
-### Cognitive Memory Tools (`src/tools/knowledge.ts`)
-- `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
-- `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to cross-session memory
-- `forget_memory(id)` — tombstones a cross-session memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
-
-### Context Engine Tools (`src/tools/knowledge.ts` — engine mode only)
-- `retrieve_artifact(id, options?)` — retrieves raw artifact content with optional grep/line/jsonPath selectors
-- `context_summary()` — current checkpoint + open errors + recent activity + session stats
-- `search_turn_events(query)` — BM25 search over turn ledger
-- `event_lineage(artifactId)` — trace artifact → producing turn → decisions → related artifacts
+### Shared tools (classic and engine mode)
+- `search_session_log(query, kinds?, limit?)` — keyword search over the current session event log
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s)
 - `read_file(path, offset?, limit?)` — reads a file with optional pagination limits
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching
+
+### Cognitive Memory Tools (`src/tools/knowledge.ts`)
+- `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
+- `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to cross-session memory
+- `forget_memory(id)` — tombstones a cross-session memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
+
+### Adaptive Context Tools (`src/tools/memory.ts` — engine mode only)
+- `create_task(title, description?)` — creates a task in working memory
+- `complete_task(id)` — marks a task as done, auto-demoting it to the `soft` tier
+- `retract_task(id)` — tombstones a state object (any kind)
+- `add_constraint(text)` — records a constraint rule/limitation
+- `decide(summary, rationale)` — records an architectural/design decision
+- `add_note(text)` — records a general note
+- `soft_unload(id)` / `hard_unload(id)` / `hydrate(id)` — tier management
+- `list_state()` — lists all state objects with their IDs, kinds, tiers, and summaries
+
+### Context Engine Tools (`src/tools/knowledge.ts` — engine mode only)
+- `retrieve_artifact(id, options?)` — retrieves raw artifact content with optional grep/line/jsonPath selectors
+- `context_summary()` — current checkpoint + open errors + recent activity + session stats
+- `search_turn_events(query)` — BM25 search over turn ledger
+- `event_lineage(artifactId)` — trace artifact → producing turn → decisions → related artifacts
 
 ## Cognitive Memory
 
@@ -331,7 +359,6 @@ measurement_mode = false           # write telemetry in classic mode for A/B com
 artifact_inline_threshold = 400
 artifact_ttl_turns = 50
 checkpoint_enabled = true          # narrative, plan history, constraints, decisions w/ rationale
-scoring_enabled = true
 
 [context_engine.distiller]
 default_intensity = "full"         # lite | full

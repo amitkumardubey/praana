@@ -4,14 +4,17 @@ vi.mock("@earendil-works/pi-ai", () => ({
   stream: vi.fn(),
 }));
 
-vi.mock("../src/compiler.js", () => ({
-  compileWithMetrics: vi.fn(() => ({
-    prompt: "compiled",
+vi.mock("../src/compiler.js", () => ({}));
+
+vi.mock("../src/compile-classic.js", () => ({
+  compileClassicWithMetrics: vi.fn(() => ({
+    prompt: "classic compiled",
     metrics: {
       totalTokens: 100,
       systemFrameTokens: 10,
       agentsContextTokens: 0,
       skillsCatalogTokens: 0,
+      checkpointTokens: 0,
       crossSessionTokens: 0,
       activeStateTokens: 0,
       peripheralStubsTokens: 0,
@@ -47,6 +50,8 @@ function mockSession(): Session {
       append: vi.fn(),
       readLast: vi.fn(() => []),
       readLastUncompressed: vi.fn(() => []),
+      readAll: vi.fn(() => []),
+      readAllUncompressed: vi.fn(() => []),
       markEventsAsCompressed: vi.fn(),
     },
     stateGraph: {
@@ -89,11 +94,14 @@ function mockSession(): Session {
       drainEvents: vi.fn(() => []),
     },
     agentsContext: null,
+    skills: [],
     promptDir: "/tmp",
     setLastCompileMetrics: vi.fn(),
     setLastCompileScoreRecords(_records?: unknown, _mode?: unknown, _ratio?: unknown) {},
     setLastUserInput: vi.fn(),
     getLastUserInput: vi.fn(() => ""),
+    isCompactionArmed: vi.fn(() => false),
+    setCompactionArmed: vi.fn(),
     recordInputTokens: vi.fn(),
     recordOutputTokens: vi.fn(),
     incrementTurn: vi.fn(),
@@ -104,6 +112,8 @@ function mockSession(): Session {
       hard: 0,
       byKind: {},
     })),
+    ensureModelContextWindow: vi.fn(async () => 128_000),
+    getContextWindowTokens: vi.fn(() => 128_000),
   } as unknown as Session;
 }
 

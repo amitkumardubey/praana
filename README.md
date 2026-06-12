@@ -73,13 +73,13 @@ ARIA's context engine (enabled via `context_engine.enabled = true`) replaces nai
 
 **Scored compilation** — Context units are scored with a 3-term model (pin + recency + relevance) and compiled against budget bands. Pinned content (system frame, checkpoint, last 2 verbatim turns) always fits. Scored content (turn digests, artifact cards, activity entries) fills remaining budget by score. Pressure monitoring triggers compaction or emergency mode when the prompt exceeds thresholds.
 
-When the context engine is disabled, ARIA runs in **classic mode** — full verbatim conversation history, no StateGraph tools, skills loaded as a metadata catalog only. This is the same way other agents like Claude Code and pi work, and serves as the baseline for A/B measurement.
+When the context engine is disabled (`context_engine.enabled = false`), ARIA runs in **classic mode** — full verbatim conversation history via `compile-classic.ts`, no StateGraph or engine tools, skills loaded as a metadata catalog only (agent reads `SKILL.md` with `read_file` when needed). This matches how agents like Claude Code and pi work, and serves as the A/B baseline. If the engine is enabled but fails to initialize, ARIA falls back to the same classic behaviour.
 
-### Adaptive Context — three-tier working memory
+### Adaptive Context — three-tier working memory (engine mode)
 
 Most agents treat context as a flat window. Every prior decision, task, and note competes equally for the same tokens. As a session grows, the model drowns in history.
 
-ARIA organises state objects into tiers:
+When the context engine is enabled, ARIA organises state objects into tiers:
 
 | Tier | What the model sees | When |
 |---|---|---|
@@ -127,9 +127,9 @@ Combined content is capped at ~4000 tokens. ARIA prints `[context] Loaded projec
 
 The agent can create or update `AGENTS.md` via `write_file` as it discovers useful project knowledge.
 
-### Skills — progressive agent capabilities
+### Skills — progressive agent capabilities (engine mode)
 
-ARIA discovers [Agent Skills](https://agentskills.io/) (`SKILL.md` files) from standard locations and loads them progressively so the prompt stays within budget:
+When the context engine is enabled, ARIA discovers [Agent Skills](https://agentskills.io/) (`SKILL.md` files) from standard locations and loads them progressively so the prompt stays within budget:
 
 | Tier | What the model sees | When |
 |---|---|---|
@@ -143,6 +143,8 @@ Search paths (project overrides user when names collide):
 - `~/.agents/skills`, `~/.aria/skills`, `~/.claude/skills`
 
 Skills are ranked per turn with BM25 + synonym expansion. Execution and recovery sections hydrate when tools run or fail. The status bar shows residency counts (`HOT · WARM · COLD`). Residency resets on session resume — skills are re-discovered, not persisted.
+
+In **classic mode**, skills appear as a static name/path catalog only — no BM25 matching or residency tiers.
 
 Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, triggers, neighbors, per-skill token budgets, custom section headings.
 
@@ -169,16 +171,18 @@ Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, tri
 
 ## Tools
 
-**Adaptive Context** (working memory for this session):
+Tool availability depends on compile mode. **Classic mode** exposes shared + system + cognitive memory tools only. **Engine mode** adds Adaptive Context and context-engine tools.
+
+**Shared** (both modes):
+`search_session_log` · `recall` · `remember` · `forget_memory`
+
+**Adaptive Context** (engine mode):
 `create_task` · `complete_task` · `add_constraint` · `decide` · `add_note` · `hydrate` · `soft_unload` · `hard_unload` · `list_state`
 
-**Cognitive Memory** (cross-session knowledge):
-`recall` · `remember`
-
-**Context Engine** (artifact retrieval and session navigation — engine mode only):
+**Context Engine** (engine mode):
 `retrieve_artifact` · `context_summary` · `search_turn_events` · `event_lineage`
 
-**System** (filesystem and shell):
+**System** (both modes):
 `shell` · `read_file` · `write_file` · `edit_file`
 
 ---
@@ -239,7 +243,6 @@ measurement_mode = false           # write telemetry in classic mode for A/B com
 artifact_inline_threshold = 400    # tokens; below this, output appears verbatim
 artifact_ttl_turns = 50           # turns before artifact eviction
 checkpoint_enabled = true          # SessionCheckpoint: narrative, plan, constraints, decisions w/ rationale
-scoring_enabled = true             # scored multi-resolution compiler
 
 [context_engine.distiller]
 default_intensity = "full"         # lite | full
@@ -296,15 +299,19 @@ Session end (/exit)
   → close event log + context engine
 ```
 
-**Classic mode** (`context_engine.enabled = false`):
+**Classic mode** (`context_engine.enabled = false`, or enabled but engine init failed):
 
 ```
 User input
-  → compile prompt with full verbatim conversation history
-  → stream LLM response with tool calls
+  → compile prompt with full verbatim conversation history (compile-classic.ts)
+  → stream LLM response with tool calls (shared + system + memory tools only)
   → log all events to append-only JSONL
-  → apply tier demotion
   → print session banner
+
+Session end (/exit)
+  → send transcript to summariser
+  → extract learnings → store to SQLite
+  → close event log
 ```
 
 The context and memory systems are domain-agnostic at their core. Coding is the first application.
@@ -329,7 +336,6 @@ Node 22+. TypeScript throughout.
 
 The core works. What needs to come next, in order:
 
-- **Classic mode implementation** — full verbatim conversation history, no StateGraph, skills as metadata catalog. The A/B measurement baseline.
 - **Global + project recall merge** — query both scopes and combine results with project-aware precedence
 - **Confidence reinforcement** — wire the feedback loop so recalled memories that help get stronger; unused ones fade faster
 - **Multi-file operations** — create multiple files in one turn instead of three

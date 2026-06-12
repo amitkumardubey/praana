@@ -1,4 +1,11 @@
 import type { AriaConfig } from "./types.js";
+import { resolveContextWindowSync } from "./model-context.js";
+
+export {
+  resolveContextWindowSync,
+  fetchAndCacheContextWindow,
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+} from "./model-context.js";
 
 // ── Provider registry ──────────────────────────────────────────
 // Each entry maps a config `provider` string to pi-ai's model fields.
@@ -151,7 +158,11 @@ type RuntimeModel = Record<string, unknown> & {
   __piOptions?: Record<string, unknown>;
 };
 
-function buildModel(config: AriaConfig["llm"], modelId: string): RuntimeModel {
+function buildModel(
+  config: AriaConfig["llm"],
+  modelId: string,
+  contextWindow?: number,
+): RuntimeModel {
   const pc = getProviderConfig(config.provider);
 
   const baseUrl = config.base_url ?? pc.baseUrl;
@@ -166,7 +177,9 @@ function buildModel(config: AriaConfig["llm"], modelId: string): RuntimeModel {
     input: ["text"],
     reasoning: true,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128000,
+    contextWindow:
+      contextWindow ??
+      resolveContextWindowSync(config.provider, modelId, config.context_window),
     maxTokens: 8192,
   };
 
@@ -182,8 +195,8 @@ function buildModel(config: AriaConfig["llm"], modelId: string): RuntimeModel {
   return model;
 }
 
-export function createProvider(config: AriaConfig["llm"]) {
-  return (modelId: string) => buildModel(config, modelId);
+export function createProvider(config: AriaConfig["llm"], contextWindow?: number) {
+  return (modelId: string) => buildModel(config, modelId, contextWindow);
 }
 
 export function resolveModel(modelString: string) {

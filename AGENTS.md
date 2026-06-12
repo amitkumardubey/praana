@@ -132,7 +132,7 @@ Tests live in `tests/`. Keep the full suite passing before committing.
 - Use in-memory SQLite (`:memory:`) for memory-layer tests — never use a real db path.
 - Integration tests for session lifecycle → `tests/resume.test.ts`
 - State graph unit tests → `tests/state-graph.test.ts`
-- Compiler tests → `tests/compiler.test.ts`
+- Compiler tests → `tests/compiler.test.ts`, `tests/compile-classic.test.ts`
 
 ---
 
@@ -145,7 +145,8 @@ src/
   main.ts        — CLI entry, readline loop, slash commands
   turn.ts        — Per-turn orchestration: prompt → LLM → tools → tier management
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
-  compiler.ts    — Deterministic prompt compiler, 5 sections, per-section token budgets
+  compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
+  compiler.ts    — Legacy budget-band compiler (unit tests and benchmarks only)
   state-graph.ts — Tiered state (active/soft/hard), auto-demotion, auto-hydrate
   event-log.ts   — Append-only events.jsonl, fsyncSync durability
   llm.ts         — Provider registry, model building via pi-ai
@@ -170,25 +171,38 @@ src/
 
 ### Skills (issue #57)
 
-On session start, `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.aria/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `aria.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
+**Engine mode:** `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.aria/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `aria.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
+
+**Classic mode:** `discoverSkills()` + `buildSkillMetadataCatalog()` — name/path catalog only. No SkillRuntime, no BM25, no residency. Agent loads skill bodies via `read_file` when relevant.
 
 ### Turn flow (per turn)
 
-Engine mode (`context_engine.enabled = true`):
+Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true` **and** `session.contextEngine` is initialized; otherwise classic.
+
+**Engine mode:**
 
 ```
 User input
   → auto-hydrate matching peripheral state (keyword matching)
   → skill matching (BM25) + residency promotion/demotion
-  → compile prompt: system frame | skills | checkpoint | verbatim turns | scored context | active state | memory digest
+  → compileEngineWithMetrics: system frame | skills | checkpoint | verbatim turns | scored context | active state | memory digest
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
-  → extract TurnDigest (deterministic) + reconcile SessionCheckpoint (narrative, plan, constraints, decisions w/ rationale)
+  → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement()
   → print memory banner
 ```
 
-Classic mode uses `compiler.ts` with full recent-turns history instead of checkpoint/scoring.
+**Classic mode:**
+
+```
+User input
+  → compileClassicWithMetrics: system frame | skill catalog | memory digest | full verbatim history
+  → stream LLM response (shared + system + memory tools only)
+  → log all events
+  → increment turn count (no tier management, no skill residency)
+  → print memory banner
+```
 
 ### Memory scopes
 

@@ -61,6 +61,26 @@ describe("EventLog compression checkpoint", () => {
     log.close();
   });
 
+  it("readAllUncompressed excludes compressed events", () => {
+    const sessionDir = join(logDir, "test-session-all-uncompressed");
+    mkdirSync(sessionDir, { recursive: true });
+
+    const log = new EventLog("test-session-all-uncompressed", logDir);
+    for (let i = 0; i < 5; i++) {
+      log.append(makeEvent({ event_id: `evt-${i}`, payload: { text: `msg ${i}` } }));
+    }
+    log.markEventsAsCompressed(["evt-0", "evt-1"]);
+
+    expect(log.readAll().length).toBe(5);
+    expect(log.readAllUncompressed().map((e) => e.event_id)).toEqual([
+      "evt-2",
+      "evt-3",
+      "evt-4",
+    ]);
+
+    log.close();
+  });
+
   it("persists compression checkpoint across EventLog instances", () => {
     const sessionId = "test-session-persist";
     const sessionDir = join(logDir, sessionId);

@@ -34,6 +34,10 @@ provider = "openrouter"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
 # Override at runtime via ARIA_MODEL env var or /model command.
 model = "deepseek/deepseek-v4-flash:free"
+
+# Optional: override detected model context window (input tokens) for pressure and compaction
+# context_window = 128000
+
 # Free tier — zero cost, good for getting started.
 # Upgrade to a paid model for better results on complex tasks:
 #   deepseek/deepseek-v4-pro
@@ -117,6 +121,21 @@ recent_turns_token_budget = 30000
 # Max share of token_budget for AGENTS.md / project context in the system frame
 agents_budget_ratio = 0.3
 
+# Tokens reserved for model output when measuring context pressure
+# reserved_output_tokens = 0
+
+# Auto-compact when prompt fill reaches this ratio of the model context window (classic mode)
+auto_compact_at = 0.75
+
+# Disarm compaction hysteresis below this ratio (classic mode)
+auto_compact_clear_at = 0.55
+
+# Fraction of oldest transcript events to summarise per compaction (classic mode)
+compact_chunk_fraction = 0.25
+
+# Classic A/B baseline: never auto-compact (full verbatim until model limit)
+# verbatim_only = false
+
 [skills]
 # Discover and load SKILL.md files (https://agentskills.io/)
 enabled = true
@@ -148,6 +167,7 @@ log_dir = "~/.aria/sessions"
 # Context engine: structured checkpoint, distillation, and scored compilation.
 # When disabled (false), ARIA runs in classic mode — full verbatim conversation
 # history, no StateGraph tools, skills loaded as metadata catalog only.
+# If enabled but initialization fails, ARIA falls back to the same classic mode.
 #
 # When enabled, SessionCheckpoint is reconciled after every turn from a
 # deterministic TurnDigest (never by the LLM). Checkpoint sections:
@@ -175,9 +195,6 @@ artifact_ttl_turns = 50
 # Section token budgets are fixed in code: narrative/plan 400 each, decisions 800,
 # findings 300. No per-section config yet.
 checkpoint_enabled = true
-
-# Use scored multi-resolution compiler (engine mode)
-scoring_enabled = true
 
 # Use LLM for ambiguous userIntent extraction (default: first 120 chars)
 llm_digest = false

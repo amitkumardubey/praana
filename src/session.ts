@@ -8,7 +8,7 @@ import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { AriaConfig, SkillRecord } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
-import { SkillRuntime } from "./skills/index.js";
+import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { StateGraph } from "./state-graph.js";
 import { loadConfig } from "./config.js";
@@ -27,6 +27,10 @@ import {
   resolveContextEngineConfig,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
+import {
+  fetchAndCacheContextWindow,
+  resolveContextWindowSync,
+} from "./model-context.js";
 
 export class Session {
   id: string;
@@ -39,6 +43,7 @@ export class Session {
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
+  projectContext: string | null = null; // stack fingerprint from package.json, README, etc.
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
   contextEngine: ContextEngine | null = null;
@@ -47,6 +52,8 @@ export class Session {
   private readonly startedAt: number;
   private turnCount = 0;
   private modelOverride: string | null = null;
+  private modelContextWindow: number | null = null;
+  private modelContextWindowFor: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
   private lastCompileScoreRecords: CompileScoreRecord[] = [];
   private lastPressureMode: PressureMode = "normal";
@@ -54,6 +61,7 @@ export class Session {
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private lastUserInput = "";
+  private compactionArmed = false;
 
   private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
     this.id = id;
@@ -97,26 +105,22 @@ export class Session {
       console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
     }
 
-    await initSkillRuntime(session, cfg, cwd);
     initContextEngine(session);
+    await initSkills(session, cfg, cwd);
 
-    // Auto-load project context (stack fingerprint)
-    const projectContext = buildProjectContext(cwd);
-    if (projectContext) {
-      session.stateGraph.create("constraint", { text: projectContext });
-      session.eventLog.append({
-        kind: "system_note",
-        actor: "kernel",
-        payload: { type: "project_context_loaded", summary: projectContext.slice(0, 100) },
-      });
-      console.log(chalk.cyan(`🔑 fingerprint  ${Math.ceil(projectContext.length / 4)} tok`));
-    }
+    applyProjectContext(session, cwd);
 
     if (session.incognito) {
       session.memoryEnabled = false;
       session.memoryStore = null;
       session.digest = null;
       console.log("[incognito] Cross-session memory persistence disabled.");
+      await session.refreshModelContextWindow().catch((err) => {
+        console.warn(
+          "[model] Failed to prefetch context window:",
+          (err as Error).message,
+        );
+      });
       return session;
     }
 
@@ -169,6 +173,13 @@ export class Session {
       }
     }
 
+    await session.refreshModelContextWindow().catch((err) => {
+      console.warn(
+        "[model] Failed to prefetch context window:",
+        (err as Error).message,
+      );
+    });
+
     return session;
   }
 
@@ -190,8 +201,8 @@ export class Session {
       console.log(chalk.cyan(`🧠 context  ${tokEst} tok`));
     }
 
-    await initSkillRuntime(session, cfg, cwd);
     initContextEngine(session);
+    await initSkills(session, cfg, cwd);
 
     const allEvents = session.eventLog.readAll();
 
@@ -208,6 +219,8 @@ export class Session {
         session.stateGraph.clear();
       }
     }
+
+    loadProjectContextField(session, cwd);
 
     // Restore model override if one was set previously.
     for (let i = allEvents.length - 1; i >= 0; i--) {
@@ -271,6 +284,13 @@ export class Session {
       }
     }
 
+    await session.refreshModelContextWindow().catch((err) => {
+      console.warn(
+        "[model] Failed to prefetch context window:",
+        (err as Error).message,
+      );
+    });
+
     return session;
   }
 
@@ -300,8 +320,48 @@ export class Session {
     return Math.max(0, Date.now() - this.startedAt);
   }
 
+  getActiveModelId(): string {
+    return this.modelOverride ?? this.config.llm.model;
+  }
+
+  getContextWindowTokens(modelId?: string): number {
+    const id = modelId ?? this.getActiveModelId();
+    if (this.modelContextWindowFor === id && this.modelContextWindow !== null) {
+      return this.modelContextWindow;
+    }
+    return resolveContextWindowSync(
+      this.config.llm.provider,
+      id,
+      this.config.llm.context_window,
+    );
+  }
+
+  async refreshModelContextWindow(modelId?: string): Promise<number> {
+    const id = modelId ?? this.getActiveModelId();
+    const window = await fetchAndCacheContextWindow(
+      this.config.llm.provider,
+      id,
+      this.config.llm.context_window,
+    );
+    this.modelContextWindow = window;
+    this.modelContextWindowFor = id;
+    return window;
+  }
+
+  async ensureModelContextWindow(modelId?: string): Promise<number> {
+    const id = modelId ?? this.getActiveModelId();
+    if (this.modelContextWindowFor === id && this.modelContextWindow !== null) {
+      return this.modelContextWindow;
+    }
+    return this.refreshModelContextWindow(id);
+  }
+
   setModelOverride(model: string | null): void {
-    this.modelOverride = model && model.trim() ? model.trim() : null;
+    const next = model && model.trim() ? model.trim() : null;
+    if (next === this.modelOverride) return;
+    this.modelOverride = next;
+    this.modelContextWindow = null;
+    this.modelContextWindowFor = null;
   }
 
   getModelOverride(): string | null {
@@ -417,6 +477,14 @@ export class Session {
 
   getLastUserInput(): string {
     return this.lastUserInput;
+  }
+
+  isCompactionArmed(): boolean {
+    return this.compactionArmed;
+  }
+
+  setCompactionArmed(armed: boolean): void {
+    this.compactionArmed = armed;
   }
 
   getMemoryStats(): {
@@ -816,6 +884,52 @@ export function buildProjectContext(cwd: string): string | null {
   const summary = parts.join("\n");
   // Cap at ~500 chars
   return summary.length > 500 ? summary.slice(0, 500) + "..." : summary;
+}
+
+function loadProjectContextField(session: Session, cwd: string): void {
+  session.projectContext = buildProjectContext(cwd);
+}
+
+/** Load stack fingerprint on session start; StateGraph constraint only for engine mode. */
+function applyProjectContext(session: Session, cwd: string): void {
+  loadProjectContextField(session, cwd);
+  const projectContext = session.projectContext;
+  if (!projectContext) return;
+
+  session.eventLog.append({
+    kind: "system_note",
+    actor: "kernel",
+    payload: {
+      type: "project_context_loaded",
+      summary: projectContext.slice(0, 100),
+    },
+  });
+  console.log(chalk.cyan(`🔑 fingerprint  ${Math.ceil(projectContext.length / 4)} tok`));
+
+  const engineActive =
+    session.isContextEngineEnabled() && session.contextEngine !== null;
+  if (engineActive) {
+    session.stateGraph.create("constraint", { text: projectContext });
+  }
+}
+
+/** Discover skills — SkillRuntime in engine mode, metadata catalog only in classic mode. */
+async function initSkills(session: Session, cfg: AriaConfig, cwd: string): Promise<void> {
+  if (!cfg.skills?.enabled) return;
+
+  if (session.isContextEngineEnabled() && session.contextEngine) {
+    await initSkillRuntime(session, cfg, cwd);
+    return;
+  }
+
+  session.skillRuntime = null;
+  session.skills = discoverSkills(cwd, cfg.skills.max_depth);
+
+  if (session.skills.length > 0) {
+    console.log(
+      chalk.magenta(`⚡ skills  ${session.skills.length} skill(s) (classic catalog)`),
+    );
+  }
 }
 
 /** Discover skills and attach SkillRuntime to the session (residency resets on resume). */

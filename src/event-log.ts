@@ -132,6 +132,13 @@ export class EventLog {
     return this.internalRead();
   }
 
+  /** All events excluding those marked compressed for prompt assembly. */
+  readAllUncompressed(): Event[] {
+    const all = this.internalRead();
+    if (this.compressedIds.size === 0) return all;
+    return all.filter((e) => !this.compressedIds.has(e.event_id));
+  }
+
   replayContextActions(): Event[] {
     return this.internalRead().filter((e) => e.kind === "context_action");
   }

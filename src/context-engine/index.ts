@@ -72,7 +72,6 @@ const CONTEXT_ENGINE_DEFAULTS: ContextEngineConfig = {
   llm_digest: false,
   activity_log_max_entries: 15,
   checkpoint_enabled: true,
-  scoring_enabled: true,
   scoring: {
     w_pin: 1.0,
     w_recency: 0.5,

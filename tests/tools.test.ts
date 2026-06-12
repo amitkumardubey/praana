@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createAllTools, describeTools } from '../src/tools/index.js';
 import { createMemoryTools } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
 import { ContextEngine } from '../src/context-engine/index.js';
@@ -447,7 +448,6 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
         llm_digest: false,
         activity_log_max_entries: 15,
         checkpoint_enabled: true,
-        scoring_enabled: true,
         scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
         pressure: { compact_at: 0.7, emergency_at: 0.85 },
       });
@@ -1465,5 +1465,59 @@ import path from 'path';
         expect(result.ok).toBe(true);
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mode-aware tool registry
+// ---------------------------------------------------------------------------
+
+describe('Tool registry (mode-aware)', () => {
+  const baseCtx = {
+    eventLog: mockEventLog(),
+    stateGraph: mockStateGraph(),
+    memoryStore: null,
+    memoryEnabled: false,
+    incognito: false,
+    contextEngine: null,
+    cwd: process.cwd(),
+  };
+
+  it('describeTools classic mode omits working memory and engine tools', () => {
+    const tools = describeTools({ contextEngineEnabled: true, classicMode: true });
+    expect(tools.some((t) => t.startsWith('create_task'))).toBe(false);
+    expect(tools.some((t) => t.startsWith('retrieve_artifact'))).toBe(false);
+    expect(tools.some((t) => t.startsWith('shell'))).toBe(true);
+  });
+
+  it('describeTools engine mode includes working memory and engine tools', () => {
+    const tools = describeTools({ contextEngineEnabled: true, classicMode: false });
+    expect(tools.some((t) => t.startsWith('create_task'))).toBe(true);
+    expect(tools.some((t) => t.startsWith('retrieve_artifact'))).toBe(true);
+  });
+
+  it('describeTools defaults to engine tool set when options omitted', () => {
+    const tools = describeTools();
+    expect(tools.some((t) => t.startsWith('create_task'))).toBe(true);
+  });
+
+  it('describeTools uses classic set when contextEngineEnabled is false', () => {
+    const tools = describeTools({ contextEngineEnabled: false });
+    expect(tools.some((t) => t.startsWith('create_task'))).toBe(false);
+    expect(tools.some((t) => t.startsWith('shell'))).toBe(true);
+  });
+
+  it('createAllTools classic mode excludes working memory tools', () => {
+    const tools = createAllTools({ ...baseCtx, classicMode: true });
+    expect('create_task' in tools).toBe(false);
+    expect('hydrate' in tools).toBe(false);
+    expect('search_session_log' in tools).toBe(true);
+    expect('shell' in tools).toBe(true);
+  });
+
+  it('createAllTools engine mode includes working memory tools', () => {
+    const tools = createAllTools({ ...baseCtx, classicMode: false });
+    expect('create_task' in tools).toBe(true);
+    expect('list_state' in tools).toBe(true);
   });
 });
