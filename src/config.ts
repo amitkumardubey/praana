@@ -414,6 +414,18 @@ function validateConfig(config: AriaConfig): AriaConfig {
     }
   }
 
+  // search_code config validation
+  if (out.search_code) {
+    if (
+      typeof out.search_code.rg_path !== "string" &&
+      out.search_code.rg_path !== undefined
+    ) {
+      console.warn("[config] search_code.rg_path must be a string, ignoring");
+      out.search_code.rg_path = undefined;
+    } else if (typeof out.search_code.rg_path === "string") {
+      out.search_code.rg_path = expandHome(out.search_code.rg_path);
+    }
+  }
   // UI config validation
   if (out.ui) {
     if (typeof out.ui.markdown_rendering !== 'boolean') {

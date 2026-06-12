@@ -100,10 +100,10 @@ export async function runTurn(
     contextEngine: session.contextEngine,
     classicMode,
     cwd: session.cwd,
-    getAbortSignal: () => options?.signal,
     sandbox: session.config.shell,
     editConfirm: session.config.edit?.confirm,
     getCurrentTurn: () => session.getTurnCount(),
+    searchCode: session.config.search_code,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;

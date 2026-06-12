@@ -6,6 +6,7 @@ import type { SandboxConfig } from "../types.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
+import { createSearchCodeTool } from "./search-code.js";
 
 export interface ToolRegistryContext {
   eventLog: EventLog;
@@ -20,6 +21,7 @@ export interface ToolRegistryContext {
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
   getCurrentTurn?: () => number;
+  searchCode?: { rg_path?: string };
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -53,11 +55,18 @@ export function createAllTools(ctx: ToolRegistryContext) {
     sandbox: ctx.sandbox,
     editConfirm: ctx.editConfirm,
   });
+  const searchCodeTools = createSearchCodeTool({
+    cwd: ctx.cwd,
+    getAbortSignal: ctx.getAbortSignal,
+    sandbox: ctx.sandbox,
+    rgPath: ctx.searchCode?.rg_path,
+  });
 
   return {
     ...memoryTools,
     ...knowledgeTools,
     ...systemTools,
+    ...searchCodeTools,
   };
 }
 
@@ -92,6 +101,7 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "edit_file(path, oldText, newText) — Replace text in a file",
   "batch_write(files) — Write multiple files atomically",
   "batch_edit(edits) — Edit multiple files atomically",
+  "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, include_hidden?, no_ignore?, multiline?, timeout?) — Structured ripgrep-backed code search (file:line:column matches with context and stats)",
 ];
 
 const ENGINE_TOOL_DESCRIPTIONS = [

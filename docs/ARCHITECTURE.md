@@ -53,7 +53,8 @@ src/
   tools/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
-    system.ts    — shell, read_file, write_file, edit_file
+    system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
+    search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   memory/

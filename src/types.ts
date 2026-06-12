@@ -204,6 +204,11 @@ export interface EditConfig {
   confirm: boolean;
 }
 
+export interface SearchCodeConfig {
+  /** Absolute path to the ripgrep binary. Omit to use system "rg" via PATH. */
+  rg_path?: string;
+}
+
 export type UiMode = "readline" | "tui";
 export type UiScreenMode = "preserve" | "alternate";
 
@@ -269,12 +274,12 @@ export interface AriaConfig {
   consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
+  search_code?: SearchCodeConfig;
   skills: SkillsConfig;
   ui: UiConfig;
   context_engine: ContextEngineConfig;
   project_detection: ProjectDetectionConfig;
 }
-
 // ---- Session Meta ----
 
 export interface SessionMeta {

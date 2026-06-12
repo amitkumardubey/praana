@@ -174,7 +174,7 @@ Optional metadata in `.aria/skills-meta.json` (project or `~/.aria/`): tags, tri
 Tool availability depends on compile mode. **Classic mode** exposes shared + system + cognitive memory tools only. **Engine mode** adds Adaptive Context and context-engine tools.
 
 **Shared** (both modes):
-`search_session_log` · `recall` · `remember` · `forget_memory`
+`search_session_log` · `recall` · `remember` · `forget_memory` · `search_code`
 
 **Adaptive Context** (engine mode):
 `create_task` · `complete_task` · `add_constraint` · `decide` · `add_note` · `hydrate` · `soft_unload` · `hard_unload` · `list_state`
@@ -183,9 +183,9 @@ Tool availability depends on compile mode. **Classic mode** exposes shared + sys
 `retrieve_artifact` · `context_summary` · `search_turn_events` · `event_lineage`
 
 **System** (both modes):
-`shell` · `read_file` · `write_file` · `edit_file`
+`shell` · `read_file` · `write_file` · `edit_file` · `read_and_summarize` · `batch_write` · `batch_edit`
 
----
+`search_code` is ripgrep-backed and returns structured `file:line:column` matches with optional context lines, glob include/exclude filters, and `max_results` truncation. It replaces ad-hoc `shell grep` invocations for codebase exploration. Output is JSON, large results are compressed by the ripgrep distiller.
 
 ## Provider Support
 
@@ -258,6 +258,9 @@ emergency_at = 0.85                # pressure ratio for emergency mode
 
 [session]
 log_dir = "~/.aria/sessions"
+
+[search_code]
+# rg_path = "/opt/homebrew/bin/rg"  # override ripgrep binary (default: $PATH)
 ```
 
 Config is merged from four locations, lowest to highest precedence:

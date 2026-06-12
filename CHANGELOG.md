@@ -2,12 +2,12 @@
 
 ## [Unreleased]
 
+### Tools
+- Added `search_code` tool: ripgrep-backed structured code search with file:line:column matches, optional context lines, glob include/exclude, max_results truncation, case-insensitive and multiline flags, sandbox path enforcement, and abort signal support (#105).
+- Added `[search_code]` config section with `rg_path` to override the ripgrep binary path when `rg` is not on `$PATH`.
+- `search_code` now streams rg output instead of buffering it (fixes linear memory growth on broad searches; on `max_results` truncation the stdout pipe is destroyed and rg is killed with SIGKILL). Added `stats.dropped` to signal that results were capped.
+
 ### Context Engine
-- Session checkpoint now retains decision rationale after age-based compaction.
-- Added session narrative section (rolling prose from TurnDigest, replaces volatile).
-- Added plan history with superseded plans and completion hints.
-- Auto-extract implicit constraints from user correction/preference patterns.
-- System frame nudges agent to capture preferences via `add_constraint` / `add_note`.
 
 ## [0.3.0] — 2026-05-30
 

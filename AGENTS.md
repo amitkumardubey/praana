@@ -161,6 +161,7 @@ src/
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
     system.ts    — System tools (shell, read_file, write_file, edit_file)
+    search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle
     db.ts        — SQLite schema, CRUD, vector search

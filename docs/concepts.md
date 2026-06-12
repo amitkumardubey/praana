@@ -152,6 +152,24 @@ When `hash` is used, vectors are deterministic but **not semantically meaningful
 
 ---
 
+## Tooling
+
+ARIA's tool surface is small and deliberately shared across modes. The goal: every tool the agent reaches for returns a **structured, bounded response** — never a wall of unparsed text. Distillers downstream of these tools keep large outputs from polluting the context.
+
+| Category | Tools | Mode |
+|---|---|---|
+| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output) | Both |
+| File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` | Both |
+| Shell | `shell` (with optional sandbox allowlist) | Both |
+| Session search | `search_session_log` (in-session events) | Both |
+| Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
+| Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
+| Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |
+
+`search_code` (#105) is the newest addition. It wraps `rg --json` and returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. Ripgrep is resolved from `$PATH` by default; the `[search_code] rg_path` config overrides the binary. Large outputs flow through the ripgrep distiller automatically.
+
+---
+
 ## How the Two Systems Relate
 
 Adaptive Context and Cognitive Memory are complementary but distinct:

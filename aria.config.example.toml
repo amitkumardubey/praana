@@ -163,6 +163,12 @@ idle_hard_after_turns = 50
 # Directory where session event logs are stored
 log_dir = "~/.aria/sessions"
 
+[search_code]
+# Optional: absolute path to the ripgrep binary.
+# Leave unset to resolve "rg" from $PATH (default).
+# Useful when ripgrep is installed outside PATH (e.g. a vendored copy).
+# rg_path = "/opt/homebrew/bin/rg"
+
 [context_engine]
 # Context engine: structured checkpoint, distillation, and scored compilation.
 # When disabled (false), ARIA runs in classic mode — full verbatim conversation

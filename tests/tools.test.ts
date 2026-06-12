@@ -1520,4 +1520,18 @@ describe('Tool registry (mode-aware)', () => {
     expect('create_task' in tools).toBe(true);
     expect('list_state' in tools).toBe(true);
   });
+
+  it('createAllTools registers the search_code tool in both modes', () => {
+    const classicTools = createAllTools({ ...baseCtx, classicMode: true });
+    const engineTools = createAllTools({ ...baseCtx, classicMode: false });
+    expect('search_code' in classicTools).toBe(true);
+    expect('search_code' in engineTools).toBe(true);
+  });
+
+  it('describeTools advertises search_code in both classic and engine modes', () => {
+    const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
+    const engine = describeTools({ contextEngineEnabled: true });
+    expect(classic.some((t) => t.startsWith('search_code'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('search_code'))).toBe(true);
+  });
 });
