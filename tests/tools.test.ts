@@ -968,6 +968,67 @@ describe('System Tools (createSystemTools)', () => {
       expect(result).toEqual({ ok: true, files: ['special.txt'] });
       expect(readFileSync(join(testDir, 'special.txt'), 'utf-8')).toBe('price is $50.00 & more');
     });
+
+    it('should apply multiple edits to the same file sequentially', async () => {
+      writeFileSync(join(testDir, 'chain.txt'), 'alpha beta gamma');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'chain.txt', oldText: 'alpha', newText: 'ALPHA' },
+          { path: 'chain.txt', oldText: 'ALPHA beta', newText: 'ALPHA BETA' },
+          { path: 'chain.txt', oldText: 'gamma', newText: 'GAMMA' },
+        ],
+      });
+
+      expect(result).toEqual({ ok: true, files: ['chain.txt', 'chain.txt', 'chain.txt'] });
+      expect(readFileSync(join(testDir, 'chain.txt'), 'utf-8')).toBe('ALPHA BETA GAMMA');
+    });
+
+    it('should allow later same-file edits to match text introduced by earlier edits', async () => {
+      writeFileSync(join(testDir, 'build.txt'), 'const x = 1;');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'build.txt', oldText: 'const x = 1;', newText: 'const x = 2;\nconst y = 3;' },
+          { path: 'build.txt', oldText: 'const y = 3;', newText: 'const y = 4;' },
+        ],
+      });
+
+      expect(result.ok).toBe(true);
+      expect(readFileSync(join(testDir, 'build.txt'), 'utf-8')).toBe('const x = 2;\nconst y = 4;');
+    });
+
+    it('should rollback same-file edits when a later sequential edit fails', async () => {
+      writeFileSync(join(testDir, 'rollback.txt'), 'one two three');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'rollback.txt', oldText: 'one', newText: 'ONE' },
+          { path: 'rollback.txt', oldText: 'missing', newText: 'MISSING' },
+        ],
+      });
+
+      expect(result.ok).toBe(false);
+      expect((result as any).error).toContain('not found');
+      expect(readFileSync(join(testDir, 'rollback.txt'), 'utf-8')).toBe('one two three');
+    });
+
+    it('should interleave same-file sequential edits with independent file edits', async () => {
+      writeFileSync(join(testDir, 'a.txt'), 'aaa');
+      writeFileSync(join(testDir, 'b.txt'), 'bbb');
+
+      const result = await tools.batch_edit.execute({
+        edits: [
+          { path: 'a.txt', oldText: 'aaa', newText: 'AAA' },
+          { path: 'b.txt', oldText: 'bbb', newText: 'BBB' },
+          { path: 'a.txt', oldText: 'AAA', newText: 'AAAA' },
+        ],
+      });
+
+      expect(result).toEqual({ ok: true, files: ['a.txt', 'b.txt', 'a.txt'] });
+      expect(readFileSync(join(testDir, 'a.txt'), 'utf-8')).toBe('AAAA');
+      expect(readFileSync(join(testDir, 'b.txt'), 'utf-8')).toBe('BBB');
+    });
   });
 
   describe('shell', () => {

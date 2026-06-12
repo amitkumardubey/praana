@@ -464,7 +464,7 @@ export function createSystemTools(ctx: SystemToolContext) {
 
     batch_edit: defineTool({
       description:
-        "Edit multiple files atomically. All edits are applied or none. Use for multi-file refactors in one call.",
+        "Edit multiple files atomically. All edits are applied or none. Edits to the same file are applied sequentially (each edit sees the result of the previous one). Edits across different files are independent. Use for multi-file refactors in one call.",
       parameters: z.object({
         edits: z.array(z.object({
           path: z.string().describe("File path"),
@@ -473,47 +473,58 @@ export function createSystemTools(ctx: SystemToolContext) {
         })).describe("Array of edits to apply"),
       }),
       execute: async ({ edits }) => {
-        // Validate all edits first (all must have unique matches)
-        const validated: Array<{ absPath: string; idx: number; oldText: string; newText: string; relPath: string }> = [];
+        if (edits.length === 0) {
+          return { ok: true, files: [] };
+        }
+
+        // Resolve paths and verify files exist
+        const resolvedEdits: Array<{ absPath: string; oldText: string; newText: string; relPath: string }> = [];
         for (const e of edits) {
           const absPath = resolvePath(e.path);
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${e.path}` };
           }
-          const content = readFileSync(absPath, "utf-8");
-          const idx = content.indexOf(e.oldText);
-          if (idx === -1) {
-            return { ok: false, error: `oldText not found in ${e.path}` };
-          }
-          if (content.indexOf(e.oldText, idx + 1) !== -1) {
-            return { ok: false, error: `oldText not unique in ${e.path}` };
-          }
-          validated.push({ absPath, idx, oldText: e.oldText, newText: e.newText, relPath: e.path });
+          resolvedEdits.push({ absPath, oldText: e.oldText, newText: e.newText, relPath: e.path });
         }
 
         // Snapshot original contents for rollback
         const snapshots = new Map<string, string>();
-        for (const { absPath } of validated) {
-          snapshots.set(absPath, readFileSync(absPath, "utf-8"));
+        const workingContents = new Map<string, string>();
+        for (const { absPath } of resolvedEdits) {
+          if (!snapshots.has(absPath)) {
+            const original = readFileSync(absPath, "utf-8");
+            snapshots.set(absPath, original);
+            workingContents.set(absPath, original);
+          }
         }
 
-        // Apply all edits
         const edited: string[] = [];
+
         try {
-          for (const { absPath, idx, oldText, newText, relPath } of validated) {
-            const content = readFileSync(absPath, "utf-8");
-            const newContent = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
-            writeFileSync(absPath, newContent);
+          for (const { absPath, oldText, newText, relPath } of resolvedEdits) {
+            const content = workingContents.get(absPath)!;
+            const idx = content.indexOf(oldText);
+            if (idx === -1) {
+              throw new Error(`oldText not found in ${relPath}`);
+            }
+            if (content.indexOf(oldText, idx + 1) !== -1) {
+              throw new Error(`oldText not unique in ${relPath}`);
+            }
+            workingContents.set(
+              absPath,
+              content.slice(0, idx) + newText + content.slice(idx + oldText.length),
+            );
             edited.push(relPath);
           }
+
+          for (const [absPath, content] of workingContents) {
+            writeFileSync(absPath, content);
+          }
+
           return { ok: true, files: edited };
         } catch (err: any) {
-          // Rollback: restore all files to their original content
-          for (const { absPath } of validated) {
-            const original = snapshots.get(absPath);
-            if (original !== undefined) {
-              try { writeFileSync(absPath, original); } catch { /* best-effort */ }
-            }
+          for (const [absPath, original] of snapshots) {
+            try { writeFileSync(absPath, original); } catch { /* best-effort */ }
           }
           return { ok: false, error: err?.message ?? "Batch edit failed", edited };
         }
