@@ -15,7 +15,7 @@ src/
   turn.ts        — Per-turn orchestration (prompt → LLM → tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
-  compiler.ts    — Legacy budget-band compiler (unit tests and benchmarks only)
+  compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & keyword auto-hydrate
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
   llm.ts         — Provider registry and model building via pi-ai
@@ -183,7 +183,7 @@ const classicMode = !useEngineCompiler;
 - **Engine mode** — `context_engine.enabled = true` and `ContextEngine` initialized successfully at session start.
 - **Classic mode** — engine disabled, or enabled but initialization failed (falls back to full classic behaviour).
 
-`src/compiler.ts` (`compileWithMetrics`) is retained for unit tests and benchmarks only; it is not used at runtime.
+`src/compiler.ts` (`compileWithMetrics`) is retained for unit tests only; it is not used at runtime.
 
 ### Engine mode (`context_engine.enabled = true`, engine initialized)
 
@@ -243,11 +243,11 @@ When classic mode is active, `src/compile-classic.ts` builds a flat prompt with 
 | TurnDigest / checkpoint | Yes | Skipped |
 | `/why` scores | Available (debug) | N/A |
 
-Classic mode matches how agents like Claude Code and pi operate — a growing transcript with no working-memory tiering — and serves as the A/B baseline against the context engine. Set `measurement_mode = true` to write engine telemetry even while running classic mode for comparison.
+Classic mode matches how agents like Claude Code and pi operate — a growing transcript with no working-memory tiering. Set `measurement_mode = true` to write engine telemetry while running classic mode (development/debug only).
 
 ### Legacy compiler (`compiler.ts`)
 
-The original 5-section budget-band allocator (`compileWithMetrics`) remains in the tree for regression tests and token benchmarks. It applied per-section token budgets, truncated recent turns, and included Adaptive Context active/peripheral sections. Runtime no longer uses this path.
+The original 5-section budget-band allocator (`compileWithMetrics`) remains in the tree for regression tests only. It applied per-section token budgets, truncated recent turns, and included Adaptive Context active/peripheral sections. Runtime no longer uses this path.
 
 ## Tools
 
@@ -257,10 +257,15 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `search_session_log(query, kinds?, limit?)` — keyword search over the current session event log
 
 ### System Tools (`src/tools/system.ts`)
-- `shell(command, timeout?)` — executes a bash command with timeout (default: 30s)
+- `shell(command, timeout?)` — executes a bash command with timeout (default: 30s); optional sandbox allowlist via `[shell]`
 - `read_file(path, offset?, limit?)` — reads a file with optional pagination limits
+- `read_and_summarize(path)` — structured file overview (size, line count, head/tail preview)
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
-- `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching
+- `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)
+- `batch_write(files[])` / `batch_edit(edits[])` — multi-file create/replace in one turn
+
+### Code Search (`src/tools/search-code.ts`)
+- `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
 
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
@@ -306,16 +311,13 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Scope Isolation (Multi-Context Safety)
 To prevent cross-project context leaks, all memory queries and writes are isolated using scopes:
 - Default scopes are constructed at session start: `["user:<hashed_username>", "agent:aria", "context:<hashed_cwd_path>"]`.
-- The SQLite query layer enforces **AND-scoping**: recalled entries must match *all* requested query scopes.
+- The SQLite query layer enforces **AND-scoping**: recalled entries must match *all* scopes in a single query.
 
-```sql
-SELECT e.* FROM entries e
-JOIN entry_scopes es ON e.id = es.entry_id
-WHERE es.scope IN (?, ?, ?)
-GROUP BY e.id
-HAVING COUNT(DISTINCT es.scope) = 3
-ORDER BY e.last_seen_at DESC
-```
+In **project sessions**, `MemoryStore` runs two queries and merges by entry id:
+1. Full project scopes (`user` + `agent` + `context`) — project-local facts and decisions.
+2. Global-only scopes (`user` + `agent`) — entries without a `context:` scope (preferences, cross-project patterns).
+
+Global-only queries exclude entries that carry `context:`, so project facts stay local. Ranking is unified across the merged set; semantic conflicts between global and project entries are not auto-resolved.
 
 ### Ranking and Decay
 The memory retrieval system fuses multiple signals into a unified search score:
@@ -323,6 +325,7 @@ The memory retrieval system fuses multiple signals into a unified search score:
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
+- **Tool-outcome reinforcement** (#45): entries recalled before a successful tool invocation receive a confidence boost; broader cross-session reinforcement is still ongoing.
 
 ### Schema Migrations
 The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
@@ -356,7 +359,7 @@ idle_hard_after_turns = 50
 
 [context_engine]
 enabled = false                    # true = engine mode (checkpoint, distillation, scoring)
-measurement_mode = false           # write telemetry in classic mode for A/B comparison
+measurement_mode = false           # write telemetry in classic mode (debug)
 artifact_inline_threshold = 400
 artifact_ttl_turns = 50
 checkpoint_enabled = true          # narrative, plan history, constraints, decisions w/ rationale
@@ -386,8 +389,15 @@ log_dir = "~/.aria/sessions"
 
 ## UI and Slash Commands
 
-The interactive terminal (`src/main.ts`) runs a readline loop supporting slash commands:
+ARIA supports two terminal interfaces (see `[ui] mode` in config):
+
+- **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
+- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `aria --ui readline`.
+
+Both support slash commands via `src/slash-commands.ts`:
+
 - `/exit` — ends session, triggers summarizer, saves and quits
+- `/clear`, `/new` — clears working-memory state (StateGraph + engine checkpoint)
 - `/state` — lists all state objects and tiers, or prints an empty-state guidance message
 - `/stats` — prints session metadata plus working-memory and persistent-memory stats
 - `/digest` — prints the current cross-session markdown digest
@@ -395,7 +405,10 @@ The interactive terminal (`src/main.ts`) runs a readline loop supporting slash c
 - `/recall <query>` — performs manual vector recall query
 - `/model <name>` — switches active model on-the-fly (persisted to log)
 - `/sessions` — lists last 15 historical sessions for easy resuming
+- `/incognito <on|off>` — toggles cross-session memory persistence
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
 - `/help` — prints slash commands documentation
+
+CLI flags: `aria --incognito`, `aria --ui tui|readline`, `aria --config <path>`. See `src/app-banner.ts` for the full list.

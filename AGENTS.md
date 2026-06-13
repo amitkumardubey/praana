@@ -16,7 +16,7 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 npm install
 npm run build    # TypeScript compile → dist/
 npm run dev      # Run with tsx (no build step)
-npm test         # 19 files, 226 tests, ~<1s
+npm test         # 61 files, 658 tests, ~2s
 ```
 
 Requires Node 22+. Native dependencies are optional (see Embedder Config below).
@@ -111,7 +111,10 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/model <name>` | Switch models mid-session |
 | `/sessions` | List past sessions for resuming |
 | `/debug` | Toggle debug mode |
-| `/thinking <on\|off>` | Toggle LLM reasoning stream |
+| `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
+| `/incognito <on\|off>` | Toggle cross-session memory persistence |
+| `/clear`, `/new` | Clear working-memory state (engine checkpoint + StateGraph) |
+| `/why <id>` | Explain context-unit scoring (engine mode, debug) |
 | `/help` | All commands |
 
 ---
@@ -142,17 +145,19 @@ Full details: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Key terms: [docs/c
 
 ```
 src/
-  main.ts        — CLI entry, readline loop, slash commands
+  main.ts        — CLI entry: TUI (default) or readline, slash commands
   turn.ts        — Per-turn orchestration: prompt → LLM → tools → tier management
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
   compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
-  compiler.ts    — Legacy budget-band compiler (unit tests and benchmarks only)
+  compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state (active/soft/hard), auto-demotion, auto-hydrate
   event-log.ts   — Append-only events.jsonl, fsyncSync durability
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
-  ui.ts          — Terminal output, banners, formatting
+  ui/
+    readline-ui.ts — Classic readline loop
+    tui/           — Ink TUI (default when TTY): transcript, status bar, thinking blocks
   skills/
     index.ts     — SkillRuntime: discovery, BM25 matching, hot/warm/cold residency
     types.ts     — Skill metadata, runtime state, telemetry types
@@ -212,7 +217,7 @@ Default scopes set at session start: `user:<sha256>`, `agent:aria`, `context:<sh
 - **Project-level** memories carry all three scopes — only visible from that project directory.
 - **Global** memories carry only `user` and `agent` scopes — visible in all project sessions.
 
-Recall enforces AND-scoping: an entry is returned only if it carries *all* requested scopes. The recall pipeline should query both project and global scopes and merge results. **This merge is not yet implemented** — currently only project scope is queried.
+Recall enforces AND-scoping: an entry is returned only if it carries *all* scopes in the query. In project sessions, the store queries **both** the full project scopes (`user` + `agent` + `context`) and global-only scopes (`user` + `agent`), then merges and de-duplicates by entry id. Global-only queries exclude entries that carry a `context:` scope, so project facts stay project-local while preferences and cross-project patterns surface everywhere.
 
 ---
 
@@ -231,7 +236,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* reque
 
 ## Security
 
-- **Shell tool:** Runs arbitrary commands with user's permissions. No sandboxing. Respect the `timeout` field.
+- **Shell tool:** Runs arbitrary commands with the user's permissions. Optional sandbox allowlist via `[shell]` in config (`enabled`, `allowed_paths`); off by default.
 - **Event log:** `~/.aria/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
 - **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
 - **Memory DB:** `~/.aria/memory.db` — plaintext SQLite. No encryption at rest.
@@ -254,8 +259,9 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* reque
 
 ## Git Conventions
 
-- **Commits:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`
-- **Tags:** Semver — `v0.2.0`
+- **Commits:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:` (release-please uses these for `CHANGELOG.md`)
+- **Changelog:** Do not edit `CHANGELOG.md` by hand for releases. Release-please opens a version PR from commit history; merge that PR to cut a release.
+- **Tags:** Semver — `v0.4.0` (release-please creates tags)
 - **Branch:** `main`
 - **Issue work:** Create a dedicated branch for each GitHub issue before making code changes (example: `feat/phase1-issue-56`).
 - **Before commit:** `npm run build && npm test` — both must pass clean

@@ -15,10 +15,4 @@ refer/
 PRODUCT_DOCUMENT.md
 ENGINEERING_PLAN.md
 
-# Local eval files
-eval/runbook.md
-eval/scoring-rubric.md
-eval/task-template.md
-eval/results*.jsonl
-eval/metrics.schema.json
 TODO.md

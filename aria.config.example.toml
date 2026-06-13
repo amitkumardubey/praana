@@ -133,7 +133,7 @@ auto_compact_clear_at = 0.55
 # Fraction of oldest transcript events to summarise per compaction (classic mode)
 compact_chunk_fraction = 0.25
 
-# Classic A/B baseline: never auto-compact (full verbatim until model limit)
+# Classic mode: never auto-compact (full verbatim until model limit)
 # verbatim_only = false
 
 [skills]
@@ -186,9 +186,9 @@ log_dir = "~/.aria/sessions"
 # Casual user preferences ("we use pnpm", "let's use JWT") are NOT captured by regex —
 # the system prompt nudge directs the LLM to call add_constraint for those.
 # Only the unambiguous "not X, Y" correction pattern is regex-captured.
-enabled = true
+enabled = false
 
-# Write telemetry even when engine is off (for A/B comparison measurement)
+# Write telemetry even when engine is off (debug / comparison during development)
 measurement_mode = false
 
 # Tool outputs at or below this token count appear verbatim in the prompt

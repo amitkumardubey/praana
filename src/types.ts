@@ -155,7 +155,7 @@ export interface CompilerConfig {
   auto_compact_clear_at?: number;
   /** Fraction (0–1) of oldest transcript events to compact per trigger. Default: 0.25. */
   compact_chunk_fraction?: number;
-  /** Classic mode: never auto-compact (A/B verbatim baseline). Default: false. */
+  /** Classic mode: never auto-compact (full verbatim until model limit). Default: false. */
   verbatim_only?: boolean;
   /** @deprecated Use auto_compact_at */
   compression_watermark?: number;
@@ -240,7 +240,7 @@ export interface ContextEnginePressureConfig {
 export interface ContextEngineConfig {
   /** false = classic mode (full verbatim history, no StateGraph, skill metadata only). */
   enabled: boolean;
-  /** Write context-engine telemetry when engine is off (A/B comparison). */
+  /** Write context-engine telemetry when engine is off (debug / comparison). */
   measurement_mode: boolean;
   /** Tool outputs at or below this token count appear verbatim in the prompt. */
   artifact_inline_threshold: number;

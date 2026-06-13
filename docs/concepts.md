@@ -39,7 +39,7 @@ Promotion (`hard` or `soft` → `active`) happens in two ways:
 
 ### Why This Matters
 
-A session with 50 state objects, rendered flat, would consume thousands of tokens on every turn. With tiering, only the active objects (typically 5–15) get full representation. The rest exist as stubs or anchors — still accessible, but not burning tokens. Measured token savings on peripheral state: **70–88%** compared to flat rendering.
+A session with 50 state objects, rendered flat, would consume thousands of tokens on every turn. With tiering, only the active objects (typically 5–15) get full representation. The rest exist as stubs or anchors — still accessible via `hydrate` or keyword auto-promotion, but not repeated in full every turn.
 
 ### Retraction (Tombstone Semantics)
 
@@ -73,6 +73,24 @@ Turns 0–2 appear verbatim in the prompt. Turns 3–6 appear as scored digests.
 
 The checkpoint is written from `TurnDigest` data only — never by the LLM — to prevent summarisation drift. For deep reasoning chains or full exploration history, the agent should still use `search_turn_events` or `retrieve_artifact`.
 
+### Current status (honest)
+
+Engine mode is **off by default** (`context_engine.enabled = false`). We have not benchmarked it against classic mode or other agents. The table below reflects real behaviour today, not a marketing claim.
+
+| Area | Status | Notes |
+|---|---|---|
+| Tool output management | Works | Distillation at ingestion, artifact store, `retrieve_artifact` when the card is not enough |
+| Structured checkpoint state | Works | Constraints (append-only), errors (open vs fixed), decisions, files, activity |
+| Session narrative & plan history | Works | Rolling prose and superseded plans from deterministic `TurnDigest` |
+| Decision rationale | Works | Rationale retained after compaction (capped per entry) |
+| Implicit user corrections | Improved | Auto-extraction of "not X, use Y" patterns into constraints; agent should still call `add_constraint` for important rules |
+| Old user intent (full text) | Partial | Only the latest request in **Active request**; earlier intent may survive in narrative if captured |
+| Deep reasoning chains | Gap | Narrative captures *what* happened, not full multi-step *why* — use `search_turn_events` or `retrieve_artifact` |
+| Contradiction detection | Gap | Old and new decisions can coexist in the checkpoint without an explicit alert |
+| Cross-session continuity | Memory layer | Within-session checkpoint does not replace Cognitive Memory for the next session |
+
+Classic mode remains the simpler baseline: full verbatim transcript, no checkpoint or tiering. Enable the engine when you want structured session state and distillation; expect rough edges on long conversational threads.
+
 ---
 
 ## Classic Mode
@@ -87,7 +105,7 @@ Classic mode is intentionally simple:
 - **Skills as catalog** — discovered skill names and paths are listed in the prompt; the agent reads `SKILL.md` files with `read_file` when needed. No BM25 matching or hot/warm/cold residency.
 - **Cognitive Memory unchanged** — cross-session `recall` / `remember` and the session-start digest still work.
 
-Classic mode is the A/B baseline against the context engine. Set `measurement_mode = true` to record engine telemetry while running classic for comparison experiments.
+Classic mode is a simpler alternative when the context engine is disabled or unavailable. Set `measurement_mode = true` to record engine-style telemetry while running classic (for internal debugging only).
 
 ---
 
@@ -128,7 +146,7 @@ At session start, ARIA builds a ranked digest from memory in scope for the curre
 
 Every memory entry carries scope labels: `user:<hash>`, `agent:aria`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
 
-Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. Recall enforces AND-scoping in all cases; cross-scope merge behavior is still being completed.
+Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. In project sessions, recall and the session-start digest query both scopes and merge results (global entries never carry `context:`). Ranking is unified; there is no automatic override when a global preference and a project fact disagree — both can appear until one is retracted or decays.
 
 ### Ranking and Confidence
 
@@ -137,6 +155,7 @@ Recalled memories are ranked by a fusion of three signals:
 - **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays at 5% per day
 - **Recency** — entries accessed recently receive a small boost
 - **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
+- **Tool outcomes** — memories recalled before a successful tool call receive a confidence boost (#45); broader “useful → stronger, ignored → fade” behaviour is still ongoing
 
 ### Embeddings — Honest Note
 
