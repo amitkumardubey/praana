@@ -1,12 +1,12 @@
-# Core Concepts in ARIA
+# Core Concepts in PRAANA
 
-This document explains the key ideas behind ARIA's two adaptive systems.
+This document explains the key ideas behind PRAANA's two adaptive systems.
 
 ---
 
 ## Adaptive Context
 
-**Adaptive Context** is ARIA's within-session working memory, active in **engine mode only**. Rather than treating all prior state equally, ARIA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
+**Adaptive Context** is PRAANA's within-session working memory, active in **engine mode only**. Rather than treating all prior state equally, PRAANA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
 
 In **classic mode**, Adaptive Context is not exposed — no StateGraph tools, no tier sections in the prompt. The full event log serves as working memory instead.
 
@@ -34,7 +34,7 @@ Every state object lives in one of three tiers:
 Demotion happens automatically at the end of each turn based on how many turns have passed since the object was last touched. The thresholds are configurable (`idle_soft_after_turns`, `idle_hard_after_turns`).
 
 Promotion (`hard` or `soft` → `active`) happens in two ways:
-- **Automatic** — before each prompt, ARIA extracts keywords from your input and matches them against peripheral objects. Matches promote automatically.
+- **Automatic** — before each prompt, PRAANA extracts keywords from your input and matches them against peripheral objects. Matches promote automatically.
 - **Manual** — the agent can call `hydrate(id)` to explicitly promote an object.
 
 ### Why This Matters
@@ -54,7 +54,7 @@ The same tombstone pattern applies in Cognitive Memory via `forget_memory(id)` �
 
 ## Session Checkpoint (Context Engine)
 
-When `context_engine.enabled = true`, ARIA maintains a **SessionCheckpoint** — a structured within-session summary reconciled after every turn from a deterministic `TurnDigest`. Unlike Adaptive Context (tiered state objects the agent manages via tools), the checkpoint is assembled automatically and pinned in the prompt so it survives when older turns fall out of the verbatim window.
+When `context_engine.enabled = true`, PRAANA maintains a **SessionCheckpoint** — a structured within-session summary reconciled after every turn from a deterministic `TurnDigest`. Unlike Adaptive Context (tiered state objects the agent manages via tools), the checkpoint is assembled automatically and pinned in the prompt so it survives when older turns fall out of the verbatim window.
 
 ### Checkpoint sections
 
@@ -95,7 +95,7 @@ Classic mode remains the simpler baseline: full verbatim transcript, no checkpoi
 
 ## Classic Mode
 
-When `context_engine.enabled = false` (or enabled but the engine fails to initialize), ARIA runs in **classic mode** via `src/compile-classic.ts`.
+When `context_engine.enabled = false` (or enabled but the engine fails to initialize), PRAANA runs in **classic mode** via `src/compile-classic.ts`.
 
 Classic mode is intentionally simple:
 
@@ -111,7 +111,7 @@ Classic mode is a simpler alternative when the context engine is disabled or una
 
 ## Cognitive Memory
 
-**Cognitive Memory** is ARIA's cross-session persistence layer.
+**Cognitive Memory** is PRAANA's cross-session persistence layer.
 
 ### Memory Kinds
 
@@ -140,11 +140,11 @@ Entries exist at two levels:
 
 > `"Always write tests before implementation"` · `"Never use any in TypeScript"` · `"Prefer functional over class-based components"`
 
-At session start, ARIA builds a ranked digest from memory in scope for the current session.
+At session start, PRAANA builds a ranked digest from memory in scope for the current session.
 
 ### Scoping
 
-Every memory entry carries scope labels: `user:<hash>`, `agent:aria`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
+Every memory entry carries scope labels: `user:<hash>`, `agent:praana`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
 
 Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. In project sessions, recall and the session-start digest query both scopes and merge results (global entries never carry `context:`). Ranking is unified; there is no automatic override when a global preference and a project fact disagree — both can appear until one is retracted or decays.
 
@@ -159,21 +159,21 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-ARIA supports multiple embedders: `auto` (Ollama probe then fallback), `ollama`, `transformers`, `llama-cpp`, and `hash`.
+PRAANA supports multiple embedders: `auto` (Ollama probe then fallback), `ollama`, `transformers`, `llama-cpp`, and `hash`.
 
-When `hash` is used, vectors are deterministic but **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce different vectors. When vector search returns nothing useful, ARIA falls back to scope-based retrieval.
+When `hash` is used, vectors are deterministic but **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce different vectors. When vector search returns nothing useful, PRAANA falls back to scope-based retrieval.
 
 ### Session Lifecycle
 
-**Session start:** ARIA queries the memory store for all entries in scope, ranks them, and builds a markdown digest. This digest is included in the system prompt on every turn.
+**Session start:** PRAANA queries the memory store for all entries in scope, ranks them, and builds a markdown digest. This digest is included in the system prompt on every turn.
 
-**Session end** (`/exit`): ARIA sends the full transcript to a summariser model. The summariser extracts up to 5 learnings and returns them as structured JSON. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
+**Session end** (`/exit`): PRAANA sends the full transcript to a summariser model. The summariser extracts up to 5 learnings and returns them as structured JSON. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
 
 ---
 
 ## Tooling
 
-ARIA's tool surface is small and deliberately shared across modes. The goal: every tool the agent reaches for returns a **structured, bounded response** — never a wall of unparsed text. Distillers downstream of these tools keep large outputs from polluting the context.
+PRAANA's tool surface is small and deliberately shared across modes. The goal: every tool the agent reaches for returns a **structured, bounded response** — never a wall of unparsed text. Distillers downstream of these tools keep large outputs from polluting the context.
 
 | Category | Tools | Mode |
 |---|---|---|

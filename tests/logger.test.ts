@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
-  AriaLogger,
+  PraanaLogger,
   createSessionLogger,
   createTestLogger,
   extractLlmErrorMessage,
@@ -17,7 +17,7 @@ import {
 
 describe("logger", () => {
   beforeEach(() => {
-    setAppLogger(new AriaLogger({ domain: "app", writeLine: () => {} }));
+    setAppLogger(new PraanaLogger({ domain: "app", writeLine: () => {} }));
   });
 
   it("writes warn/error lines to the test sink", () => {
@@ -97,7 +97,7 @@ describe("logger", () => {
   });
 
   it("exposes a shared app logger", () => {
-    expect(getAppLogger()).toBeInstanceOf(AriaLogger);
+    expect(getAppLogger()).toBeInstanceOf(PraanaLogger);
   });
 
   it("keeps 15 days of daily rotated logs", () => {

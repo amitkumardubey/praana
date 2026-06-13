@@ -30,7 +30,7 @@ describe("memory layer schema and half-life decay", () => {
     });
 
     await store.sessionStart({
-      agent: "aria",
+      agent: "praana",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",
@@ -75,7 +75,7 @@ describe("memory layer schema and half-life decay", () => {
     });
 
     const ctx = {
-      agent: "aria",
+      agent: "praana",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

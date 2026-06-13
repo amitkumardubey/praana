@@ -5,7 +5,7 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "package-name": "aria",
+      "package-name": "praana",
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [

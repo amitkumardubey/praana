@@ -9,7 +9,7 @@ describe("memory pruning", () => {
     });
 
     const ctx = {
-      agent: "aria",
+      agent: "praana",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",
@@ -37,7 +37,7 @@ describe("memory pruning", () => {
     });
 
     const ctx = {
-      agent: "aria",
+      agent: "praana",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

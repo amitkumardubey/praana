@@ -18,7 +18,7 @@ describe('Compiler', () => {
       tokenBudget: 4000,
     });
 
-    expect(prompt).toContain('ARIA');
+    expect(prompt).toContain('PRAANA');
     expect(prompt).toContain('coding agent');
     expect(prompt).toContain('tools');
   });

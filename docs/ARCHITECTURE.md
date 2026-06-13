@@ -1,6 +1,6 @@
-# ARIA Architecture
+# PRAANA Architecture
 
-ARIA is a single-process TypeScript CLI coding agent with two cognitive memory systems:
+PRAANA is a single-process TypeScript CLI coding agent with two cognitive memory systems:
 
 1. **Adaptive Context** — within-session working memory
 2. **Cognitive Memory** — cross-session persistent memory
@@ -157,7 +157,7 @@ Before a turn prompt is compiled, `stateGraph.autoHydrate(userInput)` extracts k
 
 ## Event Log
 
-Location: `~/.aria/sessions/<session_id>/events.jsonl`
+Location: `~/.praana/sessions/<session_id>/events.jsonl`
 
 Each line is a single JSON line representing an `Event`:
 - `user_message`
@@ -173,7 +173,7 @@ Agents can search the full log in-session via the `search_session_log` tool (key
 
 ## Compiler
 
-ARIA has two runtime compile paths. Selection happens in `turn.ts`:
+PRAANA has two runtime compile paths. Selection happens in `turn.ts`:
 
 ```ts
 const useEngineCompiler = contextEngineEnabled && !!session.contextEngine;
@@ -292,7 +292,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### Key Components
 - `MemoryStore` (`src/memory/store.ts`): Coordinates high-level cross-session memory operations, session starts, and session ends.
-- SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.aria/memory.db`.
+- SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.praana/memory.db`.
 - Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts`): supports `auto`, `ollama`, `transformers`, `llama-cpp`, and `hash`. `auto` probes Ollama first and falls back to hash with a warning.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
 - Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the full transcript to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) that maps to an initial confidence score.
@@ -310,7 +310,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### Scope Isolation (Multi-Context Safety)
 To prevent cross-project context leaks, all memory queries and writes are isolated using scopes:
-- Default scopes are constructed at session start: `["user:<hashed_username>", "agent:aria", "context:<hashed_cwd_path>"]`.
+- Default scopes are constructed at session start: `["user:<hashed_username>", "agent:praana", "context:<hashed_cwd_path>"]`.
 - The SQLite query layer enforces **AND-scoping**: recalled entries must match *all* scopes in a single query.
 
 In **project sessions**, `MemoryStore` runs two queries and merges by entry id:
@@ -333,10 +333,10 @@ The SQLite schema evolves through additive `ALTER TABLE` migrations applied at e
 ## Configuration
 
 Config files are deep-merged from lower to higher precedence (later overrides earlier):
-1. Global JSON: `~/.aria/aria.config.json`
-2. Global TOML: `~/.aria/config.toml`
-3. Local JSON: `./aria.config.json`
-4. Local TOML: `./aria.config.toml`
+1. Global JSON: `~/.praana/praana.config.json`
+2. Global TOML: `~/.praana/config.toml`
+3. Local JSON: `./praana.config.json`
+4. Local TOML: `./praana.config.toml`
 
 ```toml
 [llm]
@@ -346,7 +346,7 @@ model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provid
 [memory]
 enabled = true
 summarizer = "openrouter"             # openrouter | disabled
-db_path = "~/.aria/memory.db"
+db_path = "~/.praana/memory.db"
 
 [compiler]
 token_budget = 100000
@@ -377,19 +377,19 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [session]
-log_dir = "~/.aria/sessions"
+log_dir = "~/.praana/sessions"
 ```
 
 ### Environment Variables
-- `ARIA_MODEL` — overrides default model
-- `ARIA_SUMMARIZER_MODEL` — overrides summarizer model (defaults to `google/gemini-2.5-flash` on OpenRouter)
-- `ARIA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
-- `ARIA_MEASUREMENT_MODE` — overrides `context_engine.measurement_mode`
+- `PRAANA_MODEL` — overrides default model
+- `PRAANA_SUMMARIZER_MODEL` — overrides summarizer model (defaults to `google/gemini-2.5-flash` on OpenRouter)
+- `PRAANA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
+- `PRAANA_MEASUREMENT_MODE` — overrides `context_engine.measurement_mode`
 - Provider-specific keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, etc.
 
 ## UI and Slash Commands
 
-ARIA supports two terminal interfaces (see `[ui] mode` in config):
+PRAANA supports two terminal interfaces (see `[ui] mode` in config):
 
 - **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
 - **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `aria --ui readline`.

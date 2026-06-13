@@ -111,7 +111,7 @@ describe("formatTurnStatsSuffix", () => {
 describe("formatTurnFooter", () => {
   it("records model, duration, and turn stats on one line", () => {
     expect(formatTurnFooter("anthropic/claude-sonnet-4", 3200)).toBe(
-      "▣ ARIA · claude-sonnet-4 · 3.2s"
+      "▣ PRAANA · claude-sonnet-4 · 3.2s"
     );
     expect(
       formatTurnFooter("openrouter/big-pickle", 9200, {
@@ -124,7 +124,7 @@ describe("formatTurnFooter", () => {
         promptTokens: 24_100,
         outputTokens: 211,
       })
-    ).toBe("▣ ARIA · big-pickle · 9.2s · prompt ~24.1k · out ~211");
+    ).toBe("▣ PRAANA · big-pickle · 9.2s · prompt ~24.1k · out ~211");
   });
 });
 

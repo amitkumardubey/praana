@@ -48,7 +48,7 @@ function isDirectory(path: string): boolean {
   }
 }
 
-const SKIP_ALLOWLIST = new Set([".agents", ".aria", ".cursor", ".claude"]);
+const SKIP_ALLOWLIST = new Set([".agents", ".aria", ".praana", ".cursor", ".claude"]);
 
 function shouldSkipDir(dirName: string): boolean {
   if (dirName === ".git" || dirName === "node_modules") return true;
@@ -130,17 +130,19 @@ function getSkillsMetaPaths(cwd: string): string[] {
   const gitRoot = findGitRoot(cwd);
   const home = homedir();
   return [
+    join(gitRoot, ".praana", "skills-meta.json"),
     join(gitRoot, ".aria", "skills-meta.json"),
+    expandHome("~/.praana/skills-meta.json"),
     expandHome("~/.aria/skills-meta.json"),
   ];
 }
 
 export function loadMergedSkillsMeta(cwd: string): SkillsMetaFile {
-  const paths = getSkillsMetaPaths(cwd);
-  // Project-level overrides user-level
-  const userMeta = paths.length > 1 ? loadSkillsMeta(paths[1]) : {};
-  const projectMeta = paths.length > 0 ? loadSkillsMeta(paths[0]) : {};
-  return { ...userMeta, ...projectMeta };
+  let merged: SkillsMetaFile = {};
+  for (const path of getSkillsMetaPaths(cwd)) {
+    merged = { ...merged, ...loadSkillsMeta(path) };
+  }
+  return merged;
 }
 
 // ========================================================================
@@ -153,6 +155,7 @@ function getSkillSearchPaths(cwd: string): string[] {
 
   const projectPaths = [
     join(gitRoot, ".agents", "skills"),
+    join(gitRoot, ".praana", "skills"),
     join(gitRoot, ".aria", "skills"),
     join(gitRoot, ".cursor", "skills"),
     join(gitRoot, "skills"),
@@ -160,6 +163,7 @@ function getSkillSearchPaths(cwd: string): string[] {
 
   const userPaths = [
     join(home, ".agents", "skills"),
+    join(home, ".praana", "skills"),
     join(home, ".aria", "skills"),
     join(home, ".claude", "skills"),
   ];

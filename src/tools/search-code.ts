@@ -469,7 +469,7 @@ export async function runRipgrep(
         finish({
           ok: false,
           error:
-            "ripgrep ('rg') not found in PATH. Install ripgrep (https://github.com/BurntSushi/ripgrep) or set search_code.rg_path in aria.config.toml to point at the binary.",
+            "ripgrep ('rg') not found in PATH. Install ripgrep (https://github.com/BurntSushi/ripgrep) or set search_code.rg_path in praana.config.toml to point at the binary.",
         });
         return;
       }

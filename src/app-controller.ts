@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { AriaConfig } from "./types.js";
+import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
 import type { UiMode } from "./types.js";
 import { Session } from "./session.js";
@@ -30,7 +30,7 @@ export interface StartupInfo {
 export class AppController {
   session!: Session;
   readonly cwd: string;
-  readonly config: AriaConfig;
+  readonly config: PraanaConfig;
   readonly parsed: CliArgs;
   showThinking = false;
   currentModel?: string;
@@ -39,7 +39,7 @@ export class AppController {
   private readonly turnController = new TurnController();
   private interruptHandling = false;
 
-  constructor(opts: { cwd?: string; config: AriaConfig; parsed: CliArgs }) {
+  constructor(opts: { cwd?: string; config: PraanaConfig; parsed: CliArgs }) {
     this.cwd = opts.cwd ?? resolve(process.cwd());
     this.config = opts.config;
     this.parsed = opts.parsed;

@@ -4,10 +4,10 @@ import { Session } from "../src/session.js";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { AriaConfig } from "../src/types.js";
+import type { PraanaConfig } from "../src/types.js";
 
 const testLogDir = join(tmpdir(), "aria-test-sessions");
-const testConfig: AriaConfig = {
+const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
   memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "aria-test-memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },

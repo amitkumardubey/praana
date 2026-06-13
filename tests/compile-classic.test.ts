@@ -28,7 +28,7 @@ describe("compile-classic", () => {
       "shell(command) — Run a shell command",
     ]);
 
-    expect(frame).toContain("ARIA");
+    expect(frame).toContain("PRAANA");
     expect(frame).toContain("shell(command)");
     expect(frame).toContain("read_file on a SKILL.md");
     expect(frame).not.toContain("soft_unload");

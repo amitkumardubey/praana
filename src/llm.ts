@@ -1,4 +1,4 @@
-import type { AriaConfig } from "./types.js";
+import type { PraanaConfig } from "./types.js";
 import { resolveContextWindowSync } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 
@@ -34,7 +34,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     baseUrl: "https://openrouter.ai/api/v1",
     headers: {
       "HTTP-Referer": "https://github.com/aria",
-      "X-Title": "ARIA",
+      "X-Title": "PRAANA",
     },
   },
   openai: {
@@ -159,7 +159,7 @@ type RuntimeModel = Record<string, unknown> & {
 };
 
 function buildModel(
-  config: AriaConfig["llm"],
+  config: PraanaConfig["llm"],
   modelId: string,
   contextWindow?: number,
 ): RuntimeModel {
@@ -195,7 +195,7 @@ function buildModel(
   return model;
 }
 
-export function createProvider(config: AriaConfig["llm"], contextWindow?: number) {
+export function createProvider(config: PraanaConfig["llm"], contextWindow?: number) {
   return (modelId: string) => buildModel(config, modelId, contextWindow);
 }
 

@@ -157,7 +157,7 @@ describe("transcriptReducer", () => {
     });
     expect(state.completed[0]?.role).toBe("turn_footer");
     expect(state.completed[0]?.text).toBe(
-      "▣ ARIA · big-pickle · 1.5s · prompt ~1.0k · out ~211"
+      "▣ PRAANA · big-pickle · 1.5s · prompt ~1.0k · out ~211"
     );
   });
 

@@ -61,7 +61,7 @@ function renderVerbatimTurn(record: TurnRecord): string {
   const lines = [
     `### Turn ${record.turn}`,
     `User: ${record.userMessage}`,
-    `ARIA: ${record.assistantMessage}`,
+    `PRAANA: ${record.assistantMessage}`,
   ];
   for (const tc of record.toolCalls) {
     lines.push(`Tool call: ${tc.tool}(${JSON.stringify(tc.args)})`);

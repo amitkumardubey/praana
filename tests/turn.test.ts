@@ -140,11 +140,11 @@ import {
 } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
-import type { AriaConfig, Event } from "../src/types.js";
+import type { PraanaConfig, Event } from "../src/types.js";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function makeConfig(overrides?: Partial<AriaConfig>): AriaConfig {
+function makeConfig(overrides?: Partial<PraanaConfig>): PraanaConfig {
   return {
     llm: { provider: "openrouter", model: "test-model" },
     memory: {

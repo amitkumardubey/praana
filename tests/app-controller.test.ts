@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { AppController } from "../src/app-controller.js";
 import type { CliArgs } from "../src/cli-args.js";
-import type { AriaConfig } from "../src/types.js";
+import type { PraanaConfig } from "../src/types.js";
 
 vi.mock("../src/session.js", () => ({
   Session: {
@@ -44,7 +44,7 @@ vi.mock("../src/session.js", () => ({
   },
 }));
 
-const baseConfig: AriaConfig = {
+const baseConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
   memory: { enabled: false, summarizer: "disabled", db_path: ":memory:" },
   compiler: {
