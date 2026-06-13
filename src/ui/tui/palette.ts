@@ -1,4 +1,4 @@
-/* Colour palette for the ARIA TUI */
+/* Colour palette for the PRAANA TUI */
 export const PALETTE = {
   user: "#B7E4C7",       // green-600
   assistant: "#fbbf24",  // amber-400

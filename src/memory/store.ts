@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Store
+// PRAANA Memory — Store
 //
 // Unified API: remember, recall, digest, pin, session lifecycle.
 // ============================================================
