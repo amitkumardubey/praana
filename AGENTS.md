@@ -56,12 +56,10 @@ Config is deep-merged from (later overrides earlier):
 3. `./praana.config.json`
 4. `./praana.config.toml`
 
-Legacy paths (`~/.aria/*`, `./aria.config.*`) are still loaded first and overridden by the PRAANA paths above.
-
 Key env vars:
 - Provider API keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.
-- `PRAANA_MODEL` — override model at runtime (legacy: `ARIA_MODEL`)
-- `PRAANA_SUMMARIZER_MODEL` — override summariser model (legacy: `ARIA_SUMMARIZER_MODEL`)
+- `PRAANA_MODEL` — override model at runtime
+- `PRAANA_SUMMARIZER_MODEL` — override summariser model
 - `PRAANA_DEBUG=true` — saves compiled prompts per turn to `prompts/`
 
 ### Embedder Config

@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Context Engine — Types
+// PRAANA Context Engine — Types
 // ============================================================
 
 export type ContentType =

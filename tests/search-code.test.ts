@@ -16,7 +16,7 @@ const hasRg = (() => {
   return r.status === 0;
 })();
 
-const testDir = '/tmp/aria-test-search-code';
+const testDir = '/tmp/praana-test-search-code';
 
 function setupFixture() {
   if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
@@ -691,7 +691,7 @@ describe('parseRipgrepEvents', () => {
   it('returns the rg-not-found error when rgPath points at a missing binary', async () => {
     const tools = createSearchCodeTool({
       cwd: testDir,
-      rgPath: '/definitely/does/not/exist/rg-aria-test',
+      rgPath: '/definitely/does/not/exist/rg-praana-test',
     });
     const r = (await tools.search_code.execute({
       pattern: 'function alpha',

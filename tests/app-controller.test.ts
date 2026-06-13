@@ -53,7 +53,7 @@ const baseConfig: PraanaConfig = {
     recent_turns_token_budget: 30_000,
   },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
-  session: { log_dir: "/tmp/aria-test" },
+  session: { log_dir: "/tmp/praana-test" },
   ui: { mode: "tui", screen: "preserve" },
 };
 

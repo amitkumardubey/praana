@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — OpenAI/OpenRouter Summarizer Adapter
+// PRAANA Memory — OpenAI/OpenRouter Summarizer Adapter
 // ============================================================
 
 import type { SummarizerLLM } from "./types.js";

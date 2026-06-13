@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Embeddings
+// PRAANA Memory — Embeddings
 // ============================================================
 
 import type { Embedder } from "./types.js";

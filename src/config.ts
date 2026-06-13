@@ -5,7 +5,6 @@ import type { PraanaConfig } from "./types.js";
 import { getAppLogger } from "./logger.js";
 import {
   APP_HOME_DIR,
-  LEGACY_APP_HOME_DIR,
   envFlag,
   envOverride,
   resolveDefaultMemoryDbPath,
@@ -185,17 +184,10 @@ export function loadConfig(configPath?: string): PraanaConfig {
     }
   } else {
     // Load and merge configs from all sources in order
-    // Order: global JSON -> global TOML -> local JSON -> local TOML
-    // Later sources override earlier ones
-    
-    // Order: legacy global → global → legacy local → local (later overrides earlier)
+    // Order: global → local (later overrides earlier)
     const configs = [
-      { path: expandHome(`~/${LEGACY_APP_HOME_DIR}/aria.config.json`), loader: loadJsonConfig },
-      { path: expandHome(`~/${LEGACY_APP_HOME_DIR}/config.toml`), loader: loadTomlConfig },
       { path: expandHome(`~/${APP_HOME_DIR}/praana.config.json`), loader: loadJsonConfig },
       { path: expandHome(`~/${APP_HOME_DIR}/config.toml`), loader: loadTomlConfig },
-      { path: "aria.config.json", loader: loadJsonConfig },
-      { path: "aria.config.toml", loader: loadTomlConfig },
       { path: "praana.config.json", loader: loadJsonConfig },
       { path: "praana.config.toml", loader: loadTomlConfig },
     ];
@@ -212,31 +204,20 @@ export function loadConfig(configPath?: string): PraanaConfig {
 
   const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as PraanaConfig;
 
-  // Backward compat: skills_budget_ratio → agents_budget_ratio
-  const compiler = (userConfig as { compiler?: { skills_budget_ratio?: number; agents_budget_ratio?: number } }).compiler;
-  if (compiler?.skills_budget_ratio !== undefined && compiler.agents_budget_ratio === undefined) {
-    merged.compiler.agents_budget_ratio = compiler.skills_budget_ratio;
-  }
-
-  // Backward compat: map old [bodha] config to [memory]
-  if ((userConfig as any).bodha && !(userConfig as any).memory) {
-    merged.memory = { ...merged.memory, ...(userConfig as any).bodha };
-  }
-
-  const modelOverride = envOverride("PRAANA_MODEL", "ARIA_MODEL");
+  const modelOverride = envOverride("PRAANA_MODEL");
   if (modelOverride) merged.llm.model = modelOverride;
 
-  const contextEngineFlag = envFlag("PRAANA_CONTEXT_ENGINE", "ARIA_CONTEXT_ENGINE");
+  const contextEngineFlag = envFlag("PRAANA_CONTEXT_ENGINE");
   if (contextEngineFlag !== undefined) {
     merged.context_engine.enabled = contextEngineFlag;
   }
 
-  const measurementFlag = envFlag("PRAANA_MEASUREMENT_MODE", "ARIA_MEASUREMENT_MODE");
+  const measurementFlag = envFlag("PRAANA_MEASUREMENT_MODE");
   if (measurementFlag !== undefined) {
     merged.context_engine.measurement_mode = measurementFlag;
   }
   
-  // Expand paths — fall back to legacy home when the new default paths are unused
+  // Expand paths
   merged.session.log_dir = expandHome(merged.session.log_dir);
   if (merged.memory?.db_path) {
     merged.memory.db_path = expandHome(merged.memory.db_path);

@@ -44,8 +44,8 @@ describe("status-bar", () => {
   it("renders memory tier line", () => {
     const lines = formatStatusBarLines({
       model: "openai/gpt-4o",
-      repoPath: "/tmp/aria",
-      cwd: "/tmp/aria",
+      repoPath: "/tmp/praana",
+      cwd: "/tmp/praana",
       debug: false,
       thinking: true,
       memoryEnabled: true,
@@ -69,11 +69,11 @@ describe("status-bar", () => {
 
   it("buildStatusBarInput reads session metrics and memory", () => {
     const session = {
-      cwd: "/tmp/aria",
+      cwd: "/tmp/praana",
       debug: true,
       memoryEnabled: false,
       agentsContext: null,
-      getRepoRoot: () => "/tmp/aria",
+      getRepoRoot: () => "/tmp/praana",
       getMemoryStats: () => ({ active: 1, soft: 2, hard: 3, total: 6, byKind: {} }),
       getLastCompileMetrics: () => ({
         totalTokens: 9000,
@@ -108,11 +108,11 @@ describe("status-bar", () => {
 
   it("falls back to agents context token estimate before first compile", () => {
     const session = {
-      cwd: "/tmp/aria",
+      cwd: "/tmp/praana",
       debug: false,
       memoryEnabled: false,
       agentsContext: "x".repeat(4000),
-      getRepoRoot: () => "/tmp/aria",
+      getRepoRoot: () => "/tmp/praana",
       getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
       getLastCompileMetrics: () => null,
       isIncognito: () => false,

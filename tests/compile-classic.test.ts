@@ -41,13 +41,13 @@ describe("compile-classic", () => {
       "sess-1",
       ["shell(command)"],
       "Follow AGENTS.md conventions.",
-      "Project: aria\nLanguage: TypeScript",
+      "Project: praana\nLanguage: TypeScript",
     );
 
     expect(frame).toContain("## Project Context");
     expect(frame).toContain("Follow AGENTS.md conventions.");
     expect(frame).toContain("## Project Stack");
-    expect(frame).toContain("Project: aria");
+    expect(frame).toContain("Project: praana");
     const contextIdx = frame.indexOf("## Project Context");
     const stackIdx = frame.indexOf("## Project Stack");
     expect(stackIdx).toBeGreaterThan(contextIdx);

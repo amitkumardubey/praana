@@ -29,7 +29,7 @@ function compactJson(value: unknown, budget: number): unknown {
     return [
       ...value.slice(0, budget).map((item) => compactJson(item, budget)),
       {
-        __aria_summary: `${value.length - budget} array item(s) omitted`,
+        __praana_summary: `${value.length - budget} array item(s) omitted`,
       },
     ];
   }
@@ -41,7 +41,7 @@ function compactJson(value: unknown, budget: number): unknown {
       out[key] = compactJson(child, budget);
     }
     if (entries.length > budget) {
-      out.__aria_summary = `${entries.length - budget} object field(s) omitted`;
+      out.__praana_summary = `${entries.length - budget} object field(s) omitted`;
     }
     return out;
   }

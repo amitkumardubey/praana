@@ -93,7 +93,7 @@ Nothing actively in flight right now. See [Up Next](#up-next).
 
 ## Not Planned
 
-- GUI / web interface — ARIA is a terminal agent.
+- GUI / web interface — PRAANA is a terminal agent.
 - Cloud sync — local-first, your data stays on your machine.
 - Multi-user shared memory — single-user for now.
 - Published benchmark claims — no performance table until real eval data exists.

@@ -11,7 +11,7 @@ describe("Memory Learning Impact", () => {
     });
 
     const ctx = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",
@@ -66,7 +66,7 @@ describe("Memory Learning Impact", () => {
     });
 
     await store.sessionStart({
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

@@ -505,7 +505,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
 // ---------------------------------------------------------------------------
 
 describe('System Tools (createSystemTools)', () => {
-  const testDir = '/tmp/aria-test-tools';
+  const testDir = '/tmp/praana-test-tools';
   let tools: ReturnType<typeof createSystemTools>;
 
   beforeEach(() => {
@@ -634,10 +634,10 @@ describe('System Tools (createSystemTools)', () => {
       const result = await tools.edit_file.execute({
         path: 'edit.txt',
         oldText: 'World',
-        newText: 'ARIA',
+        newText: 'PRAANA',
       });
       expect(result).toEqual({ ok: true });
-      expect(readFileSync(join(testDir, 'edit.txt'), 'utf-8')).toBe('Hello ARIA');
+      expect(readFileSync(join(testDir, 'edit.txt'), 'utf-8')).toBe('Hello PRAANA');
     });
 
     it('should return error if oldText not found', async () => {
@@ -694,10 +694,10 @@ describe('System Tools (createSystemTools)', () => {
         const result = await confirmTools.edit_file.execute({
           path: 'confirm.txt',
           oldText: 'World',
-          newText: 'ARIA',
+          newText: 'PRAANA',
         });
         expect(result).toEqual({ ok: true });
-        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello ARIA');
+        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello PRAANA');
       } finally {
         Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
       }
@@ -716,7 +716,7 @@ describe('System Tools (createSystemTools)', () => {
         const result = await confirmTools.edit_file.execute({
           path: 'confirm.txt',
           oldText: 'World',
-          newText: 'ARIA',
+          newText: 'PRAANA',
         });
         expect(result).toEqual({ ok: false, error: 'Edit cancelled by user' });
         expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello World');
@@ -731,10 +731,10 @@ describe('System Tools (createSystemTools)', () => {
       const result = await tools.edit_file.execute({
         path: 'noconfirm.txt',
         oldText: 'World',
-        newText: 'ARIA',
+        newText: 'PRAANA',
       });
       expect(result).toEqual({ ok: true });
-      expect(readFileSync(join(testDir, 'noconfirm.txt'), 'utf-8')).toBe('Hello ARIA');
+      expect(readFileSync(join(testDir, 'noconfirm.txt'), 'utf-8')).toBe('Hello PRAANA');
     });
 
     it('should show line number in diff preview when editConfirm is enabled', async () => {
@@ -759,7 +759,7 @@ describe('System Tools (createSystemTools)', () => {
         await confirmTools.edit_file.execute({
           path: 'linenum.txt',
           oldText: 'World',
-          newText: 'ARIA',
+          newText: 'PRAANA',
         });
         const stderrOutput = stderrChunks.join('');
         expect(stderrOutput).toContain('linenum.txt:3');
@@ -870,12 +870,12 @@ describe('System Tools (createSystemTools)', () => {
 
       const result = await tools.batch_edit.execute({
         edits: [
-          { path: 'file1.txt', oldText: 'World', newText: 'ARIA' },
+          { path: 'file1.txt', oldText: 'World', newText: 'PRAANA' },
           { path: 'file2.txt', oldText: 'Bar', newText: 'Baz' },
         ],
       });
       expect(result).toEqual({ ok: true, files: ['file1.txt', 'file2.txt'] });
-      expect(readFileSync(join(testDir, 'file1.txt'), 'utf-8')).toBe('Hello ARIA');
+      expect(readFileSync(join(testDir, 'file1.txt'), 'utf-8')).toBe('Hello PRAANA');
       expect(readFileSync(join(testDir, 'file2.txt'), 'utf-8')).toBe('Foo Baz');
     });
 

@@ -66,7 +66,7 @@ describe("Memory confidence reinforcement", () => {
     });
 
     const ctx = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",
@@ -109,7 +109,7 @@ describe("Memory confidence reinforcement", () => {
     });
 
     await store.sessionStart({
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

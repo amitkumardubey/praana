@@ -5,7 +5,7 @@ import type { Event } from '../src/types.js';
 import { join } from 'node:path';
 
 describe('EventLog', () => {
-  const testLogDir = '/tmp/aria-test-logs';
+  const testLogDir = '/tmp/praana-test-logs';
   let eventLog: EventLog;
 
   beforeEach(() => {
@@ -253,7 +253,7 @@ describe('EventLog', () => {
 });
 
 describe('migrateLegacyEventLog', () => {
-  const testDir = '/tmp/aria-test-migrate';
+  const testDir = '/tmp/praana-test-migrate';
 
   beforeEach(() => {
     if (existsSync(testDir)) {

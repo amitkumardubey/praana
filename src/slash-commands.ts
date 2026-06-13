@@ -215,7 +215,7 @@ export async function executeSlashCommand(
           `  ${time}  ${d.name.slice(0, 12)}...  ${String(events).padStart(4)} events  ${cwdLabel}${marker}`
         );
       }
-      lines.push("", "Resume with: aria resume <session-id>");
+      lines.push("", "Resume with: praana resume <session-id>");
       break;
     }
 

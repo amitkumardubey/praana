@@ -173,7 +173,7 @@ rename to new.ts`;
     });
     const out = new GenericDistiller().distill(input, "full", "json");
     expect(() => JSON.parse(out)).not.toThrow();
-    expect(out).toContain('"__aria_summary"');
+    expect(out).toContain('"__praana_summary"');
   });
 
   it("LogDistiller aggregates repetitive log lines", () => {

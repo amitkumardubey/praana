@@ -145,8 +145,7 @@ export interface CompilerConfig {
   memories_budget_ratio?: number;
   /** Max share of usable prompt budget for project context (AGENTS.md). */
   agents_budget_ratio?: number;
-  /** @deprecated Use agents_budget_ratio */
-  skills_budget_ratio?: number;
+
   /** Tokens reserved for model output when computing section ceilings. */
   reserved_output_tokens?: number;
   /** Context fill ratio (0–1) that triggers auto-compaction. Default: 0.75. */

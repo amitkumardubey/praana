@@ -1,8 +1,8 @@
 // ============================================================
-// ARIA Memory — Core Types
+// PRAANA Memory — Core Types
 //
 // A simplified, purpose-built cross-session memory layer.
-// Replaces bodha dependency with ~600 lines of focused code.
+// Native memory implementation (~600 lines of focused code).
 // ============================================================
 
 export const MEMORY_KINDS = [

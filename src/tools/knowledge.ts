@@ -241,7 +241,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
         }
 
         try {
-          // Map bodha-style kinds to our kinds
+          // Map legacy kind aliases to our kinds
           const mappedKind =
             kind === "context_fact" ? "fact" :
             (kind as any) ?? "fact";

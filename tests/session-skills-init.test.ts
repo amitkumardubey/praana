@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
 import type { PraanaConfig } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "aria-test-session-skills-init");
+const testLogDir = join(tmpdir(), "praana-test-session-skills-init");
 
 function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
   return {
@@ -13,7 +13,7 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     memory: {
       enabled: false,
       summarizer: "disabled",
-      db_path: join(tmpdir(), "aria-skills-init-memory.db"),
+      db_path: join(tmpdir(), "praana-skills-init-memory.db"),
       embedder: "hash",
       ollama_url: "http://localhost:11434",
       ollama_model: "nomic-embed-text",

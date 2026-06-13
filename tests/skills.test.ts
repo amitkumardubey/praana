@@ -37,7 +37,7 @@ ${body}
 }
 
 beforeEach(() => {
-  tmpBase = join(tmpdir(), `aria-skills-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  tmpBase = join(tmpdir(), `praana-skills-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tmpBase, { recursive: true });
 });
 
@@ -254,9 +254,9 @@ describe("buildPromptSection", () => {
   it("uses compiler token budget for enforcement, not a hardcoded base", async () => {
     const skillsDir = join(tmpBase, "skills");
     mkdirSync(skillsDir, { recursive: true });
-    mkdirSync(join(tmpBase, ".aria"), { recursive: true });
+    mkdirSync(join(tmpBase, ".praana"), { recursive: true });
     writeFileSync(
-      join(tmpBase, ".aria", "skills-meta.json"),
+      join(tmpBase, ".praana", "skills-meta.json"),
       JSON.stringify({
         "big-a": { budget: { max_tokens: 8000 } },
         "big-b": { budget: { max_tokens: 8000 } },

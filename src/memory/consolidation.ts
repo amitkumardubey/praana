@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Consolidation Processor
+// PRAANA Memory — Consolidation Processor
 //
 // Background learning loop: re-evaluates session learnings,
 // cross-checks against existing Layer 1 entries, and promotes

@@ -218,7 +218,7 @@ Score logging: in debug mode, `scores.jsonl` records every context unit's score 
 | Errors | Open errors full detail; fixed errors one-liners |
 | Activity | Rolling 15 entries from activity log |
 
-Implicit knowledge capture has two layers: (1) the system frame nudges the agent to call `add_constraint` / `add_note` for preferences and corrections — this is the **primary** mechanism because the LLM is the language-understanding component, not regex; (2) `extractImplicitConstraints()` in `turn-digest.ts` is a **minimal safety net** that only captures the syntactically unambiguous "not X, Y" correction pattern. Patterns like "let's use", "we use", "I prefer", "how about" are NOT regex-matched because natural language is too variable — those are the LLM's responsibility via the nudge.
+Implicit knowledge capture has two layers: (1) the system frame nudges the agent to call `add_constraint` / `add_note` for preferences and corrections — this is the **primary** mechanism because the LLM is the language-understanding component, not regex; (2) `extractImplicitConstraints()` in `turn-digest.ts` is a **minimal safety net** that only captures the syntactically unambiguous "not X, Y" correction pattern. Patterns like "let's use", "we use", "I prefer", "how about" are NOT regex-matched because natural language is too varied — those are the LLM's responsibility via the nudge.
 
 ### Classic mode (`compile-classic.ts`)
 
@@ -380,7 +380,7 @@ emergency_at = 0.85
 log_dir = "~/.praana/sessions"
 ```
 
-### Environment Variables
+### Env Vars
 - `PRAANA_MODEL` — overrides default model
 - `PRAANA_SUMMARIZER_MODEL` — overrides summarizer model (defaults to `google/gemini-2.5-flash` on OpenRouter)
 - `PRAANA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
@@ -392,7 +392,7 @@ log_dir = "~/.praana/sessions"
 PRAANA supports two terminal interfaces (see `[ui] mode` in config):
 
 - **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
-- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `aria --ui readline`.
+- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `praana --ui readline`.
 
 Both support slash commands via `src/slash-commands.ts`:
 
@@ -411,4 +411,4 @@ Both support slash commands via `src/slash-commands.ts`:
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
 - `/help` — prints slash commands documentation
 
-CLI flags: `aria --incognito`, `aria --ui tui|readline`, `aria --config <path>`. See `src/app-banner.ts` for the full list.
+CLI flags: `praana --incognito`, `praana --ui tui|readline`, `praana --config <path>`. See `src/app-banner.ts` for the full list.

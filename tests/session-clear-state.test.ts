@@ -6,10 +6,10 @@ import { Session } from "../src/session.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import type { PraanaConfig } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "aria-test-session-clear-state");
+const testLogDir = join(tmpdir(), "praana-test-session-clear-state");
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "aria-test-memory.db") },
+  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "praana-test-memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },

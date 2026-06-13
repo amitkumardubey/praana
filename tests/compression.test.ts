@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const TEST_DIR = join(tmpdir(), "aria-compression-test");
+const TEST_DIR = join(tmpdir(), "praana-compression-test");
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
   return {

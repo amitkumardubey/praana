@@ -8,14 +8,14 @@ describe("parseCliArgs", () => {
   });
 
   it("parses debug and config flags", () => {
-    const parsed = parseCliArgs(["--debug", "--config", "/tmp/aria.toml"]);
+    const parsed = parseCliArgs(["--debug", "--config", "/tmp/praana.toml"]);
     expect(parsed.debug).toBe(true);
-    expect(parsed.configPath).toBe("/tmp/aria.toml");
+    expect(parsed.configPath).toBe("/tmp/praana.toml");
   });
 
   it("parses short config flag", () => {
-    const parsed = parseCliArgs(["-c", "aria.config.toml"]);
-    expect(parsed.configPath).toBe("aria.config.toml");
+    const parsed = parseCliArgs(["-c", "praana.config.toml"]);
+    expect(parsed.configPath).toBe("praana.config.toml");
   });
 
   it("parses incognito flag", () => {
