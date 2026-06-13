@@ -1,5 +1,8 @@
 # PRAANA
 
+[![npm](https://img.shields.io/npm/v/praana)](https://www.npmjs.com/package/praana)
+[![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
+
 **A terminal coding agent with adaptive context and cross-session memory.**
 
 PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
@@ -14,26 +17,54 @@ We have **not** benchmarked PRAANA against other agents. Treat memory and the co
 
 ## Quick Start
 
+### Install from npm (recommended)
+
+```bash
+# Install globally
+npm install -g praana
+
+# Or run without installing
+npx praana
+```
+
+Set up your config file and API key:
+
+```bash
+cp praana.config.example.toml praana.config.toml
+export OPENROUTER_API_KEY="sk-or-v1-..."   # or another provider — see config example
+
+# Launch the agent
+praana
+```
+
+> **First time?** Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
+> Requires **Node 22+**.
+
+### Global CLI alias
+
+After installing with `npm install -g praana`, both `praana` and `pran` are on your PATH automatically. If you use `fnm` or `nvm`, make sure your npm global bin directory is in your PATH:
+
+```bash
+export PATH="$(npm config get prefix)/bin:$PATH"
+praana    # or the short alias: pran
+```
+
+### Build from source (for development)
+
 ```bash
 git clone https://github.com/amitkumardubey/praana.git
 cd praana
 npm install && npm run build
 
 cp praana.config.example.toml praana.config.toml
-export OPENROUTER_API_KEY="sk-or-v1-..."   # or another provider — see config example
+export OPENROUTER_API_KEY="sk-or-v1-..."
 
 node dist/main.js
 ```
 
-Global CLI (optional):
+### Configuration
 
-```bash
-npm run build && npm link
-export PATH="$(npm config get prefix)/bin:$PATH"
-praana    # or the short alias: pran
-```
-
-Requires Node 22+. Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface. See [`praana.config.example.toml`](./praana.config.example.toml) for providers, memory, and engine settings.
+See [`praana.config.example.toml`](./praana.config.example.toml) for providers, memory, and engine settings.
 
 Legacy `aria` config paths and `ARIA_*` environment variables are still read for backward compatibility.
 

@@ -392,7 +392,7 @@ log_dir = "~/.praana/sessions"
 PRAANA supports two terminal interfaces (see `[ui] mode` in config):
 
 - **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
-- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `aria --ui readline`.
+- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `praana --ui readline`.
 
 Both support slash commands via `src/slash-commands.ts`:
 
@@ -411,4 +411,4 @@ Both support slash commands via `src/slash-commands.ts`:
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
 - `/help` — prints slash commands documentation
 
-CLI flags: `aria --incognito`, `aria --ui tui|readline`, `aria --config <path>`. See `src/app-banner.ts` for the full list.
+CLI flags: `praana --incognito`, `praana --ui tui|readline`, `praana --config <path>`. See `src/app-banner.ts` for the full list.
