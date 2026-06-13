@@ -59,7 +59,7 @@ export function LogoBanner({ bootSummary }: LogoBannerProps) {
           <Box marginLeft={2} marginRight={1}>
             <Text>*</Text>
           </Box>
-          <Text>/thinking on — show reasoning blocks</Text>
+          <Text>/thinking on|off — show or hide reasoning text</Text>
         </Box>
         <Box>
           <Box marginLeft={2} marginRight={1}>

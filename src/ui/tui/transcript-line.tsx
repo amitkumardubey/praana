@@ -6,7 +6,7 @@ import { PALETTE } from "./palette.js";
 import { MarkdownRender } from "./markdown-render.js";
 import { needsTopMargin } from "./tool-display.js";
 import { UserBlock } from "./components/user-block.js";
-import { CompletedThinkingBlock, ThinkingBlock } from "./components/thinking-block.js";
+import { ThinkingBlock } from "./components/thinking-block.js";
 import { InlineToolRow } from "./components/inline-tool-row.js";
 import { ToolResultLine } from "./components/tool-result-line.js";
 import { TurnFooter } from "./components/turn-footer.js";
@@ -17,7 +17,6 @@ export interface TranscriptLineProps {
   prevRole?: TranscriptEntry["role"];
   live?: boolean;
   showThinking?: boolean;
-  thoughtsExpanded?: boolean;
   markdownRendering?: boolean;
   syntaxHighlighting?: boolean;
   syntaxTheme?: string;
@@ -28,7 +27,6 @@ export const TranscriptLine = React.memo(function TranscriptLine({
   prevRole,
   live = false,
   showThinking = false,
-  thoughtsExpanded = false,
   markdownRendering = true,
   syntaxHighlighting = true,
   syntaxTheme = "solarized-dark",
@@ -47,25 +45,12 @@ export const TranscriptLine = React.memo(function TranscriptLine({
   }
 
   if (entry.role === "thinking") {
-    if (!showThinking) return null;
-    if (live) {
-      return (
-        <ThinkingBlock
-          text={plain}
-          live
-          showBody
-          expanded={thoughtsExpanded}
-          markdownRendering={markdownRendering}
-          syntaxHighlighting={syntaxHighlighting}
-          syntaxTheme={syntaxTheme}
-        />
-      );
-    }
     return (
-      <CompletedThinkingBlock
+      <ThinkingBlock
         text={plain}
+        live={live}
+        showBody={showThinking}
         durationMs={entry.durationMs}
-        expanded={thoughtsExpanded}
         markdownRendering={markdownRendering}
         syntaxHighlighting={syntaxHighlighting}
         syntaxTheme={syntaxTheme}

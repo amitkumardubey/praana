@@ -41,7 +41,6 @@ export function TuiApp({
   const [input, setInput] = useState("");
   const [status, setStatus] = useState(initialStatus);
   const [toast, setToast] = useState("");
-  const [thoughtsExpanded, setThoughtsExpanded] = useState(false);
   const [showBusy, setShowBusy] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const atBottomRef = useRef(true);
@@ -247,17 +246,9 @@ export function TuiApp({
         controller.abortTurn();
         return true;
       }
-      if (key.ctrl && input === "t" && status.thinking) {
-        setThoughtsExpanded((v) => {
-          const next = !v;
-          showToast(next ? "Thoughts expanded." : "Thoughts collapsed.");
-          return next;
-        });
-        return true;
-      }
       return false;
     },
-    [transcript.busy, controller, status.thinking, showToast]
+    [transcript.busy, controller, showToast]
   );
 
   useInput((input, key) => {
@@ -321,7 +312,6 @@ export function TuiApp({
                   : undefined
             }
             showThinking={status.thinking}
-            thoughtsExpanded={thoughtsExpanded}
             markdownRendering={markdownRendering}
             syntaxHighlighting={syntaxHighlighting}
             syntaxTheme={syntaxTheme}
@@ -341,7 +331,6 @@ export function TuiApp({
               }
               live
               showThinking={status.thinking}
-              thoughtsExpanded={thoughtsExpanded}
               markdownRendering={markdownRendering}
               syntaxHighlighting={syntaxHighlighting}
               syntaxTheme={syntaxTheme}
