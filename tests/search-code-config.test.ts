@@ -10,8 +10,8 @@ let dir = '';
 let configPath = '';
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'aria-cfg-'));
-  configPath = join(dir, 'aria.config.toml');
+  dir = mkdtempSync(join(tmpdir(), 'praana-cfg-'));
+  configPath = join(dir, 'praana.config.toml');
 });
 
 afterEach(() => {

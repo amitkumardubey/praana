@@ -2,9 +2,6 @@ node_modules/
 dist/
 *.log
 .env
-aria.config.json
-aria-knowledge.db*
-aria.config.toml
 refer/
 
 # SQLite :memory: spill files from in-memory db tests

@@ -34,7 +34,7 @@ describe("event lineage", () => {
   });
 
   function openEngine(): ContextEngine {
-    dbPath = join(mkdtempSync(join(tmpdir(), "aria-lineage-")), "memory.db");
+    dbPath = join(mkdtempSync(join(tmpdir(), "praana-lineage-")), "memory.db");
     return ContextEngine.open(dbPath, "sess-lineage", TEST_CONFIG);
   }
 

@@ -281,7 +281,7 @@ describe("checkpoint store integration", () => {
   });
 
   it("persists and restores checkpoint across engine instances", () => {
-    const dir = mkdtempSync(join(tmpdir(), "aria-checkpoint-"));
+    const dir = mkdtempSync(join(tmpdir(), "praana-checkpoint-"));
     const dbPath = join(dir, "memory.db");
     engine.close();
     engine = ContextEngine.open(dbPath, "sess-checkpoint", TEST_CONFIG);

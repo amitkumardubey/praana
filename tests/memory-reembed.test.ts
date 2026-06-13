@@ -17,7 +17,7 @@ class FixedEmbedder implements Embedder {
 }
 
 async function withTempDb<T>(fn: (dbPath: string) => Promise<T> | T): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), "aria-memory-"));
+  const dir = mkdtempSync(join(tmpdir(), "praana-memory-"));
   const dbPath = join(dir, "memory.db");
   try {
     return await fn(dbPath);
@@ -40,7 +40,7 @@ function seedEntry(dbPath: string): void {
     created_at: now,
     last_seen_at: now,
     session_id: "session-1",
-    scopes: ["user:u1", "agent:aria-test", "context:ctx1"],
+    scopes: ["user:u1", "agent:praana-test", "context:ctx1"],
   });
   upsertEmbedding(db, "entry-1", new Float32Array([1, 0]));
   db.close();
@@ -70,7 +70,7 @@ describe("Memory vector re-embedding migration", () => {
       });
 
       await store.sessionStart({
-        agent: "aria-test",
+        agent: "praana-test",
         user_id: "u1",
         time: Date.now(),
         context_id: "ctx1",

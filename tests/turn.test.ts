@@ -165,7 +165,7 @@ function makeConfig(overrides?: Partial<PraanaConfig>): PraanaConfig {
       idle_hard_after_turns: 6,
     },
     session: {
-      log_dir: "/tmp/aria-test",
+      log_dir: "/tmp/praana-test",
     },
     consolidation: {
       enabled: false,
@@ -235,7 +235,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     digest: null,
     agentsContext: null,
     debug: false,
-    promptDir: "/tmp/aria-test/prompts",
+    promptDir: "/tmp/praana-test/prompts",
     _turnCount: 0,
     _lastCompileMetrics: null,
 

@@ -66,8 +66,6 @@ node dist/main.js
 
 See [`praana.config.example.toml`](./praana.config.example.toml) for providers, memory, and engine settings.
 
-Legacy `aria` config paths and `ARIA_*` environment variables are still read for backward compatibility.
-
 ---
 
 ## What it does

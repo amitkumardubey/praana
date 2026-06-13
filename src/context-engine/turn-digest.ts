@@ -56,7 +56,7 @@ export function normalizeTurnDigest(raw: TurnDigest): TurnDigest {
  * - "not X, Y" corrections (the user directly reversing a wrong choice)
  *
  * Patterns like "we use", "let's use", "I prefer", "make sure", "how about"
- * are NOT captured here because they are too variable in natural language.
+ * are NOT captured here because natural language is too varied.
  * Those are the LLM's responsibility via the system prompt nudge.
  */
 export function extractImplicitConstraints(userMessage: string): string[] {

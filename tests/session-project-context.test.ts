@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
 import type { PraanaConfig } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "aria-test-session-project-context");
+const testLogDir = join(tmpdir(), "praana-test-session-project-context");
 
 function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
   return {
@@ -13,7 +13,7 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     memory: {
       enabled: false,
       summarizer: "disabled",
-      db_path: join(tmpdir(), "aria-project-context-memory.db"),
+      db_path: join(tmpdir(), "praana-project-context-memory.db"),
       embedder: "hash",
       ollama_url: "http://localhost:11434",
       ollama_model: "nomic-embed-text",
@@ -62,7 +62,7 @@ describe("Session project context", () => {
   });
 
   it("stores projectContext on session but not in StateGraph when engine is disabled", async () => {
-    projectDir = join(tmpdir(), `aria-project-classic-${Date.now()}`);
+    projectDir = join(tmpdir(), `praana-project-classic-${Date.now()}`);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(
       join(projectDir, "package.json"),
@@ -82,7 +82,7 @@ describe("Session project context", () => {
   });
 
   it("stores projectContext in StateGraph when context engine is enabled", async () => {
-    projectDir = join(tmpdir(), `aria-project-engine-${Date.now()}`);
+    projectDir = join(tmpdir(), `praana-project-engine-${Date.now()}`);
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(
       join(projectDir, "package.json"),

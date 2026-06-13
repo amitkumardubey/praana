@@ -8,7 +8,7 @@ import { ProjectDetector, formatProjectContext } from "../src/project-detector.j
 // ---- Helpers ----
 
 function makeDir(): string {
-  const dir = join(tmpdir(), `aria-pctx-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const dir = join(tmpdir(), `praana-pctx-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(dir, { recursive: true });
   return dir;
 }

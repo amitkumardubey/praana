@@ -59,7 +59,7 @@ describe('Compiler', () => {
     expect(prompt).toContain('# Active State');
   });
 
-  it('should include bodha digest when available', () => {
+  it('should include memory digest when available', () => {
     const prompt = compile({
       stateGraph: {
         list: () => [],

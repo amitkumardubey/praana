@@ -9,7 +9,7 @@ describe("Recall ranking", () => {
     });
 
     const ctx = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",
@@ -51,7 +51,7 @@ describe("Recall ranking", () => {
     });
 
     const ctx = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

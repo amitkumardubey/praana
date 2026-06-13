@@ -23,7 +23,7 @@ describe("Memory safety", () => {
     });
 
     await store.sessionStart({
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx-a",
@@ -46,7 +46,7 @@ describe("Memory safety", () => {
     });
 
     await store.sessionStart({
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx-a",
@@ -77,7 +77,7 @@ describe("Memory safety", () => {
     });
 
     const base = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_label: "test",
@@ -106,7 +106,7 @@ describe("Memory safety", () => {
     });
 
     const base = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_label: "test",
@@ -116,7 +116,7 @@ describe("Memory safety", () => {
     await store.remember("global note: always prefer strict mode", {
       kind: "fact",
       certainty: "high",
-      scope: ["user:u1", "agent:aria-test"],
+      scope: ["user:u1", "agent:praana-test"],
     });
     await store.remember("project note: checkout schema migration", {
       kind: "fact",
@@ -139,7 +139,7 @@ describe("Memory safety", () => {
     });
 
     const base = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_label: "test",
@@ -149,7 +149,7 @@ describe("Memory safety", () => {
     await store.remember("global preference: keep answers concise", {
       kind: "preference",
       certainty: "high",
-      scope: ["user:u1", "agent:aria-test"],
+      scope: ["user:u1", "agent:praana-test"],
     });
     await store.sessionEnd("clean");
 
@@ -166,7 +166,7 @@ describe("Memory safety", () => {
     });
 
     const base = {
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_label: "test",
@@ -205,7 +205,7 @@ describe("Memory safety", () => {
     });
 
     await store.sessionStart({
-      agent: "aria-test",
+      agent: "praana-test",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx-a",

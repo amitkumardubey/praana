@@ -33,7 +33,7 @@ describe("logger", () => {
   });
 
   it("writes session diagnostics to current.log (not events.jsonl)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "aria-syslog-"));
+    const root = mkdtempSync(join(tmpdir(), "praana-syslog-"));
     const sessionLogDir = join(root, "sessions");
     const sessionId = "sess-log-test";
     const prevVitest = process.env.VITEST;

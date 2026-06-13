@@ -9,7 +9,7 @@ const testConfig: PraanaConfig = {
   memory: { enabled: true, summarizer: "disabled", db_path: ":memory:" },
   compiler: { token_budget: 100_000, recent_turns: 10 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
-  session: { log_dir: join(tmpdir(), "aria-incognito-test") },
+  session: { log_dir: join(tmpdir(), "praana-incognito-test") },
 };
 
 describe("incognito mode", () => {

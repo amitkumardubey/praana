@@ -47,7 +47,7 @@ function isDirectory(path: string): boolean {
   }
 }
 
-const SKIP_ALLOWLIST = new Set([".agents", ".aria", ".praana", ".cursor", ".claude"]);
+const SKIP_ALLOWLIST = new Set([".agents", ".praana", ".cursor", ".claude"]);
 
 function shouldSkipDir(dirName: string): boolean {
   if (dirName === ".git" || dirName === "node_modules") return true;

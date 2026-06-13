@@ -32,7 +32,7 @@ provider = "openrouter"
 # Model name passed to the provider.
 # For OpenRouter: use "provider/model" format, e.g. "deepseek/deepseek-v4-pro"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
-# Override at runtime via PRAANA_MODEL env var (legacy: ARIA_MODEL) or /model command.
+# Override at runtime via PRAANA_MODEL env var or /model command.
 model = "deepseek/deepseek-v4-flash:free"
 
 # Optional: override detected model context window (input tokens) for pressure and compaction
@@ -47,7 +47,7 @@ model = "deepseek/deepseek-v4-flash:free"
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
 
-# API keys are read from environment variables:
+# API keys are read from env vars:
 #   openrouter    → OPENROUTER_API_KEY
 #   openai        → OPENAI_API_KEY
 #   anthropic     → ANTHROPIC_API_KEY

@@ -30,7 +30,7 @@ describe("context engine telemetry", () => {
   });
 
   function openEngine(): ContextEngine {
-    dbPath = join(mkdtempSync(join(tmpdir(), "aria-telemetry-")), "memory.db");
+    dbPath = join(mkdtempSync(join(tmpdir(), "praana-telemetry-")), "memory.db");
     return ContextEngine.open(dbPath, "sess-telemetry", TEST_CONFIG);
   }
 
