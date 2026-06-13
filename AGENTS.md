@@ -1,6 +1,6 @@
-# AGENTS.md — ARIA
+# AGENTS.md — PRAANA
 
-ARIA is a TypeScript CLI coding agent built around two systems:
+PRAANA is a TypeScript CLI coding agent built around two systems:
 
 - **Adaptive Context** — within-session working memory. State objects (tasks, decisions, constraints, notes) are tiered: `active` (full detail), `soft` (one-line stub), `hard` (ID only). Tiers are managed automatically based on idle turn count. The deterministic prompt compiler assembles a token-budgeted context window on every turn.
 
@@ -25,7 +25,7 @@ Requires Node 22+. Native dependencies are optional (see Embedder Config below).
 
 ### Global CLI (`npm link`)
 
-`package.json` exposes `aria` via `bin/aria.js`. After `npm run build`, run `npm link` and add `$(npm config get prefix)/bin` to your PATH (fnm/nvm users often need this explicitly).
+`package.json` exposes `praana` and `pran` via `bin/praana.js`. After `npm run build`, run `npm link` and add `$(npm config get prefix)/bin` to your PATH (fnm/nvm users often need this explicitly).
 
 ## Running
 
@@ -34,32 +34,35 @@ Requires Node 22+. Native dependencies are optional (see Embedder Config below).
 npm start
 
 # Global CLI (after npm run build && npm link)
-aria
-aria resume <session_id>
+praana
+pran
+praana resume <session_id>
 
 # Resume a previous session
 npm start -- resume <session_id>
 
 # Debug mode (saves compiled prompts, verbose tool blocks)
-ARIA_DEBUG=true npm start
+PRAANA_DEBUG=true npm start
 
 # Explicit config file
-aria --config /path/to/aria.config.toml
+praana --config /path/to/praana.config.toml
 ```
 
 ### Configuration
 
 Config is deep-merged from (later overrides earlier):
-1. `~/.aria/aria.config.json`
-2. `~/.aria/config.toml`
-3. `./aria.config.json`
-4. `./aria.config.toml`
+1. `~/.praana/praana.config.json`
+2. `~/.praana/config.toml`
+3. `./praana.config.json`
+4. `./praana.config.toml`
+
+Legacy paths (`~/.aria/*`, `./aria.config.*`) are still loaded first and overridden by the PRAANA paths above.
 
 Key env vars:
 - Provider API keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.
-- `ARIA_MODEL` — override model at runtime
-- `ARIA_SUMMARIZER_MODEL` — override summariser model
-- `ARIA_DEBUG=true` — saves compiled prompts per turn to `prompts/`
+- `PRAANA_MODEL` — override model at runtime (legacy: `ARIA_MODEL`)
+- `PRAANA_SUMMARIZER_MODEL` — override summariser model (legacy: `ARIA_SUMMARIZER_MODEL`)
+- `PRAANA_DEBUG=true` — saves compiled prompts per turn to `prompts/`
 
 ### Embedder Config
 
@@ -83,9 +86,9 @@ When adding embedder support, implement the `Embedder` interface in `src/memory/
 
 ### Project Context (AGENTS.md)
 
-On session start, ARIA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
+On session start, PRAANA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
 
-1. `~/.aria/AGENTS.md` — global personal instructions
+1. `~/.praana/AGENTS.md` — global personal instructions
 2. `<git root>/AGENTS.md` — project-wide context  
 3. `<cwd>/AGENTS.md` — subdirectory context (if cwd ≠ git root)
 4. `CLAUDE.md` — compatibility fallback if no `AGENTS.md` found at project root
@@ -177,7 +180,7 @@ src/
 
 ### Skills (issue #57)
 
-**Engine mode:** `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.aria/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `aria.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
+**Engine mode:** `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `praana.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
 
 **Classic mode:** `discoverSkills()` + `buildSkillMetadataCatalog()` — name/path catalog only. No SkillRuntime, no BM25, no residency. Agent loads skill bodies via `read_file` when relevant.
 
@@ -212,7 +215,7 @@ User input
 
 ### Memory scopes
 
-Default scopes set at session start: `user:<sha256>`, `agent:aria`, `context:<sha256_of_cwd>`.
+Default scopes set at session start: `user:<sha256>`, `agent:praana`, `context:<sha256_of_cwd>`.
 
 - **Project-level** memories carry all three scopes — only visible from that project directory.
 - **Global** memories carry only `user` and `agent` scopes — visible in all project sessions.
@@ -237,9 +240,9 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 ## Security
 
 - **Shell tool:** Runs arbitrary commands with the user's permissions. Optional sandbox allowlist via `[shell]` in config (`enabled`, `allowed_paths`); off by default.
-- **Event log:** `~/.aria/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
+- **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
 - **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
-- **Memory DB:** `~/.aria/memory.db` — plaintext SQLite. No encryption at rest.
+- **Memory DB:** `~/.praana/memory.db` — plaintext SQLite. No encryption at rest.
 - **Provider keys:** Read from env vars only. Never hardcode or log.
 
 ---
@@ -248,10 +251,10 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 
 - `edit_file` requires exact unique text match — whitespace-sensitive. Will fail on duplicate code blocks or trailing whitespace differences.
 - Event log `fsyncSync` on every write — intentional for durability, affects throughput on fast tool loops.
-- Session log path is `events.jsonl` under `~/.aria/sessions/<session_id>/`. Legacy `events.log` files are migrated automatically on session open.
+- Session log path is `events.jsonl` under `~/.praana/sessions/<session_id>/`. Legacy `events.log` files are migrated automatically on session open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
-- Config merge order is global-first, local-last. A `./aria.config.toml` always wins over `~/.aria/config.toml`.
+- Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`.
 - The embedder dimension matters for the vector table schema. Switching from `hash` (384-dim) to `ollama`/`transformers` (768-dim) requires a schema migration in `openMemoryDb()`. A migration is needed before shipping embedder switching.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 

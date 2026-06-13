@@ -8,7 +8,7 @@ export interface LogoBannerProps {
 }
 
 export function LogoBanner({ bootSummary }: LogoBannerProps) {
-  const title = `▲ ARIA ${APP_VERSION}`;
+  const title = `▲ PRAANA ${APP_VERSION}`;
   return (
     <Box marginBottom={1}>
       <Box flexDirection="column" paddingX={2}>

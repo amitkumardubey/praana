@@ -234,7 +234,7 @@ export function buildSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are ARIA, a coding agent with persistent memory.",
+    "You are PRAANA, a coding agent with persistent memory.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
   ];
@@ -284,7 +284,7 @@ export function buildSystemFrame(
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
     "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
     "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",
-    "Session event log file: ~/.aria/sessions/<session_id>/events.jsonl",
+    "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
     "See the Active State and Peripheral Memory sections below for your current working memory.",
     "",
     "## Tool Safety",
@@ -415,7 +415,7 @@ function buildRecentTurnsWithTruncationFlag(events: Event[], tokenBudget?: numbe
         break;
       case "agent_message": {
         const text = truncateText(ev.payload.text, 800);
-        line = `ARIA: ${text}`;
+        line = `PRAANA: ${text}`;
         break;
       }
       case "tool_call":

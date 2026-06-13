@@ -8,8 +8,13 @@ describe("CLI binary entrypoint", () => {
     expect(typeof main).toBe("function");
   });
 
-  it("invokes exported main from the bin wrapper", () => {
-    const binSource = readFileSync(resolve("bin/aria.js"), "utf-8");
+  it("invokes exported main from the praana bin wrapper", () => {
+    const binSource = readFileSync(resolve("bin/praana.js"), "utf-8");
+    expect(binSource).toContain("await mod.main()");
+  });
+
+  it("invokes exported main from the pran bin wrapper", () => {
+    const binSource = readFileSync(resolve("bin/pran.js"), "utf-8");
     expect(binSource).toContain("await mod.main()");
   });
 });

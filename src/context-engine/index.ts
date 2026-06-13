@@ -2,7 +2,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Event } from "../types.js";
 import type { StateGraph } from "../state-graph.js";
-import type { AriaConfig } from "../types.js";
+import type { PraanaConfig } from "../types.js";
+import { resolveDefaultMemoryDbPath } from "../app-identity.js";
 import { ArtifactStore } from "./artifact-store.js";
 import { CheckpointStore, renderContextSummary as formatContextSummary } from "./checkpoint.js";
 import {
@@ -104,21 +105,21 @@ export function normalizeContextEngineConfig(
   };
 }
 
-export function resolveContextEngineConfig(config: AriaConfig): ContextEngineConfig {
+export function resolveContextEngineConfig(config: PraanaConfig): ContextEngineConfig {
   return normalizeContextEngineConfig(config.context_engine ?? {});
 }
 
-export function isContextEngineEnabled(config: AriaConfig): boolean {
+export function isContextEngineEnabled(config: PraanaConfig): boolean {
   return resolveContextEngineConfig(config).enabled;
 }
 
-export function resolveContextDbPath(config: AriaConfig, cwd: string): string {
+export function resolveContextDbPath(config: PraanaConfig, cwd: string): string {
   const configuredPath = config.memory?.db_path;
   if (configuredPath) {
     const expanded = expandHome(configuredPath);
     return expanded.startsWith("/") ? expanded : join(cwd, expanded);
   }
-  return expandHome("~/.aria/memory.db");
+  return resolveDefaultMemoryDbPath();
 }
 
 function expandHome(p: string): string {

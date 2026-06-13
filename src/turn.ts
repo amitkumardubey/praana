@@ -1,7 +1,7 @@
 import { stream as piStream, type Message } from "@earendil-works/pi-ai";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
@@ -259,7 +259,7 @@ export async function runTurn(
 
   const logger = await createSessionLogger({
     sessionId: session.id,
-    sessionLogDir: session.config.session?.log_dir ?? join(homedir(), ".aria", "sessions"),
+    sessionLogDir: session.config.session?.log_dir ?? resolveDefaultSessionLogDir(),
     debug: session.debug,
   });
   const llmLogger = logger.child("llm");

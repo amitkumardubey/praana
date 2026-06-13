@@ -1,7 +1,13 @@
-import { readFileSync } from "node:fs";
 import chalk from "chalk";
 import boxen from "boxen";
+import { readFileSync } from "node:fs";
 import { getLoadedConfigSources } from "./config.js";
+import {
+  APP_NAME,
+  APP_TAGLINE,
+  CLI_NAME,
+  CLI_SHORT,
+} from "./app-identity.js";
 import type { Session } from "./session.js";
 
 export const APP_VERSION = readAppVersion();
@@ -25,7 +31,7 @@ export function formatSessionBannerLines(
   const digestLen = session.digest?.length ?? 0;
   const configSources = getLoadedConfigSources();
   return [
-    `ARIA ${APP_VERSION}`,
+    `${APP_NAME} ${APP_VERSION}`,
     `session: ${session.id}`,
     `cwd: ${cwd}`,
     `model: ${model}`,
@@ -44,9 +50,9 @@ export function formatSessionBannerLines(
 
 export function printSessionBanner(session: Session, cwd: string, model: string): void {
   const W = 72;
-  const title = "▲ ARIA [" + APP_VERSION + "]";
+  const title = `▲ ${APP_NAME} [` + APP_VERSION + "]";
   console.log(title + " " + "─".repeat(W - title.length - 2) + "┐");
-  const tagline = "Agent with Retrieval, Intent, and Action";
+  const tagline = APP_TAGLINE;
   console.log("│ " + chalk.dim(tagline) + " ".repeat(W - 3 - tagline.length) + "│");
   console.log("└" + "─".repeat(W - 2) + "┘");
 }
@@ -58,28 +64,35 @@ export function formatSessionEndSummary(session: Session): string {
 
 /** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
 export function formatSessionEpilogue(sessionId: string): string[] {
-  return ["", `  aria resume ${sessionId}`, ""];
+  return ["", `  ${CLI_NAME} resume ${sessionId}`, `  ${CLI_SHORT} resume ${sessionId}`, ""];
 }
 
 export function printSessionEndSummary(session: Session): void {
   console.log(formatSessionEndSummary(session));
 }
 
+function usageLines(): string[] {
+  return [
+    `  ${CLI_NAME}                     Start new session in current directory`,
+    `  ${CLI_SHORT}                      Short alias for ${CLI_NAME}`,
+    `  ${CLI_NAME} resume <session>    Resume an existing session`,
+    `  ${CLI_NAME} --ui tui            Start with Ink TUI (default when TTY)`,
+    `  ${CLI_NAME} --ui readline       Classic readline interface`,
+    `  ${CLI_NAME} --screen alternate  Full-screen TUI (fixed viewport)`,
+    `  ${CLI_NAME} --debug             Start with debug mode enabled`,
+    `  ${CLI_NAME} --incognito         Start without cross-session memory persistence`,
+    `  ${CLI_NAME} -I                  Short alias for --incognito`,
+    `  ${CLI_NAME} --config <path>     Load config from specific .json/.toml path`,
+    `  ${CLI_NAME} --help              Show this help`,
+  ];
+}
+
 export function getHelpLines(): string[] {
   return [
-    chalk.bold("  ARIA — Agent with Retrieval, Intent, and Action"),
+    chalk.bold(`  ${APP_NAME} — ${APP_TAGLINE}`),
     "",
     "Usage:",
-    "  aria                     Start new session in current directory",
-    "  aria resume <session>    Resume an existing session",
-    "  aria --ui tui            Start with Ink TUI (default when TTY)",
-    "  aria --ui readline       Classic readline interface",
-    "  aria --screen alternate  Full-screen TUI (fixed viewport)",
-    "  aria --debug             Start with debug mode enabled",
-    "  aria --incognito         Start without cross-session memory persistence",
-    "  aria -I                  Short alias for --incognito",
-    "  aria --config <path>     Load config from specific .json/.toml path",
-    "  aria --help              Show this help",
+    ...usageLines(),
     "",
     "Slash Commands:",
     "  /exit                    End session and save",
@@ -104,18 +117,7 @@ export function getHelpLines(): string[] {
 }
 
 export function printHelp(): void {
-  const usage = [
-    "  aria                     Start new session in current directory",
-    "  aria resume <session>    Resume an existing session",
-    "  aria --ui tui            Start with Ink TUI (default when TTY)",
-    "  aria --ui readline       Classic readline interface",
-    "  aria --screen alternate  Full-screen TUI (fixed viewport)",
-    "  aria --debug             Start with debug mode enabled",
-    "  aria --incognito         Start without cross-session memory persistence",
-    "  aria -I                  Short alias for --incognito",
-    "  aria --config <path>     Load config from specific .json/.toml path",
-    "  aria --help              Show this help",
-  ].join("\n");
+  const usage = usageLines().join("\n");
   const commands = [
     "  /exit                    End session and save",
     "  /state                   List all state objects for this session",
@@ -137,7 +139,7 @@ export function printHelp(): void {
     "  /help                    Show this help",
   ].join("\n");
   console.log(
-    chalk.bold("  ARIA — Agent with Retrieval, Intent, and Action") +
+    chalk.bold(`  ${APP_NAME} — ${APP_TAGLINE}`) +
       "\n\n" +
       boxen(usage, {
         padding: { top: 0, bottom: 0, left: 0, right: 0 },
@@ -172,7 +174,7 @@ export function formatRecentConversationLines(session: Session, maxMessages = 6)
   ];
   const shown = turns.slice(-maxMessages);
   for (const ev of shown) {
-    const prefix = ev.kind === "user_message" ? "You" : "ARIA";
+    const prefix = ev.kind === "user_message" ? "You" : APP_NAME;
     const text = (ev.payload.text as string)?.trim() ?? "";
     const displayLines = text.split("\n").slice(0, 2).join(" ");
     const display =

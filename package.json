@@ -1,11 +1,11 @@
 {
-  "name": "aria",
+  "name": "praana",
   "version": "0.4.0",
   "description": "Terminal coding agent with adaptive context and cross-session memory",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amitkumardubey/aria.git"
+    "url": "https://github.com/amitkumardubey/praana.git"
   },
   "keywords": [
     "cli",
@@ -17,12 +17,13 @@
   ],
   "type": "module",
   "bin": {
-    "aria": "bin/aria.js"
+    "praana": "bin/praana.js",
+    "pran": "bin/pran.js"
   },
   "files": [
     "bin",
     "dist",
-    "aria.config.example.toml"
+    "praana.config.example.toml"
   ],
   "engines": {
     "node": ">=22"

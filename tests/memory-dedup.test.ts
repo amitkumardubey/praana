@@ -5,7 +5,7 @@ import { heuristicContradiction } from "../src/memory/dedup.js";
 
 describe("sessionEnd duplicate and contradiction detection", () => {
   const ctx = {
-    agent: "aria",
+    agent: "praana",
     user_id: "u1",
     time: Date.now(),
     context_id: "ctx1",

@@ -4,6 +4,7 @@
 
 import type { MemoryConfig } from "../types.js";
 import { getAppLogger } from "../logger.js";
+import { envOverride } from "../app-identity.js";
 import { OllamaEmbedder } from "./embeddings.js";
 import {
   OllamaSummarizer,
@@ -24,7 +25,7 @@ export async function createSummarizer(
     const url = config.ollama_url ?? "http://localhost:11434";
     const configured =
       config.ollama_summarizer_model?.trim() ||
-      process.env.ARIA_SUMMARIZER_MODEL?.trim() ||
+      envOverride("PRAANA_SUMMARIZER_MODEL", "ARIA_SUMMARIZER_MODEL")?.trim() ||
       "";
 
     let model = configured;
@@ -57,7 +58,7 @@ export async function createSummarizer(
   if (mode === "openai") {
     const apiKey = process.env.OPENAI_API_KEY ?? "";
     const model =
-      process.env.ARIA_SUMMARIZER_MODEL ?? "gpt-4o-mini";
+      envOverride("PRAANA_SUMMARIZER_MODEL", "ARIA_SUMMARIZER_MODEL") ?? "gpt-4o-mini";
     if (!apiKey) {
       log.warn("summarizer=openai but OPENAI_API_KEY is not set");
       return null;
@@ -78,7 +79,8 @@ export async function createSummarizer(
       ? "https://openrouter.ai/api/v1"
       : "https://api.openai.com/v1";
     const model =
-      process.env.ARIA_SUMMARIZER_MODEL ?? "google/gemini-2.5-flash";
+      envOverride("PRAANA_SUMMARIZER_MODEL", "ARIA_SUMMARIZER_MODEL") ??
+      "google/gemini-2.5-flash";
     if (!apiKey) {
       log.warn("summarizer=openrouter but OPENROUTER_API_KEY / OPENAI_API_KEY is not set");
       return null;

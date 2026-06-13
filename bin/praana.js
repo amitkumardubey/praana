@@ -7,7 +7,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const mainPath = join(root, "dist/main.js");
 
 if (!existsSync(mainPath)) {
-  process.stderr.write("[aria] Not built yet. From the repo root, run: npm run build\n");
+  process.stderr.write(
+    "[praana] Not built yet. From the repo root, run: npm run build\n"
+  );
   process.exit(1);
 }
 

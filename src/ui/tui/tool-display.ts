@@ -173,7 +173,7 @@ export function formatTurnFooter(
     durationMs < 1000
       ? `${Math.max(0, Math.round(durationMs))}ms`
       : `${(durationMs / 1000).toFixed(1)}s`;
-  const parts = [`▣ ARIA`, modelShort, duration];
+  const parts = [`▣ PRAANA`, modelShort, duration];
   const suffix = formatTurnStatsSuffix(stats);
   if (suffix) parts.push(suffix);
   return parts.join(" · ");

@@ -36,7 +36,7 @@ describe("per-kind digest ranking weights", () => {
     });
 
     const ctx = {
-      agent: "aria",
+      agent: "praana",
       user_id: "u1",
       time: Date.now(),
       context_id: "ctx1",

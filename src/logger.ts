@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  APP_HOME_DIR,
+  APP_NAME,
+  resolveAppHomePath,
+} from "./app-identity.js";
 import pino, { type Logger as PinoLogger, type DestinationStream } from "pino";
 import pretty from "pino-pretty";
 import { Writable } from "node:stream";
@@ -42,9 +47,9 @@ export interface LoggerOptions {
   domain?: LogDomain;
   debug?: boolean;
   sessionId?: string;
-  /** Base session directory from config (e.g. ~/.aria/sessions). */
+  /** Base session directory from config (e.g. ~/.praana/sessions). */
   sessionLogDir?: string;
-  /** Pre-built rolling file destination for ~/.aria/logs. */
+  /** Pre-built rolling file destination for ~/.praana/logs. */
   appFileStream?: DestinationStream;
   /** Pre-built rolling file destination for session system.log. */
   sessionFileStream?: DestinationStream;
@@ -72,12 +77,12 @@ function expandHome(p: string): string {
 }
 
 export function getAppLogDir(): string {
-  return join(homedir(), ".aria", "logs");
+  return resolveAppHomePath("logs");
 }
 
 /** Base path for pino-roll (extension added by rotator). */
 export function getAppLogBase(): string {
-  return join(getAppLogDir(), "aria");
+  return join(getAppLogDir(), APP_NAME.toLowerCase());
 }
 
 /** Stable symlink path for tailing the active app log. */
@@ -190,7 +195,7 @@ function createPinoLogger(options: LoggerOptions): PinoLogger {
   );
 }
 
-export class AriaLogger {
+export class PraanaLogger {
   private readonly pino: PinoLogger;
   private readonly options: Required<Pick<LoggerOptions, "domain" | "debug">> &
     Omit<LoggerOptions, "domain" | "debug">;
@@ -209,8 +214,8 @@ export class AriaLogger {
     this.pino = createPinoLogger(this.options).child({ domain: this.options.domain });
   }
 
-  child(domain: LogDomain): AriaLogger {
-    return new AriaLogger({ ...this.options, domain });
+  child(domain: LogDomain): PraanaLogger {
+    return new PraanaLogger({ ...this.options, domain });
   }
 
   log(entry: LogEntry): void {
@@ -305,25 +310,25 @@ export class AriaLogger {
   }
 }
 
-let appLogger = new AriaLogger({ domain: "app" });
+let appLogger = new PraanaLogger({ domain: "app" });
 let appLogInitPromise: Promise<void> | null = null;
 
-export function getAppLogger(): AriaLogger {
+export function getAppLogger(): PraanaLogger {
   return appLogger;
 }
 
-export function setAppLogger(logger: AriaLogger): void {
+export function setAppLogger(logger: PraanaLogger): void {
   appLogger = logger;
 }
 
-/** Initialise daily-rotating app log under ~/.aria/logs (no-op in tests). */
+/** Initialise daily-rotating app log under ~/.praana/logs (no-op in tests). */
 export async function initAppLogFile(): Promise<void> {
   if (isTestEnv()) return;
   if (appLogInitPromise) return appLogInitPromise;
 
   appLogInitPromise = (async () => {
     const stream = await createRollingFileDestination(getAppLogBase());
-    appLogger = new AriaLogger({ domain: "app", appFileStream: stream });
+    appLogger = new PraanaLogger({ domain: "app", appFileStream: stream });
   })();
 
   return appLogInitPromise;
@@ -334,9 +339,9 @@ export async function createSessionLogger(opts: {
   sessionLogDir: string;
   debug?: boolean;
   captureNotice?: (line: string) => void;
-}): Promise<AriaLogger> {
+}): Promise<PraanaLogger> {
   if (isTestEnv()) {
-    return new AriaLogger({
+    return new PraanaLogger({
       domain: "session",
       debug: opts.debug ?? false,
       sessionId: opts.sessionId,
@@ -350,7 +355,7 @@ export async function createSessionLogger(opts: {
     getSessionLogBase(opts.sessionLogDir, opts.sessionId),
   );
 
-  return new AriaLogger({
+  return new PraanaLogger({
     domain: "session",
     debug: opts.debug ?? false,
     sessionId: opts.sessionId,
@@ -364,8 +369,8 @@ export async function createSessionLogger(opts: {
 export function createTestLogger(
   writeLine: (line: string) => void,
   opts?: { debug?: boolean },
-): AriaLogger {
-  return new AriaLogger({
+): PraanaLogger {
+  return new PraanaLogger({
     domain: "app",
     debug: opts?.debug ?? false,
     writeLine,
@@ -406,7 +411,7 @@ export function formatUserFacingLlmError(opts: {
     return `[LLM error: ${detail}]`;
   }
   if (opts.reason === "error") {
-    return `[LLM request failed — see ~/.aria/logs/current.log or the session current.log (model: ${opts.model}, provider: ${opts.provider})]`;
+    return `[LLM request failed — see ~/.${APP_HOME_DIR}/logs/current.log or the session current.log (model: ${opts.model}, provider: ${opts.provider})]`;
   }
   return "[no response from model — try again or switch models with /model]";
 }

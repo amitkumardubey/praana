@@ -3,11 +3,11 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
-import type { AriaConfig } from "../src/types.js";
+import type { PraanaConfig } from "../src/types.js";
 
 const testLogDir = join(tmpdir(), "aria-test-session-skills-init");
 
-function makeConfig(overrides: Partial<AriaConfig> = {}): AriaConfig {
+function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
   return {
     llm: { provider: "openrouter", model: "test/model" },
     memory: {

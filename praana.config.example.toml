@@ -1,16 +1,16 @@
-# ARIA Configuration — Example
+# PRAANA Configuration — Example
 #
-# Copy this file to `aria.config.toml` in your project root and customize:
-#   cp aria.config.example.toml aria.config.toml
+# Copy this file to `praana.config.toml` in your project root and customize:
+#   cp praana.config.example.toml praana.config.toml
 #
 # All values shown are the built-in defaults. You only need to
-# override what you want to change. ARIA works with zero config.
+# override what you want to change. PRAANA works with zero config.
 #
 # Config is loaded from (later overrides earlier):
-#   1. ~/.aria/aria.config.json
-#   2. ~/.aria/config.toml
-#   3. ./aria.config.json
-#   4. ./aria.config.toml
+#   1. ~/.praana/praana.config.json
+#   2. ~/.praana/config.toml
+#   3. ./praana.config.json
+#   4. ./praana.config.toml
 
 [llm]
 # LLM provider. Supported values:
@@ -32,7 +32,7 @@ provider = "openrouter"
 # Model name passed to the provider.
 # For OpenRouter: use "provider/model" format, e.g. "deepseek/deepseek-v4-pro"
 # For native providers: use the model name directly, e.g. "claude-sonnet-4-20250514"
-# Override at runtime via ARIA_MODEL env var or /model command.
+# Override at runtime via PRAANA_MODEL env var (legacy: ARIA_MODEL) or /model command.
 model = "deepseek/deepseek-v4-flash:free"
 
 # Optional: override detected model context window (input tokens) for pressure and compaction
@@ -74,7 +74,7 @@ enabled = true
 summarizer = "openrouter"
 
 # Path to the SQLite memory database (~ is expanded to $HOME)
-db_path = "~/.aria/memory.db"
+db_path = "~/.praana/memory.db"
 
 # --- Embeddings (semantic /recall) ---
 #   auto          — try Ollama, fall back to hash with a warning
@@ -94,7 +94,7 @@ ollama_model = "nomic-embed-text"
 # Must be a chat model from `ollama list`, not an embedding model.
 # Ways to set it (pick one):
 #   1. ollama_summarizer_model below (recommended)
-#   2. ARIA_SUMMARIZER_MODEL env var (e.g. export ARIA_SUMMARIZER_MODEL=qwen3.5:4b)
+#   2. PRAANA_SUMMARIZER_MODEL env var (e.g. export PRAANA_SUMMARIZER_MODEL=qwen3.5:4b)
 #   3. Leave unset — auto-picks the first non-embedding model from `ollama list`
 # ollama_summarizer_model = "qwen3.5:4b"
 
@@ -106,7 +106,7 @@ ollama_model = "nomic-embed-text"
 # ollama_summarizer_model = "qwen3.5:4b"
 
 # Summarizer model override for openrouter/openai (ignored when summarizer = "ollama"):
-#   export ARIA_SUMMARIZER_MODEL=google/gemini-2.5-flash
+#   export PRAANA_SUMMARIZER_MODEL=google/gemini-2.5-flash
 
 [compiler]
 # Total estimated token budget for the compiled prompt
@@ -161,7 +161,7 @@ idle_hard_after_turns = 50
 
 [session]
 # Directory where session event logs are stored
-log_dir = "~/.aria/sessions"
+log_dir = "~/.praana/sessions"
 
 [search_code]
 # Optional: absolute path to the ripgrep binary.
@@ -171,9 +171,9 @@ log_dir = "~/.aria/sessions"
 
 [context_engine]
 # Context engine: structured checkpoint, distillation, and scored compilation.
-# When disabled (false), ARIA runs in classic mode — full verbatim conversation
+# When disabled (false), PRAANA runs in classic mode — full verbatim conversation
 # history, no StateGraph tools, skills loaded as metadata catalog only.
-# If enabled but initialization fails, ARIA falls back to the same classic mode.
+# If enabled but initialization fails, PRAANA falls back to the same classic mode.
 #
 # When enabled, SessionCheckpoint is reconciled after every turn from a
 # deterministic TurnDigest (never by the LLM). Checkpoint sections:

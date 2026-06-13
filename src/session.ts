@@ -5,7 +5,7 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
-import type { AriaConfig, SkillRecord } from "./types.js";
+import type { PraanaConfig, SkillRecord } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
@@ -31,12 +31,13 @@ import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
 } from "./model-context.js";
-import { createSessionLogger, getAppLogger, type AriaLogger } from "./logger.js";
+import { APP_HOME_DIR, APP_AGENT_ID, LEGACY_APP_HOME_DIR, resolveAppHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
+import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 
 export class Session {
   id: string;
   cwd: string;
-  config: AriaConfig;
+  config: PraanaConfig;
   eventLog: EventLog;
   stateGraph: StateGraph;
   memoryStore: MemoryStore | null = null;
@@ -63,10 +64,10 @@ export class Session {
   private sessionOutputTokens = 0;
   private lastUserInput = "";
   private compactionArmed = false;
-  private sessionLogger: AriaLogger | null = null;
+  private sessionLogger: PraanaLogger | null = null;
   private noticeCapture?: (line: string) => void;
 
-  private constructor(id: string, cwd: string, config: AriaConfig, startedAt: number) {
+  private constructor(id: string, cwd: string, config: PraanaConfig, startedAt: number) {
     this.id = id;
     this.cwd = cwd;
     this.config = config;
@@ -79,7 +80,7 @@ export class Session {
     this.memoryEnabled = config.memory.enabled;
   }
 
-  static createNew(id: string, cwd: string, config: AriaConfig): Session {
+  static createNew(id: string, cwd: string, config: PraanaConfig): Session {
     const startedAt = Date.now();
     const session = new Session(id, cwd, config, startedAt);
 
@@ -87,7 +88,7 @@ export class Session {
       session_id: id,
       started_at: startedAt,
       cwd,
-      agent: "aria",
+      agent: APP_AGENT_ID,
     });
 
     return session;
@@ -95,7 +96,7 @@ export class Session {
 
   static async create(
     cwd: string,
-    config?: AriaConfig,
+    config?: PraanaConfig,
     opts?: { incognito?: boolean; captureNotice?: (line: string) => void }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
@@ -141,7 +142,7 @@ export class Session {
         });
 
         const d = await session.memoryStore.sessionStart({
-          agent: "aria",
+          agent: APP_AGENT_ID,
           user_id: hashString(process.env.USER ?? "unknown"),
           time: Date.now(),
           context_id: hashString(cwd),
@@ -192,7 +193,7 @@ export class Session {
   static async resume(
     sessionId: string,
     cwd: string,
-    config?: AriaConfig,
+    config?: PraanaConfig,
     opts?: { captureNotice?: (line: string) => void }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
@@ -258,7 +259,7 @@ export class Session {
 
         // For resumed sessions, regenerate digest
         const d = await session.memoryStore.sessionStart({
-          agent: "aria",
+          agent: APP_AGENT_ID,
           user_id: hashString(process.env.USER ?? "unknown"),
           time: Date.now(),
           context_id: hashString(cwd),
@@ -335,7 +336,7 @@ export class Session {
     return this.modelOverride ?? this.config.llm.model;
   }
 
-  getLogger(): AriaLogger {
+  getLogger(): PraanaLogger {
     if (!this.sessionLogger) {
       return getAppLogger().child("session");
     }
@@ -430,7 +431,7 @@ export class Session {
     try {
       this.memoryStore = await this.initMemoryStore();
       const d = await this.memoryStore.sessionStart({
-        agent: "aria",
+        agent: APP_AGENT_ID,
         user_id: hashString(process.env.USER ?? "unknown"),
         time: Date.now(),
         context_id: hashString(this.cwd),
@@ -461,7 +462,7 @@ export class Session {
       const p = expandHome(configuredPath);
       return p.startsWith("/") ? p : join(this.cwd, p);
     }
-    return expandHome("~/.aria/memory.db");
+    return resolveDefaultMemoryDbPath();
   }
 
   getRepoRoot(): string {
@@ -735,7 +736,7 @@ export class Session {
       dbPath = expandHome(configuredPath);
       if (!dbPath.startsWith("/")) dbPath = join(this.cwd, dbPath);
     } else {
-      dbPath = expandHome("~/.aria/memory.db");
+      dbPath = resolveDefaultMemoryDbPath();
     }
 
     const embedder = await createEmbedder(this.config.memory);
@@ -815,7 +816,7 @@ function findGitRoot(cwd: string): string {
  * Load project context from AGENTS.md / CLAUDE.md files.
  *
  * Load order (all non-empty results are merged):
- *   1. ~/.aria/AGENTS.md       — global personal instructions
+ *   1. ~/.praana/AGENTS.md (or legacy ~/.aria/AGENTS.md) — global personal instructions
  *   2. <git root>/AGENTS.md    — project-wide context
  *   3. <cwd>/AGENTS.md         — subdirectory context (if cwd ≠ git root)
  *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
@@ -835,7 +836,8 @@ export function loadAgentsContext(cwd: string): string | null {
   };
 
   // 1. Global personal instructions
-  tryRead(expandHome("~/.aria/AGENTS.md"), "~/.aria/AGENTS.md");
+  tryRead(resolveAppHomePath("AGENTS.md"), `~/${APP_HOME_DIR}/AGENTS.md`);
+  tryRead(expandHome(`~/${LEGACY_APP_HOME_DIR}/AGENTS.md`), `~/${LEGACY_APP_HOME_DIR}/AGENTS.md`);
 
   // 2. Project root AGENTS.md
   const gitRoot = findGitRoot(cwd);
@@ -905,7 +907,7 @@ function applyProjectContext(session: Session, cwd: string): void {
 }
 
 /** Discover skills — SkillRuntime in engine mode, metadata catalog only in classic mode. */
-async function initSkills(session: Session, cfg: AriaConfig, cwd: string): Promise<void> {
+async function initSkills(session: Session, cfg: PraanaConfig, cwd: string): Promise<void> {
   if (!cfg.skills?.enabled) return;
 
   if (session.isContextEngineEnabled() && session.contextEngine) {
@@ -924,7 +926,7 @@ async function initSkills(session: Session, cfg: AriaConfig, cwd: string): Promi
 }
 
 /** Discover skills and attach SkillRuntime to the session (residency resets on resume). */
-async function initSkillRuntime(session: Session, cfg: AriaConfig, cwd: string): Promise<void> {
+async function initSkillRuntime(session: Session, cfg: PraanaConfig, cwd: string): Promise<void> {
   session.skillRuntime = new SkillRuntime(cfg.skills, cwd);
   if (!cfg.skills?.enabled) return;
 

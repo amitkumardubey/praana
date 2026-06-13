@@ -1,10 +1,10 @@
-# ARIA
+# PRAANA
 
 **A terminal coding agent with adaptive context and cross-session memory.**
 
-ARIA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
+PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
 
-We have **not** benchmarked ARIA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
+We have **not** benchmarked PRAANA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
 
 > **Status:** v0.4.0 <!-- x-release-please-version --> — experimental. Core flows work; long or messy tasks will hit rough edges.
 
@@ -15,11 +15,11 @@ We have **not** benchmarked ARIA against other agents. Treat memory and the cont
 ## Quick Start
 
 ```bash
-git clone https://github.com/amitkumardubey/aria.git
-cd aria
+git clone https://github.com/amitkumardubey/praana.git
+cd praana
 npm install && npm run build
 
-cp aria.config.example.toml aria.config.toml
+cp praana.config.example.toml praana.config.toml
 export OPENROUTER_API_KEY="sk-or-v1-..."   # or another provider — see config example
 
 node dist/main.js
@@ -30,10 +30,12 @@ Global CLI (optional):
 ```bash
 npm run build && npm link
 export PATH="$(npm config get prefix)/bin:$PATH"
-aria
+praana    # or the short alias: pran
 ```
 
-Requires Node 22+. Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `aria --ui readline` for the classic interface. See [`aria.config.example.toml`](./aria.config.example.toml) for providers, memory, and engine settings.
+Requires Node 22+. Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface. See [`praana.config.example.toml`](./praana.config.example.toml) for providers, memory, and engine settings.
+
+Legacy `aria` config paths and `ARIA_*` environment variables are still read for backward compatibility.
 
 ---
 

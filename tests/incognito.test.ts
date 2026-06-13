@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { Session } from "../src/session.js";
-import type { AriaConfig } from "../src/types.js";
+import type { PraanaConfig } from "../src/types.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const testConfig: AriaConfig = {
+const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
   memory: { enabled: true, summarizer: "disabled", db_path: ":memory:" },
   compiler: { token_budget: 100_000, recent_turns: 10 },

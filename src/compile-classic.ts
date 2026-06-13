@@ -28,7 +28,7 @@ export function buildClassicSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are ARIA, a coding agent with persistent memory.",
+    "You are PRAANA, a coding agent with persistent memory.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
   ];
@@ -56,7 +56,7 @@ export function buildClassicSystemFrame(
     "## Memory",
     "",
     "Use recall() for cross-session memory. Use search_session_log() to search this session's event log.",
-    "Session event log file: ~/.aria/sessions/<session_id>/events.jsonl",
+    "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
     "",
     "## Tool Safety",
     "",
@@ -100,7 +100,7 @@ export function buildFullConversationHistory(events: Event[]): string {
         lines.push(`User: ${event.payload.text ?? ""}`);
         break;
       case "agent_message":
-        lines.push(`ARIA: ${event.payload.text ?? ""}`);
+        lines.push(`PRAANA: ${event.payload.text ?? ""}`);
         break;
       case "tool_call":
         lastToolName = event.payload.tool as string | undefined;

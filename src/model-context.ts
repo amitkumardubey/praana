@@ -1,15 +1,16 @@
 import { getModel, getProviders } from "@earendil-works/pi-ai";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { resolveAppHomePath } from "./app-identity.js";
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 
 const CACHE_VERSION = 1;
 const OPENROUTER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
-const CACHE_FILE = join(homedir(), ".aria", "model-context-cache.json");
+const CACHE_FILE = resolveAppHomePath("model-context-cache.json");
 
-/** ARIA config provider → pi-ai MODELS registry key (when available). */
+/** PRAANA config provider → pi-ai MODELS registry key (when available). */
 const PI_AI_PROVIDER_MAP: Record<string, string> = {
   openrouter: "openrouter",
   openai: "openai",
@@ -72,7 +73,7 @@ function loadDiskCache(): ModelContextCacheFile {
 }
 
 function persistDiskCache(): void {
-  const dir = join(homedir(), ".aria");
+  const dir = dirname(CACHE_FILE);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(CACHE_FILE, JSON.stringify(loadDiskCache(), null, 2), "utf-8");
 }

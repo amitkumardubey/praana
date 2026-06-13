@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA — Core Types
+// PRAANA — Core Types
 // ============================================================
 
 // ---- State Objects ----
@@ -265,7 +265,7 @@ export interface ProjectDetectionConfig {
   manual_frameworks?: string[];
 }
 
-export interface AriaConfig {
+export interface PraanaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
   compiler: CompilerConfig;
