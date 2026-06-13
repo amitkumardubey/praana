@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Embedder factory (auto / ollama / opt-in backends)
+// PRAANA Memory — Embedder factory (auto / ollama / opt-in backends)
 // ============================================================
 
 import type { MemoryConfig } from "../types.js";
@@ -78,7 +78,7 @@ async function tryLlamaCppEmbedder(): Promise<Embedder | null> {
     const { getLlama, LlamaEmbeddingContext } = await import(/* webpackIgnore: true */ spec);
     const llama = await getLlama();
     const modelPath =
-      envOverride("PRAANA_EMBED_MODEL_PATH", "ARIA_EMBED_MODEL_PATH") ??
+      envOverride("PRAANA_EMBED_MODEL_PATH") ??
       "models/nomic-embed-text-v1.5.Q8_0.gguf";
     const model = await llama.loadModel({ modelPath });
     const ctx = await LlamaEmbeddingContext.create({ model });

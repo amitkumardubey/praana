@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — SQLite Schema
+// PRAANA Memory — SQLite Schema
 // ============================================================
 
 import Database from "better-sqlite3";

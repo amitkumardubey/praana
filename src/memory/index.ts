@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Public API
+// PRAANA Memory — Public API
 // ============================================================
 
 export { MemoryStore } from "./store.js";

@@ -31,7 +31,7 @@ import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
 } from "./model-context.js";
-import { APP_HOME_DIR, APP_AGENT_ID, LEGACY_APP_HOME_DIR, resolveAppHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
+import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 
 export class Session {
@@ -816,7 +816,7 @@ function findGitRoot(cwd: string): string {
  * Load project context from AGENTS.md / CLAUDE.md files.
  *
  * Load order (all non-empty results are merged):
- *   1. ~/.praana/AGENTS.md (or legacy ~/.aria/AGENTS.md) — global personal instructions
+ *   1. ~/.praana/AGENTS.md — global personal instructions
  *   2. <git root>/AGENTS.md    — project-wide context
  *   3. <cwd>/AGENTS.md         — subdirectory context (if cwd ≠ git root)
  *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
@@ -836,8 +836,7 @@ export function loadAgentsContext(cwd: string): string | null {
   };
 
   // 1. Global personal instructions
-  tryRead(resolveAppHomePath("AGENTS.md"), `~/${APP_HOME_DIR}/AGENTS.md`);
-  tryRead(expandHome(`~/${LEGACY_APP_HOME_DIR}/AGENTS.md`), `~/${LEGACY_APP_HOME_DIR}/AGENTS.md`);
+  tryRead(appHomePath("AGENTS.md"), `~/${APP_HOME_DIR}/AGENTS.md`);
 
   // 2. Project root AGENTS.md
   const gitRoot = findGitRoot(cwd);

@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Ollama Summarizer Adapter
+// PRAANA Memory — Ollama Summarizer Adapter
 // ============================================================
 
 import { OllamaEmbedder } from "./embeddings.js";

@@ -33,7 +33,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: "OPENROUTER_API_KEY",
     baseUrl: "https://openrouter.ai/api/v1",
     headers: {
-      "HTTP-Referer": "https://github.com/aria",
+      "HTTP-Referer": "https://github.com/amitkumardubey/praana",
       "X-Title": "PRAANA",
     },
   },

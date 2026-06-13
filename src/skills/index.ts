@@ -8,7 +8,6 @@ import type {
   SkillMetadata,
   SkillRecord,
   SkillBudgetConfig,
-  SkillAriaMeta,
   SkillsMetaFile,
   SkillIndexEntry,
   SkillRuntimeState,
@@ -131,9 +130,7 @@ function getSkillsMetaPaths(cwd: string): string[] {
   const home = homedir();
   return [
     join(gitRoot, ".praana", "skills-meta.json"),
-    join(gitRoot, ".aria", "skills-meta.json"),
     expandHome("~/.praana/skills-meta.json"),
-    expandHome("~/.aria/skills-meta.json"),
   ];
 }
 
@@ -156,7 +153,6 @@ function getSkillSearchPaths(cwd: string): string[] {
   const projectPaths = [
     join(gitRoot, ".agents", "skills"),
     join(gitRoot, ".praana", "skills"),
-    join(gitRoot, ".aria", "skills"),
     join(gitRoot, ".cursor", "skills"),
     join(gitRoot, "skills"),
   ];
@@ -164,7 +160,6 @@ function getSkillSearchPaths(cwd: string): string[] {
   const userPaths = [
     join(home, ".agents", "skills"),
     join(home, ".praana", "skills"),
-    join(home, ".aria", "skills"),
     join(home, ".claude", "skills"),
   ];
 
@@ -286,7 +281,7 @@ export function buildSkillMetadataCatalog(records: SkillRecord[]): string {
 
 function detectSectionRanges(
   body: string,
-  ariaSections?: SkillSectionMapping,
+  sectionOverrides?: SkillSectionMapping,
 ): Record<string, { start: number; end: number }> | undefined {
   if (!body) return undefined;
 
@@ -294,8 +289,8 @@ function detectSectionRanges(
   const lines = body.split("\n");
   let hasAny = false;
 
-  // Use aria.skill.json section headings if provided, else auto-detect
-  const sectionDefs = ariaSections ?? {
+  // Use metadata section headings if provided, else auto-detect
+  const sectionDefs = sectionOverrides ?? {
     planner: ["## Planner"],
     execution: ["## Execution"],
     recovery: ["## Recovery"],
@@ -382,17 +377,17 @@ export function buildBM25Index(
   meta: SkillsMetaFile,
 ): SkillIndexEntry[] {
   return skills.map((s) => {
-    const aria = meta[s.name] ?? {};
-    const tags = aria.tags ?? [];
-    const trigger = aria.trigger ?? "";
-    const synonyms = aria.synonyms ?? [];
+    const skillMeta = meta[s.name] ?? {};
+    const tags = skillMeta.tags ?? [];
+    const trigger = skillMeta.trigger ?? "";
+    const synonyms = skillMeta.synonyms ?? [];
 
     // Build search text from name, description, tags, trigger
     const searchParts = [s.name, s.description, ...tags, trigger, ...synonyms];
     const searchText = searchParts.filter(Boolean).join(" ");
 
-    const budgetConfig: SkillBudgetConfig = aria.budget ?? {};
-    const sectionMapping = aria.sections;
+    const budgetConfig: SkillBudgetConfig = skillMeta.budget ?? {};
+    const sectionMapping = skillMeta.sections;
 
     return {
       id: s.name,
@@ -401,7 +396,7 @@ export function buildBM25Index(
       tags,
       trigger,
       synonyms,
-      neighbors: aria.neighbors ?? [],
+      neighbors: skillMeta.neighbors ?? [],
       searchText,
       sectionRanges: detectSectionRanges(s.body, sectionMapping),
       budgetPriority: budgetConfig.priority ?? "normal",
@@ -566,7 +561,7 @@ export class SkillRuntime {
       ? discoverSkills(this.cwd, this.config.max_depth, this.config.searchPaths)
       : discoverSkills(this.cwd, this.config.max_depth);
 
-    // 2. Load ARIA-specific metadata
+    // 2. Load skills metadata
     const meta = loadMergedSkillsMeta(this.cwd);
 
     // 3. Merge user-provided synonyms from meta (extensible)

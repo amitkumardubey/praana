@@ -1,5 +1,5 @@
 // ============================================================
-// ARIA Memory — Summarizer
+// PRAANA Memory — Summarizer
 //
 // One LLM call per session end: "what did we learn?"
 // No extract→consolidate→gate pipeline. Just ask.

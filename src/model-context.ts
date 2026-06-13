@@ -2,13 +2,13 @@ import { getModel, getProviders } from "@earendil-works/pi-ai";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { resolveAppHomePath } from "./app-identity.js";
+import { appHomePath } from "./app-identity.js";
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 
 const CACHE_VERSION = 1;
 const OPENROUTER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
-const CACHE_FILE = resolveAppHomePath("model-context-cache.json");
+const CACHE_FILE = appHomePath("model-context-cache.json");
 
 /** PRAANA config provider → pi-ai MODELS registry key (when available). */
 const PI_AI_PROVIDER_MAP: Record<string, string> = {
@@ -86,7 +86,7 @@ function rememberContextWindow(provider: string, modelId: string, contextWindow:
   persistDiskCache();
 }
 
-export function mapAriaProviderToPiAi(provider: string): string | null {
+export function mapProviderToPiAi(provider: string): string | null {
   const mapped = PI_AI_PROVIDER_MAP[provider];
   if (mapped) return mapped;
   const known = getProviders() as string[];
@@ -97,7 +97,7 @@ export function lookupPiAiContextWindow(
   provider: string,
   modelId: string,
 ): number | null {
-  const piProvider = mapAriaProviderToPiAi(provider);
+  const piProvider = mapProviderToPiAi(provider);
   if (!piProvider) return null;
   const model = getModel(piProvider as never, modelId as never);
   return isValidWindow(model?.contextWindow) ? model.contextWindow : null;

@@ -49,7 +49,7 @@ import type {
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
 import { effectiveConfidence, digestScore } from "./confidence.js";
 import { getAppLogger } from "../logger.js";
-import { APP_AGENT_ID, LEGACY_APP_AGENT_ID } from "../app-identity.js";
+import { APP_AGENT_ID } from "../app-identity.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -559,13 +559,6 @@ export class MemoryStore {
     if (scopes.length === 0) return [scopes];
 
     const queries: string[][] = [scopes];
-
-    const legacyAgentScopes = scopes.map((scope) =>
-      scope === `agent:${APP_AGENT_ID}` ? `agent:${LEGACY_APP_AGENT_ID}` : scope
-    );
-    if (legacyAgentScopes.some((scope, index) => scope !== scopes[index])) {
-      queries.push(legacyAgentScopes);
-    }
 
     const hasContextScope = scopes.some((scope) => scope.startsWith("context:"));
     if (!hasContextScope) return queries;

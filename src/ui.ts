@@ -1,5 +1,5 @@
 /**
- * Terminal UI helpers for ARIA.
+ * Terminal UI helpers for PRAANA.
  * Tool/status output goes to stderr; stdout gets blank-line breaks so
  * agent text and debug blocks don't run together in the terminal.
  *

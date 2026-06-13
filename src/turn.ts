@@ -133,8 +133,7 @@ export async function runTurn(
   const skillsSection = classicMode
     ? buildSkillMetadataCatalog(session.skills) || null
     : session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
-  const agentsBudgetRatio =
-    session.config.compiler.agents_budget_ratio ?? session.config.compiler.skills_budget_ratio;
+  const agentsBudgetRatio = session.config.compiler.agents_budget_ratio;
 
   const engineConfig = resolveContextEngineConfig(session.config);
   const checkpointSection =

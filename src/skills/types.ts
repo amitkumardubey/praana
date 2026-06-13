@@ -33,7 +33,7 @@ export interface SkillRecord {
   metadata: SkillMetadata;
 }
 
-// ---- ARIA-specific metadata (from <scope>/.aria/skills-meta.json) ----
+// ---- Metadata extensions (from <scope>/.praana/skills-meta.json) ----
 
 export interface SkillSectionMapping {
   planner?: string[];
@@ -47,7 +47,7 @@ export interface SkillBudgetConfig {
   max_tokens?: number;
 }
 
-export interface SkillAriaMeta {
+export interface SkillMetaExtensions {
   tags?: string[];
   trigger?: string;
   synonyms?: string[];
@@ -56,7 +56,7 @@ export interface SkillAriaMeta {
   budget?: SkillBudgetConfig;
 }
 
-export type SkillsMetaFile = Record<string, SkillAriaMeta>;
+export type SkillsMetaFile = Record<string, SkillMetaExtensions>;
 
 // ---- Runtime types ----
 

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import {
   APP_HOME_DIR,
   APP_NAME,
-  resolveAppHomePath,
+  appHomePath,
 } from "./app-identity.js";
 import pino, { type Logger as PinoLogger, type DestinationStream } from "pino";
 import pretty from "pino-pretty";
@@ -77,7 +77,7 @@ function expandHome(p: string): string {
 }
 
 export function getAppLogDir(): string {
-  return resolveAppHomePath("logs");
+  return appHomePath("logs");
 }
 
 /** Base path for pino-roll (extension added by rotator). */
