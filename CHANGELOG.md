@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.4.0](https://github.com/amitkumardubey/aria/compare/v0.3.0...v0.4.0) (2026-06-13)
+
+
+### Features
+
+* add /clear and /new commands to reset session state ([bc096bf](https://github.com/amitkumardubey/aria/commit/bc096bfb2d919eb0843be08a5178eae087ea724d))
+* add skill runtime with tiered caching and prompt integration ([#103](https://github.com/amitkumardubey/aria/issues/103)) ([25771e1](https://github.com/amitkumardubey/aria/commit/25771e1e23ad782474379f786d10d3f15ca7cdf7))
+* auto-load project context at session start (stack fingerprint) ([b6bccca](https://github.com/amitkumardubey/aria/commit/b6bcccaaf168a9f691ab48250cecba295b7285fa))
+* background consolidation processor — the core learning loop ([#28](https://github.com/amitkumardubey/aria/issues/28)) ([503a0a1](https://github.com/amitkumardubey/aria/commit/503a0a1c219cfbdb82198e7e1850b1edb72016f3))
+* batch_write and batch_edit tools for multi-file operations ([20f3d5f](https://github.com/amitkumardubey/aria/commit/20f3d5fa1be08324c6e52dd97fcd22a88e4e1e30))
+* **classic-mode:** add classic mode ([e454aed](https://github.com/amitkumardubey/aria/commit/e454aed416a199001bea6b6a20674928bd1ea1e5))
+* **cli:** add incognito mode to disable cross-session memory persistence ([fe686cb](https://github.com/amitkumardubey/aria/commit/fe686cb4e6cd7a5d73e3a2be438cc7747188e169)), closes [#11](https://github.com/amitkumardubey/aria/issues/11)
+* **compiler:** enforce per-section token ceilings with degraded fallback ([4cead07](https://github.com/amitkumardubey/aria/commit/4cead07182beb4fdafa51fce61136eedde604038)), closes [#25](https://github.com/amitkumardubey/aria/issues/25)
+* **compiler:** filter digest entries below recall_min_score threshold ([5eb96cf](https://github.com/amitkumardubey/aria/commit/5eb96cf35308e6a7f32b947a240aea4ce053d4d4)), closes [#23](https://github.com/amitkumardubey/aria/issues/23)
+* **context-engine:** Phases 1–8 — artifact store through telemetry ([#117](https://github.com/amitkumardubey/aria/issues/117)) ([a30863a](https://github.com/amitkumardubey/aria/commit/a30863a880cbc3b3608bc647f8ebadc6734d1855))
+* diff preview before edit with y/n confirmation prompt ([f6a1e93](https://github.com/amitkumardubey/aria/commit/f6a1e9349dee2251287af14cc688e7403dfc5e30)), closes [#98](https://github.com/amitkumardubey/aria/issues/98)
+* **logging:** add pino system logs with daily rotation ([#129](https://github.com/amitkumardubey/aria/issues/129)) ([831248b](https://github.com/amitkumardubey/aria/commit/831248bebe7441b7ccef4aef77cd73979e7a0880))
+* **memory:** add two-layer schema with per-kind half-life decay ([9ec2baf](https://github.com/amitkumardubey/aria/commit/9ec2baf1da3cde2ed863c19d2d5071608e24c47f)), closes [#21](https://github.com/amitkumardubey/aria/issues/21)
+* **memory:** apply per-kind weights when ranking digest entries ([c505d1a](https://github.com/amitkumardubey/aria/commit/c505d1a1e061534133a01fb7add99366250539e4)), closes [#24](https://github.com/amitkumardubey/aria/issues/24)
+* **memory:** detect duplicates and contradictions at session end ([a2db1d9](https://github.com/amitkumardubey/aria/commit/a2db1d9020078f226e9300a60a93d2db9dc10048)), closes [#20](https://github.com/amitkumardubey/aria/issues/20)
+* **memory:** merge project + global scope recall and digest ([#56](https://github.com/amitkumardubey/aria/issues/56)) ([387f439](https://github.com/amitkumardubey/aria/commit/387f439a8a7bd4e8c343760d7b89ec521afc387a))
+* **memory:** merge project and global scope recall ([#56](https://github.com/amitkumardubey/aria/issues/56)) ([f35b7d2](https://github.com/amitkumardubey/aria/commit/f35b7d2048995d3b32624ac7aa7ca4fbbc2467fc))
+* **memory:** prune stale low-confidence Layer 1 entries at session start ([92f81a7](https://github.com/amitkumardubey/aria/commit/92f81a792418bcc6ad2bc105c28ab6d72cbb83df)), closes [#22](https://github.com/amitkumardubey/aria/issues/22)
+* **memory:** reinforce recall based on successful tool outcomes ([#45](https://github.com/amitkumardubey/aria/issues/45)) ([f23b213](https://github.com/amitkumardubey/aria/commit/f23b2138dbe1a35a6486f8a32337dd8ddbf01637))
+* **memory:** reinforce recall from successful tool outcomes ([#45](https://github.com/amitkumardubey/aria/issues/45)) ([a1a7d21](https://github.com/amitkumardubey/aria/commit/a1a7d217f4d863503bb0f4bea5c2d1d16a38c10b))
+* **notes:** guide and lint against activity-log working memory notes ([cbb7c13](https://github.com/amitkumardubey/aria/commit/cbb7c13ca3ed31292be843bea26818b8f741c0e6)), closes [#5](https://github.com/amitkumardubey/aria/issues/5)
+* Phase 2 — Consolidation Processor ([3af711e](https://github.com/amitkumardubey/aria/commit/3af711efd01826e3684724a361e3696f60a76bb0))
+* **prompt:** add evidence-first assertion checklist for codebase claims ([95b0aab](https://github.com/amitkumardubey/aria/commit/95b0aab5a7b1d4e4ef0e441ebcb5b9461412ff3f)), closes [#6](https://github.com/amitkumardubey/aria/issues/6)
+* read_and_summarize tool for file overview ([71ad849](https://github.com/amitkumardubey/aria/commit/71ad84912140078ac784cd7eae863c5c59fa9765)), closes [#14](https://github.com/amitkumardubey/aria/issues/14)
+* RETRACT opcode — retract_task and forget_memory tools with tombstone semantics ([a396dba](https://github.com/amitkumardubey/aria/commit/a396dba75699bd40e5e77f720a7d73167534a473))
+* sandbox environment for shell commands ([ee64c26](https://github.com/amitkumardubey/aria/commit/ee64c26da827f57b3c301e4fcfac99ea5832339f))
+* show token usage per turn and cumulative in /stats ([5118d64](https://github.com/amitkumardubey/aria/commit/5118d6461ff67347be13ab81d073802706019f93))
+* **state:** add FOCUS opcode to pin one active object first in prompt ([bd041a3](https://github.com/amitkumardubey/aria/commit/bd041a31324d3a37b06f1a8d800b35f8cb9da1d4)), closes [#26](https://github.com/amitkumardubey/aria/issues/26)
+* stream shell output in real time ([617af89](https://github.com/amitkumardubey/aria/commit/617af89a66e772602a2d17494df269cc7b187fae))
+* thinking block UX with collapsible display and t toggle ([9492ec3](https://github.com/amitkumardubey/aria/commit/9492ec3cd4745904cd69d8348dddb392177b0df6))
+* **tools:** add ripgrep-backed search_code tool ([#105](https://github.com/amitkumardubey/aria/issues/105)) ([#127](https://github.com/amitkumardubey/aria/issues/127)) ([77644a5](https://github.com/amitkumardubey/aria/commit/77644a5adf94e8be63dbed10c967732a7636dc72))
+* **tools:** apply batch_edit sequentially per file ([#106](https://github.com/amitkumardubey/aria/issues/106)) ([#128](https://github.com/amitkumardubey/aria/issues/128)) ([f94e95b](https://github.com/amitkumardubey/aria/commit/f94e95b1a8b423fe7ecba344c5e43d80f0311a21))
+* **ui:** add markdown rendering and syntax highlighting ([#126](https://github.com/amitkumardubey/aria/issues/126)) ([07da154](https://github.com/amitkumardubey/aria/commit/07da154617fdbab815afde442cd26dc070afcd5d))
+* **ui:** minimal Ink TUI shell with configurable screen mode ([#104](https://github.com/amitkumardubey/aria/issues/104)) ([924c845](https://github.com/amitkumardubey/aria/commit/924c8457f6ee0cd13e54b20932f848bf4ab713fa))
+* **ui:** overhaul TUI transcript display ([#130](https://github.com/amitkumardubey/aria/issues/130)) ([84c1098](https://github.com/amitkumardubey/aria/commit/84c1098565a60fa1cd5625515999e2a1c374509f))
+* watermark history compression — summarize old turns into episodic memories ([#27](https://github.com/amitkumardubey/aria/issues/27)) ([272f617](https://github.com/amitkumardubey/aria/commit/272f61771b85ef9b4d579f3d5dd34a4927894272))
+* wire consolidation processor into session lifecycle ([#29](https://github.com/amitkumardubey/aria/issues/29)) ([ec0a5be](https://github.com/amitkumardubey/aria/commit/ec0a5be7b9df029ef56b90bb96bfc8a0e4535387))
+
+
+### Bug Fixes
+
+* add system prompt constraint against unsolicited file writes ([6d55b33](https://github.com/amitkumardubey/aria/commit/6d55b3353142ff435f7b46a95b97cddb302146bd))
+* **agent:** require evidence checks before capability claims ([#3](https://github.com/amitkumardubey/aria/issues/3)) ([2157760](https://github.com/amitkumardubey/aria/commit/2157760bd5b3d94f2c3de610b1a02e612d85e369))
+* **agent:** verify evidence before capability assertions ([#3](https://github.com/amitkumardubey/aria/issues/3)) ([e4af5ca](https://github.com/amitkumardubey/aria/commit/e4af5ca029d0b727785ce7e3653ce339a086326a))
+* align release-please tags with existing v* format ([8b3112c](https://github.com/amitkumardubey/aria/commit/8b3112c91ddf0b19d0d04b6cea3a13a1b840f019))
+* centralize events.jsonl filename usage ([f6f5ec1](https://github.com/amitkumardubey/aria/commit/f6f5ec12f627cbf81b08a56dccbb999776ed9805))
+* combine /clear and /new handlers, retain session turnCount, add tests ([a26cf20](https://github.com/amitkumardubey/aria/commit/a26cf2029b5413246d3cbe94ce9455dca8dfe68b))
+* **distillers:** preserve actionable summaries ([#124](https://github.com/amitkumardubey/aria/issues/124)) ([3505b6c](https://github.com/amitkumardubey/aria/commit/3505b6ce6285ba255779a6514c5353755a5927de))
+* guide same-session retrieval to search_session_log ([ec1af09](https://github.com/amitkumardubey/aria/commit/ec1af09d3a5e88417f0c775c902abcbc0a69c59d))
+* **memory:** initialize retracted flag for new entries ([8c4c51c](https://github.com/amitkumardubey/aria/commit/8c4c51c5e6e4dc777d32942560174a0cb622bb09))
+* polyglot project detection — surface Go/Cargo deps, merge manifests ([#125](https://github.com/amitkumardubey/aria/issues/125)) ([14aaeb9](https://github.com/amitkumardubey/aria/commit/14aaeb9beacf810f6a62a6e3c7b0c075c9cf158c))
+* preserve clear state across resume ([4fcba63](https://github.com/amitkumardubey/aria/commit/4fcba6383d0d53ab5ff46a8dbdb576a97808ec8f))
+* remove unnecessary file ([fe5d775](https://github.com/amitkumardubey/aria/commit/fe5d7758626dbff790281039fd139eaf89a0cde4))
+* steer same-session retrieval to search_session_log ([036da10](https://github.com/amitkumardubey/aria/commit/036da10c55252082d3b9a2968f1c7e9470771e3c))
+* **tui:** eliminate screen flash and display tool results distinctly ([#123](https://github.com/amitkumardubey/aria/issues/123)) ([7c8a20a](https://github.com/amitkumardubey/aria/commit/7c8a20ab14f02657d48109f55ec58a12f114c866))
+* **tui:** simplify thinking display — no expand/collapse ([#135](https://github.com/amitkumardubey/aria/issues/135)) ([df1181f](https://github.com/amitkumardubey/aria/commit/df1181fc1af792421221bcecb89d3d778e722f6e))
+* unify session event log file as events.jsonl ([46dda4e](https://github.com/amitkumardubey/aria/commit/46dda4e31db5d47e5b32cadab97dcc4f41933a24))
+
 ## [Unreleased]
 
 ### Tools
