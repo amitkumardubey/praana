@@ -111,8 +111,15 @@ function MarkdownList({
     >
       {token.items.map((item, i) => {
         const bullet = token.ordered ? `${i + 1}. ` : "• ";
+        const multiline = item.tokens.some(
+          (t) => t.type === "list" || (t.type === "paragraph" && t.raw.includes("\n"))
+        );
         return (
-          <Box key={i} flexDirection="row" alignItems="flex-start">
+          <Box
+            key={i}
+            flexDirection="row"
+            alignItems={multiline ? "flex-start" : undefined}
+          >
             <Text color={PALETTE.gutter}>{bullet}</Text>
             <Box flexDirection="column" flexGrow={1}>
               <ListItemTokens tokens={item.tokens} depth={depth} />

@@ -60,6 +60,17 @@ describe("estimateEntryLines", () => {
     };
     expect(estimateEntryLines(entry)).toBe(5);
   });
+
+  it("keeps minimum tool line budget when only summary is present", () => {
+    const entry = {
+      id: "e-2",
+      role: "tool" as const,
+      text: "shell",
+      group: 1,
+      resultSummary: "exit 0 · 0 line(s)",
+    };
+    expect(estimateEntryLines(entry)).toBe(4);
+  });
 });
 
 describe("sliceEntriesByLineBudget", () => {

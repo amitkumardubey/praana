@@ -98,7 +98,7 @@ describe("formatShellOutputForDisplay", () => {
       JSON.stringify({ ok: true, stdout: "", stderr: "warn\n", exitCode: 0 })
     );
     expect(display!.body).toContain("[stderr] warn");
-    expect(display!.isError).toBe(true);
+    expect(display!.isError).toBe(false);
   });
 
   it("truncates long output", () => {

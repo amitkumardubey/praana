@@ -98,7 +98,10 @@ export function estimateEntryLines(
       const bodyLines = entry.resultBody
         ? entry.resultBody.split("\n").length
         : 0;
-      return Math.max(2, summaryLines + bodyLines);
+      const contentLines = summaryLines + bodyLines;
+      return entry.resultSummary
+        ? Math.max(4, contentLines)
+        : Math.max(2, contentLines);
     }
     case "thinking":
       return 3;

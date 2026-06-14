@@ -38,8 +38,8 @@ export function summarizeResultForDisplay(text: string): string {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed.stdout === "string" || typeof parsed.stderr === "string") {
-      const stdout = stripAnsi(String(parsed.stdout ?? "")).trim();
-      const stderr = stripAnsi(String(parsed.stderr ?? "")).trim();
+      const stdout = stripAnsi(String(parsed.stdout ?? "")).trimEnd();
+      const stderr = stripAnsi(String(parsed.stderr ?? "")).trimEnd();
       const primary = stdout || stderr;
       const lineCount = primary ? primary.split("\n").filter(Boolean).length : 0;
       const preview = primary.split("\n")[0]?.slice(0, 56) ?? "";
@@ -126,7 +126,7 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
     return {
       summary,
       body,
-      isError: exitCode !== 0 || (stderr.length > 0 && stdout.length === 0),
+      isError: exitCode !== 0,
     };
   } catch {
     return null;
