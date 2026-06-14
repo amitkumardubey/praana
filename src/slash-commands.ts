@@ -11,6 +11,7 @@ import {
   resolvedTargetLabel,
   parseModelCommandArgs,
 } from "./model-resolver.js";
+import { getProviderEnvKey } from "./llm.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status";
 
@@ -347,9 +348,9 @@ export async function executeSlashCommand(
             outcome: "failed",
             reason: keyError,
           });
-          // Add a helpful hint for setting the env var
-          const hint = keyError.includes("Missing required env var: ")
-            ? ` (set ${keyError.split(": ")[1]} in your shell or .env file)`
+          const envVarName = getProviderEnvKey(resolved.provider);
+          const hint = envVarName
+            ? ` (set ${envVarName} in your shell or .env file)`
             : "";
           lines.push(`${keyError}${hint}`);
           return result("none", "toast", "error");
@@ -357,6 +358,18 @@ export async function executeSlashCommand(
         session.setProviderOverride(resolved.provider);
       }
 
+      if (resolved.switchedProvider) {
+        // Append provider_override before model_override so forward-replay
+        // order matches intent: first switch provider, then set model.
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "provider_override",
+            provider: resolved.provider,
+          },
+        });
+      }
       session.setModelOverride(resolved.modelId);
       handlers.setModel(resolved.modelId);
       const contextWindow = await session.refreshModelContextWindow(resolved.modelId);
@@ -367,18 +380,6 @@ export async function executeSlashCommand(
         userInput: parsed.userInput,
         outcome: "success",
       });
-      // Append provider_override first so forward-replay order matches intent:
-      // first switch provider, then set model.
-      if (resolved.switchedProvider) {
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "provider_override",
-            provider: resolved.provider,
-          },
-        });
-      }
       session.eventLog.append({
         kind: "system_note",
         actor: "kernel",

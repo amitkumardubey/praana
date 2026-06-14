@@ -182,6 +182,16 @@ describe("executeSlashCommand", () => {
         payload: { type: "provider_override", provider: "openai" },
       }),
     );
+    // provider_override should be logged before model_override for correct replay order
+    const providerOverrideIdx = append.mock.calls.findIndex(
+      (c: any) => c[0]?.payload?.type === "provider_override",
+    );
+    const modelOverrideIdx = append.mock.calls.findIndex(
+      (c: any) => c[0]?.payload?.type === "model_override",
+    );
+    expect(modelOverrideIdx).toBeGreaterThanOrEqual(0);
+    expect(providerOverrideIdx).toBeGreaterThanOrEqual(0);
+    expect(providerOverrideIdx).toBeLessThan(modelOverrideIdx);
   });
 
   it("shows error when target provider API key is missing", async () => {
