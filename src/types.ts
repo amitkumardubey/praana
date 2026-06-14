@@ -169,6 +169,11 @@ export interface TiersConfig {
 
 export interface SessionConfig {
   log_dir: string;
+  /**
+   * Max ms to wait for the session-end summarizer LLM call before backgrounding it.
+   * Used by `AppController.shutdown()`. Default: 2000.
+   */
+  shutdown_memory_timeout_ms?: number;
 }
 
 export interface ConsolidationConfig {

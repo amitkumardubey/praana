@@ -40,7 +40,7 @@ vi.mock("../src/session.js", () => ({
       getMemoryDbPath: () => null,
       stateGraph: { list: () => [] },
       eventLog: { readLast: () => [] },
-      end: vi.fn(),
+      end: vi.fn(async () => ({ memory: "skipped" as const })),
       getTranscriptEvents: () => [],
     })),
     resume: vi.fn(),
@@ -99,5 +99,50 @@ describe("AppController", () => {
     const result = await controller.executeSlashCommand("/help");
     expect(result.action).toBe("none");
     expect(result.lines.length).toBeGreaterThan(0);
+  });
+
+  it("shutdown() returns the memory status from session.end() and passes a default 2s timeout", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    end.mockResolvedValueOnce({ memory: "background" });
+
+    const status = await controller.shutdown();
+    expect(status).toEqual({ memory: "background" });
+    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
+  });
+
+  it("shutdown() honours config.session.shutdown_memory_timeout_ms when set", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: { ...baseConfig, session: { ...baseConfig.session, shutdown_memory_timeout_ms: 500 } },
+      parsed: baseParsed,
+    });
+    await controller.start();
+    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    end.mockResolvedValueOnce({ memory: "completed" });
+
+    const status = await controller.shutdown();
+    expect(status).toEqual({ memory: "completed" });
+    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
+  });
+
+  it("shutdown() returns 'noop' on the second call", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    end.mockResolvedValue({ memory: "completed" });
+
+    expect(await controller.shutdown()).toEqual({ memory: "completed" });
+    expect(await controller.shutdown()).toEqual({ memory: "noop" });
+    expect(end).toHaveBeenCalledTimes(1);
   });
 });

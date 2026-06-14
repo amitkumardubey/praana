@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
 import type { UiMode } from "./types.js";
-import { Session } from "./session.js";
+import { Session, type SessionEndStatus } from "./session.js";
 import { runTurn } from "./turn.js";
 import { TurnController } from "./turn-control.js";
 import { buildStatusBarInput } from "./status-bar.js";
@@ -170,10 +170,16 @@ export class AppController {
     }
   }
 
-  async shutdown(): Promise<void> {
-    if (this.sessionEnded) return;
+  async shutdown(): Promise<ShutdownStatus> {
+    if (this.sessionEnded) return { memory: "noop" };
     this.sessionEnded = true;
     const events = this.session.getTranscriptEvents();
-    await this.session.end("clean", events, { memoryTimeoutMs: 5_000 });
+    const memoryTimeoutMs =
+      this.config.session.shutdown_memory_timeout_ms ?? 2_000;
+    return this.session.end("clean", events, { memoryTimeoutMs });
   }
 }
+
+export type ShutdownStatus = {
+  memory: SessionEndStatus["memory"] | "noop";
+};
