@@ -18,6 +18,8 @@ src/
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & keyword auto-hydrate
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
+  model-resolver.ts — /model parsing and provider+model resolution
+  provider-catalog.ts — live /models fetch + 6h cache for OpenAI-compatible providers
   llm.ts         — Provider registry and model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading & deep-merge
   types.ts       — Core shared TypeScript types
@@ -340,7 +342,7 @@ Config files are deep-merged from lower to higher precedence (later overrides ea
 
 ```toml
 [llm]
-provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | anthropic | google | mistral | amazon-bedrock
+provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | opencode | anthropic | google | mistral | amazon-bedrock
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
 
 [memory]
@@ -385,7 +387,22 @@ log_dir = "~/.praana/sessions"
 - `PRAANA_SUMMARIZER_MODEL` — overrides summarizer model (defaults to `google/gemini-2.5-flash` on OpenRouter)
 - `PRAANA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
 - `PRAANA_MEASUREMENT_MODE` — overrides `context_engine.measurement_mode`
-- Provider-specific keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, etc.
+- Provider-specific keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`, etc.
+
+### Mid-session model switching
+
+`/model` is handled by `model-resolver.ts` and validated before the switch toast appears.
+
+**Syntax:** `/model [provider] <model-id>` — provider is optional and space-separated only (not `provider/model` as a single token unless it is the model id on the current provider).
+
+**Resolution order:**
+1. pi-ai static catalog (`getModel(provider, id)`)
+2. Live provider catalog from `GET {baseUrl}/models` via `provider-catalog.ts` (6-hour disk cache at `~/.praana/provider-catalog-cache.json`)
+3. Reject with an error toast if still unknown
+
+**Live catalog providers** (OpenAI-compatible `/models`): OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama. Anthropic, Google, Mistral, and Bedrock rely on pi-ai only.
+
+**Persistence:** successful switches write `model_override` and optionally `provider_override` system notes to the event log. `session.ts` restores the latest overrides on resume. Routing prefixes like `openrouter/` or `opencode/` are stripped before API calls.
 
 ## UI and Slash Commands
 
@@ -403,7 +420,7 @@ Both support slash commands via `src/slash-commands.ts`:
 - `/digest` — prints the current cross-session markdown digest
 - `/events` — lists the last 20 events in the event log
 - `/recall <query>` — performs manual vector recall query
-- `/model <name>` — switches active model on-the-fly (persisted to log)
+- `/model [provider] <id>` — switch model and optionally provider (persisted to log; validated via pi-ai + live catalog)
 - `/sessions` — lists last 15 historical sessions for easy resuming
 - `/incognito <on|off>` — toggles cross-session memory persistence
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)

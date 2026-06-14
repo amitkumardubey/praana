@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   getProviderConfig,
   getProviderEnvKey,
   getMissingKeyMessage,
+  isProviderAvailable,
   listKnownProviders,
+  inferReasoningModel,
 } from "../src/llm.js";
 
 describe("llm provider registry", () => {
@@ -25,5 +27,22 @@ describe("llm provider registry", () => {
     expect(getProviderEnvKey("opencode")).toBe("OPENCODE_API_KEY");
     expect(getMissingKeyMessage("opencode")).toMatch(/OPENCODE_API_KEY/);
     if (prev !== undefined) process.env.OPENCODE_API_KEY = prev;
+  });
+
+  it("infers reasoning for kimi model ids", () => {
+    expect(inferReasoningModel("openrouter", "kimi-k2.7-code")).toBe(true);
+    expect(inferReasoningModel("openrouter", "moonshotai/kimi-k2.5")).toBe(true);
+    expect(inferReasoningModel("openrouter", "gpt-4o")).toBe(false);
+  });
+
+  it("treats pi-ai providers without configured keys as unavailable", () => {
+    const prevMoonshot = process.env.MOONSHOT_API_KEY;
+    delete process.env.MOONSHOT_API_KEY;
+    expect(isProviderAvailable("moonshotai")).toBe(false);
+    if (prevMoonshot !== undefined) process.env.MOONSHOT_API_KEY = prevMoonshot;
+  });
+
+  it("treats keyless registry providers as available", () => {
+    expect(isProviderAvailable("ollama")).toBe(true);
   });
 });

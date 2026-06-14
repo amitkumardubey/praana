@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { StatusBarInput } from "../../status-bar.js";
-import { formatTokenCount } from "../../status-bar.js";
+import { formatModelStatusLabel, formatTokenCount } from "../../status-bar.js";
 import { PALETTE } from "./palette.js";
 import { getTerminalWidth } from "./terminal-width.js";
 
@@ -35,7 +35,8 @@ export function StatusBarView({
   const pct = status.contextWindowTokens > 0
     ? Math.min(100, Math.round((status.contextUsedTokens / status.contextWindowTokens) * 100))
     : 0;
-  const modelShort = status.model.split("/").pop() ?? status.model;
+  const { provider, modelShort } = formatModelStatusLabel(status.model);
+  const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
   const memStr = formatMemLabel(status);
   const skillsCount = skills.length;
   const stateStr = formatStateLabel(memoryStats);
@@ -49,7 +50,7 @@ export function StatusBarView({
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={PALETTE.assistant}>{`📦 ${modelShort}`}</Text>
+        <Text color={PALETTE.assistant}>{`📦 ${modelLabel}`}</Text>
         <Text dimColor>  |  </Text>
         <Text color={pct > 90 ? PALETTE.error : pct > 70 ? PALETTE.tool : PALETTE.muted}>
           {`🧠 ctx ${ctxStr}`}

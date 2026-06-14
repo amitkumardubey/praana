@@ -53,6 +53,12 @@ export function LogoBanner({ bootSummary }: LogoBannerProps) {
           <Box marginLeft={2} marginRight={1}>
             <Text>*</Text>
           </Box>
+          <Text>/model  — switch model or provider mid-session</Text>
+        </Box>
+        <Box>
+          <Box marginLeft={2} marginRight={1}>
+            <Text>*</Text>
+          </Box>
           <Text>/recall — search my persistent memory</Text>
         </Box>
         <Box>

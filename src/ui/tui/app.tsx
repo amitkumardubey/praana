@@ -14,7 +14,7 @@ import { TranscriptLine } from "./transcript-line.js";
 import { BusyIndicator } from "./busy-indicator.js";
 import { LogoBanner } from "./logo-banner.js";
 import { StatusBarView } from "./status-bar-view.js";
-import { ToastLine } from "./components/toast-line.js";
+import { ToastLine, type ToastTone } from "./components/toast-line.js";
 
 export interface TuiAppProps {
   controller: AppController;
@@ -40,7 +40,7 @@ export function TuiApp({
   const { exit } = useApp();
   const [input, setInput] = useState("");
   const [status, setStatus] = useState(initialStatus);
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<{ message: string; tone: ToastTone } | null>(null);
   const [showBusy, setShowBusy] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const atBottomRef = useRef(true);
@@ -49,11 +49,11 @@ export function TuiApp({
   const inputHistoryRef = useRef<string[]>([]);
   const historyIndexRef = useRef(-1);
 
-  const showToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, tone: ToastTone = "info") => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast(message);
+    setToast({ message, tone });
     toastTimerRef.current = setTimeout(() => {
-      setToast("");
+      setToast(null);
       toastTimerRef.current = null;
     }, 4000);
   }, []);
@@ -183,7 +183,7 @@ export function TuiApp({
         const result = await controller.executeSlashCommand(trimmed);
         if (result.lines.length > 0) {
           if (result.display === "toast") {
-            showToast(result.lines.join(" "));
+            showToast(result.lines.join(" "), result.toastTone ?? "info");
           } else {
             dispatch({ type: "system_lines", lines: result.lines });
           }
@@ -351,7 +351,7 @@ export function TuiApp({
           <BusyIndicator />
         ) : null}
       </Box>
-      {toast ? <ToastLine message={toast} /> : null}
+      {toast ? <ToastLine message={toast.message} tone={toast.tone} /> : null}
       <Box padding={1} gap={1}>
         <Text color={PALETTE.assistant}>❯ </Text>
         <PromptInput

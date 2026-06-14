@@ -70,6 +70,10 @@ export function summarizeResultForDisplay(text: string): string {
   return `${size} — ${previewText}`;
 }
 
+/**
+ * Shell output truncation limits for TUI transcript display.
+ * These are hardcoded for now; could be made configurable via config file in the future.
+ */
 const SHELL_OUTPUT_MAX_LINES = 30;
 const SHELL_OUTPUT_MAX_CHARS = 4096;
 
@@ -113,6 +117,8 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
       body = joined;
       const charTruncated = body.length > SHELL_OUTPUT_MAX_CHARS;
       if (charTruncated) {
+        // Note: slice operates on UTF-16 code units. Multi-byte characters
+        // beyond the BMP could be split; terminal output rarely contains them.
         body = body.slice(0, SHELL_OUTPUT_MAX_CHARS);
       }
       const remaining = lines.length - truncatedLines.length;

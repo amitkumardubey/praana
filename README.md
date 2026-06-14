@@ -121,12 +121,26 @@ If cross-session memory doesn't help you after a few real projects, that's usefu
 | `/recall <query>` | Search persistent memory |
 | `/stats` | Session + memory stats |
 | `/events` | Last 20 session log events |
-| `/model <name>` | Switch model |
+| `/model [provider] <id>` | Switch model and optionally provider mid-session |
 | `/sessions` | List sessions to resume |
 | `/thinking <on\|off>` | Show or hide reasoning text |
 | `/incognito <on\|off>` | Disable cross-session memory writes |
 | `/debug` | Verbose tooling + saved prompts |
 | `/why <id>` | Why a context unit was included (engine + debug) |
+
+### `/model` syntax
+
+Switch the active model on the current provider, or switch provider and model together:
+
+```text
+/model                          # show current provider/model
+/model gpt-4o                     # model on current provider
+/model openai gpt-4o            # switch to OpenAI native
+/model opencode mimo-v2.5-free  # switch to OpenCode Zen
+/model openrouter openai/gpt-4o # route via OpenRouter
+```
+
+Unknown ids are validated against the bundled pi-ai catalog first, then against the provider's live `/models` list (cached 6 hours at `~/.praana/provider-catalog-cache.json`). OpenAI-compatible providers with live catalogs: OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, and Ollama. Anthropic, Google, Mistral, and Bedrock still rely on the static pi-ai catalog.
 
 ---
 

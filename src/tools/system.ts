@@ -171,6 +171,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             // ANSI escape sequences from child processes pass through unmodified —
             // this matches standard terminal multiplexer behavior (script(1), tee).
             // In TUI mode shellLiveStream is false — output is buffered and shown in transcript.
+            // Default (undefined) = stream; explicit false = buffer only.
             if (shellLiveStream !== false) {
               process.stdout.write(chunk);
             }

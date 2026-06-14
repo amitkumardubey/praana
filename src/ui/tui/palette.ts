@@ -9,5 +9,7 @@ export const PALETTE = {
   gutter: "#374151",     // gray-700 for turn-group gutter
   muted: "#475569",      // gray-600
   error: "#ef4444",      // red-500
+  info: "#60a5fa",       // blue-400
+  success: "#4ade80",    // green-400
   text: "#FAF9F6"
 };

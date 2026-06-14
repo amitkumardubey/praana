@@ -5,16 +5,69 @@ import type { Session } from "./session.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig } from "./context-engine/index.js";
+import {
+  resolveModelSpecifier,
+  getProviderConfigurationError,
+  resolvedTargetLabel,
+  parseModelCommandArgs,
+} from "./model-resolver.js";
+import { getProviderEnvKey } from "./llm.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast";
 
+export type SlashCommandToastTone = "info" | "success" | "error";
+
 export interface SlashCommandResult {
   action: SlashCommandAction;
   lines: string[];
   display?: SlashCommandDisplay;
+  toastTone?: SlashCommandToastTone;
+}
+
+type ModelSwitchOutcome = "success" | "failed" | "already_on";
+
+function appendModelSwitchLog(
+  session: Session,
+  entry: {
+    provider: string;
+    model: string;
+    userInput: string;
+    outcome: ModelSwitchOutcome;
+    reason?: string;
+  },
+): void {
+  session.eventLog.append({
+    kind: "system_note",
+    actor: "kernel",
+    payload: {
+      type: "model_switch",
+      provider: entry.provider,
+      model: entry.model,
+      userInput: entry.userInput,
+      outcome: entry.outcome,
+      ...(entry.reason ? { reason: entry.reason } : {}),
+    },
+  });
+
+  const details: Record<string, unknown> = {
+    provider: entry.provider,
+    model: entry.model,
+    userInput: entry.userInput,
+    outcome: entry.outcome,
+  };
+  if (entry.reason) details.reason = entry.reason;
+
+  const log = session.getLogger().child("session");
+  if (entry.outcome === "failed") {
+    log.warn("Model switch failed", { details });
+  } else if (entry.outcome === "already_on") {
+    log.info("Model switch skipped (already on target)", { details });
+  } else {
+    log.info("Model switch succeeded", { details });
+  }
 }
 
 export async function executeSlashCommand(
@@ -33,10 +86,12 @@ export async function executeSlashCommand(
   const result = (
     action: SlashCommandAction = "none",
     display: SlashCommandDisplay = "transcript",
+    toastTone?: SlashCommandToastTone,
   ): SlashCommandResult => ({
     action,
     lines,
     display,
+    toastTone,
   });
 
   switch (cmd) {
@@ -220,26 +275,124 @@ export async function executeSlashCommand(
     }
 
     case "/model": {
-      const model = parts[1];
-      if (!model) {
-        lines.push(`Current model: ${session.getModelOverride() ?? session.config.llm.model}`);
-        lines.push("Usage: /model <provider/model> (e.g., /model openai/gpt-4o)");
+      const parsed = parseModelCommandArgs(parts);
+      if (parsed.kind === "help") {
+        lines.push(`Current: ${session.getActiveModelLabel()}`);
+        lines.push("Usage: /model [provider] <model-id>");
+        lines.push("  /model gpt-4o                         — model on current provider");
+        lines.push("  /model openai gpt-4o                  — switch to OpenAI native");
+        lines.push("  /model openrouter openai/gpt-4o       — route via OpenRouter");
+        lines.push("  Note: use a space to switch provider. A slash is part of the model id.");
         break;
       }
-      const trimmed = model.trim();
-      handlers.setModel(trimmed);
-      session.setModelOverride(trimmed);
-      const contextWindow = await session.refreshModelContextWindow(trimmed);
+
+      const resolved = await resolveModelSpecifier(
+        parsed.modelSpec,
+        session.getEffectiveProvider(),
+        parsed.explicitProvider,
+      ).catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : "Failed to resolve model";
+        appendModelSwitchLog(session, {
+          provider: parsed.explicitProvider ?? session.getEffectiveProvider(),
+          model: parsed.modelSpec,
+          userInput: parsed.userInput,
+          outcome: "failed",
+          reason: message,
+        });
+        lines.push(`Model lookup failed: ${message}`);
+        return null;
+      });
+      if (!resolved) {
+        return result("none", "toast", "error");
+      }
+
+      const targetProvider = resolved.provider;
+      const targetModel = resolved.modelId;
+
+      if (!resolved.known) {
+        appendModelSwitchLog(session, {
+          provider: targetProvider,
+          model: targetModel,
+          userInput: parsed.userInput,
+          outcome: "failed",
+          reason: "unknown_model",
+        });
+        lines.push(`Unknown model ID: ${parsed.userInput}`);
+        return result("none", "toast", "error");
+      }
+
+      const currentProvider = session.getEffectiveProvider();
+      const targetLabel = resolvedTargetLabel(resolved, currentProvider);
+      if (targetLabel === session.getActiveModelLabel()) {
+        appendModelSwitchLog(session, {
+          provider: targetProvider,
+          model: targetModel,
+          userInput: parsed.userInput,
+          outcome: "already_on",
+        });
+        const contextWindow = session.getContextWindowTokens(resolved.modelId);
+        lines.push(
+          `Already on: ${targetLabel} (${contextWindow.toLocaleString()} ctx)`,
+        );
+        return result("none", "toast", "info");
+      }
+
+      if (resolved.switchedProvider) {
+        const keyError = getProviderConfigurationError(resolved.provider);
+        if (keyError) {
+          appendModelSwitchLog(session, {
+            provider: targetProvider,
+            model: targetModel,
+            userInput: parsed.userInput,
+            outcome: "failed",
+            reason: keyError,
+          });
+          const envVarName = getProviderEnvKey(resolved.provider);
+          const hint = envVarName
+            ? ` (set ${envVarName} in your shell or .env file)`
+            : "";
+          lines.push(`${keyError}${hint}`);
+          return result("none", "toast", "error");
+        }
+        session.setProviderOverride(resolved.provider);
+      }
+
+      if (resolved.switchedProvider) {
+        // Append provider_override before model_override so forward-replay
+        // order matches intent: first switch provider, then set model.
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "provider_override",
+            provider: resolved.provider,
+          },
+        });
+      }
+      session.setModelOverride(resolved.modelId);
+      handlers.setModel(resolved.modelId);
+      const contextWindow = await session.refreshModelContextWindow(resolved.modelId);
+
+      appendModelSwitchLog(session, {
+        provider: targetProvider,
+        model: targetModel,
+        userInput: parsed.userInput,
+        outcome: "success",
+      });
       session.eventLog.append({
         kind: "system_note",
         actor: "kernel",
         payload: {
           type: "model_override",
-          model: trimmed,
+          provider: targetProvider,
+          model: resolved.modelId,
         },
       });
-      lines.push(`Model switched to: ${model} (${contextWindow.toLocaleString()} ctx)`);
-      return result("refresh_status", "toast");
+      lines.push(
+        `Switched to: ${session.getActiveModelLabel()} (${contextWindow.toLocaleString()} ctx)`,
+      );
+      return result("refresh_status", "toast", "success");
     }
 
     case "/debug": {

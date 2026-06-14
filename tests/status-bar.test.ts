@@ -4,6 +4,7 @@ import {
   formatTokenCount,
   formatRepoLabel,
   formatMode,
+  formatModelStatusLabel,
   getCurrentTaskTitle,
   formatStatusBarLines,
   buildStatusBarInput,
@@ -26,6 +27,17 @@ describe("status-bar", () => {
     expect(formatMode(false, true)).toBe("normal");
     expect(formatMode(true, true)).toBe("debug+think");
     expect(formatMode(false, false)).toBe("normal·think-off");
+  });
+
+  it("splits provider and model for status bar display", () => {
+    expect(formatModelStatusLabel("openrouter/moonshotai/kimi-k2.7-code")).toEqual({
+      provider: "openrouter",
+      modelShort: "kimi-k2.7-code",
+    });
+    expect(formatModelStatusLabel("gpt-4o")).toEqual({
+      provider: null,
+      modelShort: "gpt-4o",
+    });
   });
 
   it("picks doing task over todo", () => {

@@ -30,6 +30,30 @@ export interface StatusBarInput {
   agentsContextLoaded: boolean;
 }
 
+/**
+ * Split an active model label into provider + short model name for the
+ * status bar.  When the label contains a provider prefix (the common
+ * case after a `/model` switch), both parts are returned so the status
+ * bar can show e.g. `openrouter · kimi-k2.7-code`.
+ *
+ * For bare model ids without a provider prefix (e.g. `gpt-4o` when the
+ * provider is implicit), `provider` is `null` and `modelShort` is the
+ * full id.
+ */
+export function formatModelStatusLabel(model: string): {
+  provider: string | null;
+  modelShort: string;
+} {
+  const parts = model.split("/");
+  if (parts.length >= 2) {
+    return {
+      provider: parts[0],
+      modelShort: parts[parts.length - 1],
+    };
+  }
+  return { provider: null, modelShort: model };
+}
+
 /** Format token counts for compact display (e.g. 18400 → "18.4k"). */
 export function formatTokenCount(tokens: number): string {
   if (tokens < 1000) return String(tokens);
@@ -124,8 +148,10 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
       : chalk.dim("off");
   const agents = input.agentsContextLoaded ? chalk.dim("· AGENTS.md") : "";
 
+  const { provider: statusProvider, modelShort: statusModelShort } = formatModelStatusLabel(input.model);
+  const statusModelLabel = statusProvider ? `${statusProvider} · ${statusModelShort}` : statusModelShort;
   const line1 = [
-    chalk.cyan(input.model.split("/").pop() ?? input.model),
+    chalk.cyan(statusModelLabel),
     chalk.dim(ctx),
     chalk.yellow(formatMode(input.debug, input.thinking)),
     chalk.blue(repo),
@@ -167,7 +193,8 @@ export function renderStatusBar(input: StatusBarInput): void {
 
 /** One-line emoji status bar — compact with pipe separators. */
 export function formatEmojiStatusLine(input: StatusBarInput): string {
-  const modelShort = input.model.split("/").pop() ?? input.model;
+  const { provider, modelShort } = formatModelStatusLabel(input.model);
+  const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
   const pct = input.contextWindowTokens > 0
     ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
     : 0;
@@ -182,7 +209,7 @@ export function formatEmojiStatusLine(input: StatusBarInput): string {
     stateStr = parts.join("/");
   }
   const parts = [
-    chalk.cyan(`📦 model: ${input.model}`),
+    chalk.cyan(`📦 model: ${modelLabel}`),
     pct > 90 ? chalk.red(`🧠 ctx: ${pct}%`) : pct > 70 ? chalk.yellow(`🧠 ctx: ${pct}%`) : chalk.dim(`🧠 ctx: ${pct}%`),
     memStr === "on" ? chalk.green(`💾 mem: ${memStr}`) : chalk.dim(`💾 mem: ${memStr}`),
   ];

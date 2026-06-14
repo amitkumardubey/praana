@@ -13,7 +13,7 @@ import {
 } from "./context-engine/index.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
-import { createProvider, resolveModel } from "./llm.js";
+import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -112,7 +112,7 @@ export async function runTurn(
     getCurrentTurn: () => session.getTurnCount(),
     searchCode: session.config.search_code,
     getAbortSignal: () => options?.signal,
-    shellLiveStream: s.shellLiveStream !== false,
+    shellLiveStream: s.shellLiveStream ?? true,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -255,7 +255,8 @@ export async function runTurn(
   }
 
   // 4. Create LLM provider and model
-  const providerFn = createProvider(session.config.llm, contextWindowTokens);
+  const effectiveLlm = session.getEffectiveLlmConfig();
+  const providerFn = createProvider(effectiveLlm, contextWindowTokens);
   const model = providerFn(resolveModel(modelName));
 
   const logger = await createSessionLogger({
@@ -264,7 +265,7 @@ export async function runTurn(
     debug: session.debug,
   });
   const llmLogger = logger.child("llm");
-  const providerName = session.config.llm.provider;
+  const providerName = effectiveLlm.provider;
 
   // 5. Stream response
   let fullResponse = "";
@@ -293,9 +294,16 @@ export async function runTurn(
       parameters: normalizeToolParameters((def as any).parameters),
     }));
 
+    const streamReasoning = getReasoningEffort(
+      model as Record<string, unknown>,
+      modelName,
+      providerName,
+    );
     const modelOptions = {
       ...((model as any).__piOptions ?? {}),
       ...(options?.signal ? { signal: options.signal } : {}),
+      // pi-ai `stream()` expects `reasoningEffort`; `reasoning` is only for `streamSimple()`.
+      ...(streamReasoning ? { reasoningEffort: streamReasoning } : {}),
     };
     const stream = piStream(
       model as any,
