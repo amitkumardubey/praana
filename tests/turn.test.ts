@@ -273,6 +273,18 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getOutputTokens() { return this._outputTokens; },
     ensureModelContextWindow: vi.fn(async () => 128_000),
     getContextWindowTokens: vi.fn(() => 128_000),
+    getEffectiveProvider() {
+      return this.config.llm.provider;
+    },
+    getEffectiveLlmConfig() {
+      return this.config.llm;
+    },
+    getActiveModelId() {
+      return this.config.llm.model;
+    },
+    getActiveModelLabel() {
+      return `${this.config.llm.provider}/${this.config.llm.model}`;
+    },
     isCompactionArmed: vi.fn(() => false),
     setCompactionArmed: vi.fn(),
     ...overrides,

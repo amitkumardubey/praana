@@ -64,7 +64,7 @@ export class AppController {
     }
 
     this.currentModel = this.session.getModelOverride() ?? undefined;
-    const model = this.currentModelOrDefault();
+    const model = this.session.getActiveModelLabel();
 
     return {
       session: this.session,
@@ -82,16 +82,17 @@ export class AppController {
   }
 
   currentModelOrDefault(): string {
-    return this.currentModel ?? this.session.config.llm.model;
+    return this.currentModel ?? this.session.getActiveModelId();
   }
 
   getStatusBarInput(): StatusBarInput {
-    const model = this.currentModelOrDefault();
+    const model = this.session.getActiveModelLabel();
+    const modelId = this.currentModelOrDefault();
     return buildStatusBarInput(this.session, {
       model,
       debug: this.session.debug,
       thinking: this.showThinking,
-      contextWindowTokens: this.session.getContextWindowTokens(model),
+      contextWindowTokens: this.session.getContextWindowTokens(modelId),
     });
   }
 

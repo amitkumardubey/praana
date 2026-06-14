@@ -1,5 +1,6 @@
+import { getModel, getEnvApiKey, getProviders, findEnvKeys } from "@earendil-works/pi-ai";
 import type { PraanaConfig } from "./types.js";
-import { resolveContextWindowSync } from "./model-context.js";
+import { mapProviderToPiAi, resolveContextWindowSync } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 
 export {
@@ -140,16 +141,35 @@ export function getProviderEnvKey(provider: string): string | null {
 /** Check whether the provider's API key is available in the environment. */
 export function isProviderAvailable(provider: string): boolean {
   const envKey = getProviderEnvKey(provider);
-  if (envKey === null) return true; // no key needed (ollama, bedrock)
-  return !!process.env[envKey];
+  if (PROVIDER_REGISTRY[provider] && envKey === null) return true;
+  if (envKey && process.env[envKey]) return true;
+
+  const piProviders = getProviders() as string[];
+  if (piProviders.includes(provider)) {
+    if (getEnvApiKey(provider as never)) return true;
+    const keys = findEnvKeys(provider as never);
+    if (keys?.length) return false;
+    return !envKey;
+  }
+
+  return false;
 }
 
 /** Human-readable message explaining which env var is missing. */
 export function getMissingKeyMessage(provider: string): string | null {
+  if (isProviderAvailable(provider)) return null;
+
   const envKey = getProviderEnvKey(provider);
-  if (envKey === null) return null;
-  if (process.env[envKey]) return null;
-  return `Missing required env var: ${envKey}`;
+  if (envKey && PROVIDER_REGISTRY[provider]) {
+    return `Missing required env var: ${envKey}`;
+  }
+
+  const piKeys = findEnvKeys(provider as never);
+  if (piKeys?.length) {
+    return `Missing required env var: ${piKeys.join(" or ")}`;
+  }
+
+  return `Provider "${provider}" is not configured`;
 }
 
 // ── Model construction ─────────────────────────────────────────
@@ -158,11 +178,42 @@ type RuntimeModel = Record<string, unknown> & {
   __piOptions?: Record<string, unknown>;
 };
 
+function buildFromPiAiCatalog(
+  config: PraanaConfig["llm"],
+  modelId: string,
+  contextWindow?: number,
+): RuntimeModel | null {
+  const piProvider = mapProviderToPiAi(config.provider) ?? config.provider;
+  if (!(getProviders() as string[]).includes(piProvider)) return null;
+
+  const catalogModel = getModel(piProvider as never, modelId as never);
+  if (!catalogModel) return null;
+
+  const model: RuntimeModel = {
+    ...catalogModel,
+    contextWindow:
+      contextWindow ??
+      resolveContextWindowSync(config.provider, modelId, config.context_window),
+  };
+
+  const apiKey = getEnvApiKey(piProvider as never) ?? "no-key";
+
+  model.__piOptions = {
+    apiKey,
+    headers: catalogModel.headers ? { ...catalogModel.headers } : undefined,
+  };
+
+  return model;
+}
+
 function buildModel(
   config: PraanaConfig["llm"],
   modelId: string,
   contextWindow?: number,
 ): RuntimeModel {
+  const fromCatalog = buildFromPiAiCatalog(config, modelId, contextWindow);
+  if (fromCatalog) return fromCatalog;
+
   const pc = getProviderConfig(config.provider);
 
   const baseUrl = config.base_url ?? pc.baseUrl;

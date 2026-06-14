@@ -65,7 +65,7 @@ function mockSession(): Session {
       list: vi.fn(() => []),
     },
     config: {
-      llm: { model: "test/model" },
+      llm: { provider: "openrouter", model: "test/model" },
       compiler: {
         token_budget: 100_000,
         recent_turns: 10,
@@ -114,6 +114,12 @@ function mockSession(): Session {
     })),
     ensureModelContextWindow: vi.fn(async () => 128_000),
     getContextWindowTokens: vi.fn(() => 128_000),
+    getEffectiveProvider: vi.fn(() => "openrouter"),
+    getEffectiveLlmConfig: vi.fn(function (this: { config: { llm: unknown } }) {
+      return this.config.llm;
+    }),
+    getActiveModelId: vi.fn(() => "test/model"),
+    getActiveModelLabel: vi.fn(() => "openrouter/test/model"),
   } as unknown as Session;
 }
 

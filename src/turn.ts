@@ -255,7 +255,8 @@ export async function runTurn(
   }
 
   // 4. Create LLM provider and model
-  const providerFn = createProvider(session.config.llm, contextWindowTokens);
+  const effectiveLlm = session.getEffectiveLlmConfig();
+  const providerFn = createProvider(effectiveLlm, contextWindowTokens);
   const model = providerFn(resolveModel(modelName));
 
   const logger = await createSessionLogger({
@@ -264,7 +265,7 @@ export async function runTurn(
     debug: session.debug,
   });
   const llmLogger = logger.child("llm");
-  const providerName = session.config.llm.provider;
+  const providerName = effectiveLlm.provider;
 
   // 5. Stream response
   let fullResponse = "";

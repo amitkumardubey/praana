@@ -93,6 +93,12 @@ export function mapProviderToPiAi(provider: string): string | null {
   return known.includes(provider) ? provider : null;
 }
 
+export function isInPiAiCatalog(provider: string, modelId: string): boolean {
+  const piProvider = mapProviderToPiAi(provider);
+  if (!piProvider) return false;
+  return !!getModel(piProvider as never, modelId as never);
+}
+
 export function lookupPiAiContextWindow(
   provider: string,
   modelId: string,
@@ -101,6 +107,16 @@ export function lookupPiAiContextWindow(
   if (!piProvider) return null;
   const model = getModel(piProvider as never, modelId as never);
   return isValidWindow(model?.contextWindow) ? model.contextWindow : null;
+}
+
+export async function isInOpenRouterCatalog(modelId: string): Promise<boolean> {
+  if (readOpenRouterCatalogEntry(modelId) !== null) return true;
+  try {
+    const catalog = await fetchOpenRouterCatalog();
+    return modelId in catalog;
+  } catch {
+    return false;
+  }
 }
 
 function readCachedContextWindow(provider: string, modelId: string): number | null {

@@ -54,6 +54,7 @@ export class Session {
   private readonly startedAt: number;
   private turnCount = 0;
   private modelOverride: string | null = null;
+  private providerOverride: string | null = null;
   private modelContextWindow: number | null = null;
   private modelContextWindowFor: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
@@ -232,17 +233,23 @@ export class Session {
 
     loadProjectContextField(session, cwd);
 
-    // Restore model override if one was set previously.
+    // Restore model + provider overrides from the latest system_note events.
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
-      if (ev.kind !== "system_note" || ev.payload.type !== "model_override") continue;
-      const rawModel = ev.payload.model;
-      if (typeof rawModel === "string" && rawModel.trim()) {
-        session.modelOverride = rawModel.trim();
-      } else {
-        session.modelOverride = null;
+      if (ev.kind !== "system_note") continue;
+      if (ev.payload.type === "provider_override" && session.providerOverride === null) {
+        const rawProvider = ev.payload.provider;
+        if (typeof rawProvider === "string" && rawProvider.trim()) {
+          session.providerOverride = rawProvider.trim();
+        }
       }
-      break;
+      if (ev.payload.type === "model_override" && session.modelOverride === null) {
+        const rawModel = ev.payload.model;
+        if (typeof rawModel === "string" && rawModel.trim()) {
+          session.modelOverride = rawModel.trim();
+        }
+      }
+      if (session.modelOverride !== null && session.providerOverride !== null) break;
     }
 
     if (session.memoryEnabled) {
@@ -336,6 +343,36 @@ export class Session {
     return this.modelOverride ?? this.config.llm.model;
   }
 
+  getEffectiveProvider(): string {
+    return this.providerOverride ?? this.config.llm.provider;
+  }
+
+  getEffectiveLlmConfig(): PraanaConfig["llm"] {
+    return { ...this.config.llm, provider: this.getEffectiveProvider() };
+  }
+
+  getActiveModelLabel(): string {
+    const provider = this.getEffectiveProvider();
+    const modelId = this.getActiveModelId();
+    if (modelId.includes("/")) {
+      const prefix = modelId.slice(0, modelId.indexOf("/"));
+      if (prefix === provider) return modelId;
+    }
+    return `${provider}/${modelId}`;
+  }
+
+  getProviderOverride(): string | null {
+    return this.providerOverride;
+  }
+
+  setProviderOverride(provider: string | null): void {
+    const next = provider && provider.trim() ? provider.trim() : null;
+    if (next === this.providerOverride) return;
+    this.providerOverride = next;
+    this.modelContextWindow = null;
+    this.modelContextWindowFor = null;
+  }
+
   getLogger(): PraanaLogger {
     if (!this.sessionLogger) {
       return getAppLogger().child("session");
@@ -359,7 +396,7 @@ export class Session {
       return this.modelContextWindow;
     }
     return resolveContextWindowSync(
-      this.config.llm.provider,
+      this.getEffectiveProvider(),
       id,
       this.config.llm.context_window,
     );
@@ -368,7 +405,7 @@ export class Session {
   async refreshModelContextWindow(modelId?: string): Promise<number> {
     const id = modelId ?? this.getActiveModelId();
     const window = await fetchAndCacheContextWindow(
-      this.config.llm.provider,
+      this.getEffectiveProvider(),
       id,
       this.config.llm.context_window,
     );

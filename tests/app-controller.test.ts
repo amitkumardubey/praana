@@ -9,8 +9,11 @@ vi.mock("../src/session.js", () => ({
       id: "sess-1",
       cwd: "/tmp",
       debug: false,
-      config: { llm: { model: "test/model" } },
+      config: { llm: { provider: "openrouter", model: "test/model" } },
       getModelOverride: () => null,
+      getActiveModelId: () => "test/model",
+      getActiveModelLabel: () => "openrouter/test/model",
+      getEffectiveProvider: () => "openrouter",
       getContextWindowTokens: () => 128_000,
       refreshModelContextWindow: vi.fn(async () => 128_000),
       getMemoryStats: () => ({
@@ -83,7 +86,7 @@ describe("AppController", () => {
     expect(info.session.id).toBe("sess-1");
     expect(info.bannerLines.some((l) => l.includes("sess-1"))).toBe(true);
     const status = controller.getStatusBarInput();
-    expect(status.model).toBe("test/model");
+    expect(status.model).toBe("openrouter/test/model");
   });
 
   it("delegates slash commands with structured results", async () => {

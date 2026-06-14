@@ -5,6 +5,10 @@ import type { Session } from "./session.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig } from "./context-engine/index.js";
+import {
+  resolveModelSpecifier,
+  getProviderConfigurationError,
+} from "./model-resolver.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status";
 
@@ -222,23 +226,48 @@ export async function executeSlashCommand(
     case "/model": {
       const model = parts[1];
       if (!model) {
-        lines.push(`Current model: ${session.getModelOverride() ?? session.config.llm.model}`);
+        lines.push(`Current: ${session.getActiveModelLabel()}`);
         lines.push("Usage: /model <provider/model> (e.g., /model openai/gpt-4o)");
+        lines.push("Tip: prefix with openrouter/ to force OpenRouter routing.");
         break;
       }
       const trimmed = model.trim();
-      handlers.setModel(trimmed);
-      session.setModelOverride(trimmed);
-      const contextWindow = await session.refreshModelContextWindow(trimmed);
+      const resolved = await resolveModelSpecifier(trimmed, session.getEffectiveProvider());
+
+      if (resolved.switchedProvider) {
+        const keyError = getProviderConfigurationError(resolved.provider);
+        if (keyError) {
+          lines.push(keyError);
+          break;
+        }
+        session.setProviderOverride(resolved.provider);
+      }
+
+      session.setModelOverride(resolved.modelId);
+      handlers.setModel(resolved.modelId);
+      const contextWindow = await session.refreshModelContextWindow(resolved.modelId);
+
       session.eventLog.append({
         kind: "system_note",
         actor: "kernel",
         payload: {
           type: "model_override",
-          model: trimmed,
+          model: resolved.modelId,
         },
       });
-      lines.push(`Model switched to: ${model} (${contextWindow.toLocaleString()} ctx)`);
+      if (resolved.switchedProvider) {
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: {
+            type: "provider_override",
+            provider: resolved.provider,
+          },
+        });
+      }
+      lines.push(
+        `Switched to: ${session.getActiveModelLabel()} (${contextWindow.toLocaleString()} ctx)`,
+      );
       return result("refresh_status", "toast");
     }
 
