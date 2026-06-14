@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
 
 const CACHE_VERSION = 1;
 const CACHE_FILE = appHomePath("provider-catalog-cache.json");
@@ -58,6 +59,13 @@ interface ProviderCatalogSnapshot {
   fetchedAt: number;
   /** null context window means the model exists but the API did not report a window. */
   models: Record<string, number | null>;
+  /** Maps bare model name (segment after last /) to full catalog id. */
+  suffixIndex?: Record<string, string>;
+}
+
+interface InFlightFetch {
+  promise: Promise<Record<string, number | null>>;
+  controller: AbortController;
 }
 
 interface ProviderCatalogCacheFile {
@@ -66,7 +74,22 @@ interface ProviderCatalogCacheFile {
 }
 
 let diskCache: ProviderCatalogCacheFile | null = null;
-const fetchPromises = new Map<string, Promise<Record<string, number | null>>>();
+const fetchPromises = new Map<string, InFlightFetch>();
+
+function buildSuffixIndex(models: Record<string, number | null>): Record<string, string> {
+  const index: Record<string, string> = {};
+  for (const id of Object.keys(models)) {
+    const slash = id.lastIndexOf("/");
+    if (slash < 0) continue;
+    const bare = id.slice(slash + 1);
+    if (!(bare in index)) index[bare] = id;
+  }
+  return index;
+}
+
+function getSuffixIndex(snapshot: ProviderCatalogSnapshot): Record<string, string> {
+  return snapshot.suffixIndex ?? buildSuffixIndex(snapshot.models);
+}
 
 function isValidWindow(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1000;
@@ -121,6 +144,7 @@ function findInCatalogMap(
   catalog: Record<string, number | null>,
   provider: string,
   modelId: string,
+  suffixIndex?: Record<string, string>,
 ): string | null {
   for (const id of providerModelIdCandidates(provider, modelId)) {
     if (id in catalog) return id;
@@ -128,6 +152,9 @@ function findInCatalogMap(
 
   const normalized = stripProviderRoutingPrefix(provider, modelId);
   if (!normalized.includes("/")) {
+    if (suffixIndex && normalized in suffixIndex) {
+      return suffixIndex[normalized];
+    }
     const suffix = `/${normalized}`;
     for (const id of Object.keys(catalog)) {
       if (id.endsWith(suffix)) return id;
@@ -145,7 +172,7 @@ function readCachedCatalogEntry(
   if (!snapshot) return null;
   if (Date.now() - snapshot.fetchedAt > PROVIDER_CATALOG_TTL_MS) return null;
 
-  const id = findInCatalogMap(snapshot.models, provider, modelId);
+  const id = findInCatalogMap(snapshot.models, provider, modelId, getSuffixIndex(snapshot));
   if (!id) return null;
   return { id, contextWindow: snapshot.models[id] ?? null };
 }
@@ -174,12 +201,12 @@ export async function findProviderCatalogModelId(
 
   try {
     let catalog = await fetchProviderCatalog(provider);
-    let found = findInCatalogMap(catalog, provider, modelId);
+    let found = findInCatalogMap(catalog, provider, modelId, buildSuffixIndex(catalog));
     if (found) return found;
 
     invalidateProviderCatalog(provider);
     catalog = await fetchProviderCatalogFresh(provider);
-    return findInCatalogMap(catalog, provider, modelId);
+    return findInCatalogMap(catalog, provider, modelId, buildSuffixIndex(catalog));
   } catch {
     return null;
   }
@@ -210,55 +237,80 @@ async function fetchProviderCatalog(
 }
 
 function invalidateProviderCatalog(provider: string): void {
+  const inFlight = fetchPromises.get(provider);
+  if (inFlight) {
+    inFlight.controller.abort();
+    fetchPromises.delete(provider);
+  }
+
   const file = loadDiskCache();
   delete file.catalogs[provider];
   persistDiskCache();
-  fetchPromises.delete(provider);
 }
 
 async function fetchProviderCatalogFresh(
   provider: string,
 ): Promise<Record<string, number | null>> {
-  const pending = fetchPromises.get(provider);
-  if (pending) return pending;
+  const inFlight = fetchPromises.get(provider);
+  if (inFlight) return inFlight.promise;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort(
+      new Error(
+        `Provider catalog fetch timed out after ${PROVIDER_CATALOG_FETCH_TIMEOUT_MS}ms`,
+      ),
+    );
+  }, PROVIDER_CATALOG_FETCH_TIMEOUT_MS);
 
   const promise = (async () => {
-    const config = LIVE_CATALOG_PROVIDERS[provider];
-    if (!config) throw new Error(`Provider "${provider}" has no live catalog`);
+    try {
+      const config = LIVE_CATALOG_PROVIDERS[provider];
+      if (!config) throw new Error(`Provider "${provider}" has no live catalog`);
 
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-      ...config.headers,
-    };
-    const apiKey = config.envKey ? process.env[config.envKey] : null;
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        ...config.headers,
+      };
+      const apiKey = config.envKey ? process.env[config.envKey] : null;
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-    const url = `${config.baseUrl.replace(/\/$/, "")}/models`;
-    const response = await fetch(url, { headers });
-    if (!response.ok) {
-      throw new Error(`${provider} models API returned ${response.status}`);
+      const url = `${config.baseUrl.replace(/\/$/, "")}/models`;
+      const response = await fetch(url, { headers, signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`${provider} models API returned ${response.status}`);
+      }
+
+      const body = (await response.json()) as {
+        data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
+      };
+
+      if (controller.signal.aborted) {
+        throw controller.signal.reason ?? new Error("Provider catalog fetch aborted");
+      }
+
+      const models: Record<string, number | null> = {};
+      for (const item of body.data ?? []) {
+        if (!item.id) continue;
+        const contextWindow = item.context_length ?? item.context_window;
+        models[item.id] = isValidWindow(contextWindow) ? contextWindow : null;
+      }
+
+      const file = loadDiskCache();
+      file.catalogs[provider] = {
+        fetchedAt: Date.now(),
+        models,
+        suffixIndex: buildSuffixIndex(models),
+      };
+      persistDiskCache();
+      return models;
+    } finally {
+      clearTimeout(timeoutId);
+      fetchPromises.delete(provider);
     }
+  })();
 
-    const body = (await response.json()) as {
-      data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
-    };
-
-    const models: Record<string, number | null> = {};
-    for (const item of body.data ?? []) {
-      if (!item.id) continue;
-      const contextWindow = item.context_length ?? item.context_window;
-      models[item.id] = isValidWindow(contextWindow) ? contextWindow : null;
-    }
-
-    const file = loadDiskCache();
-    file.catalogs[provider] = { fetchedAt: Date.now(), models };
-    persistDiskCache();
-    return models;
-  })().finally(() => {
-    fetchPromises.delete(provider);
-  });
-
-  fetchPromises.set(provider, promise);
+  fetchPromises.set(provider, { promise, controller });
   return promise;
 }
 
@@ -274,6 +326,9 @@ export async function findOpenRouterCatalogModelId(modelId: string): Promise<str
 
 /** Test helper — reset in-memory/disk cache state. */
 export function resetProviderCatalogCacheForTests(): void {
+  for (const inFlight of fetchPromises.values()) {
+    inFlight.controller.abort();
+  }
   diskCache = null;
   fetchPromises.clear();
   if (existsSync(CACHE_FILE)) {

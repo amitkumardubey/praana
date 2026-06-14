@@ -370,4 +370,36 @@ describe("executeSlashCommand", () => {
       },
     });
   });
+
+  it("shows error toast when model resolution throws", async () => {
+    vi.mocked(resolveModelSpecifier).mockRejectedValue(
+      new Error("Provider catalog fetch timed out after 15000ms"),
+    );
+
+    const append = vi.fn();
+    const { getLogger, warn } = mockSessionLogger();
+
+    const session = {
+      getEffectiveProvider: () => "opencode",
+      getActiveModelLabel: vi.fn(() => "opencode/mimo-v2.5-free"),
+      eventLog: { append },
+      getLogger,
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/model mimo-v2.5-free", session, {
+      setModel: vi.fn(),
+      setThinking: vi.fn(),
+      getThinking: () => true,
+    });
+
+    expect(result.action).toBe("none");
+    expect(result.toastTone).toBe("error");
+    expect(result.lines[0]).toContain("Model lookup failed");
+    expect(warn).toHaveBeenCalledWith("Model switch failed", {
+      details: expect.objectContaining({
+        outcome: "failed",
+        reason: "Provider catalog fetch timed out after 15000ms",
+      }),
+    });
+  });
 });

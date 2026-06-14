@@ -32,11 +32,9 @@ export type ParsedModelCommand =
 
 /** Same formatting as Session.getActiveModelLabel() for a provider + model id pair. */
 export function formatActiveModelLabel(provider: string, modelId: string): string {
-  if (modelId.includes("/")) {
-    const prefix = modelId.slice(0, modelId.indexOf("/"));
-    if (prefix === provider) return modelId;
-  }
-  return `${provider}/${modelId}`;
+  const routingPrefix = `${provider}/`;
+  if (modelId.startsWith(routingPrefix)) return modelId;
+  return `${routingPrefix}${modelId}`;
 }
 
 export function resolvedTargetLabel(

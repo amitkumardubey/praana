@@ -288,7 +288,22 @@ export async function executeSlashCommand(
         parsed.modelSpec,
         session.getEffectiveProvider(),
         parsed.explicitProvider,
-      );
+      ).catch((err: unknown) => {
+        const message =
+          err instanceof Error ? err.message : "Failed to resolve model";
+        appendModelSwitchLog(session, {
+          provider: parsed.explicitProvider ?? session.getEffectiveProvider(),
+          model: parsed.modelSpec,
+          userInput: parsed.userInput,
+          outcome: "failed",
+          reason: message,
+        });
+        lines.push(`Model lookup failed: ${message}`);
+        return null;
+      });
+      if (!resolved) {
+        return result("none", "toast", "error");
+      }
 
       const targetProvider = resolved.provider;
       const targetModel = resolved.modelId;

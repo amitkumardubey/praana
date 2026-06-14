@@ -140,16 +140,16 @@ export function getProviderEnvKey(provider: string): string | null {
 
 /** Check whether the provider's API key is available in the environment. */
 export function isProviderAvailable(provider: string): boolean {
-  const envKey = getProviderEnvKey(provider);
-  if (PROVIDER_REGISTRY[provider] && envKey === null) return true;
-  if (envKey && process.env[envKey]) return true;
+  const registryEntry = PROVIDER_REGISTRY[provider];
+  if (registryEntry && registryEntry.envKey === null) return true;
+  if (registryEntry?.envKey && process.env[registryEntry.envKey]) return true;
 
   const piProviders = getProviders() as string[];
   if (piProviders.includes(provider)) {
     if (getEnvApiKey(provider as never)) return true;
     const keys = findEnvKeys(provider as never);
     if (keys?.length) return false;
-    return !envKey;
+    return registryEntry?.envKey === null;
   }
 
   return false;
@@ -179,9 +179,6 @@ export function inferReasoningModel(provider: string, modelId: string): boolean 
     const piProvider = mapProviderToPiAi(provider) ?? provider;
     const catalogModel = getModel(piProvider as never, modelId as never);
     return !!catalogModel?.reasoning;
-  }
-  if (provider === "openrouter") {
-    return isInPiAiCatalog("openrouter", modelId);
   }
   return false;
 }

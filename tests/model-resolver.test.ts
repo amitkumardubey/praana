@@ -1,11 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  formatActiveModelLabel,
   resolveModelSpecifier,
   resolveModelSpecifierSync,
   catalogHasModel,
   parseModelCommandArgs,
 } from "../src/model-resolver.js";
 import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
+
+describe("formatActiveModelLabel", () => {
+  it("returns model id unchanged when it already has the provider routing prefix", () => {
+    expect(formatActiveModelLabel("openrouter", "openrouter/openai/gpt-4o")).toBe(
+      "openrouter/openai/gpt-4o",
+    );
+  });
+
+  it("prefixes bare model ids with provider", () => {
+    expect(formatActiveModelLabel("openai", "gpt-4o")).toBe("openai/gpt-4o");
+  });
+
+  it("prefixes vendor/model ids routed through another provider", () => {
+    expect(formatActiveModelLabel("openrouter", "openai/gpt-4o")).toBe(
+      "openrouter/openai/gpt-4o",
+    );
+  });
+});
 
 describe("parseModelCommandArgs", () => {
   beforeEach(() => {
@@ -187,29 +206,29 @@ describe("resolveModelSpecifierSync", () => {
 });
 
 describe("resolveModelSpecifier", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     resetProviderCatalogCacheForTests();
-    vi.restoreAllMocks();
+    fetchSpy = vi.spyOn(globalThis, "fetch");
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    fetchSpy.mockRestore();
+    resetProviderCatalogCacheForTests();
   });
 
   it("accepts OpenCode free models via live catalog when missing from pi-ai", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          data: [
-            { id: "mimo-v2.5-free" },
-            { id: "nemotron-3-ultra-free" },
-            { id: "north-mini-code-free" },
-          ],
-        }),
-      })),
-    );
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: "mimo-v2.5-free" },
+          { id: "nemotron-3-ultra-free" },
+          { id: "north-mini-code-free" },
+        ],
+      }),
+    } as Response);
 
     const result = await resolveModelSpecifier("mimo-v2.5-free", "opencode");
     expect(result).toEqual({
