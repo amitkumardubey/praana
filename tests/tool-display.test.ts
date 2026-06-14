@@ -110,6 +110,16 @@ describe("formatShellOutputForDisplay", () => {
     expect(display!.body).toContain("+20 more lines");
   });
 
+  it("shows both line and character truncation markers when both limits apply", () => {
+    const longLine = "x".repeat(200);
+    const lines = Array.from({ length: 50 }, () => longLine).join("\n");
+    const display = formatShellOutputForDisplay(
+      JSON.stringify({ ok: true, stdout: lines, stderr: "", exitCode: 0 })
+    );
+    expect(display!.body).toContain("+20 more lines");
+    expect(display!.body).toContain("truncated");
+  });
+
   it("returns null for non-shell json", () => {
     expect(formatShellOutputForDisplay(JSON.stringify({ ok: true, content: "x" }))).toBeNull();
   });

@@ -109,18 +109,23 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
     let body = fullBody;
     if (lines.length > SHELL_OUTPUT_MAX_LINES || body.length > SHELL_OUTPUT_MAX_CHARS) {
       const truncatedLines = lines.slice(0, SHELL_OUTPUT_MAX_LINES);
-      body = truncatedLines.join("\n");
-      if (body.length > SHELL_OUTPUT_MAX_CHARS) {
+      const joined = truncatedLines.join("\n");
+      body = joined;
+      const charTruncated = body.length > SHELL_OUTPUT_MAX_CHARS;
+      if (charTruncated) {
         body = body.slice(0, SHELL_OUTPUT_MAX_CHARS);
       }
       const remaining = lines.length - truncatedLines.length;
-      const suffix =
-        remaining > 0
-          ? `\n… +${remaining} more line${remaining === 1 ? "" : "s"}`
-          : body.length < fullBody.length
-            ? "\n… (truncated)"
-            : "";
-      body += suffix;
+      const suffixParts: string[] = [];
+      if (remaining > 0) {
+        suffixParts.push(`+${remaining} more line${remaining === 1 ? "" : "s"}`);
+      }
+      if (charTruncated) {
+        suffixParts.push("truncated");
+      }
+      if (suffixParts.length > 0) {
+        body += `\n… ${suffixParts.join(", ")}`;
+      }
     }
 
     return {
