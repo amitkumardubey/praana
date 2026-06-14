@@ -21,8 +21,8 @@ function truncate(text: string, max: number): string {
 
 interface Segment {
   text: string;
-  color: string;
-  dim?: boolean;
+  /** Override the default mono colour (used only for the ctx threshold warning). */
+  color?: string;
 }
 
 export function StatusBarView({
@@ -49,27 +49,28 @@ export function StatusBarView({
 
   /* Line 1 — identity / config: where you are and what you're running. */
   const identity: Segment[] = [
-    { text: `📁 ${repoStr}`, color: PALETTE.success },
-    { text: `📦 ${modelLabel}`, color: PALETTE.assistant },
+    { text: repoStr },
+    { text: modelLabel },
   ];
 
   /* Line 2 — live session state. Flags appear only when they deviate
-     from the quiet default, so this line stays short. */
+     from the quiet default, so this line stays short. The ctx segment keeps
+     its threshold colour as a fill-up warning; everything else is mono. */
   const live: Segment[] = [
     {
-      text: `🧠 ${ctxStr}`,
-      color: pct > 90 ? PALETTE.error : pct > 70 ? PALETTE.warning : PALETTE.muted,
+      text: `ctx ${ctxStr}`,
+      color: pct > 90 ? PALETTE.error : pct > 70 ? PALETTE.warning : undefined,
     },
   ];
-  if (status.thinking) live.push({ text: "💭 think", color: PALETTE.thinking });
+  if (status.thinking) live.push({ text: "think" });
   if (status.incognito) {
-    live.push({ text: "🕶 incognito", color: PALETTE.warning });
+    live.push({ text: "incognito" });
   } else if (!status.memoryEnabled) {
-    live.push({ text: "💾 mem off", color: PALETTE.muted, dim: true });
+    live.push({ text: "mem off" });
   }
-  if (skills.length > 0) live.push({ text: `🛠️  ${skills.length}`, color: PALETTE.tool });
-  if (stateStr) live.push({ text: `◇ ${stateStr}`, color: PALETTE.muted, dim: true });
-  if (status.debug) live.push({ text: "🐞 debug", color: PALETTE.warning });
+  if (skills.length > 0) live.push({ text: `skills ${skills.length}` });
+  if (stateStr) live.push({ text: `state ${stateStr}` });
+  if (status.debug) live.push({ text: "debug" });
 
   return (
     <Box flexDirection="column">
@@ -77,7 +78,7 @@ export function StatusBarView({
       <SegmentRow segments={live} />
       {taskLabel ? (
         <Box>
-          <Text color={PALETTE.muted} dimColor>{`🎯 ${taskLabel}`}</Text>
+          <Text color={PALETTE.muted} dimColor>{`task ${taskLabel}`}</Text>
         </Box>
       ) : null}
     </Box>
@@ -90,8 +91,8 @@ function SegmentRow({ segments }: { segments: Segment[] }) {
     <Box>
       {segments.map((seg, i) => (
         <React.Fragment key={i}>
-          {i > 0 ? <Text dimColor>{" · "}</Text> : null}
-          <Text color={seg.color} dimColor={seg.dim}>{seg.text}</Text>
+          {i > 0 ? <Text color={PALETTE.muted} dimColor>{" · "}</Text> : null}
+          <Text color={seg.color ?? PALETTE.muted} dimColor>{seg.text}</Text>
         </React.Fragment>
       ))}
     </Box>
