@@ -59,6 +59,7 @@ describe("executeSlashCommand", () => {
       modelId: "gpt-4o",
       switchedProvider: false,
       source: "model-only",
+      known: true,
     });
 
     const session = {
@@ -98,6 +99,7 @@ describe("executeSlashCommand", () => {
       modelId: "gpt-4o",
       switchedProvider: true,
       source: "native-catalog",
+      known: true,
     });
 
     const session = {
@@ -131,6 +133,7 @@ describe("executeSlashCommand", () => {
       modelId: "claude-sonnet-4-20250514",
       switchedProvider: true,
       source: "native-catalog",
+      known: true,
     });
     vi.mocked(getProviderConfigurationError).mockReturnValue(
       "Missing required env var: ANTHROPIC_API_KEY",
@@ -161,5 +164,39 @@ describe("executeSlashCommand", () => {
     expect(result.lines[0]).toContain("ANTHROPIC_API_KEY");
     expect(setProviderOverride).not.toHaveBeenCalled();
     expect(setModelOverride).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown model ids without switching or faking context window", async () => {
+    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+      provider: "openrouter",
+      modelId: "totally/fake-model",
+      switchedProvider: false,
+      source: "openrouter-fallback",
+      known: false,
+    });
+
+    const setModel = vi.fn();
+    const setModelOverride = vi.fn();
+    const refreshModelContextWindow = vi.fn();
+
+    const session = {
+      getEffectiveProvider: () => "openrouter",
+      setProviderOverride: vi.fn(),
+      setModelOverride,
+      refreshModelContextWindow,
+      eventLog: { append: vi.fn() },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/model totally/fake-model", session, {
+      setModel,
+      setThinking: vi.fn(),
+      getThinking: () => true,
+    });
+
+    expect(result.action).toBe("none");
+    expect(result.lines[0]).toBe("Unknown model ID: totally/fake-model");
+    expect(setModel).not.toHaveBeenCalled();
+    expect(setModelOverride).not.toHaveBeenCalled();
+    expect(refreshModelContextWindow).not.toHaveBeenCalled();
   });
 });

@@ -16,6 +16,8 @@ export interface ResolvedModelSpecifier {
   modelId: string;
   switchedProvider: boolean;
   source: ResolveSource;
+  /** True when the model id exists in pi-ai or the live OpenRouter catalog. */
+  known: boolean;
 }
 
 function isPiAiProviderName(name: string): boolean {
@@ -45,6 +47,7 @@ function resolveNativeCatalog(
       modelId: suffix,
       switchedProvider: prefix !== currentProvider,
       source: "native-catalog",
+      known: true,
     };
   }
   if (!isInPiAiCatalog(prefix, suffix)) {
@@ -55,6 +58,7 @@ function resolveNativeCatalog(
     modelId: suffix,
     switchedProvider: prefix !== currentProvider,
     source: "native-catalog",
+    known: true,
   };
 }
 
@@ -69,6 +73,7 @@ function resolveOpenRouter(
     modelId,
     switchedProvider: currentProvider !== "openrouter",
     source,
+    known: source === "openrouter-catalog",
   };
 }
 
@@ -83,6 +88,7 @@ export function resolveModelSpecifierSync(
       modelId: trimmed,
       switchedProvider: false,
       source: "model-only",
+      known: false,
     };
   }
 
@@ -99,6 +105,7 @@ export function resolveModelSpecifierSync(
           modelId: suffix,
           switchedProvider: currentProvider !== "openrouter",
           source: "native-catalog",
+          known: true,
         };
       }
       return resolveOpenRouter(suffix, currentProvider, "openrouter-fallback");
@@ -119,7 +126,13 @@ export function resolveModelSpecifierSync(
     modelId: trimmed,
     switchedProvider: false,
     source: "model-only",
+    known: knownModelOnly(currentProvider, trimmed),
   };
+}
+
+function knownModelOnly(provider: string, modelId: string): boolean {
+  if (isPraanaOnlyProvider(provider)) return true;
+  return isInPiAiCatalog(provider, modelId);
 }
 
 export async function resolveModelSpecifier(
@@ -127,37 +140,20 @@ export async function resolveModelSpecifier(
   currentProvider: string,
 ): Promise<ResolvedModelSpecifier> {
   const sync = resolveModelSpecifierSync(spec, currentProvider);
+  if (sync.known) return sync;
 
-  if (sync.provider === "openrouter" || sync.source === "openrouter-fallback") {
-    const canonical = await findOpenRouterCatalogModelId(sync.modelId);
-    if (canonical) {
-      return {
-        provider: "openrouter",
-        modelId: canonical,
-        switchedProvider: currentProvider !== "openrouter",
-        source: "openrouter-catalog",
-      };
-    }
+  const canonical = await findOpenRouterCatalogModelId(sync.modelId);
+  if (canonical) {
     return {
-      ...sync,
       provider: "openrouter",
-      modelId: stripOpenRouterProviderPrefix(sync.modelId),
-      switchedProvider: sync.switchedProvider || currentProvider !== "openrouter",
+      modelId: canonical,
+      switchedProvider: sync.provider !== "openrouter" || sync.switchedProvider,
+      source: "openrouter-catalog",
+      known: true,
     };
   }
 
-  if (sync.source === "model-only" && currentProvider === "openrouter") {
-    const canonical = await findOpenRouterCatalogModelId(sync.modelId);
-    if (canonical) {
-      return {
-        ...sync,
-        modelId: canonical,
-        source: "openrouter-catalog",
-      };
-    }
-  }
-
-  return sync;
+  return { ...sync, known: false };
 }
 
 export function isProviderConfigured(provider: string): boolean {

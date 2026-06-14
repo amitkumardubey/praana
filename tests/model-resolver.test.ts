@@ -12,6 +12,7 @@ describe("resolveModelSpecifierSync", () => {
       modelId: "gpt-4o",
       switchedProvider: true,
       source: "native-catalog",
+      known: true,
     });
   });
 
@@ -33,6 +34,7 @@ describe("resolveModelSpecifierSync", () => {
       modelId: "gpt-4o",
       switchedProvider: false,
       source: "model-only",
+      known: true,
     });
   });
 
@@ -54,6 +56,7 @@ describe("resolveModelSpecifierSync", () => {
       modelId: "moonshotai/kimi-k2.7-code",
       switchedProvider: false,
       source: "openrouter-fallback",
+      known: false,
     });
   });
 
@@ -67,6 +70,7 @@ describe("resolveModelSpecifierSync", () => {
       modelId: "moonshotai/kimi-k2.7-code",
       switchedProvider: true,
       source: "openrouter-fallback",
+      known: false,
     });
   });
 

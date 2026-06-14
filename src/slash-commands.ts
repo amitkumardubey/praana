@@ -234,6 +234,11 @@ export async function executeSlashCommand(
       const trimmed = model.trim();
       const resolved = await resolveModelSpecifier(trimmed, session.getEffectiveProvider());
 
+      if (!resolved.known) {
+        lines.push(`Unknown model ID: ${trimmed}`);
+        return result("none", "toast");
+      }
+
       if (resolved.switchedProvider) {
         const keyError = getProviderConfigurationError(resolved.provider);
         if (keyError) {
