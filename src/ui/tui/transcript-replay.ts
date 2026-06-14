@@ -2,6 +2,7 @@ import type { Event } from "../../types.js";
 import type { TranscriptEntry } from "./reducer.js";
 import {
   formatToolDisplay,
+  formatShellOutputForDisplay,
   summarizeResultForDisplay,
 } from "./tool-display.js";
 import { formatToolResultRawText } from "../../tool-summary.js";
@@ -41,7 +42,9 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
       case "tool_result": {
         const toolName = String(ev.payload.tool ?? "tool");
         const raw = formatToolResultRawText(ev.payload.result);
-        const summary = summarizeResultForDisplay(raw);
+        const shellDisplay =
+          toolName === "shell" ? formatShellOutputForDisplay(raw) : null;
+        const summary = shellDisplay?.summary ?? summarizeResultForDisplay(raw);
         const isError =
           typeof ev.payload.result === "object" &&
           ev.payload.result !== null &&
@@ -57,7 +60,8 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
               ...entry,
               resultSummary: summary,
               resultText: raw,
-              isError: isError ?? false,
+              resultBody: shellDisplay?.body ?? undefined,
+              isError: isError ?? shellDisplay?.isError ?? false,
             };
             break;
           }

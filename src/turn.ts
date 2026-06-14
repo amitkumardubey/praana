@@ -111,6 +111,8 @@ export async function runTurn(
     editConfirm: session.config.edit?.confirm,
     getCurrentTurn: () => session.getTurnCount(),
     searchCode: session.config.search_code,
+    getAbortSignal: () => options?.signal,
+    shellLiveStream: s.shellLiveStream !== false,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -490,8 +492,11 @@ export async function runTurn(
         payload: { tool: tc.toolName, result },
       });
 
-      // Notify UI sink of tool result for distinct rendering (e.g. TUI)
-      s.onToolResult?.(tc.toolName, promptResultText, isError);
+      // Notify UI sink of tool result for distinct rendering (e.g. TUI).
+      // Shell uses raw result so TUI shows stdout/stderr even when context engine artifacts.
+      const uiResultText =
+        tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
+      s.onToolResult?.(tc.toolName, uiResultText, isError);
 
       if (options?.signal?.aborted) {
         interrupted = true;

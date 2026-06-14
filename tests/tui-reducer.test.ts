@@ -128,6 +128,30 @@ describe("transcriptReducer", () => {
     expect(state.live?.role).toBe("assistant");
   });
 
+  it("attaches shell result body to the matching tool entry", () => {
+    let state = createInitialTranscriptState();
+    state = transcriptReducer(state, {
+      type: "tool_call",
+      toolName: "shell",
+      args: { command: "echo hello" },
+    });
+    state = transcriptReducer(state, {
+      type: "tool_result",
+      toolName: "shell",
+      resultText: JSON.stringify({
+        ok: true,
+        stdout: "hello\nworld\n",
+        stderr: "",
+        exitCode: 0,
+      }),
+    });
+    expect(state.completed).toHaveLength(1);
+    expect(state.completed[0]?.role).toBe("tool");
+    expect(state.completed[0]?.toolName).toBe("shell");
+    expect(state.completed[0]?.resultSummary).toContain("exit 0");
+    expect(state.completed[0]?.resultBody).toBe("hello\nworld");
+  });
+
   it("falls back to orphan tool_result when no matching tool call exists", () => {
     const state = transcriptReducer(createInitialTranscriptState(), {
       type: "tool_result",

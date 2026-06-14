@@ -22,6 +22,7 @@ export interface ToolRegistryContext {
   editConfirm?: boolean;
   getCurrentTurn?: () => number;
   searchCode?: { rg_path?: string };
+  shellLiveStream?: boolean;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -54,6 +55,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     getAbortSignal: ctx.getAbortSignal,
     sandbox: ctx.sandbox,
     editConfirm: ctx.editConfirm,
+    shellLiveStream: ctx.shellLiveStream,
   });
   const searchCodeTools = createSearchCodeTool({
     cwd: ctx.cwd,

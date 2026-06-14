@@ -4,6 +4,7 @@ import {
   formatTurnFooter,
   formatTurnStatsSuffix,
   formatTuiBootSummary,
+  formatShellOutputForDisplay,
   needsTopMargin,
   summarizeResultForDisplay,
 } from "../src/ui/tui/tool-display.js";
@@ -78,6 +79,46 @@ describe("summarizeResultForDisplay", () => {
     );
     expect(summary).toContain("artifact");
     expect(summary).toContain("13250");
+  });
+});
+
+describe("formatShellOutputForDisplay", () => {
+  it("parses shell json and builds body from stdout", () => {
+    const display = formatShellOutputForDisplay(
+      JSON.stringify({ ok: true, stdout: "line1\nline2\n", stderr: "", exitCode: 0 })
+    );
+    expect(display).not.toBeNull();
+    expect(display!.summary).toContain("exit 0");
+    expect(display!.body).toBe("line1\nline2");
+    expect(display!.isError).toBe(false);
+  });
+
+  it("includes stderr with prefix", () => {
+    const display = formatShellOutputForDisplay(
+      JSON.stringify({ ok: true, stdout: "", stderr: "warn\n", exitCode: 0 })
+    );
+    expect(display!.body).toContain("[stderr] warn");
+    expect(display!.isError).toBe(true);
+  });
+
+  it("truncates long output", () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n");
+    const display = formatShellOutputForDisplay(
+      JSON.stringify({ ok: true, stdout: lines, stderr: "", exitCode: 0 })
+    );
+    expect(display!.body).toContain("line 1");
+    expect(display!.body).toContain("+20 more lines");
+  });
+
+  it("returns null for non-shell json", () => {
+    expect(formatShellOutputForDisplay(JSON.stringify({ ok: true, content: "x" }))).toBeNull();
+  });
+
+  it("strips ansi escape codes", () => {
+    const display = formatShellOutputForDisplay(
+      JSON.stringify({ ok: true, stdout: "\x1b[31mred\x1b[0m", stderr: "", exitCode: 0 })
+    );
+    expect(display!.body).toBe("red");
   });
 });
 
