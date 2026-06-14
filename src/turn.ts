@@ -1,4 +1,4 @@
-import { stream as piStream, type Message, clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { stream as piStream, type Message, clampThinkingLevel } from "@earendil-works/pi-ai";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -32,6 +32,8 @@ import {
 import { printDebug, printMemoryBanner } from "./ui.js";
 
 /** Default reasoning level for models that require or support chain-of-thought. */
+const DEFAULT_REASONING_LEVEL = "medium";
+
 function defaultStreamReasoning(
   model: Record<string, unknown>,
   modelId: string,
@@ -41,11 +43,9 @@ function defaultStreamReasoning(
     !!model.reasoning || inferReasoningModel(provider, modelId);
   if (!needsReasoning) return undefined;
   try {
-    const levels = getSupportedThinkingLevels(model as never);
-    const pick = levels.find((level) => level !== "off") ?? "low";
-    return clampThinkingLevel(model as never, pick);
+    return clampThinkingLevel(model as never, DEFAULT_REASONING_LEVEL);
   } catch {
-    return "low";
+    return DEFAULT_REASONING_LEVEL;
   }
 }
 
@@ -320,7 +320,8 @@ export async function runTurn(
     const modelOptions = {
       ...((model as any).__piOptions ?? {}),
       ...(options?.signal ? { signal: options.signal } : {}),
-      ...(streamReasoning ? { reasoning: streamReasoning } : {}),
+      // pi-ai `stream()` expects `reasoningEffort`; `reasoning` is only for `streamSimple()`.
+      ...(streamReasoning ? { reasoningEffort: streamReasoning } : {}),
     };
     const stream = piStream(
       model as any,

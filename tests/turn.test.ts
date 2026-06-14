@@ -5,6 +5,8 @@ import { z } from "zod";
 
 vi.mock("@earendil-works/pi-ai", () => ({
   stream: vi.fn(),
+  clampThinkingLevel: vi.fn((_model: unknown, level: string) => level),
+  getSupportedThinkingLevels: vi.fn(() => ["off", "low", "medium", "high"]),
 }));
 
 vi.mock("zod-to-json-schema", () => ({
@@ -130,7 +132,7 @@ import { stream as piStream } from "@earendil-works/pi-ai";
 import { compileClassicWithMetrics } from "../src/compile-classic.js";
 import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
-import { createProvider, resolveModel } from "../src/llm.js";
+import { createProvider, resolveModel, inferReasoningModel } from "../src/llm.js";
 
 import {
   runTurn,
@@ -599,6 +601,27 @@ describe("runTurn", () => {
     await runTurn(session, "hello", "gpt-4");
 
     expect(resolveModel).toHaveBeenCalledWith("gpt-4");
+  });
+
+  it("passes reasoningEffort (not reasoning) to piStream for reasoning models", async () => {
+    vi.mocked(inferReasoningModel).mockReturnValue(true);
+    vi.mocked(createProvider).mockReturnValue(
+      vi.fn(() => ({ reasoning: true, __piOptions: { apiKey: "test-key" } })) as any,
+    );
+
+    const session = makeMockSession({
+      getEffectiveLlmConfig: () => ({
+        provider: "openrouter",
+        model: "moonshotai/kimi-k2.7-code",
+      }),
+    });
+
+    await runTurn(session, "hello", "moonshotai/kimi-k2.7-code");
+
+    expect(piStream).toHaveBeenCalled();
+    const options = vi.mocked(piStream).mock.calls.at(-1)?.[2] as Record<string, unknown>;
+    expect(options).toHaveProperty("reasoningEffort", "medium");
+    expect(options).not.toHaveProperty("reasoning");
   });
 
   it("handles an empty LLM response with a fallback message", async () => {

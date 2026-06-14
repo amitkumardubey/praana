@@ -30,6 +30,21 @@ export interface StatusBarInput {
   agentsContextLoaded: boolean;
 }
 
+/** Split an active model label into provider + short model name for the status bar. */
+export function formatModelStatusLabel(model: string): {
+  provider: string | null;
+  modelShort: string;
+} {
+  const parts = model.split("/");
+  if (parts.length >= 2) {
+    return {
+      provider: parts[0],
+      modelShort: parts[parts.length - 1],
+    };
+  }
+  return { provider: null, modelShort: model };
+}
+
 /** Format token counts for compact display (e.g. 18400 → "18.4k"). */
 export function formatTokenCount(tokens: number): string {
   if (tokens < 1000) return String(tokens);
@@ -167,7 +182,8 @@ export function renderStatusBar(input: StatusBarInput): void {
 
 /** One-line emoji status bar — compact with pipe separators. */
 export function formatEmojiStatusLine(input: StatusBarInput): string {
-  const modelShort = input.model.split("/").pop() ?? input.model;
+  const { provider, modelShort } = formatModelStatusLabel(input.model);
+  const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
   const pct = input.contextWindowTokens > 0
     ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
     : 0;
@@ -182,7 +198,7 @@ export function formatEmojiStatusLine(input: StatusBarInput): string {
     stateStr = parts.join("/");
   }
   const parts = [
-    chalk.cyan(`📦 model: ${input.model}`),
+    chalk.cyan(`📦 model: ${modelLabel}`),
     pct > 90 ? chalk.red(`🧠 ctx: ${pct}%`) : pct > 70 ? chalk.yellow(`🧠 ctx: ${pct}%`) : chalk.dim(`🧠 ctx: ${pct}%`),
     memStr === "on" ? chalk.green(`💾 mem: ${memStr}`) : chalk.dim(`💾 mem: ${memStr}`),
   ];
