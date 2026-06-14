@@ -3,6 +3,7 @@ import type { MemoryBannerStats } from "../../ui-events.js";
 import {
   formatToolDisplay,
   formatTurnFooter,
+  formatShellOutputForDisplay,
   summarizeResultForDisplay,
 } from "./tool-display.js";
 
@@ -25,6 +26,8 @@ export interface TranscriptEntry {
   isError?: boolean;
   /** Raw result text for error detail */
   resultText?: string;
+  /** Multiline shell output body for TUI display */
+  resultBody?: string;
   /** Display icon for tool rows */
   toolIcon?: string;
   /** Human-readable tool label */
@@ -253,7 +256,12 @@ export function transcriptReducer(
     }
 
     case "tool_result": {
-      const summary = summarizeResultForDisplay(action.resultText);
+      const shellDisplay =
+        action.toolName === "shell"
+          ? formatShellOutputForDisplay(action.resultText)
+          : null;
+      const summary =
+        shellDisplay?.summary ?? summarizeResultForDisplay(action.resultText);
       const completed = [...state.completed];
       for (let i = completed.length - 1; i >= 0; i--) {
         const entry = completed[i];
@@ -264,9 +272,10 @@ export function transcriptReducer(
         ) {
           completed[i] = {
             ...entry,
-            resultSummary: summary,
+            resultSummary: shellDisplay?.summary ?? summary,
             resultText: action.resultText,
-            isError: action.isError ?? false,
+            resultBody: shellDisplay?.body ?? undefined,
+            isError: action.isError || (shellDisplay?.isError ?? false),
           };
           return { ...state, completed };
         }
@@ -275,9 +284,10 @@ export function transcriptReducer(
         role: "tool_result",
         toolName: action.toolName,
         text: action.resultText,
-        resultSummary: summary,
+        resultSummary: shellDisplay?.summary ?? summary,
         resultText: action.resultText,
-        isError: action.isError ?? false,
+        resultBody: shellDisplay?.body ?? undefined,
+        isError: action.isError || (shellDisplay?.isError ?? false),
       });
     }
 

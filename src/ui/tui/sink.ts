@@ -45,6 +45,7 @@ export function createTuiTurnSink(
   let pendingStats: MemoryBannerStats | null = null;
 
   return {
+    shellLiveStream: false,
     onTextDelta: (delta) => text.onDelta(delta),
 
     onThinkingDelta: (delta) => {

@@ -31,7 +31,45 @@ describe("buildTranscriptFromEvents", () => {
       "assistant",
     ]);
     expect(entries[1]?.resultSummary).toContain("exit 0");
+    expect(entries[1]?.resultBody).toBe("a");
     expect(entries[1]?.toolIcon).toBe("$");
+  });
+
+  it("replays failed shell commands with error styling", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("tool_call", { tool: "shell", args: { command: "false" } }),
+      ev("tool_result", {
+        tool: "shell",
+        result: { ok: false, stdout: "", stderr: "failed\n", exitCode: 1 },
+      }),
+    ]);
+    expect(entries[0]?.isError).toBe(true);
+    expect(entries[0]?.resultBody).toContain("[stderr] failed");
+  });
+});
+
+describe("estimateEntryLines", () => {
+  it("counts shell result body lines in scroll budget", () => {
+    const entry = {
+      id: "e-1",
+      role: "tool" as const,
+      text: "shell",
+      group: 1,
+      resultSummary: "exit 0 · 3 line(s)",
+      resultBody: "a\nb\nc",
+    };
+    expect(estimateEntryLines(entry)).toBe(5);
+  });
+
+  it("keeps minimum tool line budget when only summary is present", () => {
+    const entry = {
+      id: "e-2",
+      role: "tool" as const,
+      text: "shell",
+      group: 1,
+      resultSummary: "exit 0 · 0 line(s)",
+    };
+    expect(estimateEntryLines(entry)).toBe(4);
   });
 });
 

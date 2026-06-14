@@ -1,5 +1,6 @@
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
+import stripAnsi from "strip-ansi";
 function fmtToken(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
@@ -36,15 +37,17 @@ export function summarizeResultForDisplay(text: string): string {
 
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (typeof parsed.stdout === "string" || typeof parsed.stderr === "string") {
+      const stdout = stripAnsi(String(parsed.stdout ?? "")).trimEnd();
+      const stderr = stripAnsi(String(parsed.stderr ?? "")).trimEnd();
+      const primary = stdout || stderr;
+      const lineCount = primary ? primary.split("\n").filter(Boolean).length : 0;
+      const preview = primary.split("\n")[0]?.slice(0, 56) ?? "";
+      const suffix = preview ? ` — ${preview}${primary.length > 56 ? "…" : ""}` : "";
+      return `exit ${parsed.exitCode ?? 0} · ${lineCount} line(s)${suffix}`;
+    }
     if (parsed.ok === false) {
       return `error: ${String(parsed.error ?? "failed").slice(0, 72)}`;
-    }
-    if (typeof parsed.stdout === "string") {
-      const stdout = parsed.stdout.trim();
-      const lineCount = stdout ? stdout.split("\n").filter(Boolean).length : 0;
-      const preview = stdout.split("\n")[0]?.slice(0, 56) ?? "";
-      const suffix = preview ? ` — ${preview}${stdout.length > 56 ? "…" : ""}` : "";
-      return `exit ${parsed.exitCode ?? 0} · ${lineCount} line(s)${suffix}`;
     }
     if (typeof parsed.content === "string") {
       const content = parsed.content;
@@ -65,6 +68,74 @@ export function summarizeResultForDisplay(text: string): string {
   const previewText = preview.length > 72 ? `${preview.slice(0, 71)}…` : preview;
   const size = lines > 1 ? `${lines} lines, ${chars} chars` : `${chars} chars`;
   return `${size} — ${previewText}`;
+}
+
+const SHELL_OUTPUT_MAX_LINES = 30;
+const SHELL_OUTPUT_MAX_CHARS = 4096;
+
+export interface ShellOutputDisplay {
+  summary: string;
+  body: string | null;
+  isError: boolean;
+}
+
+/** Format shell tool JSON result for TUI transcript display. */
+export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | null {
+  if (!text) return null;
+
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (typeof parsed.stdout !== "string" && typeof parsed.stderr !== "string") {
+      return null;
+    }
+
+    const stdout = stripAnsi(String(parsed.stdout ?? "")).trimEnd();
+    const stderr = stripAnsi(String(parsed.stderr ?? "")).trimEnd();
+    const exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : 0;
+    const summary = summarizeResultForDisplay(text);
+
+    const bodyParts: string[] = [];
+    if (stdout) bodyParts.push(stdout);
+    if (stderr) {
+      bodyParts.push(stderr.split("\n").map((line) => `[stderr] ${line}`).join("\n"));
+    }
+
+    const fullBody = bodyParts.join("\n");
+    if (!fullBody) {
+      return { summary, body: null, isError: exitCode !== 0 };
+    }
+
+    const lines = fullBody.split("\n");
+    let body = fullBody;
+    if (lines.length > SHELL_OUTPUT_MAX_LINES || body.length > SHELL_OUTPUT_MAX_CHARS) {
+      const truncatedLines = lines.slice(0, SHELL_OUTPUT_MAX_LINES);
+      const joined = truncatedLines.join("\n");
+      body = joined;
+      const charTruncated = body.length > SHELL_OUTPUT_MAX_CHARS;
+      if (charTruncated) {
+        body = body.slice(0, SHELL_OUTPUT_MAX_CHARS);
+      }
+      const remaining = lines.length - truncatedLines.length;
+      const suffixParts: string[] = [];
+      if (remaining > 0) {
+        suffixParts.push(`+${remaining} more line${remaining === 1 ? "" : "s"}`);
+      }
+      if (charTruncated) {
+        suffixParts.push("truncated");
+      }
+      if (suffixParts.length > 0) {
+        body += `\n… ${suffixParts.join(", ")}`;
+      }
+    }
+
+    return {
+      summary,
+      body,
+      isError: exitCode !== 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function formatPath(path: unknown): string {

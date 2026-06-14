@@ -2,6 +2,7 @@ import type { Event } from "../../types.js";
 import type { TranscriptEntry } from "./reducer.js";
 import {
   formatToolDisplay,
+  formatShellOutputForDisplay,
   summarizeResultForDisplay,
 } from "./tool-display.js";
 import { formatToolResultRawText } from "../../tool-summary.js";
@@ -41,7 +42,9 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
       case "tool_result": {
         const toolName = String(ev.payload.tool ?? "tool");
         const raw = formatToolResultRawText(ev.payload.result);
-        const summary = summarizeResultForDisplay(raw);
+        const shellDisplay =
+          toolName === "shell" ? formatShellOutputForDisplay(raw) : null;
+        const summary = shellDisplay?.summary ?? summarizeResultForDisplay(raw);
         const isError =
           typeof ev.payload.result === "object" &&
           ev.payload.result !== null &&
@@ -57,7 +60,8 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
               ...entry,
               resultSummary: summary,
               resultText: raw,
-              isError: isError ?? false,
+              resultBody: shellDisplay?.body ?? undefined,
+              isError: isError || (shellDisplay?.isError ?? false),
             };
             break;
           }
@@ -89,8 +93,16 @@ export function estimateEntryLines(
       return Math.max(4, lines + 3);
     case "assistant":
       return Math.max(2, lines + Math.ceil(entry.text.length / wrapCols));
-    case "tool":
-      return entry.resultSummary ? 4 : 2;
+    case "tool": {
+      const summaryLines = entry.resultSummary ? 2 : 0;
+      const bodyLines = entry.resultBody
+        ? entry.resultBody.split("\n").length
+        : 0;
+      const contentLines = summaryLines + bodyLines;
+      return entry.resultSummary
+        ? Math.max(4, contentLines)
+        : Math.max(2, contentLines);
+    }
     case "thinking":
       return 3;
     case "turn_footer":

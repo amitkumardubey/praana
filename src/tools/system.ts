@@ -41,10 +41,11 @@ export interface SystemToolContext {
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
+  shellLiveStream?: boolean;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -169,11 +170,16 @@ export function createSystemTools(ctx: SystemToolContext) {
             // Stream raw output to terminal so long-running commands show progress.
             // ANSI escape sequences from child processes pass through unmodified —
             // this matches standard terminal multiplexer behavior (script(1), tee).
-            process.stdout.write(chunk);
+            // In TUI mode shellLiveStream is false — output is buffered and shown in transcript.
+            if (shellLiveStream !== false) {
+              process.stdout.write(chunk);
+            }
             if (stdout.length < maxBuf) stdout += chunk.toString();
           });
           child.stderr?.on("data", (chunk: Buffer) => {
-            process.stderr.write(chunk);
+            if (shellLiveStream !== false) {
+              process.stderr.write(chunk);
+            }
             if (stderr.length < maxBuf) stderr += chunk.toString();
           });
 

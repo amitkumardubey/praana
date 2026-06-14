@@ -13,6 +13,8 @@ export type MemoryBannerStats = ReturnType<typeof computeMemoryStats>;
 
 /** UI sink for turn execution — replaces direct stdout/stderr writes when provided. */
 export interface TurnUiSink {
+  /** When false, shell tool buffers output only (no raw terminal writes). Default: true. */
+  shellLiveStream?: boolean;
   onTextDelta?(delta: string): void;
   onThinkingDelta?(delta: string): void;
   onToolCallsStart?(): void;
@@ -46,6 +48,7 @@ export function createDefaultTurnSink(options?: {
   onToolCallsStart?: () => void;
 }): TurnUiSink {
   return {
+    shellLiveStream: true,
     onTextDelta: (delta) => {
       if (options?.onTextDelta) options.onTextDelta(delta);
       else process.stdout.write(delta);

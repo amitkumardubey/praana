@@ -70,7 +70,11 @@ export const TranscriptLine = React.memo(function TranscriptLine({
           marginTop={marginTop}
         />
         {entry.resultSummary ? (
-          <ToolResultLine summary={entry.resultSummary} isError={entry.isError} />
+          <ToolResultLine
+            summary={entry.resultSummary}
+            body={entry.toolName === "shell" ? (entry.resultBody ?? null) : null}
+            isError={entry.isError}
+          />
         ) : null}
       </Box>
     );

@@ -1105,6 +1105,48 @@ describe('System Tools (createSystemTools)', () => {
         process.stderr.write = originalWrite;
       }
     });
+
+    it('should not stream stdout when shellLiveStream is false', async () => {
+      const written: string[] = [];
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk: any) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      const bufferedTools = createSystemTools({
+        cwd: testDir,
+        shellLiveStream: false,
+      });
+      try {
+        const result = await bufferedTools.shell.execute({ command: 'echo buffered' });
+        expect(result.ok).toBe(true);
+        expect((result as any).stdout.trim()).toBe('buffered');
+        expect(written.some((s) => s.includes('buffered'))).toBe(false);
+      } finally {
+        process.stdout.write = originalWrite;
+      }
+    });
+
+    it('should not stream stderr when shellLiveStream is false', async () => {
+      const written: string[] = [];
+      const originalWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: any) => {
+        written.push(String(chunk));
+        return true;
+      }) as typeof process.stderr.write;
+      const bufferedTools = createSystemTools({
+        cwd: testDir,
+        shellLiveStream: false,
+      });
+      try {
+        const result = await bufferedTools.shell.execute({ command: 'echo errbuf >&2' });
+        expect(result.ok).toBe(true);
+        expect((result as any).stderr.trim()).toBe('errbuf');
+        expect(written.some((s) => s.includes('errbuf'))).toBe(false);
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+    });
   });
 
   describe('read_and_summarize', () => {
