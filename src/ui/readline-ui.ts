@@ -2,7 +2,7 @@ import * as readline from "node:readline";
 import chalk from "chalk";
 import type { AppController, StartupInfo } from "../app-controller.js";
 import { TurnAbortedError, EscInterruptListener } from "../turn-control.js";
-import { formatEmojiStatusLine } from "../status-bar.js";
+import { formatStatusLine } from "../status-bar.js";
 import { printSessionBanner, printSessionEndSummary } from "../app-banner.js";
 import { createDefaultTurnSink } from "../ui-events.js";
 import {
@@ -35,7 +35,7 @@ export async function runReadlineUi(
   });
 
   const refreshStatusBar = () => {
-    const line = formatEmojiStatusLine(controller.getStatusBarInput());
+    const line = formatStatusLine(controller.getStatusBarInput());
     if (process.stderr.isTTY) {
       process.stderr.write(line + "\n");
     } else {

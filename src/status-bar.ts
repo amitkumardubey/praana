@@ -194,14 +194,18 @@ export function renderStatusBar(input: StatusBarInput): void {
   }
 }
 
-/** One-line emoji status bar — compact with pipe separators. */
-export function formatEmojiStatusLine(input: StatusBarInput): string {
+/** One-line status bar — mono colour, text labels, ` · ` separators.
+ * Mirrors the TUI footer (StatusBarView): the only colour is the ctx
+ * threshold warning; everything else is dimmed. */
+export function formatStatusLine(input: StatusBarInput): string {
   const { provider, modelShort } = formatModelStatusLabel(input.model);
   const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
   const pct = input.contextWindowTokens > 0
     ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
     : 0;
-  const memStr = input.incognito ? "incognito" : input.memoryEnabled ? "on" : "off";
+  const ctxStr = input.contextWindowTokens > 0
+    ? `${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
+    : `${pct}%`;
   const skillsCount = input.skills.length;
   let stateStr = "";
   if (input.memoryStats && (input.memoryStats.active > 0 || input.memoryStats.soft > 0 || input.memoryStats.hard > 0)) {
@@ -209,24 +213,35 @@ export function formatEmojiStatusLine(input: StatusBarInput): string {
     if (input.memoryStats.active > 0) parts.push(`${input.memoryStats.active}A`);
     if (input.memoryStats.soft > 0) parts.push(`${input.memoryStats.soft}S`);
     if (input.memoryStats.hard > 0) parts.push(`${input.memoryStats.hard}H`);
-    stateStr = parts.join("/");
+    stateStr = parts.join("·");
   }
-  const parts = [
-    chalk.cyan(`📦 model: ${modelLabel}`),
-    pct > 90 ? chalk.red(`🧠 ctx: ${pct}%`) : pct > 70 ? chalk.yellow(`🧠 ctx: ${pct}%`) : chalk.dim(`🧠 ctx: ${pct}%`),
-    memStr === "on" ? chalk.green(`💾 mem: ${memStr}`) : chalk.dim(`💾 mem: ${memStr}`),
-  ];
+
   const repoStr = formatRepoLabel(input.repoPath, input.cwd);
-  parts.push(chalk.blue(`📁 ${input.branch ? `${repoStr} · ${input.branch}` : repoStr}`));
-  if (skillsCount > 0) {
-    parts.push(chalk.magenta(`🛠️  ${skillsCount}sk${stateStr ? ` [${stateStr}]` : ""}`));
-  } else if (stateStr) {
-    parts.push(chalk.magenta(`🛠️  [${stateStr}]`));
+  const repoLabel = input.branch ? `${repoStr} · ${input.branch}` : repoStr;
+
+  // ctx keeps its threshold colour as a fill-up warning; everything else mono.
+  const ctxSeg = pct > 90
+    ? chalk.red(`ctx ${ctxStr}`)
+    : pct > 70
+      ? chalk.yellow(`ctx ${ctxStr}`)
+      : chalk.dim(`ctx ${ctxStr}`);
+
+  const parts = [
+    chalk.dim(repoLabel),
+    chalk.dim(modelLabel),
+    ctxSeg,
+  ];
+  if (input.thinking) parts.push(chalk.dim("think"));
+  if (input.incognito) {
+    parts.push(chalk.dim("incognito"));
+  } else if (!input.memoryEnabled) {
+    parts.push(chalk.dim("mem off"));
   }
-  if (input.currentTask) {
-    parts.push(chalk.dim(`🎯 ${input.currentTask}`));
-  }
-  return parts.join(chalk.dim("  |  "));
+  if (skillsCount > 0) parts.push(chalk.dim(`skills ${skillsCount}`));
+  if (stateStr) parts.push(chalk.dim(`state ${stateStr}`));
+  if (input.debug) parts.push(chalk.dim("debug"));
+  if (input.currentTask) parts.push(chalk.dim(`task ${input.currentTask}`));
+  return parts.join(chalk.dim(" · "));
 }
 
 function truncateAnsiLine(line: string, maxWidth: number): string {

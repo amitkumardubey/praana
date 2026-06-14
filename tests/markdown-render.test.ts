@@ -8,6 +8,12 @@ import {
   plainTextFromInlineTokens,
   renderInlineToAnsi,
 } from '../src/ui/tui/markdown-render.js';
+import { PALETTE } from '../src/ui/tui/palette.js';
+
+const hexToRgb = (hex: string) => {
+  const h = hex.replace('#', '');
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)).join(';');
+};
 
 describe('Markdown token processing', () => {
   it('should extract text from string cells', () => {
@@ -148,10 +154,10 @@ describe('renderInlineToAnsi', () => {
     const paragraph = tokens.find((t) => t.type === 'paragraph') as Tokens.Paragraph;
     const ansi = renderInlineToAnsi(paragraph.tokens);
     expect(stripAnsi(ansi)).toBe('use  foo  bar');
-    // Background should be dark (#2d2d2d = 45;45;45)
-    expect(ansi).toMatch(/\x1b\[48;2;45;45;45m/);
-    // Foreground (tool color #38bdf8 = 56;189;248) must differ from background
-    expect(ansi).toMatch(/\x1b\[38;2;56;189;248m/);
+    // Background should be the inline-code-span surface colour
+    expect(ansi).toContain(`\x1b[48;2;${hexToRgb(PALETTE.codeSpanBg)}m`);
+    // Foreground (tool colour) must differ from the background
+    expect(ansi).toContain(`\x1b[38;2;${hexToRgb(PALETTE.tool)}m`);
   });
 
   it('should handle links with underline', () => {

@@ -2,6 +2,7 @@ import React from "react";
 import { Text, Box } from "ink";
 import { marked, type Token, type Tokens } from "marked";
 import { highlight as cliHighlight } from "cli-highlight";
+import { resolveSyntaxTheme } from "./syntax-themes.js";
 import stripAnsi from "strip-ansi";
 import ansiStyles from "ansi-styles";
 import wrapAnsi from "wrap-ansi";
@@ -387,7 +388,7 @@ function renderCodeBlock(token: Tokens.Code, syntaxHighlighting: boolean, syntax
   let highlighted: string;
   if (syntaxHighlighting && token.lang) {
     try {
-      highlighted = cliHighlight(code, { language: token.lang, theme: syntaxTheme, ignoreIllegals: true });
+      highlighted = cliHighlight(code, { language: token.lang, theme: resolveSyntaxTheme(syntaxTheme), ignoreIllegals: true });
     } catch {
       highlighted = code;
     }
@@ -508,7 +509,7 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
 export const MarkdownRender = React.memo(function MarkdownRender({
   text,
   syntaxHighlighting = true,
-  syntaxTheme = "solarized-dark",
+  syntaxTheme = "nord",
 }: MarkdownRenderProps) {
   if (!text) return <Text> </Text>;
 

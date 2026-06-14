@@ -4,6 +4,7 @@
 
 declare module "marked-terminal" {
   import type { MarkedExtension } from "marked";
+  import type { Theme } from "cli-highlight";
 
   export interface MarkedTerminalOptions {
     /** Whether to reflow text to fit terminal width. Default: true */
@@ -20,7 +21,17 @@ declare module "marked-terminal" {
     };
   }
 
+  /** Options forwarded to cli-highlight for fenced code blocks. */
+  export interface MarkedTerminalHighlightOptions {
+    theme?: Theme | string;
+    ignoreIllegals?: boolean;
+    language?: string;
+  }
+
   export class markedTerminal {
-    constructor(options?: MarkedTerminalOptions);
+    constructor(
+      options?: MarkedTerminalOptions,
+      highlightOptions?: MarkedTerminalHighlightOptions
+    );
   }
 }

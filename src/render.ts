@@ -7,22 +7,26 @@
 
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
+import { NORD_SYNTAX } from "./ui/tui/syntax-themes.js";
 
 let initialized = false;
 
 function ensureInit(): void {
   if (initialized) return;
   marked.use(
-    new markedTerminal({
-      // Disable reflow — we want to preserve the original line breaks
-      reflowText: false,
-      // Don't add section prefixes like "h1. "
-      showSectionPrefix: false,
-      // Unescape HTML entities
-      unescape: true,
-      // Use a dark theme for code blocks
-      code: { theme: "solarized-dark" },
-    })
+    new markedTerminal(
+      {
+        // Disable reflow — we want to preserve the original line breaks
+        reflowText: false,
+        // Don't add section prefixes like "h1. "
+        showSectionPrefix: false,
+        // Unescape HTML entities
+        unescape: true,
+      },
+      // highlightOptions → forwarded to cli-highlight. The Nord theme object
+      // is what actually colours fenced code blocks (name strings are no-ops).
+      { theme: NORD_SYNTAX, ignoreIllegals: true }
+    )
   );
   initialized = true;
 }

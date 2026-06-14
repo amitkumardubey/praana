@@ -35,7 +35,7 @@ export function TuiApp({
   bootSummary,
   markdownRendering = true,
   syntaxHighlighting = true,
-  syntaxTheme = "solarized-dark",
+  syntaxTheme = "nord",
 }: TuiAppProps) {
   const { exit } = useApp();
   const [input, setInput] = useState("");
@@ -352,7 +352,7 @@ export function TuiApp({
         ) : null}
       </Box>
       {toast ? <ToastLine message={toast.message} tone={toast.tone} /> : null}
-      <Box padding={1} gap={1}>
+      <Box paddingY={1} gap={1}>
         <Text color={PALETTE.assistant}>❯ </Text>
         <PromptInput
           value={input}
