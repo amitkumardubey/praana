@@ -22,5 +22,8 @@ export const PALETTE = {
   error: "#f87171",      // red-400 — softer red, readable
   info: "#60a5fa",       // blue-400
   success: "#4ade80",    // green-400
-  text: "#FAF9F6"
+  text: "#FAF9F6",
+  /* Surfaces — backgrounds for code blocks and inline code spans */
+  codeBg: "#1e1e1e",     // fenced code block background
+  codeSpanBg: "#2d2d2d"  // inline `code` span background
 };

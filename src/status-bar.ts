@@ -17,6 +17,7 @@ export interface StatusBarInput {
   model: string;
   repoPath: string;
   cwd: string;
+  branch: string | null;
   debug: boolean;
   thinking: boolean;
   memoryEnabled: boolean;
@@ -121,6 +122,7 @@ export function buildStatusBarInput(
     model: opts.model,
     repoPath: session.getRepoRoot(),
     cwd: session.cwd,
+    branch: session.getGitBranch(),
     debug: opts.debug,
     thinking: opts.thinking,
     memoryEnabled: session.memoryEnabled,
@@ -141,6 +143,7 @@ export function buildStatusBarInput(
 export function formatStatusBarLines(input: StatusBarInput): string[] {
   const ctx = `${formatTokenCount(input.contextUsedTokens)} / ${formatTokenCount(input.contextWindowTokens)}`;
   const repo = formatRepoLabel(input.repoPath, input.cwd);
+  const repoLabel = input.branch ? `${repo} · ${input.branch}` : repo;
   const memFlag = input.incognito
     ? chalk.magenta("incognito")
     : input.memoryEnabled
@@ -154,7 +157,7 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
     chalk.cyan(statusModelLabel),
     chalk.dim(ctx),
     chalk.yellow(formatMode(input.debug, input.thinking)),
-    chalk.blue(repo),
+    chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,
   ].join(chalk.dim(" · "));
 
@@ -213,6 +216,8 @@ export function formatEmojiStatusLine(input: StatusBarInput): string {
     pct > 90 ? chalk.red(`🧠 ctx: ${pct}%`) : pct > 70 ? chalk.yellow(`🧠 ctx: ${pct}%`) : chalk.dim(`🧠 ctx: ${pct}%`),
     memStr === "on" ? chalk.green(`💾 mem: ${memStr}`) : chalk.dim(`💾 mem: ${memStr}`),
   ];
+  const repoStr = formatRepoLabel(input.repoPath, input.cwd);
+  parts.push(chalk.blue(`📁 ${input.branch ? `${repoStr} · ${input.branch}` : repoStr}`));
   if (skillsCount > 0) {
     parts.push(chalk.magenta(`🛠️  ${skillsCount}sk${stateStr ? ` [${stateStr}]` : ""}`));
   } else if (stateStr) {

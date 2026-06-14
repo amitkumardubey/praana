@@ -32,6 +32,7 @@ export function StatusBarView({
   const { memoryStats, currentTask, skills } = status;
   const width = getTerminalWidth();
   const repoLabel = formatRepoLabel(status.repoPath, status.cwd);
+  const repoStr = status.branch ? `${repoLabel} · ${status.branch}` : repoLabel;
 
   const pct = status.contextWindowTokens > 0
     ? Math.min(100, Math.round((status.contextUsedTokens / status.contextWindowTokens) * 100))
@@ -51,7 +52,7 @@ export function StatusBarView({
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={PALETTE.success}>{`📁 ${repoLabel}`}</Text>
+        <Text color={PALETTE.success}>{`📁 ${repoStr}`}</Text>
         <Text dimColor>  |  </Text>
         <Text color={PALETTE.assistant}>{`📦 ${modelLabel}`}</Text>
         <Text dimColor>  |  </Text>

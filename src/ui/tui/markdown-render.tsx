@@ -62,7 +62,7 @@ function InlineToken({ token }: { token: Token | string }): React.ReactNode {
     }
     case "codespan":
       return (
-        <Text color={PALETTE.tool} backgroundColor="#2d2d2d">
+        <Text color={PALETTE.tool} backgroundColor={PALETTE.codeSpanBg}>
           {" "}{(token as Tokens.Codespan).text}{" "}
         </Text>
       );
@@ -161,7 +161,7 @@ function inlineToAnsi(token: Token | string): string {
       return `${ansiStyles.strikethrough.open}${ansiStyles.dim.open}${inner}${ansiStyles.dim.close}${ansiStyles.strikethrough.close}`;
     }
     case "codespan":
-      return `${ansiStyles.bgColor.ansi16m.hex("#2d2d2d")}${ansiStyles.color.ansi16m.hex(PALETTE.tool)}${" "}${(token as Tokens.Codespan).text}${" "}${ansiStyles.bgColor.close}${ansiStyles.color.close}`;
+      return `${ansiStyles.bgColor.ansi16m.hex(PALETTE.codeSpanBg)}${ansiStyles.color.ansi16m.hex(PALETTE.tool)}${" "}${(token as Tokens.Codespan).text}${" "}${ansiStyles.bgColor.close}${ansiStyles.color.close}`;
     case "link": {
       const t = token as Tokens.Link;
       const label = t.text || t.href;
@@ -402,7 +402,7 @@ function renderCodeBlock(token: Tokens.Code, syntaxHighlighting: boolean, syntax
           {"  "}{token.lang}
         </Text>
       )}
-      <Box flexDirection="column" backgroundColor="#1e1e1e" paddingX={1}>
+      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1}>
         {lines.map((line, i) => (
           <Text key={i}>{line || " "}</Text>
         ))}

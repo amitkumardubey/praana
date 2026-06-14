@@ -24,6 +24,7 @@ vi.mock("../src/session.js", () => ({
         byKind: {},
       }),
       getRepoRoot: () => "/tmp",
+      getGitBranch: () => null,
       memoryEnabled: false,
       isIncognito: () => false,
       digest: null,
