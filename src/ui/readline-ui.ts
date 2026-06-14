@@ -68,8 +68,20 @@ export async function runReadlineUi(
 
     if (input.startsWith("/")) {
       const result = await controller.executeSlashCommand(input);
-      for (const l of result.lines) {
-        if (l) console.log(l);
+      if (result.display === "toast" && result.lines.length > 0) {
+        const line = result.lines.join(" ");
+        const tone = result.toastTone ?? "info";
+        const styled =
+          tone === "error"
+            ? chalk.red(line)
+            : tone === "success"
+              ? chalk.green(line)
+              : chalk.blue(line);
+        console.log(styled);
+      } else {
+        for (const l of result.lines) {
+          if (l) console.log(l);
+        }
       }
       if (result.action === "refresh_status") refreshStatusBar();
       if (result.action === "exit") {

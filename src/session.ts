@@ -31,6 +31,7 @@ import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
 } from "./model-context.js";
+import { formatActiveModelLabel } from "./model-resolver.js";
 import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 
@@ -352,13 +353,7 @@ export class Session {
   }
 
   getActiveModelLabel(): string {
-    const provider = this.getEffectiveProvider();
-    const modelId = this.getActiveModelId();
-    if (modelId.includes("/")) {
-      const prefix = modelId.slice(0, modelId.indexOf("/"));
-      if (prefix === provider) return modelId;
-    }
-    return `${provider}/${modelId}`;
+    return formatActiveModelLabel(this.getEffectiveProvider(), this.getActiveModelId());
   }
 
   getProviderOverride(): string | null {

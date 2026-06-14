@@ -1,13 +1,32 @@
 import { getModel, getProviders } from "@earendil-works/pi-ai";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";
+import {
+  findOpenRouterCatalogModelId,
+  findProviderCatalogModelId,
+  lookupProviderCatalogContextWindow,
+  openRouterModelIdCandidates,
+  providerModelIdCandidates,
+  providerSupportsLiveCatalog,
+  resetProviderCatalogCacheForTests,
+  stripProviderRoutingPrefix,
+} from "./provider-catalog.js";
+
+export {
+  findOpenRouterCatalogModelId,
+  findProviderCatalogModelId,
+  isInProviderCatalog,
+  lookupProviderCatalogContextWindow,
+  openRouterModelIdCandidates,
+  providerModelIdCandidates,
+  providerSupportsLiveCatalog,
+  stripProviderRoutingPrefix,
+} from "./provider-catalog.js";
 
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 
 const CACHE_VERSION = 1;
-const OPENROUTER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 const CACHE_FILE = appHomePath("model-context-cache.json");
 
 /** PRAANA config provider → pi-ai MODELS registry key (when available). */
@@ -33,15 +52,10 @@ interface CacheEntry {
 interface ModelContextCacheFile {
   version: number;
   entries: Record<string, CacheEntry>;
-  openRouterCatalog?: {
-    fetchedAt: number;
-    models: Record<string, number>;
-  };
 }
 
 const memoryEntries = new Map<string, number>();
 let diskCache: ModelContextCacheFile | null = null;
-let openRouterFetchPromise: Promise<Record<string, number>> | null = null;
 
 function cacheKey(provider: string, modelId: string): string {
   return `${provider}:${modelId}`;
@@ -62,9 +76,11 @@ function loadDiskCache(): ModelContextCacheFile {
   if (!existsSync(CACHE_FILE)) return diskCache;
 
   try {
-    const raw = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as ModelContextCacheFile;
+    const raw = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as ModelContextCacheFile & {
+      openRouterCatalog?: unknown;
+    };
     if (raw.version === CACHE_VERSION && raw.entries && typeof raw.entries === "object") {
-      diskCache = raw;
+      diskCache = { version: CACHE_VERSION, entries: raw.entries };
     }
   } catch {
     diskCache = { version: CACHE_VERSION, entries: {} };
@@ -114,49 +130,9 @@ export async function isInOpenRouterCatalog(modelId: string): Promise<boolean> {
   return canonical !== null;
 }
 
-function normalizeOpenRouterModelId(modelId: string): string {
-  return modelId.startsWith("openrouter/") ? modelId.slice("openrouter/".length) : modelId;
-}
-
 /** Strip provider routing prefix before sending model id to the API. */
 export function normalizeModelIdForProvider(provider: string, modelId: string): string {
-  if (provider === "openrouter") return normalizeOpenRouterModelId(modelId);
-  return modelId;
-}
-
-function findInOpenRouterCatalogMap(
-  catalog: Record<string, number>,
-  modelId: string,
-): string | null {
-  const normalized = normalizeOpenRouterModelId(modelId);
-  for (const id of openRouterModelIdCandidates(normalized)) {
-    if (id in catalog) return id;
-  }
-  if (!normalized.includes("/")) {
-    const suffix = `/${normalized}`;
-    for (const id of Object.keys(catalog)) {
-      if (id.endsWith(suffix)) return id;
-    }
-  }
-  return null;
-}
-
-/** Resolve alias ids (e.g. kimi-k2.7-code) to canonical OpenRouter catalog keys. */
-export async function findOpenRouterCatalogModelId(modelId: string): Promise<string | null> {
-  const normalized = normalizeOpenRouterModelId(modelId);
-  for (const id of openRouterModelIdCandidates(normalized)) {
-    if (readOpenRouterCatalogEntry(id) !== null) return id;
-  }
-  try {
-    let catalog = await fetchOpenRouterCatalog();
-    let found = findInOpenRouterCatalogMap(catalog, normalized);
-    if (found) return found;
-    invalidateOpenRouterCatalog();
-    catalog = await fetchOpenRouterCatalogFresh();
-    return findInOpenRouterCatalogMap(catalog, normalized);
-  } catch {
-    return null;
-  }
+  return stripProviderRoutingPrefix(provider, modelId);
 }
 
 function readCachedContextWindow(provider: string, modelId: string): number | null {
@@ -172,129 +148,26 @@ function readCachedContextWindow(provider: string, modelId: string): number | nu
   return null;
 }
 
-function readOpenRouterCatalogEntry(modelId: string): number | null {
-  const catalog = loadDiskCache().openRouterCatalog;
-  if (!catalog) return null;
-  if (Date.now() - catalog.fetchedAt > OPENROUTER_CATALOG_TTL_MS) return null;
-  const value = catalog.models[modelId];
-  return isValidWindow(value) ? value : null;
-}
-
-/** Alternate OpenRouter ids to try when the session model id omits the vendor prefix. */
-export function openRouterModelIdCandidates(modelId: string): string[] {
-  const candidates = new Set<string>([modelId]);
-  if (!modelId.includes("/")) {
-    if (/^kimi-/i.test(modelId)) {
-      candidates.add(`moonshotai/${modelId}`);
-    }
-  }
-  return [...candidates];
-}
-
-function lookupOpenRouterCatalogEntry(modelId: string): number | null {
-  for (const id of openRouterModelIdCandidates(modelId)) {
-    const value = readOpenRouterCatalogEntry(id);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-async function fetchOpenRouterCatalog(): Promise<Record<string, number>> {
-  const file = loadDiskCache();
-  const existing = file.openRouterCatalog;
-  if (
-    existing &&
-    Date.now() - existing.fetchedAt <= OPENROUTER_CATALOG_TTL_MS &&
-    Object.keys(existing.models).length > 0
-  ) {
-    return existing.models;
-  }
-
-  return fetchOpenRouterCatalogFresh();
-}
-
-function invalidateOpenRouterCatalog(): void {
-  const file = loadDiskCache();
-  delete file.openRouterCatalog;
-  persistDiskCache();
-  openRouterFetchPromise = null;
-}
-
-async function fetchOpenRouterCatalogFresh(): Promise<Record<string, number>> {
-  if (openRouterFetchPromise) return openRouterFetchPromise;
-
-  openRouterFetchPromise = (async () => {
-    const headers: Record<string, string> = { Accept: "application/json" };
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-
-    const response = await fetch("https://openrouter.ai/api/v1/models", { headers });
-    if (!response.ok) {
-      throw new Error(`OpenRouter models API returned ${response.status}`);
-    }
-
-    const body = (await response.json()) as {
-      data?: Array<{ id?: string; context_length?: number }>;
-    };
-
-    const models: Record<string, number> = {};
-    for (const item of body.data ?? []) {
-      if (item.id && isValidWindow(item.context_length)) {
-        models[item.id] = item.context_length;
-      }
-    }
-
-    const file = loadDiskCache();
-    file.openRouterCatalog = { fetchedAt: Date.now(), models };
-    persistDiskCache();
-    return models;
-  })().finally(() => {
-    openRouterFetchPromise = null;
-  });
-
-  return openRouterFetchPromise;
-}
-
-async function lookupOpenRouterContextWindow(modelId: string): Promise<number | null> {
-  const cached = lookupOpenRouterCatalogEntry(modelId);
+async function lookupLiveProviderContextWindow(
+  provider: string,
+  modelId: string,
+): Promise<number | null> {
+  const cached = lookupProviderCatalogContextWindow(provider, modelId);
   if (cached !== null) return cached;
 
+  if (!providerSupportsLiveCatalog(provider)) return null;
+
   try {
-    let catalog = await fetchOpenRouterCatalog();
-    for (const id of openRouterModelIdCandidates(modelId)) {
-      const value = catalog[id];
-      if (isValidWindow(value)) return value;
-    }
-    if (!modelId.includes("/")) {
-      const suffix = `/${modelId}`;
-      for (const [id, contextWindow] of Object.entries(catalog)) {
-        if (id.endsWith(suffix) && isValidWindow(contextWindow)) {
-          return contextWindow;
-        }
-      }
-    }
-    invalidateOpenRouterCatalog();
-    catalog = await fetchOpenRouterCatalogFresh();
-    for (const id of openRouterModelIdCandidates(modelId)) {
-      const value = catalog[id];
-      if (isValidWindow(value)) return value;
-    }
-    if (!modelId.includes("/")) {
-      const suffix = `/${modelId}`;
-      for (const [id, contextWindow] of Object.entries(catalog)) {
-        if (id.endsWith(suffix) && isValidWindow(contextWindow)) {
-          return contextWindow;
-        }
-      }
-    }
+    const canonical = await findProviderCatalogModelId(provider, modelId);
+    if (!canonical) return null;
+    return lookupProviderCatalogContextWindow(provider, canonical);
   } catch {
     return null;
   }
-  return null;
 }
 
 /**
- * Synchronous best-effort resolution: override → cache → pi-ai catalog → default.
+ * Synchronous best-effort resolution: override → cache → provider catalog cache → pi-ai → default.
  */
 export function resolveContextWindowSync(
   provider: string,
@@ -304,26 +177,35 @@ export function resolveContextWindowSync(
   const fromOverride = applyOverride(override);
   if (fromOverride !== null) return fromOverride;
 
-  const cached = readCachedContextWindow(provider, modelId);
+  const normalizedId = normalizeModelIdForProvider(provider, modelId);
+
+  const cached = readCachedContextWindow(provider, normalizedId);
   if (cached !== null) return cached;
 
-  const fromCatalog = lookupOpenRouterCatalogEntry(modelId);
-  if (fromCatalog !== null) return fromCatalog;
+  const fromProviderCatalog = lookupProviderCatalogContextWindow(provider, normalizedId);
+  if (fromProviderCatalog !== null) return fromProviderCatalog;
 
-  const fromPiAi = lookupPiAiContextWindow(provider, modelId);
+  const fromPiAi = lookupPiAiContextWindow(provider, normalizedId);
   if (fromPiAi !== null) return fromPiAi;
 
   if (provider === "openrouter") {
-    for (const alt of openRouterModelIdCandidates(modelId)) {
-      if (alt === modelId) continue;
+    for (const alt of openRouterModelIdCandidates(normalizedId)) {
+      if (alt === normalizedId) continue;
       const fromAltPiAi = lookupPiAiContextWindow("openrouter", alt);
       if (fromAltPiAi !== null) return fromAltPiAi;
     }
   }
 
+  if (providerSupportsLiveCatalog(provider)) {
+    for (const alt of providerModelIdCandidates(provider, normalizedId)) {
+      const fromAltCatalog = lookupProviderCatalogContextWindow(provider, alt);
+      if (fromAltCatalog !== null) return fromAltCatalog;
+    }
+  }
+
   // OpenRouter-style ids may live under the openrouter provider in pi-ai.
-  if (provider !== "openrouter" && modelId.includes("/")) {
-    const fromOpenRouterPiAi = lookupPiAiContextWindow("openrouter", modelId);
+  if (provider !== "openrouter" && normalizedId.includes("/")) {
+    const fromOpenRouterPiAi = lookupPiAiContextWindow("openrouter", normalizedId);
     if (fromOpenRouterPiAi !== null) return fromOpenRouterPiAi;
   }
 
@@ -341,26 +223,28 @@ export async function fetchAndCacheContextWindow(
   const fromOverride = applyOverride(override);
   if (fromOverride !== null) return fromOverride;
 
-  const cached = readCachedContextWindow(provider, modelId);
+  const normalizedId = normalizeModelIdForProvider(provider, modelId);
+
+  const cached = readCachedContextWindow(provider, normalizedId);
   if (cached !== null) return cached;
 
   const sources: Array<number | null> = [];
-  for (const id of openRouterModelIdCandidates(modelId)) {
+  for (const id of providerModelIdCandidates(provider, normalizedId)) {
     sources.push(lookupPiAiContextWindow(provider, id));
     if (provider !== "openrouter") {
       sources.push(lookupPiAiContextWindow("openrouter", id));
     }
   }
-  sources.push(await lookupOpenRouterContextWindow(modelId));
+  sources.push(await lookupLiveProviderContextWindow(provider, normalizedId));
 
   for (const value of sources) {
     if (value !== null) {
-      rememberContextWindow(provider, modelId, value);
+      rememberContextWindow(provider, normalizedId, value);
       return value;
     }
   }
 
-  return resolveContextWindowSync(provider, modelId, override);
+  return resolveContextWindowSync(provider, normalizedId, override);
 }
 
 /** @deprecated Use resolveContextWindowSync with provider, or session.getContextWindowTokens(). */
@@ -372,7 +256,7 @@ export function resolveContextWindow(modelId: string, override?: number): number
 export function resetModelContextCacheForTests(): void {
   memoryEntries.clear();
   diskCache = null;
-  openRouterFetchPromise = null;
+  resetProviderCatalogCacheForTests();
   if (existsSync(CACHE_FILE)) {
     unlinkSync(CACHE_FILE);
   }

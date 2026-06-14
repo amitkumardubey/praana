@@ -1,23 +1,50 @@
-import { getModel, getProviders } from "@earendil-works/pi-ai";
+import { getProviders } from "@earendil-works/pi-ai";
 import {
-  findOpenRouterCatalogModelId,
-  isInPiAiCatalog,
-} from "./model-context.js";
+  findProviderCatalogModelId,
+  isInProviderCatalog,
+  providerSupportsLiveCatalog,
+  stripProviderRoutingPrefix,
+} from "./provider-catalog.js";
+import { isInPiAiCatalog } from "./model-context.js";
 import { isProviderAvailable, getMissingKeyMessage, listKnownProviders } from "./llm.js";
 
 export type ResolveSource =
   | "native-catalog"
-  | "openrouter-catalog"
+  | "provider-catalog"
   | "model-only"
-  | "openrouter-fallback";
+  | "provider-fallback";
+
+/** @deprecated Use provider-catalog or provider-fallback. */
+export type LegacyResolveSource = ResolveSource | "openrouter-catalog" | "openrouter-fallback";
 
 export interface ResolvedModelSpecifier {
   provider: string;
   modelId: string;
   switchedProvider: boolean;
   source: ResolveSource;
-  /** True when the model id exists in pi-ai or the live OpenRouter catalog. */
+  /** True when the model id exists in pi-ai or the provider's live catalog. */
   known: boolean;
+}
+
+export type ParsedModelCommand =
+  | { kind: "help" }
+  | { kind: "resolve"; explicitProvider: string | null; modelSpec: string; userInput: string };
+
+/** Same formatting as Session.getActiveModelLabel() for a provider + model id pair. */
+export function formatActiveModelLabel(provider: string, modelId: string): string {
+  if (modelId.includes("/")) {
+    const prefix = modelId.slice(0, modelId.indexOf("/"));
+    if (prefix === provider) return modelId;
+  }
+  return `${provider}/${modelId}`;
+}
+
+export function resolvedTargetLabel(
+  resolved: ResolvedModelSpecifier,
+  currentProvider: string,
+): string {
+  const provider = resolved.switchedProvider ? resolved.provider : currentProvider;
+  return formatActiveModelLabel(provider, resolved.modelId);
 }
 
 function isPiAiProviderName(name: string): boolean {
@@ -29,59 +56,92 @@ function isPraanaOnlyProvider(name: string): boolean {
   return listKnownProviders().includes(name) && !isPiAiProviderName(name);
 }
 
-function stripOpenRouterProviderPrefix(modelId: string): string {
-  return modelId.startsWith("openrouter/") ? modelId.slice("openrouter/".length) : modelId;
+export function isKnownProviderName(name: string): boolean {
+  return isPiAiProviderName(name) || isPraanaOnlyProvider(name);
 }
 
-function resolveNativeCatalog(
-  prefix: string,
-  suffix: string,
-  currentProvider: string,
-): ResolvedModelSpecifier | null {
-  if (!isPiAiProviderName(prefix) && !isPraanaOnlyProvider(prefix)) {
-    return null;
+/**
+ * Parse `/model [provider] <model-id>` (space-separated provider only).
+ * Without a provider, the full model id applies to the current provider (may contain `/`).
+ */
+export function parseModelCommandArgs(commandParts: string[]): ParsedModelCommand {
+  const args = commandParts.slice(1);
+  if (args.length === 0 || !args[0]?.trim()) {
+    return { kind: "help" };
   }
-  if (isPraanaOnlyProvider(prefix)) {
+
+  const userInput = args.join(" ");
+
+  if (args.length >= 2 && isKnownProviderName(args[0]!.trim())) {
     return {
-      provider: prefix,
-      modelId: suffix,
-      switchedProvider: prefix !== currentProvider,
-      source: "native-catalog",
-      known: true,
+      kind: "resolve",
+      explicitProvider: args[0]!.trim(),
+      modelSpec: args.slice(1).join(" ").trim(),
+      userInput,
     };
   }
-  if (!isInPiAiCatalog(prefix, suffix)) {
-    return null;
-  }
+
   return {
-    provider: prefix,
-    modelId: suffix,
-    switchedProvider: prefix !== currentProvider,
+    kind: "resolve",
+    explicitProvider: null,
+    modelSpec: userInput.trim(),
+    userInput,
+  };
+}
+
+function resolveCatalogHit(
+  provider: string,
+  modelId: string,
+  switchedProvider: boolean,
+): ResolvedModelSpecifier {
+  return {
+    provider,
+    modelId,
+    switchedProvider,
     source: "native-catalog",
     known: true,
   };
 }
 
-function resolveOpenRouter(
-  fullSpec: string,
-  currentProvider: string,
-  source: "openrouter-catalog" | "openrouter-fallback",
+function resolvePendingCatalogLookup(
+  provider: string,
+  modelId: string,
+  switchedProvider: boolean,
 ): ResolvedModelSpecifier {
-  const modelId = stripOpenRouterProviderPrefix(fullSpec);
   return {
-    provider: "openrouter",
+    provider,
     modelId,
-    switchedProvider: currentProvider !== "openrouter",
-    source,
-    known: source === "openrouter-catalog",
+    switchedProvider,
+    source: providerSupportsLiveCatalog(provider) ? "provider-fallback" : "model-only",
+    known: false,
   };
 }
 
-export function resolveModelSpecifierSync(
-  spec: string,
+function resolveWithExplicitProvider(
+  provider: string,
+  modelSpec: string,
   currentProvider: string,
 ): ResolvedModelSpecifier {
-  const trimmed = spec.trim();
+  const modelId = stripProviderRoutingPrefix(provider, modelSpec.trim());
+  const switchedProvider = provider !== currentProvider;
+
+  if (isPraanaOnlyProvider(provider)) {
+    return resolveCatalogHit(provider, modelId, switchedProvider);
+  }
+
+  if (isInPiAiCatalog(provider, modelId)) {
+    return resolveCatalogHit(provider, modelId, switchedProvider);
+  }
+
+  return resolvePendingCatalogLookup(provider, modelId, switchedProvider);
+}
+
+export function resolveModelSpecifierSync(
+  modelSpec: string,
+  currentProvider: string,
+  explicitProvider: string | null = null,
+): ResolvedModelSpecifier {
+  const trimmed = modelSpec.trim();
   if (!trimmed) {
     return {
       provider: currentProvider,
@@ -92,41 +152,18 @@ export function resolveModelSpecifierSync(
     };
   }
 
-  const slashIdx = trimmed.indexOf("/");
-  if (slashIdx > 0) {
-    const prefix = trimmed.slice(0, slashIdx);
-    const suffix = trimmed.slice(slashIdx + 1);
-
-    // Explicit OpenRouter escape hatch: /model openrouter/vendor/model
-    if (prefix === "openrouter" && suffix) {
-      if (isInPiAiCatalog("openrouter", suffix)) {
-        return {
-          provider: "openrouter",
-          modelId: suffix,
-          switchedProvider: currentProvider !== "openrouter",
-          source: "native-catalog",
-          known: true,
-        };
-      }
-      return resolveOpenRouter(suffix, currentProvider, "openrouter-fallback");
-    }
-
-    const native = resolveNativeCatalog(prefix, suffix, currentProvider);
-    if (native) return native;
-
-    if (isInPiAiCatalog("openrouter", trimmed)) {
-      return resolveOpenRouter(trimmed, currentProvider, "openrouter-catalog");
-    }
-
-    return resolveOpenRouter(trimmed, currentProvider, "openrouter-fallback");
+  if (explicitProvider) {
+    return resolveWithExplicitProvider(explicitProvider, trimmed, currentProvider);
   }
+
+  const modelId = stripProviderRoutingPrefix(currentProvider, trimmed);
 
   return {
     provider: currentProvider,
-    modelId: trimmed,
+    modelId,
     switchedProvider: false,
     source: "model-only",
-    known: knownModelOnly(currentProvider, trimmed),
+    known: knownModelOnly(currentProvider, modelId),
   };
 }
 
@@ -136,19 +173,23 @@ function knownModelOnly(provider: string, modelId: string): boolean {
 }
 
 export async function resolveModelSpecifier(
-  spec: string,
+  modelSpec: string,
   currentProvider: string,
+  explicitProvider: string | null = null,
 ): Promise<ResolvedModelSpecifier> {
-  const sync = resolveModelSpecifierSync(spec, currentProvider);
+  const sync = resolveModelSpecifierSync(modelSpec, currentProvider, explicitProvider);
   if (sync.known) return sync;
 
-  const canonical = await findOpenRouterCatalogModelId(sync.modelId);
+  if (!providerSupportsLiveCatalog(sync.provider)) {
+    return { ...sync, known: false };
+  }
+
+  const canonical = await findProviderCatalogModelId(sync.provider, sync.modelId);
   if (canonical) {
     return {
-      provider: "openrouter",
+      ...sync,
       modelId: canonical,
-      switchedProvider: sync.provider !== "openrouter" || sync.switchedProvider,
-      source: "openrouter-catalog",
+      source: "provider-catalog",
       known: true,
     };
   }
@@ -167,4 +208,12 @@ export function getProviderConfigurationError(provider: string): string | null {
 /** @internal test helper — direct pi-ai catalog probe */
 export function catalogHasModel(provider: string, modelId: string): boolean {
   return isInPiAiCatalog(provider, modelId);
+}
+
+/** @internal test helper — live provider catalog probe */
+export async function liveCatalogHasModel(
+  provider: string,
+  modelId: string,
+): Promise<boolean> {
+  return isInProviderCatalog(provider, modelId);
 }
