@@ -59,6 +59,7 @@ const fakeInfo: StartupInfo = {
 describe("runTui shutdown feedback", () => {
   let stderrSpy: ReturnType<typeof vi.spyOn>;
   let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     waitUntilExit.mockReset();
@@ -67,11 +68,13 @@ describe("runTui shutdown feedback", () => {
     getStatusBarInput.mockClear();
     stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     stdoutSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
   });
 
   afterEach(() => {
     stderrSpy.mockRestore();
     stdoutSpy.mockRestore();
+    exitSpy.mockRestore();
   });
 
   it("writes 'Saving session…' to stderr and prints the epilogue on clean shutdown", async () => {

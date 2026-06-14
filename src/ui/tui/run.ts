@@ -58,4 +58,5 @@ export async function runTui(
     console.log(line);
   }
   console.log(formatSessionEndSummary(controller.session));
+  process.exit(0);
 }

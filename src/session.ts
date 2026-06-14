@@ -746,7 +746,7 @@ export class Session {
               cause: err as Error,
             });
           }
-        }, consolidationConfig.run_delay_seconds * 1000);
+        }, consolidationConfig.run_delay_seconds * 1000).unref();
       }
     }
 
