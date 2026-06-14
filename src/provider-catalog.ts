@@ -237,8 +237,10 @@ async function fetchProviderCatalogFresh(
     );
   }, PROVIDER_CATALOG_FETCH_TIMEOUT_MS);
 
-  // Use a slot object so the async IIFE's finally block can compare
-  // promise references without TypeScript's "assigned before use" check.
+  // Use a slot object to work around TypeScript's control-flow analysis:
+  // a `let` assigned inside an IIFE is flagged as "used before assignment"
+  // even when the IIFE runs synchronously up to the first await. The slot
+  // indirection lets the finally block compare promise references safely.
   const slot: { promise: Promise<Record<string, number | null>> } = {
     promise: undefined as unknown as Promise<Record<string, number | null>>,
   };
@@ -315,12 +317,12 @@ async function fetchProviderCatalogFresh(
   return slot.promise;
 }
 
-/** @deprecated Use providerModelIdCandidates("openrouter", modelId). */
+/** @deprecated Use providerModelIdCandidates("openrouter", modelId). Removal: v0.6.0 */
 export function openRouterModelIdCandidates(modelId: string): string[] {
   return providerModelIdCandidates("openrouter", modelId);
 }
 
-/** @deprecated Use findProviderCatalogModelId("openrouter", modelId). */
+/** @deprecated Use findProviderCatalogModelId("openrouter", modelId). Removal: v0.6.0 */
 export async function findOpenRouterCatalogModelId(modelId: string): Promise<string | null> {
   return findProviderCatalogModelId("openrouter", modelId);
 }

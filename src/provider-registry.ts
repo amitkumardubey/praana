@@ -131,6 +131,13 @@ export const VENDOR_PREFIX_ALIASES: Record<
  *
  * Structure: `provider → Array<{ pattern }>`
  *   - `pattern` is tested against the full model id (case-insensitive)
+ *
+ * The `"*"` key applies to all providers. Add provider-specific entries
+ * to override or extend the global patterns for a single provider.
+ * Note: `"*"` patterns match before provider-specific ones, so a model
+ * name that happens to match a global pattern on a provider that doesn't
+ * need reasoning will be incorrectly flagged. Add provider-specific
+ * overrides when this becomes an issue.
  */
 export const REASONING_MODEL_HINTS: Record<
   string,

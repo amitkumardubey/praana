@@ -212,7 +212,7 @@ export function getReasoningEffort(
         DEFAULT_REASONING_LEVEL,
       );
     } catch {
-      getAppLogger().child("llm").debug(
+      getAppLogger().child("llm").warn(
         "clampThinkingLevel failed, using default reasoning",
       );
     }
