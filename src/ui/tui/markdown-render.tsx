@@ -205,7 +205,7 @@ function MarkdownList({
             flexDirection="row"
             alignItems={multiline ? "flex-start" : undefined}
           >
-            <Text color={PALETTE.gutter}>{bullet}</Text>
+            <Text color={PALETTE.faint}>{bullet}</Text>
             <Box flexDirection="column" flexGrow={1}>
               <ListItemTokens tokens={item.tokens} depth={depth} />
             </Box>
@@ -488,7 +488,7 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
     case "hr":
       return (
         <Box marginBottom={1}>
-          <Text color={PALETTE.gutter}>
+          <Text color={PALETTE.faint}>
             {"─".repeat(Math.max(20, getTerminalWidth() - 4))}
           </Text>
         </Box>

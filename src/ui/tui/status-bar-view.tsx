@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { StatusBarInput } from "../../status-bar.js";
-import { formatModelStatusLabel, formatTokenCount } from "../../status-bar.js";
+import { formatModelStatusLabel, formatTokenCount, formatRepoLabel } from "../../status-bar.js";
 import { PALETTE } from "./palette.js";
 import { getTerminalWidth } from "./terminal-width.js";
 
@@ -31,6 +31,7 @@ export function StatusBarView({
 }) {
   const { memoryStats, currentTask, skills } = status;
   const width = getTerminalWidth();
+  const repoLabel = formatRepoLabel(status.repoPath, status.cwd);
 
   const pct = status.contextWindowTokens > 0
     ? Math.min(100, Math.round((status.contextUsedTokens / status.contextWindowTokens) * 100))
@@ -50,13 +51,15 @@ export function StatusBarView({
   return (
     <Box flexDirection="column">
       <Box>
+        <Text color={PALETTE.success}>{`📁 ${repoLabel}`}</Text>
+        <Text dimColor>  |  </Text>
         <Text color={PALETTE.assistant}>{`📦 ${modelLabel}`}</Text>
         <Text dimColor>  |  </Text>
-        <Text color={pct > 90 ? PALETTE.error : pct > 70 ? PALETTE.tool : PALETTE.muted}>
+        <Text color={pct > 90 ? PALETTE.error : pct > 70 ? PALETTE.warning : PALETTE.muted}>
           {`🧠 ctx ${ctxStr}`}
         </Text>
         <Text dimColor>  |  </Text>
-        <Text color={status.thinking ? PALETTE.tool : PALETTE.muted}>
+        <Text color={status.thinking ? PALETTE.thinking : PALETTE.muted}>
           {`💭 think ${thinkStr}`}
         </Text>
         <Text dimColor>  |  </Text>
@@ -73,6 +76,12 @@ export function StatusBarView({
           <>
             <Text dimColor>  |  </Text>
             <Text color={PALETTE.muted}>{`◇ ${stateStr}`}</Text>
+          </>
+        )}
+        {status.debug && (
+          <>
+            <Text dimColor>  |  </Text>
+            <Text color={PALETTE.warning}>{`🐞 debug`}</Text>
           </>
         )}
       </Box>

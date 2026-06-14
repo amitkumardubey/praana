@@ -150,8 +150,8 @@ describe('renderInlineToAnsi', () => {
     expect(stripAnsi(ansi)).toBe('use  foo  bar');
     // Background should be dark (#2d2d2d = 45;45;45)
     expect(ansi).toMatch(/\x1b\[48;2;45;45;45m/);
-    // Foreground (tool color #f59e0b = 245;158;11) must differ from background
-    expect(ansi).toMatch(/\x1b\[38;2;245;158;11m/);
+    // Foreground (tool color #38bdf8 = 56;189;248) must differ from background
+    expect(ansi).toMatch(/\x1b\[38;2;56;189;248m/);
   });
 
   it('should handle links with underline', () => {
