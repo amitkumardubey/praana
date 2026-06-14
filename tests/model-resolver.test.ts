@@ -57,6 +57,19 @@ describe("resolveModelSpecifierSync", () => {
     });
   });
 
+  it("routes openrouter/moonshotai/kimi-k2.7-code without double prefix", () => {
+    const result = resolveModelSpecifierSync(
+      "openrouter/moonshotai/kimi-k2.7-code",
+      "anthropic",
+    );
+    expect(result).toEqual({
+      provider: "openrouter",
+      modelId: "moonshotai/kimi-k2.7-code",
+      switchedProvider: true,
+      source: "openrouter-fallback",
+    });
+  });
+
   it("uses openrouter catalog for routed vendor/model ids", () => {
     const result = resolveModelSpecifierSync("openrouter/openai/gpt-4o", "anthropic");
     expect(result.provider).toBe("openrouter");

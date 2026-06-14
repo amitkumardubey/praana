@@ -110,20 +110,53 @@ export function lookupPiAiContextWindow(
 }
 
 export async function isInOpenRouterCatalog(modelId: string): Promise<boolean> {
-  if (lookupOpenRouterCatalogEntry(modelId) !== null) return true;
-  try {
-    const catalog = await fetchOpenRouterCatalog();
-    for (const id of openRouterModelIdCandidates(modelId)) {
-      if (id in catalog) return true;
-    }
-    if (!modelId.includes("/")) {
-      const suffix = `/${modelId}`;
-      if (Object.keys(catalog).some((id) => id.endsWith(suffix))) return true;
-    }
-  } catch {
-    return false;
+  const canonical = await findOpenRouterCatalogModelId(modelId);
+  return canonical !== null;
+}
+
+function normalizeOpenRouterModelId(modelId: string): string {
+  return modelId.startsWith("openrouter/") ? modelId.slice("openrouter/".length) : modelId;
+}
+
+/** Strip provider routing prefix before sending model id to the API. */
+export function normalizeModelIdForProvider(provider: string, modelId: string): string {
+  if (provider === "openrouter") return normalizeOpenRouterModelId(modelId);
+  return modelId;
+}
+
+function findInOpenRouterCatalogMap(
+  catalog: Record<string, number>,
+  modelId: string,
+): string | null {
+  const normalized = normalizeOpenRouterModelId(modelId);
+  for (const id of openRouterModelIdCandidates(normalized)) {
+    if (id in catalog) return id;
   }
-  return false;
+  if (!normalized.includes("/")) {
+    const suffix = `/${normalized}`;
+    for (const id of Object.keys(catalog)) {
+      if (id.endsWith(suffix)) return id;
+    }
+  }
+  return null;
+}
+
+/** Resolve alias ids (e.g. kimi-k2.7-code) to canonical OpenRouter catalog keys. */
+export async function findOpenRouterCatalogModelId(modelId: string): Promise<string | null> {
+  const normalized = normalizeOpenRouterModelId(modelId);
+  for (const id of openRouterModelIdCandidates(normalized)) {
+    if (readOpenRouterCatalogEntry(id) !== null) return id;
+  }
+  try {
+    let catalog = await fetchOpenRouterCatalog();
+    let found = findInOpenRouterCatalogMap(catalog, normalized);
+    if (found) return found;
+    invalidateOpenRouterCatalog();
+    catalog = await fetchOpenRouterCatalogFresh();
+    return findInOpenRouterCatalogMap(catalog, normalized);
+  } catch {
+    return null;
+  }
 }
 
 function readCachedContextWindow(provider: string, modelId: string): number | null {
@@ -177,6 +210,17 @@ async function fetchOpenRouterCatalog(): Promise<Record<string, number>> {
     return existing.models;
   }
 
+  return fetchOpenRouterCatalogFresh();
+}
+
+function invalidateOpenRouterCatalog(): void {
+  const file = loadDiskCache();
+  delete file.openRouterCatalog;
+  persistDiskCache();
+  openRouterFetchPromise = null;
+}
+
+async function fetchOpenRouterCatalogFresh(): Promise<Record<string, number>> {
   if (openRouterFetchPromise) return openRouterFetchPromise;
 
   openRouterFetchPromise = (async () => {
@@ -200,6 +244,7 @@ async function fetchOpenRouterCatalog(): Promise<Record<string, number>> {
       }
     }
 
+    const file = loadDiskCache();
     file.openRouterCatalog = { fetchedAt: Date.now(), models };
     persistDiskCache();
     return models;
@@ -215,7 +260,21 @@ async function lookupOpenRouterContextWindow(modelId: string): Promise<number | 
   if (cached !== null) return cached;
 
   try {
-    const catalog = await fetchOpenRouterCatalog();
+    let catalog = await fetchOpenRouterCatalog();
+    for (const id of openRouterModelIdCandidates(modelId)) {
+      const value = catalog[id];
+      if (isValidWindow(value)) return value;
+    }
+    if (!modelId.includes("/")) {
+      const suffix = `/${modelId}`;
+      for (const [id, contextWindow] of Object.entries(catalog)) {
+        if (id.endsWith(suffix) && isValidWindow(contextWindow)) {
+          return contextWindow;
+        }
+      }
+    }
+    invalidateOpenRouterCatalog();
+    catalog = await fetchOpenRouterCatalogFresh();
     for (const id of openRouterModelIdCandidates(modelId)) {
       const value = catalog[id];
       if (isValidWindow(value)) return value;

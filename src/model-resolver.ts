@@ -1,5 +1,8 @@
 import { getModel, getProviders } from "@earendil-works/pi-ai";
-import { isInOpenRouterCatalog, isInPiAiCatalog } from "./model-context.js";
+import {
+  findOpenRouterCatalogModelId,
+  isInPiAiCatalog,
+} from "./model-context.js";
 import { isProviderAvailable, getMissingKeyMessage, listKnownProviders } from "./llm.js";
 
 export type ResolveSource =
@@ -22,6 +25,10 @@ function isPiAiProviderName(name: string): boolean {
 /** PRAANA-only providers (e.g. ollama) not in pi-ai but valid for native switch. */
 function isPraanaOnlyProvider(name: string): boolean {
   return listKnownProviders().includes(name) && !isPiAiProviderName(name);
+}
+
+function stripOpenRouterProviderPrefix(modelId: string): string {
+  return modelId.startsWith("openrouter/") ? modelId.slice("openrouter/".length) : modelId;
 }
 
 function resolveNativeCatalog(
@@ -56,9 +63,10 @@ function resolveOpenRouter(
   currentProvider: string,
   source: "openrouter-catalog" | "openrouter-fallback",
 ): ResolvedModelSpecifier {
+  const modelId = stripOpenRouterProviderPrefix(fullSpec);
   return {
     provider: "openrouter",
-    modelId: fullSpec,
+    modelId,
     switchedProvider: currentProvider !== "openrouter",
     source,
   };
@@ -82,6 +90,20 @@ export function resolveModelSpecifierSync(
   if (slashIdx > 0) {
     const prefix = trimmed.slice(0, slashIdx);
     const suffix = trimmed.slice(slashIdx + 1);
+
+    // Explicit OpenRouter escape hatch: /model openrouter/vendor/model
+    if (prefix === "openrouter" && suffix) {
+      if (isInPiAiCatalog("openrouter", suffix)) {
+        return {
+          provider: "openrouter",
+          modelId: suffix,
+          switchedProvider: currentProvider !== "openrouter",
+          source: "native-catalog",
+        };
+      }
+      return resolveOpenRouter(suffix, currentProvider, "openrouter-fallback");
+    }
+
     const native = resolveNativeCatalog(prefix, suffix, currentProvider);
     if (native) return native;
 
@@ -105,12 +127,34 @@ export async function resolveModelSpecifier(
   currentProvider: string,
 ): Promise<ResolvedModelSpecifier> {
   const sync = resolveModelSpecifierSync(spec, currentProvider);
-  if (sync.source !== "openrouter-fallback") {
-    return sync;
+
+  if (sync.provider === "openrouter" || sync.source === "openrouter-fallback") {
+    const canonical = await findOpenRouterCatalogModelId(sync.modelId);
+    if (canonical) {
+      return {
+        provider: "openrouter",
+        modelId: canonical,
+        switchedProvider: currentProvider !== "openrouter",
+        source: "openrouter-catalog",
+      };
+    }
+    return {
+      ...sync,
+      provider: "openrouter",
+      modelId: stripOpenRouterProviderPrefix(sync.modelId),
+      switchedProvider: sync.switchedProvider || currentProvider !== "openrouter",
+    };
   }
 
-  if (await isInOpenRouterCatalog(spec.trim())) {
-    return resolveOpenRouter(spec.trim(), currentProvider, "openrouter-catalog");
+  if (sync.source === "model-only" && currentProvider === "openrouter") {
+    const canonical = await findOpenRouterCatalogModelId(sync.modelId);
+    if (canonical) {
+      return {
+        ...sync,
+        modelId: canonical,
+        source: "openrouter-catalog",
+      };
+    }
   }
 
   return sync;

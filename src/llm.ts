@@ -1,6 +1,6 @@
 import { getModel, getEnvApiKey, getProviders, findEnvKeys } from "@earendil-works/pi-ai";
 import type { PraanaConfig } from "./types.js";
-import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog } from "./model-context.js";
+import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 
 export {
@@ -223,7 +223,8 @@ function buildModel(
   modelId: string,
   contextWindow?: number,
 ): RuntimeModel {
-  const fromCatalog = buildFromPiAiCatalog(config, modelId, contextWindow);
+  const normalizedId = normalizeModelIdForProvider(config.provider, modelId);
+  const fromCatalog = buildFromPiAiCatalog(config, normalizedId, contextWindow);
   if (fromCatalog) return fromCatalog;
 
   const pc = getProviderConfig(config.provider);
@@ -232,17 +233,17 @@ function buildModel(
   const apiKey = pc.envKey ? (process.env[pc.envKey] ?? "") : "no-key";
 
   const model: RuntimeModel = {
-    id: modelId,
-    name: modelId,
+    id: normalizedId,
+    name: normalizedId,
     provider: pc.provider,
     api: pc.api,
     baseUrl,
     input: ["text"],
-    reasoning: inferReasoningModel(config.provider, modelId),
+    reasoning: inferReasoningModel(config.provider, normalizedId),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow:
       contextWindow ??
-      resolveContextWindowSync(config.provider, modelId, config.context_window),
+      resolveContextWindowSync(config.provider, normalizedId, config.context_window),
     maxTokens: 8192,
   };
 
