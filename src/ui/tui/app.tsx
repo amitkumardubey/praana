@@ -246,9 +246,17 @@ export function TuiApp({
         controller.abortTurn();
         return true;
       }
+      if (key.ctrl && input === "t" && !transcript.busy) {
+        controller.showThinking = !controller.showThinking;
+        refreshStatus();
+        showToast(
+          controller.showThinking ? "Thinking enabled." : "Thinking disabled."
+        );
+        return true;
+      }
       return false;
     },
-    [transcript.busy, controller, showToast]
+    [transcript.busy, controller, refreshStatus, showToast]
   );
 
   useInput((input, key) => {
@@ -351,15 +359,6 @@ export function TuiApp({
           onChange={setInput}
           onSubmit={handleSubmit}
           placeholder={transcript.busy ? "running…" : "message or /command"}
-          onEmptyShortcut={(key) => {
-            if (key !== "t" || transcript.busy) return false;
-            controller.showThinking = !controller.showThinking;
-            refreshStatus();
-            showToast(
-              controller.showThinking ? "Thinking enabled." : "Thinking disabled."
-            );
-            return true;
-          }}
           onNavigationKey={handleNavigationKey}
           onHistoryPrev={() => {
             const history = inputHistoryRef.current;
