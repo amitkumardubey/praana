@@ -37,15 +37,17 @@ export function summarizeResultForDisplay(text: string): string {
 
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
+    if (typeof parsed.stdout === "string" || typeof parsed.stderr === "string") {
+      const stdout = stripAnsi(String(parsed.stdout ?? "")).trim();
+      const stderr = stripAnsi(String(parsed.stderr ?? "")).trim();
+      const primary = stdout || stderr;
+      const lineCount = primary ? primary.split("\n").filter(Boolean).length : 0;
+      const preview = primary.split("\n")[0]?.slice(0, 56) ?? "";
+      const suffix = preview ? ` — ${preview}${primary.length > 56 ? "…" : ""}` : "";
+      return `exit ${parsed.exitCode ?? 0} · ${lineCount} line(s)${suffix}`;
+    }
     if (parsed.ok === false) {
       return `error: ${String(parsed.error ?? "failed").slice(0, 72)}`;
-    }
-    if (typeof parsed.stdout === "string") {
-      const stdout = parsed.stdout.trim();
-      const lineCount = stdout ? stdout.split("\n").filter(Boolean).length : 0;
-      const preview = stdout.split("\n")[0]?.slice(0, 56) ?? "";
-      const suffix = preview ? ` — ${preview}${stdout.length > 56 ? "…" : ""}` : "";
-      return `exit ${parsed.exitCode ?? 0} · ${lineCount} line(s)${suffix}`;
     }
     if (typeof parsed.content === "string") {
       const content = parsed.content;

@@ -256,11 +256,12 @@ export function transcriptReducer(
     }
 
     case "tool_result": {
-      const summary = summarizeResultForDisplay(action.resultText);
       const shellDisplay =
         action.toolName === "shell"
           ? formatShellOutputForDisplay(action.resultText)
           : null;
+      const summary =
+        shellDisplay?.summary ?? summarizeResultForDisplay(action.resultText);
       const completed = [...state.completed];
       for (let i = completed.length - 1; i >= 0; i--) {
         const entry = completed[i];
@@ -274,7 +275,7 @@ export function transcriptReducer(
             resultSummary: shellDisplay?.summary ?? summary,
             resultText: action.resultText,
             resultBody: shellDisplay?.body ?? undefined,
-            isError: action.isError ?? shellDisplay?.isError ?? false,
+            isError: action.isError || (shellDisplay?.isError ?? false),
           };
           return { ...state, completed };
         }
@@ -286,7 +287,7 @@ export function transcriptReducer(
         resultSummary: shellDisplay?.summary ?? summary,
         resultText: action.resultText,
         resultBody: shellDisplay?.body ?? undefined,
-        isError: action.isError ?? shellDisplay?.isError ?? false,
+        isError: action.isError || (shellDisplay?.isError ?? false),
       });
     }
 

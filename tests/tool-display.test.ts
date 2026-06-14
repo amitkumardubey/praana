@@ -120,6 +120,22 @@ describe("formatShellOutputForDisplay", () => {
     );
     expect(display!.body).toBe("red");
   });
+
+  it("strips ansi from summary preview", () => {
+    const summary = summarizeResultForDisplay(
+      JSON.stringify({ ok: true, stdout: "\x1b[31mred\x1b[0m\n", stderr: "", exitCode: 0 })
+    );
+    expect(summary).toContain("red");
+    expect(summary).not.toContain("\x1b");
+  });
+
+  it("summarizes stderr-only shell output", () => {
+    const summary = summarizeResultForDisplay(
+      JSON.stringify({ ok: true, stdout: "", stderr: "warn\n", exitCode: 0 })
+    );
+    expect(summary).toContain("exit 0");
+    expect(summary).toContain("warn");
+  });
 });
 
 describe("formatTurnStatsSuffix", () => {

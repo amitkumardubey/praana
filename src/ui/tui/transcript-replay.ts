@@ -61,7 +61,7 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
               resultSummary: summary,
               resultText: raw,
               resultBody: shellDisplay?.body ?? undefined,
-              isError: isError ?? shellDisplay?.isError ?? false,
+              isError: isError || (shellDisplay?.isError ?? false),
             };
             break;
           }
@@ -93,8 +93,13 @@ export function estimateEntryLines(
       return Math.max(4, lines + 3);
     case "assistant":
       return Math.max(2, lines + Math.ceil(entry.text.length / wrapCols));
-    case "tool":
-      return entry.resultSummary ? 4 : 2;
+    case "tool": {
+      const summaryLines = entry.resultSummary ? 2 : 0;
+      const bodyLines = entry.resultBody
+        ? entry.resultBody.split("\n").length
+        : 0;
+      return Math.max(2, summaryLines + bodyLines);
+    }
     case "thinking":
       return 3;
     case "turn_footer":

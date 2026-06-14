@@ -152,6 +152,28 @@ describe("transcriptReducer", () => {
     expect(state.completed[0]?.resultBody).toBe("hello\nworld");
   });
 
+  it("marks non-zero shell exit as error when turn passes isError false", () => {
+    let state = createInitialTranscriptState();
+    state = transcriptReducer(state, {
+      type: "tool_call",
+      toolName: "shell",
+      args: { command: "false" },
+    });
+    state = transcriptReducer(state, {
+      type: "tool_result",
+      toolName: "shell",
+      isError: false,
+      resultText: JSON.stringify({
+        ok: false,
+        stdout: "",
+        stderr: "command failed\n",
+        exitCode: 1,
+      }),
+    });
+    expect(state.completed[0]?.isError).toBe(true);
+    expect(state.completed[0]?.resultSummary).toContain("exit 1");
+  });
+
   it("falls back to orphan tool_result when no matching tool call exists", () => {
     const state = transcriptReducer(createInitialTranscriptState(), {
       type: "tool_result",
