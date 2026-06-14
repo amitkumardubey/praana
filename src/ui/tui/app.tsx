@@ -35,7 +35,7 @@ export function TuiApp({
   bootSummary,
   markdownRendering = true,
   syntaxHighlighting = true,
-  syntaxTheme = "solarized-dark",
+  syntaxTheme = "nord",
 }: TuiAppProps) {
   const { exit } = useApp();
   const [input, setInput] = useState("");

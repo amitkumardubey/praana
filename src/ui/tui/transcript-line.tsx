@@ -29,7 +29,7 @@ export const TranscriptLine = React.memo(function TranscriptLine({
   showThinking = false,
   markdownRendering = true,
   syntaxHighlighting = true,
-  syntaxTheme = "solarized-dark",
+  syntaxTheme = "nord",
 }: TranscriptLineProps) {
   const plain = stripAnsi(entry.text);
   const marginTop = needsTopMargin(entry.role, prevRole);

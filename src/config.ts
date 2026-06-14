@@ -84,7 +84,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     screen: "preserve",
     markdown_rendering: true,
     syntax_highlighting: true,
-    syntax_theme: "solarized-dark",
+    syntax_theme: "nord",
   },
   context_engine: {
     enabled: true,
@@ -431,11 +431,10 @@ function validateConfig(config: PraanaConfig): PraanaConfig {
     if (typeof out.ui.syntax_highlighting !== 'boolean') {
       out.ui.syntax_highlighting = DEFAULT_CONFIG.ui.syntax_highlighting;
     }
-    // Dynamic lookup of theme via cli-highlight if theme doesn't exist, fallback to solarized-dark
-    // cli-highlight themes are usually packaged under its theme directory, but let's check safety.
-    // If cli-highlight throws a parse error on a test piece of code, it means the theme is invalid.
+    // Validate ui.syntax_theme. Named theme objects (e.g. "nord") are resolved
+    // at render time; unknown names fall back to cli-highlight's default theme.
     if (typeof out.ui.syntax_theme !== 'string' || !out.ui.syntax_theme.trim()) {
-      configWarn("Invalid ui.syntax_theme, using default 'solarized-dark'");
+      configWarn("Invalid ui.syntax_theme, using default 'nord'");
       out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
     } else {
       try {
@@ -445,7 +444,7 @@ function validateConfig(config: PraanaConfig): PraanaConfig {
           try {
             highlight("const x = 1;", { theme: out.ui.syntax_theme });
           } catch {
-            configWarn(`Theme '${out.ui.syntax_theme}' not found or invalid. Falling back to 'solarized-dark'`);
+            configWarn(`Theme '${out.ui.syntax_theme}' not found or invalid. Falling back to 'nord'`);
             out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
           }
         }).catch(() => {});
