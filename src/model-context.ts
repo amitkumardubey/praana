@@ -247,7 +247,11 @@ export async function fetchAndCacheContextWindow(
     }
   }
 
-  return resolveContextWindowSync(provider, normalizedId, override);
+  // Cache the default fallback so repeated calls for unknown models
+  // don't re-traverse all lookup paths every turn.
+  const fallback = resolveContextWindowSync(provider, normalizedId, override);
+  rememberContextWindow(provider, normalizedId, fallback);
+  return fallback;
 }
 
 /** @deprecated Use resolveContextWindowSync with provider, or session.getContextWindowTokens(). */
