@@ -49,7 +49,7 @@ export async function runTui(
   unmount();
   // Immediate feedback so the terminal isn't blank while shutdown runs.
   // stderr is used so piped/captured stdout stays clean.
-  process.stderr.write("Saving session…\n");
+  process.stderr.write("\nSaving session…\n");
   const { memory } = await controller.shutdown();
   if (memory === "background") {
     process.stderr.write("Memory save continuing in background…\n");
