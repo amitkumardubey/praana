@@ -109,7 +109,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
-| `/model <name>` | Switch models mid-session |
+| `/model [provider] <id>` | Switch model and optionally provider mid-session |
 | `/sessions` | List past sessions for resuming |
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
@@ -117,6 +117,8 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/clear`, `/new` | Clear working-memory state (engine checkpoint + StateGraph) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
 | `/help` | All commands |
+
+**`/model` resolution order:** pi-ai static catalog → live provider `/models` API (6h cache) → reject with toast if still unknown. Parse as `/model [provider] <model-id>` (space-separated provider only). Strip routing prefixes like `openrouter/` or `opencode/` before API calls. Persist `modelOverride` and `providerOverride` to the event log; restore both on resume. Ollama accepts any local model name without a catalog hit.
 
 ---
 
