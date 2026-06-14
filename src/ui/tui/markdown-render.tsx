@@ -3,6 +3,8 @@ import { Text, Box } from "ink";
 import { marked, type Token, type Tokens } from "marked";
 import { highlight as cliHighlight } from "cli-highlight";
 import stripAnsi from "strip-ansi";
+import ansiStyles from "ansi-styles";
+import wrapAnsi from "wrap-ansi";
 import { PALETTE } from "./palette.js";
 import { getTerminalWidth } from "./terminal-width.js";
 
@@ -96,6 +98,89 @@ function InlineTokens({ tokens }: { tokens: (Token | string)[] }): React.ReactNo
   );
 }
 
+/**
+ * Flatten inline tokens into a single string with ANSI escape codes for styling.
+ * This avoids Ink's multi-child Text wrapping issue by producing one contiguous string.
+ */
+export function renderInlineToAnsi(tokens: (Token | string)[]): string {
+  let result = "";
+  for (const token of tokens) {
+    result += inlineToAnsi(token);
+  }
+  return result;
+}
+
+/**
+ * Pre-wrap an ANSI-styled string at word boundaries and render line-by-line.
+ *
+ * This bypasses Ink's internal wrap-ansi call (which uses trim: false,
+ * leaving orphan leading spaces on continuation lines). We wrap ourselves
+ * with trim: true and render each line as a plain <Text> — no wrap prop needed.
+ *
+ * @param ansi  ANSI-styled string (from renderInlineToAnsi)
+ * @param width Available width in columns (e.g. terminal width minus padding)
+ */
+function PreWrappedText({ ansi, width, color }: { ansi: string; width: number; color?: string }): React.ReactNode {
+  const wrapped = wrapAnsi(ansi, width, { trim: true, hard: false });
+  const lines = wrapped.split("\n");
+  return (
+    <>
+      {lines.map((line, i) => (
+        <Text key={i} color={color}>{line || " "}</Text>
+      ))}
+    </>
+  );
+}
+
+function inlineToAnsi(token: Token | string): string {
+  if (typeof token === "string") {
+    return token;
+  }
+
+  switch (token.type) {
+    case "text": {
+      const t = token as Tokens.Text;
+      if (t.tokens && t.tokens.length > 0) {
+        return renderInlineToAnsi(t.tokens);
+      }
+      return t.text;
+    }
+    case "strong": {
+      const t = token as Tokens.Strong;
+      const inner = t.tokens?.length ? renderInlineToAnsi(t.tokens) : t.text;
+      return `${ansiStyles.bold.open}${inner}${ansiStyles.bold.close}`;
+    }
+    case "em": {
+      const t = token as Tokens.Em;
+      const inner = t.tokens?.length ? renderInlineToAnsi(t.tokens) : t.text;
+      return `${ansiStyles.italic.open}${inner}${ansiStyles.italic.close}`;
+    }
+    case "del": {
+      const t = token as Tokens.Del;
+      const inner = t.tokens?.length ? renderInlineToAnsi(t.tokens) : t.text;
+      return `${ansiStyles.strikethrough.open}${ansiStyles.dim.open}${inner}${ansiStyles.dim.close}${ansiStyles.strikethrough.close}`;
+    }
+    case "codespan":
+      return `${ansiStyles.bgColor.ansi16m.hex("#2d2d2d")}${ansiStyles.color.ansi16m.hex(PALETTE.tool)}${" "}${(token as Tokens.Codespan).text}${" "}${ansiStyles.bgColor.close}${ansiStyles.color.close}`;
+    case "link": {
+      const t = token as Tokens.Link;
+      const label = t.text || t.href;
+      const showHref = t.href && t.href !== t.text;
+      let link = `${ansiStyles.color.ansi16m.hex(PALETTE.assistant)}${ansiStyles.underline.open}${label}${ansiStyles.underline.close}`;
+      if (showHref) {
+        link += `${ansiStyles.dim.open} (${t.href})${ansiStyles.dim.close}`;
+      }
+      return link;
+    }
+    case "br":
+      return "\n";
+    case "escape":
+      return (token as Tokens.Escape).text;
+    default:
+      return token.raw ?? "";
+  }
+}
+
 function MarkdownList({
   token,
   depth = 0,
@@ -138,6 +223,8 @@ function ListItemTokens({
   tokens: Token[];
   depth?: number;
 }): React.ReactNode {
+  // List indent: transcript paddingLeft(1) + list paddingLeft(2) + bullet(2)
+  const wrapWidth = Math.max(20, getTerminalWidth() - 5 - (depth > 0 ? 2 : 0));
   return (
     <>
       {tokens.map((token, i) => {
@@ -146,11 +233,18 @@ function ListItemTokens({
         }
         if (token.type === "paragraph") {
           const p = token as Tokens.Paragraph;
-          return (
-            <Text key={i} wrap="wrap">
-              <InlineTokens tokens={p.tokens} />
-            </Text>
-          );
+          const ansi = renderInlineToAnsi(p.tokens);
+          return <PreWrappedText key={i} ansi={ansi} width={wrapWidth} />;
+        }
+        // "text" tokens inside list items can contain nested inline tokens
+        // (strong, codespan, etc.) — flatten to ANSI to avoid wrapping breaks
+        if (token.type === "text") {
+          const t = token as Tokens.Text;
+          if (t.tokens && t.tokens.length > 0) {
+            const ansi = renderInlineToAnsi(t.tokens);
+            return <PreWrappedText key={i} ansi={ansi} width={wrapWidth} />;
+          }
+          return <PreWrappedText key={i} ansi={t.text ?? ""} width={wrapWidth} />;
         }
         if (token.type === "list") {
           return (
@@ -333,11 +427,12 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
 
     case "paragraph": {
       const t = token as Tokens.Paragraph;
+      const ansi = renderInlineToAnsi(t.tokens);
+      // transcript paddingLeft(1)
+      const wrapWidth = Math.max(20, getTerminalWidth() - 1);
       return (
         <Box marginBottom={1}>
-          <Text wrap="wrap">
-            <InlineTokens tokens={t.tokens} />
-          </Text>
+          <PreWrappedText ansi={ansi} width={wrapWidth} />
         </Box>
       );
     }
@@ -370,16 +465,15 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
 
     case "blockquote": {
       const t = token as Tokens.Blockquote;
+      // transcript paddingLeft(1) + blockquote paddingLeft(2)
+      const wrapWidth = Math.max(20, getTerminalWidth() - 3);
       return (
         <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
           {t.tokens.map((tk, i) => {
             if (tk.type === "paragraph") {
               const p = tk as Tokens.Paragraph;
-              return (
-                <Text key={i} wrap="wrap" color={PALETTE.muted} italic>
-                  <InlineTokens tokens={p.tokens} />
-                </Text>
-              );
+              const ansi = `${ansiStyles.italic.open}${renderInlineToAnsi(p.tokens)}${ansiStyles.italic.close}`;
+              return <PreWrappedText key={i} ansi={ansi} width={wrapWidth} color={PALETTE.muted} />;
             }
             return (
               <Text key={i} color={PALETTE.muted}>
