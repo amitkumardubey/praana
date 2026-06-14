@@ -200,7 +200,10 @@ export async function runReadlineUi(
 
   rl.on("close", async () => {
     console.log("\nShutting down...");
-    await controller.shutdown();
+    const { memory } = await controller.shutdown();
+    if (memory === "background") {
+      console.log("Memory save continuing in background…");
+    }
     printSessionEndSummary(session);
     process.exit(0);
   });

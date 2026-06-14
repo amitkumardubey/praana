@@ -47,9 +47,16 @@ export async function runTui(
 
   await waitUntilExit();
   unmount();
-  await controller.shutdown();
+  // Immediate feedback so the terminal isn't blank while shutdown runs.
+  // stderr is used so piped/captured stdout stays clean.
+  process.stderr.write("Saving session…\n");
+  const { memory } = await controller.shutdown();
+  if (memory === "background") {
+    process.stderr.write("Memory save continuing in background…\n");
+  }
   for (const line of formatSessionEpilogue(controller.session.id)) {
     console.log(line);
   }
   console.log(formatSessionEndSummary(controller.session));
+  process.exit(0);
 }

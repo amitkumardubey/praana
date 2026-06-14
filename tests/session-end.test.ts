@@ -28,10 +28,11 @@ describe("Session end timeout behavior", () => {
     };
 
     const started = Date.now();
-    await s.end("clean", [], { memoryTimeoutMs: 30 });
+    const status = await s.end("clean", [], { memoryTimeoutMs: 30 });
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeLessThan(400);
+    expect(status).toEqual({ memory: "background" });
   });
 
   it("waits for memory sessionEnd when timeout is not provided", async () => {
@@ -46,10 +47,40 @@ describe("Session end timeout behavior", () => {
     };
 
     const started = Date.now();
-    await s.end("clean", []);
+    const status = await s.end("clean", []);
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeGreaterThanOrEqual(50);
+    expect(status).toEqual({ memory: "completed" });
+  });
+
+  it("returns 'completed' when summarizer finishes within timeout", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
+      sessionEnd: () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
+    };
+
+    const status = await s.end("clean", [], { memoryTimeoutMs: 200 });
+    expect(status).toEqual({ memory: "completed" });
+  });
+
+  it("returns 'skipped' when memory is disabled", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    // memoryEnabled is false by default in testConfig
+    const status = await s.end("clean");
+    expect(status).toEqual({ memory: "skipped" });
+  });
+
+  it("returns 'failed' when summarizer throws", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
+      sessionEnd: () => Promise.reject(new Error("summarizer down")),
+    };
+
+    const status = await s.end("clean", [], { memoryTimeoutMs: 0 });
+    expect(status).toEqual({ memory: "failed" });
   });
 
   it("tracks session start metadata and uptime", async () => {

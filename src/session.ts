@@ -35,6 +35,11 @@ import { formatActiveModelLabel } from "./model-resolver.js";
 import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 
+/** Outcome of the session-end memory summarization step. */
+export type SessionEndStatus = {
+  memory: "completed" | "background" | "skipped" | "failed";
+};
+
 export class Session {
   id: string;
   cwd: string;
@@ -621,11 +626,14 @@ export class Session {
     reason: "clean" | "aborted" | "error",
     events?: SessionEvent[],
     opts?: { memoryTimeoutMs?: number }
-  ): Promise<void> {
-    if (this.ended) return;
+  ): Promise<SessionEndStatus> {
+    if (this.ended) return { memory: "skipped" };
     this.ended = true;
 
+    let memoryStatus: SessionEndStatus["memory"] = "skipped";
+
     if (this.memoryEnabled && this.memoryStore) {
+      const store = this.memoryStore;
       const memoryTimeoutMs = opts?.memoryTimeoutMs ?? 0;
       try {
         this.eventLog.append({
@@ -637,7 +645,7 @@ export class Session {
             reason,
           },
         });
-        const finish = this.memoryStore.sessionEnd(reason, events);
+        const finish = store.sessionEnd(reason, events);
 
         if (memoryTimeoutMs > 0) {
           const completed = await waitForCompletion(finish, memoryTimeoutMs);
@@ -651,6 +659,7 @@ export class Session {
                 reason,
               },
             });
+            memoryStatus = "completed";
           } else {
             // Ensure late failures are not unhandled after we stop waiting.
             void finish.catch((err: unknown) => {
@@ -669,6 +678,7 @@ export class Session {
                 timeoutMs: memoryTimeoutMs,
               },
             });
+            memoryStatus = "background";
           }
         } else {
           await finish;
@@ -681,6 +691,7 @@ export class Session {
               reason,
             },
           });
+          memoryStatus = "completed";
         }
       } catch (err) {
         this.getLogger().child("memory").warn("Error during session end", {
@@ -696,47 +707,47 @@ export class Session {
             error: (err as Error).message,
           },
         });
+        memoryStatus = "failed";
       }
-    }
 
-    // Spawn background consolidation processor if enabled
-    if (this.memoryEnabled && this.memoryStore && this.config.consolidation?.enabled) {
-      const consolidationConfig: ConsolidationConfig = {
-        enabled: true,
-        promotion_threshold: this.config.consolidation.promotion_threshold ?? 3,
-        run_delay_seconds: this.config.consolidation.run_delay_seconds ?? 30,
-      };
-      const sessionId = this.id;
-      const store = this.memoryStore;
-      const transcriptEvents = events ?? this.getTranscriptEvents();
+      // Spawn background consolidation processor if enabled
+      if (this.config.consolidation?.enabled) {
+        const consolidationConfig: ConsolidationConfig = {
+          enabled: true,
+          promotion_threshold: this.config.consolidation.promotion_threshold ?? 3,
+          run_delay_seconds: this.config.consolidation.run_delay_seconds ?? 30,
+        };
+        const sessionId = this.id;
+        const transcriptEvents = events ?? this.getTranscriptEvents();
 
-      setTimeout(async () => {
-        try {
-          const summarizer = store.getSummarizer();
-          if (!summarizer) return;
-          const result = await runConsolidation({
-            store,
-            llm: summarizer,
-            sessionId,
-            events: transcriptEvents,
-            config: consolidationConfig,
-          });
-          if (result.promotions > 0) {
-            this.getLogger().child("memory").info(
-              `Consolidated: ${result.promotions} patterns promoted to deep memory`,
-            );
+        setTimeout(async () => {
+          try {
+            const summarizer = store.getSummarizer();
+            if (!summarizer) return;
+            const result = await runConsolidation({
+              store,
+              llm: summarizer,
+              sessionId,
+              events: transcriptEvents,
+              config: consolidationConfig,
+            });
+            if (result.promotions > 0) {
+              this.getLogger().child("memory").info(
+                `Consolidated: ${result.promotions} patterns promoted to deep memory`,
+              );
+            }
+            if (result.newEntries > 0 || result.confirmations > 0) {
+              this.getLogger().child("memory").info(
+                `Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`,
+              );
+            }
+          } catch (err) {
+            this.getLogger().child("memory").warn("Background consolidation failed", {
+              cause: err as Error,
+            });
           }
-          if (result.newEntries > 0 || result.confirmations > 0) {
-            this.getLogger().child("memory").info(
-              `Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`,
-            );
-          }
-        } catch (err) {
-          this.getLogger().child("memory").warn("Background consolidation failed", {
-            cause: err as Error,
-          });
-        }
-      }, consolidationConfig.run_delay_seconds * 1000);
+        }, consolidationConfig.run_delay_seconds * 1000).unref();
+      }
     }
 
     if (this.contextEngine) {
@@ -758,6 +769,7 @@ export class Session {
     }
 
     this.eventLog.close();
+    return { memory: memoryStatus };
   }
 
   private async initMemoryStore(): Promise<MemoryStore> {
