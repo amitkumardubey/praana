@@ -14,8 +14,7 @@ export type ResolveSource =
   | "model-only"
   | "provider-fallback";
 
-/** @deprecated Use provider-catalog or provider-fallback. */
-export type LegacyResolveSource = ResolveSource | "openrouter-catalog" | "openrouter-fallback";
+
 
 export interface ResolvedModelSpecifier {
   provider: string;
@@ -30,7 +29,15 @@ export type ParsedModelCommand =
   | { kind: "help" }
   | { kind: "resolve"; explicitProvider: string | null; modelSpec: string; userInput: string };
 
-/** Same formatting as Session.getActiveModelLabel() for a provider + model id pair. */
+/**
+ * Format a provider + model id pair into the active model label string.
+ *
+ * Convention: `provider/model` or `provider/vendor/model` for routed models.
+ * - `formatActiveModelLabel("openai", "gpt-4o")` → `"openai/gpt-4o"`
+ * - `formatActiveModelLabel("openrouter", "moonshotai/kimi-k2.7-code")` → `"openrouter/moonshotai/kimi-k2.7-code"`
+ *
+ * The three-segment form `provider/vendor/model` means "provider routing to vendor's model".
+ */
 export function formatActiveModelLabel(provider: string, modelId: string): string {
   const routingPrefix = `${provider}/`;
   if (modelId.startsWith(routingPrefix)) return modelId;

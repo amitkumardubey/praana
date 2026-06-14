@@ -152,8 +152,9 @@ export function isProviderAvailable(provider: string): boolean {
     const keys = findEnvKeys(provider as never);
     // If pi-ai knows about env keys for this provider but none are set, unavailable.
     if (keys?.length) return false;
+    // pi-ai knows this provider but has no env keys configured — check if keyless.
+    if (keys && keys.length === 0) return registryEntry?.envKey === null;
     // pi-ai doesn't know about keys for this provider — fall back to registry check.
-    // If not in registry (registryEntry is undefined), treat as unavailable.
     return registryEntry?.envKey === null;
   }
 

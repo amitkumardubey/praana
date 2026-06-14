@@ -281,6 +281,7 @@ export async function executeSlashCommand(
         lines.push("  /model gpt-4o                         — model on current provider");
         lines.push("  /model openai gpt-4o                  — switch to OpenAI native");
         lines.push("  /model openrouter openai/gpt-4o       — route via OpenRouter");
+        lines.push("  Note: use a space to switch provider. A slash is part of the model id.");
         break;
       }
 
@@ -366,15 +367,8 @@ export async function executeSlashCommand(
         userInput: parsed.userInput,
         outcome: "success",
       });
-      session.eventLog.append({
-        kind: "system_note",
-        actor: "kernel",
-        payload: {
-          type: "model_override",
-          provider: targetProvider,
-          model: resolved.modelId,
-        },
-      });
+      // Append provider_override first so forward-replay order matches intent:
+      // first switch provider, then set model.
       if (resolved.switchedProvider) {
         session.eventLog.append({
           kind: "system_note",
@@ -385,6 +379,15 @@ export async function executeSlashCommand(
           },
         });
       }
+      session.eventLog.append({
+        kind: "system_note",
+        actor: "kernel",
+        payload: {
+          type: "model_override",
+          provider: targetProvider,
+          model: resolved.modelId,
+        },
+      });
       lines.push(
         `Switched to: ${session.getActiveModelLabel()} (${contextWindow.toLocaleString()} ctx)`,
       );

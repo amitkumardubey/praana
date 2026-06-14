@@ -80,6 +80,9 @@ function loadDiskCache(): ModelContextCacheFile {
       openRouterCatalog?: unknown;
     };
     if (raw.version === CACHE_VERSION && raw.entries && typeof raw.entries === "object") {
+      // Drop the legacy openRouterCatalog field (moved to provider-catalog-cache.json).
+      // It will be naturally excluded on next persistDiskCache since the new schema
+      // only has version + entries.
       diskCache = { version: CACHE_VERSION, entries: raw.entries };
     }
   } catch {

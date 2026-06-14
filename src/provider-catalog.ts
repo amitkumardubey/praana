@@ -10,7 +10,8 @@ const CACHE_FILE = appHomePath("provider-catalog-cache.json");
 
 /**
  * OpenAI-compatible providers with a /models listing endpoint.
- * Keep in sync with llm.ts base URLs.
+ * Keep in sync with llm.ts base URLs (PROVIDER_REGISTRY).
+ * TODO: extract a shared getBaseUrl(provider) utility to avoid this duplication.
  *
  * Note on OpenCode Zen: The endpoint `https://opencode.ai/zen/v1/models`
  * is expected to return the standard OpenAI-compatible shape:
@@ -166,6 +167,8 @@ function findInCatalogMap(
     if (suffixIndex && normalized in suffixIndex) {
       return suffixIndex[normalized];
     }
+    // O(n) fallback: suffixIndex miss, scan for suffix match.
+    // This is rare since suffixIndex is rebuilt on every cache load.
     const suffix = `/${normalized}`;
     for (const id of Object.keys(catalog)) {
       if (id.endsWith(suffix)) return id;
@@ -274,7 +277,12 @@ async function fetchProviderCatalogFresh(
     );
   }, PROVIDER_CATALOG_FETCH_TIMEOUT_MS);
 
-  const promise = (async () => {
+  // Use a slot object so the async IIFE's finally block can compare
+  // promise references without TypeScript's "assigned before use" check.
+  const slot: { promise: Promise<Record<string, number | null>> } = {
+    promise: undefined as unknown as Promise<Record<string, number | null>>,
+  };
+  slot.promise = (async () => {
     try {
       const config = LIVE_CATALOG_PROVIDERS[provider];
       if (!config) throw new Error(`Provider "${provider}" has no live catalog`);
@@ -292,13 +300,24 @@ async function fetchProviderCatalogFresh(
         throw new Error(`${provider} models API returned ${response.status}`);
       }
 
-      const body = (await response.json()) as {
-        data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
-      };
-
-      if (controller.signal.aborted) {
-        throw controller.signal.reason ?? new Error("Provider catalog fetch aborted");
-      }
+      // The AbortSignal only cancels the HTTP request, not response.json().
+      // Race response.json() against the abort signal to handle hangs during body parsing.
+      const body = await Promise.race([
+        response.json() as Promise<{
+          data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
+        }>,
+        new Promise<never>((_, reject) => {
+          const onAbort = () => {
+            controller.signal.removeEventListener("abort", onAbort);
+            reject(controller.signal.reason ?? new Error("Provider catalog fetch aborted"));
+          };
+          if (controller.signal.aborted) {
+            reject(controller.signal.reason ?? new Error("Provider catalog fetch aborted"));
+          } else {
+            controller.signal.addEventListener("abort", onAbort);
+          }
+        }),
+      ]);
 
       const models: Record<string, number | null> = {};
       for (const item of body.data ?? []) {
@@ -317,12 +336,16 @@ async function fetchProviderCatalogFresh(
       return models;
     } finally {
       clearTimeout(timeoutId);
-      fetchPromises.delete(provider);
+      // Only clear if this promise is still the current one for this provider,
+      // preventing a race where a new fetch was started (e.g. after invalidation)
+      // while this one was still settling.
+      const current = fetchPromises.get(provider);
+      if (current?.promise === slot.promise) fetchPromises.delete(provider);
     }
   })();
 
-  fetchPromises.set(provider, { promise, controller });
-  return promise;
+  fetchPromises.set(provider, { promise: slot.promise, controller });
+  return slot.promise;
 }
 
 /** @deprecated Use providerModelIdCandidates("openrouter", modelId). */

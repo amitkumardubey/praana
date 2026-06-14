@@ -117,6 +117,8 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
       body = joined;
       const charTruncated = body.length > SHELL_OUTPUT_MAX_CHARS;
       if (charTruncated) {
+        // Note: slice operates on UTF-16 code units. Multi-byte characters
+        // beyond the BMP could be split; terminal output rarely contains them.
         body = body.slice(0, SHELL_OUTPUT_MAX_CHARS);
       }
       const remaining = lines.length - truncatedLines.length;

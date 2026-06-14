@@ -25,6 +25,7 @@ import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
 import {
   createSessionLogger,
+  getAppLogger,
   extractLlmErrorMessage,
   formatUserFacingLlmError,
   type LogEntry,
@@ -57,7 +58,10 @@ function defaultStreamReasoning(
   if (thinkingModel.thinkingLevelMap) {
     try {
       return clampThinkingLevel(thinkingModel as any, DEFAULT_REASONING_LEVEL);
-    } catch {
+    } catch (err) {
+      getAppLogger().child("llm").debug("clampThinkingLevel failed, using default reasoning", {
+        details: { error: String(err) },
+      });
       return DEFAULT_REASONING_LEVEL;
     }
   }
