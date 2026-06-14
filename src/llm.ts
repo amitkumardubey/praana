@@ -137,18 +137,23 @@ export function listKnownProviders(): string[] {
 export function getProviderEnvKey(provider: string): string | null {
   return getProviderConfig(provider).envKey;
 }
-
 /** Check whether the provider's API key is available in the environment. */
 export function isProviderAvailable(provider: string): boolean {
   const registryEntry = PROVIDER_REGISTRY[provider];
+  // Providers with no envKey in registry (e.g. ollama, bedrock) are always available.
   if (registryEntry && registryEntry.envKey === null) return true;
+  // Registry entry with envKey: check if that specific env var is set.
   if (registryEntry?.envKey && process.env[registryEntry.envKey]) return true;
 
+  // For pi-ai catalog providers not in our registry, check pi-ai's key detection.
   const piProviders = getProviders() as string[];
   if (piProviders.includes(provider)) {
     if (getEnvApiKey(provider as never)) return true;
     const keys = findEnvKeys(provider as never);
+    // If pi-ai knows about env keys for this provider but none are set, unavailable.
     if (keys?.length) return false;
+    // pi-ai doesn't know about keys for this provider — fall back to registry check.
+    // If not in registry (registryEntry is undefined), treat as unavailable.
     return registryEntry?.envKey === null;
   }
 

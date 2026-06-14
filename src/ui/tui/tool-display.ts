@@ -70,6 +70,10 @@ export function summarizeResultForDisplay(text: string): string {
   return `${size} — ${previewText}`;
 }
 
+/**
+ * Shell output truncation limits for TUI transcript display.
+ * These are hardcoded for now; could be made configurable via config file in the future.
+ */
 const SHELL_OUTPUT_MAX_LINES = 30;
 const SHELL_OUTPUT_MAX_CHARS = 4096;
 

@@ -346,7 +346,11 @@ export async function executeSlashCommand(
             outcome: "failed",
             reason: keyError,
           });
-          lines.push(keyError);
+          // Add a helpful hint for setting the env var
+          const hint = keyError.includes("Missing required env var: ")
+            ? ` (set ${keyError.split(": ")[1]} in your shell or .env file)`
+            : "";
+          lines.push(`${keyError}${hint}`);
           return result("none", "toast", "error");
         }
         session.setProviderOverride(resolved.provider);

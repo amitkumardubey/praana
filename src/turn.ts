@@ -34,6 +34,14 @@ import { printDebug, printMemoryBanner } from "./ui.js";
 /** Default reasoning level for models that require or support chain-of-thought. */
 const DEFAULT_REASONING_LEVEL = "medium";
 
+/**
+ * Model shape required by pi-ai's clampThinkingLevel.
+ * Only pi-ai catalog models have thinkingLevelMap; manually built models may not. */
+interface ThinkingModel {
+  reasoning?: boolean;
+  thinkingLevelMap?: Record<string, string | null>;
+}
+
 function defaultStreamReasoning(
   model: Record<string, unknown>,
   modelId: string,
@@ -42,11 +50,19 @@ function defaultStreamReasoning(
   const needsReasoning =
     !!model.reasoning || inferReasoningModel(provider, modelId);
   if (!needsReasoning) return undefined;
-  try {
-    return clampThinkingLevel(model as never, DEFAULT_REASONING_LEVEL);
-  } catch {
-    return DEFAULT_REASONING_LEVEL;
+
+  // Only call clampThinkingLevel if model has the required pi-ai catalog shape.
+  // Manually built models (for providers not in pi-ai) lack thinkingLevelMap.
+  const thinkingModel = model as ThinkingModel;
+  if (thinkingModel.thinkingLevelMap) {
+    try {
+      return clampThinkingLevel(thinkingModel as any, DEFAULT_REASONING_LEVEL);
+    } catch {
+      return DEFAULT_REASONING_LEVEL;
+    }
   }
+  // Fallback: model supports reasoning but no level map — use default.
+  return DEFAULT_REASONING_LEVEL;
 }
 
 export async function runTurn(

@@ -8,7 +8,16 @@ export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
 const CACHE_VERSION = 1;
 const CACHE_FILE = appHomePath("provider-catalog-cache.json");
 
-/** OpenAI-compatible providers with a /models listing endpoint. Keep in sync with llm.ts base URLs. */
+/**
+ * OpenAI-compatible providers with a /models listing endpoint.
+ * Keep in sync with llm.ts base URLs.
+ *
+ * Note on OpenCode Zen: The endpoint `https://opencode.ai/zen/v1/models`
+ * is expected to return the standard OpenAI-compatible shape:
+ * `{ data: Array<{ id: string; context_length?: number; context_window?: number }> }`.
+ * If the API response differs, the parsing in `fetchProviderCatalogFresh`
+ * may need adjustment.
+ */
 const LIVE_CATALOG_PROVIDERS: Record<
   string,
   { baseUrl: string; envKey: string | null; headers?: Record<string, string> }
@@ -44,6 +53,8 @@ const LIVE_CATALOG_PROVIDERS: Record<
   opencode: {
     baseUrl: "https://opencode.ai/zen/v1",
     envKey: "OPENCODE_API_KEY",
+    // OpenCode Zen /models endpoint returns standard OpenAI-compatible shape.
+    // See comment on LIVE_CATALOG_PROVIDERS for expected response format.
   },
   together: {
     baseUrl: "https://api.together.xyz/v1",
@@ -51,7 +62,7 @@ const LIVE_CATALOG_PROVIDERS: Record<
   },
   ollama: {
     baseUrl: "http://127.0.0.1:11434/v1",
-    envKey: null,
+    envKey: null, // local — no key needed
   },
 };
 
