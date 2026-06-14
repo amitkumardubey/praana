@@ -1,6 +1,6 @@
 import { getModel, getEnvApiKey, getProviders, findEnvKeys } from "@earendil-works/pi-ai";
 import type { PraanaConfig } from "./types.js";
-import { mapProviderToPiAi, resolveContextWindowSync } from "./model-context.js";
+import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 
 export {
@@ -172,7 +172,19 @@ export function getMissingKeyMessage(provider: string): string | null {
   return `Provider "${provider}" is not configured`;
 }
 
-// ── Model construction ─────────────────────────────────────────
+/** Whether a model likely requires chain-of-thought enabled on the wire. */
+export function inferReasoningModel(provider: string, modelId: string): boolean {
+  if (/kimi-k2/i.test(modelId)) return true;
+  if (isInPiAiCatalog(provider, modelId)) {
+    const piProvider = mapProviderToPiAi(provider) ?? provider;
+    const catalogModel = getModel(piProvider as never, modelId as never);
+    return !!catalogModel?.reasoning;
+  }
+  if (provider === "openrouter") {
+    return isInPiAiCatalog("openrouter", modelId);
+  }
+  return false;
+}
 
 type RuntimeModel = Record<string, unknown> & {
   __piOptions?: Record<string, unknown>;
@@ -226,7 +238,7 @@ function buildModel(
     api: pc.api,
     baseUrl,
     input: ["text"],
-    reasoning: true,
+    reasoning: inferReasoningModel(config.provider, modelId),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow:
       contextWindow ??

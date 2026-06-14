@@ -110,13 +110,20 @@ export function lookupPiAiContextWindow(
 }
 
 export async function isInOpenRouterCatalog(modelId: string): Promise<boolean> {
-  if (readOpenRouterCatalogEntry(modelId) !== null) return true;
+  if (lookupOpenRouterCatalogEntry(modelId) !== null) return true;
   try {
     const catalog = await fetchOpenRouterCatalog();
-    return modelId in catalog;
+    for (const id of openRouterModelIdCandidates(modelId)) {
+      if (id in catalog) return true;
+    }
+    if (!modelId.includes("/")) {
+      const suffix = `/${modelId}`;
+      if (Object.keys(catalog).some((id) => id.endsWith(suffix))) return true;
+    }
   } catch {
     return false;
   }
+  return false;
 }
 
 function readCachedContextWindow(provider: string, modelId: string): number | null {
@@ -138,6 +145,25 @@ function readOpenRouterCatalogEntry(modelId: string): number | null {
   if (Date.now() - catalog.fetchedAt > OPENROUTER_CATALOG_TTL_MS) return null;
   const value = catalog.models[modelId];
   return isValidWindow(value) ? value : null;
+}
+
+/** Alternate OpenRouter ids to try when the session model id omits the vendor prefix. */
+export function openRouterModelIdCandidates(modelId: string): string[] {
+  const candidates = new Set<string>([modelId]);
+  if (!modelId.includes("/")) {
+    if (/^kimi-/i.test(modelId)) {
+      candidates.add(`moonshotai/${modelId}`);
+    }
+  }
+  return [...candidates];
+}
+
+function lookupOpenRouterCatalogEntry(modelId: string): number | null {
+  for (const id of openRouterModelIdCandidates(modelId)) {
+    const value = readOpenRouterCatalogEntry(id);
+    if (value !== null) return value;
+  }
+  return null;
 }
 
 async function fetchOpenRouterCatalog(): Promise<Record<string, number>> {
@@ -185,16 +211,27 @@ async function fetchOpenRouterCatalog(): Promise<Record<string, number>> {
 }
 
 async function lookupOpenRouterContextWindow(modelId: string): Promise<number | null> {
-  const cached = readOpenRouterCatalogEntry(modelId);
+  const cached = lookupOpenRouterCatalogEntry(modelId);
   if (cached !== null) return cached;
 
   try {
     const catalog = await fetchOpenRouterCatalog();
-    const value = catalog[modelId];
-    return isValidWindow(value) ? value : null;
+    for (const id of openRouterModelIdCandidates(modelId)) {
+      const value = catalog[id];
+      if (isValidWindow(value)) return value;
+    }
+    if (!modelId.includes("/")) {
+      const suffix = `/${modelId}`;
+      for (const [id, contextWindow] of Object.entries(catalog)) {
+        if (id.endsWith(suffix) && isValidWindow(contextWindow)) {
+          return contextWindow;
+        }
+      }
+    }
   } catch {
     return null;
   }
+  return null;
 }
 
 /**
@@ -211,11 +248,19 @@ export function resolveContextWindowSync(
   const cached = readCachedContextWindow(provider, modelId);
   if (cached !== null) return cached;
 
-  const fromCatalog = readOpenRouterCatalogEntry(modelId);
+  const fromCatalog = lookupOpenRouterCatalogEntry(modelId);
   if (fromCatalog !== null) return fromCatalog;
 
   const fromPiAi = lookupPiAiContextWindow(provider, modelId);
   if (fromPiAi !== null) return fromPiAi;
+
+  if (provider === "openrouter") {
+    for (const alt of openRouterModelIdCandidates(modelId)) {
+      if (alt === modelId) continue;
+      const fromAltPiAi = lookupPiAiContextWindow("openrouter", alt);
+      if (fromAltPiAi !== null) return fromAltPiAi;
+    }
+  }
 
   // OpenRouter-style ids may live under the openrouter provider in pi-ai.
   if (provider !== "openrouter" && modelId.includes("/")) {
@@ -240,13 +285,14 @@ export async function fetchAndCacheContextWindow(
   const cached = readCachedContextWindow(provider, modelId);
   if (cached !== null) return cached;
 
-  const sources: Array<number | null> = [
-    lookupPiAiContextWindow(provider, modelId),
-    provider !== "openrouter" && modelId.includes("/")
-      ? lookupPiAiContextWindow("openrouter", modelId)
-      : null,
-    await lookupOpenRouterContextWindow(modelId),
-  ];
+  const sources: Array<number | null> = [];
+  for (const id of openRouterModelIdCandidates(modelId)) {
+    sources.push(lookupPiAiContextWindow(provider, id));
+    if (provider !== "openrouter") {
+      sources.push(lookupPiAiContextWindow("openrouter", id));
+    }
+  }
+  sources.push(await lookupOpenRouterContextWindow(modelId));
 
   for (const value of sources) {
     if (value !== null) {
@@ -255,9 +301,7 @@ export async function fetchAndCacheContextWindow(
     }
   }
 
-  const fallback = DEFAULT_MODEL_CONTEXT_WINDOW;
-  rememberContextWindow(provider, modelId, fallback);
-  return fallback;
+  return resolveContextWindowSync(provider, modelId, override);
 }
 
 /** @deprecated Use resolveContextWindowSync with provider, or session.getContextWindowTokens(). */

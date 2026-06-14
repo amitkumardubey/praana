@@ -4,6 +4,7 @@ import {
   getProviderEnvKey,
   getMissingKeyMessage,
   listKnownProviders,
+  inferReasoningModel,
 } from "../src/llm.js";
 
 describe("llm provider registry", () => {
@@ -25,5 +26,11 @@ describe("llm provider registry", () => {
     expect(getProviderEnvKey("opencode")).toBe("OPENCODE_API_KEY");
     expect(getMissingKeyMessage("opencode")).toMatch(/OPENCODE_API_KEY/);
     if (prev !== undefined) process.env.OPENCODE_API_KEY = prev;
+  });
+
+  it("infers reasoning for kimi model ids", () => {
+    expect(inferReasoningModel("openrouter", "kimi-k2.7-code")).toBe(true);
+    expect(inferReasoningModel("openrouter", "moonshotai/kimi-k2.5")).toBe(true);
+    expect(inferReasoningModel("openrouter", "gpt-4o")).toBe(false);
   });
 });

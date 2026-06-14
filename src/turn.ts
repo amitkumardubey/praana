@@ -1,4 +1,4 @@
-import { stream as piStream, type Message } from "@earendil-works/pi-ai";
+import { stream as piStream, type Message, clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -13,7 +13,7 @@ import {
 } from "./context-engine/index.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
-import { createProvider, resolveModel } from "./llm.js";
+import { createProvider, resolveModel, inferReasoningModel } from "./llm.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -30,6 +30,24 @@ import {
   type LogEntry,
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
+
+/** Default reasoning level for models that require or support chain-of-thought. */
+function defaultStreamReasoning(
+  model: Record<string, unknown>,
+  modelId: string,
+  provider: string,
+): string | undefined {
+  const needsReasoning =
+    !!model.reasoning || inferReasoningModel(provider, modelId);
+  if (!needsReasoning) return undefined;
+  try {
+    const levels = getSupportedThinkingLevels(model as never);
+    const pick = levels.find((level) => level !== "off") ?? "low";
+    return clampThinkingLevel(model as never, pick);
+  } catch {
+    return "low";
+  }
+}
 
 export async function runTurn(
   session: Session,
@@ -294,9 +312,15 @@ export async function runTurn(
       parameters: normalizeToolParameters((def as any).parameters),
     }));
 
+    const streamReasoning = defaultStreamReasoning(
+      model as Record<string, unknown>,
+      modelName,
+      providerName,
+    );
     const modelOptions = {
       ...((model as any).__piOptions ?? {}),
       ...(options?.signal ? { signal: options.signal } : {}),
+      ...(streamReasoning ? { reasoning: streamReasoning } : {}),
     };
     const stream = piStream(
       model as any,
