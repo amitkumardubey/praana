@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";
+import {
+  PROVIDER_REGISTRY,
+  LIVE_CATALOG_PROVIDER_IDS,
+  VENDOR_PREFIX_ALIASES,
+} from "./provider-registry.js";
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
@@ -9,63 +14,12 @@ const CACHE_VERSION = 1;
 const CACHE_FILE = appHomePath("provider-catalog-cache.json");
 
 /**
- * OpenAI-compatible providers with a /models listing endpoint.
- * Keep in sync with llm.ts base URLs (PROVIDER_REGISTRY).
- * TODO: extract a shared getBaseUrl(provider) utility to avoid this duplication.
- *
- * Note on OpenCode Zen: The endpoint `https://opencode.ai/zen/v1/models`
- * is expected to return the standard OpenAI-compatible shape:
- * `{ data: Array<{ id: string; context_length?: number; context_window?: number }> }`.
- * If the API response differs, the parsing in `fetchProviderCatalogFresh`
- * may need adjustment.
+ * Live-catalog provider set — built from `LIVE_CATALOG_PROVIDER_IDS` at
+ * module load time.  Base URLs, env keys, and headers are looked up from
+ * the shared `PROVIDER_REGISTRY` on each fetch, so there is no
+ * duplication of endpoint configuration.
  */
-const LIVE_CATALOG_PROVIDERS: Record<
-  string,
-  { baseUrl: string; envKey: string | null; headers?: Record<string, string> }
-> = {
-  openrouter: {
-    baseUrl: "https://openrouter.ai/api/v1",
-    envKey: "OPENROUTER_API_KEY",
-    headers: {
-      "HTTP-Referer": "https://github.com/amitkumardubey/praana",
-      "X-Title": "PRAANA",
-    },
-  },
-  openai: {
-    baseUrl: "https://api.openai.com/v1",
-    envKey: "OPENAI_API_KEY",
-  },
-  deepseek: {
-    baseUrl: "https://api.deepseek.com/v1",
-    envKey: "DEEPSEEK_API_KEY",
-  },
-  groq: {
-    baseUrl: "https://api.groq.com/openai/v1",
-    envKey: "GROQ_API_KEY",
-  },
-  xai: {
-    baseUrl: "https://api.x.ai/v1",
-    envKey: "XAI_API_KEY",
-  },
-  fireworks: {
-    baseUrl: "https://api.fireworks.ai/inference/v1",
-    envKey: "FIREWORKS_API_KEY",
-  },
-  opencode: {
-    baseUrl: "https://opencode.ai/zen/v1",
-    envKey: "OPENCODE_API_KEY",
-    // OpenCode Zen /models endpoint returns standard OpenAI-compatible shape.
-    // See comment on LIVE_CATALOG_PROVIDERS for expected response format.
-  },
-  together: {
-    baseUrl: "https://api.together.xyz/v1",
-    envKey: "TOGETHER_API_KEY",
-  },
-  ollama: {
-    baseUrl: "http://127.0.0.1:11434/v1",
-    envKey: null, // local — no key needed
-  },
-};
+const LIVE_CATALOG_PROVIDERS = new Set(LIVE_CATALOG_PROVIDER_IDS);
 
 interface ProviderCatalogSnapshot {
   fetchedAt: number;
@@ -126,11 +80,11 @@ function loadDiskCache(): ProviderCatalogCacheFile {
 function persistDiskCache(): void {
   const dir = dirname(CACHE_FILE);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CACHE_FILE, JSON.stringify(loadDiskCache(), null, 2), "utf-8");
+  writeFileSync(CACHE_FILE, JSON.stringify(loadDiskCache()), "utf-8");
 }
 
 export function providerSupportsLiveCatalog(provider: string): boolean {
-  return provider in LIVE_CATALOG_PROVIDERS;
+  return LIVE_CATALOG_PROVIDERS.has(provider);
 }
 
 /** Strip `provider/` routing prefix from a model id before API or catalog lookup. */
@@ -145,8 +99,14 @@ export function providerModelIdCandidates(provider: string, modelId: string): st
   const candidates = new Set<string>([normalized]);
   if (normalized !== modelId) candidates.add(modelId);
 
-  if (provider === "openrouter" && !normalized.includes("/") && /^kimi-/i.test(normalized)) {
-    candidates.add(`moonshotai/${normalized}`);
+  // Apply configurable vendor prefix aliases (e.g. openrouter: kimi-* → moonshotai/*)
+  const aliases = VENDOR_PREFIX_ALIASES[provider];
+  if (aliases && !normalized.includes("/")) {
+    for (const { pattern, vendor } of aliases) {
+      if (pattern.test(normalized)) {
+        candidates.add(`${vendor}/${normalized}`);
+      }
+    }
   }
 
   return [...candidates];
@@ -284,17 +244,18 @@ async function fetchProviderCatalogFresh(
   };
   slot.promise = (async () => {
     try {
-      const config = LIVE_CATALOG_PROVIDERS[provider];
-      if (!config) throw new Error(`Provider "${provider}" has no live catalog`);
+      // Look up base URL, env key, and headers from the shared registry.
+      const registryEntry = PROVIDER_REGISTRY[provider];
+      if (!registryEntry) throw new Error(`Provider "${provider}" has no registry entry`);
 
       const headers: Record<string, string> = {
         Accept: "application/json",
-        ...config.headers,
+        ...registryEntry.headers,
       };
-      const apiKey = config.envKey ? process.env[config.envKey] : null;
+      const apiKey = registryEntry.envKey ? process.env[registryEntry.envKey] : null;
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-      const url = `${config.baseUrl.replace(/\/$/, "")}/models`;
+      const url = `${registryEntry.baseUrl.replace(/\/$/, "")}/models`;
       const response = await fetch(url, { headers, signal: controller.signal });
       if (!response.ok) {
         throw new Error(`${provider} models API returned ${response.status}`);
@@ -318,6 +279,12 @@ async function fetchProviderCatalogFresh(
           }
         }),
       ]);
+
+      // Guard: if the fetch was aborted during response.json(), do not
+      // persist stale data.
+      if (controller.signal.aborted) {
+        throw new Error("Provider catalog fetch aborted");
+      }
 
       const models: Record<string, number | null> = {};
       for (const item of body.data ?? []) {

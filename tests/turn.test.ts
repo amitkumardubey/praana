@@ -115,6 +115,7 @@ vi.mock("../src/llm.js", () => ({
   createProvider: vi.fn(() => vi.fn(() => ({}))),
   resolveModel: vi.fn((name: string) => name),
   inferReasoningModel: vi.fn(() => false),
+  getReasoningEffort: vi.fn(() => undefined),
 }));
 
 vi.mock("../src/ui.js", () => ({
@@ -132,7 +133,7 @@ import { stream as piStream } from "@earendil-works/pi-ai";
 import { compileClassicWithMetrics } from "../src/compile-classic.js";
 import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
-import { createProvider, resolveModel, inferReasoningModel } from "../src/llm.js";
+import { createProvider, resolveModel, inferReasoningModel, getReasoningEffort } from "../src/llm.js";
 
 import {
   runTurn,
@@ -604,7 +605,7 @@ describe("runTurn", () => {
   });
 
   it("passes reasoningEffort (not reasoning) to piStream for reasoning models", async () => {
-    vi.mocked(inferReasoningModel).mockReturnValue(true);
+    vi.mocked(getReasoningEffort).mockReturnValue("medium");
     vi.mocked(createProvider).mockReturnValue(
       vi.fn(() => ({ reasoning: true, __piOptions: { apiKey: "test-key" } })) as any,
     );

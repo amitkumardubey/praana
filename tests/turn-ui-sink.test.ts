@@ -39,6 +39,7 @@ vi.mock("../src/llm.js", () => ({
   createProvider: vi.fn(() => vi.fn(() => ({}))),
   resolveModel: vi.fn((name: string) => name),
   inferReasoningModel: vi.fn(() => false),
+  getReasoningEffort: vi.fn(() => undefined),
 }));
 
 import { stream as piStream } from "@earendil-works/pi-ai";

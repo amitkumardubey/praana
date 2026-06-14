@@ -1,4 +1,4 @@
-import { stream as piStream, type Message, clampThinkingLevel } from "@earendil-works/pi-ai";
+import { stream as piStream, type Message } from "@earendil-works/pi-ai";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -13,7 +13,7 @@ import {
 } from "./context-engine/index.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
-import { createProvider, resolveModel, inferReasoningModel } from "./llm.js";
+import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -25,49 +25,11 @@ import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
 import {
   createSessionLogger,
-  getAppLogger,
   extractLlmErrorMessage,
   formatUserFacingLlmError,
   type LogEntry,
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
-
-/** Default reasoning level for models that require or support chain-of-thought. */
-const DEFAULT_REASONING_LEVEL = "medium";
-
-/**
- * Model shape required by pi-ai's clampThinkingLevel.
- * Only pi-ai catalog models have thinkingLevelMap; manually built models may not. */
-interface ThinkingModel {
-  reasoning?: boolean;
-  thinkingLevelMap?: Record<string, string | null>;
-}
-
-function defaultStreamReasoning(
-  model: Record<string, unknown>,
-  modelId: string,
-  provider: string,
-): string | undefined {
-  const needsReasoning =
-    !!model.reasoning || inferReasoningModel(provider, modelId);
-  if (!needsReasoning) return undefined;
-
-  // Only call clampThinkingLevel if model has the required pi-ai catalog shape.
-  // Manually built models (for providers not in pi-ai) lack thinkingLevelMap.
-  const thinkingModel = model as ThinkingModel;
-  if (thinkingModel.thinkingLevelMap) {
-    try {
-      return clampThinkingLevel(thinkingModel as any, DEFAULT_REASONING_LEVEL);
-    } catch (err) {
-      getAppLogger().child("llm").debug("clampThinkingLevel failed, using default reasoning", {
-        details: { error: String(err) },
-      });
-      return DEFAULT_REASONING_LEVEL;
-    }
-  }
-  // Fallback: model supports reasoning but no level map — use default.
-  return DEFAULT_REASONING_LEVEL;
-}
 
 export async function runTurn(
   session: Session,
@@ -150,7 +112,7 @@ export async function runTurn(
     getCurrentTurn: () => session.getTurnCount(),
     searchCode: session.config.search_code,
     getAbortSignal: () => options?.signal,
-    shellLiveStream: s.shellLiveStream !== false,
+    shellLiveStream: s.shellLiveStream ?? true,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -332,7 +294,7 @@ export async function runTurn(
       parameters: normalizeToolParameters((def as any).parameters),
     }));
 
-    const streamReasoning = defaultStreamReasoning(
+    const streamReasoning = getReasoningEffort(
       model as Record<string, unknown>,
       modelName,
       providerName,

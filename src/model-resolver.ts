@@ -14,8 +14,6 @@ export type ResolveSource =
   | "model-only"
   | "provider-fallback";
 
-
-
 export interface ResolvedModelSpecifier {
   provider: string;
   modelId: string;

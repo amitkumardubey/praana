@@ -1,7 +1,12 @@
-import { getModel, getEnvApiKey, getProviders, findEnvKeys } from "@earendil-works/pi-ai";
+import { getModel, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { PraanaConfig } from "./types.js";
 import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
+import {
+  PROVIDER_REGISTRY,
+  REASONING_MODEL_HINTS,
+  type ProviderConfig,
+} from "./provider-registry.js";
 
 export {
   resolveContextWindowSync,
@@ -9,110 +14,7 @@ export {
   DEFAULT_MODEL_CONTEXT_WINDOW,
 } from "./model-context.js";
 
-// ── Provider registry ──────────────────────────────────────────
-// Each entry maps a config `provider` string to pi-ai's model fields.
-// Add new providers here — no other code changes needed.
-
-interface ProviderConfig {
-  /** pi-ai API type identifier */
-  api: string;
-  /** pi-ai provider identifier */
-  provider: string;
-  /** Env var to check for API key, or null if none needed */
-  envKey: string | null;
-  /** Default base URL for this provider's API */
-  baseUrl: string;
-  /** Optional HTTP headers sent with every request */
-  headers?: Record<string, string>;
-}
-
-const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
-  // ── OpenAI-compatible (use "openai-completions" API) ──
-  openrouter: {
-    api: "openai-completions",
-    provider: "openrouter",
-    envKey: "OPENROUTER_API_KEY",
-    baseUrl: "https://openrouter.ai/api/v1",
-    headers: {
-      "HTTP-Referer": "https://github.com/amitkumardubey/praana",
-      "X-Title": "PRAANA",
-    },
-  },
-  openai: {
-    api: "openai-completions",
-    provider: "openai",
-    envKey: "OPENAI_API_KEY",
-    baseUrl: "https://api.openai.com/v1",
-  },
-  deepseek: {
-    api: "openai-completions",
-    provider: "deepseek",
-    envKey: "DEEPSEEK_API_KEY",
-    baseUrl: "https://api.deepseek.com/v1",
-  },
-  groq: {
-    api: "openai-completions",
-    provider: "groq",
-    envKey: "GROQ_API_KEY",
-    baseUrl: "https://api.groq.com/openai/v1",
-  },
-  xai: {
-    api: "openai-completions",
-    provider: "xai",
-    envKey: "XAI_API_KEY",
-    baseUrl: "https://api.x.ai/v1",
-  },
-  fireworks: {
-    api: "openai-completions",
-    provider: "fireworks",
-    envKey: "FIREWORKS_API_KEY",
-    baseUrl: "https://api.fireworks.ai/inference/v1",
-  },
-  opencode: {
-    api: "openai-completions",
-    provider: "opencode",
-    envKey: "OPENCODE_API_KEY",
-    baseUrl: "https://opencode.ai/zen/v1",
-  },
-  together: {
-    api: "openai-completions",
-    provider: "together",
-    envKey: "TOGETHER_API_KEY",
-    baseUrl: "https://api.together.xyz/v1",
-  },
-  ollama: {
-    api: "openai-completions",
-    provider: "openai",
-    envKey: null, // local — no key needed
-    baseUrl: "http://127.0.0.1:11434/v1",
-  },
-
-  // ── Native API (different wire protocol) ──
-  anthropic: {
-    api: "anthropic-messages",
-    provider: "anthropic",
-    envKey: "ANTHROPIC_API_KEY",
-    baseUrl: "https://api.anthropic.com",
-  },
-  google: {
-    api: "google-generative-ai",
-    provider: "google",
-    envKey: "GOOGLE_GENERATIVE_AI_API_KEY",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-  },
-  mistral: {
-    api: "mistral-conversations",
-    provider: "mistral",
-    envKey: "MISTRAL_API_KEY",
-    baseUrl: "https://api.mistral.ai/v1",
-  },
-  "amazon-bedrock": {
-    api: "bedrock-converse-stream",
-    provider: "amazon-bedrock",
-    envKey: null, // uses AWS credentials (env / IAM / profile)
-    baseUrl: "",
-  },
-};
+export type { ProviderConfig } from "./provider-registry.js";
 
 // ── Exported helpers ───────────────────────────────────────────
 
@@ -140,24 +42,27 @@ export function getProviderEnvKey(provider: string): string | null {
 /** Check whether the provider's API key is available in the environment. */
 export function isProviderAvailable(provider: string): boolean {
   const registryEntry = PROVIDER_REGISTRY[provider];
-  // Providers with no envKey in registry (e.g. ollama, bedrock) are always available.
-  if (registryEntry && registryEntry.envKey === null) return true;
-  // Registry entry with envKey: check if that specific env var is set.
-  if (registryEntry?.envKey && process.env[registryEntry.envKey]) return true;
 
-  // For pi-ai catalog providers not in our registry, check pi-ai's key detection.
-  const piProviders = getProviders() as string[];
-  if (piProviders.includes(provider)) {
-    if (getEnvApiKey(provider as never)) return true;
-    const keys = findEnvKeys(provider as never);
-    // If pi-ai knows about env keys for this provider but none are set, unavailable.
-    if (keys?.length) return false;
-    // pi-ai knows this provider but has no env keys configured — check if keyless.
-    if (keys && keys.length === 0) return registryEntry?.envKey === null;
-    // pi-ai doesn't know about keys for this provider — fall back to registry check.
-    return registryEntry?.envKey === null;
+  // 1. Providers explicitly marked keyless in the registry (ollama, bedrock).
+  if (registryEntry && registryEntry.envKey === null) return true;
+
+  // 2. Registry entry with an env key — check if that env var is set.
+  //    This takes precedence over pi-ai's detection to avoid false positives
+  //    for providers that ARE in our registry (e.g. opencode).
+  if (registryEntry?.envKey) {
+    return !!process.env[registryEntry.envKey];
   }
 
+  // 3. For providers known to pi-ai but NOT in our registry, use pi-ai's
+  //    key detection.  Only treat as available when pi-ai confirms the key
+  //    is present; otherwise default to unavailable (safer for providers we
+  //    don't explicitly manage).
+  const piProviders = getProviders() as string[];
+  if (piProviders.includes(provider)) {
+    return !!getEnvApiKey(provider as never);
+  }
+
+  // Unknown provider.
   return false;
 }
 
@@ -180,7 +85,13 @@ export function getMissingKeyMessage(provider: string): string | null {
 
 /** Whether a model likely requires chain-of-thought enabled on the wire. */
 export function inferReasoningModel(provider: string, modelId: string): boolean {
-  if (/kimi-k2/i.test(modelId)) return true;
+  // Check configurable hints first (provider-specific, then global "*").
+  const providerHints = REASONING_MODEL_HINTS[provider];
+  const globalHints = REASONING_MODEL_HINTS["*"];
+  for (const hints of [providerHints, globalHints]) {
+    if (hints?.some((h) => h.pattern.test(modelId))) return true;
+  }
+  // Fall back to pi-ai catalog metadata.
   if (isInPiAiCatalog(provider, modelId)) {
     const piProvider = mapProviderToPiAi(provider) ?? provider;
     const catalogModel = getModel(piProvider as never, modelId as never);
@@ -268,4 +179,43 @@ export function createProvider(config: PraanaConfig["llm"], contextWindow?: numb
 
 export function resolveModel(modelString: string) {
   return modelString;
+}
+
+// ── Reasoning / thinking-level helpers ────────────────────────
+
+const DEFAULT_REASONING_LEVEL = "medium";
+
+/**
+ * Determine the `reasoningEffort` value to pass to pi-ai `stream()`.
+ *
+ * Returns `undefined` when the model does not need chain-of-thought,
+ * or a clamped reasoning level string (e.g. "medium") when it does.
+ */
+export function getReasoningEffort(
+  model: Record<string, unknown>,
+  modelId: string,
+  provider: string,
+): string | undefined {
+  const needsReasoning =
+    !!model.reasoning || inferReasoningModel(provider, modelId);
+  if (!needsReasoning) return undefined;
+
+  // Only call clampThinkingLevel if model has the pi-ai catalog shape
+  // with thinkingLevelMap. Manually built models may lack this.
+  const thinkingLevelMap = model.thinkingLevelMap as
+    | Record<string, string | null>
+    | undefined;
+  if (thinkingLevelMap) {
+    try {
+      return clampThinkingLevel(
+        { thinkingLevelMap } as Parameters<typeof clampThinkingLevel>[0],
+        DEFAULT_REASONING_LEVEL,
+      );
+    } catch {
+      getAppLogger().child("llm").debug(
+        "clampThinkingLevel failed, using default reasoning",
+      );
+    }
+  }
+  return DEFAULT_REASONING_LEVEL;
 }
