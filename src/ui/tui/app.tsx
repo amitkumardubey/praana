@@ -352,7 +352,7 @@ export function TuiApp({
         ) : null}
       </Box>
       {toast ? <ToastLine message={toast.message} tone={toast.tone} /> : null}
-      <Box borderStyle="round" borderColor={PALETTE.assistant} paddingX={1} gap={1}>
+      <Box padding={1} gap={1}>
         <Text color={PALETTE.assistant}>❯ </Text>
         <PromptInput
           value={input}
