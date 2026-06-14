@@ -64,6 +64,7 @@ describe("status-bar", () => {
       incognito: false,
       contextUsedTokens: 18400,
       contextWindowTokens: 128000,
+      branch: "feat/foo",
       memoryStats: { active: 8, soft: 23, hard: 91 },
       skills: ["git", "node"],
       currentTask: "implement auth middleware",
@@ -77,6 +78,8 @@ describe("status-bar", () => {
     expect(lines[2]).toContain("128k");
     expect(lines[3]).toContain("2 skills");
     expect(lines[4]).toContain("implement auth middleware");
+    expect(lines[0]).toContain("praana");
+    expect(lines[0]).toContain("feat/foo");
   });
 
   it("buildStatusBarInput reads session metrics and memory", () => {
@@ -86,6 +89,7 @@ describe("status-bar", () => {
       memoryEnabled: false,
       agentsContext: null,
       getRepoRoot: () => "/tmp/praana",
+      getGitBranch: () => "main",
       getMemoryStats: () => ({ active: 1, soft: 2, hard: 3, total: 6, byKind: {} }),
       getLastCompileMetrics: () => ({
         totalTokens: 9000,
@@ -125,6 +129,7 @@ describe("status-bar", () => {
       memoryEnabled: false,
       agentsContext: "x".repeat(4000),
       getRepoRoot: () => "/tmp/praana",
+      getGitBranch: () => null,
       getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
       getLastCompileMetrics: () => null,
       isIncognito: () => false,

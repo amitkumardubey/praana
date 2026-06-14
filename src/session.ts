@@ -506,6 +506,11 @@ export class Session {
     return findGitRoot(this.cwd);
   }
 
+  /** Current git branch name, or null when detached/not a git repo. */
+  getGitBranch(): string | null {
+    return findGitBranch(this.cwd);
+  }
+
   setLastCompileMetrics(metrics: CompileMetrics): void {
     this.lastCompileMetrics = metrics;
   }
@@ -853,6 +858,21 @@ function findGitRoot(cwd: string): string {
     }).trim();
   } catch {
     return cwd;
+  }
+}
+
+/** Current git branch, or null when detached HEAD or not in a git repo. */
+function findGitBranch(cwd: string): string | null {
+  try {
+    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!branch || branch === "HEAD") return null;
+    return branch;
+  } catch {
+    return null;
   }
 }
 

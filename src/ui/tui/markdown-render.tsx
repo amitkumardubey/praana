@@ -62,7 +62,7 @@ function InlineToken({ token }: { token: Token | string }): React.ReactNode {
     }
     case "codespan":
       return (
-        <Text color={PALETTE.tool} backgroundColor="#2d2d2d">
+        <Text color={PALETTE.tool} backgroundColor={PALETTE.codeSpanBg}>
           {" "}{(token as Tokens.Codespan).text}{" "}
         </Text>
       );
@@ -161,7 +161,7 @@ function inlineToAnsi(token: Token | string): string {
       return `${ansiStyles.strikethrough.open}${ansiStyles.dim.open}${inner}${ansiStyles.dim.close}${ansiStyles.strikethrough.close}`;
     }
     case "codespan":
-      return `${ansiStyles.bgColor.ansi16m.hex("#2d2d2d")}${ansiStyles.color.ansi16m.hex(PALETTE.tool)}${" "}${(token as Tokens.Codespan).text}${" "}${ansiStyles.bgColor.close}${ansiStyles.color.close}`;
+      return `${ansiStyles.bgColor.ansi16m.hex(PALETTE.codeSpanBg)}${ansiStyles.color.ansi16m.hex(PALETTE.tool)}${" "}${(token as Tokens.Codespan).text}${" "}${ansiStyles.bgColor.close}${ansiStyles.color.close}`;
     case "link": {
       const t = token as Tokens.Link;
       const label = t.text || t.href;
@@ -205,7 +205,7 @@ function MarkdownList({
             flexDirection="row"
             alignItems={multiline ? "flex-start" : undefined}
           >
-            <Text color={PALETTE.gutter}>{bullet}</Text>
+            <Text color={PALETTE.faint}>{bullet}</Text>
             <Box flexDirection="column" flexGrow={1}>
               <ListItemTokens tokens={item.tokens} depth={depth} />
             </Box>
@@ -402,7 +402,7 @@ function renderCodeBlock(token: Tokens.Code, syntaxHighlighting: boolean, syntax
           {"  "}{token.lang}
         </Text>
       )}
-      <Box flexDirection="column" backgroundColor="#1e1e1e" paddingX={1}>
+      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1}>
         {lines.map((line, i) => (
           <Text key={i}>{line || " "}</Text>
         ))}
@@ -488,7 +488,7 @@ function MarkdownBlock({ token, syntaxHighlighting, syntaxTheme }: { token: Toke
     case "hr":
       return (
         <Box marginBottom={1}>
-          <Text color={PALETTE.gutter}>
+          <Text color={PALETTE.faint}>
             {"─".repeat(Math.max(20, getTerminalWidth() - 4))}
           </Text>
         </Box>
