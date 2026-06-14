@@ -8,17 +8,15 @@ export interface PromptInputProps {
   onSubmit: (value: string) => void;
   placeholder?: string;
   focus?: boolean;
-  /** Called for single-char keys when the input is empty. Return true to consume. */
-  onEmptyShortcut?: (key: string) => boolean;
-  /** Scroll / escape keys — PromptInput owns stdin so these must be routed here. */
+  /** Modifier shortcuts — PromptInput owns stdin so these must be routed here. */
   onNavigationKey?: (key: Key, input: string) => boolean;
   onHistoryPrev?: () => string | null;
   onHistoryNext?: () => string | null;
 }
 
 /**
- * Prompt line input — ink-text-input fork with empty-input shortcut support.
- * Ink TextInput captures all keystrokes; shortcuts like `t` must be handled here.
+ * Prompt line input — ink-text-input fork with navigation-key routing.
+ * Ink TextInput captures all keystrokes; modifier shortcuts go through onNavigationKey.
  */
 export function PromptInput({
   value: originalValue,
@@ -26,7 +24,6 @@ export function PromptInput({
   focus = true,
   onChange,
   onSubmit,
-  onEmptyShortcut,
   onNavigationKey,
   onHistoryPrev,
   onHistoryNext,
@@ -106,16 +103,6 @@ export function PromptInput({
 
       if (key.return) {
         onSubmit?.(originalValue);
-        return;
-      }
-
-      if (
-        !key.ctrl &&
-        !key.meta &&
-        input.length === 1 &&
-        originalValue.length === 0 &&
-        onEmptyShortcut?.(input)
-      ) {
         return;
       }
 
