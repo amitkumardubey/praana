@@ -9,7 +9,6 @@ import { UserBlock } from "./components/user-block.js";
 import { ThinkingBlock } from "./components/thinking-block.js";
 import { InlineToolRow } from "./components/inline-tool-row.js";
 import { ToolResultLine } from "./components/tool-result-line.js";
-import { ShellOutputBlock } from "./components/shell-output-block.js";
 import { TurnFooter } from "./components/turn-footer.js";
 import { SystemLine } from "./components/system-line.js";
 
@@ -71,15 +70,11 @@ export const TranscriptLine = React.memo(function TranscriptLine({
           marginTop={marginTop}
         />
         {entry.resultSummary ? (
-          entry.toolName === "shell" ? (
-            <ShellOutputBlock
-              summary={entry.resultSummary}
-              body={entry.resultBody ?? null}
-              isError={entry.isError}
-            />
-          ) : (
-            <ToolResultLine summary={entry.resultSummary} isError={entry.isError} />
-          )
+          <ToolResultLine
+            summary={entry.resultSummary}
+            body={entry.toolName === "shell" ? (entry.resultBody ?? null) : null}
+            isError={entry.isError}
+          />
         ) : null}
       </Box>
     );

@@ -112,11 +112,11 @@ function MarkdownList({
       {token.items.map((item, i) => {
         const bullet = token.ordered ? `${i + 1}. ` : "• ";
         return (
-          <Box key={i} flexDirection="row">
+          <Box key={i} flexDirection="row" alignItems="flex-start">
             <Text color={PALETTE.gutter}>{bullet}</Text>
-            <Text wrap="wrap">
+            <Box flexDirection="column" flexGrow={1}>
               <ListItemTokens tokens={item.tokens} depth={depth} />
-            </Text>
+            </Box>
           </Box>
         );
       })}
