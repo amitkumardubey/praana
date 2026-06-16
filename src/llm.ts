@@ -16,6 +16,69 @@ export {
 
 export type { ProviderConfig } from "./provider-registry.js";
 
+// ── Provider auto-detection ───────────────────────────────────
+
+/**
+ * Precedence order for auto-detecting a provider from environment keys.
+ * First provider whose env var is set wins.
+ */
+const DETECTION_PRECEDENCE: string[] = [
+  "anthropic",
+  "openai",
+  "deepseek",
+  "groq",
+  "google",
+  "mistral",
+  "xai",
+  "fireworks",
+  "together",
+  "opencode",
+  "openrouter",
+  "ollama",
+];
+
+/** Default model for each provider when auto-detecting. */
+export const DEFAULT_MODELS: Record<string, string> = {
+  anthropic: "claude-sonnet-4-20250514",
+  openai: "gpt-4o",
+  deepseek: "deepseek-chat",
+  groq: "llama-3.1-70b-versatile",
+  google: "gemini-2.0-flash",
+  mistral: "mistral-large-latest",
+  xai: "grok-2",
+  fireworks: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+  together: "meta-llama/Llama-3.1-70B-Instruct-Turbo",
+  opencode: "gpt-4o",
+  openrouter: "deepseek/deepseek-v4-flash:free",
+  ollama: "llama3",
+};
+
+/**
+ * Auto-detect the first available provider from environment variables.
+ * Returns `{ provider, model }` or `null` if nothing is found.
+ */
+export function detectProviderFromEnvironment(): { provider: string; model: string } | null {
+  const logger = getAppLogger().child("llm");
+
+  for (const provider of DETECTION_PRECEDENCE) {
+    if (isProviderAvailable(provider)) {
+      const model = DEFAULT_MODELS[provider] ?? "";
+      logger.info(`Auto-detected provider "${provider}" from environment`, {
+        details: { provider, model },
+      });
+      return { provider, model };
+    }
+  }
+
+  logger.debug("No provider API key found in environment");
+  return null;
+}
+
+/** Return all available providers in detection-precedence order. */
+export function listAvailableProviders(): string[] {
+  return DETECTION_PRECEDENCE.filter(isProviderAvailable);
+}
+
 // ── Exported helpers ───────────────────────────────────────────
 
 /** Lookup a provider config. Falls back to openrouter for unknown values. */

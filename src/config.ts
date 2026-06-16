@@ -10,6 +10,7 @@ import {
   resolveDefaultMemoryDbPath,
   resolveDefaultSessionLogDir,
 } from "./app-identity.js";
+import { detectProviderFromEnvironment, DEFAULT_MODELS } from "./llm.js";
 
 function configWarn(message: string, cause?: Error): void {
   getAppLogger().child("config").warn(message, {
@@ -27,12 +28,12 @@ export function getLoadedConfigSources(): string[] {
 
 const DEFAULT_CONFIG: PraanaConfig = {
   llm: {
-    provider: "openrouter",
-    model: "deepseek/deepseek-v4-flash:free",
+    provider: "",   // auto-detected from environment at load time
+    model: "",      // derived from detected provider
   },
   memory: {
     enabled: true,
-    summarizer: "openrouter",
+    summarizer: "",  // auto-detected from provider at load time
     db_path: `~/${APP_HOME_DIR}/memory.db`,
     embedder: "auto",
     ollama_url: "http://localhost:11434",
@@ -207,6 +208,22 @@ export function loadConfig(configPath?: string): PraanaConfig {
 
   const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as PraanaConfig;
 
+  // ── Provider auto-detection (precedence: config > env > none) ──
+  const userExplicitlySetProvider = !!merged.llm.provider;
+  const userExplicitlySetModel = !!merged.llm.model;
+  const userExplicitlySetSummarizer = !!(userConfig as any)?.memory?.summarizer;
+
+  if (!userExplicitlySetProvider) {
+    const detected = detectProviderFromEnvironment();
+    if (detected) {
+      merged.llm.provider = detected.provider;
+      if (!userExplicitlySetModel) {
+        merged.llm.model = detected.model;
+      }
+    }
+    // If nothing detected, leave provider empty — main.ts will handle the no-key flow.
+  }
+
   const modelOverride = envOverride("PRAANA_MODEL");
   if (modelOverride) merged.llm.model = modelOverride;
 
@@ -232,15 +249,45 @@ export function loadConfig(configPath?: string): PraanaConfig {
     merged.memory.db_path = resolveDefaultMemoryDbPath();
   }
 
-  return validateConfig(merged);
+  return validateConfig(merged, { userExplicitlySetSummarizer });
 }
 
-function validateConfig(config: PraanaConfig): PraanaConfig {
+function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummarizer?: boolean }): PraanaConfig {
   const out: PraanaConfig = deepMerge(config, {});
 
+  // Validate provider name (but allow empty — indicates no key detected)
+  if (out.llm.provider && !out.llm.provider.trim()) {
+    out.llm.provider = "";
+  }
+
+  // Model fallback: if provider is set but model is empty, use provider-specific default
   if (!out.llm.model || !out.llm.model.trim()) {
-    configWarn("Invalid llm.model, using default deepseek/deepseek-v4-flash:free");
-    out.llm.model = DEFAULT_CONFIG.llm.model;
+    if (out.llm.provider) {
+      out.llm.model = DEFAULT_MODELS[out.llm.provider] ?? "deepseek/deepseek-v4-flash:free";
+    }
+    // If both empty, leave empty — main.ts will handle the no-key flow
+  }
+
+  // Summarizer fallback: auto-select from provider if not explicitly set
+  if (!opts?.userExplicitlySetSummarizer && (!out.memory.summarizer || !out.memory.summarizer.trim())) {
+    if (out.llm.provider) {
+      // Map provider names to summarizer-compatible names
+      const summarizerMap: Record<string, string> = {
+        openrouter: "openrouter",
+        openai: "openai",
+        anthropic: "openai",  // anthropic doesn't have a summarizer, use openai-compatible
+        ollama: "ollama",
+        deepseek: "openrouter",  // use openrouter for deepseek summarizer
+        groq: "openrouter",
+        google: "openrouter",
+        mistral: "openrouter",
+        xai: "openrouter",
+        fireworks: "openrouter",
+        together: "openrouter",
+        opencode: "openai",
+      };
+      out.memory.summarizer = summarizerMap[out.llm.provider] ?? "disabled";
+    }
   }
 
   const validEmbedders = new Set(["auto", "ollama", "transformers", "llama-cpp", "hash"]);
