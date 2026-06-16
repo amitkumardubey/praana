@@ -65,7 +65,8 @@ export type TranscriptAction =
   | { type: "memory_banner"; text: string }
   | { type: "interrupted" }
   | { type: "error"; message: string }
-  | { type: "bootstrap"; entries: TranscriptEntry[] };
+  | { type: "bootstrap"; entries: TranscriptEntry[] }
+  | { type: "clear_transcript" };
 
 export function createInitialTranscriptState(): TranscriptState {
   return {
@@ -319,6 +320,9 @@ export function transcriptReducer(
         role: "system",
         text: `[error] ${action.message}`,
       });
+
+    case "clear_transcript":
+      return createInitialTranscriptState();
 
     default:
       return state;

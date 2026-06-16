@@ -13,7 +13,7 @@ import {
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
 
-export type SlashCommandAction = "none" | "exit" | "refresh_status";
+export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast";
@@ -461,7 +461,7 @@ export async function executeSlashCommand(
         },
       });
       lines.push("State cleared. Starting fresh.");
-      return result("none", "toast");
+      return result("clear_transcript", "toast");
     }
 
     case "/why": {

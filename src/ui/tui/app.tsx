@@ -188,6 +188,7 @@ export function TuiApp({
             dispatch({ type: "system_lines", lines: result.lines });
           }
         }
+        if (result.action === "clear_transcript") dispatch({ type: "clear_transcript" });
         if (result.action === "refresh_status") refreshStatus();
         if (result.action === "exit") exit();
         return;
