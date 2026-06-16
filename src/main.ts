@@ -13,6 +13,7 @@ import { AppController } from "./app-controller.js";
 import { runReadlineUi } from "./ui/readline-ui.js";
 import { runTui } from "./ui/tui/run.js";
 import { handleInit } from "./init.js";
+import { runInteractiveSetup } from "./interactive-setup.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -38,24 +39,27 @@ export async function main() {
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
     const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
-    const detected = listAvailableProviders();
 
     if (isInteractive) {
-      // Interactive: show what was tried and what keys exist
-      console.error("");
-      console.error("PRAANA needs a model provider to run — no API key found for the selected provider.");
-      console.error("");
-      if (detected.length > 0) {
-        console.error(`Available providers detected in environment: ${detected.join(", ")}`);
-        console.error("");
-        console.error(`Try switching provider:  /model ${detected[0]} <model-id>`);
-      } else {
-        console.error("Fastest options:");
-        console.error("  • Set a provider key, e.g.  export OPENROUTER_API_KEY=sk-or-...");
-        console.error("    (also: OPENAI, ANTHROPIC, DEEPSEEK, GROQ, XAI, FIREWORKS, TOGETHER)");
-        console.error("  • Or run:  praana init");
+      // Interactive: run guided setup
+      const setupResult = await runInteractiveSetup(cwd);
+      if (!setupResult.success) {
+        getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
+        process.exit(1);
       }
-      console.error("");
+      // After setup, try to reload config
+      const newConfig = loadConfig(parsed.configPath);
+      const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
+      if (newKeyError) {
+        // Still no key — show instructions and exit
+        console.error("");
+        console.error("Key still not detected. Please set the environment variable and restart.");
+        console.error("");
+        getAppLogger().error(newKeyError, { code: "SESSION_START_FAILED" });
+        process.exit(1);
+      }
+      // Success — continue with new config
+      Object.assign(config, newConfig);
     } else {
       // Non-interactive: clean scannable message, no traceback
       console.error("PRAANA needs a model provider to run — no API key found.");
@@ -65,10 +69,9 @@ export async function main() {
       console.error("    (also: OPENAI, ANTHROPIC, DEEPSEEK, GROQ, XAI, FIREWORKS, TOGETHER)");
       console.error("  • Or run:  praana init");
       console.error("");
+      getAppLogger().error(keyError, { code: "SESSION_START_FAILED" });
+      process.exit(1);
     }
-
-    getAppLogger().error(keyError, { code: "SESSION_START_FAILED" });
-    process.exit(1);
   }
 
   const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
