@@ -109,6 +109,10 @@ export function createTuiTurnSink(
       dispatch({ type: "assistant_delta", delta: text + "\n" });
     },
 
+    onSystemLines: (lines) => {
+      dispatch({ type: "system_lines", lines });
+    },
+
     onError: (entry) => {
       dispatch({
         type: "system_lines",

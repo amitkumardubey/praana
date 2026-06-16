@@ -279,7 +279,7 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = 25;
+  const maxSteps = session.config.turn?.max_steps ?? 25;
   let interrupted = false;
 
   for (let step = 0; step < maxSteps; step++) {
@@ -390,6 +390,13 @@ export async function runTurn(
 
     if (!pendingToolCalls.length || finalReason !== "toolUse") {
       break;
+    }
+
+    // Check if we've reached the step limit
+    if (step === maxSteps - 1) {
+      // We're on the last step and the model wants more tools — warn the user
+      const limitBanner = `Reached per-turn tool step limit (${maxSteps}/${maxSteps}). Send another message to continue, or raise turn.max_steps in praana.config.toml.`;
+      s.onSystemLines?.([limitBanner]);
     }
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
