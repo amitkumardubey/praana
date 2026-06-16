@@ -12,6 +12,7 @@ import { printHelp } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
 import { runReadlineUi } from "./ui/readline-ui.js";
 import { runTui } from "./ui/tui/run.js";
+import { handleInit } from "./init.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -21,6 +22,14 @@ export async function main() {
   }
 
   await initAppLogFile();
+
+  // Handle init command early (before config loading)
+  if (parsed.initMode) {
+    const cwd = resolve(process.cwd());
+    const result = handleInit({ force: parsed.force, cwd });
+    console.log(result.message);
+    process.exit(result.success ? 0 : 1);
+  }
 
   const cwd = resolve(process.cwd());
   const config = loadConfig(parsed.configPath);
