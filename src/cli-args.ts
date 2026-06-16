@@ -3,6 +3,8 @@ import type { UiMode, UiScreenMode } from "./types.js";
 export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
+  initMode: boolean;
+  force: boolean;
   debug: boolean;
   incognito: boolean;
   configPath: string | undefined;
@@ -14,6 +16,8 @@ export interface CliArgs {
 export function parseCliArgs(args: string[]): CliArgs {
   let sessionId: string | null = null;
   let resumeMode = false;
+  let initMode = false;
+  let force = false;
   let debug = false;
   let incognito = false;
   let configPath: string | undefined;
@@ -24,6 +28,10 @@ export function parseCliArgs(args: string[]): CliArgs {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--help" || args[i] === "-h") {
       showHelp = true;
+      continue;
+    }
+    if (args[i] === "--force" || args[i] === "-f") {
+      force = true;
       continue;
     }
     if (args[i] === "--debug" || args[i] === "-d") {
@@ -60,11 +68,17 @@ export function parseCliArgs(args: string[]): CliArgs {
       sessionId = args[i + 1];
       i++;
     }
+    if (args[i] === "init") {
+      initMode = true;
+      continue;
+    }
   }
 
   return {
     sessionId,
     resumeMode,
+    initMode,
+    force,
     debug,
     incognito,
     configPath,

@@ -75,6 +75,8 @@ function usageLines(): string[] {
   return [
     `  ${CLI_NAME}                     Start new session in current directory`,
     `  ${CLI_SHORT}                      Short alias for ${CLI_NAME}`,
+    `  ${CLI_NAME} init                Create a default config file`,
+    `  ${CLI_NAME} init --force        Overwrite existing config file`,
     `  ${CLI_NAME} resume <session>    Resume an existing session`,
     `  ${CLI_NAME} --ui tui            Start with Ink TUI (default when TTY)`,
     `  ${CLI_NAME} --ui readline       Classic readline interface`,
