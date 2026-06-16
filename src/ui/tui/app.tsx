@@ -177,7 +177,11 @@ export function TuiApp({
     async (value: string) => {
       const trimmed = value.trim();
       setInput("");
-      if (!trimmed || busyRef.current) return;
+      if (!trimmed) return;
+      if (busyRef.current) {
+        showToast("Cannot process commands while a turn is active. Press Esc Esc to interrupt.", "error");
+        return;
+      }
 
       if (trimmed.startsWith("/")) {
         const result = await controller.executeSlashCommand(trimmed);

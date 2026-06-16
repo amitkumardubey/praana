@@ -11,7 +11,7 @@ import {
   closeThinking as closeThinkingBlock,
   toggleThinking,
 } from "../thinking-display.js";
-import { startSpinner, stopSpinner } from "../ui.js";
+import { startSpinner, stopSpinner, isSpinnerActive } from "../ui.js";
 import { writeMarkdown } from "../render.js";
 
 export async function runReadlineUi(
@@ -67,6 +67,11 @@ export async function runReadlineUi(
     }
 
     if (input.startsWith("/")) {
+      if (isSpinnerActive()) {
+        console.log(chalk.red("Cannot process commands while a turn is active. Press Ctrl+C to interrupt."));
+        rl.prompt();
+        return;
+      }
       const result = await controller.executeSlashCommand(input);
       if (result.display === "toast" && result.lines.length > 0) {
         const line = result.lines.join(" ");
