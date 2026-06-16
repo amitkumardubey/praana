@@ -565,11 +565,15 @@ export async function runTurn(
       code,
       details: { model: modelName, provider: providerName, reason: lastStreamReason },
     };
-    if (lastStreamReason !== "error") {
-      s.onError?.(errorEntry);
-    }
+    s.onError?.(errorEntry);
     s.onFallback?.(fallback);
-    fullResponse = fallback;
+    // For errors, append a graceful message to the transcript instead of the raw error.
+    // The fallback (with raw error details) is still shown to the user via onFallback.
+    if (lastStreamReason === "error") {
+      fullResponse = "I encountered an error while processing your request. Please try again.";
+    } else {
+      fullResponse = fallback;
+    }
   }
 
   // 6. Append agent_message

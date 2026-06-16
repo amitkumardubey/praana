@@ -650,7 +650,13 @@ describe("runTurn", () => {
 
     const session = makeMockSession();
     const response = await runTurn(session, "hello");
-    expect(response).toContain("[LLM error: 401 Unauthorized]");
+    // Errors should show a graceful message in the transcript, not the raw error
+    expect(response).toContain("I encountered an error");
+    // The raw error should be logged to the event log
+    const events = session.eventLog.readAll();
+    const agentMsg = events.find((e) => e.kind === "agent_message");
+    expect(agentMsg).toBeDefined();
+    expect((agentMsg!.payload as any).text).toContain("I encountered an error");
   });
 
   it("accumulates input and output tokens during the turn", async () => {
