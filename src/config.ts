@@ -110,6 +110,9 @@ const DEFAULT_CONFIG: PraanaConfig = {
   project_detection: {
     enabled: true,
   },
+  turn: {
+    max_steps: 25,
+  },
 };
 
 function expandHome(p: string): string {

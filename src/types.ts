@@ -269,6 +269,11 @@ export interface ProjectDetectionConfig {
   manual_frameworks?: string[];
 }
 
+export interface TurnConfig {
+  /** Max LLM rounds per user message (each round may batch multiple tool calls). */
+  max_steps: number;
+}
+
 export interface PraanaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -283,6 +288,7 @@ export interface PraanaConfig {
   ui: UiConfig;
   context_engine: ContextEngineConfig;
   project_detection: ProjectDetectionConfig;
+  turn: TurnConfig;
 }
 // ---- Session Meta ----
 

@@ -32,6 +32,8 @@ export interface TurnUiSink {
   onSpinnerStop?(): void;
   onNewline?(): void;
   onFallback?(text: string): void;
+  /** System lines for informational messages (e.g., step limit warnings). */
+  onSystemLines?(lines: string[]): void;
   /** Structured error for UI display (LLM failures, etc.). */
   onError?(entry: LogEntry): void;
   /** Flush any buffered text before dispatching terminal actions (e.g. assistant_complete).
@@ -67,6 +69,11 @@ export function createDefaultTurnSink(options?: {
     onSpinnerStop: () => stopSpinner(),
     onNewline: () => process.stdout.write("\n"),
     onFallback: (text) => process.stdout.write(text + "\n"),
+    onSystemLines: (lines) => {
+      for (const line of lines) {
+        process.stdout.write(line + "\n");
+      }
+    },
     onError: (entry) => {
       if (entry.level === "error" || entry.level === "warn") {
         process.stderr.write(`[${entry.domain}] ${entry.message}\n`);
