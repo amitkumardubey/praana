@@ -358,7 +358,7 @@ export function TuiApp({
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
-          placeholder={transcript.busy ? "running…" : "message or /command"}
+          placeholder={transcript.busy ? "working…" : "message or /command"}
           onNavigationKey={handleNavigationKey}
           onHistoryPrev={() => {
             const history = inputHistoryRef.current;
