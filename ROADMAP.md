@@ -16,8 +16,9 @@ A terminal coding agent that aims to get more useful the more you use it — by 
 
 These exist and work — we're not claiming they're solved problems, just that they're there:
 
+- **Easy onboarding** — auto-detects provider API keys from the environment; `praana init` for config; interactive setup wizard when no key is found
 - **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching
-- **Many providers** — OpenRouter, OpenAI, DeepSeek, Groq, xAI, Fireworks, and more
+- **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local)
 - **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox
 - **Two context modes** — *classic* (full transcript, like most agents) and an opt-in *engine* (tiered working memory, tool-output distillation, session checkpoint, skills)
 - **Cross-session memory** (optional) — extracts learnings at the end of a session and surfaces a ranked digest at the start of the next; project and global scopes
@@ -41,7 +42,6 @@ Smaller, concrete improvements:
 
 - Git tools (`git_status`, `git_diff`, `git_commit`)
 - Quality-of-life: searchable command picker, named sessions, session cost in the status bar, settings that persist
-- Clean-install testing on fresh environments
 
 ---
 
