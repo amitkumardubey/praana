@@ -65,6 +65,13 @@ export function startSpinner(text: string): void {
 }
 
 /**
+ * Check if a spinner is currently active (i.e., a turn is running).
+ */
+export function isSpinnerActive(): boolean {
+  return activeSpinner !== null;
+}
+
+/**
  * Stop and clear the active spinner.
  * Safe to call when no spinner is running.
  */
