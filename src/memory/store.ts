@@ -48,7 +48,7 @@ import type {
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
 import { effectiveConfidence, digestScore } from "./confidence.js";
-import { getAppLogger } from "../logger.js";
+import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 
 function certaintyToConfidence(c: "high" | "medium" | "low"): number {
@@ -87,21 +87,20 @@ export class MemoryStore {
   /** True while a background re-embed migration is running. */
   private reembedding = false;
   private reembedPromise: Promise<void> | null = null;
+  private readonly logger: PraanaLogger;
 
   constructor(opts: {
     dbPath: string;
     embedder: Embedder;
     summarizer?: SummarizerLLM | null;
-    /**
-     * Override the auto-detected needsReembed flag from openMemoryDb.
-     * Intended for tests that use :memory: DBs with explicit control.
-     */
+    logger?: PraanaLogger;
     needsReembed?: boolean;
   }) {
     const opened = openMemoryDb(opts.dbPath, opts.embedder.dim);
     this.db = opened.db;
     this.embedder = opts.embedder;
     this.summarizer = opts.summarizer ?? null;
+    this.logger = opts.logger ?? getAppLogger();
     if (opts.needsReembed ?? opened.needsReembed) {
       this.reembedPromise = this.reembedAllEntries();
     }
@@ -130,7 +129,7 @@ export class MemoryStore {
 
     const pruned = await this.prune();
     if (pruned > 0) {
-      getAppLogger().child("memory").info(`Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
+      this.logger.child("memory").info(`Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
     }
 
     startSessionRow(this.db, {
@@ -158,7 +157,7 @@ export class MemoryStore {
         }
       } catch (err) {
         if (isAbortLikeError(err)) {
-          getAppLogger().child("memory").warn("Session-end summarizer aborted; skipping learnings for this session");
+          this.logger.child("memory").warn("Session-end summarizer aborted; skipping learnings for this session");
           return;
         }
         throw err;
@@ -184,7 +183,7 @@ export class MemoryStore {
       return facts.length;
     } catch (err) {
       if (isAbortLikeError(err)) {
-        getAppLogger().child("memory").warn("Turn compression aborted; skipping");
+        this.logger.child("memory").warn("Turn compression aborted; skipping");
         return 0;
       }
       throw err;
@@ -274,7 +273,7 @@ export class MemoryStore {
     const now = Date.now();
 
     if (this.reembedding) {
-      getAppLogger().child("memory").warn(
+      this.logger.child("memory").warn(
         "Vector migration in progress — recall quality may be reduced until re-embed completes",
       );
     }
@@ -464,7 +463,7 @@ export class MemoryStore {
   async reembedAllEntries(): Promise<void> {
     this.reembedding = true;
     const entries = getAllEntries(this.db);
-    const log = getAppLogger().child("memory");
+    const log = this.logger.child("memory");
     log.info(`Re-embedding ${entries.length} entries after dimension migration…`);
     let failed = 0;
     for (const e of entries) {
