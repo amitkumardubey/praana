@@ -650,6 +650,7 @@ export class Session {
             reason,
           },
         });
+        this.getLogger().child("memory").info(`Session end begun (reason: ${reason})`);
         const finish = store.sessionEnd(reason, events);
 
         if (memoryTimeoutMs > 0) {
@@ -664,6 +665,7 @@ export class Session {
                 reason,
               },
             });
+            this.getLogger().child("memory").info(`Session end succeeded (reason: ${reason})`);
             memoryStatus = "completed";
           } else {
             // Ensure late failures are not unhandled after we stop waiting.
@@ -683,6 +685,7 @@ export class Session {
                 timeoutMs: memoryTimeoutMs,
               },
             });
+            this.getLogger().child("memory").info(`Session end continuing in background (reason: ${reason})`);
             memoryStatus = "background";
           }
         } else {
@@ -696,6 +699,7 @@ export class Session {
               reason,
             },
           });
+          this.getLogger().child("memory").info(`Session end succeeded (reason: ${reason})`);
           memoryStatus = "completed";
         }
       } catch (err) {
@@ -712,6 +716,7 @@ export class Session {
             error: (err as Error).message,
           },
         });
+        this.getLogger().child("memory").warn(`Session end failed (reason: ${reason})`, { cause: err as Error });
         memoryStatus = "failed";
       }
 
@@ -791,7 +796,7 @@ export class Session {
     const embedder = await createEmbedder(this.config.memory);
     const summarizer = await createSummarizer(this.config.memory);
 
-    return new MemoryStore({ dbPath, embedder, summarizer });
+    return new MemoryStore({ dbPath, embedder, summarizer, logger: this.getLogger() });
   }
 }
 
