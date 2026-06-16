@@ -128,11 +128,6 @@ export class Session {
       session.memoryStore = null;
       session.digest = null;
       session.getLogger().notice("Cross-session memory persistence disabled (incognito)");
-      await session.refreshModelContextWindow().catch((err) => {
-        session.getLogger().child("session").warn("Failed to prefetch context window", {
-          cause: err as Error,
-        });
-      });
       return session;
     }
 
@@ -187,12 +182,6 @@ export class Session {
         session.digest = null;
       }
     }
-
-    await session.refreshModelContextWindow().catch((err) => {
-      session.getLogger().child("session").warn("Failed to prefetch context window", {
-        cause: err as Error,
-      });
-    });
 
     return session;
   }
@@ -309,12 +298,6 @@ export class Session {
         session.memoryStore = null;
       }
     }
-
-    await session.refreshModelContextWindow().catch((err) => {
-      session.getLogger().child("session").warn("Failed to prefetch context window", {
-        cause: err as Error,
-      });
-    });
 
     return session;
   }
