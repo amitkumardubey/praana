@@ -27,17 +27,20 @@ npm install -g praana
 npx praana
 ```
 
-Set up your config file and API key:
+Set up your API key and launch:
 
 ```bash
-cp praana.config.example.toml praana.config.toml
-export OPENROUTER_API_KEY="sk-or-v1-..."   # or another provider — see config example
+# Set any provider API key (PRAANA auto-detects which one)
+export ANTHROPIC_API_KEY="sk-ant-..."       # or
+export OPENAI_API_KEY="sk-..."              # or
+export OPENROUTER_API_KEY="sk-or-v1-..."    # or many others
 
 # Launch the agent
 praana
 ```
 
-> **First time?** Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
+> **First time?** PRAANA auto-detects your provider from the environment. If no key is found, it runs an interactive setup wizard (TTY) or shows clear instructions.
+> Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
 > Requires **Node 22+**.
 
 ### Global CLI alias
@@ -56,15 +59,47 @@ git clone https://github.com/amitkumardubey/praana.git
 cd praana
 npm install && npm run build
 
-cp praana.config.example.toml praana.config.toml
-export OPENROUTER_API_KEY="sk-or-v1-..."
+# Create a config file (auto-detects provider from environment)
+node dist/main.js init
 
+# Set your API key and launch
+export ANTHROPIC_API_KEY="sk-ant-..."
 node dist/main.js
 ```
 
 ### Configuration
 
-See [`praana.config.example.toml`](./praana.config.example.toml) for providers, memory, and engine settings.
+PRAANA auto-detects provider API keys from the environment. No config file is needed to get started.
+
+If you want to customize settings, create a config file:
+
+```bash
+praana init   # Creates praana.config.toml with detected provider
+```
+
+See [`praana.config.example.toml`](./praana.config.example.toml) for all available settings.
+
+#### Supported Providers
+
+| Provider | Environment Variable |
+|---|---|
+| Anthropic | `ANTHROPIC_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| Groq | `GROQ_API_KEY` |
+| Google | `GOOGLE_GENERATIVE_AI_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| Fireworks | `FIREWORKS_API_KEY` |
+| Together | `TOGETHER_API_KEY` |
+| OpenCode | `OPENCODE_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Ollama | *(local, no key needed)* |
+
+Provider resolution precedence:
+1. Explicit config file setting
+2. Environment-detected key (in the order above)
+3. Interactive setup (TTY) or clear instructions (non-TTY)
 
 ---
 
