@@ -156,7 +156,7 @@ npm test
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md). High level: planner task graph, ongoing confidence reinforcement, LSP integration.
+See [ROADMAP.md](./ROADMAP.md). High level: making cross-session memory and the context engine actually pay off, semantic recall by default, and the measurement to tell honestly whether they help.
 
 Issues and PRs welcome.
 
