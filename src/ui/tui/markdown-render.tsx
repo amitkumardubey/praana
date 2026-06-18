@@ -397,13 +397,13 @@ function renderCodeBlock(token: Tokens.Code, syntaxHighlighting: boolean, syntax
   }
   const lines = highlighted.split("\n");
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column" marginTop={1} marginBottom={1}>
       {token.lang && (
         <Text color={PALETTE.muted} dimColor>
           {"  "}{token.lang}
         </Text>
       )}
-      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1}>
+      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1} paddingY={1} borderStyle="round" borderColor={PALETTE.border}>
         {lines.map((line, i) => (
           <Text key={i}>{line || " "}</Text>
         ))}
