@@ -403,7 +403,7 @@ function renderCodeBlock(token: Tokens.Code, syntaxHighlighting: boolean, syntax
           {"  "}{token.lang}
         </Text>
       )}
-      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1} paddingY={1} borderStyle="round" borderColor={PALETTE.border}>
+      <Box flexDirection="column" backgroundColor={PALETTE.codeBg} paddingX={1} paddingY={1}>
         {lines.map((line, i) => (
           <Text key={i}>{line || " "}</Text>
         ))}
