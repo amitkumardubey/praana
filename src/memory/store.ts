@@ -35,6 +35,8 @@ import {
   upsertEmbedding,
   weakenEntry,
   incrementConfirmationCount,
+  recordConfirmation,
+  distinctConfirmationCountsByEntry,
 } from "./db.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 import type { Embedder } from "./types.js";
@@ -106,6 +108,17 @@ function isAbortLikeError(err: unknown): boolean {
 }
 
 const DEFAULT_RECALL_MIN_MATCH = 0.35;
+
+/**
+ * M4 deterministic promotion gate.
+ * An entry flips from Layer 1 → Layer 2 when it has been confirmed in at least
+ * MIN_PROMOTION_DISTINCT_SESSIONS distinct sessions AND its effective validity
+ * meets MIN_PROMOTION_VALIDITY. Distinctness is tracked in the `confirmations`
+ * table (one row per session_id) — repeats within a single session do NOT count.
+ * Spec: build-spec §4 / ADR-004 M4.
+ */
+const MIN_PROMOTION_DISTINCT_SESSIONS = 2;
+const MIN_PROMOTION_VALIDITY = 0.7;
 
 export interface RememberResult {
   id: string;
@@ -219,7 +232,11 @@ export class MemoryStore {
       started_at: ctx.time,
     });
 
-    return this.buildDigest(ctx, ctx.recall_min_score);
+    // Stamp the digest's entries as surfaced for THIS session. The digest is
+    // the primary surfacing path (injected into the system prompt), so its
+    // entries must count toward the M2 utility loop and the M4 distinct-session
+    // confirmation gate — not just entries the agent re-queries via recall().
+    return this.buildDigest(ctx, ctx.recall_min_score, { stampSurfaced: true });
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
@@ -278,8 +295,24 @@ export class MemoryStore {
       }
     }
 
+    // M4: Record each surfaced entry as confirmed-in-this-session for the
+    // distinct-session promotion gate. Done BEFORE flushReinforcements because
+    // that call deletes pending_reinforcements; the confirmation history is
+    // what feeds the deterministic gate. Pending rows are still the per-session
+    // bookkeeping; confirmations is the cross-session history.
+    if (surfacedWithContent.length > 0) {
+      for (const { id } of surfacedWithContent) {
+        recordConfirmation(this.db, id, this.sessionId, now);
+      }
+    }
+
     // Flush: validity reinforcement + utility updates (two passes)
     flushReinforcements(this.db, this.sessionId);
+
+    // M4: Apply the deterministic Layer 1 → Layer 2 promotion gate.
+    // Runs after flush so validity reinforcement has already landed, but
+    // promotion is purely a separate concern (distinct-session count + validity).
+    this.applyPromotionGate(now);
 
     endSessionRow(this.db, this.sessionId, now, reason);
 
@@ -729,6 +762,43 @@ export class MemoryStore {
     this.db.prepare("UPDATE entries SET layer = 2 WHERE id = ? AND layer = 1").run(id);
   }
 
+  /**
+   * M4: Apply the deterministic Layer 1 → Layer 2 promotion gate.
+   * An entry promotes when it has been confirmed in at least
+   * MIN_PROMOTION_DISTINCT_SESSIONS distinct sessions AND its effective
+   * validity meets MIN_PROMOTION_VALIDITY. Runs once at session end.
+   * Returns the ids that were promoted in this pass (used by tests + logs).
+   *
+   * Intentionally NOT batched via a single UPDATE: a gate that flips N rows
+   * at once is hard to test/observe. A small loop with explicit per-row logs
+   * keeps the behaviour auditable.
+   */
+  applyPromotionGate(now: number = Date.now()): string[] {
+    const candidates = getAllEntries(this.db).filter(
+      (e) => !e.retracted && e.layer === 1,
+    );
+    if (candidates.length === 0) return [];
+    const ids = candidates.map((e) => e.id);
+    const distinctCounts = distinctConfirmationCountsByEntry(this.db, ids);
+    const promoted: string[] = [];
+    const log = this.logger.child("memory");
+    for (const entry of candidates) {
+      const distinct = distinctCounts.get(entry.id) ?? 0;
+      const valid = effectiveValidity(entry, now);
+      if (
+        distinct >= MIN_PROMOTION_DISTINCT_SESSIONS &&
+        valid >= MIN_PROMOTION_VALIDITY
+      ) {
+        this.promoteToLayer2(entry.id);
+        promoted.push(entry.id);
+        log.info(
+          `Promoted entry to Layer 2 (distinct_sessions=${distinct}, validity=${valid.toFixed(2)}) [${entry.kind}] ${entry.content}`,
+        );
+      }
+    }
+    return promoted;
+  }
+
   /** Weaken an entry's validity by a beta factor (0–1). */
   weakenEntry(id: string, beta = 0.3): void {
     weakenEntry(this.db, id, beta);
@@ -802,7 +872,11 @@ export class MemoryStore {
     ];
   }
 
-  private async buildDigest(ctx: SessionContext, minScore = 0.35): Promise<Digest> {
+  private async buildDigest(
+    ctx: SessionContext,
+    minScore = 0.35,
+    opts: { stampSurfaced?: boolean } = {},
+  ): Promise<Digest> {
     const now = Date.now();
     const entries = this.getEntriesForScopeQueries(
       this.buildScopeQueries(this.defaultScopes),
@@ -841,6 +915,15 @@ export class MemoryStore {
 
     if (lines.length > 0) {
       lines.push("Use recall(\"...\") for anything not shown.");
+    }
+
+    // Record digest entries as surfaced this session (idempotent per
+    // entry/session). Only on genuine surfacing paths (sessionStart), never on
+    // diagnostic getDigest() calls.
+    if (opts.stampSurfaced) {
+      for (const id of included) {
+        stampReinforcement(this.db, id, this.sessionId);
+      }
     }
 
     const markdown = lines.join("\n").trimEnd();

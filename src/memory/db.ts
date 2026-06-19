@@ -12,6 +12,7 @@ const EMBEDDING_BACKEND_KEY = "embedding_backend";
 export const DEDUP_RECONCILED_KEY = "dedup_reconciled_v1";
 const SIGNAL_COLUMNS_MIGRATED_KEY = "signal_columns_migrated_v1";
 const UTILITY_COLUMNS_MIGRATED_KEY = "utility_columns_migrated_v1";
+const CONFIRMATIONS_TABLE_MIGRATED_KEY = "confirmations_table_migrated_v1";
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -59,6 +60,16 @@ CREATE TABLE IF NOT EXISTS pending_reinforcements (
   PRIMARY KEY (entry_id, session_id)
 );
 
+-- M4: distinct-session confirmation history.
+-- One row per (entry_id, session_id) the entry was confirmed in.
+-- Persisted across sessions (unlike pending_reinforcements, which is flushed per session).
+CREATE TABLE IF NOT EXISTS confirmations (
+  entry_id   TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  ts         INTEGER NOT NULL,
+  PRIMARY KEY (entry_id, session_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_kind      ON entries(kind);
 CREATE INDEX IF NOT EXISTS idx_entries_pinned    ON entries(pinned);
 CREATE INDEX IF NOT EXISTS idx_entries_last_seen ON entries(last_seen_at);
@@ -84,6 +95,7 @@ export function openMemoryDb(
   ensureSignalColumns(db);
   ensureFtsBackfill(db);
   ensureUtilityColumns(db);
+  ensureConfirmationsTable(db);
 
   const needsReembedFromDim = ensureVectorTable(db, embeddingDim);
   const needsReembedFromBackend = embeddingBackend
@@ -160,6 +172,26 @@ function ensureUtilityColumns(db: Database.Database): void {
   }
 
   setMemoryMeta(db, UTILITY_COLUMNS_MIGRATED_KEY, "1");
+}
+
+/**
+ * M4 migration: Create the confirmations table for distinct-session tracking.
+ * Idempotent — CREATE TABLE IF NOT EXISTS plus a memory_meta flag for older DBs
+ * that pre-date the schema having it inline.
+ */
+function ensureConfirmationsTable(db: Database.Database): void {
+  if (getMemoryMeta(db, CONFIRMATIONS_TABLE_MIGRATED_KEY) === "1") return;
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS confirmations (
+      entry_id   TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      ts         INTEGER NOT NULL,
+      PRIMARY KEY (entry_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_confirmations_entry
+      ON confirmations(entry_id);
+  `);
+  setMemoryMeta(db, CONFIRMATIONS_TABLE_MIGRATED_KEY, "1");
 }
 
 function ensureFtsBackfill(db: Database.Database): void {
@@ -288,6 +320,67 @@ export function incrementConfirmationCount(
   db.prepare(
     "UPDATE entries SET confirmation_count = confirmation_count + ? WHERE id = ?",
   ).run(delta, id);
+}
+
+// ---- M4: distinct-session confirmation history ----
+
+/**
+ * Record that a session confirmed an entry. Idempotent per (entry_id, session_id):
+ * repeats within the same session do NOT add a second row. This is what makes
+ * "1 session re-confirming the same entry 5×" count as ONE distinct confirming
+ * session in `countDistinctConfirmingSessions`.
+ */
+export function recordConfirmation(
+  db: Database.Database,
+  entryId: string,
+  sessionId: string,
+  now: number,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO confirmations (entry_id, session_id, ts)
+     VALUES (?, ?, ?)`,
+  ).run(entryId, sessionId, now);
+}
+
+/**
+ * Count the number of *distinct* sessions that have confirmed the given entry.
+ * Used by the M4 promotion gate (>= 2 distinct sessions required).
+ */
+export function countDistinctConfirmingSessions(
+  db: Database.Database,
+  entryId: string,
+): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS c FROM confirmations WHERE entry_id = ?",
+    )
+    .get(entryId) as { c: number };
+  return row.c;
+}
+
+/**
+ * For a batch of entry IDs, return a map entry_id -> distinct confirming session count.
+ * Single query — avoids N+1 at session end.
+ */
+export function distinctConfirmationCountsByEntry(
+  db: Database.Database,
+  entryIds: string[],
+): Map<string, number> {
+  const result = new Map<string, number>();
+  if (entryIds.length === 0) return result;
+  const placeholders = entryIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT entry_id, COUNT(*) AS c
+       FROM confirmations
+       WHERE entry_id IN (${placeholders})
+       GROUP BY entry_id`,
+    )
+    .all(...entryIds) as Array<{ entry_id: string; c: number }>;
+  for (const r of rows) {
+    result.set(r.entry_id, r.c);
+  }
+  return result;
 }
 
 export function mergeEntryMetadata(

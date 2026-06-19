@@ -10,6 +10,7 @@ import {
   getArtifactById,
   insertArtifact,
   insertDistillerStat,
+  listHighValueArtifacts,
   openContextEngineDb,
   touchArtifactAccess,
   updateArtifactSummary,
@@ -359,6 +360,22 @@ export class ArtifactStore {
 
   touchAccess(id: string, currentTurn: number): void {
     touchArtifactAccess(this.db, id, currentTurn);
+  }
+
+  /**
+   * M4 artifact promotion: return artifacts from this session that were
+   * accessed at least `minAccessCount` times. These are the ones an agent
+   * had to revisit to get its job done — the kind of "high-value artifact"
+   * the spec (build-spec §4 / decisions/003 Finding #14) flags as worth
+   * promoting to cross-session memory.
+   *
+   * Caller is responsible for the actual promotion (calling
+   * MemoryStore.remember with a project scope). Keeping ArtifactStore
+   * decoupled from MemoryStore preserves the boundary between per-session
+   * context and cross-session memory.
+   */
+  listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
+    return listHighValueArtifacts(this.db, this.sessionId, minAccessCount);
   }
 
   private recordDistillerStat(input: {
