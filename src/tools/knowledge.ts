@@ -196,11 +196,16 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               ok: true,
               entries: [],
               note:
+                result.notice ??
                 "No cross-session matches. If this was discussed earlier in this same session, use search_session_log(query, kinds?, limit?) to recover it from events.jsonl.",
             };
           }
 
-          return { ok: true, entries: result.entries };
+          return {
+            ok: true,
+            entries: result.entries,
+            ...(result.notice ? { note: result.notice } : {}),
+          };
         } catch (err: any) {
           const message = err?.message ?? "Recall failed";
           return {

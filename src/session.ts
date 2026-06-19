@@ -14,6 +14,7 @@ import { loadConfig } from "./config.js";
 import {
   MemoryStore,
   createEmbedder,
+  resolveEmbeddingBackend,
   createSummarizer,
   type SessionEvent,
 } from "./memory/index.js";
@@ -779,7 +780,13 @@ export class Session {
     const embedder = await createEmbedder(this.config.memory);
     const summarizer = await createSummarizer(this.config.memory);
 
-    return new MemoryStore({ dbPath, embedder, summarizer, logger: this.getLogger() });
+    return new MemoryStore({
+      dbPath,
+      embedder,
+      summarizer,
+      logger: this.getLogger(),
+      embeddingBackend: resolveEmbeddingBackend(this.config.memory, embedder),
+    });
   }
 }
 

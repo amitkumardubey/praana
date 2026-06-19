@@ -67,6 +67,8 @@ export interface RecallOptions {
   scope?: string[];
   mode?: "standard" | "causal_chain";
   kinds?: MemoryKind[];
+  /** Minimum query-match score (0–1) for a result to be returned. Default 0.35. */
+  minMatch?: number;
 }
 
 export interface RecallResult {
@@ -79,6 +81,8 @@ export interface RecallResult {
     scopes: string[];
     score: number;         // final ranking score (currently equals match)
   }>;
+  /** Set when recall cannot run semantic search (e.g. migration still pending). */
+  notice?: string;
 }
 
 export interface RememberOptions {

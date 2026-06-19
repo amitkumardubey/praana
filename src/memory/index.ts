@@ -5,7 +5,13 @@
 export { MemoryStore } from "./store.js";
 export { retractMemory } from "./db.js";
 export { HashEmbedder, OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
-export { createEmbedder } from "./embedder-factory.js";
+export {
+  TransformersEmbedder,
+  isTransformersAvailable,
+  resetTransformersEmbedderForTests,
+} from "./transformers-embedder.js";
+export { TRANSFORMERS_MODEL_PRESETS } from "./transformers-models.js";
+export { createEmbedder, resolveEmbeddingBackend } from "./embedder-factory.js";
 export { createSummarizer } from "./summarizer-factory.js";
 export { OpenAISummarizer } from "./openai-summarizer.js";
 export {

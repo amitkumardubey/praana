@@ -68,19 +68,21 @@ Cognitive Memory uses vector search for recall. The embedder strategy is configu
 
 ```toml
 [memory]
-embedder = "auto"            # default — tries Ollama first, falls back to hash
+embedder = "auto"            # default — transformers when installed, else hash
+transformers_model = "Xenova/all-MiniLM-L6-v2"  # optional override
 ollama_url = "http://localhost:11434"
 ollama_model = "nomic-embed-text"
 ```
 
 Strategies:
-- `auto` — checks Ollama availability at startup (2s timeout). Uses it if running, otherwise HashEmbedder + warning.
-- `ollama` — explicitly requires Ollama. Run `ollama pull nomic-embed-text` first.
-- `transformers` — in-process ONNX via `@huggingface/transformers`. No daemon. Requires `npm install @huggingface/transformers` (~266MB ONNX runtime).
+- `auto` — uses Transformers.js when `@huggingface/transformers` is installed, otherwise HashEmbedder + warning.
+- `transformers` — in-process ONNX via `@huggingface/transformers` (Xenova/all-MiniLM-L6-v2, 384-dim). Models cache in `~/.praana/models/`.
+- `transformers-nomic` — 768-dim variant (Xenova/nomic-embed-text-v1) for higher-quality recall.
+- `ollama` — opt-in; requires running Ollama daemon. Run `ollama pull nomic-embed-text` first.
 - `llama-cpp` — native bindings via `node-llama-cpp`. Fastest. Requires `npm install node-llama-cpp` and build tools.
-- `hash` — deterministic, non-semantic, zero deps. Default fallback. Not suitable for production recall quality.
+- `hash` — deterministic, non-semantic, zero deps. Emergency fallback. Not suitable for production recall quality.
 
-When adding embedder support, implement the `Embedder` interface in `src/memory/embeddings.ts`. The interface has two fields: `dim: number` and `embed(text: string): Promise<Float32Array>`.
+When adding embedder support, implement the `Embedder` interface in `src/memory/types.ts`. The interface has two fields: `dim: number` and `embed(text: string): Promise<Float32Array>`.
 
 ### Project Context (AGENTS.md)
 
@@ -173,7 +175,9 @@ src/
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle
     db.ts        — SQLite schema, CRUD, vector search
-    embeddings.ts — HashEmbedder + OllamaEmbedder; Embedder interface
+    embeddings.ts — HashEmbedder + OllamaEmbedder
+    transformers-embedder.ts — Transformers.js in-process semantic embedder
+    transformers-models.ts — Model presets (MiniLM, nomic)
     summarizer.ts — extractLearnings: transcript → structured learnings via LLM
     types.ts     — Memory-specific types
 ```
@@ -255,7 +259,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
 - Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`.
-- The embedder dimension matters for the vector table schema. Switching from `hash` (384-dim) to `ollama`/`transformers` (768-dim) requires a schema migration in `openMemoryDb()`. A migration is needed before shipping embedder switching.
+- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. hash/transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Switching hash → transformers at the same 384-dim also triggers re-embed via `embedding_backend` tracking in `memory_meta`.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 
 ---
