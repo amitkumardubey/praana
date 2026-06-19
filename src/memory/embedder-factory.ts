@@ -4,7 +4,6 @@
 
 import type { MemoryConfig } from "../types.js";
 import { getAppLogger } from "../logger.js";
-import { envOverride } from "../app-identity.js";
 import { OllamaEmbedder } from "./embeddings.js";
 import { TransformersEmbedder } from "./transformers-embedder.js";
 import type { Embedder } from "./types.js";
@@ -63,39 +62,6 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder | n
     return null;
   }
 
-  if (strategy === "llama-cpp") {
-    const embedder = await tryLlamaCppEmbedder();
-    if (embedder) return embedder;
-    log.warn(
-      "node-llama-cpp not available — recall will use keyword search only. Install with: npm install node-llama-cpp",
-    );
-    return null;
-  }
-
   log.warn(`Unknown embedder strategy '${strategy}' — recall will use keyword search only`);
   return null;
-}
-
-async function tryLlamaCppEmbedder(): Promise<Embedder | null> {
-  try {
-    const spec = "node-llama-cpp";
-    const { getLlama, LlamaEmbeddingContext } = await import(/* webpackIgnore: true */ spec);
-    const llama = await getLlama();
-    const modelPath =
-      envOverride("PRAANA_EMBED_MODEL_PATH") ??
-      "models/nomic-embed-text-v1.5.Q8_0.gguf";
-    const model = await llama.loadModel({ modelPath });
-    const ctx = await LlamaEmbeddingContext.create({ model });
-    const probe = await ctx.getEmbeddingFor("probe");
-    const dim = probe.vector.length;
-    return {
-      dim,
-      async embed(text: string): Promise<Float32Array> {
-        const { vector } = await ctx.getEmbeddingFor(text);
-        return vector;
-      },
-    };
-  } catch {
-    return null;
-  }
 }

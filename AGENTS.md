@@ -79,7 +79,6 @@ Strategies:
 - `transformers` — in-process ONNX via `@huggingface/transformers` (Xenova/all-MiniLM-L6-v2, 384-dim). Models cache in `~/.praana/models/`.
 - `transformers-nomic` — 768-dim variant (Xenova/nomic-embed-text-v1) for higher-quality recall.
 - `ollama` — opt-in; requires running Ollama daemon. Run `ollama pull nomic-embed-text` first.
-- `llama-cpp` — native bindings via `node-llama-cpp`. Fastest. Requires `npm install node-llama-cpp` and build tools.
 
 When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
 
