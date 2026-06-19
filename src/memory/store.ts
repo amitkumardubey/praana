@@ -33,6 +33,7 @@ import {
   startSessionRow,
   touchEntry,
   upsertEmbedding,
+  rowToEntry,
   weakenEntry,
   incrementConfirmationCount,
   recordConfirmation,
@@ -63,7 +64,7 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
-import { effectiveValidity, digestScore } from "./confidence.js";
+import { effectiveValidity, digestScore, MS_PER_DAY } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 
@@ -108,7 +109,7 @@ function isAbortLikeError(err: unknown): boolean {
 }
 
 const DEFAULT_RECALL_MIN_MATCH = 0.35;
-const CONSOLIDATION_AGE_MS = 30 * 86_400_000;
+const CONSOLIDATION_AGE_MS = 30 * MS_PER_DAY;
 const CONSOLIDATION_CANDIDATE_LIMIT = 50;
 const PRUNE_ENTRY_COUNT_THRESHOLD = 1000;
 const PRUNE_GROWTH_STEP = 100;
@@ -207,7 +208,8 @@ export class MemoryStore {
   }
 
   getEntryCount(): number {
-    return getAllEntries(this.db).length;
+    const row = this.db.prepare("SELECT COUNT(*) AS c FROM entries").get() as { c: number } | undefined;
+    return row?.c ?? 0;
   }
 
   // ---- Session lifecycle ----
@@ -751,34 +753,30 @@ export class MemoryStore {
    */
   getConsolidationCandidates(now: number = Date.now()): MemoryEntry[] {
     const sessionId = this.sessionId;
-    const surfacedIds = new Set(
-      getSurfacedEntriesWithContent(this.db, sessionId).map((entry) => entry.id),
-    );
     const agingCutoff = now - CONSOLIDATION_AGE_MS;
-    const candidates = getAllEntries(this.db)
-      .filter((entry) => !entry.retracted && entry.layer === 1)
-      .map((entry) => {
-        if (surfacedIds.has(entry.id)) {
-          return { entry, priority: 0 };
-        }
-        if (entry.session_id === sessionId) {
-          return { entry, priority: 1 };
-        }
-        if (entry.last_seen_at <= agingCutoff) {
-          return { entry, priority: 2 };
-        }
-        return null;
-      })
-      .filter((item): item is { entry: MemoryEntry; priority: number } => item !== null)
-      .sort((a, b) => {
-        if (a.priority !== b.priority) return a.priority - b.priority;
-        if (b.entry.last_seen_at !== a.entry.last_seen_at) {
-          return b.entry.last_seen_at - a.entry.last_seen_at;
-        }
-        return b.entry.created_at - a.entry.created_at;
-      });
-
-    return candidates.slice(0, CONSOLIDATION_CANDIDATE_LIMIT).map((item) => item.entry);
+    const rows = this.db
+      .prepare(
+        `SELECT e.*,
+           CASE
+             WHEN e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId) THEN 0
+             WHEN e.session_id = @sessionId THEN 1
+             WHEN e.last_seen_at <= @agingCutoff THEN 2
+           END AS priority
+         FROM entries e
+         WHERE e.layer = 1 AND e.retracted = 0
+           AND (
+             e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId)
+             OR e.session_id = @sessionId
+             OR e.last_seen_at <= @agingCutoff
+           )
+         ORDER BY priority, e.last_seen_at DESC, e.created_at DESC
+         LIMIT @limit`,
+      )
+      .all({ sessionId, agingCutoff, limit: CONSOLIDATION_CANDIDATE_LIMIT }) as Record<
+        string,
+        unknown
+      >[];
+    return rows.map((r) => rowToEntry(this.db, r));
   }
 
   async pin(id: string): Promise<void> {
@@ -855,13 +853,11 @@ export class MemoryStore {
    */
   async prune(): Promise<number> {
     const now = Date.now();
-    const minAgeMs = 30 * 86_400_000;
+    const minAgeMs = 30 * MS_PER_DAY;
     const toDelete = getAllEntries(this.db).filter((e) => {
       if (e.pinned || e.layer === 2) return false;
       if (effectiveValidity(e, now) >= PRUNE_MIN_VALIDITY) return false;
-      const ageMs = now - e.last_seen_at;
-      if (ageMs <= minAgeMs) return false;
-      return effectiveValidity(e, now) < 0.05;
+      return now - e.last_seen_at > minAgeMs;
     });
 
     for (const entry of toDelete) {
@@ -871,11 +867,15 @@ export class MemoryStore {
   }
 
   private async maybePruneOnGrowth(): Promise<void> {
-    const entryCount = this.getEntryCount();
-    if (entryCount <= PRUNE_ENTRY_COUNT_THRESHOLD) return;
-    if (entryCount - this.lastGrowthPruneCount < PRUNE_GROWTH_STEP) return;
-    await this.prune();
-    this.lastGrowthPruneCount = entryCount;
+    try {
+      const entryCount = this.getEntryCount();
+      if (entryCount <= PRUNE_ENTRY_COUNT_THRESHOLD) return;
+      if (entryCount - this.lastGrowthPruneCount < PRUNE_GROWTH_STEP) return;
+      await this.prune();
+      this.lastGrowthPruneCount = entryCount;
+    } catch (err) {
+      this.logger.child("memory").warn("Growth prune failed", { cause: err as Error });
+    }
   }
 
   /** Re-embed all entries after vector dimension migration. Runs in the background. */

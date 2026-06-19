@@ -19,7 +19,6 @@ describe("consolidation processor", () => {
   it("returns empty result when disabled", async () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
-      getAllEntries: vi.fn().mockReturnValue([]),
       getConsolidationCandidates: vi.fn().mockReturnValue([]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
@@ -44,7 +43,6 @@ describe("consolidation processor", () => {
   it("returns empty result when no events", async () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
-      getAllEntries: vi.fn().mockReturnValue([]),
       getConsolidationCandidates: vi.fn().mockReturnValue([]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
@@ -101,7 +99,6 @@ describe("consolidation processor", () => {
     };
 
     const store = {
-      getAllEntries: vi.fn().mockReturnValue([entry1, entry2]),
       getConsolidationCandidates: vi.fn().mockReturnValue([entry1, entry2]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
@@ -175,7 +172,6 @@ describe("consolidation processor", () => {
     };
 
     const store = {
-      getAllEntries: vi.fn().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
       getConsolidationCandidates: vi.fn().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),

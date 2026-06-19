@@ -123,8 +123,9 @@ export async function runConsolidation(opts: {
   if (!(await opts.llm.available())) return result;
 
   try {
+    const now = Date.now();
     // Get only the Layer 1 entries that are actually in play this session.
-    const layer1Entries = opts.store.getConsolidationCandidates(Date.now());
+    const layer1Entries = opts.store.getConsolidationCandidates(now);
 
     // Build the prompt
     const transcript = transcriptToText(opts.events);
@@ -197,7 +198,7 @@ export async function runConsolidation(opts: {
           entry &&
           entry.layer === 1 &&
           entry.confirmation_count >= opts.config.promotion_threshold &&
-          effectiveValidity(entry, Date.now()) >= 0.6
+          effectiveValidity(entry, now) >= 0.6
         ) {
           opts.store.promoteToLayer2(id);
           result.promotions++;

@@ -624,7 +624,7 @@ export function retractMemory(db: Database.Database, id: string): void {
   db.prepare("UPDATE entries SET retracted = 1 WHERE id = ?").run(id);
 }
 
-function rowToEntry(db: Database.Database, row: Record<string, unknown>): MemoryEntry {
+export function rowToEntry(db: Database.Database, row: Record<string, unknown>): MemoryEntry {
   const scopes = db
     .prepare("SELECT scope FROM entry_scopes WHERE entry_id = ?")
     .all(row.id) as { scope: string }[];
