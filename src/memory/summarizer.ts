@@ -25,6 +25,25 @@ Rules:
 - Content should be one sentence, max 120 characters.
 - certainty reflects how strongly the transcript supports this.`;
 
+const UTILITY_PROMPT = `You are a memory utility judge for a coding agent.
+Given a session transcript and a list of memory entries that were surfaced (recall results),
+identify which surfaced entries the agent actually **acted on** during the session.
+
+An entry was "acted on" if:
+- The agent used the information to make a decision or take an action
+- The agent followed the advice/preference/constraint
+- The agent referenced the fact in a tool call or response
+- The entry directly informed a successful action
+
+Output ONLY a JSON object with one key. No prose outside the object.
+
+{
+  "used_ids": ["entry-id-1", "entry-id-2"]
+}
+
+Include only IDs from the surfaced list. Be conservative — only include entries clearly acted on.
+If none were acted on, return an empty array.`;
+
 function transcriptToPrompt(events: SessionEvent[]): string {
   const lines: string[] = ["Session transcript:"];
   for (const e of events) {
@@ -74,6 +93,87 @@ export async function extractLearnings(
   } catch {
     return [];
   }
+}
+
+/**
+ * Ask the summarizer to identify which surfaced recall entries were actually
+ * acted on during the session. Returns the set of acted-on entry IDs.
+ */
+export async function extractUsedEntryIds(
+  llm: SummarizerLLM,
+  events: SessionEvent[],
+  surfaced: Array<{ id: string; content: string }>,
+): Promise<Set<string>> {
+  if (surfaced.length === 0) return new Set();
+  if (events.length === 0) return new Set();
+  if (!(await llm.available())) return new Set();
+
+  let prompt = transcriptToPrompt(events);
+  prompt += "\n\n## Surfaced Memory Entries\n";
+  for (const e of surfaced) {
+    prompt += `- [${e.id}] ${e.content.slice(0, 120)}\n`;
+  }
+  prompt += "\nIdentify which of these surfaced entries were acted on.";
+
+  try {
+    const raw = await llm.complete({
+      system: UTILITY_PROMPT,
+      prompt,
+      temperature: 0.2,
+      maxTokens: 500,
+      json: true,
+      timeoutMs: 20_000,
+    });
+
+    const parsed = JSON.parse(raw) as { used_ids?: string[] };
+    if (!Array.isArray(parsed.used_ids)) return new Set();
+
+    const surfacedIdSet = new Set(surfaced.map((s) => s.id));
+    return new Set(
+      parsed.used_ids.filter((id: string) => surfacedIdSet.has(id)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Fallback heuristic when no summarizer is available: term co-occurrence
+ * between surfaced entry content and tool-call args/results in the events.
+ * Returns entry IDs that have at least one significant term match.
+ */
+export function usedIdsByCooccurrence(
+  events: SessionEvent[],
+  surfaced: Array<{ id: string; content: string }>,
+): Set<string> {
+  if (surfaced.length === 0) return new Set();
+
+  // Collect all tool-call args and results text
+  const toolTexts: string[] = [];
+  for (const e of events) {
+    if (e.type === "tool_use" && e.args) {
+      toolTexts.push(JSON.stringify(e.args));
+    } else if (e.type === "tool_result" && e.result !== undefined) {
+      toolTexts.push(typeof e.result === "string" ? e.result : JSON.stringify(e.result));
+    }
+  }
+
+  const corpus = toolTexts.join(" ").toLowerCase();
+  if (!corpus) return new Set();
+
+  const used = new Set<string>();
+  for (const entry of surfaced) {
+    const terms = entry.content
+      .toLowerCase()
+      .match(/[a-z0-9_]{3,}/g) ?? [];
+    // Entry is "used" if ≥2 significant content terms appear in tool text
+    const matches = terms.filter((t) => corpus.includes(t));
+    if (matches.length >= 2) {
+      used.add(entry.id);
+    }
+  }
+
+  return used;
 }
 
 const TURN_COMPRESSION_PROMPT = `You are a memory compressor for a coding agent.

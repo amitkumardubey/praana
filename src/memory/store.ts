@@ -20,6 +20,7 @@ import {
   insertEntry,
   deleteEntry,
   isReembedPending,
+  markReinforcementUsed,
   mergeEntryMetadata,
   retractMemory as retractMemoryDb,
   openMemoryDb,
@@ -36,7 +37,7 @@ import {
 } from "./db.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 import type { Embedder } from "./types.js";
-import { extractLearnings, summarizeTurns } from "./summarizer.js";
+import { extractLearnings, extractUsedEntryIds, summarizeTurns, usedIdsByCooccurrence } from "./summarizer.js";
 import {
   CONTRADICTION_MATCH_THRESHOLD,
   DUPLICATE_MATCH_THRESHOLD,
@@ -59,12 +60,48 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
-import { effectiveConfidence, digestScore } from "./confidence.js";
+import { effectiveValidity, effectiveConfidence, digestScore } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 
-function certaintyToConfidence(c: "high" | "medium" | "low"): number {
+function certaintyToValidity(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
+}
+
+/** @deprecated Use certaintyToValidity instead. Kept for backward compatibility during migration. */
+const certaintyToConfidence = certaintyToValidity;
+
+/**
+ * Derive a coarse session-success bit from the session-end reason and events.
+ * TODO(scorecard): placeholder — replace with real telemetry signal (tests passed,
+ * no error-loop, commit landed, etc.) once the scorecard (ADR-005 C1 / #99) exists.
+ * Currently: reason is "normal" AND at least one tool returned ok = true.
+ */
+function isSessionGood(
+  reason: string,
+  events: Array<{ type: string; result?: unknown }> | undefined,
+): boolean {
+  if (reason !== "normal") return false;
+  if (!events || events.length === 0) return true; // no events → assume good
+  return events.some((e) => {
+    if (e.type !== "tool_result") return false;
+    if (e.result && typeof e.result === "object" && "ok" in e.result) {
+      return (e.result as { ok: boolean }).ok === true;
+    }
+    return false;
+  });
+}
+
+/** Fetch surfaced entry IDs from pending_reinforcements for the current session. */
+function getSurfacedEntriesForSession(
+  db: Database.Database,
+  sessionId: string,
+): Array<{ entry_id: string }> {
+  return db
+    .prepare(
+      "SELECT entry_id FROM pending_reinforcements WHERE session_id = ?",
+    )
+    .all(sessionId) as { entry_id: string }[];
 }
 
 function queryTerms(query: string): string[] {
@@ -195,9 +232,62 @@ export class MemoryStore {
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
+    const now = Date.now();
+
+    // Determine session-success bit for utility updates.
+    // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #99).
+    const sessionGood = isSessionGood(reason, events);
+
+    // Determine which surfaced entries were used (acted on).
+    const surfOrSurf = getSurfacedEntriesForSession(this.db, this.sessionId);
+    if (surfOrSurf.length > 0) {
+      let usedIds: Set<string>;
+
+      if (this.summarizer && events && events.length > 0) {
+        try {
+          const surfOrSurfaceWithContent = surfOrSurf.map(({ entry_id: id }) => {
+            const entry = getEntryById(this.db, id);
+            return { id, content: entry?.content ?? "" };
+          }).filter((e) => e.content);
+          usedIds = await extractUsedEntryIds(
+            this.summarizer,
+            events,
+            surfOrSurfaceWithContent,
+          );
+        } catch {
+          usedIds = new Set();
+        }
+      } else {
+        const surfOrSurfaceWithContent = surfOrSurf.map(({ entry_id: id }) => {
+          const entry = getEntryById(this.db, id);
+          return { id, content: entry?.content ?? "" };
+        }).filter((e) => e.content);
+        usedIds = usedIdsByCooccurrence(events ?? [], surfOrSurfaceWithContent);
+      }
+
+      // Mark used in pending_reinforcements before flush
+      for (const { entry_id } of surfOrSurf) {
+        markReinforcementUsed(
+          this.db,
+          entry_id,
+          this.sessionId,
+          usedIds.has(entry_id),
+        );
+      }
+
+      // Stamp the session-good flag on all pending rows for this session
+      if (sessionGood) {
+        this.db
+          .prepare(
+            "UPDATE pending_reinforcements SET good = 1 WHERE session_id = ?",
+          )
+          .run(this.sessionId);
+      }
+    }
+
+    // Flush: validity reinforcement + utility updates (two passes)
     flushReinforcements(this.db, this.sessionId);
 
-    const now = Date.now();
     endSessionRow(this.db, this.sessionId, now, reason);
 
     if (events && events.length > 0 && this.summarizer) {
@@ -262,13 +352,14 @@ export class MemoryStore {
 
     const id = ulid();
     const now = Date.now();
-    const confidence = certaintyToConfidence(opts.certainty ?? "medium");
+    const validity = certaintyToValidity(opts.certainty ?? "medium");
 
     const entry: MemoryEntry = {
       id,
       kind,
       content: trimmed,
-      confidence,
+      validity,
+      usefulness: 0.5,  // M2: neutral initial utility
       pinned: opts.pinned ?? false,
       layer: 1,
       confirmation_count: 0,
@@ -347,7 +438,7 @@ export class MemoryStore {
   private pickDuplicateKeeper(cluster: MemoryEntry[]): MemoryEntry {
     return [...cluster].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      if (b.validity !== a.validity) return b.validity - a.validity;
       return a.created_at - b.created_at;
     })[0];
   }
@@ -567,21 +658,23 @@ export class MemoryStore {
     }
 
     // Score & rank
+    // TODO(scorecard): M3 weight constants (W_VALID=0.20, W_UTIL=0.30) — start from these values;
+    // they are A/B targets once the scorecard (ADR-005 C1 / #99) exists, not final.
     const scored = candidates.map(({ entry: e, matchScore }) => {
-      const conf = effectiveConfidence(e, now);
+      const valid = effectiveValidity(e, now);
       const match = matchScore;
       // Recency bonus: 0–0.2 based on days since last seen (max at 0 days)
       const daysSince = (now - e.last_seen_at) / (1000 * 60 * 60 * 24);
       const recency = Math.max(0, 0.2 - daysSince * 0.02);
       // Pin bonus
       const pin = e.pinned ? 0.3 : 0;
-      const score = matchScore + conf * 0.2 + recency + pin;
-      return { entry: e, score, match, conf };
+      const score = matchScore + valid * 0.2 + recency + pin;
+      return { entry: e, score, match, valid };
     });
 
     scored.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      return b.conf - a.conf;
+      return b.valid - a.valid;
     });
 
     const relevant = scored.filter((s) => s.match >= minMatch);
@@ -598,7 +691,8 @@ export class MemoryStore {
         id: s.entry.id,
         kind: s.entry.kind,
         content: s.entry.content,
-        confidence: s.entry.confidence,
+        validity: s.entry.validity,
+        usefulness: s.entry.usefulness,
         match: Math.round(s.match * 1000) / 1000,
         scopes: s.entry.scopes,
         score: Math.round(s.score * 1000) / 1000,
@@ -632,13 +726,13 @@ export class MemoryStore {
     this.db.prepare("UPDATE entries SET layer = 2 WHERE id = ? AND layer = 1").run(id);
   }
 
-  /** Weaken an entry's confidence by a beta factor (0–1). */
+  /** Weaken an entry's validity by a beta factor (0–1). */
   weakenEntry(id: string, beta = 0.3): void {
     weakenEntry(this.db, id, beta);
   }
 
   /**
-   * Remove stale Layer 1 entries with effective confidence below 0.05
+   * Remove stale Layer 1 entries with effective validity below 0.05
    * that have not been seen in 30+ days. Never prunes pinned or Layer 2 entries.
    */
   async prune(): Promise<number> {
@@ -648,7 +742,7 @@ export class MemoryStore {
       if (e.pinned || e.layer === 2) return false;
       const ageMs = now - e.last_seen_at;
       if (ageMs <= minAgeMs) return false;
-      return effectiveConfidence(e, now) < 0.05;
+      return effectiveValidity(e, now) < 0.05;
     });
 
     for (const entry of toDelete) {

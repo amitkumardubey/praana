@@ -45,13 +45,13 @@ describe("sessionEnd duplicate and contradiction detection", () => {
       kind: "fact",
       certainty: "high",
     });
-    const before = store.getAllEntries()[0].confidence;
+    const before = store.getAllEntries()[0].validity;
     await store.sessionEnd("clean", [
       { type: "user_message", timestamp: Date.now(), content: "tests" },
     ]);
 
     expect(store.getAllEntries()).toHaveLength(1);
-    expect(store.getAllEntries()[0].confidence).toBeGreaterThan(before);
+    expect(store.getAllEntries()[0].validity).toBeGreaterThan(before);
   });
 
   it("weakens contradictory entry before storing new learning", async () => {
@@ -86,7 +86,7 @@ describe("sessionEnd duplicate and contradiction detection", () => {
       kind: "fact",
       certainty: "high",
     });
-    const beforeConf = store.getAllEntries()[0].confidence;
+    const beforeConf = store.getAllEntries()[0].validity;
     await store.sessionEnd("clean", [
       { type: "user_message", timestamp: Date.now(), content: "streaming" },
     ]);
@@ -96,7 +96,7 @@ describe("sessionEnd duplicate and contradiction detection", () => {
     const weakened = entries.find(
       (e) => e.content.includes("implemented in turn.ts") && !e.content.includes("not"),
     );
-    expect(weakened?.confidence).toBeLessThan(beforeConf);
+    expect(weakened?.validity).toBeLessThan(beforeConf);
   });
 });
 
@@ -171,7 +171,8 @@ describe("reconcileDuplicates()", () => {
         id,
         kind: "fact",
         content: "The project uses Vitest for testing.",
-        confidence: 0.7 + i * 0.05,
+        validity: 0.7 + i * 0.05,
+        usefulness: 0.5,
         pinned: false,
         layer: 1,
         confirmation_count: i,
@@ -210,7 +211,8 @@ describe("reconcileDuplicates()", () => {
         id,
         kind: "fact",
         content,
-        confidence: 0.8,
+        validity: 0.8,
+        usefulness: 0.5,
         pinned: false,
         layer: 1,
         confirmation_count: 0,

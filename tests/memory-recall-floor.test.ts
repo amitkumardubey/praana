@@ -30,7 +30,7 @@ describe("recall min score floor for digest", () => {
     for (const entry of store.getAllEntries()) {
       if (entry.content.includes("Weak vague")) {
         store["db"]
-          .prepare("UPDATE entries SET created_at = ?, confidence = 0.05 WHERE id = ?")
+          .prepare("UPDATE entries SET created_at = ?, validity = 0.05 WHERE id = ?")
           .run(staleLastSeen, entry.id);
       }
     }

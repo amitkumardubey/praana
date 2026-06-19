@@ -10,6 +10,8 @@ import { EMBEDDING_DIM } from "./embeddings.js";
 const REEMBED_NEEDED_KEY = "reembed_needed";
 const EMBEDDING_BACKEND_KEY = "embedding_backend";
 export const DEDUP_RECONCILED_KEY = "dedup_reconciled_v1";
+const SIGNAL_COLUMNS_MIGRATED_KEY = "signal_columns_migrated_v1";
+const UTILITY_COLUMNS_MIGRATED_KEY = "utility_columns_migrated_v1";
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -77,6 +79,7 @@ export function openMemoryDb(
   db.exec(BASE_SCHEMA);
   ensureLayerColumns(db);
   ensureFtsBackfill(db);
+  ensureUtilityColumns(db);
 
   const needsReembedFromDim = ensureVectorTable(db, embeddingDim);
   const needsReembedFromBackend = embeddingBackend
@@ -105,6 +108,57 @@ function ensureLayerColumns(db: Database.Database): void {
   if (!names.has("retracted")) {
     db.exec("ALTER TABLE entries ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0");
   }
+
+  // M2: Two-signal memory model — rename confidence → validity, add usefulness
+  ensureSignalColumns(db);
+}
+
+/**
+ * M2 migration: Rename confidence column to validity, add usefulness column.
+ * Uses SQLite ALTER TABLE RENAME COLUMN (requires SQLite >= 3.25.0).
+ * Idempotent: tracks migration via memory_meta key.
+ */
+function ensureSignalColumns(db: Database.Database): void {
+  if (getMemoryMeta(db, SIGNAL_COLUMNS_MIGRATED_KEY) === "1") return;
+
+  const columns = db
+    .prepare("PRAGMA table_info(entries)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+
+  // Rename confidence → validity if still named confidence
+  if (names.has("confidence") && !names.has("validity")) {
+    db.exec("ALTER TABLE entries RENAME COLUMN confidence TO validity");
+  }
+
+  // Add usefulness column if missing
+  if (!names.has("usefulness")) {
+    db.exec("ALTER TABLE entries ADD COLUMN usefulness REAL NOT NULL DEFAULT 0.5");
+  }
+
+  setMemoryMeta(db, SIGNAL_COLUMNS_MIGRATED_KEY, "1");
+}
+
+/**
+ * M2-part-2 migration: Add used/good columns to pending_reinforcements
+ * for utility tracking. Idempotent.
+ */
+function ensureUtilityColumns(db: Database.Database): void {
+  if (getMemoryMeta(db, UTILITY_COLUMNS_MIGRATED_KEY) === "1") return;
+
+  const columns = db
+    .prepare("PRAGMA table_info(pending_reinforcements)")
+    .all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+
+  if (!names.has("used")) {
+    db.exec("ALTER TABLE pending_reinforcements ADD COLUMN used INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("good")) {
+    db.exec("ALTER TABLE pending_reinforcements ADD COLUMN good INTEGER NOT NULL DEFAULT 0");
+  }
+
+  setMemoryMeta(db, UTILITY_COLUMNS_MIGRATED_KEY, "1");
 }
 
 function ensureFtsBackfill(db: Database.Database): void {
@@ -293,14 +347,15 @@ export function countVectorEmbeddings(db: Database.Database): number {
 
 export function insertEntry(db: Database.Database, e: MemoryEntry): void {
   const stmt = db.prepare(
-    `INSERT INTO entries (id, kind, content, confidence, pinned, layer, confirmation_count, created_at, last_seen_at, session_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO entries (id, kind, content, validity, usefulness, pinned, layer, confirmation_count, created_at, last_seen_at, session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   stmt.run(
     e.id,
     e.kind,
     e.content,
-    e.confidence,
+    e.validity,
+    e.usefulness,
     e.pinned ? 1 : 0,
     e.layer,
     e.confirmation_count,
@@ -329,16 +384,16 @@ export function reinforceEntry(db: Database.Database, id: string, alpha = 0.15):
   db.prepare(
     `
     UPDATE entries
-    SET confidence = MIN(1.0, confidence + (1.0 - confidence) * ?), last_seen_at = ?
+    SET validity = MIN(1.0, validity + (1.0 - validity) * ?), last_seen_at = ?
     WHERE id = ?
   `,
   ).run(alpha, Date.now(), id);
 }
 
-// TODO: wire into a scheduled confidence-decay pass (not yet called from production code).
+// TODO: wire into a scheduled validity-decay pass (not yet called from production code).
 export function weakenEntry(db: Database.Database, id: string, beta = 0.3): void {
   db.prepare(
-    `UPDATE entries SET confidence = confidence * (1.0 - ?) WHERE id = ?`,
+    `UPDATE entries SET validity = validity * (1.0 - ?) WHERE id = ?`,
   ).run(beta, id);
 }
 
@@ -349,19 +404,71 @@ export function stampReinforcement(
 ): void {
   db.prepare(
     `
-    INSERT OR IGNORE INTO pending_reinforcements (entry_id, session_id, ts)
-    VALUES (?, ?, ?)
+    INSERT OR IGNORE INTO pending_reinforcements (entry_id, session_id, ts, used, good)
+    VALUES (?, ?, ?, 0, 0)
   `,
   ).run(entryId, sessionId, Date.now());
 }
 
+/** Mark whether a surfaced entry was actually used (acted on) during the session. */
+export function markReinforcementUsed(
+  db: Database.Database,
+  entryId: string,
+  sessionId: string,
+  used: boolean,
+): void {
+  db.prepare(
+    `UPDATE pending_reinforcements SET used = ? WHERE entry_id = ? AND session_id = ?`,
+  ).run(used ? 1 : 0, entryId, sessionId);
+}
+
+/** Utility update constants. */
+const UTILITY_ALPHA_USE = 0.15;  // boost when used ∧ good
+const UTILITY_BETA_IDLE = 0.05;  // decay when ¬used
+
+/** Apply a delta update to a single entry's usefulness, clamped to [0, 1]. */
+function updateUsefulness(
+  db: Database.Database,
+  id: string,
+  mode: "boost" | "decay" | "neutral",
+): void {
+  if (mode === "neutral") return;
+
+  if (mode === "boost") {
+    db.prepare(
+      `UPDATE entries SET usefulness = MIN(1.0, usefulness + (1.0 - usefulness) * ?) WHERE id = ?`,
+    ).run(UTILITY_ALPHA_USE, id);
+  } else {
+    db.prepare(
+      `UPDATE entries SET usefulness = usefulness * (1.0 - ?) WHERE id = ?`,
+    ).run(UTILITY_BETA_IDLE, id);
+  }
+}
+
 export function flushReinforcements(db: Database.Database, sessionId: string): void {
   const rows = db
-    .prepare("SELECT entry_id FROM pending_reinforcements WHERE session_id = ?")
-    .all(sessionId) as { entry_id: string }[];
-  for (const { entry_id } of rows) {
+    .prepare(
+      "SELECT entry_id, used, good FROM pending_reinforcements WHERE session_id = ?",
+    )
+    .all(sessionId) as { entry_id: string; used: number; good: number }[];
+
+  for (const { entry_id, used, good } of rows) {
+    // Pass 1: validity reinforcement (always — being surfaced confirms truth)
     reinforceEntry(db, entry_id);
+
+    // Pass 2: utility update based on surfaced+used+outcome
+    if (used && good) {
+      updateUsefulness(db, entry_id, "boost");
+    } else if (used && !good) {
+      // Decision: neutral — session-success bit is too noisy to penalize a used memory.
+      // TODO(scorecard): revisit toward a small decay once #99 delivers reliable signal.
+      updateUsefulness(db, entry_id, "neutral");
+    } else {
+      // ¬used — idle decay regardless of good/bad
+      updateUsefulness(db, entry_id, "decay");
+    }
   }
+
   db.prepare("DELETE FROM pending_reinforcements WHERE session_id = ?").run(sessionId);
 }
 
@@ -413,7 +520,8 @@ function rowToEntry(db: Database.Database, row: Record<string, unknown>): Memory
     id: row.id as string,
     kind: row.kind as MemoryKind,
     content: row.content as string,
-    confidence: row.confidence as number,
+    validity: (row.validity ?? row.confidence) as number,  // back-compat: read from validity or legacy confidence
+    usefulness: (row.usefulness as number | undefined) ?? 0.5,  // default 0.5 for pre-migration rows
     pinned: row.pinned === 1,
     layer: (row.layer as number | undefined) === 2 ? 2 : 1,
     confirmation_count: (row.confirmation_count as number | undefined) ?? 0,

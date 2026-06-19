@@ -24,7 +24,7 @@ describe("memory pruning", () => {
     const staleId = store.getAllEntries()[0].id;
     const staleLastSeen = Date.now() - 31 * 86_400_000;
     store["db"]
-      .prepare("UPDATE entries SET last_seen_at = ?, confidence = 0.05, created_at = ? WHERE id = ?")
+      .prepare("UPDATE entries SET last_seen_at = ?, validity = 0.05, created_at = ? WHERE id = ?")
       .run(staleLastSeen, staleLastSeen, staleId);
 
     await store.sessionStart(ctx);
@@ -53,7 +53,7 @@ describe("memory pruning", () => {
     const staleLastSeen = Date.now() - 31 * 86_400_000;
     for (const entry of store.getAllEntries()) {
       store["db"]
-        .prepare("UPDATE entries SET last_seen_at = ?, confidence = 0.1, layer = ? WHERE id = ?")
+        .prepare("UPDATE entries SET last_seen_at = ?, validity = 0.1, layer = ? WHERE id = ?")
         .run(staleLastSeen, entry.content === "Deep memory" ? 2 : 1, entry.id);
     }
 

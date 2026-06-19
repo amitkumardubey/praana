@@ -239,7 +239,8 @@ describe("Memory safety", () => {
       id: "e1",
       kind: "fact",
       content: "first entry",
-      confidence: 0.5,
+      validity: 0.5,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 0,
@@ -247,13 +248,15 @@ describe("Memory safety", () => {
       last_seen_at: now,
       session_id: "s1",
       scopes: ["context:a"],
+      retracted: false,
     });
 
     insertEntry(db, {
       id: "e2",
       kind: "fact",
       content: "second entry",
-      confidence: 0.5,
+      validity: 0.5,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 0,
@@ -261,6 +264,7 @@ describe("Memory safety", () => {
       last_seen_at: now,
       session_id: "s1",
       scopes: ["context:a"],
+      retracted: false,
     });
 
     const v1 = new Float32Array(384);

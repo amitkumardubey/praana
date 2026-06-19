@@ -34,7 +34,8 @@ export interface MemoryEntry {
   id: string;              // ULID
   kind: MemoryKind;
   content: string;
-  confidence: number;      // 0.0–1.0, starts at creation value
+  validity: number;        // 0.0–1.0, starts at creation value — "is it still true"
+  usefulness: number;      // 0.0–1.0, starts 0.5 (neutral) — "is it worth surfacing"
   pinned: boolean;         // never forget, always in digest
   layer: MemoryLayer;      // 1 = working, 2 = consolidated/deep
   confirmation_count: number; // sessions that confirmed this entry
@@ -44,6 +45,8 @@ export interface MemoryEntry {
   scopes: string[];        // explicit scope labels, e.g. ["context:proj-a"]
   retracted: boolean;      // tombstone flag — excluded from recall
   embedding?: Buffer;      // 384-dim float32 buffer
+  // TODO(scorecard): Session-success definition for utility "good" bit currently uses placeholder
+  // (reason=normal ∧ ≥1 tool success). Real definition is a research-agenda open question gating the scorecard.
 }
 
 export interface SessionContext {
@@ -76,7 +79,8 @@ export interface RecallResult {
     id: string;
     kind: MemoryKind;
     content: string;
-    confidence: number;
+    validity: number;
+    usefulness: number;
     match: number;         // query-match score (higher means more relevant)
     scopes: string[];
     score: number;         // final ranking score (currently equals match)
