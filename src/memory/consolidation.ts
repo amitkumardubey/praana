@@ -123,9 +123,11 @@ export async function runConsolidation(opts: {
   if (!(await opts.llm.available())) return result;
 
   try {
-    // Get Layer 1 entries for the current scope
-    const allEntries = opts.store.getAllEntries();
-    const layer1Entries = allEntries.filter((e) => e.layer === 1);
+    // Get only the Layer 1 entries that are actually in play this session.
+    const layer1Entries = opts.store.getConsolidationCandidates(
+      opts.sessionId,
+      Date.now(),
+    );
 
     // Build the prompt
     const transcript = transcriptToText(opts.events);
@@ -155,7 +157,7 @@ export async function runConsolidation(opts: {
     // Process confirmations
     if (Array.isArray(parsed.confirmations)) {
       for (const id of parsed.confirmations) {
-        const entry = allEntries.find((e) => e.id === id);
+        const entry = layer1Entries.find((e) => e.id === id);
         if (entry && entry.layer === 1) {
           opts.store.reinforceFromSuccessfulToolOutcome([id], 0.1);
           result.confirmations++;
@@ -166,7 +168,7 @@ export async function runConsolidation(opts: {
     // Process contradictions
     if (Array.isArray(parsed.contradictions)) {
       for (const id of parsed.contradictions) {
-        const entry = allEntries.find((e) => e.id === id);
+        const entry = layer1Entries.find((e) => e.id === id);
         if (entry && entry.layer === 1) {
           // Weaken contradicted entries
           opts.store.weakenEntry(id, 0.2);
@@ -193,7 +195,7 @@ export async function runConsolidation(opts: {
     // Process promotions to Layer 2
     if (Array.isArray(parsed.promotions)) {
       for (const id of parsed.promotions) {
-        const entry = allEntries.find((e) => e.id === id);
+        const entry = layer1Entries.find((e) => e.id === id);
         if (
           entry &&
           entry.layer === 1 &&

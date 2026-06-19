@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 
@@ -59,5 +59,73 @@ describe("memory pruning", () => {
 
     await store.sessionStart(ctx);
     expect(store.getAllEntries()).toHaveLength(2);
+  });
+
+  it("retains stale entries that are still highly valid", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+    await store.remember("Cold but true", { kind: "fact", certainty: "high" });
+
+    const entry = store.getAllEntries()[0];
+    const staleLastSeen = Date.now() - 31 * 86_400_000;
+
+    store["db"]
+      .prepare("UPDATE entries SET last_seen_at = ?, validity = 0.9, usefulness = 0.1 WHERE id = ?")
+      .run(staleLastSeen, entry.id);
+
+    const pruned = await store.prune();
+
+    expect(pruned).toBe(0);
+    expect(store.getAllEntries()).toHaveLength(1);
+  });
+
+  it("triggers prune when entry count crosses the growth threshold", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+
+    const pruneSpy = vi.spyOn(store, "prune").mockResolvedValue(0);
+    const now = Date.now();
+    const insert = store["db"].prepare(`
+      INSERT INTO entries (
+        id, kind, content, validity, usefulness, pinned, layer,
+        confirmation_count, created_at, last_seen_at, session_id
+      ) VALUES (?, 'fact', ?, 0.5, 0.5, 0, 1, 0, ?, ?, ?)
+    `);
+
+    const tx = store["db"].transaction((count: number) => {
+      for (let i = 0; i < count; i++) {
+        const ts = now - i;
+        insert.run(`seed-${i}`, `Seed ${i}`, ts, ts, "previous-session");
+      }
+    });
+    tx(1000);
+
+    await store.remember("Trigger prune", { kind: "fact", certainty: "low" });
+
+    expect(pruneSpy).toHaveBeenCalledTimes(1);
   });
 });

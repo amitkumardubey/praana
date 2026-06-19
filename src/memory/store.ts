@@ -108,6 +108,11 @@ function isAbortLikeError(err: unknown): boolean {
 }
 
 const DEFAULT_RECALL_MIN_MATCH = 0.35;
+const CONSOLIDATION_AGE_MS = 30 * 86_400_000;
+const CONSOLIDATION_CANDIDATE_LIMIT = 50;
+const PRUNE_ENTRY_COUNT_THRESHOLD = 1000;
+const PRUNE_GROWTH_STEP = 100;
+const PRUNE_MIN_VALIDITY = 0.7;
 
 /**
  * M4 deterministic promotion gate.
@@ -164,6 +169,7 @@ export class MemoryStore {
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
+  private lastGrowthPruneCount = 0;
   /** True while a background re-embed migration is running. */
   private reembedding = false;
   private reembedPromise: Promise<void> | null = null;
@@ -405,6 +411,8 @@ export class MemoryStore {
         upsertEmbedding(this.db, id, vec);
       }).catch(() => { /* embedder failure is non-fatal */ });
     }
+
+    await this.maybePruneOnGrowth();
 
     return { id };
   }
@@ -736,6 +744,42 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * Select Layer 1 entries that are in play for consolidation this session.
+   * Priority order: surfaced in this session, created in this session, aging.
+   * The list is capped so prompt size stays bounded.
+   */
+  getConsolidationCandidates(sessionId: string, now: number = Date.now()): MemoryEntry[] {
+    const surfacedIds = new Set(
+      getSurfacedEntriesWithContent(this.db, sessionId).map((entry) => entry.id),
+    );
+    const agingCutoff = now - CONSOLIDATION_AGE_MS;
+    const candidates = getAllEntries(this.db)
+      .filter((entry) => !entry.retracted && entry.layer === 1)
+      .map((entry) => {
+        if (surfacedIds.has(entry.id)) {
+          return { entry, priority: 0 };
+        }
+        if (entry.session_id === sessionId) {
+          return { entry, priority: 1 };
+        }
+        if (entry.last_seen_at <= agingCutoff) {
+          return { entry, priority: 2 };
+        }
+        return null;
+      })
+      .filter((item): item is { entry: MemoryEntry; priority: number } => item !== null)
+      .sort((a, b) => {
+        if (a.priority !== b.priority) return a.priority - b.priority;
+        if (b.entry.last_seen_at !== a.entry.last_seen_at) {
+          return b.entry.last_seen_at - a.entry.last_seen_at;
+        }
+        return b.entry.created_at - a.entry.created_at;
+      });
+
+    return candidates.slice(0, CONSOLIDATION_CANDIDATE_LIMIT).map((item) => item.entry);
+  }
+
   async pin(id: string): Promise<void> {
     this.db.prepare("UPDATE entries SET pinned = 1 WHERE id = ?").run(id);
   }
@@ -813,6 +857,7 @@ export class MemoryStore {
     const minAgeMs = 30 * 86_400_000;
     const toDelete = getAllEntries(this.db).filter((e) => {
       if (e.pinned || e.layer === 2) return false;
+      if (effectiveValidity(e, now) >= PRUNE_MIN_VALIDITY) return false;
       const ageMs = now - e.last_seen_at;
       if (ageMs <= minAgeMs) return false;
       return effectiveValidity(e, now) < 0.05;
@@ -822,6 +867,14 @@ export class MemoryStore {
       deleteEntry(this.db, entry.id);
     }
     return toDelete.length;
+  }
+
+  private async maybePruneOnGrowth(): Promise<void> {
+    const entryCount = this.getEntryCount();
+    if (entryCount <= PRUNE_ENTRY_COUNT_THRESHOLD) return;
+    if (entryCount - this.lastGrowthPruneCount < PRUNE_GROWTH_STEP) return;
+    await this.prune();
+    this.lastGrowthPruneCount = entryCount;
   }
 
   /** Re-embed all entries after vector dimension migration. Runs in the background. */

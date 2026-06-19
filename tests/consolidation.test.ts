@@ -1,16 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { ConsolidationConfig, ConsolidationResult } from "../src/memory/consolidation.js";
-
-// Mock the memory store
-vi.mock("../src/memory/store.js", () => ({
-  MemoryStore: vi.fn().mockImplementation(() => ({
-    getAllEntries: vi.fn().mockReturnValue([]),
-    reinforceFromSuccessfulToolOutcome: vi.fn(),
-    weakenEntry: vi.fn(),
-    promoteToLayer2: vi.fn(),
-    remember: vi.fn().mockResolvedValue({ id: "new-entry" }),
-  })),
-}));
 
 // Mock the summarizer LLM
 function createMockLLM(response: string) {
@@ -31,6 +20,7 @@ describe("consolidation processor", () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
       getAllEntries: vi.fn().mockReturnValue([]),
+      getConsolidationCandidates: vi.fn().mockReturnValue([]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
       promoteToLayer2: vi.fn(),
@@ -55,6 +45,7 @@ describe("consolidation processor", () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
       getAllEntries: vi.fn().mockReturnValue([]),
+      getConsolidationCandidates: vi.fn().mockReturnValue([]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
       promoteToLayer2: vi.fn(),
@@ -111,6 +102,7 @@ describe("consolidation processor", () => {
 
     const store = {
       getAllEntries: vi.fn().mockReturnValue([entry1, entry2]),
+      getConsolidationCandidates: vi.fn().mockReturnValue([entry1, entry2]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
       promoteToLayer2: vi.fn(),
@@ -184,6 +176,7 @@ describe("consolidation processor", () => {
 
     const store = {
       getAllEntries: vi.fn().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
+      getConsolidationCandidates: vi.fn().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
       reinforceFromSuccessfulToolOutcome: vi.fn(),
       weakenEntry: vi.fn(),
       promoteToLayer2: vi.fn(),
@@ -211,6 +204,89 @@ describe("consolidation processor", () => {
     expect(store.promoteToLayer2).toHaveBeenCalledTimes(1);
     expect(store.promoteToLayer2).toHaveBeenCalledWith("entry-high");
     expect(result.promotions).toBe(1);
+  });
+
+  it("selects surfaced, new, and aging Layer 1 entries for consolidation", async () => {
+    const { MemoryStore } = await import("../src/memory/index.js");
+    const { DeterministicTestEmbedder } = await import("./helpers/test-embedder.js");
+
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+    await store.remember("Aging candidate", { kind: "fact", certainty: "low" });
+    await store.remember("Fresh surfaced candidate", { kind: "fact", certainty: "low" });
+    await store.remember("Fresh new candidate", { kind: "fact", certainty: "low" });
+    await store.recall("Fresh surfaced candidate", { limit: 1 });
+
+    const now = Date.now();
+    const oldEnough = now - 31 * 86_400_000;
+    const recentEnough = now - 10 * 86_400_000;
+
+    const agedId = store.getAllEntries().find((e) => e.content === "Aging candidate")?.id;
+    const freshSurfacedId = store.getAllEntries().find((e) => e.content === "Fresh surfaced candidate")?.id;
+    const freshNewId = store.getAllEntries().find((e) => e.content === "Fresh new candidate")?.id;
+
+    if (!agedId || !freshSurfacedId || !freshNewId) {
+      throw new Error("Test setup failed");
+    }
+
+    store["db"]
+      .prepare("UPDATE entries SET last_seen_at = ?, session_id = ? WHERE id = ?")
+      .run(oldEnough, "previous-session", agedId);
+    store["db"]
+      .prepare("UPDATE entries SET last_seen_at = ?, session_id = ? WHERE id = ?")
+      .run(recentEnough, "previous-session", freshSurfacedId);
+
+    const candidates = store.getConsolidationCandidates((store as any).sessionId, now);
+    const ids = candidates.map((entry) => entry.id);
+    const contents = candidates.map((entry) => entry.content);
+
+    expect(ids[0]).toBe(freshSurfacedId);
+    expect(new Set(ids)).toEqual(new Set([freshSurfacedId, freshNewId, agedId]));
+    expect(new Set(contents)).toEqual(new Set([
+      "Fresh surfaced candidate",
+      "Fresh new candidate",
+      "Aging candidate",
+    ]));
+  });
+
+  it("caps consolidation candidates at 50 entries", async () => {
+    const { MemoryStore } = await import("../src/memory/index.js");
+    const { DeterministicTestEmbedder } = await import("./helpers/test-embedder.js");
+
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+
+    for (let i = 0; i < 51; i++) {
+      await store.remember(`Candidate ${i}`, { kind: "fact", certainty: "low" });
+    }
+
+    const candidates = store.getConsolidationCandidates((store as any).sessionId, Date.now());
+
+    expect(candidates).toHaveLength(50);
   });
 });
 
