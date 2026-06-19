@@ -265,3 +265,88 @@ describe("M4 promotion gate — confirmations helpers", () => {
     db.close();
   });
 });
+
+describe("M4 promotion gate — digest surfacing counts as confirmation", () => {
+  afterEach(() => {
+    while (tracked.length) {
+      const s = tracked.pop();
+      try {
+        s?.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it("promotes an entry surfaced only via the session-start digest across 2 distinct sessions (no explicit recall())", async () => {
+    const store = await newStore();
+    tracked.push(store);
+
+    // Created in session A — not yet in A's digest (built before remember).
+    const { id } = await store.remember("Project uses Vitest for tests", {
+      kind: "fact",
+      certainty: "high", // validity 0.8 → surfaces in digest, clears 0.7 gate
+    });
+    await store.sessionEnd("normal", []);
+
+    const db = dbOf(store);
+    const afterA = db
+      .prepare("SELECT COUNT(*) AS c FROM confirmations WHERE entry_id = ?")
+      .get(id) as { c: number };
+    // Not surfaced in session A (entry didn't exist when A's digest was built).
+    expect(afterA.c).toBe(0);
+
+    // Session B: the entry now appears in the start-of-session digest and is
+    // stamped as surfaced — WITHOUT any explicit recall() tool call.
+    await store.sessionStart({
+      agent: APP_AGENT_ID,
+      user_id: "test-user",
+      context_id: "test-context",
+      time: Date.now(),
+      context_label: "test",
+    });
+    await store.sessionEnd("normal", []);
+    expect(
+      (
+        db
+          .prepare("SELECT COUNT(*) AS c FROM confirmations WHERE entry_id = ?")
+          .get(id) as { c: number }
+      ).c,
+    ).toBe(1);
+    // Still Layer 1 after one distinct confirming session.
+    expect(store.getAllEntries().find((e) => e.id === id)!.layer).toBe(1);
+
+    // Session C: second distinct surfacing → distinct count hits 2 → promote.
+    await store.sessionStart({
+      agent: APP_AGENT_ID,
+      user_id: "test-user",
+      context_id: "test-context",
+      time: Date.now(),
+      context_label: "test",
+    });
+    await store.sessionEnd("normal", []);
+
+    const entry = store.getAllEntries().find((e) => e.id === id);
+    expect(entry).toBeDefined();
+    expect(entry!.layer).toBe(2);
+  });
+
+  it("diagnostic getDigest() does NOT stamp surfaced/confirmation rows", async () => {
+    const store = await newStore();
+    tracked.push(store);
+
+    const { id } = await store.remember("Build runs on Node 22", {
+      kind: "fact",
+      certainty: "high",
+    });
+
+    // getDigest is a display/refresh path — must not record confirmations.
+    await store.getDigest(0.35);
+
+    const db = dbOf(store);
+    const surfaced = db
+      .prepare("SELECT COUNT(*) AS c FROM pending_reinforcements WHERE entry_id = ?")
+      .get(id) as { c: number };
+    expect(surfaced.c).toBe(0);
+  });
+});

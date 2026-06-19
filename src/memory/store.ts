@@ -232,7 +232,11 @@ export class MemoryStore {
       started_at: ctx.time,
     });
 
-    return this.buildDigest(ctx, ctx.recall_min_score);
+    // Stamp the digest's entries as surfaced for THIS session. The digest is
+    // the primary surfacing path (injected into the system prompt), so its
+    // entries must count toward the M2 utility loop and the M4 distinct-session
+    // confirmation gate — not just entries the agent re-queries via recall().
+    return this.buildDigest(ctx, ctx.recall_min_score, { stampSurfaced: true });
   }
 
   async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
@@ -868,7 +872,11 @@ export class MemoryStore {
     ];
   }
 
-  private async buildDigest(ctx: SessionContext, minScore = 0.35): Promise<Digest> {
+  private async buildDigest(
+    ctx: SessionContext,
+    minScore = 0.35,
+    opts: { stampSurfaced?: boolean } = {},
+  ): Promise<Digest> {
     const now = Date.now();
     const entries = this.getEntriesForScopeQueries(
       this.buildScopeQueries(this.defaultScopes),
@@ -907,6 +915,15 @@ export class MemoryStore {
 
     if (lines.length > 0) {
       lines.push("Use recall(\"...\") for anything not shown.");
+    }
+
+    // Record digest entries as surfaced this session (idempotent per
+    // entry/session). Only on genuine surfacing paths (sessionStart), never on
+    // diagnostic getDigest() calls.
+    if (opts.stampSurfaced) {
+      for (const id of included) {
+        stampReinforcement(this.db, id, this.sessionId);
+      }
     }
 
     const markdown = lines.join("\n").trimEnd();
