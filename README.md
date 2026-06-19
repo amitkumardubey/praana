@@ -132,7 +132,7 @@ These are real gaps today—not a roadmap dressed up as marketing.
 
 | Area | What's weak |
 |---|---|
-| **Memory recall** | Semantic recall requires `@huggingface/transformers` (default via `embedder = "auto"`) or an explicit embedder like `ollama`. Without a semantic embedder, recall falls back to keyword search only. Global and project memories merge in project sessions, but near-duplicate or conflicting entries are not automatically reconciled. |
+| **Memory recall** | Semantic recall uses `@huggingface/transformers` by default (`embedder = "auto"`); model weights download on first run. Ollama is an opt-in alternative. Global and project memories merge in project sessions, but near-duplicate or conflicting entries are not automatically reconciled. |
 | **Context engine** | Off by default. Enabling it adds complexity; fallback to classic if init fails. |
 | **Long sessions** | Tiering and distillation help but don't guarantee the model stays on track. |
 | **Hydration** | Demoted state can be hidden until you mention it or the agent calls `hydrate`—the model doesn't always recover context proactively. |

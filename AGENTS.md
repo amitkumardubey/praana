@@ -68,14 +68,14 @@ Cognitive Memory uses vector search for recall. The embedder strategy is configu
 
 ```toml
 [memory]
-embedder = "auto"            # default — transformers when installed, else keyword-only search
+embedder = "auto"            # default — transformers (model downloads on first run)
 transformers_model = "Xenova/all-MiniLM-L6-v2"  # optional override
 ollama_url = "http://localhost:11434"
 ollama_model = "nomic-embed-text"
 ```
 
 Strategies:
-- `auto` — uses Transformers.js when `@huggingface/transformers` is installed, otherwise keyword-only recall (FTS) with a warning.
+- `auto` — uses Transformers.js (`@huggingface/transformers`, shipped as a dependency). Model weights download on first run to `~/.praana/models/`.
 - `transformers` — in-process ONNX via `@huggingface/transformers` (Xenova/all-MiniLM-L6-v2, 384-dim). Models cache in `~/.praana/models/`.
 - `transformers-nomic` — 768-dim variant (Xenova/nomic-embed-text-v1) for higher-quality recall.
 - `ollama` — opt-in; requires running Ollama daemon. Run `ollama pull nomic-embed-text` first.

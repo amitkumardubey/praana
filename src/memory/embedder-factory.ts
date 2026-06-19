@@ -45,7 +45,7 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder | n
     }
 
     log.warn(
-      '@huggingface/transformers unavailable — recall will use keyword search only. Install with: npm install @huggingface/transformers',
+      'Transformers embedder failed to load — recall will use keyword search only.',
     );
     return null;
   }
