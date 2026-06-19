@@ -242,11 +242,9 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        const mirror = await mirrorToCognitiveMemory(mirrorCtx, text, "fact");
-        if (mirror) logMemoryMirror("add_note", "fact", mirror);
         return buildStateToolResult(
           obj.id,
-          mirror,
+          undefined,
           qualityWarning ? { warning: qualityWarning } : undefined,
         );
       },
