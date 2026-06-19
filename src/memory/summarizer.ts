@@ -117,16 +117,6 @@ export async function extractLearnings(
   }
 }
 
-// extractUsedEntryIds is now merged into extractLearnings (single LLM call).
-export async function extractUsedEntryIds(
-  llm: SummarizerLLM,
-  events: SessionEvent[],
-  surfaced: Array<{ id: string; content: string }>,
-): Promise<Set<string>> {
-  const result = await extractLearnings(llm, events, surfaced);
-  return result.usedIds;
-}
-
 /**
  * Fallback heuristic when no summarizer is available: term co-occurrence
  * between surfaced entry content and tool-call args/results in the events.

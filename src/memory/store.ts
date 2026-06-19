@@ -80,6 +80,11 @@ function isSessionGood(
 ): boolean {
   if (reason !== "normal") return false;
   if (!events || events.length === 0) return true; // no events → assume good
+  // NOTE: sessions with only user/agent messages (no tool calls) return false here,
+  // meaning used entries get neutral rather than boosted usefulness. This is intentional
+  // for the placeholder — a tool-free session gives no signal about memory utility.
+  // TODO(scorecard): replace with real telemetry once ADR-005 C1 / #99 delivers a
+  // reliable success signal that covers conversational sessions too.
   return events.some((e) => {
     if (e.type !== "tool_result") return false;
     if (e.result && typeof e.result === "object" && "ok" in e.result) {
@@ -237,36 +242,38 @@ export class MemoryStore {
 
     // Determine which surfaced entries were used (acted on).
     const surfaced = getSurfacedEntriesForSession(this.db, this.sessionId);
+
+    // Build surfacedWithContent once — reused across all branches below.
+    const surfacedWithContent = surfaced
+      .map(({ entry_id: id }) => {
+        const entry = getEntryById(this.db, id);
+        return { id, content: entry?.content ?? "" };
+      })
+      .filter((e) => e.content);
+
+    // Track whether learnings were already stored by the combined call below,
+    // so we don't make a redundant second LLM call at session end.
+    let learningsStored = false;
+
     if (surfaced.length > 0) {
       let usedIds: Set<string>;
 
       if (this.summarizer && events && events.length > 0) {
         try {
-          const surfacedWithContent = surfaced
-            .map(({ entry_id: id }) => {
-              const entry = getEntryById(this.db, id);
-              return { id, content: entry?.content ?? "" };
-            })
-            .filter((e) => e.content);
+          // Single combined LLM call: returns both usedIds and learnings.
+          // Storing learnings here avoids a second extractLearnings call below.
           const result = await extractLearnings(this.summarizer, events, surfacedWithContent);
           usedIds = result.usedIds;
+          for (const l of result.learnings) {
+            await this.storeLearning(l);
+          }
+          learningsStored = true;
         } catch {
-          // Summarizer failed — fall back to co-occurrence heuristic
-          const surfacedWithContent = surfaced
-            .map(({ entry_id: id }) => {
-              const entry = getEntryById(this.db, id);
-              return { id, content: entry?.content ?? "" };
-            })
-            .filter((e) => e.content);
-          usedIds = usedIdsByCooccurrence(events ?? [], surfacedWithContent);
+          // Summarizer failed — fall back to co-occurrence for usedIds;
+          // learningsStored stays false so the fallback call below runs.
+          usedIds = usedIdsByCooccurrence(events, surfacedWithContent);
         }
       } else {
-        const surfacedWithContent = surfaced
-          .map(({ entry_id: id }) => {
-            const entry = getEntryById(this.db, id);
-            return { id, content: entry?.content ?? "" };
-          })
-          .filter((e) => e.content);
         usedIds = usedIdsByCooccurrence(events ?? [], surfacedWithContent);
       }
 
@@ -295,7 +302,9 @@ export class MemoryStore {
 
     endSessionRow(this.db, this.sessionId, now, reason);
 
-    if (events && events.length > 0 && this.summarizer) {
+    // Extract learnings if not already stored by the combined call above.
+    // Runs when: (a) no entries were surfaced, or (b) the combined call errored.
+    if (!learningsStored && events && events.length > 0 && this.summarizer) {
       try {
         const result = await extractLearnings(this.summarizer, events);
         for (const l of result.learnings) {
