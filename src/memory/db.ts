@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS entries (
   id            TEXT PRIMARY KEY,
   kind          TEXT NOT NULL,
   content       TEXT NOT NULL,
-  confidence    REAL NOT NULL DEFAULT 0.5,
+  validity      REAL NOT NULL DEFAULT 0.5,
+  usefulness    REAL NOT NULL DEFAULT 0.5,
   pinned        INTEGER NOT NULL DEFAULT 0,
   created_at    INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL,
@@ -53,6 +54,8 @@ CREATE TABLE IF NOT EXISTS pending_reinforcements (
   entry_id   TEXT NOT NULL,
   session_id TEXT NOT NULL,
   ts         INTEGER NOT NULL,
+  used       INTEGER NOT NULL DEFAULT 0,
+  good       INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (entry_id, session_id)
 );
 
