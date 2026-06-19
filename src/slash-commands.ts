@@ -212,7 +212,10 @@ export async function executeSlashCommand(
         break;
       }
       try {
-        const recallResult = await session.memoryStore.recall(query, { limit: 20 });
+        const recallResult = await session.memoryStore.recall(query, {
+          limit: 20,
+          minMatch: session.config.compiler.recall_min_score ?? 0.35,
+        });
         if (recallResult.notice) {
           lines.push(recallResult.notice);
         }

@@ -67,6 +67,8 @@ function isAbortLikeError(err: unknown): boolean {
   return /\babort(ed)?\b/i.test(err.message);
 }
 
+const DEFAULT_RECALL_MIN_MATCH = 0.35;
+
 function lexicalMatchScore(
   entry: MemoryEntry,
   terms: string[],
@@ -76,6 +78,8 @@ function lexicalMatchScore(
 
   const content = entry.content.toLowerCase();
   const matched = terms.filter((term) => content.includes(term)).length;
+  if (matched === 0) return 0;
+
   const coverage = matched / terms.length;
   return 0.6 + coverage * 0.3 + rankScore * 0.1;
 }
@@ -275,6 +279,7 @@ export class MemoryStore {
 
   async recall(query: string, opts: RecallOptions = {}): Promise<RecallResult> {
     const limit = opts.limit ?? 10;
+    const minMatch = opts.minMatch ?? DEFAULT_RECALL_MIN_MATCH;
     const queryScopes = opts.scope ?? this.defaultScopes;
     const scopeQueries = this.buildScopeQueries(queryScopes);
     const now = Date.now();
@@ -318,16 +323,6 @@ export class MemoryStore {
       return scopeQueries.some((scopes) => this.entryMatchesScopeQuery(entry, scopes));
     };
 
-    const matchesRequestedFilters = (entry: MemoryEntry): boolean => {
-      if (!matchesAnyScopeQuery(entry)) return false;
-
-      if (opts.kinds && opts.kinds.length > 0 && !opts.kinds.includes(entry.kind)) {
-        return false;
-      }
-
-      return true;
-    };
-
     const ftsHits = scopeQueries.flatMap((scopes) =>
       searchByFts(this.db, query, limit * 4, {
         scopes,
@@ -335,8 +330,8 @@ export class MemoryStore {
       }),
     );
     const ftsRanks = ftsHits.map((h) => h.rank);
-    const bestFtsRank = Math.min(...ftsRanks);
-    const worstFtsRank = Math.max(...ftsRanks);
+    const bestFtsRank = ftsRanks.length > 0 ? Math.min(...ftsRanks) : 0;
+    const worstFtsRank = ftsRanks.length > 0 ? Math.max(...ftsRanks) : 0;
     for (const h of ftsHits) {
       const e = getEntryById(this.db, h.entry_id);
       if (e) {
@@ -354,7 +349,10 @@ export class MemoryStore {
         const e = getEntryById(this.db, h.entry_id);
         if (e) {
           const similarity = Math.max(0, 1 - h.distance);
-          addCandidate(e, Math.min(similarity, 0.75));
+          const matchScore = Math.min(similarity, 0.75);
+          if (matchScore >= minMatch) {
+            addCandidate(e, matchScore);
+          }
         }
       }
     } catch {
@@ -378,19 +376,6 @@ export class MemoryStore {
       candidates = candidates.filter(({ entry }) => kindSet.has(entry.kind));
     }
 
-    // Vector search is limited before scope filtering by sqlite-vec. If its top
-    // hits are outside the requested scopes, preserve the old scoped fallback.
-    if (candidates.length === 0 && candidateScores.size > 0) {
-      for (const e of this.getEntriesForScopeQueries(scopeQueries)) {
-        if (!opts.kinds || opts.kinds.includes(e.kind)) {
-          addCandidate(e, 0);
-        }
-      }
-      candidates = Array.from(candidateScores.values()).filter(({ entry }) => {
-        return matchesRequestedFilters(entry);
-      });
-    }
-
     // Score & rank
     const scored = candidates.map(({ entry: e, matchScore }) => {
       const conf = effectiveConfidence(e, now);
@@ -409,8 +394,10 @@ export class MemoryStore {
       return b.conf - a.conf;
     });
 
+    const relevant = scored.filter((s) => s.match >= minMatch);
+
     // Touch recalled entries
-    const top = scored.slice(0, limit);
+    const top = relevant.slice(0, limit);
     for (const s of top) {
       touchEntry(this.db, s.entry.id, now);
       stampReinforcement(this.db, s.entry.id, this.sessionId);

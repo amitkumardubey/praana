@@ -29,22 +29,19 @@ describe("Recall ranking", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     const result = await store.recall("name", { limit: 10 });
-    expect(result.entries.length).toBeGreaterThanOrEqual(2);
+    expect(result.entries.length).toBeGreaterThanOrEqual(1);
 
     const top = result.entries[0];
     const nameEntry = result.entries.find((e) => e.content.includes("name is Amit"));
-    const other = result.entries.find((e) => e.content.includes("Thinking block"));
 
     expect(nameEntry).toBeTruthy();
     expect(nameEntry!.match).toBeGreaterThan(0);
-    expect(other).toBeTruthy();
-    expect(other!.confidence).toBeGreaterThan(nameEntry!.confidence);
-    expect(top.score).toBeGreaterThanOrEqual(result.entries[result.entries.length - 1].score);
+    expect(top.id).toBe(nameEntry!.id);
 
     store.close();
   });
 
-  it("preserves pin priority in recall order", async () => {
+  it("boosts pinned entries among relevant matches", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
       embedder: new HashEmbedder(),
@@ -59,7 +56,7 @@ describe("Recall ranking", () => {
     };
 
     await store.sessionStart(ctx);
-    const pinned = await store.remember("Unrelated architecture note", {
+    const pinned = await store.remember("architecture note with name references", {
       kind: "fact",
       certainty: "medium",
     });
@@ -71,11 +68,37 @@ describe("Recall ranking", () => {
 
     await new Promise((r) => setTimeout(r, 10));
 
-    const result = await store.recall("zzznomatchtoken", { limit: 10 });
+    const result = await store.recall("name", { limit: 10 });
     expect(result.entries.length).toBeGreaterThanOrEqual(2);
     const pinnedEntry = result.entries.find((e) => e.id === pinned.id);
     expect(pinnedEntry).toBeTruthy();
+    expect(pinnedEntry!.match).toBeGreaterThan(0);
     expect(pinnedEntry!.score).toBeGreaterThan(pinnedEntry!.match);
+
+    store.close();
+  });
+
+  it("returns no results for unrelated queries", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new HashEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "praana-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    });
+    await store.remember("The project uses Vitest for testing.", {
+      kind: "fact",
+      certainty: "high",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const result = await store.recall("zzznomatchtoken", { limit: 10 });
+    expect(result.entries).toHaveLength(0);
 
     store.close();
   });

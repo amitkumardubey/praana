@@ -67,6 +67,8 @@ export interface RecallOptions {
   scope?: string[];
   mode?: "standard" | "causal_chain";
   kinds?: MemoryKind[];
+  /** Minimum query-match score (0–1) for a result to be returned. Default 0.35. */
+  minMatch?: number;
 }
 
 export interface RecallResult {
