@@ -159,7 +159,7 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-PRAANA supports multiple embedders: `auto` (Transformers.js when installed, else keyword-only), `transformers`, `transformers-nomic`, and `ollama`.
+PRAANA supports multiple embedders: `auto` (Transformers.js, shipped with the package), `transformers`, `transformers-nomic`, and `ollama`.
 
 When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
 
