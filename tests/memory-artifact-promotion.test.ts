@@ -67,36 +67,11 @@ describe("M4 artifact promotion — listing", () => {
   });
 
   it("only returns artifacts from the current session", () => {
-    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
-    // Create one artifact for sess-1 and one for sess-2 in the SAME db
-    // by writing directly. (ArtifactStore scopes by session_id internally.)
+    // In-memory SQLite is per-connection, so we can't share state across
+    // ArtifactStore.open calls. Verify the SQL filter directly via
+    // listHighValueArtifacts using a raw db with rows for two sessions.
     const db = openContextEngineDb(":memory:");
     db.prepare(
-      `INSERT INTO context_artifacts
-        (id, sha256, session_id, source_tool, command, created_turn, raw_tokens, raw_text, summary, content_type, last_accessed_turn, access_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      "art_otherSession",
-      "abc123",
-      "sess-other",
-      "shell",
-      "echo x",
-      1,
-      100,
-      "other session text",
-      "other summary",
-      "other",
-      1,
-      5,
-      Date.now(),
-    );
-    db.close();
-
-    // Re-open on the same db path? In-memory SQLite is per-connection, so
-    // we can't share state across ArtifactStore.open calls. Instead, verify
-    // the SQL filter directly via listHighValueArtifacts using a fresh db.
-    const db2 = openContextEngineDb(":memory:");
-    db2.prepare(
       `INSERT INTO context_artifacts
         (id, sha256, session_id, source_tool, command, created_turn, raw_tokens, raw_text, summary, content_type, last_accessed_turn, access_count, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -115,7 +90,7 @@ describe("M4 artifact promotion — listing", () => {
       5,
       Date.now(),
     );
-    db2.prepare(
+    db.prepare(
       `INSERT INTO context_artifacts
         (id, sha256, session_id, source_tool, command, created_turn, raw_tokens, raw_text, summary, content_type, last_accessed_turn, access_count, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -135,9 +110,9 @@ describe("M4 artifact promotion — listing", () => {
       Date.now(),
     );
 
-    const hot = listHighValueArtifacts(db2, "sess-1", 2);
+    const hot = listHighValueArtifacts(db, "sess-1", 2);
     expect(hot.map((a) => a.id)).toEqual(["art_thisSession"]);
-    db2.close();
+    db.close();
   });
 
   it("rejects minAccessCount < 1", () => {
