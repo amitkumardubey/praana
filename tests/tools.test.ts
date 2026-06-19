@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createAllTools, describeTools } from '../src/tools/index.js';
-import { createMemoryTools } from '../src/tools/memory.js';
+import { createMemoryTools, mirrorToCognitiveMemory } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
 import { ContextEngine } from '../src/context-engine/index.js';
 import { createSystemTools } from '../src/tools/system.js';
@@ -187,6 +187,95 @@ describe('Memory Tools (createMemoryTools)', () => {
       const result = await tools.add_note.execute({ text: 'Important finding' });
       expect(result).toEqual({ ok: true, id: expect.any(String) });
       expect(stateGraph.create).toHaveBeenCalledWith('note', { text: 'Important finding' });
+    });
+  });
+
+  describe('cognitive memory mirroring', () => {
+    let memoryStore: MemoryStore;
+
+    beforeEach(() => {
+      memoryStore = mockMemoryStore();
+      tools = createMemoryTools({
+        eventLog,
+        stateGraph,
+        memoryStore,
+        memoryEnabled: true,
+        incognito: false,
+      });
+    });
+
+    it('mirrors add_constraint to cognitive memory', async () => {
+      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
+      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
+      expect(memoryStore.remember).toHaveBeenCalledWith('Must be safe', {
+        kind: 'constraint',
+        certainty: 'high',
+      });
+      expect(eventLog.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'system_note',
+          payload: expect.objectContaining({
+            type: 'memory_mirror',
+            tool: 'add_constraint',
+            kind: 'constraint',
+            memoryId: 'mem-1',
+          }),
+        }),
+      );
+    });
+
+    it('mirrors decide to cognitive memory with combined content', async () => {
+      const result = await tools.decide.execute({
+        summary: 'Use TypeScript',
+        rationale: 'Type safety',
+      });
+      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
+      expect(memoryStore.remember).toHaveBeenCalledWith('Use TypeScript — Type safety', {
+        kind: 'decision',
+        certainty: 'high',
+      });
+    });
+
+    it('mirrors add_note to cognitive memory as fact', async () => {
+      const result = await tools.add_note.execute({ text: 'Important finding' });
+      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
+      expect(memoryStore.remember).toHaveBeenCalledWith('Important finding', {
+        kind: 'fact',
+        certainty: 'high',
+      });
+    });
+
+    it('skips cognitive mirror in incognito mode', async () => {
+      tools = createMemoryTools({
+        eventLog,
+        stateGraph,
+        memoryStore,
+        memoryEnabled: true,
+        incognito: true,
+      });
+      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(memoryStore.remember).not.toHaveBeenCalled();
+    });
+
+    it('skips cognitive mirror when memory is disabled', async () => {
+      tools = createMemoryTools({
+        eventLog,
+        stateGraph,
+        memoryStore,
+        memoryEnabled: false,
+        incognito: false,
+      });
+      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(memoryStore.remember).not.toHaveBeenCalled();
+    });
+
+    it('still succeeds when cognitive write fails', async () => {
+      vi.mocked(memoryStore.remember).mockRejectedValueOnce(new Error('db down'));
+      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(stateGraph.create).toHaveBeenCalledWith('constraint', { text: 'Must be safe' });
     });
   });
 
