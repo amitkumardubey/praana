@@ -9,6 +9,7 @@ import type { PraanaConfig, SkillRecord } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
+import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
 import { loadConfig } from "./config.js";
 import {
@@ -490,6 +491,52 @@ export class Session {
     return findGitRoot(this.cwd);
   }
 
+  /**
+   * Promote surviving add_note entries from working memory to cross-session
+   * Cognitive Memory at session end. Only notes that are not retracted,
+   * not hard-tiered, and not activity-log quality pass through.
+   * (#129)
+   */
+  private async promoteSurvivingNotesToMemory(): Promise<void> {
+    if (!this.memoryStore) return;
+
+    const notes = this.stateGraph
+      .snapshot()
+      .filter((obj) => obj.kind === "note")
+      .filter((obj) => !obj.retracted)
+      .filter((obj) => obj.tier !== "hard")
+      .filter((obj) => !detectActivityLogNote((obj.payload as { text: string }).text));
+
+    if (notes.length === 0) return;
+
+    let promoted = 0;
+    let reinforced = 0;
+    for (const note of notes) {
+      const text = (note.payload as { text: string }).text;
+      try {
+        const result = await this.memoryStore.remember(text, {
+          kind: "fact",
+          certainty: "high",
+        });
+        if (result.reinforced) {
+          reinforced++;
+        } else {
+          promoted++;
+        }
+      } catch (err) {
+        this.getLogger().child("memory").warn(`Failed to promote note ${note.id}`, {
+          cause: err as Error,
+        });
+      }
+    }
+
+    if (promoted > 0 || reinforced > 0) {
+      this.getLogger().child("memory").info(
+        `Note promotion: ${promoted} new, ${reinforced} reinforced-dedup`,
+      );
+    }
+  }
+
   /** Current git branch name, or null when detached/not a git repo. */
   getGitBranch(): string | null {
     return findGitBranch(this.cwd);
@@ -753,6 +800,15 @@ export class Session {
             });
           }
         }, consolidationConfig.run_delay_seconds * 1000).unref();
+      }
+
+      // #129: promote surviving notes to cognitive memory at session end
+      try {
+        await this.promoteSurvivingNotesToMemory();
+      } catch (err) {
+        this.getLogger().child("memory").warn("Note promotion failed", {
+          cause: err as Error,
+        });
       }
     }
 

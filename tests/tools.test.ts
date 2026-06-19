@@ -236,13 +236,10 @@ describe('Memory Tools (createMemoryTools)', () => {
       });
     });
 
-    it('mirrors add_note to cognitive memory as fact', async () => {
+    it('does not mirror add_note to cognitive memory in real time', async () => {
       const result = await tools.add_note.execute({ text: 'Important finding' });
-      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Important finding', {
-        kind: 'fact',
-        certainty: 'high',
-      });
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(memoryStore.remember).not.toHaveBeenCalled();
     });
 
     it('skips cognitive mirror in incognito mode', async () => {
