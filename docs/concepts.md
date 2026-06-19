@@ -155,7 +155,7 @@ Recalled memories are ranked by a fusion of three signals:
 - **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays at 5% per day
 - **Recency** — entries accessed recently receive a small boost
 - **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
-- **Tool outcomes** — memories recalled before a successful tool call receive a confidence boost (#45); broader “useful → stronger, ignored → fade” behaviour is still ongoing
+- **Tool outcomes** — memories recalled before a successful tool call receive a confidence boost (#45). More broadly, every entry **surfaced** in a session — whether shown in the session-start digest or returned by `recall()` — has its validity reinforced and its usefulness boosted (if acted on) or decayed (if ignored) at session end. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory, 4× slower decay)
 
 ### Embeddings — Honest Note
 

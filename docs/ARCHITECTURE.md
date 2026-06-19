@@ -327,7 +327,7 @@ The memory retrieval system fuses multiple signals into a unified search score:
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
-- **Tool-outcome reinforcement** (#45): entries recalled before a successful tool invocation receive a confidence boost; broader cross-session reinforcement is still ongoing.
+- **Tool-outcome reinforcement** (#45): entries recalled before a successful tool invocation receive a confidence boost. More broadly, any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up, usefulness up if acted on / down if ignored — and an entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
 
 ### Schema Migrations
 The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
