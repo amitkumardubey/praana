@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
-import { HashEmbedder } from "../src/memory/index.js";
+import {
+  HashEmbedder,
+  TransformersEmbedder,
+  isTransformersAvailable,
+} from "../src/memory/index.js";
 import type { MemoryConfig } from "../src/types.js";
+import type { Embedder } from "../src/memory/types.js";
+
+const HAS_TRANSFORMERS = await isTransformersAvailable();
+const TRANSFORMERS_TIMEOUT_MS = 120_000;
 
 function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
   return {
@@ -20,15 +28,40 @@ describe("createEmbedder factory", () => {
     expect(embedder).toBeInstanceOf(HashEmbedder);
   });
 
-  it("returns HashEmbedder when auto and Ollama is unreachable", async () => {
-    const embedder = await createEmbedder(
-      makeConfig({
-        embedder: "auto",
-        ollama_url: "http://127.0.0.1:19999", // nothing listening here
-      }),
-    );
+  it("returns HashEmbedder when auto and transformers is unavailable", async () => {
+    if (HAS_TRANSFORMERS) return;
+
+    const embedder = await createEmbedder(makeConfig({ embedder: "auto" }));
     expect(embedder).toBeInstanceOf(HashEmbedder);
   });
+
+  it(
+    "returns TransformersEmbedder when auto and transformers is available",
+    async () => {
+      if (!HAS_TRANSFORMERS) return;
+
+      const embedder = await createEmbedder(makeConfig({ embedder: "auto" }));
+      expect(embedder).toBeInstanceOf(TransformersEmbedder);
+      expect(embedder.dim).toBe(384);
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
+
+  it(
+    "does not use Ollama under auto even if reachable",
+    async () => {
+      if (!HAS_TRANSFORMERS) return;
+
+      const embedder = await createEmbedder(
+        makeConfig({
+          embedder: "auto",
+          ollama_url: "http://localhost:11434",
+        }),
+      );
+      expect(embedder).toBeInstanceOf(TransformersEmbedder);
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
 
   it("returns HashEmbedder when 'ollama' strategy and daemon is unreachable", async () => {
     const embedder = await createEmbedder(
@@ -41,7 +74,8 @@ describe("createEmbedder factory", () => {
   });
 
   it("returns HashEmbedder when 'transformers' backend is not installed", async () => {
-    // @huggingface/transformers is not in devDependencies — should fall back
+    if (HAS_TRANSFORMERS) return;
+
     const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
     expect(embedder).toBeInstanceOf(HashEmbedder);
   });
@@ -63,6 +97,27 @@ describe("createEmbedder factory", () => {
 
   it("HashEmbedder is deterministic for the same input", async () => {
     const embedder = await createEmbedder(makeConfig({ embedder: "hash" }));
+    const a = await embedder.embed("same text");
+    const b = await embedder.embed("same text");
+    expect(Array.from(a)).toEqual(Array.from(b));
+  });
+});
+
+describe.skipIf(!HAS_TRANSFORMERS)("TransformersEmbedder", () => {
+  let embedder: Embedder;
+
+  beforeAll(async () => {
+    embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
+  }, TRANSFORMERS_TIMEOUT_MS);
+
+  it("produces unit-norm vectors", async () => {
+    const vec = await embedder.embed("unit norm check");
+    let norm = 0;
+    for (const v of vec) norm += v * v;
+    expect(Math.sqrt(norm)).toBeCloseTo(1.0, 3);
+  });
+
+  it("is deterministic for the same input", async () => {
     const a = await embedder.embed("same text");
     const b = await embedder.embed("same text");
     expect(Array.from(a)).toEqual(Array.from(b));

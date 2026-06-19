@@ -8,6 +8,7 @@ import type { MemoryEntry, MemoryKind } from "./types.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 
 const REEMBED_NEEDED_KEY = "reembed_needed";
+const EMBEDDING_BACKEND_KEY = "embedding_backend";
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -66,6 +67,7 @@ export interface OpenMemoryDbResult {
 export function openMemoryDb(
   path: string,
   embeddingDim: number = EMBEDDING_DIM,
+  embeddingBackend?: string,
 ): OpenMemoryDbResult {
   const db = new Database(path);
   sqliteVec.load(db);
@@ -75,8 +77,14 @@ export function openMemoryDb(
   ensureLayerColumns(db);
   ensureFtsBackfill(db);
 
-  const needsReembed = ensureVectorTable(db, embeddingDim);
-  return { db, needsReembed };
+  const needsReembedFromDim = ensureVectorTable(db, embeddingDim);
+  const needsReembedFromBackend = embeddingBackend
+    ? ensureEmbeddingBackend(db, embeddingBackend)
+    : false;
+  return {
+    db,
+    needsReembed: needsReembedFromDim || needsReembedFromBackend,
+  };
 }
 
 function ensureLayerColumns(db: Database.Database): void {
@@ -148,6 +156,35 @@ function ensureVectorTable(db: Database.Database, dim: number): boolean {
   ).run(String(dim));
 
   return Boolean(vecExists) || reembedFlag?.value === "1";
+}
+
+export function getStoredEmbeddingBackend(db: Database.Database): string | null {
+  const row = db
+    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .get(EMBEDDING_BACKEND_KEY) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setStoredEmbeddingBackend(db: Database.Database, backend: string): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, ?)",
+  ).run(EMBEDDING_BACKEND_KEY, backend);
+}
+
+export function ensureEmbeddingBackend(
+  db: Database.Database,
+  backend: string,
+): boolean {
+  const stored = getStoredEmbeddingBackend(db);
+  if (!stored) {
+    setStoredEmbeddingBackend(db, backend);
+    return false;
+  }
+  if (stored === backend) return false;
+
+  markReembedNeeded(db);
+  setStoredEmbeddingBackend(db, backend);
+  return true;
 }
 
 export function markReembedNeeded(db: Database.Database): void {

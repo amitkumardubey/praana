@@ -159,7 +159,7 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-PRAANA supports multiple embedders: `auto` (Ollama probe then fallback), `ollama`, `transformers`, `llama-cpp`, and `hash`.
+PRAANA supports multiple embedders: `auto` (Transformers.js when installed, else hash), `transformers`, `transformers-nomic`, `ollama`, `llama-cpp`, and `hash`.
 
 When `hash` is used, vectors are deterministic but **not semantically meaningful**. "Fix login bug" and "repair authentication defect" produce different vectors. When vector search returns nothing useful, PRAANA falls back to scope-based retrieval.
 

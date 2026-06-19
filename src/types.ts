@@ -119,6 +119,7 @@ export type EmbedderStrategy =
   | "auto"
   | "ollama"
   | "transformers"
+  | "transformers-nomic"
   | "llama-cpp"
   | "hash";
 
@@ -128,6 +129,8 @@ export interface MemoryConfig {
   summarizer: string;
   db_path?: string;
   embedder?: EmbedderStrategy;
+  /** Hugging Face model id, e.g. Xenova/all-MiniLM-L6-v2 */
+  transformers_model?: string;
   ollama_url?: string;
   /** Embedding model (e.g. nomic-embed-text) */
   ollama_model?: string;

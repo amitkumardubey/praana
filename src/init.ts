@@ -60,7 +60,7 @@ function generateConfigContent(detected: { provider: string; model: string } | n
     "# Memory configuration",
     "# [memory]",
     "# enabled = true",
-    "# embedder = \"auto\"",
+    "# embedder = \"auto\"  # transformers when installed, else hash",
     "",
     "# Compiler settings",
     "# [compiler]",

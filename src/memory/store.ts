@@ -95,8 +95,13 @@ export class MemoryStore {
     summarizer?: SummarizerLLM | null;
     logger?: PraanaLogger;
     needsReembed?: boolean;
+    embeddingBackend?: string;
   }) {
-    const opened = openMemoryDb(opts.dbPath, opts.embedder.dim);
+    const opened = openMemoryDb(
+      opts.dbPath,
+      opts.embedder.dim,
+      opts.embeddingBackend,
+    );
     this.db = opened.db;
     this.embedder = opts.embedder;
     this.summarizer = opts.summarizer ?? null;
