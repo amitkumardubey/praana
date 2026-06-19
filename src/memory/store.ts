@@ -170,6 +170,8 @@ export class MemoryStore {
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
+  /** Tracks entry count at last growth-prune trigger. Resets on process restart —
+   *  the session-start prune handles that case, so the throttle is best-effort. */
   private lastGrowthPruneCount = 0;
   /** True while a background re-embed migration is running. */
   private reembedding = false;
@@ -848,17 +850,42 @@ export class MemoryStore {
   }
 
   /**
-   * Remove stale Layer 1 entries with effective validity below 0.05
-   * that have not been seen in 30+ days. Never prunes pinned or Layer 2 entries.
+   * Remove stale Layer 1 entries that have not been seen in 30+ days and whose
+   * effective validity is below PRUNE_MIN_VALIDITY. Never prunes pinned or
+   * Layer 2 entries. High-validity entries survive even when cold (retain-gate).
+   *
+   * Filtering is done in SQL to avoid loading all entries into JS memory.
    */
   async prune(): Promise<number> {
     const now = Date.now();
-    const minAgeMs = 30 * MS_PER_DAY;
-    const toDelete = getAllEntries(this.db).filter((e) => {
-      if (e.pinned || e.layer === 2) return false;
-      if (effectiveValidity(e, now) >= PRUNE_MIN_VALIDITY) return false;
-      return now - e.last_seen_at > minAgeMs;
-    });
+    const cutoff = now - 30 * MS_PER_DAY;
+
+    // Fetch only entries that match the cheap SQL predicates (not pinned, L1,
+    // not retracted, old enough). The validity check requires the JS-side
+    // effectiveValidity() which accounts for time-decay, so we filter that in
+    // code on the reduced set.
+    const rows = this.db
+      .prepare(
+        `SELECT e.* FROM entries e
+         WHERE e.layer = 1
+           AND e.pinned = 0
+           AND e.retracted = 0
+           AND e.last_seen_at <= ?`,
+      )
+      .all(cutoff) as Record<string, unknown>[];
+
+    const toDelete = rows
+      .map((r) => rowToEntry(this.db, r))
+      .filter((e) => {
+        // Retain-gate: never prune entries with effective validity at or above
+        // PRUNE_MIN_VALIDITY — they are still likely true even if cold.
+        if (effectiveValidity(e, now) >= PRUNE_MIN_VALIDITY) return false;
+        // Old threshold: only prune entries with very low effective validity.
+        // The 0.05 floor preserves the pre-M5 behaviour and avoids deleting
+        // mid-validity memories that haven't fully decayed.
+        return effectiveValidity(e, now) < 0.05;
+      });
+
 
     for (const entry of toDelete) {
       deleteEntry(this.db, entry.id);
@@ -872,6 +899,9 @@ export class MemoryStore {
       if (entryCount <= PRUNE_ENTRY_COUNT_THRESHOLD) return;
       if (entryCount - this.lastGrowthPruneCount < PRUNE_GROWTH_STEP) return;
       await this.prune();
+      // lastGrowthPruneCount captures the count BEFORE pruning, so the throttle
+      // is conservative — it waits for PRUNE_GROWTH_STEP more new entries before
+      // re-checking, even if prune deleted many entries.
       this.lastGrowthPruneCount = entryCount;
     } catch (err) {
       this.logger.child("memory").warn("Growth prune failed", { cause: err as Error });

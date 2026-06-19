@@ -91,6 +91,70 @@ describe("memory pruning", () => {
     expect(store.getAllEntries()).toHaveLength(1);
   });
 
+  it("retains stale entries with moderate validity between thresholds", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+    await store.remember("Moderate validity, stale", { kind: "fact", certainty: "medium" });
+
+    const entry = store.getAllEntries()[0];
+    const staleLastSeen = Date.now() - 31 * 86_400_000;
+
+    // Validity 0.3 is below the retain-gate (0.7) but above the old <0.05 threshold.
+    // These mid-validity entries are kept — the retain-gate adds a hard floor at 0.7
+    // for cold-but-valid entries, but the deletion floor stays at 0.05.
+    store["db"]
+      .prepare("UPDATE entries SET last_seen_at = ?, validity = 0.3 WHERE id = ?")
+      .run(staleLastSeen, entry.id);
+
+    const pruned = await store.prune();
+
+    expect(pruned).toBe(0);
+    expect(store.getAllEntries()).toHaveLength(1);
+  });
+
+  it("prunes stale entries with very low validity below 0.05", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    const ctx = {
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    };
+
+    await store.sessionStart(ctx);
+    await store.remember("Very low validity, stale", { kind: "fact", certainty: "low" });
+
+    const entry = store.getAllEntries()[0];
+    const staleLastSeen = Date.now() - 31 * 86_400_000;
+
+    // Validity 0.04 is below the old 0.05 threshold — should be pruned.
+    store["db"]
+      .prepare("UPDATE entries SET last_seen_at = ?, validity = 0.04 WHERE id = ?")
+      .run(staleLastSeen, entry.id);
+
+    const pruned = await store.prune();
+
+    expect(pruned).toBe(1);
+    expect(store.getAllEntries()).toHaveLength(0);
+  });
+
   it("triggers prune when entry count crosses the growth threshold", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
