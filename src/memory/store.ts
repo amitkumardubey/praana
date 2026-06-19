@@ -652,23 +652,31 @@ export class MemoryStore {
       candidates = candidates.filter(({ entry }) => kindSet.has(entry.kind));
     }
 
-    // Score & rank
-    // TODO(scorecard): M3 weight constants (W_VALID=0.20, W_UTIL=0.30) — start from these values;
-    // they are A/B targets once the scorecard (ADR-005 C1 / #99) exists, not final.
+    // Score & rank — multiplicative: match quality is primary, boosts scale it.
+    // Weights are A/B targets; tune once the scorecard (#99) provides a success signal.
+    const W_VALID = 0.20;  // validity 0–1 → 0–20% match boost
+    const W_UTIL  = 0.30;  // usefulness 0–1 → 0–30% match boost
+    // Recency: 0–0.2 based on days since last seen (max at 0 days)
+    const RECENCY_CAP = 0.2;
+    const PIN_BOOST   = 0.3;
+
     const scored = candidates.map(({ entry: e, matchScore }) => {
       const valid = effectiveValidity(e, now);
       const match = matchScore;
-      // Recency bonus: 0–0.2 based on days since last seen (max at 0 days)
       const daysSince = (now - e.last_seen_at) / (1000 * 60 * 60 * 24);
-      const recency = Math.max(0, 0.2 - daysSince * 0.02);
-      // Pin bonus
-      const pin = e.pinned ? 0.3 : 0;
-      const score = matchScore + valid * 0.2 + recency + pin;
+      const recencyBoost = Math.max(0, RECENCY_CAP - daysSince * 0.02);
+      const validityBoost = valid * W_VALID;
+      const utilityBoost = e.usefulness * W_UTIL;
+      const pinBoost = e.pinned ? PIN_BOOST : 0;
+      // Multiplicative: a zero-match entry with all boosts maxed still scores 0.
+      const score = matchScore * (1 + validityBoost + utilityBoost + recencyBoost + pinBoost);
       return { entry: e, score, match, valid };
     });
 
+    // Primary: highest score. Tiebreaker: best raw match quality, then validity.
     scored.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      if (b.match !== a.match) return b.match - a.match;
       return b.valid - a.valid;
     });
 
