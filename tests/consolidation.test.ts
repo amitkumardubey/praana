@@ -248,7 +248,7 @@ describe("consolidation processor", () => {
       .prepare("UPDATE entries SET last_seen_at = ?, session_id = ? WHERE id = ?")
       .run(recentEnough, "previous-session", freshSurfacedId);
 
-    const candidates = store.getConsolidationCandidates((store as any).sessionId, now);
+    const candidates = store.getConsolidationCandidates(now);
     const ids = candidates.map((entry) => entry.id);
     const contents = candidates.map((entry) => entry.content);
 
@@ -259,6 +259,51 @@ describe("consolidation processor", () => {
       "Fresh new candidate",
       "Aging candidate",
     ]));
+  });
+
+  it("uses the MemoryStore session id when consolidation receives an outer session id", async () => {
+    const { runConsolidation } = await import("../src/memory/consolidation.js");
+    const { MemoryStore } = await import("../src/memory/index.js");
+    const { DeterministicTestEmbedder } = await import("./helpers/test-embedder.js");
+
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: new DeterministicTestEmbedder(),
+    });
+
+    await store.sessionStart({
+      agent: "praana",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx1",
+      context_label: "test",
+    });
+    await store.remember("Current session candidate", { kind: "fact", certainty: "low" });
+
+    let prompt = "";
+    const llm = {
+      name: "test-llm",
+      available: vi.fn().mockResolvedValue(true),
+      complete: vi.fn().mockImplementation(async (req) => {
+        prompt = req.prompt;
+        return JSON.stringify({
+          confirmations: [],
+          contradictions: [],
+          new_entries: [],
+          promotions: [],
+        });
+      }),
+    };
+
+    await runConsolidation({
+      store,
+      llm,
+      sessionId: "outer-event-log-session",
+      events: [{ type: "user_message", timestamp: Date.now(), content: "hello" }],
+      config: { enabled: true, promotion_threshold: 3, run_delay_seconds: 0 },
+    });
+
+    expect(prompt).toContain("Current session candidate");
   });
 
   it("caps consolidation candidates at 50 entries", async () => {
@@ -284,7 +329,7 @@ describe("consolidation processor", () => {
       await store.remember(`Candidate ${i}`, { kind: "fact", certainty: "low" });
     }
 
-    const candidates = store.getConsolidationCandidates((store as any).sessionId, Date.now());
+    const candidates = store.getConsolidationCandidates(Date.now());
 
     expect(candidates).toHaveLength(50);
   });

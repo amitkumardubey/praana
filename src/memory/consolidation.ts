@@ -124,10 +124,7 @@ export async function runConsolidation(opts: {
 
   try {
     // Get only the Layer 1 entries that are actually in play this session.
-    const layer1Entries = opts.store.getConsolidationCandidates(
-      opts.sessionId,
-      Date.now(),
-    );
+    const layer1Entries = opts.store.getConsolidationCandidates(Date.now());
 
     // Build the prompt
     const transcript = transcriptToText(opts.events);

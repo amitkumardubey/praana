@@ -749,7 +749,8 @@ export class MemoryStore {
    * Priority order: surfaced in this session, created in this session, aging.
    * The list is capped so prompt size stays bounded.
    */
-  getConsolidationCandidates(sessionId: string, now: number = Date.now()): MemoryEntry[] {
+  getConsolidationCandidates(now: number = Date.now()): MemoryEntry[] {
+    const sessionId = this.sessionId;
     const surfacedIds = new Set(
       getSurfacedEntriesWithContent(this.db, sessionId).map((entry) => entry.id),
     );
