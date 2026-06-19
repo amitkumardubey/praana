@@ -39,11 +39,13 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.75.5",
+    "@huggingface/transformers": "^4.2.0",
     "better-sqlite3": "^11.0.0",
     "boxen": "^8.0.1",
     "chalk": "^5.6.2",
     "cli-highlight": "^2.1.11",
     "cliui": "^9.0.1",
+    "compromise": "^14.15.1",
     "ink": "^7.0.5",
     "ink-text-input": "^6.0.0",
     "js-yaml": "^4.2.0",
@@ -60,8 +62,7 @@
     "ulid": "^2.3.0",
     "wrap-ansi": "^10.0.0",
     "zod": "^3.23.0",
-    "zod-to-json-schema": "^3.25.2",
-    "@huggingface/transformers": "^4.2.0"
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",

@@ -1,6 +1,9 @@
 // ============================================================
 // PRAANA Memory — Embedder factory
 // ============================================================
+// M6 verified (2026-06-19): No hash embedder fallback.
+// Returns null when no real embedder available → keyword-only recall.
+// Supports: transformers.js (default), Ollama (opt-in), keyword-only fallback.
 
 import type { MemoryConfig } from "../types.js";
 import { getAppLogger } from "../logger.js";

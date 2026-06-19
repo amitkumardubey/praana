@@ -3,13 +3,123 @@ import type Database from "better-sqlite3";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 import type { SummarizerLLM } from "../src/memory/types.js";
-import { heuristicContradiction } from "../src/memory/dedup.js";
+import { heuristicContradiction, extractHeadNoun, cosineSimilarity } from "../src/memory/dedup.js";
 import { DEDUP_RECONCILED_KEY, getMemoryMeta, insertEntry, upsertEmbedding } from "../src/memory/db.js";
 import { ulid } from "ulid";
 
 function storeDb(store: MemoryStore): Database.Database {
   return (store as MemoryStore & { db: Database.Database }).db;
 }
+
+describe("extractHeadNoun", () => {
+  it("extracts primary noun from simple statement", () => {
+    expect(extractHeadNoun("Streaming is implemented")).toBe("streaming");
+  });
+
+  it("extracts first noun when multiple nouns present", () => {
+    const result = extractHeadNoun("Project uses PostgreSQL");
+    expect(result).toMatch(/^(project|postgresql)$/); // Either is acceptable
+  });
+
+  it("handles negation patterns", () => {
+    expect(extractHeadNoun("No database configured")).toBe("database");
+  });
+
+  it("returns null for empty input", () => {
+    expect(extractHeadNoun("")).toBe(null);
+    expect(extractHeadNoun("   ")).toBe(null);
+  });
+
+  it("returns null when no nouns found", () => {
+    expect(extractHeadNoun("is not")).toBe(null);
+  });
+
+  it("normalizes extracted noun", () => {
+    // "database" is the head noun; "PostgreSQL" is a modifier
+    expect(extractHeadNoun("The PostgreSQL database")).toBe("database");
+  });
+});
+
+describe("heuristicContradiction - M7 Layer 1 subject-aware", () => {
+  it("detects contradiction when same subject has opposite polarity", () => {
+    expect(
+      heuristicContradiction(
+        "Streaming is implemented in turn.ts",
+        "Streaming is not implemented in turn.ts"
+      )
+    ).toBe(true);
+  });
+
+  it("does NOT flag as contradictory when different subjects (PostgreSQL vs MongoDB)", () => {
+    expect(
+      heuristicContradiction(
+        "Project uses PostgreSQL",
+        "Project uses MongoDB"
+      )
+    ).toBe(false);
+  });
+
+  it("does NOT flag different subjects with negation", () => {
+    expect(
+      heuristicContradiction(
+        "Caching is enabled",
+        "Logging is not disabled"
+      )
+    ).toBe(false);
+  });
+
+  it("detects contradiction with ≥3 shared terms + shared noun", () => {
+    expect(
+      heuristicContradiction(
+        "The memory store uses a hash table",
+        "The memory store does not use a hash table"
+      )
+    ).toBe(true);
+  });
+
+  it("does NOT detect contradiction with same polarity", () => {
+    expect(
+      heuristicContradiction(
+        "Tests use Vitest",
+        "Tests use Playwright"
+      )
+    ).toBe(false);
+  });
+});
+
+describe("cosineSimilarity", () => {
+  it("returns 1 for identical vectors", () => {
+    const v = new Float32Array([1, 2, 3]);
+    expect(cosineSimilarity(v, v)).toBeCloseTo(1, 5);
+  });
+
+  it("returns 0 for orthogonal vectors", () => {
+    const a = new Float32Array([1, 0, 0]);
+    const b = new Float32Array([0, 1, 0]);
+    expect(cosineSimilarity(a, b)).toBeCloseTo(0, 5);
+  });
+
+  it("returns correct similarity for known vectors", () => {
+    const a = new Float32Array([1, 2, 3]);
+    const b = new Float32Array([4, 5, 6]);
+    // dot=32, normA=√14, normB=√77 → 32/(√14*√77) ≈ 0.9746
+    const sim = cosineSimilarity(a, b);
+    expect(sim).toBeGreaterThan(0.97);
+    expect(sim).toBeLessThan(0.98);
+  });
+
+  it("returns 0 for mismatched dimensions", () => {
+    const a = new Float32Array([1, 2]);
+    const b = new Float32Array([1, 2, 3]);
+    expect(cosineSimilarity(a, b)).toBe(0);
+  });
+
+  it("handles zero vectors", () => {
+    const a = new Float32Array([0, 0, 0]);
+    const b = new Float32Array([1, 2, 3]);
+    expect(cosineSimilarity(a, b)).toBe(0);
+  });
+});
 
 describe("sessionEnd duplicate and contradiction detection", () => {
   const ctx = {
@@ -97,6 +207,53 @@ describe("sessionEnd duplicate and contradiction detection", () => {
       (e) => e.content.includes("implemented in turn.ts") && !e.content.includes("not"),
     );
     expect(weakened?.validity).toBeLessThan(beforeConf);
+  });
+});
+
+describe("M7 edge cases - comprehensive contradiction detection", () => {
+  it("does NOT flag partial overlaps as contradictory", () => {
+    expect(
+      heuristicContradiction(
+        "Tests use Vitest for unit tests",
+        "Integration tests use Playwright"
+      )
+    ).toBe(false);
+  });
+
+  it("does NOT flag different features with opposite states", () => {
+    expect(
+      heuristicContradiction(
+        "Feature A is enabled",
+        "Feature B is not enabled"
+      )
+    ).toBe(false);
+  });
+
+  it("detects contradiction for clear opposite statements", () => {
+    expect(
+      heuristicContradiction(
+        "API endpoint returns JSON",
+        "API endpoint does not return JSON"
+      )
+    ).toBe(true);
+  });
+
+  it("does NOT flag technology comparisons as contradictory", () => {
+    expect(
+      heuristicContradiction(
+        "Frontend uses React",
+        "Backend does not use React"
+      )
+    ).toBe(false);
+  });
+
+  it("handles statements with similar structure but different subjects", () => {
+    expect(
+      heuristicContradiction(
+        "The compiler validates types",
+        "The runtime does not validate types"
+      )
+    ).toBe(false);
   });
 });
 

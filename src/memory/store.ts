@@ -584,8 +584,9 @@ export class MemoryStore {
       }
       const existing = getEntryById(this.db, candidate.id);
       if (!existing) continue;
-      if (await isContradiction(existing.content, learning.content, this.summarizer)) {
-        weakenEntry(this.db, candidate.id, 0.15);
+      if (await isContradiction(existing.content, learning.content, this.summarizer, this.embedder)) {
+        // M7: Fixed 30% validity reduction on contradiction (spec §2)
+        weakenEntry(this.db, candidate.id, 0.3);
       }
     }
 
