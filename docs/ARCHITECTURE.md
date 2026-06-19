@@ -278,9 +278,9 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `create_task(title, description?)` — creates a task in working memory
 - `complete_task(id)` — marks a task as done, auto-demoting it to the `soft` tier
 - `retract_task(id)` — tombstones a state object (any kind)
-- `add_constraint(text)` — records a constraint rule/limitation
-- `decide(summary, rationale)` — records an architectural/design decision
-- `add_note(text)` — records a general note
+- `add_constraint(text)` — records a constraint rule/limitation in working memory and mirrors it to Cognitive Memory when enabled (not incognito)
+- `decide(summary, rationale)` — records an architectural/design decision in working memory and mirrors it to Cognitive Memory as a `decision` entry
+- `add_note(text)` — records a general note in working memory and mirrors it to Cognitive Memory as a `fact` entry
 - `soft_unload(id)` / `hard_unload(id)` / `hydrate(id)` — tier management
 - `list_state()` — lists all state objects with their IDs, kinds, tiers, and summaries
 

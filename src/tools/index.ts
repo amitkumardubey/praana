@@ -31,6 +31,9 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const memoryTools = createMemoryTools({
     eventLog: ctx.eventLog,
     stateGraph: ctx.stateGraph,
+    memoryStore: ctx.memoryStore,
+    memoryEnabled: ctx.memoryEnabled,
+    incognito: ctx.incognito,
     includeWorkingMemoryTools: !classicMode,
     searchTurnEvents: ctx.contextEngine
       ? (query, limit, currentTurn) =>

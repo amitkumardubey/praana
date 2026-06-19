@@ -1,20 +1,91 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import type { EventLog } from "../event-log.js";
+import type { MemoryStore } from "../memory/index.js";
+import type { MemoryKind } from "../memory/types.js";
 import type { StateGraph } from "../state-graph.js";
 import type { TurnSearchMatch } from "../context-engine/types.js";
 
 export interface MemoryToolContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
+  memoryStore?: MemoryStore | null;
+  memoryEnabled?: boolean;
+  incognito?: boolean;
   searchTurnEvents?: (query: string, limit?: number, currentTurn?: number) => TurnSearchMatch[];
   /** false in classic mode — StateGraph tools are not registered. */
   includeWorkingMemoryTools?: boolean;
 }
 
+export interface CognitiveMirrorResult {
+  memoryId: string;
+  reinforced?: boolean;
+}
+
+/** Write explicit state-tool captures to cross-session Cognitive Memory. */
+export async function mirrorToCognitiveMemory(
+  ctx: Pick<MemoryToolContext, "memoryStore" | "memoryEnabled" | "incognito">,
+  content: string,
+  kind: MemoryKind,
+): Promise<CognitiveMirrorResult | undefined> {
+  if (!ctx.memoryEnabled || ctx.incognito || !ctx.memoryStore) {
+    return undefined;
+  }
+
+  try {
+    const result = await ctx.memoryStore.remember(content, {
+      kind,
+      certainty: "high",
+    });
+    return {
+      memoryId: result.id,
+      ...(result.reinforced ? { reinforced: true } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function buildStateToolResult(
+  stateId: string,
+  mirror?: CognitiveMirrorResult,
+  extra?: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ok: true,
+    id: stateId,
+    ...(mirror?.memoryId ? { memoryId: mirror.memoryId } : {}),
+    ...(mirror?.reinforced ? { reinforced: true } : {}),
+    ...extra,
+  };
+}
+
 export function createMemoryTools(ctx: MemoryToolContext) {
   const { eventLog, stateGraph, searchTurnEvents } = ctx;
   const includeWorkingMemory = ctx.includeWorkingMemoryTools !== false;
+  const mirrorCtx = {
+    memoryStore: ctx.memoryStore ?? null,
+    memoryEnabled: ctx.memoryEnabled ?? false,
+    incognito: ctx.incognito ?? false,
+  };
+
+  const logMemoryMirror = (
+    tool: string,
+    kind: MemoryKind,
+    mirror: CognitiveMirrorResult,
+  ) => {
+    eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "memory_mirror",
+        tool,
+        kind,
+        memoryId: mirror.memoryId,
+        reinforced: mirror.reinforced ?? false,
+      },
+    });
+  };
 
   const logAction = (
     action: string,
@@ -119,7 +190,9 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        return { ok: true, id: obj.id };
+        const mirror = await mirrorToCognitiveMemory(mirrorCtx, text, "constraint");
+        if (mirror) logMemoryMirror("add_constraint", "constraint", mirror);
+        return buildStateToolResult(obj.id, mirror);
       },
     }),
 
@@ -144,7 +217,10 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        return { ok: true, id: obj.id };
+        const content = `${summary} — ${rationale}`;
+        const mirror = await mirrorToCognitiveMemory(mirrorCtx, content, "decision");
+        if (mirror) logMemoryMirror("decide", "decision", mirror);
+        return buildStateToolResult(obj.id, mirror);
       },
     }),
 
@@ -166,9 +242,13 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        return qualityWarning
-          ? { ok: true, id: obj.id, warning: qualityWarning }
-          : { ok: true, id: obj.id };
+        const mirror = await mirrorToCognitiveMemory(mirrorCtx, text, "fact");
+        if (mirror) logMemoryMirror("add_note", "fact", mirror);
+        return buildStateToolResult(
+          obj.id,
+          mirror,
+          qualityWarning ? { warning: qualityWarning } : undefined,
+        );
       },
     }),
 
