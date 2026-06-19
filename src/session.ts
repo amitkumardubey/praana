@@ -573,6 +573,18 @@ export class Session {
     return this.memoryStore.getEntryCount();
   }
 
+  async runMemoryDedupe(): Promise<{ clustersMerged: number; entriesRemoved: number }> {
+    if (!this.memoryStore) {
+      throw new Error("Memory store is not available.");
+    }
+    const result = await this.memoryStore.reconcileDuplicates();
+    const digest = await this.memoryStore.getDigest(
+      this.config.compiler.recall_min_score ?? 0.35,
+    );
+    this.digest = digest.markdown;
+    return result;
+  }
+
   getSessionSummary(): {
     turns: number;
     stateObjects: number;

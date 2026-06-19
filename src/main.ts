@@ -14,6 +14,7 @@ import { runReadlineUi } from "./ui/readline-ui.js";
 import { runTui } from "./ui/tui/run.js";
 import { handleInit } from "./init.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
+import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -34,6 +35,20 @@ export async function main() {
 
   const cwd = resolve(process.cwd());
   const config = loadConfig(parsed.configPath);
+
+  if (parsed.memoryDedupeMode) {
+    try {
+      await runMemoryDedupe(cwd, config);
+      process.exit(0);
+    } catch (err) {
+      getAppLogger().error("Memory dedupe failed", {
+        code: "MEMORY_DEDUPE_FAILED",
+        cause: err as Error,
+      });
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
 
   // ── Provider validation ────────────────────────────────────
   const keyError = getMissingKeyMessage(config.llm.provider);

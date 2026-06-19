@@ -9,6 +9,7 @@ import { EMBEDDING_DIM } from "./embeddings.js";
 
 const REEMBED_NEEDED_KEY = "reembed_needed";
 const EMBEDDING_BACKEND_KEY = "embedding_backend";
+export const DEDUP_RECONCILED_KEY = "dedup_reconciled_v1";
 
 const BASE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS entries (
@@ -202,6 +203,77 @@ export function isReembedPending(db: Database.Database): boolean {
     .prepare("SELECT value FROM memory_meta WHERE key = ?")
     .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
   return row?.value === "1";
+}
+
+export function getMemoryMeta(
+  db: Database.Database,
+  key: string,
+): string | undefined {
+  const row = db
+    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+export function setMemoryMeta(
+  db: Database.Database,
+  key: string,
+  value: string,
+): void {
+  db.prepare(
+    "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, ?)",
+  ).run(key, value);
+}
+
+export function incrementConfirmationCount(
+  db: Database.Database,
+  id: string,
+  delta = 1,
+): void {
+  db.prepare(
+    "UPDATE entries SET confirmation_count = confirmation_count + ? WHERE id = ?",
+  ).run(delta, id);
+}
+
+export function mergeEntryMetadata(
+  db: Database.Database,
+  keeperId: string,
+  duplicate: MemoryEntry,
+): void {
+  incrementConfirmationCount(db, keeperId, duplicate.confirmation_count + 1);
+  reinforceEntry(db, keeperId, 0.08);
+  const keeper = getEntryById(db, keeperId);
+  if (!keeper) return;
+  const lastSeenAt = Math.max(keeper.last_seen_at, duplicate.last_seen_at);
+  db.prepare("UPDATE entries SET last_seen_at = ? WHERE id = ?").run(
+    lastSeenAt,
+    keeperId,
+  );
+  if (duplicate.pinned) {
+    db.prepare("UPDATE entries SET pinned = 1 WHERE id = ?").run(keeperId);
+  }
+}
+
+export function getEmbedding(
+  db: Database.Database,
+  entryId: string,
+): Float32Array | null {
+  const vecExists = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
+    )
+    .get();
+  if (!vecExists) return null;
+
+  const row = db
+    .prepare("SELECT embedding FROM entries_vec WHERE entry_id = ?")
+    .get(entryId) as { embedding: Buffer } | undefined;
+  if (!row) return null;
+  return new Float32Array(
+    row.embedding.buffer,
+    row.embedding.byteOffset,
+    row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT,
+  );
 }
 
 export function countVectorEmbeddings(db: Database.Database): number {

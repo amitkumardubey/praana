@@ -257,7 +257,11 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             scope: scope ?? undefined,
           });
 
-          return { ok: true, id: result.id };
+          return {
+            ok: true,
+            id: result.id,
+            ...(result.reinforced ? { reinforced: true } : {}),
+          };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Remember failed" };
         }

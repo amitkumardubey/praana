@@ -511,6 +511,30 @@ export async function executeSlashCommand(
       break;
     }
 
+    case "/memory": {
+      const sub = (parts[1] ?? "").toLowerCase();
+      if (sub !== "dedupe") {
+        lines.push("Usage: /memory dedupe");
+        break;
+      }
+      if (!session.memoryEnabled || !session.memoryStore) {
+        lines.push("Memory dedupe requires memory to be enabled.");
+        break;
+      }
+      try {
+        const result = await session.runMemoryDedupe();
+        lines.push(
+          `Merged ${result.clustersMerged} duplicate ${result.clustersMerged === 1 ? "cluster" : "clusters"}, removed ${result.entriesRemoved} ${result.entriesRemoved === 1 ? "entry" : "entries"}.`,
+        );
+        if (session.digest) {
+          lines.push("", "Digest refreshed.");
+        }
+      } catch (err) {
+        lines.push(`Memory dedupe error: ${(err as Error).message}`);
+      }
+      break;
+    }
+
     case "/help": {
       return { action: "none", lines: bannerHelpLines() };
     }
