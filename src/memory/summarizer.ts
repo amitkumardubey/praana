@@ -10,11 +10,12 @@ import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from 
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
 Given a session transcript, extract 0-5 concise learnings.
-Output ONLY a JSON array. No prose outside the array.
+Output ONLY a JSON object with two keys: "learnings" and "used_ids". No prose outside the object.
 
-Each entry: { "kind": "fact" | "preference" | "decision" | "pattern" | "mistake" | "constraint", "content": "...", "certainty": "high" | "medium" | "low" }
+"learnings" is an array of: { "kind": "fact" | "preference" | "decision" | "pattern" | "mistake" | "constraint", "content": "...", "certainty": "high" | "medium" | "low" }
+"used_ids" is an array of entry IDs (from the provided surfaced list) that the agent actually acted on during this session.
 
-Rules:
+Rules for learnings:
 - "fact": verifiable project knowledge ("uses Vitest for testing")
 - "preference": user or agent preference ("prefers dark mode UI")
 - "decision": architectural choice ("chose JWT over session cookies")
@@ -23,26 +24,14 @@ Rules:
 - "constraint": hard rule ("never commits .env files")
 - Be conservative. Skip vague or low-signal items.
 - Content should be one sentence, max 120 characters.
-- certainty reflects how strongly the transcript supports this.`;
+- certainty reflects how strongly the transcript supports this.
 
-const UTILITY_PROMPT = `You are a memory utility judge for a coding agent.
-Given a session transcript and a list of memory entries that were surfaced (recall results),
-identify which surfaced entries the agent actually **acted on** during the session.
+Rules for used_ids:
+- Only include IDs from the surfaced list provided in the prompt.
+- An entry was "acted on" if the agent used the information to make a decision, take an action, follow advice, or reference the fact in a tool call or response.
+- Be conservative — only include entries clearly acted on.
+- If none were acted on, return an empty array.`;
 
-An entry was "acted on" if:
-- The agent used the information to make a decision or take an action
-- The agent followed the advice/preference/constraint
-- The agent referenced the fact in a tool call or response
-- The entry directly informed a successful action
-
-Output ONLY a JSON object with one key. No prose outside the object.
-
-{
-  "used_ids": ["entry-id-1", "entry-id-2"]
-}
-
-Include only IDs from the surfaced list. Be conservative — only include entries clearly acted on.
-If none were acted on, return an empty array.`;
 
 function transcriptToPrompt(events: SessionEvent[]): string {
   const lines: string[] = ["Session transcript:"];
@@ -55,16 +44,31 @@ function transcriptToPrompt(events: SessionEvent[]): string {
   return lines.join("\n");
 }
 
+export interface ExtractLearningsResult {
+  learnings: ExtractedLearning[];
+  usedIds: Set<string>;
+}
+
 export async function extractLearnings(
   llm: SummarizerLLM,
   events: SessionEvent[],
-): Promise<ExtractedLearning[]> {
-  if (events.length === 0) return [];
-  if (!(await llm.available())) return [];
+  surfaced?: Array<{ id: string; content: string }>,
+): Promise<ExtractLearningsResult> {
+  if (events.length === 0) return { learnings: [], usedIds: new Set() };
+  if (!(await llm.available())) return { learnings: [], usedIds: new Set() };
+
+  let prompt = transcriptToPrompt(events);
+  if (surfaced && surfaced.length > 0) {
+    prompt += "\n\n## Surfaced Memory Entries\n";
+    for (const e of surfaced) {
+      prompt += `- [${e.id}] ${e.content.slice(0, 120)}\n`;
+    }
+    prompt += "\nIdentify which of these surfaced entries were acted on.";
+  }
 
   const raw = await llm.complete({
     system: SYSTEM_PROMPT,
-    prompt: transcriptToPrompt(events),
+    prompt,
     temperature: 0.3,
     maxTokens: 1500,
     json: true,
@@ -72,15 +76,23 @@ export async function extractLearnings(
   });
 
   try {
-    const parsed = JSON.parse(raw) as Array<{
-      kind: string;
-      content: string;
-      certainty: string;
-      scope_hints?: string[];
-    }>;
-    if (!Array.isArray(parsed)) return [];
+    const parsed = JSON.parse(raw) as {
+      learnings?: Array<{
+        kind: string;
+        content: string;
+        certainty: string;
+        scope_hints?: string[];
+      }>;
+      used_ids?: string[];
+    };
 
-    return parsed
+    // Back-compat: handle the old array-only format (learnings as a top-level array)
+    const rawLearnings = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed.learnings)
+        ? parsed.learnings
+        : [];
+    const learnings = rawLearnings
       .filter((p): p is typeof p & { kind: MemoryKind } => isMemoryKind(p.kind))
       .map((p) => ({
         kind: p.kind,
@@ -90,51 +102,29 @@ export async function extractLearnings(
           : "medium",
         scope_hints: p.scope_hints,
       }));
+
+    // Back-compat: also handle the old array-only format (used_ids defaults to empty)
+    const usedIdsArr = Array.isArray(parsed.used_ids) ? parsed.used_ids : [];
+    const usedIds = new Set(
+      surfaced
+        ? usedIdsArr.filter((id) => surfaced.some((s) => s.id === id))
+        : usedIdsArr,
+    );
+
+    return { learnings, usedIds };
   } catch {
-    return [];
+    return { learnings: [], usedIds: new Set() };
   }
 }
 
-/**
- * Ask the summarizer to identify which surfaced recall entries were actually
- * acted on during the session. Returns the set of acted-on entry IDs.
- */
+// extractUsedEntryIds is now merged into extractLearnings (single LLM call).
 export async function extractUsedEntryIds(
   llm: SummarizerLLM,
   events: SessionEvent[],
   surfaced: Array<{ id: string; content: string }>,
 ): Promise<Set<string>> {
-  if (surfaced.length === 0) return new Set();
-  if (events.length === 0) return new Set();
-  if (!(await llm.available())) return new Set();
-
-  let prompt = transcriptToPrompt(events);
-  prompt += "\n\n## Surfaced Memory Entries\n";
-  for (const e of surfaced) {
-    prompt += `- [${e.id}] ${e.content.slice(0, 120)}\n`;
-  }
-  prompt += "\nIdentify which of these surfaced entries were acted on.";
-
-  try {
-    const raw = await llm.complete({
-      system: UTILITY_PROMPT,
-      prompt,
-      temperature: 0.2,
-      maxTokens: 500,
-      json: true,
-      timeoutMs: 20_000,
-    });
-
-    const parsed = JSON.parse(raw) as { used_ids?: string[] };
-    if (!Array.isArray(parsed.used_ids)) return new Set();
-
-    const surfacedIdSet = new Set(surfaced.map((s) => s.id));
-    return new Set(
-      parsed.used_ids.filter((id: string) => surfacedIdSet.has(id)),
-    );
-  } catch {
-    return new Set();
-  }
+  const result = await extractLearnings(llm, events, surfaced);
+  return result.usedIds;
 }
 
 /**

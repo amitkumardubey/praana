@@ -37,7 +37,7 @@ import {
 } from "./db.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 import type { Embedder } from "./types.js";
-import { extractLearnings, extractUsedEntryIds, summarizeTurns, usedIdsByCooccurrence } from "./summarizer.js";
+import { extractLearnings, summarizeTurns, usedIdsByCooccurrence } from "./summarizer.js";
 import {
   CONTRADICTION_MATCH_THRESHOLD,
   DUPLICATE_MATCH_THRESHOLD,
@@ -60,16 +60,13 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
-import { effectiveValidity, effectiveConfidence, digestScore } from "./confidence.js";
+import { effectiveValidity, digestScore } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 
 function certaintyToValidity(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
 }
-
-/** @deprecated Use certaintyToValidity instead. Kept for backward compatibility during migration. */
-const certaintyToConfidence = certaintyToValidity;
 
 /**
  * Derive a coarse session-success bit from the session-end reason and events.
@@ -239,34 +236,42 @@ export class MemoryStore {
     const sessionGood = isSessionGood(reason, events);
 
     // Determine which surfaced entries were used (acted on).
-    const surfOrSurf = getSurfacedEntriesForSession(this.db, this.sessionId);
-    if (surfOrSurf.length > 0) {
+    const surfaced = getSurfacedEntriesForSession(this.db, this.sessionId);
+    if (surfaced.length > 0) {
       let usedIds: Set<string>;
 
       if (this.summarizer && events && events.length > 0) {
         try {
-          const surfOrSurfaceWithContent = surfOrSurf.map(({ entry_id: id }) => {
-            const entry = getEntryById(this.db, id);
-            return { id, content: entry?.content ?? "" };
-          }).filter((e) => e.content);
-          usedIds = await extractUsedEntryIds(
-            this.summarizer,
-            events,
-            surfOrSurfaceWithContent,
-          );
+          const surfacedWithContent = surfaced
+            .map(({ entry_id: id }) => {
+              const entry = getEntryById(this.db, id);
+              return { id, content: entry?.content ?? "" };
+            })
+            .filter((e) => e.content);
+          const result = await extractLearnings(this.summarizer, events, surfacedWithContent);
+          usedIds = result.usedIds;
         } catch {
-          usedIds = new Set();
+          // Summarizer failed — fall back to co-occurrence heuristic
+          const surfacedWithContent = surfaced
+            .map(({ entry_id: id }) => {
+              const entry = getEntryById(this.db, id);
+              return { id, content: entry?.content ?? "" };
+            })
+            .filter((e) => e.content);
+          usedIds = usedIdsByCooccurrence(events ?? [], surfacedWithContent);
         }
       } else {
-        const surfOrSurfaceWithContent = surfOrSurf.map(({ entry_id: id }) => {
-          const entry = getEntryById(this.db, id);
-          return { id, content: entry?.content ?? "" };
-        }).filter((e) => e.content);
-        usedIds = usedIdsByCooccurrence(events ?? [], surfOrSurfaceWithContent);
+        const surfacedWithContent = surfaced
+          .map(({ entry_id: id }) => {
+            const entry = getEntryById(this.db, id);
+            return { id, content: entry?.content ?? "" };
+          })
+          .filter((e) => e.content);
+        usedIds = usedIdsByCooccurrence(events ?? [], surfacedWithContent);
       }
 
       // Mark used in pending_reinforcements before flush
-      for (const { entry_id } of surfOrSurf) {
+      for (const { entry_id } of surfaced) {
         markReinforcementUsed(
           this.db,
           entry_id,
@@ -292,8 +297,8 @@ export class MemoryStore {
 
     if (events && events.length > 0 && this.summarizer) {
       try {
-        const learnings = await extractLearnings(this.summarizer, events);
-        for (const l of learnings) {
+        const result = await extractLearnings(this.summarizer, events);
+        for (const l of result.learnings) {
           await this.storeLearning(l);
         }
       } catch (err) {

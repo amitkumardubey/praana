@@ -78,6 +78,7 @@ export function openMemoryDb(
   db.pragma("foreign_keys = ON");
   db.exec(BASE_SCHEMA);
   ensureLayerColumns(db);
+  ensureSignalColumns(db);
   ensureFtsBackfill(db);
   ensureUtilityColumns(db);
 
@@ -108,9 +109,6 @@ function ensureLayerColumns(db: Database.Database): void {
   if (!names.has("retracted")) {
     db.exec("ALTER TABLE entries ADD COLUMN retracted INTEGER NOT NULL DEFAULT 0");
   }
-
-  // M2: Two-signal memory model — rename confidence → validity, add usefulness
-  ensureSignalColumns(db);
 }
 
 /**
@@ -457,9 +455,9 @@ export function flushReinforcements(db: Database.Database, sessionId: string): v
     reinforceEntry(db, entry_id);
 
     // Pass 2: utility update based on surfaced+used+outcome
-    if (used && good) {
+    if (used === 1 && good === 1) {
       updateUsefulness(db, entry_id, "boost");
-    } else if (used && !good) {
+    } else if (used === 1 && good === 0) {
       // Decision: neutral — session-success bit is too noisy to penalize a used memory.
       // TODO(scorecard): revisit toward a small decay once #99 delivers reliable signal.
       updateUsefulness(db, entry_id, "neutral");
