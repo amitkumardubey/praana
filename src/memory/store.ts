@@ -9,24 +9,30 @@ import { ulid } from "ulid";
 import {
   clearReembedNeeded,
   countVectorEmbeddings,
+  DEDUP_RECONCILED_KEY,
   endSessionRow,
   flushReinforcements,
   getAllEntries,
   getEntriesByScope,
   getEntryById,
+  getEmbedding,
+  getMemoryMeta,
   insertEntry,
   deleteEntry,
   isReembedPending,
+  mergeEntryMetadata,
   retractMemory as retractMemoryDb,
   openMemoryDb,
   reinforceEntry,
   searchByFts,
   searchByVector,
+  setMemoryMeta,
   stampReinforcement,
   startSessionRow,
   touchEntry,
   upsertEmbedding,
   weakenEntry,
+  incrementConfirmationCount,
 } from "./db.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 import type { Embedder } from "./types.js";
@@ -36,6 +42,9 @@ import {
   DUPLICATE_MATCH_THRESHOLD,
   isContradiction,
   isNearDuplicate,
+  normalizeMemoryContent,
+  scopeGroupKey,
+  scopesEqual,
 } from "./dedup.js";
 import type {
   Digest,
@@ -69,6 +78,29 @@ function isAbortLikeError(err: unknown): boolean {
 }
 
 const DEFAULT_RECALL_MIN_MATCH = 0.35;
+
+export interface RememberResult {
+  id: string;
+  reinforced?: boolean;
+}
+
+export interface ReconcileDuplicatesResult {
+  clustersMerged: number;
+  entriesRemoved: number;
+}
+
+function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
 
 function lexicalMatchScore(
   entry: MemoryEntry,
@@ -139,6 +171,13 @@ export class MemoryStore {
     this.sessionId = ulid();
     this.defaultScopes = this.buildDefaultScopes(ctx);
 
+    const reconciled = await this.reconcileDuplicatesIfNeeded();
+    if (reconciled.entriesRemoved > 0) {
+      this.logger.child("memory").info(
+        `Reconciled ${reconciled.clustersMerged} duplicate ${reconciled.clustersMerged === 1 ? "cluster" : "clusters"} (${reconciled.entriesRemoved} ${reconciled.entriesRemoved === 1 ? "entry" : "entries"} removed)`,
+      );
+    }
+
     const pruned = await this.prune();
     if (pruned > 0) {
       this.logger.child("memory").info(`Pruned ${pruned} stale Layer 1 ${pruned === 1 ? "entry" : "entries"}`);
@@ -204,22 +243,31 @@ export class MemoryStore {
 
   // ---- Core operations ----
 
-  async remember(content: string, opts: RememberOptions = {}): Promise<{ id: string }> {
-    const id = ulid();
-    const now = Date.now();
+  async remember(content: string, opts: RememberOptions = {}): Promise<RememberResult> {
     const kind = opts.kind ?? "fact";
     if (!isMemoryKind(kind)) {
       throw new Error(
         `Invalid memory kind: '${kind}'. Valid kinds: ${MEMORY_KINDS.join(", ")}`,
       );
     }
-    const confidence = certaintyToConfidence(opts.certainty ?? "medium");
     const scopes = opts.scope ?? this.defaultScopes;
+    const trimmed = content.slice(0, 1000);
+
+    const duplicate = await this.findDuplicateEntry(trimmed, kind, scopes);
+    if (duplicate) {
+      reinforceEntry(this.db, duplicate.id, 0.08);
+      incrementConfirmationCount(this.db, duplicate.id);
+      return { id: duplicate.id, reinforced: true };
+    }
+
+    const id = ulid();
+    const now = Date.now();
+    const confidence = certaintyToConfidence(opts.certainty ?? "medium");
 
     const entry: MemoryEntry = {
       id,
       kind,
-      content: content.slice(0, 1000),
+      content: trimmed,
       confidence,
       pinned: opts.pinned ?? false,
       layer: 1,
@@ -234,7 +282,7 @@ export class MemoryStore {
     insertEntry(this.db, entry);
 
     if (this.embedder) {
-      this.embedder.embed(content).then((vec) => {
+      this.embedder.embed(trimmed).then((vec) => {
         upsertEmbedding(this.db, id, vec);
       }).catch(() => { /* embedder failure is non-fatal */ });
     }
@@ -242,24 +290,162 @@ export class MemoryStore {
     return { id };
   }
 
+  private async findDuplicateEntry(
+    content: string,
+    kind: MemoryKind,
+    scopes: string[],
+  ): Promise<{ id: string } | null> {
+    for (const entry of this.getScopedEntries(kind, scopes)) {
+      if (normalizeMemoryContent(entry.content) === normalizeMemoryContent(content)) {
+        return { id: entry.id };
+      }
+    }
+
+    const similar = await this.recall(content, {
+      limit: 5,
+      kinds: [kind],
+      scope: scopes,
+      minMatch: 0,
+    });
+
+    for (const candidate of similar.entries) {
+      const existing = getEntryById(this.db, candidate.id);
+      if (!existing || existing.retracted) continue;
+      if (!scopesEqual(existing.scopes, scopes)) continue;
+      if (isNearDuplicate(existing.content, content, candidate.match)) {
+        return { id: existing.id };
+      }
+    }
+
+    return null;
+  }
+
+  private getScopedEntries(kind: MemoryKind, scopes: string[]): MemoryEntry[] {
+    const entries = scopes.length > 0
+      ? getEntriesByScope(this.db, scopes)
+      : getAllEntries(this.db);
+    return entries.filter(
+      (entry) => !entry.retracted && entry.kind === kind && scopesEqual(entry.scopes, scopes),
+    );
+  }
+
+  private entriesAreNearDuplicates(a: MemoryEntry, b: MemoryEntry): boolean {
+    if (a.kind !== b.kind || !scopesEqual(a.scopes, b.scopes)) return false;
+    if (normalizeMemoryContent(a.content) === normalizeMemoryContent(b.content)) {
+      return true;
+    }
+
+    const vecA = getEmbedding(this.db, a.id);
+    const vecB = getEmbedding(this.db, b.id);
+    if (vecA && vecB) {
+      return cosineSimilarity(vecA, vecB) >= DUPLICATE_MATCH_THRESHOLD;
+    }
+
+    return false;
+  }
+
+  private pickDuplicateKeeper(cluster: MemoryEntry[]): MemoryEntry {
+    return [...cluster].sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      return a.created_at - b.created_at;
+    })[0];
+  }
+
+  async reconcileDuplicatesIfNeeded(): Promise<ReconcileDuplicatesResult> {
+    if (getMemoryMeta(this.db, DEDUP_RECONCILED_KEY) === "1") {
+      return { clustersMerged: 0, entriesRemoved: 0 };
+    }
+    const result = await this.reconcileDuplicates();
+    setMemoryMeta(this.db, DEDUP_RECONCILED_KEY, "1");
+    return result;
+  }
+
+  async reconcileDuplicates(): Promise<ReconcileDuplicatesResult> {
+    await this.waitForReembed();
+
+    const entries = getAllEntries(this.db).filter((entry) => !entry.retracted);
+    const groups = new Map<string, MemoryEntry[]>();
+    for (const entry of entries) {
+      const key = `${entry.kind}:${scopeGroupKey(entry.scopes)}`;
+      const bucket = groups.get(key) ?? [];
+      bucket.push(entry);
+      groups.set(key, bucket);
+    }
+
+    let clustersMerged = 0;
+    let entriesRemoved = 0;
+
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+
+      const parent = new Map<string, string>();
+      const find = (id: string): string => {
+        const root = parent.get(id) ?? id;
+        if (root !== id) {
+          const resolved = find(root);
+          parent.set(id, resolved);
+          return resolved;
+        }
+        parent.set(id, id);
+        return id;
+      };
+      const union = (a: string, b: string): void => {
+        const rootA = find(a);
+        const rootB = find(b);
+        if (rootA !== rootB) parent.set(rootB, rootA);
+      };
+
+      for (let i = 0; i < group.length; i++) {
+        for (let j = i + 1; j < group.length; j++) {
+          if (this.entriesAreNearDuplicates(group[i], group[j])) {
+            union(group[i].id, group[j].id);
+          }
+        }
+      }
+
+      const clusters = new Map<string, MemoryEntry[]>();
+      for (const entry of group) {
+        const root = find(entry.id);
+        const bucket = clusters.get(root) ?? [];
+        bucket.push(entry);
+        clusters.set(root, bucket);
+      }
+
+      for (const cluster of clusters.values()) {
+        if (cluster.length < 2) continue;
+        const keeper = this.pickDuplicateKeeper(cluster);
+        for (const duplicate of cluster) {
+          if (duplicate.id === keeper.id) continue;
+          mergeEntryMetadata(this.db, keeper.id, duplicate);
+          deleteEntry(this.db, duplicate.id);
+          entriesRemoved++;
+        }
+        clustersMerged++;
+      }
+    }
+
+    return { clustersMerged, entriesRemoved };
+  }
+
+  async getDigest(minScore = 0.35): Promise<Digest> {
+    return this.buildDigest(
+      {
+        agent: APP_AGENT_ID,
+        user_id: "",
+        context_id: "",
+        time: Date.now(),
+        context_label: "",
+      },
+      minScore,
+    );
+  }
+
   private async storeLearning(learning: ExtractedLearning): Promise<void> {
     const similar = await this.recall(learning.content, {
       limit: 3,
       kinds: [learning.kind],
     });
-
-    const duplicate = similar.entries.find((e) => {
-      const existing = getEntryById(this.db, e.id);
-      if (!existing) return false;
-      return isNearDuplicate(existing.content, learning.content, Math.max(e.match, e.score));
-    });
-    if (duplicate) {
-      reinforceEntry(this.db, duplicate.id, 0.08);
-      this.db
-        .prepare("UPDATE entries SET confirmation_count = confirmation_count + 1 WHERE id = ?")
-        .run(duplicate.id);
-      return;
-    }
 
     for (const candidate of similar.entries) {
       if (candidate.match < CONTRADICTION_MATCH_THRESHOLD && candidate.score < CONTRADICTION_MATCH_THRESHOLD) {

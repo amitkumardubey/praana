@@ -3,8 +3,24 @@ import type { SummarizerLLM } from "./types.js";
 const NEGATION_PATTERN =
   /\b(not|never|no|without|isn't|aren't|doesn't|don't|won't|cannot|can't|missing|absent|disabled)\b/i;
 
-function normalize(text: string): string {
+export function normalizeMemoryContent(text: string): string {
   return text.toLowerCase().replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/** @deprecated alias — use normalizeMemoryContent */
+function normalize(text: string): string {
+  return normalizeMemoryContent(text);
+}
+
+export function scopesEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((scope, index) => scope === sortedB[index]);
+}
+
+export function scopeGroupKey(scopes: string[]): string {
+  return [...scopes].sort().join("\0");
 }
 
 function terms(text: string): string[] {

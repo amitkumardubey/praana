@@ -3,6 +3,7 @@
 // ============================================================
 
 export { MemoryStore } from "./store.js";
+export type { RememberResult, ReconcileDuplicatesResult } from "./store.js";
 export { retractMemory } from "./db.js";
 export { OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export {

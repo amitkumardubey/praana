@@ -4,6 +4,7 @@ export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
   initMode: boolean;
+  memoryDedupeMode: boolean;
   force: boolean;
   debug: boolean;
   incognito: boolean;
@@ -17,6 +18,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   let sessionId: string | null = null;
   let resumeMode = false;
   let initMode = false;
+  let memoryDedupeMode = false;
   let force = false;
   let debug = false;
   let incognito = false;
@@ -72,12 +74,18 @@ export function parseCliArgs(args: string[]): CliArgs {
       initMode = true;
       continue;
     }
+    if (args[i] === "memory" && args[i + 1] === "dedupe") {
+      memoryDedupeMode = true;
+      i++;
+      continue;
+    }
   }
 
   return {
     sessionId,
     resumeMode,
     initMode,
+    memoryDedupeMode,
     force,
     debug,
     incognito,
