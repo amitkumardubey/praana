@@ -14,7 +14,7 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
       enabled: false,
       summarizer: "disabled",
       db_path: join(tmpdir(), "praana-project-context-memory.db"),
-      embedder: "hash",
+      embedder: "auto",
       ollama_url: "http://localhost:11434",
       ollama_model: "nomic-embed-text",
     },

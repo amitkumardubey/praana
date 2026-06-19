@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 
 describe("memory pruning", () => {
   it("removes stale low-confidence Layer 1 entries at session start", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
@@ -33,7 +34,7 @@ describe("memory pruning", () => {
   it("never prunes pinned or Layer 2 entries", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {

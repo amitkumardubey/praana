@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 import { compile } from "../src/compiler.js";
 import type { SummarizerLLM } from "../src/memory/index.js";
 
@@ -7,7 +8,7 @@ describe("Memory Learning Impact", () => {
   it("should carry remembered preference into a later session digest and prompt", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
@@ -61,7 +62,7 @@ describe("Memory Learning Impact", () => {
 
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
       summarizer: abortingSummarizer,
     });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 import { digestScore } from "../src/memory/confidence.js";
 import type { MemoryEntry } from "../src/memory/types.js";
 
@@ -32,7 +33,7 @@ describe("per-kind digest ranking weights", () => {
   it("includes higher-weight kinds earlier in digest markdown", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {

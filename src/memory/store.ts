@@ -28,6 +28,7 @@ import {
   upsertEmbedding,
   weakenEntry,
 } from "./db.js";
+import { EMBEDDING_DIM } from "./embeddings.js";
 import type { Embedder } from "./types.js";
 import { extractLearnings, summarizeTurns } from "./summarizer.js";
 import {
@@ -86,7 +87,7 @@ function lexicalMatchScore(
 
 export class MemoryStore {
   private db: Database.Database;
-  private embedder: Embedder;
+  private embedder: Embedder | null;
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
@@ -97,7 +98,7 @@ export class MemoryStore {
 
   constructor(opts: {
     dbPath: string;
-    embedder: Embedder;
+    embedder: Embedder | null;
     summarizer?: SummarizerLLM | null;
     logger?: PraanaLogger;
     needsReembed?: boolean;
@@ -105,7 +106,7 @@ export class MemoryStore {
   }) {
     const opened = openMemoryDb(
       opts.dbPath,
-      opts.embedder.dim,
+      opts.embedder?.dim ?? EMBEDDING_DIM,
       opts.embeddingBackend,
     );
     this.db = opened.db;
@@ -232,10 +233,11 @@ export class MemoryStore {
 
     insertEntry(this.db, entry);
 
-    // Embedding (fire-and-forget)
-    this.embedder.embed(content).then((vec) => {
-      upsertEmbedding(this.db, id, vec);
-    }).catch(() => { /* embedder failure is non-fatal */ });
+    if (this.embedder) {
+      this.embedder.embed(content).then((vec) => {
+        upsertEmbedding(this.db, id, vec);
+      }).catch(() => { /* embedder failure is non-fatal */ });
+    }
 
     return { id };
   }
@@ -289,7 +291,7 @@ export class MemoryStore {
     const entryCount = this.getEntryCount();
     let vectorCount = countVectorEmbeddings(this.db);
 
-    if (entryCount > 0 && vectorCount === 0 && isReembedPending(this.db)) {
+    if (this.embedder && entryCount > 0 && vectorCount === 0 && isReembedPending(this.db)) {
       if (!this.reembedding) {
         await this.reembedAllEntries();
         vectorCount = countVectorEmbeddings(this.db);
@@ -342,21 +344,23 @@ export class MemoryStore {
       }
     }
 
-    try {
-      const qvec = await this.embedder.embed(query);
-      const hits = searchByVector(this.db, qvec, limit * 4);
-      for (const h of hits) {
-        const e = getEntryById(this.db, h.entry_id);
-        if (e) {
-          const similarity = Math.max(0, 1 - h.distance);
-          const matchScore = Math.min(similarity, 0.75);
-          if (matchScore >= minMatch) {
-            addCandidate(e, matchScore);
+    if (this.embedder) {
+      try {
+        const qvec = await this.embedder.embed(query);
+        const hits = searchByVector(this.db, qvec, limit * 4);
+        for (const h of hits) {
+          const e = getEntryById(this.db, h.entry_id);
+          if (e) {
+            const similarity = Math.max(0, 1 - h.distance);
+            const matchScore = Math.min(similarity, 0.75);
+            if (matchScore >= minMatch) {
+              addCandidate(e, matchScore);
+            }
           }
         }
+      } catch {
+        // Vector search failed — fall back to FTS/empty results only
       }
-    } catch {
-      // Vector search failed — fall back to FTS/empty results only
     }
 
     // Do not dump all scoped entries when search finds nothing — that produces
@@ -469,6 +473,8 @@ export class MemoryStore {
 
   /** Re-embed all entries after vector dimension migration. Runs in the background. */
   async reembedAllEntries(): Promise<void> {
+    if (!this.embedder) return;
+
     this.reembedding = true;
     const entries = getAllEntries(this.db);
     const log = this.logger.child("memory");

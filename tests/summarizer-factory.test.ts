@@ -7,7 +7,7 @@ function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
   return {
     enabled: true,
     summarizer: "disabled",
-    embedder: "hash",
+    embedder: "auto",
     ollama_url: "http://localhost:11434",
     ollama_model: "nomic-embed-text",
     ...overrides,

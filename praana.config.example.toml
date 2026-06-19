@@ -81,11 +81,11 @@ summarizer = "openrouter"
 db_path = "~/.praana/memory.db"
 
 # --- Embeddings (semantic /recall) ---
-#   auto                 — transformers when installed, else hash (default)
+#   auto                 — transformers when installed, else keyword-only search (default)
 #   transformers         — Xenova/all-MiniLM-L6-v2 (384-dim, ~80MB download)
 #   transformers-nomic   — Xenova/nomic-embed-text-v1 (768-dim, higher quality)
 #   ollama               — opt-in local daemon
-#   hash                 — emergency non-semantic fallback
+#   llama-cpp            — native GGUF embeddings via node-llama-cpp
 embedder = "auto"
 
 # Optional override (must match a known Xenova ONNX model)

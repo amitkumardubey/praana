@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,7 +10,6 @@ import {
   upsertEmbedding,
 } from "../src/memory/db.js";
 import { MemoryStore } from "../src/memory/store.js";
-import { HashEmbedder } from "../src/memory/embeddings.js";
 import type { Embedder } from "../src/memory/types.js";
 
 class FailingEmbedder implements Embedder {
@@ -73,7 +73,7 @@ describe("recall after embedder migration", () => {
   it("does not dump scoped entries with match 0.00 when search finds nothing", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({
@@ -129,7 +129,7 @@ describe("recall after embedder migration", () => {
 
       const store = new MemoryStore({
         dbPath,
-        embedder: new HashEmbedder(),
+        embedder: new DeterministicTestEmbedder(),
         embeddingBackend: "transformers:Xenova/all-MiniLM-L6-v2",
       });
 

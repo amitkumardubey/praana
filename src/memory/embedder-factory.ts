@@ -5,7 +5,7 @@
 import type { MemoryConfig } from "../types.js";
 import { getAppLogger } from "../logger.js";
 import { envOverride } from "../app-identity.js";
-import { HashEmbedder, OllamaEmbedder } from "./embeddings.js";
+import { OllamaEmbedder } from "./embeddings.js";
 import { TransformersEmbedder } from "./transformers-embedder.js";
 import type { Embedder } from "./types.js";
 
@@ -25,22 +25,18 @@ async function tryTransformersEmbedder(
 
 export function resolveEmbeddingBackend(
   config: MemoryConfig,
-  embedder: Embedder,
+  embedder: Embedder | null,
 ): string {
-  if (embedder instanceof HashEmbedder) return "hash";
+  if (!embedder) return "keyword-only";
   if (embedder instanceof OllamaEmbedder) return "ollama";
   if (embedder instanceof TransformersEmbedder) return `transformers:${embedder.modelId}`;
   return config.embedder ?? "unknown";
 }
 
-export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
+export async function createEmbedder(config: MemoryConfig): Promise<Embedder | null> {
   const log = getAppLogger().child("memory");
   const strategy = config.embedder ?? "auto";
   const ollamaUrl = config.ollama_url ?? "http://localhost:11434";
-
-  if (strategy === "hash") {
-    return new HashEmbedder();
-  }
 
   if (isTransformersStrategy(strategy)) {
     const embedder = await tryTransformersEmbedder(config);
@@ -50,9 +46,9 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
     }
 
     log.warn(
-      '@huggingface/transformers unavailable — using hash embedder (non-semantic recall). Install with: npm install @huggingface/transformers',
+      '@huggingface/transformers unavailable — recall will use keyword search only. Install with: npm install @huggingface/transformers',
     );
-    return new HashEmbedder();
+    return null;
   }
 
   if (strategy === "ollama") {
@@ -62,22 +58,22 @@ export async function createEmbedder(config: MemoryConfig): Promise<Embedder> {
       return new OllamaEmbedder(ollamaUrl, model);
     }
     log.warn(
-      `Ollama not available or model '${model}' not loaded — falling back to hash embedder. Run: ollama pull ${model}`,
+      `Ollama not available or model '${model}' not loaded — recall will use keyword search only. Run: ollama pull ${model}`,
     );
-    return new HashEmbedder();
+    return null;
   }
 
   if (strategy === "llama-cpp") {
     const embedder = await tryLlamaCppEmbedder();
     if (embedder) return embedder;
     log.warn(
-      "node-llama-cpp not available — falling back to hash embedder. Install with: npm install node-llama-cpp",
+      "node-llama-cpp not available — recall will use keyword search only. Install with: npm install node-llama-cpp",
     );
-    return new HashEmbedder();
+    return null;
   }
 
-  log.warn(`Unknown embedder strategy '${strategy}' — using hash embedder`);
-  return new HashEmbedder();
+  log.warn(`Unknown embedder strategy '${strategy}' — recall will use keyword search only`);
+  return null;
 }
 
 async function tryLlamaCppEmbedder(): Promise<Embedder | null> {

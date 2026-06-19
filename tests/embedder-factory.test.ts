@@ -1,12 +1,12 @@
 import { beforeAll, describe, it, expect } from "vitest";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
 import {
-  HashEmbedder,
   TransformersEmbedder,
   isTransformersAvailable,
 } from "../src/memory/index.js";
 import type { MemoryConfig } from "../src/types.js";
 import type { Embedder } from "../src/memory/types.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 
 const HAS_TRANSFORMERS = await isTransformersAvailable();
 const TRANSFORMERS_TIMEOUT_MS = 120_000;
@@ -23,16 +23,11 @@ function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
 }
 
 describe("createEmbedder factory", () => {
-  it("returns HashEmbedder when embedder is 'hash'", async () => {
-    const embedder = await createEmbedder(makeConfig({ embedder: "hash" }));
-    expect(embedder).toBeInstanceOf(HashEmbedder);
-  });
-
-  it("returns HashEmbedder when auto and transformers is unavailable", async () => {
+  it("returns null when auto and transformers is unavailable", async () => {
     if (HAS_TRANSFORMERS) return;
 
     const embedder = await createEmbedder(makeConfig({ embedder: "auto" }));
-    expect(embedder).toBeInstanceOf(HashEmbedder);
+    expect(embedder).toBeNull();
   });
 
   it(
@@ -42,7 +37,7 @@ describe("createEmbedder factory", () => {
 
       const embedder = await createEmbedder(makeConfig({ embedder: "auto" }));
       expect(embedder).toBeInstanceOf(TransformersEmbedder);
-      expect(embedder.dim).toBe(384);
+      expect(embedder!.dim).toBe(384);
     },
     TRANSFORMERS_TIMEOUT_MS,
   );
@@ -63,40 +58,40 @@ describe("createEmbedder factory", () => {
     TRANSFORMERS_TIMEOUT_MS,
   );
 
-  it("returns HashEmbedder when 'ollama' strategy and daemon is unreachable", async () => {
+  it("returns null when 'ollama' strategy and daemon is unreachable", async () => {
     const embedder = await createEmbedder(
       makeConfig({
         embedder: "ollama",
         ollama_url: "http://127.0.0.1:19999",
       }),
     );
-    expect(embedder).toBeInstanceOf(HashEmbedder);
+    expect(embedder).toBeNull();
   });
 
-  it("returns HashEmbedder when 'transformers' backend is not installed", async () => {
+  it("returns null when 'transformers' backend is not installed", async () => {
     if (HAS_TRANSFORMERS) return;
 
     const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
-    expect(embedder).toBeInstanceOf(HashEmbedder);
+    expect(embedder).toBeNull();
   });
 
-  it("HashEmbedder produces fixed-length Float32Array", async () => {
-    const embedder = await createEmbedder(makeConfig({ embedder: "hash" }));
+  it("DeterministicTestEmbedder produces fixed-length Float32Array", async () => {
+    const embedder = new DeterministicTestEmbedder();
     const vec = await embedder.embed("hello world");
     expect(vec).toBeInstanceOf(Float32Array);
     expect(vec.length).toBe(embedder.dim);
   });
 
-  it("HashEmbedder produces unit-norm vectors", async () => {
-    const embedder = await createEmbedder(makeConfig({ embedder: "hash" }));
+  it("DeterministicTestEmbedder produces unit-norm vectors", async () => {
+    const embedder = new DeterministicTestEmbedder();
     const vec = await embedder.embed("unit norm check");
     let norm = 0;
     for (const v of vec) norm += v * v;
     expect(Math.sqrt(norm)).toBeCloseTo(1.0, 5);
   });
 
-  it("HashEmbedder is deterministic for the same input", async () => {
-    const embedder = await createEmbedder(makeConfig({ embedder: "hash" }));
+  it("DeterministicTestEmbedder is deterministic for the same input", async () => {
+    const embedder = new DeterministicTestEmbedder();
     const a = await embedder.embed("same text");
     const b = await embedder.embed("same text");
     expect(Array.from(a)).toEqual(Array.from(b));

@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 
 describe("Recall ranking", () => {
   it("sorts by match score and keeps confidence separate", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
@@ -44,7 +45,7 @@ describe("Recall ranking", () => {
   it("boosts pinned entries among relevant matches", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
@@ -81,7 +82,7 @@ describe("Recall ranking", () => {
   it("returns no results for unrelated queries", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({
