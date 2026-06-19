@@ -296,7 +296,6 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     "transformers",
     "transformers-nomic",
     "llama-cpp",
-    "hash",
   ]);
   if (out.memory.embedder && !validEmbedders.has(out.memory.embedder)) {
     configWarn("Invalid memory.embedder, using default 'auto'");

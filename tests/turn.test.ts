@@ -155,7 +155,7 @@ function makeConfig(overrides?: Partial<PraanaConfig>): PraanaConfig {
       enabled: false,
       summarizer: "openrouter",
       db_path: ":memory:",
-      embedder: "hash",
+      embedder: "auto",
       ollama_url: "http://localhost:11434",
       ollama_model: "nomic-embed-text",
     },

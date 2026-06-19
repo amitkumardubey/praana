@@ -120,8 +120,7 @@ export type EmbedderStrategy =
   | "ollama"
   | "transformers"
   | "transformers-nomic"
-  | "llama-cpp"
-  | "hash";
+  | "llama-cpp";
 
 export interface MemoryConfig {
   enabled: boolean;

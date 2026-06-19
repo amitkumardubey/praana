@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder, type Embedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore, type Embedder } from "../src/memory/index.js";
 import {
   openMemoryDb,
   insertEntry,
@@ -19,7 +20,7 @@ describe("Memory safety", () => {
   it("rejects invalid memory kinds at write time", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({
@@ -42,7 +43,7 @@ describe("Memory safety", () => {
   it("prioritizes keyword matches over unrelated vector candidates", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({
@@ -73,7 +74,7 @@ describe("Memory safety", () => {
   it("does not recall memories from a different context by default", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const base = {
@@ -102,7 +103,7 @@ describe("Memory safety", () => {
   it("recalls both project and global memories in a project-scoped session", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const base = {
@@ -135,7 +136,7 @@ describe("Memory safety", () => {
   it("includes global memories in digest for project-scoped session start", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const base = {
@@ -279,5 +280,33 @@ describe("Memory safety", () => {
     expect(remainingIds.map((r) => r.entry_id)).toEqual(["e1"]);
 
     db.close();
+  });
+
+  it("recalls via keyword search when embedder is null", async () => {
+    const store = new MemoryStore({
+      dbPath: ":memory:",
+      embedder: null,
+    });
+
+    await store.sessionStart({
+      agent: "praana-test",
+      user_id: "u1",
+      time: Date.now(),
+      context_id: "ctx-a",
+      context_label: "test",
+    });
+
+    await store.remember("User's name is Amit", {
+      kind: "fact",
+      certainty: "medium",
+    });
+
+    const result = await store.recall("name", { limit: 1 });
+
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0]?.content).toBe("User's name is Amit");
+    expect(result.notice).toBeUndefined();
+
+    store.close();
   });
 });

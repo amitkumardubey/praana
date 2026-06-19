@@ -4,7 +4,7 @@
 
 export { MemoryStore } from "./store.js";
 export { retractMemory } from "./db.js";
-export { HashEmbedder, OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
+export { OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export {
   TransformersEmbedder,
   isTransformersAvailable,

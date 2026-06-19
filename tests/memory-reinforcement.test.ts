@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import {
   flushReinforcements,
   getEntryById,
@@ -62,7 +62,7 @@ describe("Memory confidence reinforcement", () => {
   it("flushReinforcements applies batched stamps at session end", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
@@ -105,7 +105,7 @@ describe("Memory confidence reinforcement", () => {
   it("reinforceFromSuccessfulToolOutcome boosts confidence immediately", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({

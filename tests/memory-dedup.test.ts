@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 import type { SummarizerLLM } from "../src/memory/types.js";
 import { heuristicContradiction } from "../src/memory/dedup.js";
 
@@ -28,7 +29,7 @@ describe("sessionEnd duplicate and contradiction detection", () => {
 
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
       summarizer,
     });
 
@@ -69,7 +70,7 @@ describe("sessionEnd duplicate and contradiction detection", () => {
 
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
       summarizer,
     });
 

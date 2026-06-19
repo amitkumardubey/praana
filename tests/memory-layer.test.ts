@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { MemoryStore, HashEmbedder } from "../src/memory/index.js";
+import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
+import { MemoryStore } from "../src/memory/index.js";
 import { effectiveConfidence, HALF_LIFE_DAYS } from "../src/memory/confidence.js";
 import type { MemoryEntry } from "../src/memory/types.js";
 
@@ -26,7 +27,7 @@ describe("memory layer schema and half-life decay", () => {
   it("defaults new entries to layer 1 with confirmation_count 0", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     await store.sessionStart({
@@ -71,7 +72,7 @@ describe("memory layer schema and half-life decay", () => {
   it("digest renders layer 2 entries before layer 1", async () => {
     const store = new MemoryStore({
       dbPath: ":memory:",
-      embedder: new HashEmbedder(),
+      embedder: new DeterministicTestEmbedder(),
     });
 
     const ctx = {
