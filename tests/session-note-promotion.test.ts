@@ -58,7 +58,7 @@ describe("session-end note promotion (#129)", () => {
 
     const recalled = await memoryStore.recall("TypeScript strict mode", {
       kinds: ["fact"],
-      minMatch: 0,
+      minMatch: 0.1,
     });
     expect(recalled.entries.some((e) => e.content.includes("TypeScript strict mode"))).toBe(true);
   });
@@ -73,7 +73,7 @@ describe("session-end note promotion (#129)", () => {
 
     const recalled = await memoryStore.recall("Vitest testing", {
       kinds: ["fact"],
-      minMatch: 0,
+      minMatch: 0.1,
     });
     expect(recalled.entries.some((e) => e.content.includes("Vitest"))).toBe(true);
   });
@@ -165,14 +165,14 @@ describe("session-end note promotion (#129)", () => {
     });
 
     // Verify pre-populated
-    const before = await memoryStore.recall("Vitest", { minMatch: 0 });
+    const before = await memoryStore.recall("Vitest", { minMatch: 0.1 });
     expect(before.entries.length).toBeGreaterThanOrEqual(1);
     const countBefore = before.entries.length;
 
     await session.end("clean", []);
 
     // Should not create a duplicate — dedup should reinforce
-    const after = await memoryStore.recall("Vitest", { minMatch: 0 });
+    const after = await memoryStore.recall("Vitest", { minMatch: 0.1 });
     expect(after.entries.length).toBe(countBefore);
   });
 
@@ -195,13 +195,13 @@ describe("session-end note promotion (#129)", () => {
 
     await session.end("clean", []);
 
-    const recalled1 = await memoryStore.recall("architecture", { minMatch: 0 });
+    const recalled1 = await memoryStore.recall("architecture", { minMatch: 0.1 });
     expect(recalled1.entries.some((e) => e.content.includes("First finding"))).toBe(true);
 
-    const recalled2 = await memoryStore.recall("performance", { minMatch: 0 });
+    const recalled2 = await memoryStore.recall("performance", { minMatch: 0.1 });
     expect(recalled2.entries.some((e) => e.content.includes("Second finding"))).toBe(true);
 
-    const recalled3 = await memoryStore.recall("security", { minMatch: 0 });
+    const recalled3 = await memoryStore.recall("security", { minMatch: 0.1 });
     expect(recalled3.entries.some((e) => e.content.includes("Third finding"))).toBe(true);
   });
 
@@ -213,7 +213,7 @@ describe("session-end note promotion (#129)", () => {
 
     await session.end("clean", []);
 
-    const recalled = await memoryStore.recall("Redis caching", { kinds: ["fact"], minMatch: 0 });
+    const recalled = await memoryStore.recall("Redis caching", { kinds: ["fact"], minMatch: 0.1 });
     expect(recalled.entries.some((e) => e.content.includes("Redis caching"))).toBe(true);
   });
 });

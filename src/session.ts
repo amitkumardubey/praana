@@ -500,19 +500,26 @@ export class Session {
   private async promoteSurvivingNotesToMemory(): Promise<void> {
     if (!this.memoryStore) return;
 
+    const extractText = (payload: unknown): string | undefined =>
+      payload && typeof payload === "object" && "text" in payload
+        ? (payload as { text: unknown }).text as string | undefined
+        : undefined;
+
     const notes = this.stateGraph
       .snapshot()
-      .filter((obj) => obj.kind === "note")
-      .filter((obj) => !obj.retracted)
-      .filter((obj) => obj.tier !== "hard")
-      .filter((obj) => !detectActivityLogNote((obj.payload as { text: string }).text));
+      .filter((obj) => {
+        if (obj.kind !== "note" || obj.retracted || obj.tier === "hard") return false;
+        const text = extractText(obj.payload);
+        return text && !detectActivityLogNote(text);
+      });
 
     if (notes.length === 0) return;
 
     let promoted = 0;
     let reinforced = 0;
     for (const note of notes) {
-      const text = (note.payload as { text: string }).text;
+      const text = extractText(note.payload);
+      if (!text) continue;
       try {
         const result = await this.memoryStore.remember(text, {
           kind: "fact",
