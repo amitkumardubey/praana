@@ -43,5 +43,3 @@ export function effectiveValidity(entry: MemoryEntry, now: number): number {
   return entry.validity * decay;
 }
 
-/** @deprecated Use effectiveValidity instead. Kept for backward compatibility during migration. */
-export const effectiveConfidence = effectiveValidity;

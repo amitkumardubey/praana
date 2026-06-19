@@ -473,6 +473,24 @@ export function flushReinforcements(db: Database.Database, sessionId: string): v
   db.prepare("DELETE FROM pending_reinforcements WHERE session_id = ?").run(sessionId);
 }
 
+/**
+ * Fetch all entries surfaced in a session (from pending_reinforcements) together
+ * with their content in a single JOIN — avoids N+1 getEntryById calls at session end.
+ */
+export function getSurfacedEntriesWithContent(
+  db: Database.Database,
+  sessionId: string,
+): Array<{ id: string; content: string }> {
+  return (db
+    .prepare(
+      `SELECT pr.entry_id AS id, e.content
+       FROM pending_reinforcements pr
+       JOIN entries e ON e.id = pr.entry_id
+       WHERE pr.session_id = ?`,
+    )
+    .all(sessionId) as { id: string; content: string }[]);
+}
+
 export function getEntryById(db: Database.Database, id: string): MemoryEntry | undefined {
   const row = db.prepare("SELECT * FROM entries WHERE id = ?").get(id) as Record<
     string,

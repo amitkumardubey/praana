@@ -21,6 +21,7 @@ import {
   deleteEntry,
   isReembedPending,
   markReinforcementUsed,
+  getSurfacedEntriesWithContent,
   mergeEntryMetadata,
   retractMemory as retractMemoryDb,
   openMemoryDb,
@@ -92,18 +93,6 @@ function isSessionGood(
     }
     return false;
   });
-}
-
-/** Fetch surfaced entry IDs from pending_reinforcements for the current session. */
-function getSurfacedEntriesForSession(
-  db: Database.Database,
-  sessionId: string,
-): Array<{ entry_id: string }> {
-  return db
-    .prepare(
-      "SELECT entry_id FROM pending_reinforcements WHERE session_id = ?",
-    )
-    .all(sessionId) as { entry_id: string }[];
 }
 
 function queryTerms(query: string): string[] {
@@ -240,22 +229,14 @@ export class MemoryStore {
     // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #99).
     const sessionGood = isSessionGood(reason, events);
 
-    // Determine which surfaced entries were used (acted on).
-    const surfaced = getSurfacedEntriesForSession(this.db, this.sessionId);
-
-    // Build surfacedWithContent once — reused across all branches below.
-    const surfacedWithContent = surfaced
-      .map(({ entry_id: id }) => {
-        const entry = getEntryById(this.db, id);
-        return { id, content: entry?.content ?? "" };
-      })
-      .filter((e) => e.content);
+    // Fetch surfaced entries with content in one JOIN — no N+1 getEntryById calls.
+    const surfacedWithContent = getSurfacedEntriesWithContent(this.db, this.sessionId);
 
     // Track whether learnings were already stored by the combined call below,
     // so we don't make a redundant second LLM call at session end.
     let learningsStored = false;
 
-    if (surfaced.length > 0) {
+    if (surfacedWithContent.length > 0) {
       let usedIds: Set<string>;
 
       if (this.summarizer && events && events.length > 0) {
@@ -278,12 +259,12 @@ export class MemoryStore {
       }
 
       // Mark used in pending_reinforcements before flush
-      for (const { entry_id } of surfaced) {
+      for (const { id } of surfacedWithContent) {
         markReinforcementUsed(
           this.db,
-          entry_id,
+          id,
           this.sessionId,
-          usedIds.has(entry_id),
+          usedIds.has(id),
         );
       }
 
