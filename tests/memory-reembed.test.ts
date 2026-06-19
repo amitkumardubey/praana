@@ -33,7 +33,8 @@ function seedEntry(dbPath: string): void {
     id: "entry-1",
     kind: "fact",
     content: "dimension migration must recover",
-    confidence: 0.8,
+    validity: 0.8,
+    usefulness: 0.5,
     pinned: false,
     layer: 1,
     confirmation_count: 0,
@@ -41,6 +42,7 @@ function seedEntry(dbPath: string): void {
     last_seen_at: now,
     session_id: "session-1",
     scopes: ["user:u1", "agent:praana-test", "context:ctx1"],
+    retracted: false,
   });
   upsertEmbedding(db, "entry-1", new Float32Array([1, 0]));
   db.close();

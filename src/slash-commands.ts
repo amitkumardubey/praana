@@ -227,7 +227,7 @@ export async function executeSlashCommand(
           lines.push(``, `Recall results for "${query}":`);
           for (const e of recallResult.entries) {
             lines.push(
-              `  - [${e.kind}] ${e.content.slice(0, 100)} (match: ${e.match.toFixed(2)} | conf: ${e.confidence.toFixed(2)})`
+              `  - [${e.kind}] ${e.content.slice(0, 100)} (match: ${e.match.toFixed(2)} | valid: ${e.validity.toFixed(2)} | useful: ${e.usefulness.toFixed(2)})`
             );
           }
         }

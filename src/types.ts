@@ -96,7 +96,8 @@ export interface RecallResult extends ToolResult {
     kind: string;
     content: string;
     score?: number;
-    confidence?: number;
+    validity?: number;
+    usefulness?: number;
     scopes?: string[];
   }>;
 }

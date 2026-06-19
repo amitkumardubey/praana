@@ -5,13 +5,14 @@ import { digestScore } from "../src/memory/confidence.js";
 import type { MemoryEntry } from "../src/memory/types.js";
 
 describe("per-kind digest ranking weights", () => {
-  it("ranks constraints above mistakes at equal confidence", () => {
+  it("ranks constraints above mistakes at equal validity", () => {
     const now = Date.now();
     const constraint: MemoryEntry = {
       id: "c1",
       kind: "constraint",
       content: "Never commit secrets",
-      confidence: 0.6,
+      validity: 0.6,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 0,
@@ -19,6 +20,7 @@ describe("per-kind digest ranking weights", () => {
       last_seen_at: now,
       session_id: "s1",
       scopes: [],
+      retracted: false,
     };
     const mistake: MemoryEntry = {
       ...constraint,

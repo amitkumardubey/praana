@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
-import { effectiveConfidence, HALF_LIFE_DAYS } from "../src/memory/confidence.js";
+import { effectiveValidity, HALF_LIFE_DAYS } from "../src/memory/confidence.js";
 import type { MemoryEntry } from "../src/memory/types.js";
 
 function makeEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
@@ -10,7 +10,8 @@ function makeEntry(overrides: Partial<MemoryEntry> = {}): MemoryEntry {
     id: "test-id",
     kind: "fact",
     content: "test",
-    confidence: 0.8,
+    validity: 0.8,
+    usefulness: 0.5,
     pinned: false,
     layer: 1,
     confirmation_count: 0,
@@ -52,7 +53,7 @@ describe("memory layer schema and half-life decay", () => {
       kind: "constraint",
       created_at: now - 365 * 86_400_000,
     });
-    expect(effectiveConfidence(entry, now)).toBe(0.8);
+    expect(effectiveValidity(entry, now)).toBe(0.8);
     expect(HALF_LIFE_DAYS.constraint).toBeNull();
   });
 
@@ -64,8 +65,8 @@ describe("memory layer schema and half-life decay", () => {
     const layer1 = makeEntry({ layer: 1, kind: "fact", created_at: created });
     const layer2 = makeEntry({ layer: 2, kind: "fact", created_at: created });
 
-    const conf1 = effectiveConfidence(layer1, now);
-    const conf2 = effectiveConfidence(layer2, now);
+    const conf1 = effectiveValidity(layer1, now);
+    const conf2 = effectiveValidity(layer2, now);
     expect(conf2).toBeGreaterThan(conf1);
   });
 

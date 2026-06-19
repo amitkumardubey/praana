@@ -419,7 +419,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
   describe('recall', () => {
     it('should search memory and return entries', async () => {
       const entries = [
-        { id: 'm1', content: 'Test memory', kind: 'fact', confidence: 0.9, scope: ['user:a'], created: 100, updated: 100 },
+        { id: 'm1', content: 'Test memory', kind: 'fact', validity: 0.9, usefulness: 0.5, scope: ['user:a'], created: 100, updated: 100 },
       ];
       (memoryStore.recall as any).mockResolvedValue({ entries });
 

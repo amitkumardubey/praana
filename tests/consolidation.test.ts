@@ -81,7 +81,8 @@ describe("consolidation processor", () => {
       id: "entry-1",
       kind: "fact",
       content: "Uses Vitest for testing",
-      confidence: 0.7,
+      validity: 0.7,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 2,
@@ -89,13 +90,15 @@ describe("consolidation processor", () => {
       last_seen_at: Date.now(),
       session_id: "test",
       scopes: ["context:test"],
+      retracted: false,
     };
 
     const entry2 = {
       id: "entry-2",
       kind: "pattern",
       content: "Validates with Zod before DB writes",
-      confidence: 0.5,
+      validity: 0.5,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 1,
@@ -103,6 +106,7 @@ describe("consolidation processor", () => {
       last_seen_at: Date.now(),
       session_id: "test",
       scopes: ["context:test"],
+      retracted: false,
     };
 
     const store = {
@@ -150,7 +154,8 @@ describe("consolidation processor", () => {
       id: "entry-low",
       kind: "fact",
       content: "Some fact",
-      confidence: 0.4, // Below 0.6 threshold
+      validity: 0.4, // Below 0.6 threshold
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 2, // Below 3 threshold
@@ -158,13 +163,15 @@ describe("consolidation processor", () => {
       last_seen_at: Date.now(),
       session_id: "test",
       scopes: ["context:test"],
+      retracted: false,
     };
 
     const entryAboveThreshold = {
       id: "entry-high",
       kind: "fact",
       content: "Confirmed fact",
-      confidence: 0.8,
+      validity: 0.8,
+      usefulness: 0.5,
       pinned: false,
       layer: 1,
       confirmation_count: 5, // Above 3 threshold
@@ -172,6 +179,7 @@ describe("consolidation processor", () => {
       last_seen_at: Date.now(),
       session_id: "test",
       scopes: ["context:test"],
+      retracted: false,
     };
 
     const store = {

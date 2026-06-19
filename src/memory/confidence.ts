@@ -24,14 +24,14 @@ export const KIND_WEIGHTS: Record<MemoryKind, number> = {
 };
 
 export function digestScore(entry: MemoryEntry, now: number): number {
-  return effectiveConfidence(entry, now) * (KIND_WEIGHTS[entry.kind] ?? 1.0);
+  return effectiveValidity(entry, now) * (KIND_WEIGHTS[entry.kind] ?? 1.0);
 }
 
-export function effectiveConfidence(entry: MemoryEntry, now: number): number {
-  if (entry.pinned) return entry.confidence;
+export function effectiveValidity(entry: MemoryEntry, now: number): number {
+  if (entry.pinned) return entry.validity;
 
   const halfLifeDays = HALF_LIFE_DAYS[entry.kind];
-  if (halfLifeDays === null) return entry.confidence;
+  if (halfLifeDays === null) return entry.validity;
 
   const ageDays = (now - entry.created_at) / MS_PER_DAY;
   let effectiveHalfLife = halfLifeDays;
@@ -40,5 +40,6 @@ export function effectiveConfidence(entry: MemoryEntry, now: number): number {
   }
 
   const decay = Math.pow(0.5, ageDays / effectiveHalfLife);
-  return entry.confidence * decay;
+  return entry.validity * decay;
 }
+

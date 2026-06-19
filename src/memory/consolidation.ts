@@ -8,7 +8,7 @@
 
 import type { MemoryEntry, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
 import type { MemoryStore } from "./store.js";
-import { effectiveConfidence } from "./confidence.js";
+import { effectiveValidity } from "./confidence.js";
 import { getAppLogger } from "../logger.js";
 
 export interface ConsolidationConfig {
@@ -48,7 +48,7 @@ Rules:
 - contradictions: entry IDs that the session explicitly contradicts or disproves
 - new_entries: NEW facts not already covered by existing entries (max 5)
 - promotions: entry IDs ready for Layer 2 (high confidence, confirmed multiple times)
-- Be conservative: only promote entries with confirmation_count >= threshold AND confidence >= 0.6
+- Be conservative: only promote entries with confirmation_count >= threshold AND validity >= 0.6
 - Output ONLY the JSON object. No prose.`;
 
 function buildConsolidationPrompt(
@@ -68,7 +68,7 @@ function buildConsolidationPrompt(
   } else {
     for (const entry of layer1Entries) {
       lines.push(
-        `- [${entry.id}] (${entry.kind}, conf=${entry.confidence.toFixed(2)}, confirms=${entry.confirmation_count}) ${entry.content}`
+        `- [${entry.id}] (${entry.kind}, valid=${entry.validity.toFixed(2)}, useful=${entry.usefulness.toFixed(2)}, confirms=${entry.confirmation_count}) ${entry.content}`
       );
     }
   }
@@ -76,7 +76,7 @@ function buildConsolidationPrompt(
 
   lines.push(`## Promotion Threshold`);
   lines.push(`- confirmation_count >= ${promotionThreshold}`);
-  lines.push(`- confidence >= 0.6`);
+  lines.push(`- validity >= 0.6`);
   lines.push("");
 
   return lines.join("\n");
@@ -198,7 +198,7 @@ export async function runConsolidation(opts: {
           entry &&
           entry.layer === 1 &&
           entry.confirmation_count >= opts.config.promotion_threshold &&
-          effectiveConfidence(entry, Date.now()) >= 0.6
+          effectiveValidity(entry, Date.now()) >= 0.6
         ) {
           opts.store.promoteToLayer2(id);
           result.promotions++;
