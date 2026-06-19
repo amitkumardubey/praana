@@ -33,6 +33,7 @@ import {
   startSessionRow,
   touchEntry,
   upsertEmbedding,
+  rowToEntry,
   weakenEntry,
   incrementConfirmationCount,
   recordConfirmation,
@@ -63,7 +64,7 @@ import type {
   SummarizerLLM,
 } from "./types.js";
 import { isMemoryKind, MEMORY_KINDS } from "./types.js";
-import { effectiveValidity, digestScore } from "./confidence.js";
+import { effectiveValidity, digestScore, MS_PER_DAY } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 
@@ -108,6 +109,11 @@ function isAbortLikeError(err: unknown): boolean {
 }
 
 const DEFAULT_RECALL_MIN_MATCH = 0.35;
+const CONSOLIDATION_AGE_MS = 30 * MS_PER_DAY;
+const CONSOLIDATION_CANDIDATE_LIMIT = 50;
+const PRUNE_ENTRY_COUNT_THRESHOLD = 1000;
+const PRUNE_GROWTH_STEP = 100;
+const PRUNE_MIN_VALIDITY = 0.7;
 
 /**
  * M4 deterministic promotion gate.
@@ -164,6 +170,9 @@ export class MemoryStore {
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";
+  /** Tracks entry count at last growth-prune trigger. Resets on process restart —
+   *  the session-start prune handles that case, so the throttle is best-effort. */
+  private lastGrowthPruneCount = 0;
   /** True while a background re-embed migration is running. */
   private reembedding = false;
   private reembedPromise: Promise<void> | null = null;
@@ -201,7 +210,8 @@ export class MemoryStore {
   }
 
   getEntryCount(): number {
-    return getAllEntries(this.db).length;
+    const row = this.db.prepare("SELECT COUNT(*) AS c FROM entries").get() as { c: number } | undefined;
+    return row?.c ?? 0;
   }
 
   // ---- Session lifecycle ----
@@ -405,6 +415,8 @@ export class MemoryStore {
         upsertEmbedding(this.db, id, vec);
       }).catch(() => { /* embedder failure is non-fatal */ });
     }
+
+    await this.maybePruneOnGrowth();
 
     return { id };
   }
@@ -736,6 +748,39 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * Select Layer 1 entries that are in play for consolidation this session.
+   * Priority order: surfaced in this session, created in this session, aging.
+   * The list is capped so prompt size stays bounded.
+   */
+  getConsolidationCandidates(now: number = Date.now()): MemoryEntry[] {
+    const sessionId = this.sessionId;
+    const agingCutoff = now - CONSOLIDATION_AGE_MS;
+    const rows = this.db
+      .prepare(
+        `SELECT e.*,
+           CASE
+             WHEN e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId) THEN 0
+             WHEN e.session_id = @sessionId THEN 1
+             WHEN e.last_seen_at <= @agingCutoff THEN 2
+           END AS priority
+         FROM entries e
+         WHERE e.layer = 1 AND e.retracted = 0
+           AND (
+             e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId)
+             OR e.session_id = @sessionId
+             OR e.last_seen_at <= @agingCutoff
+           )
+         ORDER BY priority, e.last_seen_at DESC, e.created_at DESC
+         LIMIT @limit`,
+      )
+      .all({ sessionId, agingCutoff, limit: CONSOLIDATION_CANDIDATE_LIMIT }) as Record<
+        string,
+        unknown
+      >[];
+    return rows.map((r) => rowToEntry(this.db, r));
+  }
+
   async pin(id: string): Promise<void> {
     this.db.prepare("UPDATE entries SET pinned = 1 WHERE id = ?").run(id);
   }
@@ -805,23 +850,62 @@ export class MemoryStore {
   }
 
   /**
-   * Remove stale Layer 1 entries with effective validity below 0.05
-   * that have not been seen in 30+ days. Never prunes pinned or Layer 2 entries.
+   * Remove stale Layer 1 entries that have not been seen in 30+ days and whose
+   * effective validity is below PRUNE_MIN_VALIDITY. Never prunes pinned or
+   * Layer 2 entries. High-validity entries survive even when cold (retain-gate).
+   *
+   * Filtering is done in SQL to avoid loading all entries into JS memory.
    */
   async prune(): Promise<number> {
     const now = Date.now();
-    const minAgeMs = 30 * 86_400_000;
-    const toDelete = getAllEntries(this.db).filter((e) => {
-      if (e.pinned || e.layer === 2) return false;
-      const ageMs = now - e.last_seen_at;
-      if (ageMs <= minAgeMs) return false;
-      return effectiveValidity(e, now) < 0.05;
-    });
+    const cutoff = now - 30 * MS_PER_DAY;
+
+    // Fetch only entries that match the cheap SQL predicates (not pinned, L1,
+    // not retracted, old enough). The validity check requires the JS-side
+    // effectiveValidity() which accounts for time-decay, so we filter that in
+    // code on the reduced set.
+    const rows = this.db
+      .prepare(
+        `SELECT e.* FROM entries e
+         WHERE e.layer = 1
+           AND e.pinned = 0
+           AND e.retracted = 0
+           AND e.last_seen_at <= ?`,
+      )
+      .all(cutoff) as Record<string, unknown>[];
+
+    const toDelete = rows
+      .map((r) => rowToEntry(this.db, r))
+      .filter((e) => {
+        // Retain-gate: never prune entries with effective validity at or above
+        // PRUNE_MIN_VALIDITY — they are still likely true even if cold.
+        if (effectiveValidity(e, now) >= PRUNE_MIN_VALIDITY) return false;
+        // Old threshold: only prune entries with very low effective validity.
+        // The 0.05 floor preserves the pre-M5 behaviour and avoids deleting
+        // mid-validity memories that haven't fully decayed.
+        return effectiveValidity(e, now) < 0.05;
+      });
+
 
     for (const entry of toDelete) {
       deleteEntry(this.db, entry.id);
     }
     return toDelete.length;
+  }
+
+  private async maybePruneOnGrowth(): Promise<void> {
+    try {
+      const entryCount = this.getEntryCount();
+      if (entryCount <= PRUNE_ENTRY_COUNT_THRESHOLD) return;
+      if (entryCount - this.lastGrowthPruneCount < PRUNE_GROWTH_STEP) return;
+      await this.prune();
+      // lastGrowthPruneCount captures the count BEFORE pruning, so the throttle
+      // is conservative — it waits for PRUNE_GROWTH_STEP more new entries before
+      // re-checking, even if prune deleted many entries.
+      this.lastGrowthPruneCount = entryCount;
+    } catch (err) {
+      this.logger.child("memory").warn("Growth prune failed", { cause: err as Error });
+    }
   }
 
   /** Re-embed all entries after vector dimension migration. Runs in the background. */

@@ -11,7 +11,7 @@ export const HALF_LIFE_DAYS: Record<MemoryKind, number | null> = {
 };
 
 const LAYER2_HALF_LIFE_MULTIPLIER = 4;
-const MS_PER_DAY = 86_400_000;
+export const MS_PER_DAY = 86_400_000;
 
 /** Per-kind weights when ranking digest entries. */
 export const KIND_WEIGHTS: Record<MemoryKind, number> = {
