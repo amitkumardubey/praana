@@ -292,6 +292,36 @@ export function evictStaleArtifacts(
   return result.changes;
 }
 
+/**
+ * M4 artifact promotion: list artifacts worth promoting to cross-session memory.
+ * Trigger: accessed at least `minAccessCount` times in this session. Articles
+ * accessed multiple times are the ones an agent had to recall to do its job —
+ * the ones the spec ("decisions/003 Finding #14") calls out as high-value.
+ *
+ * Returns rows ordered by access_count DESC so dedup can prefer the hottest one
+ * if multiple promoted artifacts collide.
+ */
+export function listHighValueArtifacts(
+  db: Database.Database,
+  sessionId: string,
+  minAccessCount: number,
+): ContextArtifact[] {
+  if (minAccessCount < 1) {
+    throw new Error(
+      `listHighValueArtifacts: minAccessCount must be >= 1, got ${minAccessCount}`,
+    );
+  }
+  const rows = db
+    .prepare(
+      `SELECT * FROM context_artifacts
+       WHERE session_id = ?
+         AND access_count >= ?
+       ORDER BY access_count DESC, created_at DESC`,
+    )
+    .all(sessionId, minAccessCount) as ArtifactRow[];
+  return rows.map((r) => rowToArtifact(r));
+}
+
 interface TurnLedgerRow {
   session_id: string;
   turn: number;

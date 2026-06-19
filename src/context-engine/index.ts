@@ -23,6 +23,7 @@ import type { ContextEngineConfig } from "../types.js";
 import type {
   ActivityEntry,
   CheckpointDraft,
+  ContextArtifact,
   IngestToolResultInput,
   IngestToolResultOutput,
   RetrieveArtifactOptions,
@@ -346,5 +347,16 @@ export class ContextEngine {
 
   close(): void {
     this.store.close();
+  }
+
+  /**
+   * M4 artifact promotion: list this session's high-value artifacts (those
+   * accessed >= minAccessCount times). The actual promotion into cross-session
+   * memory is done by the session via MemoryStore.remember, since the
+   * ContextEngine does not depend on MemoryStore (preserves the per-session /
+   * cross-session boundary).
+   */
+  listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
+    return this.store.listHighValueArtifacts(minAccessCount);
   }
 }

@@ -768,14 +768,84 @@ export class Session {
         this.getLogger().child("context_engine").warn("Shutdown maintenance failed", {
           cause: err as Error,
         });
-      } finally {
+      }
+
+      // M4 artifact promotion (build-spec §4 / decisions/003 Finding #14):
+      // high-value session artifacts (accessed >= MIN_ARTIFACT_ACCESS_COUNT
+      // times) are promoted into cross-session memory so they survive session
+      // end. Runs once at session end, before the engine closes its DB.
+      if (this.memoryEnabled && this.memoryStore) {
+        try {
+          await this.promoteHighValueArtifactsToMemory();
+        } catch (err) {
+          this.getLogger().child("memory").warn("Artifact promotion failed", {
+            cause: err as Error,
+          });
+        }
+      }
+
+      try {
         this.contextEngine.close();
+        this.contextEngine = null;
+      } catch (err) {
+        this.getLogger().child("context_engine").warn("Context engine close failed", {
+          cause: err as Error,
+        });
         this.contextEngine = null;
       }
     }
 
     this.eventLog.close();
     return { memory: memoryStatus };
+  }
+
+  /**
+   * M4 artifact promotion (build-spec §4 / decisions/003 Finding #14).
+   * Promote high-value session artifacts — those accessed at least
+   * MIN_ARTIFACT_ACCESS_COUNT times — into cross-session memory. These are
+   * the artifacts the agent had to revisit to do its job; the spec flags
+   * them as more useful than the one-sentence summary the summarizer would
+   * otherwise extract.
+   *
+   * - Triggers on access_count >= MIN_ARTIFACT_ACCESS_COUNT (default 2).
+   * - Stores the artifact's *summary* (already distilled; raw is too large
+   *   and would be hard-truncated by MemoryStore.remember anyway).
+   * - kind: "fact"; scope: project (caller-provided default scopes already
+   *   include context:<cwd>); the existing dedup path prevents re-stating
+   *   a previously-promoted artifact from creating a second row.
+   * - Failures are caught and logged (M4 must not block session shutdown).
+   */
+  private async promoteHighValueArtifactsToMemory(): Promise<void> {
+    if (!this.contextEngine || !this.memoryStore) return;
+    const MIN_ARTIFACT_ACCESS_COUNT = 2;
+    const artifacts = this.contextEngine.listHighValueArtifacts(
+      MIN_ARTIFACT_ACCESS_COUNT,
+    );
+    if (artifacts.length === 0) return;
+    let promoted = 0;
+    let reinforced = 0;
+    for (const artifact of artifacts) {
+      const content = `[artifact:${artifact.id}] ${artifact.summary}`;
+      try {
+        const result = await this.memoryStore.remember(content, {
+          kind: "fact",
+          certainty: "medium",
+        });
+        if (result.reinforced) {
+          reinforced++;
+        } else {
+          promoted++;
+        }
+      } catch (err) {
+        this.getLogger().child("memory").warn(
+          `Failed to promote artifact ${artifact.id}`,
+          { cause: err as Error },
+        );
+      }
+    }
+    this.getLogger().child("memory").info(
+      `Artifact promotion: ${promoted} new, ${reinforced} reinforced-dedup (min access=${MIN_ARTIFACT_ACCESS_COUNT})`,
+    );
   }
 
   private async initMemoryStore(): Promise<MemoryStore> {
