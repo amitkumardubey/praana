@@ -8,6 +8,7 @@ import type Database from "better-sqlite3";
 import { ulid } from "ulid";
 import {
   clearReembedNeeded,
+  countVectorEmbeddings,
   endSessionRow,
   flushReinforcements,
   getAllEntries,
@@ -15,6 +16,7 @@ import {
   getEntryById,
   insertEntry,
   deleteEntry,
+  isReembedPending,
   retractMemory as retractMemoryDb,
   openMemoryDb,
   reinforceEntry,
@@ -277,10 +279,28 @@ export class MemoryStore {
     const scopeQueries = this.buildScopeQueries(queryScopes);
     const now = Date.now();
 
-    if (this.reembedding) {
-      this.logger.child("memory").warn(
-        "Vector migration in progress — recall quality may be reduced until re-embed completes",
-      );
+    await this.waitForReembed();
+
+    const entryCount = this.getEntryCount();
+    let vectorCount = countVectorEmbeddings(this.db);
+
+    if (entryCount > 0 && vectorCount === 0 && isReembedPending(this.db)) {
+      if (!this.reembedding) {
+        await this.reembedAllEntries();
+        vectorCount = countVectorEmbeddings(this.db);
+      }
+      if (vectorCount === 0) {
+        const log = this.logger.child("memory");
+        log.warn(
+          "Recall skipped — embedding migration incomplete (vector index empty). Restart after embedder config change or check logs for re-embed errors.",
+        );
+        return {
+          entries: [],
+          notice:
+            "Embedding migration incomplete — memories exist but the vector index is empty. " +
+            "Restart the session after changing embedder/model, or check logs for re-embed errors.",
+        };
+      }
     }
 
     // Strategy: merge reliable keyword hits with vector candidates, then filter + re-rank.
@@ -338,15 +358,11 @@ export class MemoryStore {
         }
       }
     } catch {
-      // Vector search failed — fall back to scope-only
+      // Vector search failed — fall back to FTS/empty results only
     }
 
-    // If neither search path returned candidates, fall back to all entries in scope.
-    if (candidateScores.size === 0) {
-      for (const e of this.getEntriesForScopeQueries(scopeQueries)) {
-        addCandidate(e, 0);
-      }
-    }
+    // Do not dump all scoped entries when search finds nothing — that produces
+    // misleading match: 0.00 results ranked only by confidence.
 
     let candidates = Array.from(candidateScores.values());
     // Filter out retracted (tombstoned) entries

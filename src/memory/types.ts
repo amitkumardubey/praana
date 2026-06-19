@@ -79,6 +79,8 @@ export interface RecallResult {
     scopes: string[];
     score: number;         // final ranking score (currently equals match)
   }>;
+  /** Set when recall cannot run semantic search (e.g. migration still pending). */
+  notice?: string;
 }
 
 export interface RememberOptions {

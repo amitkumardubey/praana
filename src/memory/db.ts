@@ -197,6 +197,26 @@ export function clearReembedNeeded(db: Database.Database): void {
   db.prepare("DELETE FROM memory_meta WHERE key = ?").run(REEMBED_NEEDED_KEY);
 }
 
+export function isReembedPending(db: Database.Database): boolean {
+  const row = db
+    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
+  return row?.value === "1";
+}
+
+export function countVectorEmbeddings(db: Database.Database): number {
+  const vecExists = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
+    )
+    .get();
+  if (!vecExists) return 0;
+  const row = db.prepare("SELECT COUNT(*) as c FROM entries_vec").get() as {
+    c: number;
+  };
+  return row.c;
+}
+
 // ---- Entry CRUD ----
 
 export function insertEntry(db: Database.Database, e: MemoryEntry): void {
