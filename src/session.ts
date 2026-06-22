@@ -129,7 +129,7 @@ export class Session {
       session.memoryEnabled = false;
       session.memoryStore = null;
       session.digest = null;
-      session.getLogger().notice("Cross-session memory persistence disabled (incognito)");
+      session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
       return session;
     }
 
@@ -492,8 +492,8 @@ export class Session {
   }
 
   /**
-   * Promote surviving add_note entries from working memory to cross-session
-   * Cognitive Memory at session end. Only notes that are not retracted,
+   * Promote surviving add_note entries from working memory to Cognitive
+   * Memory at session end. Only notes that are not retracted,
    * not hard-tiered, and not activity-log quality pass through.
    * (#129)
    */
@@ -835,7 +835,7 @@ export class Session {
 
       // M4 artifact promotion (build-spec §4 / decisions/003 Finding #14):
       // high-value session artifacts (accessed >= MIN_ARTIFACT_ACCESS_COUNT
-      // times) are promoted into cross-session memory so they survive session
+      // times) are promoted into Cognitive Memory so they survive session
       // end. Runs once at session end, before the engine closes its DB.
       if (this.memoryEnabled && this.memoryStore) {
         try {
@@ -865,7 +865,7 @@ export class Session {
   /**
    * M4 artifact promotion (build-spec §4 / decisions/003 Finding #14).
    * Promote high-value session artifacts — those accessed at least
-   * MIN_ARTIFACT_ACCESS_COUNT times — into cross-session memory. These are
+   * MIN_ARTIFACT_ACCESS_COUNT times — into Cognitive Memory. These are
    * the artifacts the agent had to revisit to do its job; the spec flags
    * them as more useful than the one-sentence summary the summarizer would
    * otherwise extract.

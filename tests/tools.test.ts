@@ -439,13 +439,13 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     it('should return error when memory is disabled', async () => {
       const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.recall.execute({ query: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
+      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
     });
 
     it('should return error when memory store is null', async () => {
       const toolsNull = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore: null }));
       const result = await toolsNull.recall.execute({ query: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
+      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
     });
 
     it('should handle recall errors gracefully', async () => {
@@ -512,7 +512,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     it('should return error when memory is disabled', async () => {
       const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.remember.execute({ content: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
+      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
     });
 
     it('should handle remember errors gracefully', async () => {
@@ -575,7 +575,7 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
     it('should return error when memory is disabled', async () => {
       const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
       const result = await toolsDisabled.forget_memory.execute({ id: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cross-session memory is not available.' });
+      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
     });
 
     it('should return incognito error when incognito mode', async () => {

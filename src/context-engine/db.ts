@@ -293,7 +293,7 @@ export function evictStaleArtifacts(
 }
 
 /**
- * M4 artifact promotion: list artifacts worth promoting to cross-session memory.
+ * M4 artifact promotion: list artifacts worth promoting to Cognitive Memory.
  * Trigger: accessed at least `minAccessCount` times in this session. Articles
  * accessed multiple times are the ones an agent had to recall to do its job —
  * the ones the spec ("decisions/003 Finding #14") calls out as high-value.

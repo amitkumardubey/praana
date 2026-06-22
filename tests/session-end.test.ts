@@ -89,7 +89,7 @@ describe("Session end timeout behavior", () => {
     expect(s.getUptimeMs()).toBeGreaterThanOrEqual(0);
   });
 
-  it("returns persistent memory count from memory store when enabled", async () => {
+  it("returns Cognitive Memory entry count from memory store when enabled", async () => {
     const s = await Session.create(process.cwd(), testConfig);
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { getEntryCount: () => number } }).memoryStore = {

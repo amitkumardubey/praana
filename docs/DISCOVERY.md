@@ -19,7 +19,7 @@ Copy-paste PRs for curated awesome lists. Edit if a list has specific format req
 **Section:** Command-line apps
 
 ```markdown
-- [praana](https://github.com/amitkumardubey/praana) - Terminal LLM coding agent with adaptive context and persistent memory
+- [praana](https://github.com/amitkumardubey/praana) - Terminal LLM coding agent with adaptive context and Cognitive Memory
 ```
 
 ## awesome-typescript
@@ -37,7 +37,7 @@ Copy-paste PRs for curated awesome lists. Edit if a list has specific format req
 Search GitHub for `awesome coding agent` or `awesome llm cli` and add under the closest category:
 
 ```markdown
-- [PRAANA](https://github.com/amitkumardubey/praana) - Experimental terminal agent focused on context tiering + cross-session memory (not a hosted IDE)
+- [PRAANA](https://github.com/amitkumardubey/praana) - Experimental terminal agent focused on context tiering + Cognitive Memory (not a hosted IDE)
 ```
 
 ## PR checklist

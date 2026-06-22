@@ -1,7 +1,7 @@
 // ============================================================
 // PRAANA Memory — Core Types
 //
-// A simplified, purpose-built cross-session memory layer.
+// A simplified, purpose-built Cognitive Memory layer — learns from experience across sessions.
 // Native memory implementation (~600 lines of focused code).
 // ============================================================
 

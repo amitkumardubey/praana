@@ -148,7 +148,7 @@ export async function executeSlashCommand(
       lines.push(`  By kind: ${kindParts.length ? kindParts.join(", ") : "(none)"}`);
 
       if (session.memoryEnabled) {
-        lines.push("", "Persistent memory (SQLite):");
+        lines.push("", "Cognitive Memory (SQLite):");
         lines.push(`  Total memories: ${persistentCount ?? "(unavailable)"}`);
         lines.push(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
       }
@@ -441,12 +441,12 @@ export async function executeSlashCommand(
       }
       if (arg === "on") {
         await session.setIncognito(true);
-        lines.push("Incognito enabled — cross-session memory disabled.");
+        lines.push("Incognito enabled — Cognitive Memory disabled.");
       } else if (arg === "off") {
         await session.setIncognito(false);
         lines.push(
           session.memoryEnabled
-            ? "Incognito disabled — cross-session memory enabled."
+            ? "Incognito disabled — Cognitive Memory enabled."
             : "Incognito disabled — memory remains unavailable (check config.memory.enabled)."
         );
       } else {

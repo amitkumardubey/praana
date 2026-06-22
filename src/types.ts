@@ -143,7 +143,7 @@ export interface CompilerConfig {
   recent_turns_token_budget?: number;
   /** Minimum digest score for a memory entry to appear in the prompt. */
   recall_min_score?: number;
-  /** Max share of usable prompt budget for cross-session memory section. */
+  /** Max share of usable prompt budget for Cognitive Memory section. */
   memories_budget_ratio?: number;
   /** Max share of usable prompt budget for project context (AGENTS.md). */
   agents_budget_ratio?: number;

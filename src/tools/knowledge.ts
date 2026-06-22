@@ -156,7 +156,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
   return {
     recall: defineTool({
       description:
-        "Search your cross-session memory for past learnings, decisions, preferences, or patterns. Use when you need context from previous sessions.",
+        "Search your Cognitive Memory for past learnings, decisions, preferences, or patterns. Use when you need context from previous sessions.",
       parameters: z.object({
         query: z.string().describe("Search query"),
         mode: z
@@ -173,8 +173,8 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
           return {
             ok: false,
             error: incognito
-              ? "Incognito mode is active — cross-session memory is disabled for this session."
-              : "Cross-session memory is not available.",
+              ? "Incognito mode is active — Cognitive Memory is disabled for this session."
+              : "Cognitive Memory is not available.",
           };
         }
 
@@ -197,7 +197,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               entries: [],
               note:
                 result.notice ??
-                "No cross-session matches. If this was discussed earlier in this same session, use search_session_log(query, kinds?, limit?) to recover it from events.jsonl.",
+                "No Cognitive Memory matches. If this was discussed earlier in this same session, use search_session_log(query, kinds?, limit?) to recover it from events.jsonl.",
             };
           }
 
@@ -219,7 +219,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
 
     remember: defineTool({
       description:
-        "Store a fact, preference, decision, mistake, or pattern in your cross-session memory for future sessions.",
+        "Store a fact, preference, decision, mistake, or pattern in your Cognitive Memory for future sessions.",
       parameters: z.object({
         content: z.string().describe("What to remember"),
         kind: z
@@ -240,8 +240,8 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
           return {
             ok: false,
             error: incognito
-              ? "Incognito mode is active — cross-session memory writes are disabled."
-              : "Cross-session memory is not available.",
+              ? "Incognito mode is active — Cognitive Memory writes are disabled."
+              : "Cognitive Memory is not available.",
           };
         }
 
@@ -274,7 +274,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
     ...eventLineage,
 
     forget_memory: defineTool({
-      description: "Retract (tombstone) a cross-session memory entry. The memory is excluded from future recall and digest, but retained for audit.",
+      description: "Retract (tombstone) a Cognitive Memory entry. The memory is excluded from future recall and digest, but retained for audit.",
       parameters: z.object({
         id: z.string().describe("Memory entry ID to retract"),
       }),
@@ -288,7 +288,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
         if (!memoryEnabled || !memoryStore) {
           return {
             ok: false,
-            error: "Cross-session memory is not available.",
+            error: "Cognitive Memory is not available.",
           };
         }
         try {

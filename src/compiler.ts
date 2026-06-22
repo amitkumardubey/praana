@@ -37,7 +37,7 @@ export interface CompileMetrics {
   peripheralObjectCount: number;
   /** If true, some recent turns were truncated due to budget. */
   recentTurnsTruncated: boolean;
-  /** If true, cross-session memory was trimmed to section ceiling. */
+  /** If true, Cognitive Memory was trimmed to section ceiling. */
   memoryTruncated: boolean;
   /** If true, project context was degraded to fit agents budget. */
   agentsContextTruncated: boolean;
@@ -234,7 +234,7 @@ export function buildSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are PRAANA, a coding agent with persistent memory.",
+    "You are PRAANA, a coding agent with Cognitive Memory — memory that learns.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
   ];
@@ -280,7 +280,7 @@ export function buildSystemFrame(
     "",
     "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
-    "To recover earlier content from this session (reviews, findings, tool output), use search_session_log — not recall (recall is cross-session SQLite only).",
+    "To recover earlier content from this session (reviews, findings, tool output), use search_session_log — not recall (recall searches Cognitive Memory, the cross-session SQLite layer).",
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
     "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
     "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",

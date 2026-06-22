@@ -95,11 +95,11 @@ const WORKING_MEMORY_TOOL_DESCRIPTIONS = [
 ];
 
 const SHARED_TOOL_DESCRIPTIONS = [
-  "search_session_log(query, kinds?, limit?) — Search current session event log (not cross-session recall)",
+  "search_session_log(query, kinds?, limit?) — Search current session event log (not Cognitive Memory recall)",
   "read_and_summarize(path) — Read file and return structured summary (exports, imports, metrics)",
-  "recall(query, mode?, kinds?) — Search cross-session memory",
-  "remember(content, kind?, certainty?, scope?) — Store in cross-session memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
-  "forget_memory(id) — Retract a cross-session memory entry (tombstone)",
+  "recall(query, mode?, kinds?) — Search Cognitive Memory",
+  "remember(content, kind?, certainty?, scope?) — Store in Cognitive Memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
+  "forget_memory(id) — Retract a Cognitive Memory entry (tombstone)",
   "shell(command, timeout?) — Execute a shell command",
   "read_file(path, offset?, limit?) — Read a file",
   "write_file(path, content) — Write or overwrite a file",
