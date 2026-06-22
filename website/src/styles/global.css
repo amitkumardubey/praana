@@ -93,11 +93,11 @@ main {
 }
 
 .hero h1 {
-  font-family: var(--font-display);
+  font-family: var(--font-sans);
   font-size: clamp(2rem, 5vw, 2.75rem);
   font-weight: 700;
   margin: 0 0 0.5rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.02em;
 }
 
 .hero .lead {
