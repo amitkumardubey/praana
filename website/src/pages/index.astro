@@ -2,15 +2,54 @@
 import Layout from "../layouts/Layout.astro";
 
 const base = import.meta.env.BASE_URL;
+
+const faq = [
+  {
+    q: "What is PRAANA?",
+    a: "PRAANA is an open-source terminal coding agent. It runs in your CLI, calls an LLM, executes tools (code search, multi-file edits with diff preview, optional shell), keeps long sessions usable with adaptive context, and remembers useful learnings across sessions in a local database.",
+  },
+  {
+    q: "Which LLM providers does PRAANA work with?",
+    a: "Anthropic (Claude), OpenAI (GPT), DeepSeek, Groq, Google (Gemini), Mistral, xAI, Fireworks, Together, OpenCode, and OpenRouter, plus Ollama for fully local models. PRAANA auto-detects your provider API key from the environment.",
+  },
+  {
+    q: "How is PRAANA different from a plain transcript coding agent?",
+    a: "An opt-in engine mode keeps long sessions on track with tiered working memory and tool-output distillation instead of stuffing the full history into the prompt. Optional cognitive memory extracts learnings when a session ends and surfaces a ranked digest at the start of the next. Known limitations are published upfront and there are no benchmark claims we can't back.",
+  },
+  {
+    q: "Is PRAANA free and open source?",
+    a: "Yes. PRAANA is MIT-licensed, the source is on GitHub, and it is published on npm. Install it with npm install -g praana.",
+  },
+  {
+    q: "Does my data leave my machine?",
+    a: "PRAANA is local-first. Cognitive memory lives in a local SQLite database on your machine. The only network calls are to the LLM provider you choose, or none at all if you run a local model with Ollama.",
+  },
+  {
+    q: "What do I need to run PRAANA?",
+    a: "Node.js 22+ and an API key for any supported provider, or Ollama for fully local use.",
+  },
+];
+
+const faqStructuredData = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map(({ q, a }) => ({
+    "@type": "Question",
+    name: q,
+    acceptedAnswer: { "@type": "Answer", text: a },
+  })),
+};
 ---
 
 <Layout title="PRAANA" current="home">
   <section class="hero">
     <h1>PRAANA</h1>
     <p class="lead">
-      A terminal coding agent with adaptive context and cross-session memory.
+      An open-source <strong>terminal coding agent</strong> with adaptive context and
+      cross-session memory. Runs in your CLI, works with Claude, GPT, Gemini, DeepSeek,
+      Groq, Mistral, Ollama and more.
     </p>
-    <img src={`${base}assets/demo.png`} alt="PRAANA terminal demo" width="720" height="auto" />
+    <img src={`${base}assets/demo.png`} alt="PRAANA terminal coding agent demo" width="720" height="auto" />
   </section>
 
   <div class="prose">
@@ -87,5 +126,45 @@ praana</code></pre>
       <li><a href="https://github.com/amitkumardubey/praana/issues">Issues</a> — bugs and feature tracking</li>
       <li><a href="https://www.npmjs.com/package/praana">npm</a> — <code>npm install -g praana</code></li>
     </ul>
+
+    <h2 id="faq">Frequently asked questions</h2>
+    <h3>What is PRAANA?</h3>
+    <p>
+      PRAANA is an open-source terminal coding agent. It runs in your CLI, calls an LLM,
+      executes tools (code search, multi-file edits with diff preview, optional shell),
+      keeps long sessions usable with adaptive context, and remembers useful learnings
+      across sessions in a local database.
+    </p>
+    <h3>Which LLM providers does it work with?</h3>
+    <p>
+      Anthropic (Claude), OpenAI (GPT), DeepSeek, Groq, Google (Gemini), Mistral, xAI,
+      Fireworks, Together, OpenCode, and OpenRouter — plus Ollama for fully local models.
+      PRAANA auto-detects your provider API key from the environment.
+    </p>
+    <h3>How is it different from a plain transcript coding agent?</h3>
+    <p>
+      Two things. An opt-in <strong>engine mode</strong> keeps long sessions on track with
+      tiered working memory and tool-output distillation instead of stuffing the full
+      history into the prompt. And optional <strong>cognitive memory</strong> extracts
+      learnings when a session ends and surfaces a ranked digest at the start of the next.
+      We publish <a href="https://github.com/amitkumardubey/praana#known-limitations-honest">known limitations</a> upfront and make no benchmark claims we can't back.
+    </p>
+    <h3>Is it free and open source?</h3>
+    <p>
+      Yes. PRAANA is MIT-licensed, the source is on
+      <a href="https://github.com/amitkumardubey/praana">GitHub</a>, and it's published on
+      <a href="https://www.npmjs.com/package/praana">npm</a> — <code>npm install -g praana</code>.
+    </p>
+    <h3>Does my data leave my machine?</h3>
+    <p>
+      PRAANA is local-first. Cognitive memory lives in a local SQLite database on your
+      machine. The only network calls are to the LLM provider you choose — or none at all
+      if you run a local model with Ollama.
+    </p>
+    <h3>What do I need to run it?</h3>
+    <p>
+      Node.js 22+ and an API key for any supported provider (or Ollama for fully local use).
+    </p>
   </div>
+  <script type="application/ld+json" set:html={JSON.stringify(faqStructuredData)} />
 </Layout>

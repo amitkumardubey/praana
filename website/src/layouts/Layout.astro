@@ -4,16 +4,42 @@ import "../styles/global.css";
 interface Props {
   title: string;
   description?: string;
+  keywords?: string;
   current?: "home" | "architecture" | "concepts";
 }
 
 const {
   title,
-  description = "Terminal coding agent with adaptive context and cross-session memory",
+  description = "PRAANA is an open-source terminal coding agent with adaptive context and cross-session memory. It runs in your CLI, works with Claude, GPT, DeepSeek, Gemini, Groq, Mistral, Ollama and more, keeps long sessions on track, and remembers what it learned between sessions.",
+  keywords = "terminal coding agent, CLI coding agent, AI coding agent, coding agent with memory, cross-session memory, context management, open source coding agent, TypeScript coding agent, local-first AI agent, command line LLM agent, agent that remembers, adaptive context",
   current,
 } = Astro.props;
 
-const pageTitle = current === "home" ? title : `${title} · PRAANA`;
+const pageTitle = current === "home" ? "PRAANA — terminal coding agent with adaptive context and memory" : `${title} · PRAANA`;
+
+const siteUrl = Astro.site ?? new URL("https://amitkumardubey.github.io/praana/");
+const canonical = new URL(Astro.url.pathname, siteUrl).href;
+const ogImage = new URL(`${import.meta.env.BASE_URL}assets/demo.png`, siteUrl).href;
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "PRAANA",
+  applicationCategory: "DeveloperApplication",
+  applicationSubCategory: "Terminal coding agent",
+  operatingSystem: "Linux, macOS, Windows (Node.js 22+)",
+  description:
+    "Open-source terminal coding agent with adaptive context and cross-session memory. Works with multiple LLM providers and runs entirely in your CLI.",
+  url: "https://amitkumardubey.github.io/praana/",
+  downloadUrl: "https://www.npmjs.com/package/praana",
+  softwareHelp: "https://github.com/amitkumardubey/praana#quick-start",
+  license: "https://opensource.org/licenses/MIT",
+  programmingLanguage: "TypeScript",
+  keywords,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  author: { "@type": "Person", name: "Amit Kumar Dubey" },
+  codeRepository: "https://github.com/amitkumardubey/praana",
+};
 ---
 
 <!doctype html>
@@ -21,9 +47,43 @@ const pageTitle = current === "home" ? title : `${title} · PRAANA`;
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content={description} />
-    <link rel="icon" href={`${import.meta.env.BASE_URL}favicon.svg`} type="image/svg+xml" />
     <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <meta name="keywords" content={keywords} />
+    <meta name="author" content="Amit Kumar Dubey" />
+    <meta name="robots" content="index, follow, max-image-preview:large" />
+    <meta name="theme-color" content="#2e3440" />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={`${import.meta.env.BASE_URL}favicon.svg`} type="image/svg+xml" />
+    <link rel="sitemap" href={`${import.meta.env.BASE_URL}sitemap.xml`} />
+
+    <!-- Geist + Sora -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Outfit:wght@500;600;700&display=swap"
+    />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="PRAANA" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:alt" content="PRAANA terminal coding agent demo" />
+    <meta property="og:locale" content="en_US" />
+
+    <!-- Twitter / X card -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <meta name="twitter:image:alt" content="PRAANA terminal coding agent demo" />
+
+    <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
   </head>
   <body>
     <header class="site-header">
