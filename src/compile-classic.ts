@@ -28,7 +28,7 @@ export function buildClassicSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are PRAANA, a coding agent with persistent memory.",
+    "You are PRAANA, a coding agent with Cognitive Memory — memory that learns.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
   ];
@@ -55,7 +55,7 @@ export function buildClassicSystemFrame(
     "",
     "## Memory",
     "",
-    "Use recall() for cross-session memory. Use search_session_log() to search this session's event log.",
+    "Use recall() to search Cognitive Memory. Use search_session_log() to search this session's event log.",
     "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
     "",
     "## Tool Safety",

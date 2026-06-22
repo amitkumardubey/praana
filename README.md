@@ -4,13 +4,13 @@
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
 [![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
 
-**A terminal coding agent with adaptive context and cross-session memory.**
+**A terminal coding agent with Adaptive Ccontext and Cognitive Memory.**
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="PRAANA terminal — adaptive context and memory recall" width="720" />
+  <img src="docs/assets/demo.png" alt="PRAANA terminal — Adaptive Ccontext and Cognitive Memory" width="720" />
 </p>
 
-PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
+PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it extracts learnings from transcripts, scores and consolidates them — a Cognitive Memory that gets sharper with use.
 
 We have **not** benchmarked PRAANA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
 
@@ -130,7 +130,7 @@ Provider resolution precedence:
 | **Classic** | Yes (`enabled = false`) | Full verbatim transcript in the prompt. Same general shape as many coding agents. |
 | **Engine** | Opt-in | Tiered working memory, tool-output distillation, session checkpoint, scored prompt compilation, progressive skills. |
 
-**Cross-session memory** (optional, `[memory] enabled = true`):
+**Cognitive Memory** (optional, `[memory] enabled = true`) — memory that learns:
 
 - At `/exit`, a summariser extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
 - Next session starts with a ranked digest in the prompt.
@@ -158,7 +158,7 @@ These are real gaps today—not a roadmap dressed up as marketing.
 | **Shell tool** | Optional path/command sandbox (`[shell]` in config); **off by default**. When disabled, runs with your user permissions. |
 | **Comparison** | No published evals. We don't know if memory beats a plain transcript agent for your workflows. |
 
-If cross-session memory doesn't help you after a few real projects, that's useful feedback—not a surprise.
+If Cognitive Memory doesn't help you after a few real projects, that's useful feedback—not a surprise.
 
 ---
 
@@ -170,14 +170,14 @@ If cross-session memory doesn't help you after a few real projects, that's usefu
 | `/exit` | End session (runs summariser when memory is on) |
 | `/clear`, `/new` | Reset working memory (engine state / checkpoint) |
 | `/state` | Working-memory objects (engine mode) |
-| `/digest` | Cross-session memory digest |
-| `/recall <query>` | Search persistent memory |
+| `/digest` | Cognitive Memory digest |
+| `/recall <query>` | Search Cognitive Memory |
 | `/stats` | Session + memory stats |
 | `/events` | Last 20 session log events |
 | `/model [provider] <id>` | Switch model and optionally provider mid-session |
 | `/sessions` | List sessions to resume |
 | `/thinking <on\|off>` | Show or hide reasoning text |
-| `/incognito <on\|off>` | Disable cross-session memory writes |
+| `/incognito <on\|off>` | Disable Cognitive Memory writes |
 | `/debug` | Verbose tooling + saved prompts |
 | `/why <id>` | Why a context unit was included (engine + debug) |
 
@@ -218,7 +218,7 @@ cd website && npm run build                 # output → website/dist/
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md). High level: making cross-session memory and the context engine actually pay off, semantic recall by default, and the measurement to tell honestly whether they help.
+See [ROADMAP.md](./ROADMAP.md). High level: making Cognitive Memory and the context engine actually pay off, semantic recall by default, and the measurement to tell honestly whether they help.
 
 **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions) (Q&A, ideas, releases)
 

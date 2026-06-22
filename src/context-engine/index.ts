@@ -351,10 +351,10 @@ export class ContextEngine {
 
   /**
    * M4 artifact promotion: list this session's high-value artifacts (those
-   * accessed >= minAccessCount times). The actual promotion into cross-session
-   * memory is done by the session via MemoryStore.remember, since the
-   * ContextEngine does not depend on MemoryStore (preserves the per-session /
-   * cross-session boundary).
+   * accessed >= minAccessCount times). The actual promotion into Cognitive Memory
+   * is done by the session via MemoryStore.remember, since the ContextEngine
+   * does not depend on MemoryStore (preserves the per-session / Cognitive Memory
+   * boundary).
    */
   listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
     return this.store.listHighValueArtifacts(minAccessCount);

@@ -22,7 +22,7 @@ export interface CognitiveMirrorResult {
   reinforced?: boolean;
 }
 
-/** Write explicit state-tool captures to cross-session Cognitive Memory. */
+/** Write explicit state-tool captures to Cognitive Memory. */
 export async function mirrorToCognitiveMemory(
   ctx: Pick<MemoryToolContext, "memoryStore" | "memoryEnabled" | "incognito">,
   content: string,
@@ -341,7 +341,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
     search_session_log: defineTool({
       description:
         "Search the current session's event log for earlier messages, tool calls, and results. " +
-        "Use this to recover in-session context (e.g. a code review from earlier turns) — not recall, which only searches cross-session memory. " +
+        "Use this to recover in-session context (e.g. a code review from earlier turns) — not recall, which only searches Cognitive Memory. " +
         "Session log path: events.jsonl",
       parameters: z.object({
         query: z

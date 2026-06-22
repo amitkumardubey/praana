@@ -309,7 +309,7 @@ export class MemoryStore {
     // distinct-session promotion gate. Done BEFORE flushReinforcements because
     // that call deletes pending_reinforcements; the confirmation history is
     // what feeds the deterministic gate. Pending rows are still the per-session
-    // bookkeeping; confirmations is the cross-session history.
+    // bookkeeping; confirmations is the Cognitive Memory history.
     if (surfacedWithContent.length > 0) {
       for (const { id } of surfacedWithContent) {
         recordConfirmation(this.db, id, this.sessionId, now);

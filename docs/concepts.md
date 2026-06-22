@@ -103,7 +103,7 @@ Classic mode is intentionally simple:
 - **No Adaptive Context** — no `create_task`, `decide`, tier demotion, or auto-hydrate. Working memory is the transcript itself.
 - **No context engine** — no distillers, artifact store, checkpoint, turn ledger, or scored compilation.
 - **Skills as catalog** — discovered skill names and paths are listed in the prompt; the agent reads `SKILL.md` files with `read_file` when needed. No BM25 matching or hot/warm/cold residency.
-- **Cognitive Memory unchanged** — cross-session `recall` / `remember` and the session-start digest still work.
+- **Cognitive Memory unchanged** — `recall` / `remember` and the session-start digest still work.
 
 Classic mode is a simpler alternative when the context engine is disabled or unavailable. Set `measurement_mode = true` to record engine-style telemetry while running classic (for internal debugging only).
 
@@ -111,7 +111,7 @@ Classic mode is a simpler alternative when the context engine is disabled or una
 
 ## Cognitive Memory
 
-**Cognitive Memory** is PRAANA's cross-session persistence layer.
+**Cognitive Memory** is PRAANA's learning memory — it accumulates, scores, and consolidates knowledge across sessions.
 
 ### Memory Kinds
 
@@ -200,4 +200,4 @@ Adaptive Context and Cognitive Memory are complementary but distinct:
 | Managed by | Agent tools + automatic demotion | Session end extraction + agent tools |
 | Purpose | Curate what the model sees *right now* | Preserve what was learned *over time* |
 
-At session start, the memory digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns (engine mode), or alongside the full verbatim transcript (classic mode).
+At session start, the digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns (engine mode), or alongside the full verbatim transcript (classic mode).

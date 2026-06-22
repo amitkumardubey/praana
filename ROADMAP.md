@@ -21,7 +21,7 @@ These exist and work — we're not claiming they're solved problems, just that t
 - **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local)
 - **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox
 - **Two context modes** — *classic* (full transcript, like most agents) and an opt-in *engine* (tiered working memory, tool-output distillation, session checkpoint, skills)
-- **Cross-session memory** (optional) — extracts learnings at the end of a session and surfaces a ranked digest at the start of the next; project and global scopes
+- **Cognitive Memory** (optional) — extracts learnings at the end of a session, scores and consolidates them, and surfaces a ranked digest at the start of the next; project and global scopes
 
 ---
 
@@ -56,4 +56,4 @@ Smaller, concrete improvements:
 
 ## Contributing
 
-Issues and PRs welcome. The most useful feedback right now: **after a few real projects, does cross-session memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.
+Issues and PRs welcome. The most useful feedback right now: **after a few real projects, does Cognitive Memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.

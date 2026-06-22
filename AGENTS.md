@@ -107,7 +107,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 |---|---|
 | `/exit` | End session cleanly (triggers summariser, prints summary) |
 | `/state` | List state objects and tiers, or show empty-state guidance |
-| `/stats` | Session metadata + working-memory + persistent-memory stats |
+| `/stats` | Session metadata + working-memory + Cognitive Memory stats |
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
@@ -115,7 +115,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/sessions` | List past sessions for resuming |
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
-| `/incognito <on\|off>` | Toggle cross-session memory persistence |
+| `/incognito <on\|off>` | Toggle Cognitive Memory persistence |
 | `/clear`, `/new` | Clear working-memory state (engine checkpoint + StateGraph) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
 | `/help` | All commands |

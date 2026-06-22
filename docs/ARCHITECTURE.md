@@ -1,9 +1,9 @@
 # PRAANA Architecture
 
-PRAANA is a single-process TypeScript CLI coding agent with two cognitive memory systems:
+PRAANA is a single-process TypeScript CLI coding agent built around two memory systems:
 
 1. **Adaptive Context** — within-session working memory
-2. **Cognitive Memory** — cross-session persistent memory
+2. **Cognitive Memory** — learns from experience across sessions, scores what's confirmed, forgets what's noise
 
 No daemon, no RPC server, no multi-process coordination.
 
@@ -116,7 +116,7 @@ SESSION END:
   Session.end(reason, transcriptEvents)
   → memory.sessionEnd(reason, events)
   → if summarizer enabled: extractLearnings from transcript events
-  → write learnings into cross-session memory
+  → write learnings into Cognitive Memory
   → close event log
 ```
 
@@ -228,7 +228,7 @@ When classic mode is active, `src/compile-classic.ts` builds a flat prompt with 
 
 1. **System frame** — cwd, session ID, tool descriptions, AGENTS.md project context, skills guidance (read `SKILL.md` via `read_file` when relevant).
 2. **Skills catalog** — name + path metadata only (no BM25 residency, no hot/warm/cold sections).
-3. **Cross-session memory** — Cognitive Memory digest (if enabled).
+3. **Cognitive Memory** — digest (if enabled).
 4. **Conversation history** — **full verbatim** event log (`readAll()`), excluding `context_action` and `system_note`. Tool results are not truncated.
 5. **Current input** — latest user message.
 
@@ -270,9 +270,9 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
 
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
-- `recall(query, mode?, kinds?)` — searches cross-session memory and logs a `memory_recall` system note
-- `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to cross-session memory
-- `forget_memory(id)` — tombstones a cross-session memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
+- `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note
+- `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to Cognitive Memory
+- `forget_memory(id)` — tombstones a Cognitive Memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
 
 ### Adaptive Context Tools (`src/tools/memory.ts` — engine mode only)
 - `create_task(title, description?)` — creates a task in working memory
@@ -293,7 +293,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ## Cognitive Memory
 
 ### Key Components
-- `MemoryStore` (`src/memory/store.ts`): Coordinates high-level cross-session memory operations, session starts, and session ends.
+- `MemoryStore` (`src/memory/store.ts`): Coordinates high-level Cognitive Memory operations, session starts, and session ends.
 - SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.praana/memory.db`.
 - Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses Transformers.js (shipped as a dependency); model weights cache in `~/.praana/models/`.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
@@ -416,13 +416,13 @@ Both support slash commands via `src/slash-commands.ts`:
 - `/exit` — ends session, triggers summarizer, saves and quits
 - `/clear`, `/new` — clears working-memory state (StateGraph + engine checkpoint)
 - `/state` — lists all state objects and tiers, or prints an empty-state guidance message
-- `/stats` — prints session metadata plus working-memory and persistent-memory stats
-- `/digest` — prints the current cross-session markdown digest
+- `/stats` — prints session metadata plus working-memory and Cognitive Memory stats
+- `/digest` — prints the current Cognitive Memory markdown digest
 - `/events` — lists the last 20 events in the event log
 - `/recall <query>` — performs manual vector recall query
 - `/model [provider] <id>` — switch model and optionally provider (persisted to log; validated via pi-ai + live catalog)
 - `/sessions` — lists last 15 historical sessions for easy resuming
-- `/incognito <on|off>` — toggles cross-session memory persistence
+- `/incognito <on|off>` — toggles Cognitive Memory persistence
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)

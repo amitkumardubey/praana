@@ -123,7 +123,7 @@ describe("M4 artifact promotion — listing", () => {
   });
 });
 
-describe("M4 artifact promotion — dedup with cross-session memory", () => {
+describe("M4 artifact promotion — dedup with Cognitive Memory", () => {
   it("re-stating an already-promoted artifact reinforces rather than duplicates", async () => {
     const store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     try {
