@@ -6,8 +6,8 @@
   --border: #434c5e;      /* nord2 */
   --text: #d8dee9;        /* nord4  - Snow Storm */
   --muted: #8893a5;       /* nord3-ish, lifted for readability */
-  --accent: #5e81ac;      /* nord10 - Frost blue (deep) */
-  --accent-dim: #5e81ac55;
+  --accent: #81a1c1;      /* nord9  - Frost blue */
+  --accent-dim: #81a1c155;
   --code-bg: #353c4a;     /* between nord0/nord1 */
   --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
