@@ -1,13 +1,14 @@
 :root {
   color-scheme: dark;
-  --bg: #0d1117;
-  --bg-elevated: #161b22;
-  --border: #30363d;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --accent: #58a6ff;
-  --accent-dim: #388bfd66;
-  --code-bg: #1c2128;
+  /* Nord palette */
+  --bg: #2e3440;          /* nord0  - Polar Night */
+  --bg-elevated: #3b4252; /* nord1 */
+  --border: #434c5e;      /* nord2 */
+  --text: #d8dee9;        /* nord4  - Snow Storm */
+  --muted: #8893a5;       /* nord3-ish, lifted for readability */
+  --accent: #88c0d0;      /* nord8  - Frost */
+  --accent-dim: #88c0d055;
+  --code-bg: #353c4a;     /* between nord0/nord1 */
   --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --max-width: 52rem;
@@ -104,7 +105,7 @@ main {
   max-width: min(720px, 100%);
   border-radius: 8px;
   border: 1px solid var(--border);
-  box-shadow: 0 16px 48px #01040980;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
 
 .prose h1,
