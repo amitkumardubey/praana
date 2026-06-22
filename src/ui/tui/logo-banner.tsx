@@ -7,13 +7,31 @@ export interface LogoBannerProps {
   bootSummary?: string;
 }
 
+// Line-art "pn" monogram. Cream p (PALETTE.text), sage-green n
+// (PALETTE.success) with a trailing fade-dot decay motif on the n.
+const MONO_P = ["╭──╮", "│  │", "├──╯", "│   ", "●   "];
+const MONO_N = ["◌──╮", "   │", "   │", "   ◉", "   ◦"];
+const TAGLINE = "Adaptive Context · Cognitive Memory";
+// Indent that centres the 9-col monogram over the 35-col tagline.
+const MONO_INDENT = Math.max(0, Math.floor((TAGLINE.length - 9) / 2));
+
 export function LogoBanner({ bootSummary }: LogoBannerProps) {
-  const title = `▲ PRAANA ${APP_VERSION}`;
   return (
     <Box marginBottom={1}>
       <Box flexDirection="column" paddingX={2}>
-        <Box marginBottom={1}>
-          <Text color={PALETTE.assistant}>{title}</Text>
+        <Box flexDirection="column" marginLeft={MONO_INDENT}>
+          {MONO_P.map((p, i) => (
+            <Box key={i}>
+              <Text color={PALETTE.text}>{p}</Text>
+              <Text> </Text>
+              <Text color={PALETTE.success}>{MONO_N[i]}</Text>
+            </Box>
+          ))}
+        </Box>
+        <Box marginTop={1} marginBottom={1}>
+          <Text color={PALETTE.muted}>{TAGLINE}</Text>
+          <Text>  </Text>
+          <Text color={PALETTE.faint}>{APP_VERSION}</Text>
         </Box>
         {bootSummary ? (
           <Box marginBottom={1}>
