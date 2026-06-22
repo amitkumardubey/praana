@@ -62,10 +62,12 @@ a:hover {
 
 .site-header .brand {
   font-family: var(--font-display);
+  font-size: 1.5rem;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--text);
   margin-right: auto;
+  line-height: 1;
 }
 
 .site-header a {
