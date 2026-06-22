@@ -10,8 +10,6 @@
   <img src="docs/assets/demo.png" alt="PRAANA terminal — adaptive context and memory recall" width="720" />
 </p>
 
-> Set the repo social preview under **Settings → General → Social preview** using [`.github/social-preview.png`](./.github/social-preview.png) if it is not picked up automatically.
-
 PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
 
 We have **not** benchmarked PRAANA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
