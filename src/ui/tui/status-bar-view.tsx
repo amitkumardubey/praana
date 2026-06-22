@@ -4,6 +4,7 @@ import type { StatusBarInput } from "../../status-bar.js";
 import { formatModelStatusLabel, formatTokenCount, formatRepoLabel } from "../../status-bar.js";
 import { PALETTE } from "./palette.js";
 import { getTerminalWidth } from "./terminal-width.js";
+import { APP_VERSION } from "../../app-banner.js";
 
 /** Compact state tiers, e.g. "2A·1S" — only non-zero tiers, "" when empty. */
 function formatStateLabel(stats: { active: number; soft: number; hard: number }): string {
@@ -49,6 +50,7 @@ export function StatusBarView({
 
   /* Line 1 — identity / config: where you are and what you're running. */
   const identity: Segment[] = [
+    { text: `praana ${APP_VERSION}` },
     { text: repoStr },
     { text: modelLabel },
   ];
