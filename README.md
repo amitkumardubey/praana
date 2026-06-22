@@ -207,6 +207,15 @@ npm run build
 npm test
 ```
 
+### Docs site (Astro)
+
+GitHub Pages is built from [`website/`](./website/) with [Astro](https://astro.build/). Markdown sources in [`docs/`](./docs/) are rendered at build time (no duplication).
+
+```bash
+cd website && npm install && npm run dev    # http://localhost:4321/praana/
+cd website && npm run build                 # output → website/dist/
+```
+
 ---
 
 ## What's next

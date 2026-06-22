@@ -1,0 +1,10 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { loadDoc, renderMarkdown } from "../lib/docs.ts";
+
+const html = renderMarkdown(loadDoc("ARCHITECTURE.md"));
+---
+
+<Layout title="Architecture" current="architecture">
+  <article class="prose" set:html={html} />
+</Layout>

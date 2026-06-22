@@ -40,7 +40,7 @@ See [AGENTS.md](./AGENTS.md) for architecture, memory systems, and common gotcha
 | Memory | `src/memory/`, `tests/memory*.test.ts` |
 | Context engine | `src/context-engine/`, `tests/context-engine*.test.ts` |
 | Tools | `src/tools/` |
-| Docs | `README.md`, `docs/`, `ROADMAP.md` |
+| Docs | `README.md`, `docs/`, `website/` (Astro GitHub Pages), `ROADMAP.md` |
 
 ## Reporting bugs
 
