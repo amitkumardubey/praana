@@ -1,0 +1,72 @@
+name: Bug report
+description: Something isn't working as expected
+title: "fix: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in what you can — screenshots and logs help a lot.
+
+  - type: input
+    id: version
+    attributes:
+      label: PRAANA version
+      description: Output of `npm list -g praana` or the release tag you built from
+      placeholder: "0.8.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, terminal emulator
+      placeholder: "Ubuntu 24.04, Node 22.14, Windows Terminal"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug
+      placeholder: |
+        1. Run `praana` with ...
+        2. Type `/model ...`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant output. Redact API keys and paths with secrets.
+      render: shell
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Compile mode
+      options:
+        - Classic (default)
+        - Engine (`context_engine.enabled = true`)
+        - Not sure
+    validations:
+      required: true

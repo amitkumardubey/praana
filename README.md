@@ -2,8 +2,15 @@
 
 [![npm](https://img.shields.io/npm/v/praana)](https://www.npmjs.com/package/praana)
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
+[![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
 
 **A terminal coding agent with adaptive context and cross-session memory.**
+
+<p align="center">
+  <img src="docs/assets/demo.png" alt="PRAANA terminal — adaptive context and memory recall" width="720" />
+</p>
+
+> Set the repo social preview under **Settings → General → Social preview** using [`.github/social-preview.png`](./.github/social-preview.png) if it is not picked up automatically.
 
 PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it can extract learnings from transcripts and store them in a local SQLite database.
 
@@ -103,6 +110,19 @@ Provider resolution precedence:
 
 ---
 
+## Why PRAANA vs a plain transcript agent?
+
+| | Typical transcript agent | PRAANA |
+|---|--------------------------|--------|
+| **Long sessions** | Full history in the prompt; context window fills up | Opt-in **engine mode**: tiered working memory (`active` / `soft` / `hard`), tool-output distillation, session checkpoint |
+| **Next session** | Starts cold unless you paste notes | **Cognitive memory**: LLM summariser extracts learnings at `/exit`; ranked digest on next start (project + global scopes) |
+| **Skills** | Manual or always-on | Engine mode: BM25-ranked `SKILL.md` residency (hot / warm / cold) |
+| **Claims** | Often marketed as solved | [Known limitations](#known-limitations-honest) upfront — we have **not** benchmarked against other agents |
+
+**Example workflow:** Day 1 — you decide “use Vitest, in-memory SQLite in tests” (`decide` / `add_constraint`). Day 2 — new session in the same repo; `/digest` surfaces those constraints without re-explaining. Engine mode keeps yesterday’s task graph stubbed instead of replaying every tool result.
+
+---
+
 ## What it does
 
 **Two compile modes** (see `[context_engine] enabled` in config):
@@ -122,7 +142,7 @@ Provider resolution precedence:
 
 **Skills:** in engine mode, discovers `SKILL.md` files and loads them by relevance; in classic mode, lists paths only.
 
-Architecture details: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [docs/concepts.md](./docs/concepts.md)
+Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [concepts.md](./docs/concepts.md)
 
 ---
 
@@ -192,6 +212,8 @@ npm test
 ## What's next
 
 See [ROADMAP.md](./ROADMAP.md). High level: making cross-session memory and the context engine actually pay off, semantic recall by default, and the measurement to tell honestly whether they help.
+
+**Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions) (Q&A, ideas, releases)
 
 Issues and PRs welcome.
 

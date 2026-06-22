@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an idea or improvement
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem you're trying to solve. PRAANA is experimental — we prioritize features that help long sessions or cross-session memory.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What pain point does this address?
+      placeholder: "When I resume a session after a day, the agent forgets ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should PRAANA behave?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you've thought about
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Area
+      options:
+        - label: Adaptive Context (in-session state / engine mode)
+        - label: Cognitive Memory (cross-session recall)
+        - label: TUI / UX
+        - label: Tools (shell, edit_file, search_code, ...)
+        - label: Providers / models
+        - label: Docs / onboarding

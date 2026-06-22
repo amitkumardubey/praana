@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/amitkumardubey/praana/discussions/categories/q-a
+    about: Usage help, config questions, and troubleshooting
+  - name: Share an idea
+    url: https://github.com/amitkumardubey/praana/discussions/categories/ideas
+    about: Brainstorm features before opening an issue
