@@ -14,8 +14,6 @@ const TAGLINE = "Adaptive Context · Cognitive Memory";
 // Indent that centres the 9-col monogram over the 35-col tagline.
 const MONO_INDENT = Math.max(0, Math.floor((TAGLINE.length - 9) / 2));
 
-const INTRO =
-  "Say what you want — I'll read code, run commands, make edits, and remember across sessions.";
 const TIPS = [
   "/help    — all slash commands",
   "/stats   — what I know and remember",
@@ -47,9 +45,6 @@ export function LogoBanner({ bootSummary }: LogoBannerProps) {
             </Text>
           </Box>
         ) : null}
-        <Box marginBottom={1}>
-          <Text color={PALETTE.text}>{INTRO}</Text>
-        </Box>
         <Box marginBottom={1}>
           <Text color={PALETTE.assistant}>Quick tips:</Text>
         </Box>
