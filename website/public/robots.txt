@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://amitkumardubey.github.io/praana/sitemap.xml

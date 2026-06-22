@@ -5,6 +5,11 @@ import { loadDoc, renderMarkdown } from "../lib/docs.ts";
 const html = renderMarkdown(loadDoc("concepts.md"));
 ---
 
-<Layout title="Concepts" current="concepts">
+<Layout
+  title="Concepts"
+  current="concepts"
+  description="Core concepts and glossary for PRAANA: adaptive context tiers (active/soft/hard), cognitive memory kinds, scoping, and the mental model behind the terminal coding agent."
+  keywords="PRAANA concepts, adaptive context tiers, cognitive memory kinds, memory scoping, coding agent glossary"
+>
   <article class="prose" set:html={html} />
 </Layout>

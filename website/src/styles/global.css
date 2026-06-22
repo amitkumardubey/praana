@@ -8,8 +8,8 @@
   --accent: #58a6ff;
   --accent-dim: #388bfd66;
   --code-bg: #1c2128;
-  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --max-width: 52rem;
 }
 
@@ -24,6 +24,9 @@ html {
   background: var(--bg);
   color: var(--text);
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {

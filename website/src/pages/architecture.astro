@@ -5,6 +5,11 @@ import { loadDoc, renderMarkdown } from "../lib/docs.ts";
 const html = renderMarkdown(loadDoc("ARCHITECTURE.md"));
 ---
 
-<Layout title="Architecture" current="architecture">
+<Layout
+  title="Architecture"
+  current="architecture"
+  description="How PRAANA works: adaptive context (tiered working memory), cross-session cognitive memory, the deterministic prompt compiler, and the per-turn flow of the terminal coding agent."
+  keywords="PRAANA architecture, adaptive context, cognitive memory, prompt compiler, tiered working memory, coding agent design"
+>
   <article class="prose" set:html={html} />
 </Layout>
