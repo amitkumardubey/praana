@@ -64,7 +64,7 @@ a:hover {
   font-family: var(--font-display);
   font-size: 1.5rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
   color: var(--text);
   margin-right: auto;
   line-height: 1;
@@ -97,7 +97,7 @@ main {
   font-size: clamp(2rem, 5vw, 2.75rem);
   font-weight: 700;
   margin: 0 0 0.5rem;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.1em;
 }
 
 .hero .lead {
