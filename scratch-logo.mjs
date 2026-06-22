@@ -1,66 +1,32 @@
+// PRAANA logo — line-art "pn" monogram (gap 1) + tagline.
+// Cream p (nord6) + sage-green n (nord14) with trailing fade dots.
 import chalk from "chalk";
 
-const CREAM = "#ECEFF4";  // nord6
-const GREEN = "#A3BE8C";  // nord14 sage
-const MUTED = "#D8DEE9";  // nord4
-const RULE = "#4C566A";
+const CREAM = "#ECEFF4"; // nord6
+const GREEN = "#A3BE8C"; // nord14 sage
+const MUTED = "#D8DEE9"; // nord4
 
 const cream = (s) => chalk.hex(CREAM)(s);
 const green = (s) => chalk.hex(GREEN)(s);
 const muted = (s) => chalk.hex(MUTED)(s);
-const header = (l) =>
-  chalk.hex(RULE)(`\n  ── ${l} ${"─".repeat(Math.max(0, 42 - l.length))}\n`);
 
-const TAG = "ADAPTIVE CONTEXT · COGNITIVE MEMORY · AGENT RUNTIME";
+const TAG = "Adaptive Context · Cognitive Memory";
+const TW = TAG.length; // 35
 
-// ---- lowercase "praana" wordmark attempts ----
+// p (cream) + gap 1 + n (green)
+const P = ["╭──╮", "│  │", "├──╯", "│   ", "●   "];
+const N = ["◌──╮", "   │", "   │", "   ◉", "   ◦"];
+const GAP = " ";
 
-// W1 — half-block lowercase, 3 rows (p faked descender on row 3)
-const W1 = [
-  "█▀█ █▀▄ ▄▀█ ▄▀█ █▄ █ ▄▀█",
-  "█▀▀ █   █▀█ █▀█ █ ██ █▀█",
-  "█                       ",
-];
+const rows = P.map((p, i) => ({
+  raw: p + GAP + (N[i] ?? ""),
+  out: cream(p) + GAP + green(N[i] ?? ""),
+}));
+const width = Math.max(...rows.map((r) => [...r.raw].length));
+const lead = " ".repeat(Math.max(0, Math.floor((TW - width) / 2)));
 
-// W2 — rounded thin lowercase, 3 rows
-const W2 = [
-  "╭─╮ ╭─╮ ╭─╮ ╭─╮ ╭╮╷ ╭─╮",
-  "├─┘ ├┬╴ ├─┤ ├─┤ │╰┤ ├─┤",
-  "╵                      ",
-];
-
-// W3 — wide spaced caps-style lowercase (mono feel)
-const W3 = [
-  "┌─┐ ┌─┐ ┌─┐ ┌─┐ ┌┐╷ ┌─┐",
-  "├─┘ ├┬┘ ├─┤ ├─┤ │└┤ ├─┤",
-  "┴                      ",
-];
-
-function show(label, word, withMono) {
-  console.log(header(label));
-  if (withMono) {
-    // tiny pn line monogram with trailing fade dots
-    console.log(cream("    ╭─╮") + green("  ╭─◌"));
-    console.log(cream("    │ │") + green("  │"));
-    console.log(cream("    ╰─┤") + green("  ╵"));
-    console.log(cream("      ╵") + green("   ◌"));
-    console.log(green("          ·"));
-    console.log();
-  }
-  word.forEach((l) => console.log(cream(l)));
-  console.log();
-  console.log(green(">_ ") + green(TAG));
-  console.log();
-}
-
-show("W1  half-block wordmark", W1, false);
-show("W2  rounded thin wordmark", W2, false);
-show("W3  box wordmark", W3, false);
-show("W2 + monogram", W2, true);
-
-// alt tagline color: prompt green, text muted
-console.log(header("tagline color variants"));
-console.log(green(">_ ") + green(TAG));
-console.log(green(">_ ") + muted(TAG));
-console.log(green(">_ ") + muted("Adaptive Context · Cognitive Memory · Agent Runtime"));
+console.log();
+rows.forEach((r) => console.log(lead + r.out));
+console.log();
+console.log(muted(TAG));
 console.log();
