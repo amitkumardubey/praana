@@ -319,8 +319,7 @@ export class Session {
 
   /** Persist working-memory state for fast resume (issue #74). */
   persistStateGraphCheckpoint(): void {
-    const events = this.eventLog.readAll();
-    const lastEvent = events.at(-1);
+    const lastEvent = this.eventLog.getLastEvent();
     if (!lastEvent) return;
 
     const sessionDir = join(this.config.session.log_dir, this.id);
@@ -337,17 +336,16 @@ export class Session {
     const checkpoint = loadStateGraphCheckpoint(sessionDir);
 
     if (!checkpoint) {
-      replayStateGraphFromEvents(this.stateGraph, allEvents, 0);
+      // No checkpoint — pre-feature or deleted session. Start with empty state.
       return;
     }
 
     const startIndex = findReplayStartIndex(allEvents, checkpoint.last_event_id);
     if (startIndex === null) {
       this.getLogger().child("session").warn(
-        "State graph checkpoint anchor missing, falling back to full replay",
+        "State graph checkpoint anchor missing — starting with empty state",
       );
       deleteStateGraphCheckpoint(sessionDir);
-      replayStateGraphFromEvents(this.stateGraph, allEvents, 0);
       return;
     }
 
@@ -892,6 +890,7 @@ export class Session {
       }
     }
 
+    this.persistStateGraphCheckpoint();
     this.eventLog.close();
     return { memory: memoryStatus };
   }

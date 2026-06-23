@@ -156,23 +156,12 @@ describe("incremental state replay", () => {
       }),
     ];
 
+    // Full-replay baseline
     const full = new StateGraph();
     replayStateGraphFromEvents(full, events, 0);
 
+    // Checkpoint-based: restore state as of e1, then replay e2 onwards
     const fromCheckpoint = new StateGraph();
-    fromCheckpoint.create("task", { title: "One", status: "todo" });
-    const one = fromCheckpoint.snapshot().find((o) => (o.payload as { title: string }).title === "One")!;
-    fromCheckpoint.restoreFromCheckpoint({
-      version: 1,
-      saved_at: Date.now(),
-      last_event_id: "e1",
-      session_turn_count: 1,
-      state_graph_turn_count: 1,
-      objects: [{ ...one, tier: "active" }],
-      touched_turn: { [one.id]: 1 },
-    });
-    // Align IDs for setTier replay on e2
-    fromCheckpoint.clear();
     fromCheckpoint.restoreFromCheckpoint({
       version: 1,
       saved_at: Date.now(),

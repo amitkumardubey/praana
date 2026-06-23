@@ -14,15 +14,8 @@ import type {
   NotePayload,
 } from "./types.js";
 
-export interface StateGraphCheckpoint {
-  version: 1;
-  saved_at: number;
-  last_event_id: string;
-  session_turn_count: number;
-  state_graph_turn_count: number;
-  objects: StateObject[];
-  touched_turn: Record<string, number>;
-}
+import type { StateGraphCheckpoint } from "./state-graph-checkpoint.js";
+export type { StateGraphCheckpoint };
 
 export class StateGraph {
   private objects = new Map<string, StateObject>();
