@@ -468,6 +468,7 @@ export async function executeSlashCommand(
           command: cmd,
         },
       });
+      session.persistStateGraphCheckpoint();
       lines.push("State cleared. Starting fresh.");
       return result("clear_transcript", "toast");
     }

@@ -185,6 +185,13 @@ export class EventLog {
     return this.internalRead();
   }
 
+  /** Last event in the log without allocating a full copy. O(1) with warm cache. */
+  getLastEvent(): Event | null {
+    this.syncCache();
+    if (!this.eventCache || this.eventCache.length === 0) return null;
+    return this.eventCache[this.eventCache.length - 1];
+  }
+
   /** All events excluding those marked compressed for prompt assembly. */
   readAllUncompressed(): Event[] {
     const all = this.internalRead();

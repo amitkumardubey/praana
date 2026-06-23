@@ -64,6 +64,7 @@ describe("Session.clearState", () => {
         command: "/clear",
       },
     });
+    session.persistStateGraphCheckpoint();
 
     const resumed = await Session.resume(session.id, process.cwd(), testConfig);
 
@@ -81,6 +82,7 @@ describe("clear slash commands", () => {
     const clearState = vi.fn();
     const session = {
       clearState,
+      persistStateGraphCheckpoint: vi.fn(),
       eventLog: {
         append: vi.fn((event: unknown) => appended.push(event)),
       },
@@ -92,6 +94,7 @@ describe("clear slash commands", () => {
     });
 
     expect(clearState).toHaveBeenCalledOnce();
+    expect(session.persistStateGraphCheckpoint).toHaveBeenCalledOnce();
     expect(appended).toEqual([
       {
         kind: "system_note",
