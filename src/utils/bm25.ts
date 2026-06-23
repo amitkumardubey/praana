@@ -10,21 +10,15 @@
 // `tokenizeShort` variant additionally drops 1-char tokens (used by the
 // skills engine to filter noise words like "a" or "i").
 
-export interface BM25Config {
-  k1?: number;
-  b?: number;
-}
+// BM25 parameters — Okapi BM25 standard defaults, not tunable externally.
+const BM25_K1 = 1.5;
+const BM25_B = 0.75;
 
 export interface BM25Stats {
   avgDocLen: number;
   totalDocs: number;
   docFreq: Map<string, number>;
 }
-
-export const DEFAULT_BM25_CONFIG: Required<BM25Config> = {
-  k1: 1.5,
-  b: 0.75,
-};
 
 /**
  * Tokenize text for BM25 search.
@@ -37,26 +31,39 @@ export function tokenize(text: string): string[] {
 
 /**
  * Tokenize with short-token filter (≤1 char tokens dropped).
- * Matches the legacy skills-engine behavior where single-char noise
- * words like "a", "i" are excluded from the token stream.
+ * Used by the skills engine to exclude single-char noise words like
+ * "a" or "i" that inflate corpus statistics without contributing signal.
  */
 export function tokenizeShort(text: string): string[] {
   return tokenize(text).filter((t) => t.length > 1);
 }
 
-/** Build BM25 corpus statistics from raw document strings. */
+/**
+ * Build BM25 corpus statistics from raw document strings.
+ * Tokenizes each document with `tokenize()`.
+ * Use `buildBM25StatsFromTokens` when the caller has already tokenized.
+ */
 export function buildBM25Stats(documents: string[]): BM25Stats {
+  return buildBM25StatsFromTokens(documents.map(tokenize));
+}
+
+/**
+ * Build BM25 corpus statistics from pre-tokenized documents.
+ * Use this when the caller already has token arrays so tokenization
+ * is not duplicated and the same token stream is used for both
+ * stats and per-document scoring.
+ */
+export function buildBM25StatsFromTokens(tokenLists: string[][]): BM25Stats {
   const docFreq = new Map<string, number>();
   let totalLen = 0;
 
-  for (const doc of documents) {
-    const tokens = tokenize(doc);
+  for (const tokens of tokenLists) {
     totalLen += tokens.length;
     const seen = new Set(tokens);
     for (const t of seen) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
   }
 
-  const totalDocs = documents.length;
+  const totalDocs = tokenLists.length;
   const avgDocLen = totalDocs > 0 ? totalLen / totalDocs : 0;
   return { avgDocLen, totalDocs, docFreq };
 }
@@ -67,7 +74,6 @@ export function bm25Score(
   docTokens: string[],
   stats: BM25Stats,
 ): number {
-  const { k1, b } = DEFAULT_BM25_CONFIG;
   const docLen = docTokens.length;
   if (docLen === 0 || queryTokens.length === 0) return 0;
 
@@ -81,8 +87,8 @@ export function bm25Score(
 
     const df = stats.docFreq.get(qt) ?? 1;
     const idf = Math.log(1 + (stats.totalDocs - df + 0.5) / (df + 0.5));
-    const numerator = freq * (k1 + 1);
-    const denominator = freq + k1 * (1 - b + b * (docLen / stats.avgDocLen));
+    const numerator = freq * (BM25_K1 + 1);
+    const denominator = freq + BM25_K1 * (1 - BM25_B + BM25_B * (docLen / stats.avgDocLen));
     score += idf * (numerator / denominator);
   }
 
@@ -90,45 +96,15 @@ export function bm25Score(
 }
 
 /**
- * Single-document BM25 relevance (context engine wrapper).
- * Builds single-document stats inline so the API stays ergonomic.
+ * Single-document BM25 relevance (context engine convenience wrapper).
+ * Builds single-document stats inline so the API stays ergonomic for
+ * one-off relevance checks.
  */
 export function bm25Relevance(query: string, content: string): number {
   const queryTokens = tokenize(query);
   if (queryTokens.length === 0) return 0;
   const docTokens = tokenize(content);
   if (docTokens.length === 0) return 0;
-  const stats = buildBM25Stats([content]);
+  const stats = buildBM25StatsFromTokens([docTokens]);
   return bm25Score(queryTokens, docTokens, stats);
 }
-
-/** Synonym expansion for query tokens. */
-export function expandTokens(
-  tokens: string[],
-  synonymMap: Record<string, string[]>,
-): string[] {
-  const expanded = new Set(tokens);
-  for (const token of tokens) {
-    const syns = synonymMap[token];
-    if (syns) for (const syn of syns) expanded.add(syn);
-  }
-  return Array.from(expanded);
-}
-
-/** Default synonym map for V1. */
-export const DEFAULT_SYNONYMS: Record<string, string[]> = {
-  deploy: ["launch", "release", "rollout", "publish"],
-  database: ["db", "postgres", "mysql", "sql", "rds", "dynamodb"],
-  container: ["docker", "ecs", "kubernetes", "k8s", "pod"],
-  aws: ["amazon", "ec2", "s3", "lambda", "cloud"],
-  test: ["testing", "spec", "assert", "verify", "check"],
-  build: ["compile", "bundle", "package", "construct"],
-  error: ["error", "failure", "bug", "issue", "crash", "exception"],
-  fix: ["fix", "repair", "patch", "resolve", "correct"],
-  code: ["code", "source", "implementation", "program"],
-  review: ["review", "audit", "inspect", "check"],
-  config: ["configuration", "setup", "settings", "options"],
-  monitor: ["monitoring", "observe", "watch", "track", "metrics"],
-  auth: ["authentication", "login", "oauth", "sso", "identity"],
-  api: ["rest", "graphql", "endpoint", "service", "http"],
-};

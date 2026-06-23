@@ -6,10 +6,8 @@ import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
 import {
   tokenizeShort,
-  expandTokens,
-  buildBM25Stats,
+  buildBM25StatsFromTokens,
   bm25Score,
-  DEFAULT_SYNONYMS,
 } from "../utils/bm25.js";
 import type {
   SkillMetadata,
@@ -383,7 +381,37 @@ export interface MatchResult {
   score: number;
 }
 
-// Skills-specific scoring helpers (not BM25 primitives)
+// Skills-specific helpers — synonym expansion, scoring bonuses, invocation detection.
+// These are skill-ranking concepts, not general BM25 primitives.
+
+const DEFAULT_SYNONYMS: Record<string, string[]> = {
+  deploy: ["launch", "release", "rollout", "publish"],
+  database: ["db", "postgres", "mysql", "sql", "rds", "dynamodb"],
+  container: ["docker", "ecs", "kubernetes", "k8s", "pod"],
+  aws: ["amazon", "ec2", "s3", "lambda", "cloud"],
+  test: ["testing", "spec", "assert", "verify", "check"],
+  build: ["compile", "bundle", "package", "construct"],
+  error: ["error", "failure", "bug", "issue", "crash", "exception"],
+  fix: ["fix", "repair", "patch", "resolve", "correct"],
+  code: ["code", "source", "implementation", "program"],
+  review: ["review", "audit", "inspect", "check"],
+  config: ["configuration", "setup", "settings", "options"],
+  monitor: ["monitoring", "observe", "watch", "track", "metrics"],
+  auth: ["authentication", "login", "oauth", "sso", "identity"],
+  api: ["rest", "graphql", "endpoint", "service", "http"],
+};
+
+function expandTokens(
+  tokens: string[],
+  synonymMap: Record<string, string[]>,
+): string[] {
+  const expanded = new Set(tokens);
+  for (const token of tokens) {
+    const syns = synonymMap[token];
+    if (syns) for (const syn of syns) expanded.add(syn);
+  }
+  return Array.from(expanded);
+}
 
 function keywordScore(queryTokens: string[], docTokens: string[]): number {
   const querySet = new Set(queryTokens);
@@ -416,12 +444,9 @@ export function rankSkills(
   const queryTokens = expandTokens(tokenizeShort(userInput), syns);
   if (queryTokens.length === 0) return [];
 
-  // Build BM25 corpus stats from raw search texts
-  const searchTexts = index.map((entry) => entry.searchText);
-  const stats = buildBM25Stats(searchTexts);
-
-  // Pre-tokenize corpus documents for scoring
-  const docTokenLists = searchTexts.map((t) => tokenizeShort(t));
+  // Tokenize once — same token stream for both stats and per-doc scoring.
+  const docTokenLists = index.map((entry) => tokenizeShort(entry.searchText));
+  const stats = buildBM25StatsFromTokens(docTokenLists);
 
   const results: MatchResult[] = [];
 
