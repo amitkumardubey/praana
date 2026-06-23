@@ -622,6 +622,7 @@ export async function runTurn(
     session.skillRuntime?.endTurn();
     flushSkillTelemetry(session);
   }
+  session.persistStateGraphCheckpoint();
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
@@ -680,6 +681,7 @@ function finalizeInterruptedTurn(
     session.skillRuntime?.endTurn();
     flushSkillTelemetry(session);
   }
+  session.persistStateGraphCheckpoint();
 
   const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
   if (sink) sink.onMemoryBanner?.(stats);

@@ -14,6 +14,16 @@ import type {
   NotePayload,
 } from "./types.js";
 
+export interface StateGraphCheckpoint {
+  version: 1;
+  saved_at: number;
+  last_event_id: string;
+  session_turn_count: number;
+  state_graph_turn_count: number;
+  objects: StateObject[];
+  touched_turn: Record<string, number>;
+}
+
 export class StateGraph {
   private objects = new Map<string, StateObject>();
   private touchedTurn = new Map<string, number>(); // turn number when last touched
@@ -134,6 +144,37 @@ export class StateGraph {
 
   getTurnCount(): number {
     return this.turnCount;
+  }
+
+  exportCheckpoint(
+    lastEventId: string,
+    sessionTurnCount: number,
+  ): StateGraphCheckpoint {
+    const touched_turn: Record<string, number> = {};
+    for (const [id, turn] of this.touchedTurn) {
+      touched_turn[id] = turn;
+    }
+    return {
+      version: 1,
+      saved_at: Date.now(),
+      last_event_id: lastEventId,
+      session_turn_count: sessionTurnCount,
+      state_graph_turn_count: this.turnCount,
+      objects: this.snapshot(),
+      touched_turn,
+    };
+  }
+
+  restoreFromCheckpoint(data: StateGraphCheckpoint): void {
+    this.objects.clear();
+    this.touchedTurn.clear();
+    for (const obj of data.objects) {
+      this.objects.set(obj.id, { ...obj });
+    }
+    for (const [id, turn] of Object.entries(data.touched_turn)) {
+      this.touchedTurn.set(id, turn);
+    }
+    this.turnCount = data.state_graph_turn_count;
   }
 
   /**

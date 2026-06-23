@@ -1,10 +1,15 @@
 // Integration test: session resume with state rebuild
 import { describe, it, expect, afterAll } from "vitest";
 import { Session } from "../src/session.js";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PraanaConfig } from "../src/types.js";
+import {
+  getStateGraphCheckpointPath,
+  loadStateGraphCheckpoint,
+  replayStateGraphFromEvents,
+} from "../src/state-graph-checkpoint.js";
 
 const testLogDir = join(tmpdir(), "praana-test-sessions");
 const testConfig: PraanaConfig = {
@@ -97,5 +102,76 @@ describe("Session resume", () => {
     expect(s.id).toBe(sessionId);
     expect(s.stateGraph.list().length).toBeGreaterThan(0);
     await s.end("clean");
+  });
+
+  it("resumes from checkpoint with incremental replay", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+    const sessionDir = join(testLogDir, sid);
+
+    for (let i = 0; i < 50; i++) {
+      const obj = s.stateGraph.create("note", { text: `note-${i}` });
+      s.eventLog.append({
+        kind: "context_action",
+        actor: "kernel",
+        payload: {
+          action: "create",
+          id: obj.id,
+          kind: obj.kind,
+          tier: obj.tier,
+          statePayload: obj.payload,
+          created: obj.created,
+          updated: obj.updated,
+          lastTouched: obj.lastTouched,
+        },
+      });
+    }
+    s.persistStateGraphCheckpoint();
+
+    const events = s.eventLog.readAll();
+    const checkpoint = loadStateGraphCheckpoint(sessionDir);
+    expect(checkpoint).not.toBeNull();
+
+    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumed.stateGraph.list().length).toBe(50);
+
+    const replayed = replayStateGraphFromEvents(
+      resumed.stateGraph,
+      events,
+      events.length,
+    );
+    expect(replayed).toBe(0);
+
+    await resumed.end("clean");
+    rmSync(sessionDir, { recursive: true, force: true });
+  });
+
+  it("falls back to full replay when checkpoint is missing", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+    const sessionDir = join(testLogDir, sid);
+    const obj = s.stateGraph.create("note", { text: "fallback" });
+    s.eventLog.append({
+      kind: "context_action",
+      actor: "kernel",
+      payload: {
+        action: "create",
+        id: obj.id,
+        kind: obj.kind,
+        tier: obj.tier,
+        statePayload: obj.payload,
+        created: obj.created,
+        updated: obj.updated,
+        lastTouched: obj.lastTouched,
+      },
+    });
+    s.persistStateGraphCheckpoint();
+    expect(existsSync(getStateGraphCheckpointPath(sessionDir))).toBe(true);
+    rmSync(getStateGraphCheckpointPath(sessionDir));
+
+    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumed.stateGraph.list()).toHaveLength(1);
+    await resumed.end("clean");
+    rmSync(sessionDir, { recursive: true, force: true });
   });
 });

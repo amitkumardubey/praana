@@ -5,12 +5,19 @@ import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
-import type { PraanaConfig, SkillRecord } from "./types.js";
+import type { PraanaConfig, SkillRecord, Event } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
+import {
+  deleteStateGraphCheckpoint,
+  findReplayStartIndex,
+  loadStateGraphCheckpoint,
+  replayStateGraphFromEvents,
+  saveStateGraphCheckpoint,
+} from "./state-graph-checkpoint.js";
 import { loadConfig } from "./config.js";
 import {
   MemoryStore,
@@ -214,20 +221,7 @@ export class Session {
     await initSkills(session, cfg, cwd);
 
     const allEvents = session.eventLog.readAll();
-
-    // Replay state mutations chronologically. Reset markers intentionally clear
-    // earlier context_action events so /clear remains effective after resume.
-    for (const ev of allEvents) {
-      if (ev.kind === "context_action") {
-        session.stateGraph.replayAction(ev.payload);
-      } else if (
-        ev.kind === "system_note" &&
-        ev.payload.type === "state_reset" &&
-        ev.payload.cleared === "all"
-      ) {
-        session.stateGraph.clear();
-      }
-    }
+    session.restoreWorkingMemory(allEvents);
 
     loadProjectContextField(session, cwd);
 
@@ -321,6 +315,45 @@ export class Session {
 
   clearState(): void {
     this.stateGraph.clear();
+  }
+
+  /** Persist working-memory state for fast resume (issue #74). */
+  persistStateGraphCheckpoint(): void {
+    const events = this.eventLog.readAll();
+    const lastEvent = events.at(-1);
+    if (!lastEvent) return;
+
+    const sessionDir = join(this.config.session.log_dir, this.id);
+    const checkpoint = this.stateGraph.exportCheckpoint(
+      lastEvent.event_id,
+      this.turnCount,
+    );
+    saveStateGraphCheckpoint(sessionDir, checkpoint);
+  }
+
+  /** Load checkpoint + replay post-checkpoint state mutations (issue #74). */
+  private restoreWorkingMemory(allEvents: Event[]): void {
+    const sessionDir = join(this.config.session.log_dir, this.id);
+    const checkpoint = loadStateGraphCheckpoint(sessionDir);
+
+    if (!checkpoint) {
+      replayStateGraphFromEvents(this.stateGraph, allEvents, 0);
+      return;
+    }
+
+    const startIndex = findReplayStartIndex(allEvents, checkpoint.last_event_id);
+    if (startIndex === null) {
+      this.getLogger().child("session").warn(
+        "State graph checkpoint anchor missing, falling back to full replay",
+      );
+      deleteStateGraphCheckpoint(sessionDir);
+      replayStateGraphFromEvents(this.stateGraph, allEvents, 0);
+      return;
+    }
+
+    this.stateGraph.restoreFromCheckpoint(checkpoint);
+    this.turnCount = checkpoint.session_turn_count;
+    replayStateGraphFromEvents(this.stateGraph, allEvents, startIndex);
   }
 
   getStartedAt(): number {

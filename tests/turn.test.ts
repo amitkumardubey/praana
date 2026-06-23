@@ -247,6 +247,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
       this._turnCount++;
       this.stateGraph.incrementTurn();
     },
+    persistStateGraphCheckpoint: vi.fn(),
     getTurnCount() { return this._turnCount; },
     getMemoryStats() {
       return {

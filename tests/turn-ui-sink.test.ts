@@ -107,6 +107,7 @@ function mockSession(): Session {
     recordInputTokens: vi.fn(),
     recordOutputTokens: vi.fn(),
     incrementTurn: vi.fn(),
+    persistStateGraphCheckpoint: vi.fn(),
     getMemoryStats: vi.fn(() => ({
       total: 0,
       active: 0,
