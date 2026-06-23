@@ -27,6 +27,7 @@ import type {
   CompileScoreRecord,
   ContextUnit,
   PressureMode,
+  ScoreBreakdown,
   TurnRecord,
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
@@ -42,6 +43,8 @@ export interface EngineCompileInput extends CompileInput {
   engineConfig: ContextEngineConfig;
   /** Model input context window; pressure is measured against this when set. */
   contextWindowTokens?: number;
+  /** Searchable texts of auto-hydrated peripheral objects; used for scoring boost. */
+  hydratedTexts?: string[];
 }
 
 export interface EngineCompileResult {
@@ -308,14 +311,14 @@ export function compileEngineWithMetrics(
     (u) => input.currentTurn - u.sourceTurn > 6,
   );
 
-  const rankedRecent = rankContextUnits(recentUnits, input.currentTurn, userInput, weights);
-  const rankedOlder = rankContextUnits(olderUnits, input.currentTurn, userInput, weights);
+  const rankedRecent = rankContextUnits(recentUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
+  const rankedOlder = rankContextUnits(olderUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
 
   const recentPick = selectUnitsWithinBudget(rankedRecent, BAND_SCORED_RECENT_TOKENS);
   const olderPick = selectUnitsWithinBudget(rankedOlder, BAND_SCORED_OLDER_TOKENS);
 
   const recordScore = (
-    unit: ContextUnit & { score: number; breakdown: { pin: number; recency: number; relevance: number } },
+    unit: ContextUnit & { score: number; breakdown: ScoreBreakdown },
     included: boolean,
     band: number,
   ) => {
@@ -331,6 +334,7 @@ export function compileEngineWithMetrics(
         pin: Number(unit.breakdown.pin.toFixed(4)),
         recency: Number(unit.breakdown.recency.toFixed(4)),
         relevance: Number(unit.breakdown.relevance.toFixed(4)),
+        hydrate_boost: Number((unit.breakdown.hydrate_boost).toFixed(4)),
       },
     });
   };

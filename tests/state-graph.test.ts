@@ -124,11 +124,11 @@ describe('StateGraph', () => {
     const task = sg.create('task', { title: 'Fix login bug', status: 'todo' });
     sg.setTier(task.id, 'soft');
 
-    // Query matching note1
+    // Query matching note1 via substring
     const hydrated1 = sg.autoHydrate('What is the staging API key?');
-    expect(hydrated1).toContain(note1.id);
-    expect(hydrated1).not.toContain(note2.id);
-    expect(hydrated1).not.toContain(task.id);
+    expect(hydrated1.map((r) => r.id)).toContain(note1.id);
+    expect(hydrated1.map((r) => r.id)).not.toContain(note2.id);
+    expect(hydrated1.map((r) => r.id)).not.toContain(task.id);
     expect(sg.get(note1.id)?.tier).toBe('active');
 
     // Re-demote for next test
@@ -136,13 +136,39 @@ describe('StateGraph', () => {
 
     // Query matching task title
     const hydrated2 = sg.autoHydrate('Tell me about the login bug');
-    expect(hydrated2).toContain(task.id);
+    expect(hydrated2.map((r) => r.id)).toContain(task.id);
     expect(sg.get(task.id)?.tier).toBe('active');
 
     // Query with no meaningful keywords should hydrate nothing
     sg.setTier(task.id, 'soft');
     const hydrated3 = sg.autoHydrate('ok');
     expect(hydrated3).toHaveLength(0);
+  });
+
+  it('should hydrate via BM25 when substring match misses but semantic overlap exists', () => {
+    const sg = new StateGraph();
+
+    const task = sg.create('task', { title: 'Fix authentication bug', status: 'todo', description: 'Login endpoint returns 401' });
+    sg.setTier(task.id, 'soft');
+
+    // 'auth' is a substring of 'authentication', so substring match should also catch it
+    // Use a longer semantic query that BM25 handles better
+    const hydrated = sg.autoHydrate('the login endpoint keeps failing with 401');
+    expect(hydrated.map((r) => r.id)).toContain(task.id);
+    expect(sg.get(task.id)?.tier).toBe('active');
+  });
+
+  it('autoHydrate result includes text and method fields', () => {
+    const sg = new StateGraph();
+    const note = sg.create('note', { text: 'database connection pool is exhausted' });
+    sg.setTier(note.id, 'soft');
+
+    const results = sg.autoHydrate('database connection');
+    expect(results.length).toBeGreaterThan(0);
+    const r = results.find((x) => x.id === note.id);
+    expect(r).toBeDefined();
+    expect(r?.text).toBeTruthy();
+    expect(['substring', 'bm25']).toContain(r?.method);
   });
 
   it('should enforce at-most-one focused object and render it first in getActive', () => {

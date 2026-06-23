@@ -204,6 +204,8 @@ export interface ScoreBreakdown {
   pin: number;
   recency: number;
   relevance: number;
+  /** Boost from auto-hydrated object text overlap; 0 when feature is off. */
+  hydrate_boost: number;
 }
 
 export interface ScoredContextUnit extends ContextUnit {

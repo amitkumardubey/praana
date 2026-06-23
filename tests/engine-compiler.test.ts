@@ -13,7 +13,7 @@ const ENGINE_CONFIG: ContextEngineConfig = {
   llm_digest: false,
   activity_log_max_entries: 15,
   checkpoint_enabled: true,
-  scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3 },
+  scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3, w_hydrate_boost: 0.2 },
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };
 
@@ -158,5 +158,94 @@ describe("engine compiler", () => {
     const recent = scoreContextUnit(unit, 5, "fix failing tests", ENGINE_CONFIG.scoring);
     const pinnedScore = scoreContextUnit(pinned, 5, "fix failing tests", ENGINE_CONFIG.scoring);
     expect(pinnedScore.score).toBeGreaterThan(recent.score);
+  });
+
+  it("hydrate_boost increases score when unit content overlaps hydrated object text", () => {
+    const unit: ContextUnit = {
+      id: "turn_5",
+      type: "turn_digest",
+      content: "Updated the login authentication handler to fix the 401 error",
+      tokens: 50,
+      sourceTurn: 5,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const weights = ENGINE_CONFIG.scoring; // w_hydrate_boost: 0.2
+    const baseResult = scoreContextUnit(unit, 10, "auth bug", weights);
+    const boostedResult = scoreContextUnit(unit, 10, "auth bug", weights, [
+      "Fix authentication bug — Login endpoint returns 401",
+    ]);
+    expect(boostedResult.score).toBeGreaterThan(baseResult.score);
+    expect(boostedResult.breakdown.hydrate_boost).toBeGreaterThan(0);
+  });
+
+  it("hydrate_boost is zero when hydratedTexts is empty or w_hydrate_boost is 0", () => {
+    const unit: ContextUnit = {
+      id: "turn_6",
+      type: "turn_digest",
+      content: "login auth handler",
+      tokens: 30,
+      sourceTurn: 6,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const weightsNoBoost = { ...ENGINE_CONFIG.scoring, w_hydrate_boost: 0 };
+    const r1 = scoreContextUnit(unit, 10, "auth", weightsNoBoost, ["login auth handler"]);
+    expect(r1.breakdown.hydrate_boost).toBe(0);
+
+    const r2 = scoreContextUnit(unit, 10, "auth", ENGINE_CONFIG.scoring, []);
+    expect(r2.breakdown.hydrate_boost).toBe(0);
+  });
+
+  it("hydratedTexts flow through compileEngineWithMetrics to scoring", () => {
+    const unit: ContextUnit = {
+      id: "turn_3",
+      type: "turn_digest",
+      content: "fixed authentication login endpoint returning 401 error",
+      tokens: 50,
+      sourceTurn: 3,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const baseResult = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "auth issue",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-3",
+      tokenBudget: 100_000,
+      checkpointSection: "",
+      currentTurn: 10,
+      turnRecords: [{ turn: 3, userMessage: "fix auth", assistantMessage: "done", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+    });
+    const boostedResult = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "auth issue",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-4",
+      tokenBudget: 100_000,
+      checkpointSection: "",
+      currentTurn: 10,
+      turnRecords: [{ turn: 3, userMessage: "fix auth", assistantMessage: "done", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      hydratedTexts: ["Fix authentication login bug — endpoint returning 401"],
+    });
+    const basePick = baseResult.scoreRecords.find((r) => r.unitId.includes("turn"));
+    const boostedPick = boostedResult.scoreRecords.find((r) => r.unitId.includes("turn"));
+    if (basePick && boostedPick) {
+      expect(boostedPick.breakdown.hydrate_boost).toBeGreaterThan(0);
+      expect(boostedPick.score).toBeGreaterThan(basePick.score);
+    }
   });
 });
