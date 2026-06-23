@@ -260,14 +260,18 @@ describe('EventLog', () => {
       });
     }
 
-    const readSpy = vi.spyOn(eventLog as any, 'internalRead');
+    // Warm up the cache with an initial read.
+    eventLog.readAll();
+    // Capture the internal cache array reference — if syncCache() returns early
+    // on subsequent reads (no re-parse), this reference must stay identical.
+    const cacheRef = (eventLog as any).eventCache as Event[];
+
     eventLog.readAll();
     eventLog.readLast(2);
     eventLog.search('Cache');
 
-    // internalRead should be invoked once per public method; we care that
-    // repeated reads still return correct data without re-parsing from disk.
-    expect(readSpy).toHaveBeenCalled();
+    // Internal cache object must be the same reference: no re-parse happened.
+    expect((eventLog as any).eventCache).toBe(cacheRef);
     expect(eventLog.readAll().length).toBe(3);
   });
 
@@ -293,6 +297,36 @@ describe('EventLog', () => {
     // second event without needing a full re-parse.
     const secondRead = eventLog.readAll();
     expect(secondRead.length).toBe(2);
+  });
+
+  it('should include pre-existing events when append() is called before readAll()', () => {
+    // Write an event and close the log, simulating a prior session run.
+    eventLog.append({
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'Prior' },
+    });
+    eventLog.close();
+
+    // Reopen the same session log with a fresh instance (cold cache).
+    const freshLog = new EventLog('test-session-1', testLogDir);
+    try {
+      // append() is called BEFORE readAll() — this is the guarded edge case.
+      freshLog.append({
+        kind: 'user_message',
+        actor: 'user',
+        payload: { text: 'New' },
+      });
+
+      const all = freshLog.readAll();
+      expect(all.length).toBe(2);
+      expect((all[0].payload as any).text).toBe('Prior');
+      expect((all[1].payload as any).text).toBe('New');
+    } finally {
+      freshLog.close();
+    }
+    // Re-initialise eventLog so afterEach.close() doesn't error on a closed fd.
+    eventLog = new EventLog('test-session-1-new', testLogDir);
   });
 
   it('should re-read from disk when file is externally modified', () => {

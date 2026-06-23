@@ -147,6 +147,15 @@ export class EventLog {
     event_id?: string;
     timestamp?: number;
   }): void {
+    // Hydrate the cache from disk BEFORE writing, so the new event is not
+    // double-counted. If syncCache() ran after writeSync it would read the file
+    // (which already contains the new line) and then the push below would add it
+    // a second time. Calling it first also prevents silently losing prior events
+    // when append() is invoked before any read on a non-empty log file.
+    if (this.eventCache === null) {
+      this.syncCache();
+    }
+
     const fullEvent: Event = {
       event_id: event.event_id ?? ulid(),
       session_id: this.sessionId,
@@ -159,11 +168,7 @@ export class EventLog {
     writeSync(this.fd, line, undefined, "utf-8");
     fsyncSync(this.fd);
 
-    if (this.eventCache === null) {
-      this.eventCache = [fullEvent];
-    } else {
-      this.eventCache.push(fullEvent);
-    }
+    this.eventCache!.push(fullEvent);
 
     // Record the real file stats so the next read does not need to re-sync.
     const stats = statSync(this.logPath);
@@ -227,7 +232,10 @@ export class EventLog {
 
   private internalRead(): Event[] {
     this.syncCache();
-    return this.eventCache ?? [];
+    // Return a shallow copy so callers cannot mutate the internal cache.
+    // Previously internalRead() always built a fresh array via split/filter/map;
+    // this preserves that behaviour with the new cache-backed path.
+    return this.eventCache ? [...this.eventCache] : [];
   }
 
   getSessionId(): string {
