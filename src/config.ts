@@ -102,6 +102,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
       w_pin: 1.0,
       w_recency: 0.5,
       w_relevance: 0.3,
+      w_hydrate_boost: 0.2,
     },
     pressure: {
       compact_at: 0.7,

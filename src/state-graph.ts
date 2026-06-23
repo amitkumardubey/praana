@@ -1,4 +1,8 @@
 import { ulid } from "ulid";
+import { bm25Relevance } from "./context-engine/bm25.js";
+
+/** Minimum BM25 score for a peripheral object to be promoted via BM25 hydration. */
+const BM25_HYDRATE_THRESHOLD = 0.15;
 import type {
   StateObject,
   StateObjectKind,
@@ -133,23 +137,42 @@ export class StateGraph {
   }
 
   /**
-   * Auto-promote peripheral objects whose payload matches keywords in the query.
-   * Returns IDs of objects that were hydrated.
+   * Promote peripheral objects whose payload matches the query.
+   * Two passes: (1) substring keyword match, (2) BM25 relevance above threshold.
+   * Returns AutoHydrateResult[] — callers use .text for downstream scoring boost.
    */
-  autoHydrate(query: string): string[] {
+  autoHydrate(query: string): AutoHydrateResult[] {
     const keywords = extractKeywords(query);
-    if (keywords.length === 0) return [];
+    const hydrated: AutoHydrateResult[] = [];
 
-    const hydrated: string[] = [];
+    // Pass 1: substring keyword match (fast, low overhead)
+    if (keywords.length > 0) {
+      for (const obj of this.getPeripheral()) {
+        const text = payloadToSearchableText(obj);
+        if (keywords.some((kw) => text.toLowerCase().includes(kw))) {
+          obj.tier = "active";
+          obj.lastTouched = Date.now();
+          this.touchedTurn.set(obj.id, this.turnCount);
+          hydrated.push({ id: obj.id, text, method: "substring" });
+        }
+      }
+    }
+
+    // Pass 2: BM25 — catches overlap that substring misses (e.g. short tokens
+    // filtered by extractKeywords but present in full BM25 query tokenization).
+    // getPeripheral() returns a fresh snapshot: objects promoted in Pass 1 are
+    // already tier="active" and won't appear here, so no deduplication guard needed.
     for (const obj of this.getPeripheral()) {
-      const text = payloadToSearchableText(obj).toLowerCase();
-      if (keywords.some((kw) => text.includes(kw))) {
+      const text = payloadToSearchableText(obj);
+      const score = bm25Relevance(query, text);
+      if (score >= BM25_HYDRATE_THRESHOLD) {
         obj.tier = "active";
         obj.lastTouched = Date.now();
         this.touchedTurn.set(obj.id, this.turnCount);
-        hydrated.push(obj.id);
+        hydrated.push({ id: obj.id, text, method: "bm25" });
       }
     }
+
     return hydrated;
   }
 
@@ -244,6 +267,15 @@ export function summarizePayloadFn(obj: StateObject): string {
 }
 
 // ---- Auto-hydrate helpers ----
+
+/** Result from autoHydrate — includes the object’s text for downstream scoring boost. */
+export interface AutoHydrateResult {
+  id: string;
+  /** Searchable payload text; passed to scoring for hydrate_boost calculation. */
+  text: string;
+  /** Which signal triggered hydration. */
+  method: "substring" | "bm25";
+}
 
 const STOP_WORDS = new Set([
   "the","a","an","is","are","was","were","be","been","being",

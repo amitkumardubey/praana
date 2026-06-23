@@ -124,11 +124,11 @@ describe('StateGraph', () => {
     const task = sg.create('task', { title: 'Fix login bug', status: 'todo' });
     sg.setTier(task.id, 'soft');
 
-    // Query matching note1
+    // Query matching note1 via substring
     const hydrated1 = sg.autoHydrate('What is the staging API key?');
-    expect(hydrated1).toContain(note1.id);
-    expect(hydrated1).not.toContain(note2.id);
-    expect(hydrated1).not.toContain(task.id);
+    expect(hydrated1.map((r) => r.id)).toContain(note1.id);
+    expect(hydrated1.map((r) => r.id)).not.toContain(note2.id);
+    expect(hydrated1.map((r) => r.id)).not.toContain(task.id);
     expect(sg.get(note1.id)?.tier).toBe('active');
 
     // Re-demote for next test
@@ -136,13 +136,44 @@ describe('StateGraph', () => {
 
     // Query matching task title
     const hydrated2 = sg.autoHydrate('Tell me about the login bug');
-    expect(hydrated2).toContain(task.id);
+    expect(hydrated2.map((r) => r.id)).toContain(task.id);
     expect(sg.get(task.id)?.tier).toBe('active');
 
     // Query with no meaningful keywords should hydrate nothing
     sg.setTier(task.id, 'soft');
     const hydrated3 = sg.autoHydrate('ok');
     expect(hydrated3).toHaveLength(0);
+  });
+
+  it('should hydrate via BM25 when extractKeywords yields no keywords', () => {
+    const sg = new StateGraph();
+
+    // extractKeywords filters tokens shorter than 3 chars, so a query like 'S3 up'
+    // produces no keywords — Pass 1 is skipped entirely. BM25 still tokenizes the
+    // full query and scores the 's3' token overlap against the note payload,
+    // pushing it above BM25_HYDRATE_THRESHOLD via Pass 2.
+    const note = sg.create('note', { text: 'AWS S3 bucket job running' });
+    sg.setTier(note.id, 'soft');
+
+    const hydrated = sg.autoHydrate('S3 up');
+    expect(hydrated.map((r) => r.id)).toContain(note.id);
+    const r = hydrated.find((x) => x.id === note.id);
+    expect(r?.method).toBe('bm25');
+    expect(sg.get(note.id)?.tier).toBe('active');
+  });
+
+  it('autoHydrate result includes text and method fields', () => {
+    const sg = new StateGraph();
+    const note = sg.create('note', { text: 'database connection pool is exhausted' });
+    sg.setTier(note.id, 'soft');
+
+    const results = sg.autoHydrate('database connection');
+    expect(results.length).toBeGreaterThan(0);
+    const r = results.find((x) => x.id === note.id);
+    expect(r).toBeDefined();
+    expect(r?.text).toBeTruthy();
+    // 'database' and 'connection' are ≥3-char keywords that substring-match the note
+    expect(r?.method).toBe('substring');
   });
 
   it('should enforce at-most-one focused object and render it first in getActive', () => {

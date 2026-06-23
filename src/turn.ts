@@ -5,6 +5,7 @@ import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
+import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
 import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
@@ -73,11 +74,11 @@ export async function runTurn(
     s.onDebug?.("context engine unavailable — falling back to classic compiler");
   }
 
-  let autoHydrated: string[] = [];
+  let autoHydrated: AutoHydrateResult[] = [];
   if (!classicMode) {
     autoHydrated = session.stateGraph.autoHydrate(userInput);
     if (autoHydrated.length > 0) {
-      for (const id of autoHydrated) {
+      for (const { id, method } of autoHydrated) {
         const obj = session.stateGraph.get(id)!;
         session.eventLog.append({
           kind: "context_action",
@@ -88,11 +89,12 @@ export async function runTurn(
             tier: "active",
             lastTouched: obj.lastTouched,
             reason: "auto_hydrate",
+            hydrate_method: method,
           },
         });
       }
       if (session.debug) {
-        s.onDebug?.(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.join(", ")}`);
+        s.onDebug?.(`auto-hydrated ${autoHydrated.length} object(s): ${autoHydrated.map((r) => r.id).join(", ")}`);
       }
     }
   }
@@ -173,6 +175,7 @@ export async function runTurn(
       activityEntries: session.contextEngine!.getRecentActivity(),
       engineConfig,
       contextWindowTokens,
+      hydratedTexts: autoHydrated.map((r) => r.text),
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = engineResult.metrics;
