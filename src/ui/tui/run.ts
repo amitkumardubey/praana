@@ -8,6 +8,7 @@ import {
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./tool-display.js";
 import { TuiApp } from "./app.js";
+import { estimateTokens } from "../../token-estimate.js";
 
 export async function runTui(
   controller: AppController,
@@ -19,7 +20,7 @@ export async function runTui(
   const bootSummary = formatTuiBootSummary({
     sessionId: session.id,
     contextTokens: session.agentsContext
-      ? Math.ceil(session.agentsContext.length / 4)
+      ? estimateTokens(session.agentsContext)
       : undefined,
     engineEnabled: session.isContextEngineEnabled(),
     skillCount: session.skills.length,

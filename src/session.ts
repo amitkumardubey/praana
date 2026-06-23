@@ -36,6 +36,7 @@ import {
 import { formatActiveModelLabel } from "./model-resolver.js";
 import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
+import { estimateTokens } from "./token-estimate.js";
 
 /** Outcome of the session-end memory summarization step. */
 export type SessionEndStatus = {
@@ -116,7 +117,7 @@ export class Session {
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
-      const tokEst = Math.ceil(session.agentsContext.length / 4);
+      const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
     }
 
@@ -205,7 +206,7 @@ export class Session {
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
-      const tokEst = Math.ceil(session.agentsContext.length / 4);
+      const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
     }
 
@@ -1064,7 +1065,7 @@ export function loadAgentsContext(cwd: string): string | null {
   const combined = parts.join("\n\n");
   if (combined.length > MAX_CHARS) {
     getAppLogger().child("session").warn("AGENTS.md content truncated to ~4000 tokens", {
-      details: { tokenEstimate: Math.ceil(combined.length / 4) },
+      details: { tokenEstimate: estimateTokens(combined) },
     });
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
   }
@@ -1098,7 +1099,7 @@ function applyProjectContext(session: Session, cwd: string): void {
       summary: projectContext.slice(0, 100),
     },
   });
-  session.getLogger().notice(`fingerprint ${Math.ceil(projectContext.length / 4)} tok`, {
+  session.getLogger().notice(`fingerprint ${estimateTokens(projectContext)} tok`, {
     domain: "session",
   });
 

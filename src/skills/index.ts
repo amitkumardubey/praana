@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
+import { estimateTokens } from "../token-estimate.js";
 import {
   tokenizeShort,
   buildBM25StatsFromTokens,
@@ -917,10 +918,10 @@ export class SkillRuntime {
     let total = 0;
     for (const section of state.loadedSections) {
       const content = this.getSectionContent(state, section);
-      total += Math.ceil(content.length / 4);
+      total += estimateTokens(content);
     }
     if (state.loadedSections.length === 0 && state.body) {
-      total = Math.ceil(state.body.length / 4);
+      total = estimateTokens(state.body);
     }
     return Math.min(total, state.entry.maxTokens);
   }

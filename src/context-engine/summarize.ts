@@ -1,9 +1,5 @@
 import type { ContentType } from "./types.js";
-
-/** Rough token estimate: 1 token ≈ 4 chars. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+export { estimateTokens } from "../token-estimate.js";
 
 /** Generic head/tail summary for Phase 1 (specialized distillers land in Phase 2). */
 export function summarizeGeneric(rawText: string, contentType: ContentType): string {

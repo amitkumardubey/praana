@@ -11,6 +11,7 @@ import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
   compileEngineWithMetrics,
   resolveContextEngineConfig,
+  estimateTokens,
 } from "./context-engine/index.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
@@ -698,15 +699,6 @@ function flushSkillTelemetry(session: Session): void {
       payload: { type: "skill_telemetry", event },
     });
   }
-}
-
-/**
- * Heuristic for estimating output tokens from response text length.
- * Note: this is a rough estimate that degrades for non-ASCII text.
- * Ideally we'd get `usage` from the provider directly in the future.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 export function isZodSchema(schema: unknown): schema is ZodTypeAny {

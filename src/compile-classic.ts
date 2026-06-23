@@ -1,6 +1,7 @@
 import type { Event } from "./types.js";
 import type { CompileMetrics } from "./compiler.js";
 import { buildCrossSessionMemory } from "./compiler.js";
+import { estimateTokens as estTokens } from "./token-estimate.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -14,9 +15,7 @@ export interface ClassicCompileInput {
   userInput?: string;
 }
 
-function estTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+
 
 export function buildClassicSystemFrame(
   cwd: string,
