@@ -33,8 +33,9 @@ Every state object lives in one of three tiers:
 
 Demotion happens automatically at the end of each turn based on how many turns have passed since the object was last touched. The thresholds are configurable (`idle_soft_after_turns`, `idle_hard_after_turns`).
 
-Promotion (`hard` or `soft` → `active`) happens in two ways:
-- **Automatic** — before each prompt, PRAANA extracts keywords from your input and matches them against peripheral objects. Matches promote automatically.
+Promotion (`hard` or `soft` → `active`) happens in three ways:
+- **Substring keyword match** — before each prompt, PRAANA extracts keywords from your input (alphanumeric strings ≥3 chars, filtering common stop words) and matches them against peripheral objects. Matches promote automatically.
+- **BM25 relevance match** — peripheral objects with no substring keyword match are scored with `bm25Relevance(query, text)`. Objects above threshold (0.15) promote automatically, catching fuzzy overlap like "S3 upload" ↔ "AWS bucket".
 - **Manual** — the agent can call `hydrate(id)` to explicitly promote an object.
 
 ### Why This Matters

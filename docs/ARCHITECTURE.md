@@ -16,7 +16,7 @@ src/
   session.ts     — Session lifecycle (create/resume/end) & memory init
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
-  state-graph.ts — Tiered state management (active/soft/hard) & keyword auto-hydrate
+  state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
   model-resolver.ts — /model parsing and provider+model resolution
   provider-catalog.ts — live /models fetch + 6h cache for OpenAI-compatible providers
@@ -24,6 +24,8 @@ src/
   config.ts      — Multi-source JSON/TOML config loading & deep-merge
   types.ts       — Core shared TypeScript types
   ui.ts          — CLI output formatting, banners, and text colors
+  utils/
+    bm25.ts      — Shared BM25 tokenization, scoring, and corpus statistics
   context-engine/
     index.ts       — ContextEngine facade (store, ledger, extraction, checkpoint, telemetry)
     types.ts       — Engine-level interfaces
@@ -40,7 +42,7 @@ src/
     state-snapshot.ts — StateGraph snapshot and diff for decision/constraint extraction
     scoring.ts     — 3-term scoring (pin + recency + relevance) and budget selection
     engine-compiler.ts — Multi-resolution budget-band compiler (engine mode)
-    bm25.ts        — BM25 scoring for context unit relevance and turn search
+    bm25.ts        — Re-exports shared BM25 utilities for context-unit and turn-search scoring
     turn-recorder.ts — Per-turn event recording for the turn ledger
     event-lineage.ts — Trace artifacts back to producing turns, decisions, files
     telemetry.ts   — Per-session telemetry: pressure events, retrieval rates, distiller savings
@@ -63,7 +65,7 @@ src/
     index.ts     — Memory store exports
     store.ts     — High-level MemoryStore API (remember, recall, session start/end)
     db.ts        — SQLite schema and operations (entries, entry_scopes, sessions, entries_vec)
-    embeddings.ts — Hash-based pseudo-semantic embedder (MVP)
+    embeddings.ts — Ollama embedder adapter (optional, opt-in)
     types.ts     — Memory-specific types
     summarizer.ts — LLM-based extraction logic (conversation transcript → learnings JSON)
     openai-summarizer.ts — Chat completion fetch adapter for summarization
@@ -79,7 +81,7 @@ User input
       2) select mode:
          Engine: context_engine.enabled=true AND ContextEngine initialized
          Classic: everything else (disabled, or enabled but init failed)
-      3) [engine only] auto-hydrate matching peripheral state (keyword matching)
+      3) [engine only] auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
       4) [engine only] capture StateGraph snapshot (for post-turn diff)
       5) [engine only] ingest tool results through distillers; classic passes through
       6) compile prompt:
@@ -155,7 +157,12 @@ Managed dynamically after each turn in `src/turn.ts`:
 
 ### Auto-Hydration
 
-Before a turn prompt is compiled, `stateGraph.autoHydrate(userInput)` extracts keywords (alphanumeric strings $\ge 3$ characters, filtering common English stop words) and matches them against the searchable text representation of peripheral state objects. Matching stubs are promoted to `active` automatically and logged as `context_action` events with `reason: "auto_hydrate"`.
+Before a turn prompt is compiled, `stateGraph.autoHydrate(userInput)` runs two passes against peripheral state objects:
+
+1. **Substring keyword match** — extracts keywords (alphanumeric strings $\ge 3$ characters, filtering common English stop words) and matches them against the searchable text representation of peripheral objects. Fast and catches exact references.
+2. **BM25 relevance** — scores remaining peripheral objects with `bm25Relevance(query, text)`. Objects scoring $\ge 0.15$ (the `BM25_HYDRATE_THRESHOLD`) are promoted even when no substring keywords matched. This catches fuzzy overlap that substring matching misses — for example, when a user mentions "S3 upload" and a peripheral object about "AWS bucket" gets promoted.
+
+Returns `AutoHydrateResult[]` with `{ id, text, method }` (`method` is `"substring"` or `"bm25"`). The `text` field is passed through to context-unit scoring for `hydrate_boost` calculation (see [Scoring](#engine-mode-context_engineenabled--true-engine-initialized) below). Promotions are logged as `context_action` events with `reason: "auto_hydrate"` and `hydrate_method: "substring" | "bm25"`.
 
 ## Event Log
 
@@ -198,7 +205,7 @@ const classicMode = !useEngineCompiler;
 5. **Band 5 (scored):** Older turn digests — ~2000 tokens.
 6. **Band 6 (remaining):** Memory digest, low-priority state — remainder.
 
-Context units are scored with a 3-term model: `pin_boost × W_pin + recency(age) × W_recency + BM25(query, content) × W_relevance`. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`.
+Context units are scored with a 4-term model: `pin_boost × W_pin + recency(age) × W_recency + BM25(query, content) × W_relevance + hydrate_boost × W_hydrate`. The hydrate boost is the maximum `bm25Relevance(ht, unitContent)` across all auto-hydrated object texts — it gives a lift to context units (e.g. older turn digests) that discuss the same objects the user just implicitly referenced. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`, `w_hydrate_boost=0.2`.
 
 Pressure monitoring: `contextPressure = estimatedTokens / usableBudget`. `>0.70` triggers compaction (drop older digests). `>0.85` triggers emergency (keep only checkpoint + last 2 turns + current artifact cards).
 
@@ -373,6 +380,7 @@ default_intensity = "full"         # lite | full
 w_pin = 1.0
 w_recency = 0.5
 w_relevance = 0.3
+w_hydrate_boost = 0.2    # boost for context units overlapping auto-hydrated objects
 
 [context_engine.pressure]
 compact_at = 0.70

@@ -16,7 +16,7 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 npm install
 npm run build    # TypeScript compile → dist/
 npm run dev      # Run with tsx (no build step)
-npm test         # 61 files, 658 tests, ~2s
+npm test         # 74 files, 851 tests, ~5s
 ```
 
 Requires Node 22+. Native dependencies are optional (see Embedder Config below).
@@ -155,7 +155,7 @@ src/
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
   compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
-  state-graph.ts — Tiered state (active/soft/hard), auto-demotion, auto-hydrate
+  state-graph.ts — Tiered state (active/soft/hard), auto-demotion, two-pass auto-hydrate (substring + BM25)
   event-log.ts   — Append-only events.jsonl, fsyncSync durability
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
@@ -196,7 +196,7 @@ Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true`
 
 ```
 User input
-  → auto-hydrate matching peripheral state (keyword matching)
+  → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
   → skill matching (BM25) + residency promotion/demotion
   → compileEngineWithMetrics: system frame | skills | checkpoint | verbatim turns | scored context | active state | memory digest
   → stream LLM response with tool calls
