@@ -14,7 +14,7 @@ import {
   extractToolError,
   TurnRecorder,
 } from "./turn-recorder.js";
-import { bm25Score, tokenize } from "./bm25.js";
+import { bm25Score, tokenize, buildBM25Stats } from "./bm25.js";
 import type { ToolCallRecord, TurnRecord, TurnSearchMatch } from "./types.js";
 
 function buildExcerpt(record: TurnRecord, maxLen = 400): string {
@@ -193,19 +193,14 @@ export class TurnLedger {
     const queryTokens = tokenize(trimmed);
     if (queryTokens.length === 0) return [];
 
-    const docs = records.map((r) => tokenize(buildTurnSearchText(r)));
-    const totalDocs = docs.length;
-    const avgDocLen = docs.reduce((sum, d) => sum + d.length, 0) / totalDocs;
-    const docFreq = new Map<string, number>();
-    for (const doc of docs) {
-      const seen = new Set(doc);
-      for (const t of seen) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
-    }
+    const docTexts = records.map((r) => buildTurnSearchText(r));
+    const stats = buildBM25Stats(docTexts);
+    const docTokenLists = docTexts.map((d) => tokenize(d));
 
     const scored = records
       .map((record, i) => ({
         record,
-        score: bm25Score(queryTokens, docs[i], avgDocLen, totalDocs, docFreq),
+        score: bm25Score(queryTokens, docTokenLists[i], stats),
       }))
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)

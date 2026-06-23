@@ -4,6 +4,11 @@ import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
+import {
+  tokenizeShort,
+  buildBM25StatsFromTokens,
+  bm25Score,
+} from "../utils/bm25.js";
 import type {
   SkillMetadata,
   SkillRecord,
@@ -338,40 +343,6 @@ function extractSection(body: string, range: { start: number; end: number } | un
 // BM25 Matcher
 // ========================================================================
 
-// Default synonym map for V1
-const DEFAULT_SYNONYMS: Record<string, string[]> = {
-  deploy: ["launch", "release", "rollout", "publish"],
-  database: ["db", "postgres", "mysql", "sql", "rds", "dynamodb"],
-  container: ["docker", "ecs", "kubernetes", "k8s", "pod"],
-  aws: ["amazon", "ec2", "s3", "lambda", "cloud"],
-  test: ["testing", "spec", "assert", "verify", "check"],
-  build: ["compile", "bundle", "package", "construct"],
-  error: ["error", "failure", "bug", "issue", "crash", "exception"],
-  fix: ["fix", "repair", "patch", "resolve", "correct"],
-  code: ["code", "source", "implementation", "program"],
-  review: ["review", "audit", "inspect", "check"],
-  config: ["configuration", "setup", "settings", "options"],
-  monitor: ["monitoring", "observe", "watch", "track", "metrics"],
-  auth: ["authentication", "login", "oauth", "sso", "identity"],
-  api: ["rest", "graphql", "endpoint", "service", "http"],
-};
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 1);
-}
-
-function expandTokens(tokens: string[], synonymMap: Record<string, string[]>): string[] {
-  const expanded = new Set(tokens);
-  for (const t of tokens) {
-    const syns = synonymMap[t];
-    if (syns) for (const s of syns) expanded.add(s);
-  }
-  return [...expanded];
-}
-
 export function buildBM25Index(
   skills: SkillRecord[],
   meta: SkillsMetaFile,
@@ -405,34 +376,57 @@ export function buildBM25Index(
   });
 }
 
-/** Score a single query against a document using BM25 */
-function bm25Score(queryTokens: string[], docTokens: string[], avgDocLen: number, totalDocs: number, docFreq: Map<string, number>): number {
-  const k1 = 1.5;
-  const b = 0.75;
-  const docLen = docTokens.length;
-
-  // Count term frequencies in this document
-  const tf = new Map<string, number>();
-  for (const t of docTokens) tf.set(t, (tf.get(t) ?? 0) + 1);
-
-  let score = 0;
-  for (const qt of queryTokens) {
-    const freq = tf.get(qt) ?? 0;
-    if (freq === 0) continue;
-
-    const df = docFreq.get(qt) ?? 1;
-    const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5));
-    const numerator = freq * (k1 + 1);
-    const denominator = freq + k1 * (1 - b + b * (docLen / avgDocLen));
-    score += idf * (numerator / denominator);
-  }
-
-  return score;
-}
-
 export interface MatchResult {
   entry: SkillIndexEntry;
   score: number;
+}
+
+// Skills-specific helpers — synonym expansion, scoring bonuses, invocation detection.
+// These are skill-ranking concepts, not general BM25 primitives.
+
+const DEFAULT_SYNONYMS: Record<string, string[]> = {
+  deploy: ["launch", "release", "rollout", "publish"],
+  database: ["db", "postgres", "mysql", "sql", "rds", "dynamodb"],
+  container: ["docker", "ecs", "kubernetes", "k8s", "pod"],
+  aws: ["amazon", "ec2", "s3", "lambda", "cloud"],
+  test: ["testing", "spec", "assert", "verify", "check"],
+  build: ["compile", "bundle", "package", "construct"],
+  error: ["error", "failure", "bug", "issue", "crash", "exception"],
+  fix: ["fix", "repair", "patch", "resolve", "correct"],
+  code: ["code", "source", "implementation", "program"],
+  review: ["review", "audit", "inspect", "check"],
+  config: ["configuration", "setup", "settings", "options"],
+  monitor: ["monitoring", "observe", "watch", "track", "metrics"],
+  auth: ["authentication", "login", "oauth", "sso", "identity"],
+  api: ["rest", "graphql", "endpoint", "service", "http"],
+};
+
+function expandTokens(
+  tokens: string[],
+  synonymMap: Record<string, string[]>,
+): string[] {
+  const expanded = new Set(tokens);
+  for (const token of tokens) {
+    const syns = synonymMap[token];
+    if (syns) for (const syn of syns) expanded.add(syn);
+  }
+  return Array.from(expanded);
+}
+
+function keywordScore(queryTokens: string[], docTokens: string[]): number {
+  const querySet = new Set(queryTokens);
+  const docSet = new Set(docTokens);
+  const overlap = [...querySet].filter((t) => docSet.has(t)).length;
+  return docSet.size > 0 ? overlap / docSet.size : 0;
+}
+
+function nameMatchBonus(queryTokens: string[], nameTokens: string[]): number {
+  const querySet = new Set(queryTokens);
+  return nameTokens.some((nt) => querySet.has(nt)) ? 0.25 : 0;
+}
+
+function isExactInvocation(userInput: string, targetName: string): boolean {
+  return userInput.trim().toLowerCase() === targetName.toLowerCase();
 }
 
 /**
@@ -447,45 +441,29 @@ export function rankSkills(
   if (index.length === 0 || !userInput.trim()) return [];
 
   const syns = synonymMap ?? DEFAULT_SYNONYMS;
-  const queryTokens = expandTokens(tokenize(userInput), syns);
+  const queryTokens = expandTokens(tokenizeShort(userInput), syns);
   if (queryTokens.length === 0) return [];
 
-  // Build document frequency map across corpus
-  const docFreq = new Map<string, number>();
-  const docTokenLists: string[][] = [];
-
-  for (const entry of index) {
-    const tokens = tokenize(entry.searchText);
-    docTokenLists.push(tokens);
-    const unique = new Set(tokens);
-    for (const t of unique) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
-  }
-
-  const totalDocs = index.length;
-  const avgDocLen = docTokenLists.reduce((sum, t) => sum + t.length, 0) / Math.max(1, totalDocs);
+  // Tokenize once — same token stream for both stats and per-doc scoring.
+  const docTokenLists = index.map((entry) => tokenizeShort(entry.searchText));
+  const stats = buildBM25StatsFromTokens(docTokenLists);
 
   const results: MatchResult[] = [];
 
   for (let i = 0; i < index.length; i++) {
     const entry = index[i];
     const docTokens = docTokenLists[i];
-    let score = bm25Score(queryTokens, docTokens, avgDocLen, totalDocs, docFreq);
+    let score = bm25Score(queryTokens, docTokens, stats);
 
     // Keyword score bonus (0.5 weight): fraction of unique doc tokens that match query
-    const querySet = new Set(queryTokens);
-    const docSet = new Set(docTokens);
-    const overlap = [...querySet].filter((t) => docSet.has(t)).length;
-    const keywordScore = docSet.size > 0 ? overlap / docSet.size : 0;
-    score = score * 0.3 + keywordScore * 0.5;
+    score = score * 0.3 + keywordScore(queryTokens, docTokens) * 0.5;
 
     // Name match bonus: if the skill name appears in the query, add +0.25
-    const nameTokens = tokenize(entry.name);
-    const nameMatch = nameTokens.some((nt) => querySet.has(nt));
-    if (nameMatch) score += 0.25;
+    score += nameMatchBonus(queryTokens, tokenizeShort(entry.name));
 
     // Exact skill invocation should load the skill, even when the corpus is
     // tiny and BM25/keyword scoring would otherwise leave it WARM.
-    if (userInput.trim().toLowerCase() === entry.name.toLowerCase()) {
+    if (isExactInvocation(userInput, entry.name)) {
       score = Math.max(score, 0.5);
     }
 
