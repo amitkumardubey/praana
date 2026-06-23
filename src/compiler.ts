@@ -1,4 +1,5 @@
 import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.js";
+import { estimateTokens as estTokens } from "./token-estimate.js";
 import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
 
@@ -45,10 +46,7 @@ export interface CompileMetrics {
   skillsTruncated: boolean;
 }
 
-/** Estimate token count from character count. 1 token ≈ 4 chars is rough but consistent. */
-function estTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+
 
 /** Build a deterministic prompt from structured state. */
 export function compile(input: CompileInput): string {
@@ -403,7 +401,7 @@ function buildRecentTurnsWithTruncationFlag(events: Event[], tokenBudget?: numbe
   );
 
   let lastToolName: string | undefined;
-  let estimatedTokens = Math.ceil("# Recent Turns".length / 4);
+  let estimatedTokens = estTokens("# Recent Turns");
   let truncated = false;
 
   for (const ev of filtered) {
@@ -434,7 +432,7 @@ function buildRecentTurnsWithTruncationFlag(events: Event[], tokenBudget?: numbe
 
     if (line) {
       if (tokenBudget) {
-        const lineTokens = Math.ceil(line.length / 4);
+        const lineTokens = estTokens(line);
         if (estimatedTokens + lineTokens > tokenBudget) {
           lines.push("\n... (truncated due to token budget)");
           truncated = true;

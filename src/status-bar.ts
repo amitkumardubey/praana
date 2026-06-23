@@ -9,6 +9,7 @@ import type { CompileMetrics } from "./compiler.js";
 import type { Session } from "./session.js";
 import type { StateGraph } from "./state-graph.js";
 import type { TaskPayload } from "./types.js";
+import { estimateTokens } from "./token-estimate.js";
 
 /** Default model context window when provider metadata is unavailable. */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -115,7 +116,7 @@ export function buildStatusBarInput(
   const mem = session.getMemoryStats();
   const metrics = opts.compileMetrics ?? session.getLastCompileMetrics();
   const agentsContextTokens = session.agentsContext
-    ? Math.ceil(session.agentsContext.length / 4)
+    ? estimateTokens(session.agentsContext)
     : 0;
   const skillResidency = session.skillRuntime?.getResidencyCounts();
   return {
