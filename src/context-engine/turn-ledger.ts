@@ -195,11 +195,12 @@ export class TurnLedger {
 
     const docTexts = records.map((r) => buildTurnSearchText(r));
     const stats = buildBM25Stats(docTexts);
+    const docTokenLists = docTexts.map((d) => tokenize(d));
 
     const scored = records
       .map((record, i) => ({
         record,
-        score: bm25Score(queryTokens, tokenize(docTexts[i]), {}, stats),
+        score: bm25Score(queryTokens, docTokenLists[i], stats),
       }))
       .filter((entry) => entry.score > 0)
       .sort((a, b) => b.score - a.score)

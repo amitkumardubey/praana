@@ -5,14 +5,11 @@ import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
 import {
-  tokenize,
+  tokenizeShort,
   expandTokens,
   buildBM25Stats,
   bm25Score,
   DEFAULT_SYNONYMS,
-  calculateKeywordScore,
-  calculateNameMatchBonus,
-  isExactInvocation,
 } from "../utils/bm25.js";
 import type {
   SkillMetadata,
@@ -386,6 +383,24 @@ export interface MatchResult {
   score: number;
 }
 
+// Skills-specific scoring helpers (not BM25 primitives)
+
+function keywordScore(queryTokens: string[], docTokens: string[]): number {
+  const querySet = new Set(queryTokens);
+  const docSet = new Set(docTokens);
+  const overlap = [...querySet].filter((t) => docSet.has(t)).length;
+  return docSet.size > 0 ? overlap / docSet.size : 0;
+}
+
+function nameMatchBonus(queryTokens: string[], nameTokens: string[]): number {
+  const querySet = new Set(queryTokens);
+  return nameTokens.some((nt) => querySet.has(nt)) ? 0.25 : 0;
+}
+
+function isExactInvocation(userInput: string, targetName: string): boolean {
+  return userInput.trim().toLowerCase() === targetName.toLowerCase();
+}
+
 /**
  * Rank skills by relevance to user input using BM25 + synonym expansion + neighbor boost.
  */
@@ -398,39 +413,28 @@ export function rankSkills(
   if (index.length === 0 || !userInput.trim()) return [];
 
   const syns = synonymMap ?? DEFAULT_SYNONYMS;
-  const queryTokens = expandTokens(tokenize(userInput), syns);
+  const queryTokens = expandTokens(tokenizeShort(userInput), syns);
   if (queryTokens.length === 0) return [];
 
-  // Build document frequency map across corpus
-  const docFreq = new Map<string, number>();
-  const docTokenLists: string[][] = [];
+  // Build BM25 corpus stats from raw search texts
+  const searchTexts = index.map((entry) => entry.searchText);
+  const stats = buildBM25Stats(searchTexts);
 
-  for (const entry of index) {
-    const tokens = tokenize(entry.searchText);
-    docTokenLists.push(tokens);
-    const unique = new Set(tokens);
-    for (const t of unique) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
-  }
-
-  const totalDocs = index.length;
-  const stats = buildBM25Stats(docTokenLists.map((tokens) => tokens.join(" ")));
-  const avgDocLen = stats.avgDocLen;
+  // Pre-tokenize corpus documents for scoring
+  const docTokenLists = searchTexts.map((t) => tokenizeShort(t));
 
   const results: MatchResult[] = [];
 
   for (let i = 0; i < index.length; i++) {
     const entry = index[i];
     const docTokens = docTokenLists[i];
-    let score = bm25Score(queryTokens, docTokens, {}, stats);
+    let score = bm25Score(queryTokens, docTokens, stats);
 
     // Keyword score bonus (0.5 weight): fraction of unique doc tokens that match query
-    const keywordScore = calculateKeywordScore(queryTokens, docTokens);
-    score = score * 0.3 + keywordScore * 0.5;
+    score = score * 0.3 + keywordScore(queryTokens, docTokens) * 0.5;
 
     // Name match bonus: if the skill name appears in the query, add +0.25
-    const nameTokens = tokenize(entry.name);
-    const nameMatchBonus = calculateNameMatchBonus(queryTokens, nameTokens);
-    score += nameMatchBonus;
+    score += nameMatchBonus(queryTokens, tokenizeShort(entry.name));
 
     // Exact skill invocation should load the skill, even when the corpus is
     // tiny and BM25/keyword scoring would otherwise leave it WARM.
