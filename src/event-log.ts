@@ -80,6 +80,9 @@ export class EventLog {
   private eventCount = 0;
   private closed = false;
   private compressedIds: Set<string> = new Set();
+  private eventCache: Event[] | null = null;
+  private lastMtimeMs = 0;
+  private lastSize = 0;
 
   constructor(sessionId: string, logDir: string) {
     this.sessionId = sessionId;
@@ -90,6 +93,40 @@ export class EventLog {
     this.checkpointPath = join(sessionDir, "compression_checkpoint.json");
     this.fd = openSync(this.logPath, "a");
     this.loadCompressionCheckpoint();
+  }
+
+  private syncCache(): void {
+    let stats;
+    try {
+      stats = statSync(this.logPath);
+    } catch {
+      this.eventCache = [];
+      this.lastMtimeMs = 0;
+      this.lastSize = 0;
+      return;
+    }
+
+    if (
+      this.eventCache !== null &&
+      stats.mtimeMs === this.lastMtimeMs &&
+      stats.size === this.lastSize
+    ) {
+      return;
+    }
+
+    try {
+      const content = readFileSync(this.logPath, "utf-8");
+      this.eventCache = content
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Event);
+    } catch {
+      this.eventCache = [];
+    }
+
+    this.lastMtimeMs = stats.mtimeMs;
+    this.lastSize = stats.size;
   }
 
   private loadCompressionCheckpoint(): void {
@@ -121,6 +158,17 @@ export class EventLog {
     const line = JSON.stringify(fullEvent) + "\n";
     writeSync(this.fd, line, undefined, "utf-8");
     fsyncSync(this.fd);
+
+    if (this.eventCache === null) {
+      this.eventCache = [fullEvent];
+    } else {
+      this.eventCache.push(fullEvent);
+    }
+
+    // Record the real file stats so the next read does not need to re-sync.
+    const stats = statSync(this.logPath);
+    this.lastMtimeMs = stats.mtimeMs;
+    this.lastSize = stats.size;
     this.eventCount++;
   }
 
@@ -178,12 +226,8 @@ export class EventLog {
   }
 
   private internalRead(): Event[] {
-    try {
-      const content = readFileSync(this.logPath, "utf-8");
-      return content.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Event);
-    } catch {
-      return [];
-    }
+    this.syncCache();
+    return this.eventCache ?? [];
   }
 
   getSessionId(): string {
