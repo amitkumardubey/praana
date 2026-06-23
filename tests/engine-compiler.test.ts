@@ -200,16 +200,8 @@ describe("engine compiler", () => {
   });
 
   it("hydratedTexts flow through compileEngineWithMetrics to scoring", () => {
-    const unit: ContextUnit = {
-      id: "turn_3",
-      type: "turn_digest",
-      content: "fixed authentication login endpoint returning 401 error",
-      tokens: 50,
-      sourceTurn: 3,
-      score: 0,
-      pinned: false,
-      artifactRefs: [],
-    };
+    // Turn age must be in [3, 6] to be emitted as a scored digest unit.
+    // With currentTurn=10, turn=5 gives age=5 — within the scored window.
     const baseResult = compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
@@ -221,7 +213,7 @@ describe("engine compiler", () => {
       tokenBudget: 100_000,
       checkpointSection: "",
       currentTurn: 10,
-      turnRecords: [{ turn: 3, userMessage: "fix auth", assistantMessage: "done", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
+      turnRecords: [{ turn: 5, userMessage: "fix auth", assistantMessage: "fixed authentication login endpoint returning 401 error", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
       activityEntries: [],
       engineConfig: ENGINE_CONFIG,
     });
@@ -236,16 +228,16 @@ describe("engine compiler", () => {
       tokenBudget: 100_000,
       checkpointSection: "",
       currentTurn: 10,
-      turnRecords: [{ turn: 3, userMessage: "fix auth", assistantMessage: "done", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
+      turnRecords: [{ turn: 5, userMessage: "fix auth", assistantMessage: "fixed authentication login endpoint returning 401 error", toolCalls: [], artifactIds: [], filesRead: [], filesWritten: [], errors: [], tokenCount: 50, timestamp: 1 }],
       activityEntries: [],
       engineConfig: ENGINE_CONFIG,
       hydratedTexts: ["Fix authentication login bug — endpoint returning 401"],
     });
     const basePick = baseResult.scoreRecords.find((r) => r.unitId.includes("turn"));
     const boostedPick = boostedResult.scoreRecords.find((r) => r.unitId.includes("turn"));
-    if (basePick && boostedPick) {
-      expect(boostedPick.breakdown.hydrate_boost).toBeGreaterThan(0);
-      expect(boostedPick.score).toBeGreaterThan(basePick.score);
-    }
+    expect(basePick).toBeDefined();
+    expect(boostedPick).toBeDefined();
+    expect(boostedPick!.breakdown.hydrate_boost).toBeGreaterThan(0);
+    expect(boostedPick!.score).toBeGreaterThan(basePick!.score);
   });
 });

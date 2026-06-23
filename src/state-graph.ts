@@ -1,5 +1,8 @@
 import { ulid } from "ulid";
 import { bm25Relevance } from "./context-engine/bm25.js";
+
+/** Minimum BM25 score for a peripheral object to be promoted via BM25 hydration. */
+const BM25_HYDRATE_THRESHOLD = 0.15;
 import type {
   StateObject,
   StateObjectKind,
@@ -141,7 +144,6 @@ export class StateGraph {
   autoHydrate(query: string): AutoHydrateResult[] {
     const keywords = extractKeywords(query);
     const hydrated: AutoHydrateResult[] = [];
-    const hydratedIds = new Set<string>();
 
     // Pass 1: substring keyword match (fast, low overhead)
     if (keywords.length > 0) {
@@ -152,14 +154,15 @@ export class StateGraph {
           obj.lastTouched = Date.now();
           this.touchedTurn.set(obj.id, this.turnCount);
           hydrated.push({ id: obj.id, text, method: "substring" });
-          hydratedIds.add(obj.id);
         }
       }
     }
 
-    // Pass 2: BM25 — catches semantic overlap that substring misses
+    // Pass 2: BM25 — catches overlap that substring misses (e.g. short tokens
+    // filtered by extractKeywords but present in full BM25 query tokenization).
+    // getPeripheral() returns a fresh snapshot: objects promoted in Pass 1 are
+    // already tier="active" and won't appear here, so no deduplication guard needed.
     for (const obj of this.getPeripheral()) {
-      if (hydratedIds.has(obj.id)) continue;
       const text = payloadToSearchableText(obj);
       const score = bm25Relevance(query, text);
       if (score >= BM25_HYDRATE_THRESHOLD) {
@@ -167,7 +170,6 @@ export class StateGraph {
         obj.lastTouched = Date.now();
         this.touchedTurn.set(obj.id, this.turnCount);
         hydrated.push({ id: obj.id, text, method: "bm25" });
-        hydratedIds.add(obj.id);
       }
     }
 
@@ -265,9 +267,6 @@ export function summarizePayloadFn(obj: StateObject): string {
 }
 
 // ---- Auto-hydrate helpers ----
-
-/** Minimum BM25 score for a peripheral object to be promoted via BM25 hydration. */
-const BM25_HYDRATE_THRESHOLD = 0.15;
 
 /** Result from autoHydrate — includes the object’s text for downstream scoring boost. */
 export interface AutoHydrateResult {

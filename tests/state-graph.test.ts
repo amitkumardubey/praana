@@ -145,17 +145,21 @@ describe('StateGraph', () => {
     expect(hydrated3).toHaveLength(0);
   });
 
-  it('should hydrate via BM25 when substring match misses but semantic overlap exists', () => {
+  it('should hydrate via BM25 when extractKeywords yields no keywords', () => {
     const sg = new StateGraph();
 
-    const task = sg.create('task', { title: 'Fix authentication bug', status: 'todo', description: 'Login endpoint returns 401' });
-    sg.setTier(task.id, 'soft');
+    // extractKeywords filters tokens shorter than 3 chars, so a query like 'S3 up'
+    // produces no keywords — Pass 1 is skipped entirely. BM25 still tokenizes the
+    // full query and scores the 's3' token overlap against the note payload,
+    // pushing it above BM25_HYDRATE_THRESHOLD via Pass 2.
+    const note = sg.create('note', { text: 'AWS S3 bucket job running' });
+    sg.setTier(note.id, 'soft');
 
-    // 'auth' is a substring of 'authentication', so substring match should also catch it
-    // Use a longer semantic query that BM25 handles better
-    const hydrated = sg.autoHydrate('the login endpoint keeps failing with 401');
-    expect(hydrated.map((r) => r.id)).toContain(task.id);
-    expect(sg.get(task.id)?.tier).toBe('active');
+    const hydrated = sg.autoHydrate('S3 up');
+    expect(hydrated.map((r) => r.id)).toContain(note.id);
+    const r = hydrated.find((x) => x.id === note.id);
+    expect(r?.method).toBe('bm25');
+    expect(sg.get(note.id)?.tier).toBe('active');
   });
 
   it('autoHydrate result includes text and method fields', () => {
@@ -168,7 +172,8 @@ describe('StateGraph', () => {
     const r = results.find((x) => x.id === note.id);
     expect(r).toBeDefined();
     expect(r?.text).toBeTruthy();
-    expect(['substring', 'bm25']).toContain(r?.method);
+    // 'database' and 'connection' are ≥3-char keywords that substring-match the note
+    expect(r?.method).toBe('substring');
   });
 
   it('should enforce at-most-one focused object and render it first in getActive', () => {
