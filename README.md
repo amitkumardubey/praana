@@ -14,7 +14,7 @@ PRAANA is experimental software. It runs in your terminal, calls an LLM, execute
 
 We have **not** benchmarked PRAANA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
 
-> **Status:** v0.8.0 <!-- x-release-please-version --> — experimental. Core flows work; long or messy tasks will hit rough edges.
+> **Status:** v0.9.0 <!-- x-release-please-version --> — experimental. Core flows work; long or messy tasks will hit rough edges.
 
 > **How it was built:** Entirely vibecoded—this codebase was written by coding agents with human direction and review, not hand-coded line by line.
 
