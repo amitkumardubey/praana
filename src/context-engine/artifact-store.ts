@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { createDefaultDistillerRegistry } from "../distillers/index.js";
+import { createDefaultDistillerRegistry, inferContentTypeFromTool } from "../domain/coding-domain.js";
 import { classifyContentType } from "./classify.js";
 import { buildPendingSummary } from "./distiller.js";
 import type { DistillerRegistry, DistillDeferredResult, DistillResult } from "./distiller.js";
@@ -63,42 +63,6 @@ function savingsPct(inputTokens: number, outputTokens: number): number {
   return Math.max(0, (1 - outputTokens / inputTokens) * 100);
 }
 
-function inferContentTypeFromTool(
-  sourceTool: string,
-  command: string | undefined,
-): ContentType | null {
-  if (!command) return null;
-  const normalized = command.trim();
-  if (!normalized) return null;
-
-  if (
-    sourceTool === "shell" &&
-    /(^|\s)(rg|grep|ag|ack)(\s|$)/.test(normalized)
-  ) {
-    return "search_results";
-  }
-  if (sourceTool === "shell" && /(^|\s)git\s+(diff|show)(\s|$)/.test(normalized)) {
-    return "diff";
-  }
-  if (
-    sourceTool === "shell" &&
-    /(^|\s)(npm|pnpm|yarn|bun)\s+(run\s+)?(test|vitest|jest)(\s|$|:)/.test(
-      normalized,
-    )
-  ) {
-    return "test_output";
-  }
-  if (
-    sourceTool === "shell" &&
-    /(^|\s)(tsc|vue-tsc|npm\s+run\s+(build|typecheck)|pnpm\s+(build|typecheck))(\s|$)/.test(
-      normalized,
-    )
-  ) {
-    return "build_output";
-  }
-
-  return null;
-}
 
 interface PendingBackfill {
   artifactId: string;
