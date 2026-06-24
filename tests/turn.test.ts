@@ -48,6 +48,8 @@ vi.mock("../src/context-engine/index.js", async (importOriginal) => {
       scoreRecords: [],
       pressureRatio: 0.2,
       pressureMode: "normal" as const,
+      weightedTokens: 400,
+      rawPressureRatio: 0.25,
       excludedScoredUnits: 0,
     })),
   };
@@ -566,7 +568,7 @@ describe("runTurn", () => {
       contextEngine: {
         ledger: { list: vi.fn(() => []) },
         getRecentActivity: vi.fn(() => []),
-        renderCheckpointSection: vi.fn(() => null),
+        getSessionCheckpoint: vi.fn(() => null),
         recordCompileTelemetry: vi.fn(),
         captureStateSnapshot: vi.fn(),
       },
@@ -968,7 +970,7 @@ describe("runTurn", () => {
       contextEngine: {
         ledger: { list: vi.fn(() => []) },
         getRecentActivity: vi.fn(() => []),
-        renderCheckpointSection: vi.fn(() => null),
+        getSessionCheckpoint: vi.fn(() => null),
         recordCompileTelemetry: vi.fn(),
         captureStateSnapshot: vi.fn(),
       },

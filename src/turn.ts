@@ -141,10 +141,10 @@ export async function runTurn(
   const agentsBudgetRatio = session.config.compiler.agents_budget_ratio;
 
   const engineConfig = resolveContextEngineConfig(session.config);
-  const checkpointSection =
+  const checkpoint =
     contextEngineEnabled && session.contextEngine
-      ? session.contextEngine.renderCheckpointSection()
-      : null;
+      ? session.contextEngine.getSessionCheckpoint() ?? undefined
+      : undefined;
 
   const compileInput = {
     stateGraph: session.stateGraph,
@@ -158,7 +158,7 @@ export async function runTurn(
     recentTurnsTokenBudget: session.config.compiler.recent_turns_token_budget,
     agentsContext: session.agentsContext,
     skillsPromptSection: skillsSection,
-    checkpointSection,
+    checkpoint,
     memoriesBudgetRatio: session.config.compiler.memories_budget_ratio,
     agentsBudgetRatio,
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
@@ -184,6 +184,8 @@ export async function runTurn(
       engineResult.scoreRecords,
       engineResult.pressureMode,
       engineResult.pressureRatio,
+      engineResult.weightedTokens,
+      engineResult.rawPressureRatio,
     );
     session.contextEngine!.recordCompileTelemetry({
       turn: session.getTurnCount(),

@@ -6,11 +6,13 @@ import { StateGraph } from "../src/state-graph.js";
 import {
   reconcileCheckpoint,
   renderCheckpoint,
+  estimateCheckpointEffectiveTokens,
   replayCheckpointFromDigests,
   createEmptyCheckpointState,
 } from "../src/context-engine/checkpoint.js";
 import { ContextEngine } from "../src/context-engine/index.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { estimateTokens } from "../src/context-engine/summarize.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import type { CheckpointDraft, TurnDigest } from "../src/context-engine/types.js";
 import type { ContextEngineConfig } from "../src/types.js";
@@ -264,6 +266,108 @@ describe("session checkpoint", () => {
     expect(state.constraints).toContain("use JWT");
     expect(state.decisions[0]?.summary).toBe("sqlite sessions");
     expect(state.files.some((f) => f.path === "src/auth.ts")).toBe(true);
+  });
+
+  it("emergency render omits findings, activity, and fixed errors but keeps decisions", () => {
+    const state = createEmptyCheckpointState();
+    state.activeRequest = "ship auth";
+    state.decisions = [
+      {
+        summary: "use sqlite",
+        rationale: "simple local storage",
+        turn: 2,
+        compact: false,
+      },
+    ];
+    state.findings = Array.from({ length: 20 }, (_, i) => ({
+      summary: `Finding ${i} with verbose artifact trace output`,
+      artifactRef: `art-${i}`,
+      turn: i,
+    }));
+    state.activity = Array.from({ length: 10 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `Ran tool ${i}`,
+    }));
+    state.errors = [
+      { key: "open", message: "TypeError in auth.ts", turn: 5, fixed: false },
+      { key: "fixed", message: "Fixed: npm test", turn: 4, fixed: true, fixedTurn: 6 },
+    ];
+
+    const rendered = renderCheckpoint(
+      { version: 1, state },
+      { pressureMode: "emergency" },
+    );
+
+    expect(rendered).toContain("### Decisions");
+    expect(rendered).toContain("use sqlite");
+    expect(rendered).toContain("simple local storage");
+    expect(rendered).toContain("### Open errors");
+    expect(rendered).not.toContain("### Findings");
+    expect(rendered).not.toContain("### Recent activity");
+    expect(rendered).not.toContain("### Fixed errors");
+  });
+
+  it("compact render limits activity entries", () => {
+    const state = createEmptyCheckpointState();
+    state.activity = Array.from({ length: 12 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `activity-${i}`,
+    }));
+
+    const rendered = renderCheckpoint(
+      { version: 1, state },
+      { pressureMode: "compact" },
+    );
+
+    expect(rendered).toContain("activity-11");
+    expect(rendered).not.toContain("activity-0");
+  });
+
+  it("weighted checkpoint estimate is lower than raw for finding-heavy state", () => {
+    const state = createEmptyCheckpointState();
+    state.decisions = [{ summary: "use jwt", turn: 1, compact: false }];
+    state.findings = Array.from({ length: 25 }, (_, i) => ({
+      summary: `Artifact finding ${i} `.repeat(20),
+      turn: i,
+    }));
+
+    const { raw, effective } = estimateCheckpointEffectiveTokens(state, "normal");
+    expect(effective).toBeLessThan(raw);
+  });
+
+  it("estimateCheckpointEffectiveTokens raw ≈ renderCheckpoint tokens", () => {
+    const state = createEmptyCheckpointState();
+    state.activeRequest = "implement auth middleware";
+    state.plans = [{ text: "1. Add JWT\n2. Wire routes", turn: 1, superseded: false }];
+    state.constraints = ["use sqlite", "no external deps"];
+    state.decisions = [
+      { summary: "use jwt", rationale: "stateless sessions", turn: 2, compact: false },
+    ];
+    state.files = [{ path: "src/auth.ts", turn: 3 }];
+    state.findings = Array.from({ length: 10 }, (_, i) => ({
+      summary: `Finding ${i} with trace output`,
+      artifactRef: `art-${i}`,
+      turn: i,
+    }));
+    state.errors = [
+      { key: "open", message: "TypeError in auth.ts", turn: 5, fixed: false },
+      { key: "fixed", message: "Fixed: npm test", turn: 4, fixed: true, fixedTurn: 6 },
+    ];
+    state.activity = Array.from({ length: 8 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `shell npm test iteration ${i}`,
+    }));
+    state.narrative = [{ turn: 2, text: "User asked to fix failing auth tests." }];
+
+    for (const mode of ["normal", "compact", "emergency"] as const) {
+      const { raw } = estimateCheckpointEffectiveTokens(state, mode);
+      const rendered = renderCheckpoint({ version: 1, state }, { pressureMode: mode });
+      const renderTokens = estimateTokens(rendered);
+      expect(Math.abs(raw - renderTokens)).toBeLessThan(50);
+    }
   });
 });
 

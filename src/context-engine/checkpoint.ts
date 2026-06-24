@@ -14,6 +14,10 @@ import {
   isNarrativeWorthy,
   normalizeTurnDigest,
 } from "./turn-digest.js";
+import {
+  sumEffectiveTokens,
+  type SectionDensityKind,
+} from "./density.js";
 import type {
   ActivityEntry,
   CheckpointDecisionEntry,
@@ -21,9 +25,14 @@ import type {
   CheckpointErrorEntry,
   CheckpointPlanEntry,
   CheckpointState,
+  PressureMode,
   SessionCheckpoint,
   TurnDigest,
 } from "./types.js";
+
+export interface RenderCheckpointOptions {
+  pressureMode?: PressureMode;
+}
 
 const DECISION_IDLE_TURNS = 10;
 const FILE_IDLE_TURNS = 10;
@@ -34,7 +43,9 @@ const NARRATIVE_RENDER_TOKENS = 400;
 const RATIONALE_MAX_CHARS = 240;
 const DECISIONS_SECTION_TOKENS = 800;
 const FINDINGS_SECTION_TOKENS = 300;
+const FINDINGS_SECTION_TOKENS_COMPACT = 150;
 const PLAN_SECTION_TOKENS = 400;
+const COMPACT_ACTIVITY_MAX = 5;
 
 type LegacyCheckpointState = CheckpointState & {
   plan?: string;
@@ -399,21 +410,43 @@ function renderFindingsSection(
   ];
 }
 
-export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
-  const { state } = checkpoint;
-  const sections: string[] = ["## Session Checkpoint", ""];
+function sectionTokens(text: string): number {
+  return text.length > 0 ? estimateTokens(text) : 0;
+}
+
+function activityForMode(
+  activity: CheckpointState["activity"],
+  pressureMode: PressureMode,
+): CheckpointState["activity"] {
+  if (pressureMode === "emergency") return [];
+  if (pressureMode === "compact") return activity.slice(-COMPACT_ACTIVITY_MAX);
+  return activity;
+}
+
+const CHECKPOINT_HEADER = "## Session Checkpoint";
+
+interface CheckpointSection {
+  lines: string[];
+  kind: SectionDensityKind;
+}
+
+/** Single source of truth for checkpoint section content, budgets, and density kinds. */
+function buildCheckpointSections(
+  state: CheckpointState,
+  pressureMode: PressureMode,
+): CheckpointSection[] {
+  const sections: CheckpointSection[] = [];
 
   if (state.activeRequest) {
-    sections.push(
-      "### Active Request",
-      trimSection(state.activeRequest, 200),
-      "",
-    );
+    sections.push({
+      lines: ["### Active Request", trimSection(state.activeRequest, 200)],
+      kind: "active_request",
+    });
   }
 
   const narrativeLines = renderNarrativeSection(state.narrative);
   if (narrativeLines.length > 0) {
-    sections.push(...narrativeLines, "");
+    sections.push({ lines: narrativeLines, kind: "narrative" });
   }
 
   const planLines = trimSectionLines(
@@ -421,15 +454,17 @@ export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
     PLAN_SECTION_TOKENS,
   );
   if (planLines.length > 0) {
-    sections.push(...planLines, "");
+    sections.push({ lines: planLines, kind: "plan" });
   }
 
   if (state.constraints.length > 0) {
-    sections.push(
-      "### Constraints",
-      ...state.constraints.map((c, i) => `- C${i + 1}: ${c}`),
-      "",
-    );
+    sections.push({
+      lines: [
+        "### Constraints",
+        ...state.constraints.map((c, i) => `- C${i + 1}: ${c}`),
+      ],
+      kind: "constraint",
+    });
   }
 
   const decisions = state.decisions.slice(-20);
@@ -441,56 +476,106 @@ export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
       ],
       DECISIONS_SECTION_TOKENS,
     );
-    sections.push(...decisionLines, "");
+    sections.push({ lines: decisionLines, kind: "decision" });
   }
 
   if (state.files.length > 0) {
-    sections.push(
-      "### Files in play",
-      ...state.files.map((f) => `- ${f.path} (turn ${f.turn})`),
-      "",
-    );
+    sections.push({
+      lines: [
+        "### Files in play",
+        ...state.files.map((f) => `- ${f.path} (turn ${f.turn})`),
+      ],
+      kind: "file",
+    });
   }
 
-  const findingsLines = trimSectionLines(
-    renderFindingsSection(state.findings),
-    FINDINGS_SECTION_TOKENS,
-  );
-  if (findingsLines.length > 0) {
-    sections.push(...findingsLines, "");
+  if (pressureMode !== "emergency") {
+    const findingsBudget =
+      pressureMode === "compact"
+        ? FINDINGS_SECTION_TOKENS_COMPACT
+        : FINDINGS_SECTION_TOKENS;
+    const findingsLines = trimSectionLines(
+      renderFindingsSection(state.findings),
+      findingsBudget,
+    );
+    if (findingsLines.length > 0) {
+      sections.push({ lines: findingsLines, kind: "finding" });
+    }
   }
 
   const openErrors = state.errors.filter((e) => !e.fixed);
   if (openErrors.length > 0) {
-    sections.push(
-      "### Open errors",
-      ...openErrors.map((e) => `- ${e.message}`),
-      "",
-    );
+    sections.push({
+      lines: [
+        "### Open errors",
+        ...openErrors.map((e) => `- ${e.message}`),
+      ],
+      kind: "open_error",
+    });
   }
 
-  const fixedErrors = state.errors.filter((e) => e.fixed);
-  if (fixedErrors.length > 0) {
-    sections.push(
-      "### Fixed errors",
-      ...fixedErrors.map(
-        (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
-      ),
-      "",
-    );
+  if (pressureMode !== "emergency") {
+    const fixedOnly = state.errors.filter((e) => e.fixed);
+    if (fixedOnly.length > 0) {
+      sections.push({
+        lines: [
+          "### Fixed errors",
+          ...fixedOnly.map(
+            (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
+          ),
+        ],
+        kind: "fixed_error",
+      });
+    }
   }
 
-  if (state.activity.length > 0) {
-    sections.push(
-      "### Recent activity",
-      ...state.activity.map(
-        (a) => `- [turn ${a.turn}] ${a.summary}`,
-      ),
-      "",
-    );
+  const activity = activityForMode(state.activity, pressureMode);
+  if (activity.length > 0) {
+    sections.push({
+      lines: [
+        "### Recent activity",
+        ...activity.map((a) => `- [turn ${a.turn}] ${a.summary}`),
+      ],
+      kind: "activity",
+    });
   }
 
-  return sections.join("\n").trimEnd();
+  return sections;
+}
+
+function checkpointSectionText(section: CheckpointSection): string {
+  return section.lines.join("\n");
+}
+
+export function estimateCheckpointEffectiveTokens(
+  state: CheckpointState,
+  pressureMode: PressureMode = "normal",
+): { raw: number; effective: number } {
+  const sections = buildCheckpointSections(state, pressureMode);
+  const tokenized: { tokens: number; kind: SectionDensityKind }[] = [
+    { tokens: sectionTokens(CHECKPOINT_HEADER), kind: "pinned_infra" },
+  ];
+  for (const section of sections) {
+    tokenized.push({
+      tokens: sectionTokens(checkpointSectionText(section)),
+      kind: section.kind,
+    });
+  }
+  const raw = tokenized.reduce((sum, s) => sum + s.tokens, 0);
+  return { raw, effective: sumEffectiveTokens(tokenized) };
+}
+
+export function renderCheckpoint(
+  checkpoint: SessionCheckpoint,
+  options: RenderCheckpointOptions = {},
+): string {
+  const pressureMode = options.pressureMode ?? "normal";
+  const sections = buildCheckpointSections(checkpoint.state, pressureMode);
+  const parts: string[] = [CHECKPOINT_HEADER, ""];
+  for (const section of sections) {
+    parts.push(...section.lines, "");
+  }
+  return parts.join("\n").trimEnd();
 }
 
 export function renderContextSummary(
@@ -620,8 +705,8 @@ export class CheckpointStore {
     return this.checkpoint;
   }
 
-  render(): string {
-    const text = renderCheckpoint(this.checkpoint);
+  render(options: RenderCheckpointOptions = {}): string {
+    const text = renderCheckpoint(this.checkpoint, options);
     return text.trim().length > 0 ? text : "";
   }
 

@@ -1,4 +1,5 @@
 import type { CompilerConfig } from "./types.js";
+import type { PressureMode } from "./context-engine/types.js";
 
 export {
   DEFAULT_MODEL_CONTEXT_WINDOW,
@@ -62,4 +63,43 @@ export function effectiveCompileBudget(
 ): number {
   const windowBudget = Math.max(0, contextWindowTokens - reservedOutputTokens);
   return Math.max(0, Math.min(tokenBudget, windowBudget));
+}
+
+/** Map a fill ratio to normal/compact/emergency using context-engine thresholds. */
+export function resolveEnginePressureMode(
+  pressureRatio: number,
+  thresholds: { compact_at: number; emergency_at: number },
+): PressureMode {
+  if (pressureRatio > thresholds.emergency_at) return "emergency";
+  if (pressureRatio > thresholds.compact_at) return "compact";
+  return "normal";
+}
+
+export interface ContextPressureSnapshot {
+  weightedTokens: number;
+  weightedRatio: number;
+  rawTokens: number;
+  rawRatio: number;
+  effectiveMode: PressureMode;
+  ratioMode: PressureMode;
+}
+
+/** Format /stats lines for density-weighted vs raw context pressure. */
+export function formatContextPressureStats(
+  snapshot: ContextPressureSnapshot,
+  contextWindowTokens: number,
+): string[] {
+  const weightedPct = (snapshot.weightedRatio * 100).toFixed(0);
+  const rawPct = (snapshot.rawRatio * 100).toFixed(0);
+  const windowLabel = contextWindowTokens.toLocaleString();
+  const escalated = snapshot.effectiveMode !== snapshot.ratioMode;
+  const modeLabel = escalated
+    ? `${weightedPct}% weighted · ${snapshot.effectiveMode} (escalated)`
+    : `${weightedPct}% weighted · ${snapshot.effectiveMode}`;
+
+  return [
+    `  Raw fill: ${snapshot.rawTokens.toLocaleString()} / ${windowLabel} tokens (${rawPct}%)`,
+    `  Weighted fill: ${snapshot.weightedTokens.toLocaleString()} tokens (${weightedPct}%)`,
+    `  Pressure: ${modeLabel}`,
+  ];
 }

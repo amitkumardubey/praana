@@ -77,6 +77,8 @@ export class Session {
   private lastCompileScoreRecords: CompileScoreRecord[] = [];
   private lastPressureMode: PressureMode = "normal";
   private lastPressureRatio = 0;
+  private lastWeightedTokens = 0;
+  private lastRawPressureRatio = 0;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private lastUserInput = "";
@@ -593,10 +595,14 @@ export class Session {
     records: CompileScoreRecord[],
     pressureMode: PressureMode,
     pressureRatio: number,
+    weightedTokens = 0,
+    rawPressureRatio = 0,
   ): void {
     this.lastCompileScoreRecords = records;
     this.lastPressureMode = pressureMode;
     this.lastPressureRatio = pressureRatio;
+    this.lastWeightedTokens = weightedTokens;
+    this.lastRawPressureRatio = rawPressureRatio;
   }
 
   getLastCompileScoreRecords(): CompileScoreRecord[] {
@@ -613,6 +619,14 @@ export class Session {
 
   getLastPressureRatio(): number {
     return this.lastPressureRatio;
+  }
+
+  getLastWeightedTokens(): number {
+    return this.lastWeightedTokens;
+  }
+
+  getLastRawPressureRatio(): number {
+    return this.lastRawPressureRatio;
   }
 
   setLastUserInput(input: string): void {

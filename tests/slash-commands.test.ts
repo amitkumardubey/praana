@@ -412,4 +412,76 @@ describe("executeSlashCommand", () => {
       }),
     });
   });
+
+  it("/stats includes weighted and raw context pressure in engine mode", async () => {
+    const session = {
+      id: "sess-stats",
+      getStartedAt: () => Date.now() - 60_000,
+      getUptimeMs: () => 60_000,
+      getTurnCount: () => 3,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => null,
+      getMemoryDbPath: () => null,
+      getMemoryStats: () => ({
+        total: 1,
+        active: 1,
+        soft: 0,
+        hard: 0,
+        byKind: { task: 1 },
+      }),
+      memoryEnabled: false,
+      isContextEngineEnabled: () => true,
+      contextEngine: {
+        finalizeTelemetry: () => ({
+          artifactsProduced: 2,
+          retrievalRate: 0.5,
+          stats: {
+            artifactRetrievals: 1,
+            totalDistillerSavings: 100,
+            pressureEvents: 1,
+            compactionTriggers: 0,
+          },
+        }),
+      },
+      getLastCompileMetrics: () => ({
+        totalTokens: 50_000,
+        systemFrameTokens: 100,
+        agentsContextTokens: 0,
+        skillsCatalogTokens: 0,
+        checkpointTokens: 0,
+        crossSessionTokens: 0,
+        activeStateTokens: 0,
+        peripheralStubsTokens: 0,
+        recentTurnsTokens: 0,
+        currentInputTokens: 0,
+        activeObjectCount: 0,
+        peripheralObjectCount: 0,
+        recentTurnsTruncated: false,
+        memoryTruncated: false,
+        agentsContextTruncated: false,
+        skillsTruncated: false,
+      }),
+      getLastPressureRatio: () => 0.42,
+      getLastWeightedTokens: () => 21_000,
+      getLastRawPressureRatio: () => 0.5,
+      getLastPressureMode: () => "emergency" as const,
+      getContextWindowTokens: () => 100_000,
+      config: {
+        context_engine: { pressure: { compact_at: 0.7, emergency_at: 0.85 } },
+      },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/stats", session, {
+      setModel: vi.fn(),
+      setThinking: vi.fn(),
+      getThinking: () => true,
+    });
+
+    const output = result.lines.join("\n");
+    expect(output).toContain("Context pressure (last compile):");
+    expect(output).toContain("Weighted fill: 21,000 tokens (42%)");
+    expect(output).toContain("Raw fill: 50,000 / 100,000 tokens (50%)");
+    expect(output).toContain("42% weighted · emergency (escalated)");
+  });
 });

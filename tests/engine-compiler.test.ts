@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
+import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
 import type { ContextEngineConfig } from "../src/types.js";
-import type { ContextUnit } from "../src/context-engine/types.js";
+import type { ContextUnit, SessionCheckpoint } from "../src/context-engine/types.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -239,5 +240,243 @@ describe("engine compiler", () => {
     expect(boostedPick).toBeDefined();
     expect(boostedPick!.breakdown.hydrate_boost).toBeGreaterThan(0);
     expect(boostedPick!.score).toBeGreaterThan(basePick!.score);
+  });
+
+  it("uses weighted pressure lower than raw token ratio for finding-heavy checkpoint", () => {
+    const state = createEmptyCheckpointState();
+    state.decisions = [
+      { summary: "use sqlite", rationale: "local", turn: 2, compact: false },
+    ];
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Verbose error trace and artifact dump ${i} `.repeat(30),
+      artifactRef: `art-${i}`,
+      turn: i,
+    }));
+    state.activity = Array.from({ length: 15 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `shell npm test iteration ${i}`,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const smallWindow = 8_000;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "continue",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-density",
+      tokenBudget: smallWindow,
+      contextWindowTokens: smallWindow,
+      checkpoint,
+      currentTurn: 10,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+    });
+
+    const rawRatio = result.metrics.totalTokens / smallWindow;
+    expect(result.weightedTokens).toBeLessThan(result.metrics.totalTokens);
+    expect(result.pressureRatio).toBeLessThan(rawRatio);
+  });
+
+  it("emergency checkpoint in prompt omits findings when pressure is high", () => {
+    const state = createEmptyCheckpointState();
+    state.decisions = [
+      { summary: "keep this decision", rationale: "important", turn: 1, compact: false },
+    ];
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Low value finding ${i} `.repeat(40),
+      turn: i,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const tinyWindow = 2_000;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "x".repeat(3000),
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-emergency",
+      tokenBudget: tinyWindow,
+      contextWindowTokens: tinyWindow,
+      checkpoint,
+      currentTurn: 5,
+      turnRecords: [
+        {
+          turn: 4,
+          userMessage: "run",
+          assistantMessage: "ok",
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 1,
+        },
+        {
+          turn: 5,
+          userMessage: "again",
+          assistantMessage: "done",
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 2,
+        },
+      ],
+      activityEntries: [],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.5, emergency_at: 0.7 },
+      },
+    });
+
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.prompt).toContain("keep this decision");
+    expect(result.prompt).not.toContain("### Findings");
+  });
+
+  it("does not double-count agentsContext in weighted pressure", () => {
+    const largeAgents = "AGENTS ".repeat(4000);
+    const base = {
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "continue",
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-agents-dc",
+      tokenBudget: 100_000,
+      contextWindowTokens: 100_000,
+      checkpointSection: "",
+      currentTurn: 2,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+    };
+
+    const withoutAgents = compileEngineWithMetrics({ ...base, agentsContext: "" });
+    const withAgents = compileEngineWithMetrics({ ...base, agentsContext: largeAgents });
+    const agentsTokens = withAgents.metrics.agentsContextTokens;
+    expect(agentsTokens).toBeGreaterThan(1000);
+
+    const delta = withAgents.weightedTokens - withoutAgents.weightedTokens;
+    expect(delta).toBeGreaterThan(agentsTokens * 0.7);
+    expect(delta).toBeLessThan(agentsTokens * 1.3);
+  });
+
+  it("reports compact pressure mode when checkpoint renders in compact mode", () => {
+    const state = createEmptyCheckpointState();
+    state.decisions = [
+      { summary: "keep compact decision", rationale: "important", turn: 1, compact: false },
+    ];
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Finding ${i} `.repeat(30),
+      turn: i,
+    }));
+    state.activity = Array.from({ length: 12 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `activity-${i}`,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const window = 2_500;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "x".repeat(1000),
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-pressure-mode",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 5,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.3, emergency_at: 0.85 },
+      },
+    });
+
+    expect(result.pressureMode).toBe("compact");
+    expect(result.prompt).toContain("keep compact decision");
+    expect(result.prompt).toContain("activity-11");
+    expect(result.prompt).not.toContain("activity-0");
+  });
+
+  it("forces emergency when raw tokens exceed usable budget despite low weighted pressure", () => {
+    const state = createEmptyCheckpointState();
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Verbose low-value trace ${i} `.repeat(50),
+      turn: i,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const tinyWindow = 1_500;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "x".repeat(2000),
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-raw-safety",
+      tokenBudget: tinyWindow,
+      contextWindowTokens: tinyWindow,
+      checkpoint,
+      currentTurn: 3,
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "run",
+          assistantMessage: "ok ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 1,
+        },
+        {
+          turn: 3,
+          userMessage: "again",
+          assistantMessage: "done ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 2,
+        },
+      ],
+      activityEntries: [],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.95, emergency_at: 0.99 },
+      },
+    });
+
+    expect(result.metrics.totalTokens).toBeGreaterThan(tinyWindow * 0.5);
+    expect(result.rawPressureRatio).toBeGreaterThan(1);
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.prompt).not.toContain("### Findings");
   });
 });

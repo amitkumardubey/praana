@@ -226,6 +226,7 @@ export class ContextEngine {
   }
 
   renderCheckpointSection(): string | null {
+    // Retained for checkpoint integration tests; runtime uses getSessionCheckpoint() + renderCheckpoint().
     if (!this.checkpoint) return null;
     const rendered = this.checkpoint.render();
     return rendered.length > 0 ? rendered : null;
