@@ -156,7 +156,10 @@ src/
   compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state (active/soft/hard), auto-demotion, two-pass auto-hydrate (substring + BM25)
-  event-log.ts   — Append-only events.jsonl, fsyncSync durability
+  state-graph-checkpoint.ts — O(1) resume: persist/restore StateGraph snapshot after each turn
+  event-log.ts   — Append-only events.jsonl, fsyncSync durability; in-memory parse cache
+  token-estimate.ts — Canonical Unicode-aware token heuristic (Latin/CJK/emoji/ZWJ)
+  context-pressure.ts — Density-weighted effective-token accounting and raw-token safety net
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
