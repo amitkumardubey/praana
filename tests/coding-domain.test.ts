@@ -117,6 +117,10 @@ describe("isCodeContent", () => {
     expect(isCodeContent("```\nconst x = 1;\n```")).toBe(true);
   });
 
+  it("detects Python def", () => {
+    expect(isCodeContent("def foo():\n    pass")).toBe(true);
+  });
+
   it("rejects plain prose", () => {
     expect(isCodeContent("Just some regular text.")).toBe(false);
   });
@@ -164,6 +168,14 @@ describe("inferContentTypeFromTool", () => {
   it("no command → null", () => {
     expect(inferContentTypeFromTool("shell", undefined)).toBe(null);
   });
+
+  it("whitespace-only command → null", () => {
+    expect(inferContentTypeFromTool("shell", "   ")).toBe(null);
+  });
+
+  it("non-shell tool → null", () => {
+    expect(inferContentTypeFromTool("read_file", "rg foo")).toBe(null);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -174,6 +186,11 @@ describe("extractCommitMessage", () => {
   it("parses JSON stdout", () => {
     const input = JSON.stringify({ stdout: "main: fix the bug\n" });
     expect(extractCommitMessage(input)).toBe("main: fix the bug");
+  });
+
+  it("parses JSON output field", () => {
+    const input = JSON.stringify({ output: "fallback msg\n" });
+    expect(extractCommitMessage(input)).toBe("fallback msg");
   });
 
   it("falls back to first line for non-JSON", () => {
@@ -200,6 +217,10 @@ describe("extractFailureCount", () => {
 
   it("detects generic FAIL", () => {
     expect(extractFailureCount("FAIL")).toBe("failures detected");
+  });
+
+  it("detects lowercase failure word", () => {
+    expect(extractFailureCount("the configuration is a failure")).toBe("failures detected");
   });
 
   it("returns 'unknown count' for empty input", () => {
