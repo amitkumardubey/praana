@@ -207,7 +207,7 @@ const classicMode = !useEngineCompiler;
 
 Context units are scored with a 4-term model: `pin_boost × W_pin + recency(age) × W_recency + BM25(query, content) × W_relevance + hydrate_boost × W_hydrate`. The hydrate boost is the maximum `bm25Relevance(ht, unitContent)` across all auto-hydrated object texts — it gives a lift to context units (e.g. older turn digests) that discuss the same objects the user just implicitly referenced. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`, `w_hydrate_boost=0.2`.
 
-Pressure monitoring: `contextPressure = estimatedTokens / usableBudget`. `>0.70` triggers compaction (drop older digests). `>0.85` triggers emergency (keep only checkpoint + last 2 turns + current artifact cards).
+Pressure monitoring uses **density-weighted effective tokens**: `contextPressure = weightedTokens / usableBudget`. Each section kind has a hardcoded weight (decisions/constraints/plans = 1.0; findings/activity/fixed errors = 0.25; turn digests/artifacts = 0.4). Low-density filler counts less toward pressure so a prompt full of error traces does not trigger compaction as aggressively as one full of architectural decisions. `>0.70` triggers compaction (drop older digests, tighten checkpoint findings/activity budgets). `>0.85` triggers emergency (keep checkpoint decisions/constraints/plans/open errors only — omit findings, activity, fixed errors — plus last 2 verbatim turns and current artifact cards).
 
 Score logging: in debug mode, `scores.jsonl` records every context unit's score breakdown per turn. Inspect via `/why <unit-id>`.
 

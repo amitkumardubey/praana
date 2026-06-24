@@ -14,6 +14,10 @@ import {
   isNarrativeWorthy,
   normalizeTurnDigest,
 } from "./turn-digest.js";
+import {
+  sumEffectiveTokens,
+  type SectionDensityKind,
+} from "./density.js";
 import type {
   ActivityEntry,
   CheckpointDecisionEntry,
@@ -21,9 +25,14 @@ import type {
   CheckpointErrorEntry,
   CheckpointPlanEntry,
   CheckpointState,
+  PressureMode,
   SessionCheckpoint,
   TurnDigest,
 } from "./types.js";
+
+export interface RenderCheckpointOptions {
+  pressureMode?: PressureMode;
+}
 
 const DECISION_IDLE_TURNS = 10;
 const FILE_IDLE_TURNS = 10;
@@ -34,7 +43,9 @@ const NARRATIVE_RENDER_TOKENS = 400;
 const RATIONALE_MAX_CHARS = 240;
 const DECISIONS_SECTION_TOKENS = 800;
 const FINDINGS_SECTION_TOKENS = 300;
+const FINDINGS_SECTION_TOKENS_COMPACT = 150;
 const PLAN_SECTION_TOKENS = 400;
+const COMPACT_ACTIVITY_MAX = 5;
 
 type LegacyCheckpointState = CheckpointState & {
   plan?: string;
@@ -399,8 +410,123 @@ function renderFindingsSection(
   ];
 }
 
-export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
+function sectionTokens(text: string): number {
+  return text.length > 0 ? estimateTokens(text) : 0;
+}
+
+function activityForMode(
+  activity: CheckpointState["activity"],
+  pressureMode: PressureMode,
+): CheckpointState["activity"] {
+  if (pressureMode === "emergency") return [];
+  if (pressureMode === "compact") return activity.slice(-COMPACT_ACTIVITY_MAX);
+  return activity;
+}
+
+export function estimateCheckpointEffectiveTokens(
+  state: CheckpointState,
+  pressureMode: PressureMode = "normal",
+): { raw: number; effective: number } {
+  const sections: { tokens: number; kind: SectionDensityKind }[] = [];
+
+  if (state.activeRequest) {
+    const text = trimSection(state.activeRequest, 200);
+    sections.push({ tokens: sectionTokens(text), kind: "active_request" });
+  }
+
+  const narrativeLines = renderNarrativeSection(state.narrative);
+  if (narrativeLines.length > 0) {
+    sections.push({
+      tokens: sectionTokens(narrativeLines.join("\n")),
+      kind: "narrative",
+    });
+  }
+
+  const planLines = trimSectionLines(
+    renderPlanSection(state.plans),
+    PLAN_SECTION_TOKENS,
+  );
+  if (planLines.length > 0) {
+    sections.push({
+      tokens: sectionTokens(planLines.join("\n")),
+      kind: "plan",
+    });
+  }
+
+  if (state.constraints.length > 0) {
+    const text = state.constraints.map((c, i) => `- C${i + 1}: ${c}`).join("\n");
+    sections.push({ tokens: sectionTokens(text), kind: "constraint" });
+  }
+
+  const decisions = state.decisions.slice(-20);
+  if (decisions.length > 0) {
+    const decisionLines = trimSectionLines(
+      [
+        "### Decisions",
+        ...decisions.map((d, i) => renderDecision(d, i)),
+      ],
+      DECISIONS_SECTION_TOKENS,
+    );
+    sections.push({
+      tokens: sectionTokens(decisionLines.join("\n")),
+      kind: "decision",
+    });
+  }
+
+  if (state.files.length > 0) {
+    const text = state.files.map((f) => `- ${f.path} (turn ${f.turn})`).join("\n");
+    sections.push({ tokens: sectionTokens(text), kind: "file" });
+  }
+
+  if (pressureMode !== "emergency") {
+    const findingsBudget =
+      pressureMode === "compact"
+        ? FINDINGS_SECTION_TOKENS_COMPACT
+        : FINDINGS_SECTION_TOKENS;
+    const findingsLines = trimSectionLines(
+      renderFindingsSection(state.findings),
+      findingsBudget,
+    );
+    if (findingsLines.length > 0) {
+      sections.push({
+        tokens: sectionTokens(findingsLines.join("\n")),
+        kind: "finding",
+      });
+    }
+  }
+
+  const openErrors = state.errors.filter((e) => !e.fixed);
+  if (openErrors.length > 0) {
+    const text = openErrors.map((e) => `- ${e.message}`).join("\n");
+    sections.push({ tokens: sectionTokens(text), kind: "open_error" });
+  }
+
+  if (pressureMode !== "emergency") {
+    const fixedErrors = state.errors.filter((e) => e.fixed);
+    if (fixedErrors.length > 0) {
+      const text = fixedErrors
+        .map((e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`)
+        .join("\n");
+      sections.push({ tokens: sectionTokens(text), kind: "fixed_error" });
+    }
+  }
+
+  const activity = activityForMode(state.activity, pressureMode);
+  if (activity.length > 0) {
+    const text = activity.map((a) => `- [turn ${a.turn}] ${a.summary}`).join("\n");
+    sections.push({ tokens: sectionTokens(text), kind: "activity" });
+  }
+
+  const raw = sections.reduce((sum, s) => sum + s.tokens, 0);
+  return { raw, effective: sumEffectiveTokens(sections) };
+}
+
+export function renderCheckpoint(
+  checkpoint: SessionCheckpoint,
+  options: RenderCheckpointOptions = {},
+): string {
   const { state } = checkpoint;
+  const pressureMode = options.pressureMode ?? "normal";
   const sections: string[] = ["## Session Checkpoint", ""];
 
   if (state.activeRequest) {
@@ -452,12 +578,18 @@ export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
     );
   }
 
-  const findingsLines = trimSectionLines(
-    renderFindingsSection(state.findings),
-    FINDINGS_SECTION_TOKENS,
-  );
-  if (findingsLines.length > 0) {
-    sections.push(...findingsLines, "");
+  if (pressureMode !== "emergency") {
+    const findingsBudget =
+      pressureMode === "compact"
+        ? FINDINGS_SECTION_TOKENS_COMPACT
+        : FINDINGS_SECTION_TOKENS;
+    const findingsLines = trimSectionLines(
+      renderFindingsSection(state.findings),
+      findingsBudget,
+    );
+    if (findingsLines.length > 0) {
+      sections.push(...findingsLines, "");
+    }
   }
 
   const openErrors = state.errors.filter((e) => !e.fixed);
@@ -469,23 +601,24 @@ export function renderCheckpoint(checkpoint: SessionCheckpoint): string {
     );
   }
 
-  const fixedErrors = state.errors.filter((e) => e.fixed);
-  if (fixedErrors.length > 0) {
-    sections.push(
-      "### Fixed errors",
-      ...fixedErrors.map(
-        (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
-      ),
-      "",
-    );
+  if (pressureMode !== "emergency") {
+    const fixedOnly = state.errors.filter((e) => e.fixed);
+    if (fixedOnly.length > 0) {
+      sections.push(
+        "### Fixed errors",
+        ...fixedOnly.map(
+          (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
+        ),
+        "",
+      );
+    }
   }
 
-  if (state.activity.length > 0) {
+  const activity = activityForMode(state.activity, pressureMode);
+  if (activity.length > 0) {
     sections.push(
       "### Recent activity",
-      ...state.activity.map(
-        (a) => `- [turn ${a.turn}] ${a.summary}`,
-      ),
+      ...activity.map((a) => `- [turn ${a.turn}] ${a.summary}`),
       "",
     );
   }
@@ -620,8 +753,8 @@ export class CheckpointStore {
     return this.checkpoint;
   }
 
-  render(): string {
-    const text = renderCheckpoint(this.checkpoint);
+  render(options: RenderCheckpointOptions = {}): string {
+    const text = renderCheckpoint(this.checkpoint, options);
     return text.trim().length > 0 ? text : "";
   }
 

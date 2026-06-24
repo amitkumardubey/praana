@@ -1,0 +1,58 @@
+/** Information-density kinds used for weighted context pressure. */
+export type SectionDensityKind =
+  | "pinned_infra"
+  | "active_request"
+  | "decision"
+  | "constraint"
+  | "plan"
+  | "open_error"
+  | "narrative"
+  | "file"
+  | "finding"
+  | "activity"
+  | "fixed_error"
+  | "verbatim_turn"
+  | "turn_digest"
+  | "artifact_card"
+  | "activity_entry"
+  | "memory_digest"
+  | "active_state"
+  | "peripheral_state";
+
+/** Hardcoded density weights — lower = more compressible, counts less toward pressure. */
+export const DENSITY_WEIGHTS: Record<SectionDensityKind, number> = {
+  pinned_infra: 1.0,
+  active_request: 1.0,
+  decision: 1.0,
+  constraint: 1.0,
+  plan: 1.0,
+  open_error: 0.8,
+  narrative: 0.6,
+  file: 0.6,
+  finding: 0.25,
+  activity: 0.25,
+  fixed_error: 0.25,
+  verbatim_turn: 0.9,
+  turn_digest: 0.4,
+  artifact_card: 0.4,
+  activity_entry: 0.25,
+  memory_digest: 1.0,
+  active_state: 1.0,
+  peripheral_state: 0.6,
+};
+
+export function effectiveTokens(
+  rawTokens: number,
+  kind: SectionDensityKind,
+): number {
+  return rawTokens * DENSITY_WEIGHTS[kind];
+}
+
+export function sumEffectiveTokens(
+  sections: { tokens: number; kind: SectionDensityKind }[],
+): number {
+  return sections.reduce(
+    (sum, s) => sum + effectiveTokens(s.tokens, s.kind),
+    0,
+  );
+}

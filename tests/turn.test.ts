@@ -566,7 +566,7 @@ describe("runTurn", () => {
       contextEngine: {
         ledger: { list: vi.fn(() => []) },
         getRecentActivity: vi.fn(() => []),
-        renderCheckpointSection: vi.fn(() => null),
+        getSessionCheckpoint: vi.fn(() => null),
         recordCompileTelemetry: vi.fn(),
         captureStateSnapshot: vi.fn(),
       },
@@ -968,7 +968,7 @@ describe("runTurn", () => {
       contextEngine: {
         ledger: { list: vi.fn(() => []) },
         getRecentActivity: vi.fn(() => []),
-        renderCheckpointSection: vi.fn(() => null),
+        getSessionCheckpoint: vi.fn(() => null),
         recordCompileTelemetry: vi.fn(),
         captureStateSnapshot: vi.fn(),
       },

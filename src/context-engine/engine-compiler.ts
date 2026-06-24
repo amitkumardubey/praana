@@ -1,4 +1,3 @@
-import type { Event } from "../types.js";
 import type {
   CompileInput,
   CompileMetrics,
@@ -12,6 +11,12 @@ import {
   trimAgentsContext,
   trimSectionToTokenBudget,
 } from "../compiler.js";
+import {
+  estimateCheckpointEffectiveTokens,
+  renderCheckpoint,
+} from "./checkpoint.js";
+import { effectiveTokens } from "./density.js";
+import type { SectionDensityKind } from "./density.js";
 import { buildArtifactCard } from "./summarize.js";
 import { getAppLogger } from "../logger.js";
 import { estimateTokens } from "./summarize.js";
@@ -26,8 +31,10 @@ import type {
   ActivityEntry,
   CompileScoreRecord,
   ContextUnit,
+  ContextUnitType,
   PressureMode,
   ScoreBreakdown,
+  SessionCheckpoint,
   TurnRecord,
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
@@ -45,6 +52,8 @@ export interface EngineCompileInput extends CompileInput {
   contextWindowTokens?: number;
   /** Searchable texts of auto-hydrated peripheral objects; used for scoring boost. */
   hydratedTexts?: string[];
+  /** Structured checkpoint for pressure-aware rendering (preferred over checkpointSection). */
+  checkpoint?: SessionCheckpoint;
 }
 
 export interface EngineCompileResult {
@@ -53,6 +62,7 @@ export interface EngineCompileResult {
   scoreRecords: CompileScoreRecord[];
   pressureRatio: number;
   pressureMode: PressureMode;
+  weightedTokens: number;
   excludedScoredUnits: number;
 }
 
@@ -220,9 +230,100 @@ function resolvePressureMode(
   return "normal";
 }
 
-export function compileEngineWithMetrics(
+function pressureModeRank(mode: PressureMode): number {
+  if (mode === "emergency") return 2;
+  if (mode === "compact") return 1;
+  return 0;
+}
+
+function unitDensityKind(type: ContextUnitType): SectionDensityKind {
+  switch (type) {
+    case "turn_digest":
+      return "turn_digest";
+    case "artifact_card":
+      return "artifact_card";
+    case "activity_entry":
+      return "activity_entry";
+    default:
+      return "turn_digest";
+  }
+}
+
+function renderCheckpointForMode(
   input: EngineCompileInput,
-): EngineCompileResult {
+  pressureMode: PressureMode,
+): { text: string; tokens: number; effective: number } {
+  if (input.checkpoint) {
+    const text = renderCheckpoint(input.checkpoint, { pressureMode });
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return { text: "", tokens: 0, effective: 0 };
+    }
+    const estimate = estimateCheckpointEffectiveTokens(
+      input.checkpoint.state,
+      pressureMode,
+    );
+    return {
+      text: trimmed,
+      tokens: estTokens(trimmed),
+      effective: estimate.effective,
+    };
+  }
+  if (input.checkpointSection?.trim()) {
+    const text = input.checkpointSection.trim();
+    const tokens = estTokens(text);
+    return { text, tokens, effective: tokens };
+  }
+  return { text: "", tokens: 0, effective: 0 };
+}
+
+function computeWeightedTokens(
+  metrics: CompileMetrics,
+  checkpointEffective: number,
+  includedScored: ContextUnit[],
+): number {
+  let weighted = 0;
+  weighted += effectiveTokens(metrics.systemFrameTokens, "pinned_infra");
+  weighted += effectiveTokens(metrics.agentsContextTokens, "pinned_infra");
+  weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
+  weighted += checkpointEffective;
+  weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
+  for (const unit of includedScored) {
+    weighted += effectiveTokens(unit.tokens, unitDensityKind(unit.type));
+  }
+  weighted += effectiveTokens(metrics.crossSessionTokens, "memory_digest");
+  weighted += effectiveTokens(metrics.activeStateTokens, "active_state");
+  weighted += effectiveTokens(metrics.peripheralStubsTokens, "peripheral_state");
+  weighted += effectiveTokens(metrics.currentInputTokens, "pinned_infra");
+  return weighted;
+}
+
+function estimatePreliminaryWeighted(
+  pinnedInfraTokens: number,
+  verbatimTokens: number,
+  currentInputTokens: number,
+  checkpointEffective: number,
+): number {
+  return (
+    effectiveTokens(pinnedInfraTokens, "pinned_infra") +
+    effectiveTokens(verbatimTokens, "verbatim_turn") +
+    effectiveTokens(currentInputTokens, "pinned_infra") +
+    checkpointEffective
+  );
+}
+
+interface CompilePassResult {
+  prompt: string;
+  metrics: CompileMetrics;
+  scoreRecords: CompileScoreRecord[];
+  checkpointEffective: number;
+  includedScored: ContextUnit[];
+}
+
+function compileEnginePass(
+  input: EngineCompileInput,
+  checkpointPressureMode: PressureMode,
+): CompilePassResult {
   const sections: string[] = [];
   const metrics: Partial<CompileMetrics> = {};
   const compileTurn = input.currentTurn + 1;
@@ -234,7 +335,6 @@ export function compileEngineWithMetrics(
     0,
     Math.min(input.tokenBudget, contextWindow) - reservedOutput,
   );
-  const pressureDenominator = Math.max(1, contextWindow - reservedOutput);
   const maxMemoryTokens = Math.floor(usable * (input.memoriesBudgetRatio ?? 0.2));
   const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const maxSkillsSectionTokens = Math.floor(
@@ -274,31 +374,23 @@ export function compileEngineWithMetrics(
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
 
-  let checkpointSection = "";
-  if (input.checkpointSection?.trim()) {
-    checkpointSection = input.checkpointSection.trim();
-    sections.push(checkpointSection);
+  const checkpointRendered = renderCheckpointForMode(input, checkpointPressureMode);
+  if (checkpointRendered.text) {
+    sections.push(checkpointRendered.text);
   }
-  metrics.checkpointTokens = checkpointSection ? estTokens(checkpointSection) : 0;
+  metrics.checkpointTokens = checkpointRendered.tokens;
 
   const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
   sections.push(verbatim.text);
   metrics.recentTurnsTokens = verbatim.tokens;
   metrics.recentTurnsTruncated = false;
 
-  const pinnedTokens =
-    estTokens(sections.join("\n\n")) +
-    (input.userInput ? estTokens(`## Current Input\n\nUser: ${input.userInput}`) : 0);
-
-  let pressureRatio = pinnedTokens / pressureDenominator;
-  let pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
-
   const activityEntries = input.activityEntries ?? [];
-  let scoredUnits = buildScoredUnits(
+  const scoredUnits = buildScoredUnits(
     input.turnRecords,
     input.currentTurn,
     activityEntries,
-    pressureMode,
+    checkpointPressureMode,
   );
 
   const weights = input.engineConfig.scoring;
@@ -354,15 +446,11 @@ export function compileEngineWithMetrics(
     );
   }
 
-  const scoredSections: string[] = [];
   const includedScored = [...recentPick.included, ...olderPick.included];
   if (includedScored.length > 0) {
-    scoredSections.push(
-      "# Scored Context",
-      "",
-      ...includedScored.map((u) => u.content),
+    sections.push(
+      ["# Scored Context", "", ...includedScored.map((u) => u.content)].join("\n"),
     );
-    sections.push(scoredSections.join("\n"));
   }
 
   let crossSection = "";
@@ -404,26 +492,103 @@ export function compileEngineWithMetrics(
 
   const fullPrompt = sections.join("\n\n");
   metrics.totalTokens = estTokens(fullPrompt);
-  pressureRatio = metrics.totalTokens / pressureDenominator;
-  pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
-
-  if (metrics.totalTokens > usable) {
-    getAppLogger().child("compiler").warn(
-      `Prompt estimated at ${metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
-    );
-  }
-
-  const excludedScoredUnits =
-    rankedRecent.length -
-    recentPick.included.length +
-    (rankedOlder.length - olderPick.included.length);
 
   return {
     prompt: fullPrompt,
     metrics: metrics as CompileMetrics,
     scoreRecords,
+    checkpointEffective: checkpointRendered.effective,
+    includedScored,
+  };
+}
+
+export function compileEngineWithMetrics(
+  input: EngineCompileInput,
+): EngineCompileResult {
+  const reservedOutput = input.reservedOutputTokens ?? 0;
+  const contextWindow = input.contextWindowTokens ?? input.tokenBudget;
+  const usable = Math.max(
+    0,
+    Math.min(input.tokenBudget, contextWindow) - reservedOutput,
+  );
+  const pressureDenominator = Math.max(1, contextWindow - reservedOutput);
+
+  const normalCheckpointEstimate = input.checkpoint
+    ? estimateCheckpointEffectiveTokens(input.checkpoint.state, "normal").effective
+    : input.checkpointSection?.trim()
+      ? estTokens(input.checkpointSection.trim())
+      : 0;
+
+  const pinnedInfraEstimate =
+    estTokens(
+      buildSystemFrame(
+        input.cwd,
+        input.sessionId,
+        input.toolSchemas,
+        buildStateSummary(input.stateGraph),
+        input.agentsContext ?? "",
+      ),
+    ) +
+    (input.agentsContext ? estTokens(input.agentsContext) : 0) +
+    (input.skillsPromptSection ? estTokens(input.skillsPromptSection) : 0);
+
+  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
+  const currentInputTokens = input.userInput
+    ? estTokens(`## Current Input\n\nUser: ${input.userInput}`)
+    : 0;
+
+  const preliminaryWeighted = estimatePreliminaryWeighted(
+    pinnedInfraEstimate,
+    verbatim.tokens,
+    currentInputTokens,
+    normalCheckpointEstimate,
+  );
+  let checkpointPressureMode = resolvePressureMode(
+    preliminaryWeighted / pressureDenominator,
+    input.engineConfig,
+  );
+
+  let pass = compileEnginePass(input, checkpointPressureMode);
+  let weightedTokens = computeWeightedTokens(
+    pass.metrics,
+    pass.checkpointEffective,
+    pass.includedScored,
+  );
+  let pressureRatio = weightedTokens / pressureDenominator;
+  let pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
+
+  if (pressureModeRank(pressureMode) > pressureModeRank(checkpointPressureMode)) {
+    checkpointPressureMode = pressureMode;
+    pass = compileEnginePass(input, checkpointPressureMode);
+    weightedTokens = computeWeightedTokens(
+      pass.metrics,
+      pass.checkpointEffective,
+      pass.includedScored,
+    );
+    pressureRatio = weightedTokens / pressureDenominator;
+    pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
+  }
+
+  if (pass.metrics.totalTokens > usable) {
+    getAppLogger().child("compiler").warn(
+      `Prompt estimated at ${pass.metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
+    );
+  }
+
+  const rankedRecentCount = pass.scoreRecords.filter((r) => r.band === 4).length;
+  const rankedOlderCount = pass.scoreRecords.filter((r) => r.band === 5).length;
+  const includedRecent = pass.scoreRecords.filter((r) => r.band === 4 && r.included).length;
+  const includedOlder = pass.scoreRecords.filter((r) => r.band === 5 && r.included).length;
+  const excludedScoredUnits =
+    rankedRecentCount - includedRecent + (rankedOlderCount - includedOlder);
+
+  return {
+    prompt: pass.prompt,
+    metrics: pass.metrics,
+    scoreRecords: pass.scoreRecords,
     pressureRatio,
     pressureMode,
+    weightedTokens,
     excludedScoredUnits,
   };
 }
