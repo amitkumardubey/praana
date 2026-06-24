@@ -5,9 +5,7 @@ import type {
   TurnDigest,
   TurnRecord,
 } from "./types.js";
-import { isTestCommand } from "./error-tracker.js";
-
-const TEST_FAIL_RE = /(\d+)\s+failing|FAIL|failed/i;
+import { isTestCommand, extractCommitMessage, extractFailureCount } from "../domain/coding-domain.js";
 
 export function deriveActivityEntries(
   turn: number,
@@ -92,26 +90,6 @@ function activityFromToolCall(
   return entries;
 }
 
-function extractCommitMessage(resultText?: string): string {
-  if (!resultText) return "changes";
-  try {
-    const parsed = JSON.parse(resultText) as { stdout?: string; output?: string };
-    const stdout = parsed.stdout ?? parsed.output ?? resultText;
-    const firstLine = stdout.split("\n").map((l) => l.trim()).find(Boolean);
-    return firstLine?.slice(0, 120) ?? "changes";
-  } catch {
-    const firstLine = resultText.split("\n").map((l) => l.trim()).find(Boolean);
-    return firstLine?.slice(0, 120) ?? "changes";
-  }
-}
-
-function extractFailureCount(resultText?: string): string {
-  if (!resultText) return "unknown count";
-  const match = resultText.match(TEST_FAIL_RE);
-  if (match?.[1]) return `${match[1]} failures`;
-  if (/fail/i.test(resultText)) return "failures detected";
-  return "failures detected";
-}
 
 export class ActivityLog {
   private entries: ActivityEntry[] = [];

@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
 import { estimateTokens } from "../token-estimate.js";
+import { CODING_SYNONYMS } from "../domain/coding-domain.js";
 import {
   tokenizeShort,
   buildBM25StatsFromTokens,
@@ -385,22 +386,6 @@ export interface MatchResult {
 // Skills-specific helpers — synonym expansion, scoring bonuses, invocation detection.
 // These are skill-ranking concepts, not general BM25 primitives.
 
-const DEFAULT_SYNONYMS: Record<string, string[]> = {
-  deploy: ["launch", "release", "rollout", "publish"],
-  database: ["db", "postgres", "mysql", "sql", "rds", "dynamodb"],
-  container: ["docker", "ecs", "kubernetes", "k8s", "pod"],
-  aws: ["amazon", "ec2", "s3", "lambda", "cloud"],
-  test: ["testing", "spec", "assert", "verify", "check"],
-  build: ["compile", "bundle", "package", "construct"],
-  error: ["error", "failure", "bug", "issue", "crash", "exception"],
-  fix: ["fix", "repair", "patch", "resolve", "correct"],
-  code: ["code", "source", "implementation", "program"],
-  review: ["review", "audit", "inspect", "check"],
-  config: ["configuration", "setup", "settings", "options"],
-  monitor: ["monitoring", "observe", "watch", "track", "metrics"],
-  auth: ["authentication", "login", "oauth", "sso", "identity"],
-  api: ["rest", "graphql", "endpoint", "service", "http"],
-};
 
 function expandTokens(
   tokens: string[],
@@ -441,7 +426,7 @@ export function rankSkills(
 ): MatchResult[] {
   if (index.length === 0 || !userInput.trim()) return [];
 
-  const syns = synonymMap ?? DEFAULT_SYNONYMS;
+  const syns = synonymMap ?? CODING_SYNONYMS;
   const queryTokens = expandTokens(tokenizeShort(userInput), syns);
   if (queryTokens.length === 0) return [];
 
@@ -516,7 +501,7 @@ export class SkillRuntime {
   private budgetBase = 100_000;
 
   // Synonym map (extendable)
-  private synonyms: Record<string, string[]> = { ...DEFAULT_SYNONYMS };
+  private synonyms: Record<string, string[]> = { ...CODING_SYNONYMS };
 
   constructor(config: SkillsRuntimeConfig, cwd: string) {
     this.config = config;

@@ -4,7 +4,7 @@ import { GenericDistiller, LogDistiller } from "../src/distillers/generic.js";
 import { TestDistiller } from "../src/distillers/npm-test.js";
 import { BuildDistiller } from "../src/distillers/tsc-errors.js";
 import { SearchDistiller } from "../src/distillers/rg-results.js";
-import { createDefaultDistillerRegistry } from "../src/distillers/index.js";
+import { createDefaultDistillerRegistry } from "../src/domain/coding-domain.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { DistillerRegistry, type Distiller } from "../src/context-engine/distiller.js";
 import { estimateTokens } from "../src/context-engine/summarize.js";

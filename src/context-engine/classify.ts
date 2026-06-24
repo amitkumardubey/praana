@@ -1,3 +1,10 @@
+import {
+  isDiffContent,
+  isTestOutputContent,
+  isBuildOutputContent,
+  isCodeContent,
+  hasTestMarkers,
+} from "../domain/coding-domain.js";
 import type { ContentType } from "./types.js";
 
 /** Fast regex-based content-type classification (<1ms). */
@@ -5,17 +12,9 @@ export function classifyContentType(text: string): ContentType {
   const trimmed = text.trim();
   if (!trimmed) return "other";
 
-  if (/^diff --git/m.test(trimmed) || /^@@ -\d+/m.test(trimmed)) {
-    return "diff";
-  }
-
-  if (/\b(PASS|FAIL|✓|✗)\b/.test(trimmed) && /\btests?\b/i.test(trimmed)) {
-    return "test_output";
-  }
-
-  if (/error TS\d+:/.test(trimmed) || /^error:.+:\d+/m.test(trimmed)) {
-    return "build_output";
-  }
+  if (isDiffContent(trimmed)) return "diff";
+  if (isTestOutputContent(trimmed)) return "test_output";
+  if (isBuildOutputContent(trimmed)) return "build_output";
 
   if (
     (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
@@ -30,17 +29,12 @@ export function classifyContentType(text: string): ContentType {
   if (
     trimmed.length < 500 &&
     /\b(Error|error|EXCEPTION)\b/.test(trimmed) &&
-    !/\b(PASS|FAIL|✓|✗|tests?)\b/i.test(trimmed)
+    !hasTestMarkers(trimmed)
   ) {
     return "error";
   }
 
-  if (
-    /^(import |export |function |class |const |let |def )/m.test(trimmed) ||
-    /```[\s\S]*```/.test(trimmed)
-  ) {
-    return "code";
-  }
+  if (isCodeContent(trimmed)) return "code";
 
   const lines = trimmed.split("\n");
   if (lines.length > 20 && hasRepetitiveLines(lines)) {

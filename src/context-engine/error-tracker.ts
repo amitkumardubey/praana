@@ -1,4 +1,5 @@
 import type { OpenError, ToolCallRecord, TurnRecord } from "./types.js";
+import { isTestCommand } from "../domain/coding-domain.js";
 
 export function toolErrorKey(tool: string, args: Record<string, unknown>): string {
   const command =
@@ -8,12 +9,6 @@ export function toolErrorKey(tool: string, args: Record<string, unknown>): strin
         ? args.path
         : JSON.stringify(args);
   return `${tool}:${command}`;
-}
-
-export function isTestCommand(command: string): boolean {
-  return /\b(npm test|pnpm test|yarn test|vitest|pytest|cargo test|go test)\b/i.test(
-    command,
-  );
 }
 
 export class ErrorTracker {
