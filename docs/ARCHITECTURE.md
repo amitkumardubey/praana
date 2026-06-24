@@ -17,7 +17,10 @@ src/
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
-  event-log.ts   — Append-only JSONL event persistence with fsyncSync durability
+  state-graph-checkpoint.ts — O(1) resume: persist/restore StateGraph snapshot (tiers, touchedTurn) after each turn
+  event-log.ts   — Append-only JSONL event persistence with fsyncSync durability; in-memory parse cache (re-reads disk only on mtime/size change)
+  token-estimate.ts — Unicode-aware token heuristic (Latin/CJK/emoji/ZWJ); canonical shared estimator for all budget calculations
+  context-pressure.ts — Density-weighted effective-token accounting; raw-token safety net; resolves compaction config
   model-resolver.ts — /model parsing and provider+model resolution
   provider-catalog.ts — live /models fetch + 6h cache for OpenAI-compatible providers
   llm.ts         — Provider registry and model building via pi-ai
@@ -33,7 +36,7 @@ src/
     turn-ledger.ts — Append-only typed turn records with BM25 search
     distiller.ts   — DistillerRegistry, sync/deferred dispatch, intensity selection
     classify.ts    — Fast regex-based content-type classification
-    summarize.ts   — Token estimation and generic head/tail summarisation
+    summarize.ts   — Generic head/tail summarisation; re-exports estimateTokens from token-estimate.ts
     extraction.ts  — Post-turn deterministic extraction (TurnDigest, activity, errors)
     turn-digest.ts  — TurnDigest extraction and state-graph diffing
     activity-log.ts — ActivityEntry derivation and rolling buffer
@@ -43,6 +46,7 @@ src/
     scoring.ts     — 3-term scoring (pin + recency + relevance) and budget selection
     engine-compiler.ts — Multi-resolution budget-band compiler (engine mode)
     bm25.ts        — Re-exports shared BM25 utilities for context-unit and turn-search scoring
+    density.ts     — SectionDensityKind → weight table; densityWeight() used by engine-compiler for weighted pressure
     turn-recorder.ts — Per-turn event recording for the turn ledger
     event-lineage.ts — Trace artifacts back to producing turns, decisions, files
     telemetry.ts   — Per-session telemetry: pressure events, retrieval rates, distiller savings
@@ -95,7 +99,8 @@ User input
      12) [engine only] reconcile SessionCheckpoint from digest
      13) increment turn count
      14) [engine only] apply tier demotion rules + skill residency endTurn
-     15) print per-turn memory/prompt banner
+     15) persist state graph checkpoint (session.persistStateGraphCheckpoint())
+     16) print per-turn memory/prompt banner
 ```
 
 ## Session Boundary Flow
@@ -110,7 +115,8 @@ SESSION START:
 
 SESSION RESUME:
   Session.resume(sessionId)
-  → replay context_action events into StateGraph
+  → load state_graph_checkpoint.json if present → O(1) StateGraph restore (tiers + touchedTurn preserved)
+  → replay only context_action events that occurred after the checkpoint's last_event_id
   → restore model override from the last model_override system_note
   → re-init MemoryStore + regenerate digest
 
@@ -167,6 +173,8 @@ Returns `AutoHydrateResult[]` with `{ id, text, method }` (`method` is `"substri
 ## Event Log
 
 Location: `~/.praana/sessions/<session_id>/events.jsonl`
+
+**In-memory cache:** After the first read, `EventLog` maintains a parsed event index in memory. On every subsequent `readAll`, `readLast`, `search`, or `replayContextActions` call it checks `mtime` and `size` via `statSync`; if unchanged it returns the cached array directly — no JSONL re-parsing. `append()` updates the cache inline before writing to disk, so the cache never drifts. `getLastEvent()` is O(1) direct cache access.
 
 Each line is a single JSON line representing an `Event`:
 - `user_message`
