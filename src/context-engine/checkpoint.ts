@@ -423,23 +423,30 @@ function activityForMode(
   return activity;
 }
 
-export function estimateCheckpointEffectiveTokens(
+const CHECKPOINT_HEADER = "## Session Checkpoint";
+
+interface CheckpointSection {
+  lines: string[];
+  kind: SectionDensityKind;
+}
+
+/** Single source of truth for checkpoint section content, budgets, and density kinds. */
+function buildCheckpointSections(
   state: CheckpointState,
-  pressureMode: PressureMode = "normal",
-): { raw: number; effective: number } {
-  const sections: { tokens: number; kind: SectionDensityKind }[] = [];
+  pressureMode: PressureMode,
+): CheckpointSection[] {
+  const sections: CheckpointSection[] = [];
 
   if (state.activeRequest) {
-    const text = trimSection(state.activeRequest, 200);
-    sections.push({ tokens: sectionTokens(text), kind: "active_request" });
+    sections.push({
+      lines: ["### Active Request", trimSection(state.activeRequest, 200)],
+      kind: "active_request",
+    });
   }
 
   const narrativeLines = renderNarrativeSection(state.narrative);
   if (narrativeLines.length > 0) {
-    sections.push({
-      tokens: sectionTokens(narrativeLines.join("\n")),
-      kind: "narrative",
-    });
+    sections.push({ lines: narrativeLines, kind: "narrative" });
   }
 
   const planLines = trimSectionLines(
@@ -447,15 +454,17 @@ export function estimateCheckpointEffectiveTokens(
     PLAN_SECTION_TOKENS,
   );
   if (planLines.length > 0) {
-    sections.push({
-      tokens: sectionTokens(planLines.join("\n")),
-      kind: "plan",
-    });
+    sections.push({ lines: planLines, kind: "plan" });
   }
 
   if (state.constraints.length > 0) {
-    const text = state.constraints.map((c, i) => `- C${i + 1}: ${c}`).join("\n");
-    sections.push({ tokens: sectionTokens(text), kind: "constraint" });
+    sections.push({
+      lines: [
+        "### Constraints",
+        ...state.constraints.map((c, i) => `- C${i + 1}: ${c}`),
+      ],
+      kind: "constraint",
+    });
   }
 
   const decisions = state.decisions.slice(-20);
@@ -467,15 +476,17 @@ export function estimateCheckpointEffectiveTokens(
       ],
       DECISIONS_SECTION_TOKENS,
     );
-    sections.push({
-      tokens: sectionTokens(decisionLines.join("\n")),
-      kind: "decision",
-    });
+    sections.push({ lines: decisionLines, kind: "decision" });
   }
 
   if (state.files.length > 0) {
-    const text = state.files.map((f) => `- ${f.path} (turn ${f.turn})`).join("\n");
-    sections.push({ tokens: sectionTokens(text), kind: "file" });
+    sections.push({
+      lines: [
+        "### Files in play",
+        ...state.files.map((f) => `- ${f.path} (turn ${f.turn})`),
+      ],
+      kind: "file",
+    });
   }
 
   if (pressureMode !== "emergency") {
@@ -488,142 +499,83 @@ export function estimateCheckpointEffectiveTokens(
       findingsBudget,
     );
     if (findingsLines.length > 0) {
-      sections.push({
-        tokens: sectionTokens(findingsLines.join("\n")),
-        kind: "finding",
-      });
+      sections.push({ lines: findingsLines, kind: "finding" });
     }
   }
 
   const openErrors = state.errors.filter((e) => !e.fixed);
   if (openErrors.length > 0) {
-    const text = openErrors.map((e) => `- ${e.message}`).join("\n");
-    sections.push({ tokens: sectionTokens(text), kind: "open_error" });
+    sections.push({
+      lines: [
+        "### Open errors",
+        ...openErrors.map((e) => `- ${e.message}`),
+      ],
+      kind: "open_error",
+    });
   }
 
   if (pressureMode !== "emergency") {
-    const fixedErrors = state.errors.filter((e) => e.fixed);
-    if (fixedErrors.length > 0) {
-      const text = fixedErrors
-        .map((e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`)
-        .join("\n");
-      sections.push({ tokens: sectionTokens(text), kind: "fixed_error" });
+    const fixedOnly = state.errors.filter((e) => e.fixed);
+    if (fixedOnly.length > 0) {
+      sections.push({
+        lines: [
+          "### Fixed errors",
+          ...fixedOnly.map(
+            (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
+          ),
+        ],
+        kind: "fixed_error",
+      });
     }
   }
 
   const activity = activityForMode(state.activity, pressureMode);
   if (activity.length > 0) {
-    const text = activity.map((a) => `- [turn ${a.turn}] ${a.summary}`).join("\n");
-    sections.push({ tokens: sectionTokens(text), kind: "activity" });
+    sections.push({
+      lines: [
+        "### Recent activity",
+        ...activity.map((a) => `- [turn ${a.turn}] ${a.summary}`),
+      ],
+      kind: "activity",
+    });
   }
 
-  const raw = sections.reduce((sum, s) => sum + s.tokens, 0);
-  return { raw, effective: sumEffectiveTokens(sections) };
+  return sections;
+}
+
+function checkpointSectionText(section: CheckpointSection): string {
+  return section.lines.join("\n");
+}
+
+export function estimateCheckpointEffectiveTokens(
+  state: CheckpointState,
+  pressureMode: PressureMode = "normal",
+): { raw: number; effective: number } {
+  const sections = buildCheckpointSections(state, pressureMode);
+  const tokenized: { tokens: number; kind: SectionDensityKind }[] = [
+    { tokens: sectionTokens(CHECKPOINT_HEADER), kind: "pinned_infra" },
+  ];
+  for (const section of sections) {
+    tokenized.push({
+      tokens: sectionTokens(checkpointSectionText(section)),
+      kind: section.kind,
+    });
+  }
+  const raw = tokenized.reduce((sum, s) => sum + s.tokens, 0);
+  return { raw, effective: sumEffectiveTokens(tokenized) };
 }
 
 export function renderCheckpoint(
   checkpoint: SessionCheckpoint,
   options: RenderCheckpointOptions = {},
 ): string {
-  const { state } = checkpoint;
   const pressureMode = options.pressureMode ?? "normal";
-  const sections: string[] = ["## Session Checkpoint", ""];
-
-  if (state.activeRequest) {
-    sections.push(
-      "### Active Request",
-      trimSection(state.activeRequest, 200),
-      "",
-    );
+  const sections = buildCheckpointSections(checkpoint.state, pressureMode);
+  const parts: string[] = [CHECKPOINT_HEADER, ""];
+  for (const section of sections) {
+    parts.push(...section.lines, "");
   }
-
-  const narrativeLines = renderNarrativeSection(state.narrative);
-  if (narrativeLines.length > 0) {
-    sections.push(...narrativeLines, "");
-  }
-
-  const planLines = trimSectionLines(
-    renderPlanSection(state.plans),
-    PLAN_SECTION_TOKENS,
-  );
-  if (planLines.length > 0) {
-    sections.push(...planLines, "");
-  }
-
-  if (state.constraints.length > 0) {
-    sections.push(
-      "### Constraints",
-      ...state.constraints.map((c, i) => `- C${i + 1}: ${c}`),
-      "",
-    );
-  }
-
-  const decisions = state.decisions.slice(-20);
-  if (decisions.length > 0) {
-    const decisionLines = trimSectionLines(
-      [
-        "### Decisions",
-        ...decisions.map((d, i) => renderDecision(d, i)),
-      ],
-      DECISIONS_SECTION_TOKENS,
-    );
-    sections.push(...decisionLines, "");
-  }
-
-  if (state.files.length > 0) {
-    sections.push(
-      "### Files in play",
-      ...state.files.map((f) => `- ${f.path} (turn ${f.turn})`),
-      "",
-    );
-  }
-
-  if (pressureMode !== "emergency") {
-    const findingsBudget =
-      pressureMode === "compact"
-        ? FINDINGS_SECTION_TOKENS_COMPACT
-        : FINDINGS_SECTION_TOKENS;
-    const findingsLines = trimSectionLines(
-      renderFindingsSection(state.findings),
-      findingsBudget,
-    );
-    if (findingsLines.length > 0) {
-      sections.push(...findingsLines, "");
-    }
-  }
-
-  const openErrors = state.errors.filter((e) => !e.fixed);
-  if (openErrors.length > 0) {
-    sections.push(
-      "### Open errors",
-      ...openErrors.map((e) => `- ${e.message}`),
-      "",
-    );
-  }
-
-  if (pressureMode !== "emergency") {
-    const fixedOnly = state.errors.filter((e) => e.fixed);
-    if (fixedOnly.length > 0) {
-      sections.push(
-        "### Fixed errors",
-        ...fixedOnly.map(
-          (e) => `- [turn ${e.fixedTurn ?? e.turn}] ${e.message}`,
-        ),
-        "",
-      );
-    }
-  }
-
-  const activity = activityForMode(state.activity, pressureMode);
-  if (activity.length > 0) {
-    sections.push(
-      "### Recent activity",
-      ...activity.map((a) => `- [turn ${a.turn}] ${a.summary}`),
-      "",
-    );
-  }
-
-  return sections.join("\n").trimEnd();
+  return parts.join("\n").trimEnd();
 }
 
 export function renderContextSummary(

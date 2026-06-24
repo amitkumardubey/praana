@@ -329,10 +329,18 @@ interface CompilePassResult {
   includedScored: ContextUnit[];
 }
 
+interface CompilePassPrecomputed {
+  systemFrame: string;
+  systemFrameTokens: number;
+  agentsContextTokens: number;
+  agentsContextTruncated: boolean;
+  verbatim: { text: string; tokens: number };
+}
+
 function compileEnginePass(
   input: EngineCompileInput,
   checkpointPressureMode: PressureMode,
-  verbatimSection?: { text: string; tokens: number },
+  precomputed: CompilePassPrecomputed,
 ): CompilePassResult {
   const sections: string[] = [];
   const metrics: Partial<CompileMetrics> = {};
@@ -346,28 +354,14 @@ function compileEnginePass(
     Math.min(input.tokenBudget, contextWindow) - reservedOutput,
   );
   const maxMemoryTokens = Math.floor(usable * (input.memoriesBudgetRatio ?? 0.2));
-  const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const maxSkillsSectionTokens = Math.floor(
     usable * (input.skillsSectionBudgetRatio ?? 0.2),
   );
 
-  const stateSummary = buildStateSummary(input.stateGraph);
-  const { text: agentsContext, truncated: agentsTruncated } = trimAgentsContext(
-    input.agentsContext,
-    maxAgentsTokens,
-  );
-  metrics.agentsContextTruncated = agentsTruncated;
-
-  const frame = buildSystemFrame(
-    input.cwd,
-    input.sessionId,
-    input.toolSchemas,
-    stateSummary,
-    agentsContext,
-  );
-  sections.push(frame);
-  metrics.systemFrameTokens = estTokens(frame);
-  metrics.agentsContextTokens = agentsContext ? estTokens(agentsContext) : 0;
+  sections.push(precomputed.systemFrame);
+  metrics.systemFrameTokens = precomputed.systemFrameTokens;
+  metrics.agentsContextTokens = precomputed.agentsContextTokens;
+  metrics.agentsContextTruncated = precomputed.agentsContextTruncated;
 
   let skillsSection = "";
   if (input.skillsPromptSection) {
@@ -390,10 +384,8 @@ function compileEnginePass(
   }
   metrics.checkpointTokens = checkpointRendered.tokens;
 
-  const verbatim =
-    verbatimSection ?? buildVerbatimSection(input.turnRecords, input.currentTurn);
-  sections.push(verbatim.text);
-  metrics.recentTurnsTokens = verbatim.tokens;
+  sections.push(precomputed.verbatim.text);
+  metrics.recentTurnsTokens = precomputed.verbatim.tokens;
   metrics.recentTurnsTruncated = false;
 
   const activityEntries = input.activityEntries ?? [];
@@ -513,6 +505,31 @@ function compileEnginePass(
   };
 }
 
+function buildCompilePassPrecomputed(
+  input: EngineCompileInput,
+  usable: number,
+): CompilePassPrecomputed {
+  const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
+  const stateSummary = buildStateSummary(input.stateGraph);
+  const { text: agentsContext, truncated: agentsContextTruncated } =
+    trimAgentsContext(input.agentsContext, maxAgentsTokens);
+  const systemFrame = buildSystemFrame(
+    input.cwd,
+    input.sessionId,
+    input.toolSchemas,
+    stateSummary,
+    agentsContext,
+  );
+  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
+  return {
+    systemFrame,
+    systemFrameTokens: estTokens(systemFrame),
+    agentsContextTokens: agentsContext ? estTokens(agentsContext) : 0,
+    agentsContextTruncated,
+    verbatim,
+  };
+}
+
 export function compileEngineWithMetrics(
   input: EngineCompileInput,
 ): EngineCompileResult {
@@ -524,6 +541,8 @@ export function compileEngineWithMetrics(
   );
   const pressureDenominator = Math.max(1, contextWindow - reservedOutput);
 
+  const precomputed = buildCompilePassPrecomputed(input, usable);
+
   const normalCheckpointEstimate = input.checkpoint
     ? estimateCheckpointEffectiveTokens(input.checkpoint.state, "normal").effective
     : input.checkpointSection?.trim()
@@ -531,25 +550,16 @@ export function compileEngineWithMetrics(
       : 0;
 
   const pinnedInfraEstimate =
-    estTokens(
-      buildSystemFrame(
-        input.cwd,
-        input.sessionId,
-        input.toolSchemas,
-        buildStateSummary(input.stateGraph),
-        input.agentsContext ?? "",
-      ),
-    ) +
+    precomputed.systemFrameTokens +
     (input.skillsPromptSection ? estTokens(input.skillsPromptSection) : 0);
 
-  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
   const currentInputTokens = input.userInput
     ? estTokens(`## Current Input\n\nUser: ${input.userInput}`)
     : 0;
 
   const preliminaryWeighted = estimatePreliminaryWeighted(
     pinnedInfraEstimate,
-    verbatim.tokens,
+    precomputed.verbatim.tokens,
     currentInputTokens,
     normalCheckpointEstimate,
   );
@@ -558,7 +568,7 @@ export function compileEngineWithMetrics(
     input.engineConfig,
   );
 
-  let pass = compileEnginePass(input, checkpointPressureMode, verbatim);
+  let pass = compileEnginePass(input, checkpointPressureMode, precomputed);
   let weightedTokens = computeWeightedTokens(
     pass.metrics,
     pass.checkpointEffective,
@@ -569,7 +579,7 @@ export function compileEngineWithMetrics(
 
   if (pressureModeRank(pressureMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = pressureMode;
-    pass = compileEnginePass(input, checkpointPressureMode, verbatim);
+    pass = compileEnginePass(input, checkpointPressureMode, precomputed);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,
@@ -579,6 +589,9 @@ export function compileEngineWithMetrics(
     pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
   }
 
+  // pressureRatio reflects the final pass; pressureMode uses max(final, checkpoint)
+  // because checkpoint is rendered at checkpointPressureMode, which may escalate on
+  // the preliminary estimate before the final weighted total is known.
   const effectivePressureMode =
     pressureModeRank(checkpointPressureMode) > pressureModeRank(pressureMode)
       ? checkpointPressureMode

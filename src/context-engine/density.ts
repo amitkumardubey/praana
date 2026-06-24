@@ -19,7 +19,12 @@ export type SectionDensityKind =
   | "active_state"
   | "peripheral_state";
 
-/** Hardcoded density weights — lower = more compressible, counts less toward pressure. */
+/**
+ * Hardcoded density weights — lower = more compressible, counts less toward pressure.
+ * These values directly gate compaction behavior (pressure mode escalation and
+ * checkpoint trimming). No config knob yet; tune here or add `[context_engine.density]`
+ * when empirical calibration is needed.
+ */
 export const DENSITY_WEIGHTS: Record<SectionDensityKind, number> = {
   pinned_infra: 1.0,
   active_request: 1.0,
