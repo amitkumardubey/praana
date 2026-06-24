@@ -12,6 +12,7 @@ import {
 } from "../src/context-engine/checkpoint.js";
 import { ContextEngine } from "../src/context-engine/index.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { estimateTokens } from "../src/context-engine/summarize.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import type { CheckpointDraft, TurnDigest } from "../src/context-engine/types.js";
 import type { ContextEngineConfig } from "../src/types.js";
@@ -334,6 +335,39 @@ describe("session checkpoint", () => {
 
     const { raw, effective } = estimateCheckpointEffectiveTokens(state, "normal");
     expect(effective).toBeLessThan(raw);
+  });
+
+  it("estimateCheckpointEffectiveTokens raw ≈ renderCheckpoint tokens", () => {
+    const state = createEmptyCheckpointState();
+    state.activeRequest = "implement auth middleware";
+    state.plans = [{ text: "1. Add JWT\n2. Wire routes", turn: 1, superseded: false }];
+    state.constraints = ["use sqlite", "no external deps"];
+    state.decisions = [
+      { summary: "use jwt", rationale: "stateless sessions", turn: 2, compact: false },
+    ];
+    state.files = [{ path: "src/auth.ts", turn: 3 }];
+    state.findings = Array.from({ length: 10 }, (_, i) => ({
+      summary: `Finding ${i} with trace output`,
+      artifactRef: `art-${i}`,
+      turn: i,
+    }));
+    state.errors = [
+      { key: "open", message: "TypeError in auth.ts", turn: 5, fixed: false },
+      { key: "fixed", message: "Fixed: npm test", turn: 4, fixed: true, fixedTurn: 6 },
+    ];
+    state.activity = Array.from({ length: 8 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `shell npm test iteration ${i}`,
+    }));
+    state.narrative = [{ turn: 2, text: "User asked to fix failing auth tests." }];
+
+    for (const mode of ["normal", "compact", "emergency"] as const) {
+      const { raw } = estimateCheckpointEffectiveTokens(state, mode);
+      const rendered = renderCheckpoint({ version: 1, state }, { pressureMode: mode });
+      const renderTokens = estimateTokens(rendered);
+      expect(Math.abs(raw - renderTokens)).toBeLessThan(50);
+    }
   });
 });
 

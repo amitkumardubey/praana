@@ -30,11 +30,13 @@ export const DENSITY_WEIGHTS: Record<SectionDensityKind, number> = {
   narrative: 0.6,
   file: 0.6,
   finding: 0.25,
+  /** Checkpoint "Recent activity" section in estimateCheckpointEffectiveTokens. */
   activity: 0.25,
   fixed_error: 0.25,
   verbatim_turn: 0.9,
   turn_digest: 0.4,
   artifact_card: 0.4,
+  /** Scored ContextUnit objects of type activity_entry in computeWeightedTokens. */
   activity_entry: 0.25,
   memory_digest: 1.0,
   active_state: 1.0,

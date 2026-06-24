@@ -244,8 +244,18 @@ function unitDensityKind(type: ContextUnitType): SectionDensityKind {
       return "artifact_card";
     case "activity_entry":
       return "activity_entry";
-    default:
-      return "turn_digest";
+    case "verbatim_turn":
+      return "verbatim_turn";
+    case "memory_digest":
+      return "memory_digest";
+    case "active_state":
+      return "active_state";
+    case "checkpoint_section":
+      return "pinned_infra";
+    default: {
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
   }
 }
 
@@ -284,7 +294,6 @@ function computeWeightedTokens(
 ): number {
   let weighted = 0;
   weighted += effectiveTokens(metrics.systemFrameTokens, "pinned_infra");
-  weighted += effectiveTokens(metrics.agentsContextTokens, "pinned_infra");
   weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
   weighted += checkpointEffective;
   weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
@@ -323,6 +332,7 @@ interface CompilePassResult {
 function compileEnginePass(
   input: EngineCompileInput,
   checkpointPressureMode: PressureMode,
+  verbatimSection?: { text: string; tokens: number },
 ): CompilePassResult {
   const sections: string[] = [];
   const metrics: Partial<CompileMetrics> = {};
@@ -380,7 +390,8 @@ function compileEnginePass(
   }
   metrics.checkpointTokens = checkpointRendered.tokens;
 
-  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
+  const verbatim =
+    verbatimSection ?? buildVerbatimSection(input.turnRecords, input.currentTurn);
   sections.push(verbatim.text);
   metrics.recentTurnsTokens = verbatim.tokens;
   metrics.recentTurnsTruncated = false;
@@ -529,7 +540,6 @@ export function compileEngineWithMetrics(
         input.agentsContext ?? "",
       ),
     ) +
-    (input.agentsContext ? estTokens(input.agentsContext) : 0) +
     (input.skillsPromptSection ? estTokens(input.skillsPromptSection) : 0);
 
   const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
@@ -548,7 +558,7 @@ export function compileEngineWithMetrics(
     input.engineConfig,
   );
 
-  let pass = compileEnginePass(input, checkpointPressureMode);
+  let pass = compileEnginePass(input, checkpointPressureMode, verbatim);
   let weightedTokens = computeWeightedTokens(
     pass.metrics,
     pass.checkpointEffective,
@@ -559,7 +569,7 @@ export function compileEngineWithMetrics(
 
   if (pressureModeRank(pressureMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = pressureMode;
-    pass = compileEnginePass(input, checkpointPressureMode);
+    pass = compileEnginePass(input, checkpointPressureMode, verbatim);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,
@@ -568,6 +578,11 @@ export function compileEngineWithMetrics(
     pressureRatio = weightedTokens / pressureDenominator;
     pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
   }
+
+  const effectivePressureMode =
+    pressureModeRank(checkpointPressureMode) > pressureModeRank(pressureMode)
+      ? checkpointPressureMode
+      : pressureMode;
 
   if (pass.metrics.totalTokens > usable) {
     getAppLogger().child("compiler").warn(
@@ -587,7 +602,7 @@ export function compileEngineWithMetrics(
     metrics: pass.metrics,
     scoreRecords: pass.scoreRecords,
     pressureRatio,
-    pressureMode,
+    pressureMode: effectivePressureMode,
     weightedTokens,
     excludedScoredUnits,
   };

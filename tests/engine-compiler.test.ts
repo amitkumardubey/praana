@@ -294,13 +294,13 @@ describe("engine compiler", () => {
     }));
 
     const checkpoint: SessionCheckpoint = { version: 1, state };
-    const tinyWindow = 4_000;
+    const tinyWindow = 2_000;
 
     const result = compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
-      userInput: "x".repeat(2000),
+      userInput: "x".repeat(3000),
       toolSchemas: ["shell(command)"],
       cwd: "/proj",
       sessionId: "sess-emergency",
@@ -341,9 +341,81 @@ describe("engine compiler", () => {
       },
     });
 
-    if (result.pressureMode === "emergency") {
-      expect(result.prompt).toContain("keep this decision");
-      expect(result.prompt).not.toContain("### Findings");
-    }
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.prompt).toContain("keep this decision");
+    expect(result.prompt).not.toContain("### Findings");
+  });
+
+  it("does not double-count agentsContext in weighted pressure", () => {
+    const largeAgents = "AGENTS ".repeat(4000);
+    const base = {
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "continue",
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-agents-dc",
+      tokenBudget: 100_000,
+      contextWindowTokens: 100_000,
+      checkpointSection: "",
+      currentTurn: 2,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+    };
+
+    const withoutAgents = compileEngineWithMetrics({ ...base, agentsContext: "" });
+    const withAgents = compileEngineWithMetrics({ ...base, agentsContext: largeAgents });
+    const agentsTokens = withAgents.metrics.agentsContextTokens;
+    expect(agentsTokens).toBeGreaterThan(1000);
+
+    const delta = withAgents.weightedTokens - withoutAgents.weightedTokens;
+    expect(delta).toBeGreaterThan(agentsTokens * 0.7);
+    expect(delta).toBeLessThan(agentsTokens * 1.3);
+  });
+
+  it("reports compact pressure mode when checkpoint renders in compact mode", () => {
+    const state = createEmptyCheckpointState();
+    state.decisions = [
+      { summary: "keep compact decision", rationale: "important", turn: 1, compact: false },
+    ];
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Finding ${i} `.repeat(30),
+      turn: i,
+    }));
+    state.activity = Array.from({ length: 12 }, (_, i) => ({
+      turn: i,
+      type: "tool_call" as const,
+      summary: `activity-${i}`,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const window = 2_500;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "x".repeat(1000),
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-pressure-mode",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 5,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.3, emergency_at: 0.85 },
+      },
+    });
+
+    expect(result.pressureMode).toBe("compact");
+    expect(result.prompt).toContain("keep compact decision");
+    expect(result.prompt).toContain("activity-11");
+    expect(result.prompt).not.toContain("activity-0");
   });
 });
