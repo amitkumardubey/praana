@@ -418,4 +418,65 @@ describe("engine compiler", () => {
     expect(result.prompt).toContain("activity-11");
     expect(result.prompt).not.toContain("activity-0");
   });
+
+  it("forces emergency when raw tokens exceed usable budget despite low weighted pressure", () => {
+    const state = createEmptyCheckpointState();
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Verbose low-value trace ${i} `.repeat(50),
+      turn: i,
+    }));
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const tinyWindow = 1_500;
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "x".repeat(2000),
+      toolSchemas: ["shell(command)"],
+      cwd: "/proj",
+      sessionId: "sess-raw-safety",
+      tokenBudget: tinyWindow,
+      contextWindowTokens: tinyWindow,
+      checkpoint,
+      currentTurn: 3,
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "run",
+          assistantMessage: "ok ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 1,
+        },
+        {
+          turn: 3,
+          userMessage: "again",
+          assistantMessage: "done ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 2,
+        },
+      ],
+      activityEntries: [],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.95, emergency_at: 0.99 },
+      },
+    });
+
+    expect(result.metrics.totalTokens).toBeGreaterThan(tinyWindow * 0.5);
+    expect(result.rawPressureRatio).toBeGreaterThan(1);
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.prompt).not.toContain("### Findings");
+  });
 });

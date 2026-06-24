@@ -3,6 +3,8 @@ import {
   computeContextPressureRatio,
   shouldTriggerAutoCompact,
   effectiveCompileBudget,
+  formatContextPressureStats,
+  resolveEnginePressureMode,
 } from "../src/context-pressure.js";
 
 describe("context-pressure", () => {
@@ -40,5 +42,25 @@ describe("context-pressure", () => {
       trigger: false,
       armed: false,
     });
+  });
+
+  it("formatContextPressureStats shows escalated mode when ratio and mode disagree", () => {
+    const lines = formatContextPressureStats(
+      {
+        weightedTokens: 48_000,
+        weightedRatio: 0.6,
+        rawTokens: 90_000,
+        rawRatio: 0.9,
+        effectiveMode: "emergency",
+        ratioMode: resolveEnginePressureMode(0.6, {
+          compact_at: 0.7,
+          emergency_at: 0.85,
+        }),
+      },
+      100_000,
+    );
+    expect(lines.join("\n")).toContain("60% weighted · emergency (escalated)");
+    expect(lines.join("\n")).toContain("90,000");
+    expect(lines.join("\n")).toContain("48,000");
   });
 });

@@ -6,6 +6,10 @@ import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig } from "./context-engine/index.js";
 import {
+  formatContextPressureStats,
+  resolveEnginePressureMode,
+} from "./context-pressure.js";
+import {
   resolveModelSpecifier,
   getProviderConfigurationError,
   resolvedTargetLabel,
@@ -163,6 +167,31 @@ export async function executeSlashCommand(
         lines.push(`  Distiller savings: ${Math.round(telemetry.stats.totalDistillerSavings)} tokens`);
         lines.push(`  Pressure events: ${telemetry.stats.pressureEvents}`);
         lines.push(`  Compaction triggers: ${telemetry.stats.compactionTriggers}`);
+
+        const compileMetrics = session.getLastCompileMetrics();
+        if (compileMetrics) {
+          const engineConfig = resolveContextEngineConfig(session.config);
+          const contextWindow = session.getContextWindowTokens();
+          const weightedRatio = session.getLastPressureRatio();
+          const ratioMode = resolveEnginePressureMode(
+            weightedRatio,
+            engineConfig.pressure,
+          );
+          lines.push("", "Context pressure (last compile):");
+          lines.push(
+            ...formatContextPressureStats(
+              {
+                weightedTokens: session.getLastWeightedTokens(),
+                weightedRatio,
+                rawTokens: compileMetrics.totalTokens,
+                rawRatio: session.getLastRawPressureRatio(),
+                effectiveMode: session.getLastPressureMode(),
+                ratioMode,
+              },
+              contextWindow,
+            ),
+          );
+        }
       }
       break;
     }

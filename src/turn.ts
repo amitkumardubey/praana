@@ -184,6 +184,8 @@ export async function runTurn(
       engineResult.scoreRecords,
       engineResult.pressureMode,
       engineResult.pressureRatio,
+      engineResult.weightedTokens,
+      engineResult.rawPressureRatio,
     );
     session.contextEngine!.recordCompileTelemetry({
       turn: session.getTurnCount(),

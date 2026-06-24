@@ -60,9 +60,12 @@ export interface EngineCompileResult {
   prompt: string;
   metrics: CompileMetrics;
   scoreRecords: CompileScoreRecord[];
+  /** Density-weighted fill ratio (gates compaction/emergency). */
   pressureRatio: number;
   pressureMode: PressureMode;
   weightedTokens: number;
+  /** Raw prompt token fill ratio against the model window. */
+  rawPressureRatio: number;
   excludedScoredUnits: number;
 }
 
@@ -234,6 +237,26 @@ function pressureModeRank(mode: PressureMode): number {
   if (mode === "emergency") return 2;
   if (mode === "compact") return 1;
   return 0;
+}
+
+function maxPressureMode(...modes: PressureMode[]): PressureMode {
+  return modes.reduce(
+    (best, mode) =>
+      pressureModeRank(mode) > pressureModeRank(best) ? mode : best,
+    "normal" as PressureMode,
+  );
+}
+
+/** Escalate to emergency when raw tokens overflow usable budget or exceed emergency_at. */
+function resolveRawSafetyMode(
+  totalTokens: number,
+  usable: number,
+  rawPressureRatio: number,
+  config: ContextEngineConfig,
+): PressureMode {
+  if (totalTokens > usable) return "emergency";
+  if (rawPressureRatio > config.pressure.emergency_at) return "emergency";
+  return "normal";
 }
 
 function unitDensityKind(type: ContextUnitType): SectionDensityKind {
@@ -549,9 +572,15 @@ export function compileEngineWithMetrics(
       ? estTokens(input.checkpointSection.trim())
       : 0;
 
+  const maxSkillsSectionTokens = Math.floor(
+    usable * (input.skillsSectionBudgetRatio ?? 0.2),
+  );
+  const skillsRawTokens = input.skillsPromptSection
+    ? estTokens(input.skillsPromptSection)
+    : 0;
   const pinnedInfraEstimate =
     precomputed.systemFrameTokens +
-    (input.skillsPromptSection ? estTokens(input.skillsPromptSection) : 0);
+    Math.min(skillsRawTokens, maxSkillsSectionTokens);
 
   const currentInputTokens = input.userInput
     ? estTokens(`## Current Input\n\nUser: ${input.userInput}`)
@@ -589,17 +618,49 @@ export function compileEngineWithMetrics(
     pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
   }
 
+  let rawPressureRatio = pass.metrics.totalTokens / pressureDenominator;
+  const rawSafetyMode = resolveRawSafetyMode(
+    pass.metrics.totalTokens,
+    usable,
+    rawPressureRatio,
+    input.engineConfig,
+  );
+
   // pressureRatio reflects the final pass; pressureMode uses max(final, checkpoint)
   // because checkpoint is rendered at checkpointPressureMode, which may escalate on
   // the preliminary estimate before the final weighted total is known.
-  const effectivePressureMode =
-    pressureModeRank(checkpointPressureMode) > pressureModeRank(pressureMode)
-      ? checkpointPressureMode
-      : pressureMode;
+  let effectivePressureMode = maxPressureMode(
+    checkpointPressureMode,
+    pressureMode,
+    rawSafetyMode,
+  );
+
+  if (pressureModeRank(rawSafetyMode) > pressureModeRank(checkpointPressureMode)) {
+    checkpointPressureMode = rawSafetyMode;
+    pass = compileEnginePass(input, checkpointPressureMode, precomputed);
+    weightedTokens = computeWeightedTokens(
+      pass.metrics,
+      pass.checkpointEffective,
+      pass.includedScored,
+    );
+    pressureRatio = weightedTokens / pressureDenominator;
+    pressureMode = resolvePressureMode(pressureRatio, input.engineConfig);
+    rawPressureRatio = pass.metrics.totalTokens / pressureDenominator;
+    effectivePressureMode = maxPressureMode(
+      checkpointPressureMode,
+      pressureMode,
+      resolveRawSafetyMode(
+        pass.metrics.totalTokens,
+        usable,
+        rawPressureRatio,
+        input.engineConfig,
+      ),
+    );
+  }
 
   if (pass.metrics.totalTokens > usable) {
     getAppLogger().child("compiler").warn(
-      `Prompt estimated at ${pass.metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}).`,
+      `Prompt estimated at ${pass.metrics.totalTokens} tokens, exceeds usable budget of ${usable} (window ${contextWindow}); emergency compaction engaged.`,
     );
   }
 
@@ -617,6 +678,7 @@ export function compileEngineWithMetrics(
     pressureRatio,
     pressureMode: effectivePressureMode,
     weightedTokens,
+    rawPressureRatio,
     excludedScoredUnits,
   };
 }
