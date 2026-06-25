@@ -39,12 +39,7 @@ import type {
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
 import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
-import { narrowCodingTaskType } from "../domain/coding-domain.js";
-import type {
-  CodingTaskType,
-  DomainClassifier,
-  TaskClassificationResult,
-} from "../domain/types.js";
+import type { DomainClassifier, TaskClassificationResult } from "../domain/types.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -76,8 +71,8 @@ export interface EngineCompileResult {
   /** Raw prompt token fill ratio against the model window. */
   rawPressureRatio: number;
   excludedScoredUnits: number;
-  /** Shorthand for taskClassification.taskType (same value, not a second source of truth). */
-  taskType: CodingTaskType;
+  /** Shorthand for taskClassification.taskType (domain-agnostic; narrow at budget call sites). */
+  taskType: string;
   taskClassification: TaskClassificationResult;
 }
 
@@ -700,7 +695,7 @@ export function compileEngineWithMetrics(
     weightedTokens,
     rawPressureRatio,
     excludedScoredUnits,
-    taskType: narrowCodingTaskType(taskClassification.taskType),
+    taskType: taskClassification.taskType,
     taskClassification,
   };
 }

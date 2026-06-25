@@ -4,6 +4,7 @@ import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js"
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
 import type { ContextEngineConfig } from "../src/types.js";
 import type { ContextUnit, SessionCheckpoint } from "../src/context-engine/types.js";
+import type { DomainClassifier } from "../src/domain/types.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -83,6 +84,34 @@ describe("engine compiler", () => {
     expect(a.scoreRecords).toEqual(b.scoreRecords);
     expect(a.taskType).toBe(b.taskType);
     expect(a.taskType).toBe("debugging");
+  });
+
+  it("passes through custom classifier task labels without narrowing", () => {
+    const customClassifier: DomainClassifier = {
+      domainId: "prose",
+      tieBreakOrder: ["prose"],
+      scoreKeywords: () => ({ prose: 3 }),
+      scoreTools: () => ({}),
+    };
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "edit the essay",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-custom",
+      tokenBudget: 100_000,
+      currentTurn: 1,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: customClassifier,
+    });
+
+    expect(result.taskType).toBe("prose");
+    expect(result.taskClassification.taskType).toBe("prose");
   });
 
   it("includes checkpoint and verbatim recent turns in the prompt", () => {

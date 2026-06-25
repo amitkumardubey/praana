@@ -2,7 +2,6 @@ import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.j
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
-import type { CodingTaskType } from "./domain/types.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -45,8 +44,8 @@ export interface CompileMetrics {
   agentsContextTruncated: boolean;
   /** If true, skills section was trimmed to section ceiling. */
   skillsTruncated: boolean;
-  /** Classified task type from domain classifier (engine mode). */
-  taskType?: CodingTaskType;
+  /** Domain-agnostic classified task type (raw label from the active classifier). */
+  taskType?: string;
 }
 
 
