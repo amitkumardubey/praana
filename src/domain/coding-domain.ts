@@ -19,6 +19,7 @@ import type {
   DomainClassifier,
   TaskClassificationInput,
   TaskScoreMap,
+  CodingTaskType,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -174,9 +175,9 @@ export const CODING_TASK_CLUSTERS = {
   reviewing: ["review", "audit", "inspect", "feedback", "check"],
 } as const;
 
-export type CodingTaskCluster = keyof typeof CODING_TASK_CLUSTERS;
+type ScoredCodingTaskType = Exclude<CodingTaskType, "general">;
 
-const CODING_TASK_TIE_BREAK: readonly CodingTaskCluster[] = [
+const CODING_TASK_TIE_BREAK: readonly ScoredCodingTaskType[] = [
   "debugging",
   "testing",
   "implementing",
@@ -186,8 +187,24 @@ const CODING_TASK_TIE_BREAK: readonly CodingTaskCluster[] = [
 
 const TEST_PATH_RE = /\.(test|spec)\./i;
 
-/** Recent turns considered for tool-pattern scoring (matches typical session rhythm). */
+/** Number of turns (including current) used for tool-pattern scoring. */
 export const RECENT_TURNS_WINDOW = 3;
+
+const CODING_TASK_TYPE_SET = new Set<string>([
+  ...Object.keys(CODING_TASK_CLUSTERS),
+  "general",
+]);
+
+/** Narrow a domain-agnostic classification label to a known coding task type. */
+export function narrowCodingTaskType(taskType: string): CodingTaskType {
+  return CODING_TASK_TYPE_SET.has(taskType)
+    ? (taskType as CodingTaskType)
+    : "general";
+}
+
+function recentTurnMinTurn(currentTurn: number): number {
+  return Math.max(0, currentTurn - RECENT_TURNS_WINDOW + 1);
+}
 
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -219,7 +236,7 @@ function recentTurnRecords(
   turnRecords: TaskClassificationInput["turnRecords"],
   currentTurn: number,
 ): TaskClassificationInput["turnRecords"] {
-  const minTurn = Math.max(0, currentTurn - RECENT_TURNS_WINDOW);
+  const minTurn = recentTurnMinTurn(currentTurn);
   return turnRecords.filter((record) => record.turn >= minTurn);
 }
 
@@ -227,7 +244,7 @@ function recentActivityEntries(
   activityEntries: TaskClassificationInput["activityEntries"],
   currentTurn: number,
 ): TaskClassificationInput["activityEntries"] {
-  const minTurn = Math.max(0, currentTurn - RECENT_TURNS_WINDOW);
+  const minTurn = recentTurnMinTurn(currentTurn);
   return activityEntries.filter((entry) => entry.turn >= minTurn);
 }
 
@@ -290,17 +307,15 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
       }
       if (tc.tool === "write_file" && !tc.isError) {
         writeFileCount += 1;
-        addScore(scores, "implementing", 2);
+        if (!path || !TEST_PATH_RE.test(path)) {
+          addScore(scores, "implementing", 2);
+        }
       }
       if (tc.tool === "read_file" && !tc.isError) {
         readFileCount += 1;
       }
       if (tc.tool === "search_code" && !tc.isError) {
         searchCodeCount += 1;
-      }
-
-      if (path && TEST_PATH_RE.test(path)) {
-        addScore(scores, "testing", 1);
       }
     }
   }

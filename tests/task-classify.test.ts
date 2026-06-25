@@ -137,7 +137,7 @@ describe("classifyTask", () => {
         ],
       }),
     );
-    expect(["testing", "debugging"]).toContain(result.taskType);
+    expect(result.taskType).toBe("testing");
     expect(result.source).toBe("tools");
   });
 

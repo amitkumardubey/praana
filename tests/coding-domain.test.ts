@@ -3,6 +3,7 @@ import {
   CODING_SYNONYMS,
   CODING_TASK_CLUSTERS,
   RECENT_TURNS_WINDOW,
+  narrowCodingTaskType,
   isTestCommand,
   isDiffContent,
   isTestOutputContent,
@@ -269,8 +270,12 @@ describe("CODING_TASK_CLUSTERS", () => {
 });
 
 describe("RECENT_TURNS_WINDOW", () => {
-  it("covers enough turns for multi-turn tool heuristics", () => {
-    expect(RECENT_TURNS_WINDOW).toBeGreaterThanOrEqual(3);
+  it("includes exactly WINDOW turns including current", () => {
+    expect(RECENT_TURNS_WINDOW).toBe(3);
+    const minTurn = Math.max(0, 5 - RECENT_TURNS_WINDOW + 1);
+    expect(minTurn).toBe(3);
+    const included = [3, 4, 5].filter((t) => t >= minTurn);
+    expect(included).toHaveLength(RECENT_TURNS_WINDOW);
   });
 });
 
@@ -321,6 +326,36 @@ describe("scoreCodingTaskTools", () => {
     expect(scores.debugging).toBe(2);
   });
 
+  it("scores test file writes as testing only, not implementing", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.test.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.test.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.testing).toBe(1);
+    expect(scores.implementing).toBeUndefined();
+  });
+
   it("scores refactoring from multiple edits without writes", () => {
     const scores = scoreCodingTaskTools({
       userInput: "",
@@ -359,6 +394,17 @@ describe("scoreCodingTaskTools", () => {
       ],
     });
     expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("narrowCodingTaskType", () => {
+  it("narrows known coding labels", () => {
+    expect(narrowCodingTaskType("debugging")).toBe("debugging");
+    expect(narrowCodingTaskType("general")).toBe("general");
+  });
+
+  it("falls back unknown labels to general", () => {
+    expect(narrowCodingTaskType("data-science")).toBe("general");
   });
 });
 

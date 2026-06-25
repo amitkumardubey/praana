@@ -22,8 +22,8 @@ export interface TaskClassificationInput {
 }
 
 export interface TaskClassificationResult {
-  /** Classified task type; coding domain returns CodingTaskType values. */
-  taskType: CodingTaskType;
+  /** Domain-agnostic task label; coding callers narrow via narrowCodingTaskType(). */
+  taskType: string;
   confidence: number;
   source: TaskClassificationSource;
 }

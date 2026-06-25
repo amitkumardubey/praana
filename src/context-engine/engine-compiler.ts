@@ -39,7 +39,12 @@ import type {
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
 import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
-import type { CodingTaskType, TaskClassificationResult } from "../domain/types.js";
+import { narrowCodingTaskType } from "../domain/coding-domain.js";
+import type {
+  CodingTaskType,
+  DomainClassifier,
+  TaskClassificationResult,
+} from "../domain/types.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -56,6 +61,8 @@ export interface EngineCompileInput extends CompileInput {
   hydratedTexts?: string[];
   /** Structured checkpoint for pressure-aware rendering (preferred over checkpointSection). */
   checkpoint?: SessionCheckpoint;
+  /** Override default coding-domain classifier (for tests or future domains). */
+  domainClassifier?: DomainClassifier;
 }
 
 export interface EngineCompileResult {
@@ -561,7 +568,8 @@ function buildCompilePassPrecomputed(
 export function compileEngineWithMetrics(
   input: EngineCompileInput,
 ): EngineCompileResult {
-  const taskClassification = classifyTask(getDefaultDomainClassifier(), {
+  const classifier = input.domainClassifier ?? getDefaultDomainClassifier();
+  const taskClassification = classifyTask(classifier, {
     userInput: input.userInput ?? "",
     turnRecords: input.turnRecords,
     activityEntries: input.activityEntries ?? [],
@@ -692,7 +700,7 @@ export function compileEngineWithMetrics(
     weightedTokens,
     rawPressureRatio,
     excludedScoredUnits,
-    taskType: taskClassification.taskType,
+    taskType: narrowCodingTaskType(taskClassification.taskType),
     taskClassification,
   };
 }
