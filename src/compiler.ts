@@ -44,6 +44,8 @@ export interface CompileMetrics {
   agentsContextTruncated: boolean;
   /** If true, skills section was trimmed to section ceiling. */
   skillsTruncated: boolean;
+  /** Classified task type from domain classifier (engine mode). */
+  taskType?: string;
 }
 
 

@@ -64,6 +64,14 @@ export {
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
+export { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
+export type {
+  CodingTaskType,
+  DomainClassifier,
+  TaskClassificationInput,
+  TaskClassificationResult,
+  TaskClassificationSource,
+} from "../domain/types.js";
 
 const CONTEXT_ENGINE_DEFAULTS: ContextEngineConfig = {
   enabled: true,

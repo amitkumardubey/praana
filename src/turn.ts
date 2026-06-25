@@ -179,7 +179,10 @@ export async function runTurn(
       hydratedTexts: autoHydrated.map((r) => r.text),
     });
     compiledPrompt = engineResult.prompt;
-    promptMetrics = engineResult.metrics;
+    promptMetrics = {
+      ...engineResult.metrics,
+      taskType: engineResult.taskType,
+    };
     session.setLastCompileScoreRecords(
       engineResult.scoreRecords,
       engineResult.pressureMode,

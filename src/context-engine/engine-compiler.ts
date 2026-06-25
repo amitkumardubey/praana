@@ -38,6 +38,8 @@ import type {
   TurnRecord,
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
+import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
+import type { TaskClassificationResult } from "../domain/types.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -67,6 +69,8 @@ export interface EngineCompileResult {
   /** Raw prompt token fill ratio against the model window. */
   rawPressureRatio: number;
   excludedScoredUnits: number;
+  taskType: string;
+  taskClassification: TaskClassificationResult;
 }
 
 function estTokens(text: string): number {
@@ -556,6 +560,13 @@ function buildCompilePassPrecomputed(
 export function compileEngineWithMetrics(
   input: EngineCompileInput,
 ): EngineCompileResult {
+  const taskClassification = classifyTask(getDefaultDomainClassifier(), {
+    userInput: input.userInput ?? "",
+    turnRecords: input.turnRecords,
+    activityEntries: input.activityEntries ?? [],
+    currentTurn: input.currentTurn,
+  });
+
   const reservedOutput = input.reservedOutputTokens ?? 0;
   const contextWindow = input.contextWindowTokens ?? input.tokenBudget;
   const usable = Math.max(
@@ -680,6 +691,8 @@ export function compileEngineWithMetrics(
     weightedTokens,
     rawPressureRatio,
     excludedScoredUnits,
+    taskType: taskClassification.taskType,
+    taskClassification,
   };
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CODING_SYNONYMS,
+  CODING_TASK_CLUSTERS,
   isTestCommand,
   isDiffContent,
   isTestOutputContent,
@@ -11,6 +12,9 @@ import {
   extractCommitMessage,
   extractFailureCount,
   createDefaultDistillerRegistry,
+  scoreCodingTaskKeywords,
+  scoreCodingTaskTools,
+  codingDomainClassifier,
 } from "../src/domain/coding-domain.js";
 
 // ---------------------------------------------------------------------------
@@ -243,5 +247,111 @@ describe("createDefaultDistillerRegistry", () => {
     const result = registry.distillSync(sampleDiff, "diff", "full");
     expect(result).toBeDefined();
     expect(result.distillerName).toBe("git-diff");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task classification
+// ---------------------------------------------------------------------------
+
+describe("CODING_TASK_CLUSTERS", () => {
+  it("defines all coding task types from issue #89", () => {
+    expect(Object.keys(CODING_TASK_CLUSTERS).sort()).toEqual(
+      ["debugging", "implementing", "refactoring", "reviewing", "testing"].sort(),
+    );
+  });
+});
+
+describe("scoreCodingTaskKeywords", () => {
+  it("scores testing keywords", () => {
+    const scores = scoreCodingTaskKeywords("run test spec coverage");
+    expect(scores.testing).toBeGreaterThanOrEqual(3);
+  });
+
+  it("scores debugging keywords", () => {
+    const scores = scoreCodingTaskKeywords("fix this crash and broken error");
+    expect(scores.debugging).toBeGreaterThanOrEqual(3);
+  });
+
+  it("returns empty scores for unrelated input", () => {
+    expect(scoreCodingTaskKeywords("hello world")).toEqual({});
+  });
+});
+
+describe("scoreCodingTaskTools", () => {
+  it("scores testing from npm test commands", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "shell",
+              args: { command: "npm test" },
+              isError: true,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.testing).toBeGreaterThanOrEqual(2);
+  });
+
+  it("scores refactoring from multiple edits without writes", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 1,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "a.ts" }, isError: false },
+            { tool: "edit_file", args: { path: "b.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 1,
+        },
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "c.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("codingDomainClassifier", () => {
+  it("exposes coding domain metadata", () => {
+    expect(codingDomainClassifier.domainId).toBe("coding");
+    expect(codingDomainClassifier.tieBreakOrder[0]).toBe("debugging");
   });
 });

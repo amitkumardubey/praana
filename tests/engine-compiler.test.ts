@@ -81,6 +81,8 @@ describe("engine compiler", () => {
     const b = compileEngineWithMetrics(input);
     expect(a.prompt).toBe(b.prompt);
     expect(a.scoreRecords).toEqual(b.scoreRecords);
+    expect(a.taskType).toBe(b.taskType);
+    expect(a.taskType).toBe("debugging");
   });
 
   it("includes checkpoint and verbatim recent turns in the prompt", () => {
