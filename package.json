@@ -1,6 +1,6 @@
 {
   "name": "praana",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Terminal coding agent with adaptive context and cross-session memory",
   "license": "MIT",
   "repository": {
