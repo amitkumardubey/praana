@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   CODING_SYNONYMS,
+  CODING_TASK_CLUSTERS,
+  RECENT_TURNS_WINDOW,
+  narrowCodingTaskType,
   isTestCommand,
   isDiffContent,
   isTestOutputContent,
@@ -11,6 +14,9 @@ import {
   extractCommitMessage,
   extractFailureCount,
   createDefaultDistillerRegistry,
+  scoreCodingTaskKeywords,
+  scoreCodingTaskTools,
+  codingDomainClassifier,
 } from "../src/domain/coding-domain.js";
 
 // ---------------------------------------------------------------------------
@@ -243,5 +249,257 @@ describe("createDefaultDistillerRegistry", () => {
     const result = registry.distillSync(sampleDiff, "diff", "full");
     expect(result).toBeDefined();
     expect(result.distillerName).toBe("git-diff");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task classification
+// ---------------------------------------------------------------------------
+
+describe("CODING_TASK_CLUSTERS", () => {
+  it("defines all coding task types from issue #89", () => {
+    expect(Object.keys(CODING_TASK_CLUSTERS).sort()).toEqual(
+      ["debugging", "implementing", "refactoring", "reviewing", "testing"].sort(),
+    );
+  });
+
+  it("places check in reviewing not testing per issue spec", () => {
+    expect(CODING_TASK_CLUSTERS.reviewing).toContain("check");
+    expect(CODING_TASK_CLUSTERS.testing).not.toContain("check");
+  });
+});
+
+describe("RECENT_TURNS_WINDOW", () => {
+  it("includes exactly WINDOW turns including current", () => {
+    expect(RECENT_TURNS_WINDOW).toBe(3);
+    const minTurn = Math.max(0, 5 - RECENT_TURNS_WINDOW + 1);
+    expect(minTurn).toBe(3);
+    const included = [3, 4, 5].filter((t) => t >= minTurn);
+    expect(included).toHaveLength(RECENT_TURNS_WINDOW);
+  });
+});
+
+describe("scoreCodingTaskKeywords", () => {
+  it("scores testing keywords", () => {
+    const scores = scoreCodingTaskKeywords("run test spec coverage");
+    expect(scores.testing).toBeGreaterThanOrEqual(3);
+  });
+
+  it("scores debugging keywords", () => {
+    const scores = scoreCodingTaskKeywords("fix this crash and broken error");
+    expect(scores.debugging).toBeGreaterThanOrEqual(3);
+  });
+
+  it("returns empty scores for unrelated input", () => {
+    expect(scoreCodingTaskKeywords("hello world")).toEqual({});
+  });
+});
+
+describe("scoreCodingTaskTools", () => {
+  it("scores testing from npm test without double-counting debugging", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "shell",
+              args: { command: "npm test" },
+              isError: true,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: ["2 failing"],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.testing).toBeGreaterThanOrEqual(2);
+    expect(scores.debugging).toBe(2);
+  });
+
+  it("scores non-test file writes once via toolCalls", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.implementing).toBe(2);
+    expect(scores.testing).toBeUndefined();
+  });
+
+  it("scores test file writes as testing only, not implementing", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.test.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.test.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.testing).toBe(1);
+    expect(scores.implementing).toBeUndefined();
+  });
+
+  it("scores refactoring from multiple edits without writes", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 1,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "a.ts" }, isError: false },
+            { tool: "edit_file", args: { path: "b.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 1,
+        },
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "c.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+  });
+
+  it("detects refactoring when edits accompany a test-file write", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 4,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "a.ts" }, isError: false },
+            { tool: "edit_file", args: { path: "b.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+        {
+          turn: 3,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "c.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 3,
+        },
+        {
+          turn: 4,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.test.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.test.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 4,
+        },
+      ],
+    });
+    expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+    expect(scores.testing).toBe(1);
+  });
+});
+
+describe("narrowCodingTaskType", () => {
+  it("narrows known coding labels", () => {
+    expect(narrowCodingTaskType("debugging")).toBe("debugging");
+    expect(narrowCodingTaskType("general")).toBe("general");
+  });
+
+  it("falls back unknown labels to general", () => {
+    expect(narrowCodingTaskType("data-science")).toBe("general");
+  });
+});
+
+describe("codingDomainClassifier", () => {
+  it("exposes coding domain metadata", () => {
+    expect(codingDomainClassifier.domainId).toBe("coding");
+    expect(codingDomainClassifier.tieBreakOrder[0]).toBe("debugging");
   });
 });

@@ -178,6 +178,9 @@ export async function executeSlashCommand(
             engineConfig.pressure,
           );
           lines.push("", "Context pressure (last compile):");
+          if (compileMetrics.taskType) {
+            lines.push(`  Task type: ${compileMetrics.taskType}`);
+          }
           lines.push(
             ...formatContextPressureStats(
               {

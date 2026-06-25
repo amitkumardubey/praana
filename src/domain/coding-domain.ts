@@ -15,6 +15,12 @@ import { SearchDistiller } from "../distillers/rg-results.js";
 import { BuildDistiller } from "../distillers/tsc-errors.js";
 import { DistillerRegistry } from "../context-engine/distiller.js";
 import type { ContentType } from "../context-engine/types.js";
+import type {
+  DomainClassifier,
+  TaskClassificationInput,
+  TaskScoreMap,
+  CodingTaskType,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Synonyms — coding/devops vocabulary for BM25 expansion
@@ -156,3 +162,190 @@ export function createDefaultDistillerRegistry(): DistillerRegistry {
   registry.register(new GenericDistiller());
   return registry;
 }
+
+// ---------------------------------------------------------------------------
+// Task type classification (Issue #89)
+// ---------------------------------------------------------------------------
+
+export const CODING_TASK_CLUSTERS = {
+  testing: ["test", "spec", "assert", "verify", "coverage"],
+  debugging: ["error", "bug", "fix", "crash", "fail", "broken"],
+  refactoring: ["refactor", "restructure", "reorganize", "clean", "simplify"],
+  implementing: ["implement", "create", "add", "build", "new feature"],
+  reviewing: ["review", "audit", "inspect", "feedback", "check"],
+} as const;
+
+type ScoredCodingTaskType = Exclude<CodingTaskType, "general">;
+
+const CODING_TASK_TIE_BREAK: readonly ScoredCodingTaskType[] = [
+  "debugging",
+  "testing",
+  "implementing",
+  "refactoring",
+  "reviewing",
+];
+
+const TEST_PATH_RE = /\.(test|spec)\./i;
+
+/** Number of turns (including current) used for tool-pattern scoring. */
+export const RECENT_TURNS_WINDOW = 3;
+
+const CODING_TASK_TYPE_SET = new Set<string>([
+  ...Object.keys(CODING_TASK_CLUSTERS),
+  "general",
+]);
+
+/** Narrow a domain-agnostic classification label to a known coding task type. */
+export function narrowCodingTaskType(taskType: string): CodingTaskType {
+  return CODING_TASK_TYPE_SET.has(taskType)
+    ? (taskType as CodingTaskType)
+    : "general";
+}
+
+function recentTurnMinTurn(currentTurn: number): number {
+  return Math.max(0, currentTurn - RECENT_TURNS_WINDOW + 1);
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function countKeywordMatches(text: string, keyword: string): number {
+  const normalized = text.toLowerCase();
+  const pattern = new RegExp(`\\b${escapeRegex(keyword.toLowerCase())}\\b`, "gi");
+  return (normalized.match(pattern) ?? []).length;
+}
+
+export function scoreCodingTaskKeywords(userInput: string): TaskScoreMap {
+  const scores: TaskScoreMap = {};
+  if (!userInput.trim()) return scores;
+
+  for (const [taskType, keywords] of Object.entries(CODING_TASK_CLUSTERS)) {
+    let total = 0;
+    for (const keyword of keywords) {
+      total += countKeywordMatches(userInput, keyword);
+    }
+    if (total > 0) {
+      scores[taskType] = total;
+    }
+  }
+  return scores;
+}
+
+function recentTurnRecords(
+  turnRecords: TaskClassificationInput["turnRecords"],
+  currentTurn: number,
+): TaskClassificationInput["turnRecords"] {
+  const minTurn = recentTurnMinTurn(currentTurn);
+  return turnRecords.filter((record) => record.turn >= minTurn);
+}
+
+function recentActivityEntries(
+  activityEntries: TaskClassificationInput["activityEntries"],
+  currentTurn: number,
+): TaskClassificationInput["activityEntries"] {
+  const minTurn = recentTurnMinTurn(currentTurn);
+  return activityEntries.filter((entry) => entry.turn >= minTurn);
+}
+
+function addScore(scores: TaskScoreMap, taskType: string, points: number): void {
+  if (points <= 0) return;
+  scores[taskType] = (scores[taskType] ?? 0) + points;
+}
+
+function isErrorSearchCommand(command: string): boolean {
+  return (
+    /(^|\s)(rg|grep|ag|ack)(\s|$)/.test(command) &&
+    /\b(error|fail|exception|crash|stack)\b/i.test(command)
+  );
+}
+
+export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreMap {
+  const scores: TaskScoreMap = {};
+  const records = recentTurnRecords(input.turnRecords, input.currentTurn);
+  const activities = recentActivityEntries(input.activityEntries, input.currentTurn);
+
+  let editFileCount = 0;
+  let writeFileCount = 0;
+  let readFileCount = 0;
+  let searchCodeCount = 0;
+
+  for (const record of records) {
+    const hasErrorToolCall = record.toolCalls.some((tc) => tc.isError);
+    if (record.errors.length > 0 && !hasErrorToolCall) {
+      addScore(scores, "debugging", 2);
+    }
+
+    for (const path of record.filesWritten) {
+      // Test-path writes: filesWritten may be set without a matching toolCall entry.
+      if (TEST_PATH_RE.test(path)) {
+        addScore(scores, "testing", 1);
+      }
+    }
+
+    for (const tc of record.toolCalls) {
+      const command =
+        typeof tc.args.command === "string" ? tc.args.command : undefined;
+      const path = typeof tc.args.path === "string" ? tc.args.path : undefined;
+
+      if (tc.tool === "shell" && command) {
+        if (isTestCommand(command)) {
+          addScore(scores, "testing", 2);
+        }
+        if (isErrorSearchCommand(command)) {
+          addScore(scores, "debugging", 1);
+        }
+      }
+
+      if (tc.isError) {
+        addScore(scores, "debugging", 2);
+      }
+
+      if (tc.tool === "edit_file" && !tc.isError) {
+        editFileCount += 1;
+      }
+      if (tc.tool === "write_file" && !tc.isError) {
+        if (!path || !TEST_PATH_RE.test(path)) {
+          writeFileCount += 1;
+          addScore(scores, "implementing", 2);
+        }
+      }
+      if (tc.tool === "read_file" && !tc.isError) {
+        readFileCount += 1;
+      }
+      if (tc.tool === "search_code" && !tc.isError) {
+        searchCodeCount += 1;
+      }
+    }
+  }
+
+  for (const entry of activities) {
+    if (entry.type === "test_fail" || entry.type === "test_pass") {
+      addScore(scores, "testing", 2);
+    }
+    if (entry.type === "error_fixed") {
+      addScore(scores, "debugging", 2);
+    }
+    if (entry.type === "file_written") {
+      addScore(scores, "implementing", 1);
+    }
+  }
+
+  if (editFileCount >= 2 && writeFileCount === 0) {
+    addScore(scores, "refactoring", 3);
+  }
+
+  const reviewReads = readFileCount + searchCodeCount;
+  if (reviewReads >= 2 && writeFileCount === 0 && editFileCount === 0) {
+    addScore(scores, "reviewing", reviewReads);
+  }
+
+  return scores;
+}
+
+export const codingDomainClassifier: DomainClassifier = {
+  domainId: "coding",
+  tieBreakOrder: CODING_TASK_TIE_BREAK,
+  scoreKeywords: scoreCodingTaskKeywords,
+  scoreTools: scoreCodingTaskTools,
+};
