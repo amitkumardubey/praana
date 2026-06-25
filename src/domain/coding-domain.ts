@@ -167,11 +167,11 @@ export function createDefaultDistillerRegistry(): DistillerRegistry {
 // ---------------------------------------------------------------------------
 
 export const CODING_TASK_CLUSTERS = {
-  testing: ["test", "spec", "assert", "verify", "check", "coverage"],
+  testing: ["test", "spec", "assert", "verify", "coverage"],
   debugging: ["error", "bug", "fix", "crash", "fail", "broken"],
   refactoring: ["refactor", "restructure", "reorganize", "clean", "simplify"],
   implementing: ["implement", "create", "add", "build", "new feature"],
-  reviewing: ["review", "audit", "inspect", "feedback"],
+  reviewing: ["review", "audit", "inspect", "feedback", "check"],
 } as const;
 
 export type CodingTaskCluster = keyof typeof CODING_TASK_CLUSTERS;
@@ -185,6 +185,9 @@ const CODING_TASK_TIE_BREAK: readonly CodingTaskCluster[] = [
 ];
 
 const TEST_PATH_RE = /\.(test|spec)\./i;
+
+/** Recent turns considered for tool-pattern scoring (matches typical session rhythm). */
+export const RECENT_TURNS_WINDOW = 3;
 
 function escapeRegex(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -216,7 +219,7 @@ function recentTurnRecords(
   turnRecords: TaskClassificationInput["turnRecords"],
   currentTurn: number,
 ): TaskClassificationInput["turnRecords"] {
-  const minTurn = Math.max(0, currentTurn - 1);
+  const minTurn = Math.max(0, currentTurn - RECENT_TURNS_WINDOW);
   return turnRecords.filter((record) => record.turn >= minTurn);
 }
 
@@ -224,7 +227,7 @@ function recentActivityEntries(
   activityEntries: TaskClassificationInput["activityEntries"],
   currentTurn: number,
 ): TaskClassificationInput["activityEntries"] {
-  const minTurn = Math.max(0, currentTurn - 1);
+  const minTurn = Math.max(0, currentTurn - RECENT_TURNS_WINDOW);
   return activityEntries.filter((entry) => entry.turn >= minTurn);
 }
 
@@ -251,7 +254,8 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
   let searchCodeCount = 0;
 
   for (const record of records) {
-    if (record.errors.length > 0) {
+    const hasErrorToolCall = record.toolCalls.some((tc) => tc.isError);
+    if (record.errors.length > 0 && !hasErrorToolCall) {
       addScore(scores, "debugging", 2);
     }
 

@@ -44,7 +44,7 @@ describe("classifyTask", () => {
   it("classifies testing from keywords", () => {
     const result = classifyTask(
       classifier,
-      baseInput({ userInput: "run test and check coverage" }),
+      baseInput({ userInput: "run test spec coverage" }),
     );
     expect(result.taskType).toBe("testing");
     expect(result.source).toBe("keywords");
@@ -81,6 +81,15 @@ describe("classifyTask", () => {
     const result = classifyTask(
       classifier,
       baseInput({ userInput: "review this PR and give feedback" }),
+    );
+    expect(result.taskType).toBe("reviewing");
+    expect(result.source).toBe("keywords");
+  });
+
+  it("classifies check-this-PR phrasing as reviewing not testing", () => {
+    const result = classifyTask(
+      classifier,
+      baseInput({ userInput: "can you check this PR?" }),
     );
     expect(result.taskType).toBe("reviewing");
     expect(result.source).toBe("keywords");
@@ -186,6 +195,58 @@ describe("classifyTask", () => {
     expect(result.taskType).not.toBe("general");
   });
 
+  it("does not double-count debugging for failed tool calls", () => {
+    const scores = scoreCodingTaskTools(
+      baseInput({
+        currentTurn: 2,
+        turnRecords: [
+          turnRecord(2, {
+            toolCalls: [
+              {
+                tool: "shell",
+                args: { command: "npm test" },
+                isError: true,
+                resultText: "2 failing",
+              },
+            ],
+            errors: ["2 failing"],
+          }),
+        ],
+      }),
+    );
+    expect(scores.debugging).toBe(2);
+    expect(scores.testing).toBe(2);
+  });
+
+  it("detects refactoring across a multi-turn window", () => {
+    const result = classifyTask(
+      classifier,
+      baseInput({
+        userInput: "continue",
+        currentTurn: 20,
+        turnRecords: [
+          turnRecord(17, {
+            toolCalls: [
+              { tool: "edit_file", args: { path: "a.ts" }, isError: false },
+            ],
+          }),
+          turnRecord(18, {
+            toolCalls: [
+              { tool: "edit_file", args: { path: "b.ts" }, isError: false },
+            ],
+          }),
+          turnRecord(19, {
+            toolCalls: [
+              { tool: "edit_file", args: { path: "c.ts" }, isError: false },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(result.taskType).toBe("refactoring");
+    expect(result.source).toBe("tools");
+  });
+
   it("prefers debugging over testing on tied blended scores", () => {
     const keywordScores = scoreCodingTaskKeywords("fix failing test");
     const toolScores = scoreCodingTaskTools(
@@ -219,7 +280,7 @@ describe("classifyTask", () => {
     expect(toolScores.testing).toBeGreaterThan(0);
   });
 
-  it("completes classification within 5ms on a realistic fixture", () => {
+  it("completes classification within 1ms on a realistic fixture", () => {
     const turnRecords: TurnRecord[] = [];
     for (let i = 1; i <= 20; i++) {
       turnRecords.push(
@@ -254,7 +315,7 @@ describe("classifyTask", () => {
       classifyTask(classifier, input);
     }
     const elapsed = (performance.now() - start) / 100;
-    expect(elapsed).toBeLessThan(5);
+    expect(elapsed).toBeLessThan(1);
   });
 });
 

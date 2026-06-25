@@ -1,5 +1,6 @@
 import { codingDomainClassifier } from "./coding-domain.js";
 import type {
+  CodingTaskType,
   DomainClassifier,
   TaskClassificationInput,
   TaskClassificationResult,
@@ -17,7 +18,7 @@ export function getDefaultDomainClassifier(): DomainClassifier {
 function topScoredTask(
   scores: TaskScoreMap,
   tieBreakOrder: readonly string[],
-): { taskType: string; score: number } | null {
+): { taskType: CodingTaskType; score: number } | null {
   const entries = Object.entries(scores).filter(([, score]) => score > 0);
   if (entries.length === 0) return null;
 
@@ -31,7 +32,7 @@ function topScoredTask(
   });
 
   const [taskType, score] = entries[0];
-  return { taskType, score };
+  return { taskType: taskType as CodingTaskType, score };
 }
 
 function blendScores(
@@ -56,6 +57,7 @@ function blendScores(
   return blended;
 }
 
+// Scores at STRONG_SIGNAL_THRESHOLD (2) ≈ 0.5 confidence; 4+ → max.
 function normalizeConfidence(score: number): number {
   return Math.min(1, Math.max(0, score / 4));
 }

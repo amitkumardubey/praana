@@ -22,7 +22,8 @@ export interface TaskClassificationInput {
 }
 
 export interface TaskClassificationResult {
-  taskType: string;
+  /** Classified task type; coding domain returns CodingTaskType values. */
+  taskType: CodingTaskType;
   confidence: number;
   source: TaskClassificationSource;
 }

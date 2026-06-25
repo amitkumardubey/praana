@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CODING_SYNONYMS,
   CODING_TASK_CLUSTERS,
+  RECENT_TURNS_WINDOW,
   isTestCommand,
   isDiffContent,
   isTestOutputContent,
@@ -260,6 +261,17 @@ describe("CODING_TASK_CLUSTERS", () => {
       ["debugging", "implementing", "refactoring", "reviewing", "testing"].sort(),
     );
   });
+
+  it("places check in reviewing not testing per issue spec", () => {
+    expect(CODING_TASK_CLUSTERS.reviewing).toContain("check");
+    expect(CODING_TASK_CLUSTERS.testing).not.toContain("check");
+  });
+});
+
+describe("RECENT_TURNS_WINDOW", () => {
+  it("covers enough turns for multi-turn tool heuristics", () => {
+    expect(RECENT_TURNS_WINDOW).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe("scoreCodingTaskKeywords", () => {
@@ -279,7 +291,7 @@ describe("scoreCodingTaskKeywords", () => {
 });
 
 describe("scoreCodingTaskTools", () => {
-  it("scores testing from npm test commands", () => {
+  it("scores testing from npm test without double-counting debugging", () => {
     const scores = scoreCodingTaskTools({
       userInput: "",
       currentTurn: 2,
@@ -299,13 +311,14 @@ describe("scoreCodingTaskTools", () => {
           artifactIds: [],
           filesRead: [],
           filesWritten: [],
-          errors: [],
+          errors: ["2 failing"],
           tokenCount: 0,
           timestamp: 2,
         },
       ],
     });
     expect(scores.testing).toBeGreaterThanOrEqual(2);
+    expect(scores.debugging).toBe(2);
   });
 
   it("scores refactoring from multiple edits without writes", () => {
