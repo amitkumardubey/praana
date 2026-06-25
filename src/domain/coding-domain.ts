@@ -277,10 +277,9 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
     }
 
     for (const path of record.filesWritten) {
+      // Test-path writes: filesWritten may be set without a matching toolCall entry.
       if (TEST_PATH_RE.test(path)) {
         addScore(scores, "testing", 1);
-      } else {
-        addScore(scores, "implementing", 1);
       }
     }
 
@@ -306,8 +305,8 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
         editFileCount += 1;
       }
       if (tc.tool === "write_file" && !tc.isError) {
-        writeFileCount += 1;
         if (!path || !TEST_PATH_RE.test(path)) {
+          writeFileCount += 1;
           addScore(scores, "implementing", 2);
         }
       }

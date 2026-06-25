@@ -326,6 +326,36 @@ describe("scoreCodingTaskTools", () => {
     expect(scores.debugging).toBe(2);
   });
 
+  it("scores non-test file writes once via toolCalls", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 2,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+      ],
+    });
+    expect(scores.implementing).toBe(2);
+    expect(scores.testing).toBeUndefined();
+  });
+
   it("scores test file writes as testing only, not implementing", () => {
     const scores = scoreCodingTaskTools({
       userInput: "",
@@ -394,6 +424,65 @@ describe("scoreCodingTaskTools", () => {
       ],
     });
     expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+  });
+
+  it("detects refactoring when edits accompany a test-file write", () => {
+    const scores = scoreCodingTaskTools({
+      userInput: "",
+      currentTurn: 4,
+      activityEntries: [],
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "a.ts" }, isError: false },
+            { tool: "edit_file", args: { path: "b.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 2,
+        },
+        {
+          turn: 3,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            { tool: "edit_file", args: { path: "c.ts" }, isError: false },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 3,
+        },
+        {
+          turn: 4,
+          userMessage: "",
+          assistantMessage: "",
+          toolCalls: [
+            {
+              tool: "write_file",
+              args: { path: "src/foo.test.ts" },
+              isError: false,
+            },
+          ],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: ["src/foo.test.ts"],
+          errors: [],
+          tokenCount: 0,
+          timestamp: 4,
+        },
+      ],
+    });
+    expect(scores.refactoring).toBeGreaterThanOrEqual(3);
+    expect(scores.testing).toBe(1);
   });
 });
 
