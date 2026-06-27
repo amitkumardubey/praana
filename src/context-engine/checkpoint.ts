@@ -30,20 +30,31 @@ import type {
   TurnDigest,
 } from "./types.js";
 
-export interface RenderCheckpointOptions {
-  pressureMode?: PressureMode;
+/** Task-type-derived token caps for variable checkpoint sections. */
+export interface CheckpointSectionBudgets {
+  narrativeTokens: number;
+  decisionsTokens: number;
+  /** Token cap for the open_errors section only. */
+  errorsTokens: number;
 }
 
+export interface RenderCheckpointOptions {
+  pressureMode?: PressureMode;
+  /** When provided, overrides default section token caps for task-type-aware allocation. */
+  budgets?: CheckpointSectionBudgets;
+}
 const DECISION_IDLE_TURNS = 10;
 const FILE_IDLE_TURNS = 10;
 const MAX_FINDINGS = 30;
 const MAX_FIXED_ERRORS = 20;
 const MAX_NARRATIVE_ENTRIES = 30;
-const NARRATIVE_RENDER_TOKENS = 400;
+export const NARRATIVE_RENDER_TOKENS = 400;
 const RATIONALE_MAX_CHARS = 240;
-const DECISIONS_SECTION_TOKENS = 800;
+export const DECISIONS_SECTION_TOKENS = 800;
 const FINDINGS_SECTION_TOKENS = 300;
 const FINDINGS_SECTION_TOKENS_COMPACT = 150;
+/** Default token cap for open_errors checkpoint section when no task budget provided. */
+export const ERRORS_SECTION_TOKENS = 1000;
 const PLAN_SECTION_TOKENS = 400;
 const COMPACT_ACTIVITY_MAX = 5;
 
@@ -381,13 +392,14 @@ function renderPlanSection(plans: CheckpointPlanEntry[]): string[] {
 
 function renderNarrativeSection(
   narrative: CheckpointState["narrative"],
+  tokenBudget = NARRATIVE_RENDER_TOKENS,
 ): string[] {
   if (narrative.length === 0) return [];
   // Token-budgeted: keep as many recent entries as fit within the render budget.
   // If the full prose exceeds budget, trim oldest entries first.
   let entries = [...narrative];
   let prose = entries.map((e) => e.text).join(" ");
-  while (entries.length > 1 && estimateTokens(prose) > NARRATIVE_RENDER_TOKENS) {
+  while (entries.length > 1 && estimateTokens(prose) > tokenBudget) {
     entries.shift();
     prose = entries.map((e) => e.text).join(" ");
   }
@@ -434,6 +446,7 @@ interface CheckpointSection {
 function buildCheckpointSections(
   state: CheckpointState,
   pressureMode: PressureMode,
+  budgets?: CheckpointSectionBudgets,
 ): CheckpointSection[] {
   const sections: CheckpointSection[] = [];
 
@@ -443,8 +456,10 @@ function buildCheckpointSections(
       kind: "active_request",
     });
   }
-
-  const narrativeLines = renderNarrativeSection(state.narrative);
+  const narrativeLines = renderNarrativeSection(
+    state.narrative,
+    budgets?.narrativeTokens ?? NARRATIVE_RENDER_TOKENS,
+  );
   if (narrativeLines.length > 0) {
     sections.push({ lines: narrativeLines, kind: "narrative" });
   }
@@ -466,7 +481,6 @@ function buildCheckpointSections(
       kind: "constraint",
     });
   }
-
   const decisions = state.decisions.slice(-20);
   if (decisions.length > 0) {
     const decisionLines = trimSectionLines(
@@ -474,7 +488,7 @@ function buildCheckpointSections(
         "### Decisions",
         ...decisions.map((d, i) => renderDecision(d, i)),
       ],
-      DECISIONS_SECTION_TOKENS,
+      budgets?.decisionsTokens ?? DECISIONS_SECTION_TOKENS,
     );
     sections.push({ lines: decisionLines, kind: "decision" });
   }
@@ -505,13 +519,11 @@ function buildCheckpointSections(
 
   const openErrors = state.errors.filter((e) => !e.fixed);
   if (openErrors.length > 0) {
-    sections.push({
-      lines: [
-        "### Open errors",
-        ...openErrors.map((e) => `- ${e.message}`),
-      ],
-      kind: "open_error",
-    });
+    const errorLines = trimSectionLines(
+      ["### Open errors", ...openErrors.map((e) => `- ${e.message}`)],
+      budgets?.errorsTokens ?? ERRORS_SECTION_TOKENS,
+    );
+    sections.push({ lines: errorLines, kind: "open_error" });
   }
 
   if (pressureMode !== "emergency") {
@@ -550,8 +562,9 @@ function checkpointSectionText(section: CheckpointSection): string {
 export function estimateCheckpointEffectiveTokens(
   state: CheckpointState,
   pressureMode: PressureMode = "normal",
+  budgets?: CheckpointSectionBudgets,
 ): { raw: number; effective: number } {
-  const sections = buildCheckpointSections(state, pressureMode);
+  const sections = buildCheckpointSections(state, pressureMode, budgets);
   const tokenized: { tokens: number; kind: SectionDensityKind }[] = [
     { tokens: sectionTokens(CHECKPOINT_HEADER), kind: "pinned_infra" },
   ];
@@ -570,7 +583,7 @@ export function renderCheckpoint(
   options: RenderCheckpointOptions = {},
 ): string {
   const pressureMode = options.pressureMode ?? "normal";
-  const sections = buildCheckpointSections(checkpoint.state, pressureMode);
+  const sections = buildCheckpointSections(checkpoint.state, pressureMode, options.budgets);
   const parts: string[] = [CHECKPOINT_HEADER, ""];
   for (const section of sections) {
     parts.push(...section.lines, "");
