@@ -92,6 +92,9 @@ describe("engine compiler", () => {
       tieBreakOrder: ["prose"],
       scoreKeywords: () => ({ prose: 3 }),
       scoreTools: () => ({}),
+      getBudgetAllocation: () => ({
+        errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20,
+      }),
     };
 
     const result = compileEngineWithMetrics({
@@ -509,5 +512,76 @@ describe("engine compiler", () => {
     expect(result.rawPressureRatio).toBeGreaterThan(1);
     expect(result.pressureMode).toBe("emergency");
     expect(result.prompt).not.toContain("### Findings");
+  });
+
+  it("budgetAllocation in result reflects the classified task type", () => {
+    const debugClassifier: DomainClassifier = {
+      domainId: "test",
+      tieBreakOrder: [],
+      scoreKeywords: () => ({ debugging: 5 }),
+      scoreTools: () => ({}),
+      getBudgetAllocation: (t) => t === "debugging"
+        ? { errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 }
+        : { errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
+    };
+
+    const result = compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "fix the bug",
+      toolSchemas: [],
+      cwd: "/tmp",
+      sessionId: "s1",
+      tokenBudget: 20000,
+      currentTurn: 0,
+      turnRecords: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: debugClassifier,
+    });
+
+    expect(result.taskType).toBe("debugging");
+    expect(result.budgetAllocation).toEqual({
+      errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10,
+    });
+  });
+
+  it("scored band caps differ between debugging and testing task types", () => {
+    const makeClassifier = (taskType: string): DomainClassifier => ({
+      domainId: "test",
+      tieBreakOrder: [],
+      scoreKeywords: () => ({ [taskType]: 5 }),
+      scoreTools: () => ({}),
+      getBudgetAllocation: (t: string) => t === "testing"
+        ? { errors: 0.10, recentTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 }
+        : { errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
+    });
+
+    const baseInput = {
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "run tests",
+      toolSchemas: [],
+      cwd: "/tmp",
+      sessionId: "s1",
+      tokenBudget: 20000,
+      currentTurn: 10,
+      turnRecords: [],
+      engineConfig: ENGINE_CONFIG,
+    };
+
+    const testingResult = compileEngineWithMetrics({
+      ...baseInput,
+      domainClassifier: makeClassifier("testing"),
+    });
+    const generalResult = compileEngineWithMetrics({
+      ...baseInput,
+      domainClassifier: makeClassifier("general"),
+    });
+
+    expect(testingResult.budgetAllocation.artifacts).toBeGreaterThan(
+      generalResult.budgetAllocation.artifacts,
+    );
   });
 });

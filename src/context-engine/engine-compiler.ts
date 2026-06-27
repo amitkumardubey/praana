@@ -14,7 +14,11 @@ import {
 import {
   estimateCheckpointEffectiveTokens,
   renderCheckpoint,
+  NARRATIVE_RENDER_TOKENS,
+  DECISIONS_SECTION_TOKENS,
+  ERRORS_SECTION_TOKENS,
 } from "./checkpoint.js";
+import type { CheckpointSectionBudgets } from "./checkpoint.js";
 import { effectiveTokens } from "./density.js";
 import type { SectionDensityKind } from "./density.js";
 import { buildArtifactCard } from "./summarize.js";
@@ -39,7 +43,7 @@ import type {
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
 import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
-import type { DomainClassifier, TaskClassificationResult } from "../domain/types.js";
+import type { BudgetAllocation, DomainClassifier, TaskClassificationResult } from "../domain/types.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -74,6 +78,8 @@ export interface EngineCompileResult {
   /** Shorthand for taskClassification.taskType (domain-agnostic; narrow at budget call sites). */
   taskType: string;
   taskClassification: TaskClassificationResult;
+  /** Budget allocation fractions used for this compilation (reflects classified task type). */
+  budgetAllocation: BudgetAllocation;
 }
 
 function estTokens(text: string): number {
@@ -210,6 +216,7 @@ function buildScoredUnits(
 function buildVerbatimSection(
   records: TurnRecord[],
   currentTurn: number,
+  tokenCap = BAND_VERBATIM_TOKENS,
 ): { text: string; tokens: number } {
   const recent = records
     .filter((r) => currentTurn - r.turn <= 2 && currentTurn - r.turn >= 0)
@@ -221,7 +228,7 @@ function buildVerbatimSection(
 
   let body = recent.map(renderVerbatimTurn).join("\n\n");
   let tokens = estTokens(body);
-  if (tokens > BAND_VERBATIM_TOKENS) {
+  if (tokens > tokenCap) {
     const last = recent[recent.length - 1];
     body = renderVerbatimTurn(last);
     tokens = estTokens(body);
@@ -292,9 +299,10 @@ function unitDensityKind(type: ContextUnitType): SectionDensityKind {
 function renderCheckpointForMode(
   input: EngineCompileInput,
   pressureMode: PressureMode,
+  checkpointBudgets: CheckpointSectionBudgets,
 ): { text: string; tokens: number; effective: number } {
   if (input.checkpoint) {
-    const text = renderCheckpoint(input.checkpoint, { pressureMode });
+    const text = renderCheckpoint(input.checkpoint, { pressureMode, budgets: checkpointBudgets });
     const trimmed = text.trim();
     if (!trimmed) {
       return { text: "", tokens: 0, effective: 0 };
@@ -365,6 +373,9 @@ interface CompilePassPrecomputed {
   agentsContextTokens: number;
   agentsContextTruncated: boolean;
   verbatim: { text: string; tokens: number };
+  bandScoredRecentTokens: number;
+  bandScoredOlderTokens: number;
+  checkpointBudgets: CheckpointSectionBudgets;
 }
 
 function compileEnginePass(
@@ -408,7 +419,7 @@ function compileEnginePass(
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
 
-  const checkpointRendered = renderCheckpointForMode(input, checkpointPressureMode);
+  const checkpointRendered = renderCheckpointForMode(input, checkpointPressureMode, precomputed.checkpointBudgets);
   if (checkpointRendered.text) {
     sections.push(checkpointRendered.text);
   }
@@ -439,8 +450,8 @@ function compileEnginePass(
   const rankedRecent = rankContextUnits(recentUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
   const rankedOlder = rankContextUnits(olderUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
 
-  const recentPick = selectUnitsWithinBudget(rankedRecent, BAND_SCORED_RECENT_TOKENS);
-  const olderPick = selectUnitsWithinBudget(rankedOlder, BAND_SCORED_OLDER_TOKENS);
+  const recentPick = selectUnitsWithinBudget(rankedRecent, precomputed.bandScoredRecentTokens);
+  const olderPick = selectUnitsWithinBudget(rankedOlder, precomputed.bandScoredOlderTokens);
 
   const recordScore = (
     unit: ContextUnit & { score: number; breakdown: ScoreBreakdown },
@@ -538,7 +549,8 @@ function compileEnginePass(
 function buildCompilePassPrecomputed(
   input: EngineCompileInput,
   usable: number,
-): CompilePassPrecomputed {
+  verbatimTokenCap = BAND_VERBATIM_TOKENS,
+): Omit<CompilePassPrecomputed, "bandScoredRecentTokens" | "bandScoredOlderTokens" | "checkpointBudgets"> {
   const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const stateSummary = buildStateSummary(input.stateGraph);
   const { text: agentsContext, truncated: agentsContextTruncated } =
@@ -550,7 +562,7 @@ function buildCompilePassPrecomputed(
     stateSummary,
     agentsContext,
   );
-  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn);
+  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn, verbatimTokenCap);
   return {
     systemFrame,
     systemFrameTokens: estTokens(systemFrame),
@@ -571,6 +583,25 @@ export function compileEngineWithMetrics(
     currentTurn: input.currentTurn,
   });
 
+  // --- Compute task-type-aware band caps ---
+  const taskAlloc = classifier.getBudgetAllocation(taskClassification.taskType);
+  const defaultAlloc = classifier.getBudgetAllocation("general");
+
+  function scaleFrom(key: keyof BudgetAllocation): number {
+    const base = defaultAlloc[key] > 0 ? defaultAlloc[key] : 0.01;
+    return taskAlloc[key] / base;
+  }
+
+  const scaledVerbatim = Math.round(BAND_VERBATIM_TOKENS * scaleFrom("recentTurns"));
+  const scaledScoredRecent = Math.round(BAND_SCORED_RECENT_TOKENS * scaleFrom("artifacts"));
+  const scaledScoredOlder = Math.round(BAND_SCORED_OLDER_TOKENS * scaleFrom("artifacts"));
+  const checkpointBudgets: CheckpointSectionBudgets = {
+    narrativeTokens: Math.round(NARRATIVE_RENDER_TOKENS * scaleFrom("narrative")),
+    decisionsTokens: Math.round(DECISIONS_SECTION_TOKENS * scaleFrom("decisions")),
+    errorsTokens: Math.round(ERRORS_SECTION_TOKENS * scaleFrom("errors")),
+  };
+  // --- END ---
+
   const reservedOutput = input.reservedOutputTokens ?? 0;
   const contextWindow = input.contextWindowTokens ?? input.tokenBudget;
   const usable = Math.max(
@@ -579,7 +610,13 @@ export function compileEngineWithMetrics(
   );
   const pressureDenominator = Math.max(1, contextWindow - reservedOutput);
 
-  const precomputed = buildCompilePassPrecomputed(input, usable);
+  const base = buildCompilePassPrecomputed(input, usable, scaledVerbatim);
+  const precomputed: CompilePassPrecomputed = {
+    ...base,
+    bandScoredRecentTokens: scaledScoredRecent,
+    bandScoredOlderTokens: scaledScoredOlder,
+    checkpointBudgets,
+  };
 
   const normalCheckpointEstimate = input.checkpoint
     ? estimateCheckpointEffectiveTokens(input.checkpoint.state, "normal").effective
@@ -697,6 +734,7 @@ export function compileEngineWithMetrics(
     excludedScoredUnits,
     taskType: taskClassification.taskType,
     taskClassification,
+    budgetAllocation: taskAlloc,
   };
 }
 

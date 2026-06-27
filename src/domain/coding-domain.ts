@@ -16,6 +16,7 @@ import { BuildDistiller } from "../distillers/tsc-errors.js";
 import { DistillerRegistry } from "../context-engine/distiller.js";
 import type { ContentType } from "../context-engine/types.js";
 import type {
+  BudgetAllocation,
   DomainClassifier,
   TaskClassificationInput,
   TaskScoreMap,
@@ -342,10 +343,38 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
 
   return scores;
 }
-
 export const codingDomainClassifier: DomainClassifier = {
   domainId: "coding",
   tieBreakOrder: CODING_TASK_TIE_BREAK,
   scoreKeywords: scoreCodingTaskKeywords,
   scoreTools: scoreCodingTaskTools,
+  getBudgetAllocation: getCodingBudgetAllocation,
 };
+
+// ---------------------------------------------------------------------------
+// Task-type-aware budget allocation (Issue #90)
+// ---------------------------------------------------------------------------
+
+export const CODING_DEFAULT_BUDGET_ALLOCATION: BudgetAllocation = {
+  errors: 0.10,
+  recentTurns: 0.30,
+  decisions: 0.15,
+  artifacts: 0.25,
+  narrative: 0.20,
+};
+
+export function getCodingBudgetAllocation(taskType: string): BudgetAllocation {
+  switch (taskType) {
+    case "debugging":
+      return { errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 };
+    case "testing":
+      return { errors: 0.10, recentTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 };
+    case "implementing":
+      return { errors: 0.05, recentTurns: 0.20, decisions: 0.20, artifacts: 0.40, narrative: 0.15 };
+    case "refactoring":
+      return { errors: 0.10, recentTurns: 0.25, decisions: 0.25, artifacts: 0.30, narrative: 0.10 };
+    default:
+      // "general", "reviewing", and any unknown task type from other domains.
+      return CODING_DEFAULT_BUDGET_ALLOCATION;
+  }
+}
