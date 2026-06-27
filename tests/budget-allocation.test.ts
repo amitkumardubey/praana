@@ -7,33 +7,37 @@ import {
 import type { BudgetAllocation } from "../src/domain/types.js";
 
 function expectSumsToOne(alloc: BudgetAllocation) {
-  const sum = alloc.errors + alloc.recentTurns + alloc.decisions + alloc.artifacts + alloc.narrative;
+  const sum = alloc.errors + alloc.verbatimTurns + alloc.decisions + alloc.artifacts + alloc.narrative;
   expect(Math.abs(sum - 1.0)).toBeLessThan(0.001);
 }
 
 describe("getCodingBudgetAllocation", () => {
-  it("debugging allocation: errors=0.25, recentTurns=0.35, decisions=0.10, artifacts=0.20, narrative=0.10", () => {
+  it("debugging allocation: errors=0.25, verbatimTurns=0.35, decisions=0.10, artifacts=0.20, narrative=0.10", () => {
     const a = getCodingBudgetAllocation("debugging");
-    expect(a).toEqual({ errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 });
+    expect(a).toEqual({ errors: 0.25, verbatimTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 });
   });
 
-  it("testing allocation: errors=0.10, recentTurns=0.25, decisions=0.15, artifacts=0.35, narrative=0.15", () => {
+  it("testing allocation: errors=0.10, verbatimTurns=0.25, decisions=0.15, artifacts=0.35, narrative=0.15", () => {
     const a = getCodingBudgetAllocation("testing");
-    expect(a).toEqual({ errors: 0.10, recentTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 });
+    expect(a).toEqual({ errors: 0.10, verbatimTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 });
   });
 
-  it("implementing allocation: errors=0.05, recentTurns=0.20, decisions=0.20, artifacts=0.40, narrative=0.15", () => {
+  it("implementing allocation: errors=0.05, verbatimTurns=0.20, decisions=0.20, artifacts=0.40, narrative=0.15", () => {
     const a = getCodingBudgetAllocation("implementing");
-    expect(a).toEqual({ errors: 0.05, recentTurns: 0.20, decisions: 0.20, artifacts: 0.40, narrative: 0.15 });
+    expect(a).toEqual({ errors: 0.05, verbatimTurns: 0.20, decisions: 0.20, artifacts: 0.40, narrative: 0.15 });
   });
 
-  it("refactoring allocation: errors=0.10, recentTurns=0.25, decisions=0.25, artifacts=0.30, narrative=0.10", () => {
+  it("refactoring allocation: errors=0.10, verbatimTurns=0.25, decisions=0.25, artifacts=0.30, narrative=0.10", () => {
     const a = getCodingBudgetAllocation("refactoring");
-    expect(a).toEqual({ errors: 0.10, recentTurns: 0.25, decisions: 0.25, artifacts: 0.30, narrative: 0.10 });
+    expect(a).toEqual({ errors: 0.10, verbatimTurns: 0.25, decisions: 0.25, artifacts: 0.30, narrative: 0.10 });
   });
 
   it("general returns default allocation", () => {
     expect(getCodingBudgetAllocation("general")).toEqual(CODING_DEFAULT_BUDGET_ALLOCATION);
+  });
+
+  it("reviewing returns default allocation", () => {
+    expect(getCodingBudgetAllocation("reviewing")).toEqual(CODING_DEFAULT_BUDGET_ALLOCATION);
   });
 
   it("unknown task type returns default allocation", () => {

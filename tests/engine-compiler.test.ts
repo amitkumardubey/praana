@@ -93,7 +93,7 @@ describe("engine compiler", () => {
       scoreKeywords: () => ({ prose: 3 }),
       scoreTools: () => ({}),
       getBudgetAllocation: () => ({
-        errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20,
+        errors: 0.10, verbatimTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20,
       }),
     };
 
@@ -521,8 +521,8 @@ describe("engine compiler", () => {
       scoreKeywords: () => ({ debugging: 5 }),
       scoreTools: () => ({}),
       getBudgetAllocation: (t) => t === "debugging"
-        ? { errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 }
-        : { errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
+        ? { errors: 0.25, verbatimTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10 }
+        : { errors: 0.10, verbatimTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
     };
 
     const result = compileEngineWithMetrics({
@@ -542,7 +542,7 @@ describe("engine compiler", () => {
 
     expect(result.taskType).toBe("debugging");
     expect(result.budgetAllocation).toEqual({
-      errors: 0.25, recentTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10,
+      errors: 0.25, verbatimTurns: 0.35, decisions: 0.10, artifacts: 0.20, narrative: 0.10,
     });
   });
 
@@ -553,8 +553,8 @@ describe("engine compiler", () => {
       scoreKeywords: () => ({ [taskType]: 5 }),
       scoreTools: () => ({}),
       getBudgetAllocation: (t: string) => t === "testing"
-        ? { errors: 0.10, recentTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 }
-        : { errors: 0.10, recentTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
+        ? { errors: 0.10, verbatimTurns: 0.25, decisions: 0.15, artifacts: 0.35, narrative: 0.15 }
+        : { errors: 0.10, verbatimTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
     });
 
     const baseInput = {
@@ -567,7 +567,25 @@ describe("engine compiler", () => {
       sessionId: "s1",
       tokenBudget: 20000,
       currentTurn: 10,
-      turnRecords: [],
+      turnRecords: [
+        {
+          turn: 6,
+          userMessage: "do work",
+          assistantMessage: "done",
+          toolCalls: Array.from({ length: 20 }, (_, i) => ({
+            tool: "run",
+            args: { command: `echo a${i}` },
+            resultArtifactId: `art_${i}`,
+            resultText: "Y".repeat(800),
+          })),
+          artifactIds: Array.from({ length: 20 }, (_, i) => `art_${i}`),
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 100,
+          timestamp: 1,
+        },
+      ],
       engineConfig: ENGINE_CONFIG,
     };
 
@@ -583,5 +601,6 @@ describe("engine compiler", () => {
     expect(testingResult.budgetAllocation.artifacts).toBeGreaterThan(
       generalResult.budgetAllocation.artifacts,
     );
+    expect(testingResult.metrics.totalTokens).not.toBe(generalResult.metrics.totalTokens);
   });
 });

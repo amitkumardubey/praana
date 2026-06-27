@@ -34,11 +34,11 @@ export type TaskScoreMap = Record<string, number>;
 export interface BudgetAllocation {
   /** Share for error context (checkpoint open/fixed errors). */
   errors: number;
-  /** Share for recent verbatim turns and recent scored units. */
-  recentTurns: number;
+  /** Share for verbatim recent-turn section. */
+  verbatimTurns: number;
   /** Share for decisions (checkpoint decisions section). */
   decisions: number;
-  /** Share for artifact cards and older scored content. */
+  /** Share for artifact cards and scored content (recent and older units). */
   artifacts: number;
   /** Share for narrative (checkpoint narrative section). */
   narrative: number;

@@ -367,6 +367,14 @@ interface CompilePassResult {
   includedScored: ContextUnit[];
 }
 
+interface BuildPassBase {
+  systemFrame: string;
+  systemFrameTokens: number;
+  agentsContextTokens: number;
+  agentsContextTruncated: boolean;
+  verbatim: { text: string; tokens: number };
+}
+
 interface CompilePassPrecomputed {
   systemFrame: string;
   systemFrameTokens: number;
@@ -550,7 +558,7 @@ function buildCompilePassPrecomputed(
   input: EngineCompileInput,
   usable: number,
   verbatimTokenCap = BAND_VERBATIM_TOKENS,
-): Omit<CompilePassPrecomputed, "bandScoredRecentTokens" | "bandScoredOlderTokens" | "checkpointBudgets"> {
+): BuildPassBase {
   const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const stateSummary = buildStateSummary(input.stateGraph);
   const { text: agentsContext, truncated: agentsContextTruncated } =
@@ -587,12 +595,14 @@ export function compileEngineWithMetrics(
   const taskAlloc = classifier.getBudgetAllocation(taskClassification.taskType);
   const defaultAlloc = classifier.getBudgetAllocation("general");
 
+  const MAX_SCALE = 3;
+
   function scaleFrom(key: keyof BudgetAllocation): number {
     const base = defaultAlloc[key] > 0 ? defaultAlloc[key] : 0.01;
-    return taskAlloc[key] / base;
+    return Math.min(taskAlloc[key] / base, MAX_SCALE);
   }
 
-  const scaledVerbatim = Math.round(BAND_VERBATIM_TOKENS * scaleFrom("recentTurns"));
+  const scaledVerbatim = Math.round(BAND_VERBATIM_TOKENS * scaleFrom("verbatimTurns"));
   const scaledScoredRecent = Math.round(BAND_SCORED_RECENT_TOKENS * scaleFrom("artifacts"));
   const scaledScoredOlder = Math.round(BAND_SCORED_OLDER_TOKENS * scaleFrom("artifacts"));
   const checkpointBudgets: CheckpointSectionBudgets = {
@@ -619,7 +629,7 @@ export function compileEngineWithMetrics(
   };
 
   const normalCheckpointEstimate = input.checkpoint
-    ? estimateCheckpointEffectiveTokens(input.checkpoint.state, "normal").effective
+    ? estimateCheckpointEffectiveTokens(input.checkpoint.state, "normal", checkpointBudgets).effective
     : input.checkpointSection?.trim()
       ? estTokens(input.checkpointSection.trim())
       : 0;

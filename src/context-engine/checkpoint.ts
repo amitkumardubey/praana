@@ -562,8 +562,9 @@ function checkpointSectionText(section: CheckpointSection): string {
 export function estimateCheckpointEffectiveTokens(
   state: CheckpointState,
   pressureMode: PressureMode = "normal",
+  budgets?: CheckpointSectionBudgets,
 ): { raw: number; effective: number } {
-  const sections = buildCheckpointSections(state, pressureMode);
+  const sections = buildCheckpointSections(state, pressureMode, budgets);
   const tokenized: { tokens: number; kind: SectionDensityKind }[] = [
     { tokens: sectionTokens(CHECKPOINT_HEADER), kind: "pinned_infra" },
   ];
