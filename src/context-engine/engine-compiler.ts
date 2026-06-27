@@ -43,6 +43,7 @@ import type {
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
 import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
+import { validateBudgetAllocation } from "../domain/types.js";
 import type { BudgetAllocation, DomainClassifier, TaskClassificationResult } from "../domain/types.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
@@ -557,7 +558,7 @@ function compileEnginePass(
 function buildCompilePassPrecomputed(
   input: EngineCompileInput,
   usable: number,
-  verbatimTokenCap = BAND_VERBATIM_TOKENS,
+  verbatimTokenCap: number,
 ): BuildPassBase {
   const maxAgentsTokens = Math.floor(usable * (input.agentsBudgetRatio ?? 0.3));
   const stateSummary = buildStateSummary(input.stateGraph);
@@ -595,20 +596,32 @@ export function compileEngineWithMetrics(
   const taskAlloc = classifier.getBudgetAllocation(taskClassification.taskType);
   const defaultAlloc = classifier.getBudgetAllocation("general");
 
-  const MAX_SCALE = 3;
+  // Validate allocations once before scaling (catches misconfigured classifiers early).
+  validateBudgetAllocation(taskAlloc);
+  validateBudgetAllocation(defaultAlloc);
+
+  const SCALE_MAXIMUM = 3; // defensive clamp for custom domains (max ~2.5× for coding domain)
 
   function scaleFrom(key: keyof BudgetAllocation): number {
-    const base = defaultAlloc[key] > 0 ? defaultAlloc[key] : 0.01;
-    return Math.min(taskAlloc[key] / base, MAX_SCALE);
+    const baseValue = defaultAlloc[key];
+    const taskValue = taskAlloc[key];
+    // Both zero => the band is unused by this domain → disable.
+    if (baseValue === 0 && taskValue === 0) return 0;
+    // Default is zero but task wants it => give the full default cap (no ratio).
+    if (baseValue === 0) return 1;
+    // Normal ratio-scaling; clamp at 3× to prevent runaway allocations.
+    return Math.min(taskValue / baseValue, SCALE_MAXIMUM);
   }
 
-  const scaledVerbatim = Math.round(BAND_VERBATIM_TOKENS * scaleFrom("verbatimTurns"));
-  const scaledScoredRecent = Math.round(BAND_SCORED_RECENT_TOKENS * scaleFrom("artifacts"));
-  const scaledScoredOlder = Math.round(BAND_SCORED_OLDER_TOKENS * scaleFrom("artifacts"));
+  const MINIMUM_BAND_CAP = 50;
+
+  const scaledVerbatim = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_VERBATIM_TOKENS * scaleFrom("verbatimTurns")));
+  const scaledScoredRecent = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_SCORED_RECENT_TOKENS * scaleFrom("artifacts")));
+  const scaledScoredOlder = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_SCORED_OLDER_TOKENS * scaleFrom("artifacts")));
   const checkpointBudgets: CheckpointSectionBudgets = {
-    narrativeTokens: Math.round(NARRATIVE_RENDER_TOKENS * scaleFrom("narrative")),
-    decisionsTokens: Math.round(DECISIONS_SECTION_TOKENS * scaleFrom("decisions")),
-    errorsTokens: Math.round(ERRORS_SECTION_TOKENS * scaleFrom("errors")),
+    narrativeTokens: Math.max(MINIMUM_BAND_CAP, Math.round(NARRATIVE_RENDER_TOKENS * scaleFrom("narrative"))),
+    decisionsTokens: Math.max(MINIMUM_BAND_CAP, Math.round(DECISIONS_SECTION_TOKENS * scaleFrom("decisions"))),
+    errorsTokens: Math.max(MINIMUM_BAND_CAP, Math.round(ERRORS_SECTION_TOKENS * scaleFrom("errors"))),
   };
   // --- END ---
 

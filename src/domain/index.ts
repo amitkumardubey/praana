@@ -20,3 +20,4 @@ export type {
   TaskClassificationSource,
   TaskScoreMap,
 } from "./types.js";
+export { validateBudgetAllocation } from "./types.js";

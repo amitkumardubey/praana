@@ -601,6 +601,19 @@ describe("engine compiler", () => {
     expect(testingResult.budgetAllocation.artifacts).toBeGreaterThan(
       generalResult.budgetAllocation.artifacts,
     );
-    expect(testingResult.metrics.totalTokens).not.toBe(generalResult.metrics.totalTokens);
+    // Verify scaled band caps actually affect the prompt composition by
+    // checking inclusion counts in scoreRecords.  testing artifacts=0.35
+    // gives a larger band cap (1.4× general), so more scored units should
+    // be included from the artifact-heavy turn record.
+    const testingIncluded = testingResult.scoreRecords.filter(
+      (r) => r.included,
+    ).length;
+    const generalIncluded = generalResult.scoreRecords.filter(
+      (r) => r.included,
+    ).length;
+    expect(testingIncluded).toBeGreaterThanOrEqual(generalIncluded);
+    expect(testingResult.metrics.totalTokens).not.toBe(
+      generalResult.metrics.totalTokens,
+    );
   });
 });

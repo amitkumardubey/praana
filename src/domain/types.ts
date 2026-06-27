@@ -45,6 +45,20 @@ export interface BudgetAllocation {
 }
 
 /** Domain-specific keyword and tool-pattern scoring for task classification. */
+export function validateBudgetAllocation(alloc: BudgetAllocation): void {
+  const sum = alloc.errors + alloc.verbatimTurns + alloc.decisions + alloc.artifacts + alloc.narrative;
+  if (Math.abs(sum - 1.0) > 0.01) {
+    throw new Error(
+      `BudgetAllocation values must sum to 1.0 (got ${sum.toFixed(4)} for ${JSON.stringify(alloc)})`,
+    );
+  }
+  for (const [key, value] of Object.entries(alloc)) {
+    if (value < 0) {
+      throw new Error(`BudgetAllocation.${key} cannot be negative (got ${value})`);
+    }
+  }
+}
+
 export interface DomainClassifier {
   readonly domainId: string;
   /** Priority order when blended scores tie (highest priority first). */

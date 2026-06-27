@@ -54,7 +54,7 @@ export const DECISIONS_SECTION_TOKENS = 800;
 const FINDINGS_SECTION_TOKENS = 300;
 const FINDINGS_SECTION_TOKENS_COMPACT = 150;
 /** Default token cap for open_errors checkpoint section when no task budget provided. */
-export const ERRORS_SECTION_TOKENS = 600;
+export const ERRORS_SECTION_TOKENS = 1000;
 const PLAN_SECTION_TOKENS = 400;
 const COMPACT_ACTIVITY_MAX = 5;
 

@@ -366,6 +366,7 @@ export function getCodingBudgetAllocation(taskType: string): BudgetAllocation {
       return { errors: 0.05, verbatimTurns: 0.20, decisions: 0.20, artifacts: 0.40, narrative: 0.15 };
     case "refactoring":
       return { errors: 0.10, verbatimTurns: 0.25, decisions: 0.25, artifacts: 0.30, narrative: 0.10 };
+    case "reviewing":
     default:
       // "general", "reviewing", and any unknown task type from other domains.
       return { ...CODING_DEFAULT_BUDGET_ALLOCATION };

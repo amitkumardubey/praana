@@ -54,4 +54,13 @@ describe("getCodingBudgetAllocation", () => {
     expect(codingDomainClassifier.getBudgetAllocation("debugging"))
       .toEqual(getCodingBudgetAllocation("debugging"));
   });
+
+  it("returned allocations are independent copies (mutation safety)", () => {
+    const a = getCodingBudgetAllocation("general");
+    a.errors = 0.99;
+    expect(a).not.toEqual(CODING_DEFAULT_BUDGET_ALLOCATION);
+    // Must not affect the constant or subsequent calls
+    expect(CODING_DEFAULT_BUDGET_ALLOCATION.errors).toBe(0.10);
+    expect(getCodingBudgetAllocation("general").errors).toBe(0.10);
+  });
 });
