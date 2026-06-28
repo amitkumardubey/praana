@@ -167,7 +167,7 @@ src/
     readline-ui.ts — Classic readline loop
     tui/           — Ink TUI (default when TTY): transcript, status bar, thinking blocks
   skills/
-    index.ts     — SkillRuntime: discovery, BM25 matching, hot/warm/cold residency
+    index.ts     — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     types.ts     — Skill metadata, runtime state, telemetry types
   tools/
     index.ts     — Tool registry
@@ -185,11 +185,18 @@ src/
     types.ts     — Memory-specific types
 ```
 
-### Skills (issue #57)
+### Skills (issue #96)
 
-**Engine mode:** `SkillRuntime` discovers `SKILL.md` files from project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents). Skills are ranked per turn via BM25 + synonyms; residency tiers are **hot** (loaded sections in prompt), **warm** (one-line stub), **cold** (catalog only). Config: `[skills]` in `praana.config.toml` (`enabled`, `max_token_budget_ratio`, idle/eviction turns, `max_depth`). Compiler uses `agents_budget_ratio` for AGENTS.md trimming and `skills.max_token_budget_ratio` for the skills section ceiling. **Resume re-discovers skills; residency does not persist across sessions.**
+**Pull model — engine & classic modes share a tiny catalog.** `discoverSkills()` scans project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents) and builds a lightweight `SkillRecord[]` catalog. The catalog is rendered into the prompt via `buildSkillMetadataCatalog()` in both modes: a list of `- **name**: description` lines with a `Load a skill with load_skill(skill_id)` header. No full bodies, no file paths, no residency tiers.
 
-**Classic mode:** `discoverSkills()` + `buildSkillMetadataCatalog()` — name/path catalog only. No SkillRuntime, no BM25, no residency. Agent loads skill bodies via `read_file` when relevant.
+**Engine mode** additionally creates a `SkillRuntime` for load tracking + eviction:
+- The new `load_skill(skill_id)` tool looks up the skill by name, reads `SKILL.md` from disk, and returns the body. It calls `SkillRuntime.trackLoad()` to record the load and enforce the `max_loaded_skills` budget (oldest-by-turn evicted).
+- At each turn end, `cleanupStaleSkills(currentTurn)` evicts skills idle longer than `stale_threshold_turns`.
+- Telemetry events (`skill_loaded`, `skill_reloaded`, `skill_evicted`) are drained per turn via `flushSkillTelemetry()` to the event log. Session-end summary (under `measurement_mode`) prints: `catalog=N loaded=M reloaded=R evicted=E under_load=U`.
+
+**Classic mode** has no `SkillRuntime` — `load_skill` reads the body, no tracking, no eviction. Plain agent behavior (like pi/omp/opencode).
+
+Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceiling), `max_loaded_skills`, `stale_threshold_turns`, `max_depth`. Resume re-discovers skills; loaded state does **not** persist across sessions.
 
 ### Turn flow (per turn)
 
@@ -200,12 +207,11 @@ Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true`
 ```
 User input
   → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
-  → skill matching (BM25) + residency promotion/demotion
-  → compileEngineWithMetrics: system frame | skills | checkpoint | verbatim turns | scored context | active state | memory digest
+  → compileEngineWithMetrics: system frame | skills catalog | checkpoint | verbatim turns | scored context | active state | memory digest
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
-  → increment turn count, run applyTierManagement()
+  → increment turn count, run applyTierManagement() + cleanupStaleSkills()
   → print memory banner
 ```
 
@@ -213,10 +219,10 @@ User input
 
 ```
 User input
-  → compileClassicWithMetrics: system frame | skill catalog | memory digest | full verbatim history
+  → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
   → stream LLM response (shared + system + memory tools only)
   → log all events
-  → increment turn count (no tier management, no skill residency)
+  → increment turn count (no tier management, no skill tracking)
   → print memory banner
 ```
 

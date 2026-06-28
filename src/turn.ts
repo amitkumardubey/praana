@@ -404,7 +404,7 @@ export async function runTurn(
 
     const toolResults: Array<{ toolName: string; result: unknown }> = [];
     const recalledEntryIdsThisTurn = new Set<string>();
-    let executionHydrated = false;
+
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
     s.onToolCallsStart?.();
@@ -439,9 +439,6 @@ export async function runTurn(
         }
       }
 
-      if (isError && !classicMode) {
-        // no skill recovery hook in pull model
-      }
 
       if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
         const entries = (result as { entries?: Array<{ id?: string }> }).entries;

@@ -356,13 +356,16 @@ export function createSystemTools(ctx: SystemToolContext) {
         if (!skill) {
           return { ok: false, error: `Unknown skill: ${skill_id}` };
         }
-        if (!existsSync(skill.location)) {
-          return { ok: false, error: `Skill file not found: ${skill.location}` };
+        try {
+          if (!existsSync(skill.location)) {
+            return { ok: false, error: `Skill file not found: ${skill.name}` };
+          }
+          const body = readFileSync(skill.location, "utf-8");
+          skillRuntime?.trackLoad(skill_id, getCurrentTurn());
+          return { ok: true, body };
+        } catch (err: any) {
+          return { ok: false, error: err?.message ?? `Failed to load skill: ${skill.name}` };
         }
-        const body = readFileSync(skill.location, "utf-8");
-        // Engine mode: track the load + enforce budget. Classic mode: no-op (plain agent).
-        skillRuntime?.trackLoad(skill_id, getCurrentTurn());
-        return { ok: true, body };
       },
     }),
 

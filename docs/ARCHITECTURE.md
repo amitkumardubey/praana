@@ -98,7 +98,7 @@ User input
      11) [engine only] extract TurnDigest (deterministic, no LLM)
      12) [engine only] reconcile SessionCheckpoint from digest
      13) increment turn count
-     14) [engine only] apply tier demotion rules + skill residency endTurn
+     14) [engine only] apply tier demotion rules + cleanupStaleSkills()
      15) persist state graph checkpoint (session.persistStateGraphCheckpoint())
      16) print per-turn memory/prompt banner
 ```
@@ -241,8 +241,8 @@ Implicit knowledge capture has two layers: (1) the system frame nudges the agent
 
 When classic mode is active, `src/compile-classic.ts` builds a flat prompt with **no token-budget truncation** and **no Adaptive Context sections**:
 
-1. **System frame** — cwd, session ID, tool descriptions, AGENTS.md project context, skills guidance (read `SKILL.md` via `read_file` when relevant).
-2. **Skills catalog** — name + path metadata only (no BM25 residency, no hot/warm/cold sections).
+1. **System frame** — cwd, session ID, tool descriptions, AGENTS.md project context, skills guidance (use `load_skill` when relevant).
+2. **Skills catalog** — name + description only; `load_skill(skill_id)` loads full body on demand. No pre-injected bodies, no residency tiers.
 3. **Cognitive Memory** — digest (if enabled).
 4. **Conversation history** — **full verbatim** event log (`readAll()`), excluding `context_action` and `system_note`. Tool results are not truncated.
 5. **Current input** — latest user message.
@@ -255,7 +255,7 @@ When classic mode is active, `src/compile-classic.ts` builds a flat prompt with 
 | History | Budget bands + checkpoint + scored digests | Full verbatim log |
 | StateGraph tools | Available | Hidden from tool list |
 | Engine tools | Available | Hidden |
-| SkillRuntime | BM25 match + hot/warm/cold | Static metadata catalog |
+| SkillRuntime | Load tracker + eviction (engine only) | Not present (plain agent) |
 | Auto-hydrate / tier demotion | Yes | Skipped |
 | TurnDigest / checkpoint | Yes | Skipped |
 | `/why` scores | Available (debug) | N/A |

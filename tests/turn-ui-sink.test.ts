@@ -91,6 +91,8 @@ function mockSession(): Session {
     skillRuntime: {
       cleanupStaleSkills: vi.fn(),
       drainEvents: vi.fn(() => []),
+      trackLoad: vi.fn(),
+      getLoadedSkillNames: vi.fn(() => []),
     },
     agentsContext: null,
     skills: [],
