@@ -201,8 +201,8 @@ export type { SkillMetadata, SkillRecord } from "./skills/types.js";
 export interface SkillsConfig {
   enabled: boolean;
   max_token_budget_ratio: number;
-  active_skill_idle_turns: number;
-  warm_skill_eviction_turns: number;
+  max_loaded_skills: number;
+  stale_threshold_turns: number;
   max_depth: number;
 }
 

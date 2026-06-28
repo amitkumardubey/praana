@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SkillRuntime } from "../src/skills/index.js";
+import { SkillRuntime, buildSkillMetadataCatalog } from "../src/skills/index.js";
 import type { SkillsRuntimeConfig } from "../src/skills/types.js";
 
 // ---------------------------------------------------------------------------
@@ -15,8 +15,8 @@ function makeConfig(overrides: Partial<SkillsRuntimeConfig> & { searchPaths?: st
   return {
     enabled: true,
     max_token_budget_ratio: 0.2,
-    active_skill_idle_turns: 5,
-    warm_skill_eviction_turns: 20,
+    max_loaded_skills: 3,
+    stale_threshold_turns: 10,
     max_depth: 6,
     searchPaths: [join(tmpBase, "skills")],
     ...overrides,
@@ -108,243 +108,137 @@ describe("discovery", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Residency
+// Metadata catalog
 // ---------------------------------------------------------------------------
 
-describe("residency lifecycle", () => {
-  it("all skills start COLD", async () => {
+describe("buildSkillMetadataCatalog", () => {
+  it("lists skills with load_skill reference", () => {
     const skillsDir = join(tmpBase, "skills");
     mkdirSync(skillsDir);
-    writeSkill(skillsDir, "alpha", "First skill");
-    writeSkill(skillsDir, "beta", "Second skill");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    const counts = rt.getResidencyCounts();
-    expect(counts.hot).toBe(0);
-    expect(counts.warm).toBe(0);
-    expect(counts.cold).toBe(2);
-  });
-
-  it("matching promotes to HOT", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "git", "Git operations and commands", "## Planner\n\nUse git for version control.\n\n## Execution\n\nRun git commands.");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    rt.processUserInput("commit and push to git repo");
-    rt.endTurn();
-    const counts = rt.getResidencyCounts();
-    expect(counts.hot).toBe(1);
-    expect(counts.cold).toBe(0);
-  });
-
-  it("HOT skills have section content in prompt", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "git", "Git operations", "## Planner\n\nPlan git workflow.\n\n## Execution\n\nRun git commands.\n\n## Recovery\n\nFix git issues.");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    rt.processUserInput("how do I git rebase");
-    rt.endTurn();
-
-    const section = rt.buildPromptSection(5000);
-    expect(section).toContain("## Loaded Skills");
-    expect(section).toContain("git [HOT]");
-    expect(section).toContain("Plan git");
-  });
-
-  it("non-matching stays COLD", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "git", "Git operations", "## Planner\n\nUse git.");
-    writeSkill(skillsDir, "docker", "Docker containers", "## Planner\n\nUse docker.");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    rt.processUserInput("zzzzyyyy uncommon query");
-    rt.endTurn();
-    const counts = rt.getResidencyCounts();
-    expect(counts.hot).toBe(0);
-    expect(counts.warm).toBe(0);
-    expect(counts.cold).toBe(2);
-
-    const section = rt.buildPromptSection(5000);
-    expect(section).toContain("### Available Skills");
-    expect(section).toContain("**git**");
-    expect(section).toContain("**docker**");
-  });
-
-  it("idle turns demote HOT to WARM", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "node", "Node.js development", "## Planner\n\nUse node.");
-
-    const rt = new SkillRuntime(makeConfig({ active_skill_idle_turns: 2, warm_skill_eviction_turns: 5 }), tmpBase);
-    await rt.initialize();
-
-    // Match → HOT
-    rt.processUserInput("node run");
-    rt.endTurn();
-    expect(rt.getResidencyCounts().hot).toBe(1);
-
-    // One idle turn: stays HOT
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-    expect(rt.getResidencyCounts().hot).toBe(1);
-
-    // Second idle turn: demoted to WARM
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-    expect(rt.getResidencyCounts().hot).toBe(0);
-    expect(rt.getResidencyCounts().warm).toBe(1);
-  });
-
-  it("exact skill-name matches promote to HOT", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "bare", "Bare skill with no sections", "Use this exact-name skill.");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    rt.processUserInput("bare");
-    rt.endTurn();
-
-    expect(rt.getResidencyCounts().hot).toBe(1);
-    expect(rt.buildPromptSection(5000)).toContain("bare [HOT]");
+    writeSkill(skillsDir, "git", "Git operations");
+    const catalog = buildSkillMetadataCatalog([
+      { name: "git", description: "Git operations", location: join(skillsDir, "git.md"), directory: skillsDir, body: "", metadata: { name: "git", description: "Git operations" } },
+    ]);
+    expect(catalog).toContain("## Available Skills");
+    expect(catalog).toContain("load_skill(skill_id)");
+    expect(catalog).toContain("**git**");
+    expect(catalog).not.toContain("`"); // no raw paths in pull model
   });
 });
 
 // ---------------------------------------------------------------------------
-// Prompt Section Building
+// Load tracking
 // ---------------------------------------------------------------------------
 
-describe("buildPromptSection", () => {
-  it("returns default message when no skills discovered", async () => {
-    const rt = new SkillRuntime(makeConfig({ searchPaths: [join(tmpBase, "empty-skills")] }), tmpBase);
-    await rt.initialize();
-    expect(rt.getSkillCount()).toBe(0);
-    const section = rt.buildPromptSection(5000);
-    expect(section).toContain("## Loaded Skills");
-    expect(section).toContain("(no skills loaded)");
-  });
-
-  it("returns empty when disabled", async () => {
-    const rt = new SkillRuntime({ ...makeConfig(), enabled: false }, tmpBase);
-    await rt.initialize();
-    expect(rt.buildPromptSection(5000)).toBe("");
-  });
-
-  it("includes HOT skills in section", async () => {
+describe("trackLoad", () => {
+  it("tracks a skill load and increments loadedCount", async () => {
     const skillsDir = join(tmpBase, "skills");
     mkdirSync(skillsDir);
-    writeSkill(skillsDir, "git", "Git operations", "## Planner\n\nPlan git.\n\n## Execution\n\nRun git.");
+    writeSkill(skillsDir, "git", "Git operations");
 
     const rt = new SkillRuntime(makeConfig(), tmpBase);
     await rt.initialize();
-    rt.processUserInput("git commit");
-    rt.endTurn();
-
-    const section = rt.buildPromptSection(5000);
-    expect(section).toContain("git [HOT]");
+    rt.trackLoad("git", 1);
+    expect(rt.getLoadedSkillStats().loadedCount).toBe(1);
+    expect(rt.getLoadedSkillNames()).toEqual(["git"]);
   });
 
-  it("uses compiler token budget for enforcement, not a hardcoded base", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir, { recursive: true });
-    mkdirSync(join(tmpBase, ".praana"), { recursive: true });
-    writeFileSync(
-      join(tmpBase, ".praana", "skills-meta.json"),
-      JSON.stringify({
-        "big-a": { budget: { max_tokens: 8000 } },
-        "big-b": { budget: { max_tokens: 8000 } },
-      }),
-      "utf-8",
-    );
-
-    const largeBody = "A".repeat(30_000);
-    writeSkill(skillsDir, "big-a", "Big skill A", largeBody);
-    writeSkill(skillsDir, "big-b", "Big skill B", largeBody);
-
-    const rt = new SkillRuntime(makeConfig({ max_token_budget_ratio: 1.0 }), tmpBase);
-    await rt.initialize();
-
-    rt.setBudgetBase(20_000);
-    rt.processUserInput("big-a big-b");
-    expect(rt.getResidencyCounts().hot).toBe(2);
-
-    rt.setBudgetBase(10_000);
-    expect(rt.getResidencyCounts().hot).toBeLessThan(2);
-  });
-
-  it("respects token budget", async () => {
+  it("increments reloadedCount on repeated loads", async () => {
     const skillsDir = join(tmpBase, "skills");
     mkdirSync(skillsDir);
-    writeSkill(skillsDir, "test-skill", "Test skill", "## Planner\n\n" + "A".repeat(5000));
+    writeSkill(skillsDir, "git", "Git operations");
 
     const rt = new SkillRuntime(makeConfig(), tmpBase);
     await rt.initialize();
-    rt.processUserInput("test");
-    rt.endTurn();
+    rt.trackLoad("git", 1);
+    rt.trackLoad("git", 2);
+    expect(rt.getLoadedSkillStats().reloadedCount).toBe(1);
 
-    const small = rt.buildPromptSection(50);
-    const estimatedTokens = Math.ceil(small.length / 4);
-    expect(estimatedTokens).toBeLessThanOrEqual(100);
+    const events = rt.drainEvents();
+    const reloaded = events.find((e) => e.type === "skill_reloaded");
+    expect(reloaded).toBeDefined();
+    expect(reloaded!.reload_count).toBe(1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Telemetry
+// Skill budget enforcement
 // ---------------------------------------------------------------------------
 
-describe("telemetry", () => {
-  it("emits skill_loaded events on matching", async () => {
+describe("enforceSkillBudget", () => {
+  it("evicts oldest skill when max_loaded_skills exceeded", async () => {
     const skillsDir = join(tmpBase, "skills");
     mkdirSync(skillsDir);
-    writeSkill(skillsDir, "git", "Git operations", "## Planner\n\nUse git.\n\n## Execution\n\nRun git.");
+    writeSkill(skillsDir, "git", "Git operations");
+    writeSkill(skillsDir, "docker", "Docker containers");
+    writeSkill(skillsDir, "node", "Node.js");
+
+    const rt = new SkillRuntime(makeConfig({ max_loaded_skills: 2 }), tmpBase);
+    await rt.initialize();
+    rt.trackLoad("git", 1);
+    rt.trackLoad("docker", 2);
+    rt.trackLoad("node", 3); // exceeds budget, git evicted
+
+    const events = rt.drainEvents();
+    expect(rt.getLoadedSkillNames()).toEqual(["node", "docker"]);
+    expect(events.some((e) => e.type === "skill_evicted" && e.skill_id === "git")).toBe(true);
+    expect(rt.getLoadedSkillStats().loadedCount).toBe(3); // everLoaded
+    expect(rt.getLoadedSkillStats().evictedCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale cleanup
+// ---------------------------------------------------------------------------
+
+describe("cleanupStaleSkills", () => {
+  it("evicts skills older than stale_threshold_turns", async () => {
+    const skillsDir = join(tmpBase, "skills");
+    mkdirSync(skillsDir);
+    writeSkill(skillsDir, "git", "Git operations");
+
+    const rt = new SkillRuntime(makeConfig({ stale_threshold_turns: 10 }), tmpBase);
+    await rt.initialize();
+    rt.trackLoad("git", 1);
+    rt.cleanupStaleSkills(12); // 12 - 1 > 10
+    expect(rt.getLoadedSkillNames()).toEqual([]);
+
+    const events = rt.drainEvents();
+    expect(events.some((e) => e.type === "skill_evicted" && e.skill_id === "git")).toBe(true);
+  });
+
+  it("does not evict within stale_threshold_turns", async () => {
+    const skillsDir = join(tmpBase, "skills");
+    mkdirSync(skillsDir);
+    writeSkill(skillsDir, "git", "Git operations");
+
+    const rt = new SkillRuntime(makeConfig({ stale_threshold_turns: 10 }), tmpBase);
+    await rt.initialize();
+    rt.trackLoad("git", 1);
+    rt.cleanupStaleSkills(11); // 11 - 1 = 10 (not > 10)
+    expect(rt.getLoadedSkillNames()).toEqual(["git"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLoadedSkillNames ordering
+// ---------------------------------------------------------------------------
+
+describe("getLoadedSkillNames", () => {
+  it("returns most-recently-loaded first", async () => {
+    const skillsDir = join(tmpBase, "skills");
+    mkdirSync(skillsDir);
+    writeSkill(skillsDir, "git", "Git operations");
+    writeSkill(skillsDir, "docker", "Docker containers");
 
     const rt = new SkillRuntime(makeConfig(), tmpBase);
     await rt.initialize();
-    rt.processUserInput("git push");
-    rt.endTurn();
+    rt.trackLoad("git", 1);
+    rt.trackLoad("docker", 2);
+    expect(rt.getLoadedSkillNames()).toEqual(["docker", "git"]);
 
-    const events = rt.getEvents();
-    const loaded = events.find((e) => e.type === "skill_loaded");
-    expect(loaded).toBeDefined();
-    expect(loaded!.skill_id).toBe("git");
-  });
-
-  it("emits demotion events on idle timeout", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "node", "Node.js development", "## Planner\n\nUse node.");
-
-    const rt = new SkillRuntime(makeConfig({ active_skill_idle_turns: 3, warm_skill_eviction_turns: 5 }), tmpBase);
-    await rt.initialize();
-
-    // Match → HOT
-    rt.processUserInput("node run");
-    rt.endTurn();
-    expect(rt.getResidencyCounts().hot).toBe(1);
-
-    // One idle turn: stays HOT
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-    expect(rt.getResidencyCounts().hot).toBe(1);
-
-    // Second idle turn: demoted to WARM (idle count = turnCount - lastActiveTurn)
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-    rt.processUserInput("unrelated");
-    rt.endTurn();
-
-    const events = rt.getEvents();
-    const demotion = events.find((e) => e.type === "skill_demoted");
-    expect(demotion).toBeDefined();
+    rt.trackLoad("git", 3); // reload refreshes order
+    expect(rt.getLoadedSkillNames()).toEqual(["git", "docker"]);
   });
 });
 
@@ -358,36 +252,5 @@ describe("edge cases", () => {
     await rt.initialize();
     expect(rt.getSkillCount()).toBe(0);
     expect(rt.isEnabled()).toBe(false);
-    expect(rt.buildPromptSection(5000)).toBe("");
-  });
-
-  it("handles skills with no sections", async () => {
-    const skillsDir = join(tmpBase, "skills");
-    mkdirSync(skillsDir);
-    writeSkill(skillsDir, "bare", "Bare skill with no sections", "Use the whole skill body.");
-
-    const rt = new SkillRuntime(makeConfig(), tmpBase);
-    await rt.initialize();
-    rt.processUserInput("bare");
-    rt.endTurn();
-    const section = rt.buildPromptSection(5000);
-    expect(section).toContain("bare [HOT]");
-    expect(section).toContain("Use the whole skill body.");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Activation helper
-// ---------------------------------------------------------------------------
-
-describe("markSkillActive", () => {
-  it("does nothing for unknown id", async () => {
-    const rt = new SkillRuntime(makeConfig({ searchPaths: [join(tmpBase, "empty-skills")] }), tmpBase);
-    await rt.initialize();
-    const before = rt.getResidencyCounts();
-    rt.markSkillActive("nonexistent");
-    const after = rt.getResidencyCounts();
-    expect(after.hot).toBe(before.hot);
-    expect(after.cold).toBe(before.cold);
   });
 });

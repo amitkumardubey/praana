@@ -26,7 +26,7 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
     session: { log_dir: testLogDir },
     ui: { mode: "readline", screen: "preserve" },
-    skills: { enabled: false, max_token_budget_ratio: 0.2, active_skill_idle_turns: 5, warm_skill_eviction_turns: 20, max_depth: 6 },
+    skills: { enabled: false, max_token_budget_ratio: 0.2, max_loaded_skills: 3, stale_threshold_turns: 10, max_depth: 6 },
     context_engine: {
       enabled: false,
       measurement_mode: false,

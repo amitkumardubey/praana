@@ -871,6 +871,16 @@ export class Session {
         if (this.debug || engineConfig.measurement_mode) {
           const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
           this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(summary));
+
+          // Skills summary (issue #96 report card) — engine mode only
+          if (this.skillRuntime) {
+            const skillStats = this.skillRuntime.getLoadedSkillStats();
+            this.getLogger().child("skills").debug(
+              `Skills: catalog=${skillStats.catalogSize} loaded=${skillStats.loadedCount} ` +
+              `reloaded=${skillStats.reloadedCount} evicted=${skillStats.evictedCount} ` +
+              `under_load=${skillStats.catalogSize - skillStats.loadedCount}`,
+            );
+          }
         }
         this.contextEngine.runShutdownMaintenance(this.getTurnCount());
       } catch (err) {
@@ -1156,39 +1166,18 @@ function applyProjectContext(session: Session, cwd: string): void {
   }
 }
 
-/** Discover skills — SkillRuntime in engine mode, metadata catalog only in classic mode. */
+/** Discover skills. Engine mode additionally creates a SkillRuntime for tracking. */
 async function initSkills(session: Session, cfg: PraanaConfig, cwd: string): Promise<void> {
   if (!cfg.skills?.enabled) return;
 
-  if (session.isContextEngineEnabled() && session.contextEngine) {
-    await initSkillRuntime(session, cfg, cwd);
-    return;
-  }
-
-  session.skillRuntime = null;
   session.skills = discoverSkills(cwd, cfg.skills.max_depth);
 
-  if (session.skills.length > 0) {
-    session.getLogger().child("skills").notice(
-      `${session.skills.length} skill(s) (classic catalog)`,
-    );
+  if (session.isContextEngineEnabled() && session.contextEngine) {
+    session.skillRuntime = new SkillRuntime(cfg.skills, cwd);
+    await session.skillRuntime.initialize();
+  } else {
+    session.skillRuntime = null;
   }
-}
-
-/** Discover skills and attach SkillRuntime to the session (residency resets on resume). */
-async function initSkillRuntime(session: Session, cfg: PraanaConfig, cwd: string): Promise<void> {
-  session.skillRuntime = new SkillRuntime(cfg.skills, cwd);
-  if (!cfg.skills?.enabled) return;
-
-  await session.skillRuntime.initialize();
-  session.skills = session.skillRuntime.getIndex().map((e) => ({
-    name: e.name,
-    description: e.description,
-    location: "",
-    directory: "",
-    body: "",
-    metadata: { name: e.name, description: e.description },
-  }));
 
   if (session.skills.length > 0) {
     session.getLogger().child("skills").notice(`${session.skills.length} skill(s)`);

@@ -3,6 +3,8 @@ import type { StateGraph } from "../state-graph.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { ContextEngine } from "../context-engine/index.js";
 import type { SandboxConfig } from "../types.js";
+import type { SkillRecord } from "../skills/types.js";
+import type { SkillRuntime } from "../skills/index.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
@@ -23,6 +25,8 @@ export interface ToolRegistryContext {
   getCurrentTurn?: () => number;
   searchCode?: { rg_path?: string };
   shellLiveStream?: boolean;
+  skills: SkillRecord[];
+  skillRuntime: SkillRuntime | null;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -59,6 +63,9 @@ export function createAllTools(ctx: ToolRegistryContext) {
     sandbox: ctx.sandbox,
     editConfirm: ctx.editConfirm,
     shellLiveStream: ctx.shellLiveStream,
+    skills: ctx.skills,
+    skillRuntime: ctx.skillRuntime,
+    getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const searchCodeTools = createSearchCodeTool({
     cwd: ctx.cwd,
@@ -107,6 +114,7 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "batch_write(files) — Write multiple files atomically",
   "batch_edit(edits) — Edit multiple files atomically",
   "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, include_hidden?, no_ignore?, multiline?, timeout?) — Structured ripgrep-backed code search (file:line:column matches with context and stats)",
+  "load_skill(skill_id) — Load a skill's full instructions from the catalog",
 ];
 
 const ENGINE_TOOL_DESCRIPTIONS = [

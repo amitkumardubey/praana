@@ -13,6 +13,8 @@ import { dirname, resolve, isAbsolute, extname, normalize } from "node:path";
 import { homedir } from "node:os";
 import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
+import type { SkillRecord } from "../skills/types.js";
+import type { SkillRuntime } from "../skills/index.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
@@ -42,10 +44,13 @@ export interface SystemToolContext {
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
   shellLiveStream?: boolean;
+  skills: SkillRecord[];
+  skillRuntime: SkillRuntime | null;
+  getCurrentTurn: () => number;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, getCurrentTurn } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -335,6 +340,31 @@ export function createSystemTools(ctx: SystemToolContext) {
           };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to summarize file" };
+        }
+      },
+    }),
+
+    load_skill: defineTool({
+      description:
+        "Load a skill's full instructions from the skill catalog by name. " +
+        "Use this when a skill in the catalog is relevant to the current task.",
+      parameters: z.object({
+        skill_id: z.string().describe("Skill name from the catalog"),
+      }),
+      execute: async ({ skill_id }) => {
+        const skill = skills.find((s) => s.name === skill_id);
+        if (!skill) {
+          return { ok: false, error: `Unknown skill: ${skill_id}` };
+        }
+        try {
+          if (!existsSync(skill.location)) {
+            return { ok: false, error: `Skill file not found: ${skill.name}` };
+          }
+          const body = readFileSync(skill.location, "utf-8");
+          skillRuntime?.trackLoad(skill_id, getCurrentTurn());
+          return { ok: true, body };
+        } catch (err: any) {
+          return { ok: false, error: err?.message ?? `Failed to load skill: ${skill.name}` };
         }
       },
     }),

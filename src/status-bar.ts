@@ -27,7 +27,7 @@ export interface StatusBarInput {
   contextWindowTokens: number;
   memoryStats: { active: number; soft: number; hard: number };
   skills: string[];
-  skillResidency: { hot: number; warm: number; total: number } | null;
+  loadedSkills: string[] | null;
   currentTask: string | null;
   agentsContextLoaded: boolean;
 }
@@ -118,7 +118,7 @@ export function buildStatusBarInput(
   const agentsContextTokens = session.agentsContext
     ? estimateTokens(session.agentsContext)
     : 0;
-  const skillResidency = session.skillRuntime?.getResidencyCounts();
+  const loadedSkillNames = session.skillRuntime?.getLoadedSkillNames() ?? null;
   return {
     model: opts.model,
     repoPath: session.getRepoRoot(),
@@ -132,9 +132,7 @@ export function buildStatusBarInput(
     contextWindowTokens: opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
     skills: (session.skills ?? []).map((s) => s.name),
-    skillResidency: skillResidency
-      ? { hot: skillResidency.hot, warm: skillResidency.warm, total: skillResidency.hot + skillResidency.warm + skillResidency.cold }
-      : null,
+    loadedSkills: loadedSkillNames,
     currentTask: getCurrentTaskTitle(session.stateGraph),
     agentsContextLoaded: !!session.agentsContext,
   };
@@ -172,9 +170,13 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
   const line3 = [chalk.bold("Context:"), ctx].join(" ");
 
   const skillsLabel =
-    input.skills.length > 0
-      ? `${input.skills.length} skills (${input.skillResidency ? `${input.skillResidency.hot} HOT · ${input.skillResidency.warm} WARM · ${input.skillResidency.total - input.skillResidency.hot - input.skillResidency.warm} COLD` : "?/?/? loaded"})`
-      : chalk.dim("(none — add skills/*.md to project root)");
+    input.skills.length === 0
+      ? chalk.dim("(none — add skills/*.md to project root)")
+      : input.loadedSkills === null
+        ? `${input.skills.length} skills`
+        : input.loadedSkills.length > 0
+          ? `${input.skills.length} skills (loaded: ${input.loadedSkills.join(", ")})`
+          : `${input.skills.length} skills (none loaded)`;
   const line4 = [chalk.bold("Skills:"), skillsLabel].join(" ");
 
   const taskLabel = input.currentTask

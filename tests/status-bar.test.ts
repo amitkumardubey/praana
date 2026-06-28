@@ -67,6 +67,7 @@ describe("status-bar", () => {
       branch: "feat/foo",
       memoryStats: { active: 8, soft: 23, hard: 91 },
       skills: ["git", "node"],
+      loadedSkills: null,
       currentTask: "implement auth middleware",
       agentsContextLoaded: true,
     });
