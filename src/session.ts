@@ -937,15 +937,33 @@ export class Session {
    */
   private async promoteHighValueArtifactsToMemory(): Promise<void> {
     if (!this.contextEngine || !this.memoryStore) return;
-    const MIN_ARTIFACT_ACCESS_COUNT = 2;
+    // Threshold of 3: a file read twice in one session is normal; three
+    // accesses signals the agent genuinely kept returning to it.
+    const MIN_ARTIFACT_ACCESS_COUNT = 3;
     const artifacts = this.contextEngine.listHighValueArtifacts(
       MIN_ARTIFACT_ACCESS_COUNT,
     );
     if (artifacts.length === 0) return;
+    // Only promote artifacts whose distilled summary is human-readable prose.
+    // code/json/search_results/other are produced by GenericDistiller and
+    // contain raw JSON blobs or head-tail truncated source — not learnings.
+    const PROMOTABLE_CONTENT_TYPES = new Set(["prose", "diff", "log", "test_output", "build_output"]);
     let promoted = 0;
     let reinforced = 0;
+    let skipped = 0;
     for (const artifact of artifacts) {
-      const content = `[artifact:${artifact.id}] ${artifact.summary}`;
+      if (!PROMOTABLE_CONTENT_TYPES.has(artifact.contentType)) {
+        skipped++;
+        continue;
+      }
+      // Extra guard: skip if the summary looks like a JSON blob (starts with {).
+      const trimmedSummary = artifact.summary.trimStart();
+      if (trimmedSummary.startsWith("{") || trimmedSummary.startsWith("[")) {
+        skipped++;
+        continue;
+      }
+      // Cap to 200 chars — matches the learning size from the LLM summariser.
+      const content = trimmedSummary.slice(0, 200);
       try {
         const result = await this.memoryStore.remember(content, {
           kind: "fact",
@@ -964,7 +982,7 @@ export class Session {
       }
     }
     this.getLogger().child("memory").info(
-      `Artifact promotion: ${promoted} new, ${reinforced} reinforced-dedup (min access=${MIN_ARTIFACT_ACCESS_COUNT})`,
+      `Artifact promotion: ${promoted} new, ${reinforced} reinforced-dedup, ${skipped} skipped (min access=${MIN_ARTIFACT_ACCESS_COUNT})`,
     );
   }
 
