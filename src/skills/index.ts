@@ -4,26 +4,13 @@ import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
-import { estimateTokens } from "../token-estimate.js";
-import { CODING_SYNONYMS } from "../domain/coding-domain.js";
-import {
-  tokenizeShort,
-  buildBM25StatsFromTokens,
-  bm25Score,
-} from "../utils/bm25.js";
 import type {
   SkillMetadata,
   SkillRecord,
-  SkillBudgetConfig,
-  SkillsMetaFile,
   SkillIndexEntry,
-  SkillRuntimeState,
-  SkillRuntimeSnapshot,
-  SkillResidency,
-  SkillSection,
   SkillTelemetryEvent,
   SkillsRuntimeConfig,
-  SkillSectionMapping,
+  LoadedSkill,
 } from "./types.js";
 
 // ========================================================================
@@ -116,37 +103,6 @@ export function parseSkillMdFile(filePath: string): SkillRecord | null {
   } catch {
     return null;
   }
-}
-
-// ========================================================================
-// skills-meta.json Loading
-// ========================================================================
-
-function loadSkillsMeta(path: string): SkillsMetaFile {
-  try {
-    if (!existsSync(path)) return {};
-    const raw = readFileSync(path, "utf-8");
-    return JSON.parse(raw) as SkillsMetaFile;
-  } catch {
-    return {};
-  }
-}
-
-function getSkillsMetaPaths(cwd: string): string[] {
-  const gitRoot = findGitRoot(cwd);
-  const home = homedir();
-  return [
-    join(gitRoot, ".praana", "skills-meta.json"),
-    expandHome("~/.praana/skills-meta.json"),
-  ];
-}
-
-export function loadMergedSkillsMeta(cwd: string): SkillsMetaFile {
-  let merged: SkillsMetaFile = {};
-  for (const path of getSkillsMetaPaths(cwd)) {
-    merged = { ...merged, ...loadSkillsMeta(path) };
-  }
-  return merged;
 }
 
 // ========================================================================
@@ -264,224 +220,26 @@ export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): Sk
   return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Metadata-only skill catalog for classic mode (no residency or BM25). */
+/** Metadata-only skill catalog for the compiled prompt (both modes). */
 export function buildSkillMetadataCatalog(records: SkillRecord[]): string {
   if (records.length === 0) return "";
 
   const lines = [
     "## Available Skills",
     "",
-    "Read a skill with read_file when it is relevant:",
+    "Load a skill with load_skill(skill_id) when it is relevant:",
     "",
   ];
 
   for (const skill of records) {
-    lines.push(`- **${skill.name}**: ${skill.description} (\`${skill.location}\`)`);
+    lines.push(`- **${skill.name}**: ${skill.description}`);
   }
 
   return lines.join("\n");
 }
 
 // ========================================================================
-// Section Boundary Detection
-// ========================================================================
-
-function detectSectionRanges(
-  body: string,
-  sectionOverrides?: SkillSectionMapping,
-): Record<string, { start: number; end: number }> | undefined {
-  if (!body) return undefined;
-
-  const ranges: Record<string, { start: number; end: number }> = {};
-  const lines = body.split("\n");
-  let hasAny = false;
-
-  // Use metadata section headings if provided, else auto-detect
-  const sectionDefs = sectionOverrides ?? {
-    planner: ["## Planner"],
-    execution: ["## Execution"],
-    recovery: ["## Recovery"],
-    examples: ["## Examples"],
-  };
-
-  for (const [section, headings] of Object.entries(sectionDefs)) {
-    // Find the first heading match for this section
-    let startIdx = -1;
-    for (let i = 0; i < lines.length; i++) {
-      for (const h of headings) {
-        if (lines[i].trim().startsWith(h)) {
-          startIdx = i;
-          break;
-        }
-      }
-      if (startIdx >= 0) break;
-    }
-    if (startIdx < 0) continue;
-
-    // Find the next heading or end of body
-    let endIdx = lines.length;
-    for (let i = startIdx + 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (line.startsWith("## ")) {
-        endIdx = i;
-        break;
-      }
-    }
-
-    ranges[section] = { start: startIdx, end: endIdx };
-    hasAny = true;
-  }
-
-  return hasAny ? ranges : undefined;
-}
-
-function extractSection(body: string, range: { start: number; end: number } | undefined): string {
-  if (!range || !body) return "";
-  const lines = body.split("\n");
-  return lines.slice(range.start, range.end).join("\n").trim();
-}
-
-// ========================================================================
-// BM25 Matcher
-// ========================================================================
-
-export function buildBM25Index(
-  skills: SkillRecord[],
-  meta: SkillsMetaFile,
-): SkillIndexEntry[] {
-  return skills.map((s) => {
-    const skillMeta = meta[s.name] ?? {};
-    const tags = skillMeta.tags ?? [];
-    const trigger = skillMeta.trigger ?? "";
-    const synonyms = skillMeta.synonyms ?? [];
-
-    // Build search text from name, description, tags, trigger
-    const searchParts = [s.name, s.description, ...tags, trigger, ...synonyms];
-    const searchText = searchParts.filter(Boolean).join(" ");
-
-    const budgetConfig: SkillBudgetConfig = skillMeta.budget ?? {};
-    const sectionMapping = skillMeta.sections;
-
-    return {
-      id: s.name,
-      name: s.name,
-      description: s.description,
-      tags,
-      trigger,
-      synonyms,
-      neighbors: skillMeta.neighbors ?? [],
-      searchText,
-      sectionRanges: detectSectionRanges(s.body, sectionMapping),
-      budgetPriority: budgetConfig.priority ?? "normal",
-      maxTokens: budgetConfig.max_tokens ?? 2000,
-    };
-  });
-}
-
-export interface MatchResult {
-  entry: SkillIndexEntry;
-  score: number;
-}
-
-// Skills-specific helpers — synonym expansion, scoring bonuses, invocation detection.
-// These are skill-ranking concepts, not general BM25 primitives.
-
-
-function expandTokens(
-  tokens: string[],
-  synonymMap: Record<string, string[]>,
-): string[] {
-  const expanded = new Set(tokens);
-  for (const token of tokens) {
-    const syns = synonymMap[token];
-    if (syns) for (const syn of syns) expanded.add(syn);
-  }
-  return Array.from(expanded);
-}
-
-function keywordScore(queryTokens: string[], docTokens: string[]): number {
-  const querySet = new Set(queryTokens);
-  const docSet = new Set(docTokens);
-  const overlap = [...querySet].filter((t) => docSet.has(t)).length;
-  return docSet.size > 0 ? overlap / docSet.size : 0;
-}
-
-function nameMatchBonus(queryTokens: string[], nameTokens: string[]): number {
-  const querySet = new Set(queryTokens);
-  return nameTokens.some((nt) => querySet.has(nt)) ? 0.25 : 0;
-}
-
-function isExactInvocation(userInput: string, targetName: string): boolean {
-  return userInput.trim().toLowerCase() === targetName.toLowerCase();
-}
-
-/**
- * Rank skills by relevance to user input using BM25 + synonym expansion + neighbor boost.
- */
-export function rankSkills(
-  index: SkillIndexEntry[],
-  userInput: string,
-  hotSkillIds: Set<string>,
-  synonymMap?: Record<string, string[]>,
-): MatchResult[] {
-  if (index.length === 0 || !userInput.trim()) return [];
-
-  const syns = synonymMap ?? CODING_SYNONYMS;
-  const queryTokens = expandTokens(tokenizeShort(userInput), syns);
-  if (queryTokens.length === 0) return [];
-
-  // Tokenize once — same token stream for both stats and per-doc scoring.
-  const docTokenLists = index.map((entry) => tokenizeShort(entry.searchText));
-  const stats = buildBM25StatsFromTokens(docTokenLists);
-
-  const results: MatchResult[] = [];
-
-  for (let i = 0; i < index.length; i++) {
-    const entry = index[i];
-    const docTokens = docTokenLists[i];
-    let score = bm25Score(queryTokens, docTokens, stats);
-
-    // Keyword score bonus (0.5 weight): fraction of unique doc tokens that match query
-    score = score * 0.3 + keywordScore(queryTokens, docTokens) * 0.5;
-
-    // Name match bonus: if the skill name appears in the query, add +0.25
-    score += nameMatchBonus(queryTokens, tokenizeShort(entry.name));
-
-    // Exact skill invocation should load the skill, even when the corpus is
-    // tiny and BM25/keyword scoring would otherwise leave it WARM.
-    if (isExactInvocation(userInput, entry.name)) {
-      score = Math.max(score, 0.5);
-    }
-
-    // Graph neighbor boost (0.2 weight): boost if this skill is neighbor of a hot skill
-    let graphBoost = 0;
-    for (const hotId of hotSkillIds) {
-      const hotEntry = index.find((e) => e.id === hotId);
-      if (hotEntry?.neighbors?.includes(entry.id)) {
-        graphBoost = 0.2;
-        break;
-      }
-    }
-    score += graphBoost * 0.2;
-
-    if (score > 0) {
-      results.push({ entry, score });
-    }
-  }
-
-  return results.sort((a, b) => b.score - a.score);
-}
-
-// ========================================================================
-// Neighbor Discovery
-// ========================================================================
-
-function getNeighborIds(entry: SkillIndexEntry): string[] {
-  return entry.neighbors ?? [];
-}
-
-// ========================================================================
-// SkillRuntime
+// SkillRuntime — load tracker for engine mode
 // ========================================================================
 
 export class SkillRuntime {
@@ -491,17 +249,15 @@ export class SkillRuntime {
   // Core state
   private records: SkillRecord[] = [];
   private index: SkillIndexEntry[] = [];
-  private runtimeStates = new Map<string, SkillRuntimeState>();
-  private turnCount = 0;
+
+  // Load tracking (engine mode only)
+  private loadedSkills = new Map<string, LoadedSkill>();
+  private everLoaded = new Set<string>();
+  private totalReloads = 0;
+  private totalEvictions = 0;
 
   // Telemetry
   private events: SkillTelemetryEvent[] = [];
-
-  // Token budget base (set from compiler.token_budget each turn)
-  private budgetBase = 100_000;
-
-  // Synonym map (extendable)
-  private synonyms: Record<string, string[]> = { ...CODING_SYNONYMS };
 
   constructor(config: SkillsRuntimeConfig, cwd: string) {
     this.config = config;
@@ -520,426 +276,87 @@ export class SkillRuntime {
   async initialize(): Promise<void> {
     if (!this.config.enabled) return;
 
-    // 1. Discover skills
+    // Discover skills
     this.records = this.config.searchPaths
       ? discoverSkills(this.cwd, this.config.max_depth, this.config.searchPaths)
       : discoverSkills(this.cwd, this.config.max_depth);
 
-    // 2. Load skills metadata
-    const meta = loadMergedSkillsMeta(this.cwd);
+    // Build lightweight index (name → path lookup for load_skill)
+    this.index = this.records.map((s) => ({
+      id: s.name,
+      name: s.name,
+      description: s.description,
+      tags: [],
+      location: s.location,
+    }));
+  }
 
-    // 3. Merge user-provided synonyms from meta (extensible)
-    // (no field for custom synonyms yet — future)
+  // ---- Load tracking ----
 
-    // 4. Build BM25 index
-    this.index = buildBM25Index(this.records, meta);
-
-    // 5. Emit discovery events
-    for (const entry of this.index) {
+  /**
+   * Track a skill load (called by the load_skill tool in ENGINE mode only).
+   * The tool reads the file from disk; this method records the load + enforces budget.
+   */
+  trackLoad(skillId: string, currentTurn: number): void {
+    const existing = this.loadedSkills.get(skillId);
+    if (existing) {
+      existing.reloadCount++;
+      existing.loadedTurn = currentTurn;
+      this.totalReloads++;
       this.emit({
-        type: "skill_discovered",
-        skill_id: entry.id,
-        timestamp: Date.now(),
-      });
-
-      // Initialize all skills as cold
-      this.runtimeStates.set(entry.id, {
-        entry,
-        residency: "cold",
-        loadedSections: [],
-        lastActiveTurn: 0,
-        tokenCost: 0,
-        body: this.records.find((r) => r.name === entry.id)?.body ?? "",
-        directory: this.records.find((r) => r.name === entry.id)?.directory ?? "",
-      });
-    }
-  }
-
-  // ---- Per-turn processing ----
-
-  processUserInput(userInput: string): void {
-    if (!this.config.enabled || this.index.length === 0) return;
-
-    // 1. Get currently hot skill IDs
-    const hotIds = new Set<string>();
-    for (const [id, state] of this.runtimeStates) {
-      if (state.residency === "hot") hotIds.add(id);
-    }
-
-    // 2. Rank skills against user input
-    const matches = rankSkills(this.index, userInput, hotIds, this.synonyms);
-
-    // 3. Promote top matches to HOT (up to budget)
-    // Determine which skills get promoted
-    const promoteToHot: string[] = [];
-    const promoteToWarm: string[] = [];
-
-    for (const match of matches) {
-      const state = this.runtimeStates.get(match.entry.id);
-      if (!state) continue;
-
-      if (match.score >= 0.3 && state.residency === "cold") {
-        promoteToWarm.push(match.entry.id);
-      }
-      if (match.score >= 0.5) {
-        promoteToHot.push(match.entry.id);
-      }
-
-      this.emit({
-        type: "skill_matched",
-        skill_id: match.entry.id,
-        score: Math.round(match.score * 100) / 100,
-        residency: state.residency,
-        timestamp: Date.now(),
-      });
-    }
-
-    // 4. Apply neighbor boosting
-    for (const hotId of promoteToHot) {
-      const hotState = this.runtimeStates.get(hotId);
-      if (!hotState) continue;
-      for (const nid of getNeighborIds(hotState.entry)) {
-        const nState = this.runtimeStates.get(nid);
-        if (nState && nState.residency === "cold") {
-          promoteToWarm.push(nid);
-          this.emit({
-            type: "skill_neighbor_boosted",
-            skill_id: nid,
-            residency: "warm",
-            timestamp: Date.now(),
-          });
-        }
-      }
-    }
-
-    // 5. Apply residency changes
-    for (const id of promoteToHot) {
-      this.setResidency(id, "hot");
-    }
-    for (const id of promoteToWarm) {
-      if (this.runtimeStates.get(id)?.residency === "cold") {
-        this.setResidency(id, "warm");
-      }
-    }
-
-    // 6. Enforce token budget
-    this.enforceBudget();
-  }
-
-  endTurn(): void {
-    if (!this.config.enabled) return;
-
-    // 1. Update turn count
-    this.turnCount++;
-
-    // 2. Demote idle hot → warm
-    for (const [id, state] of this.runtimeStates) {
-      if (state.residency !== "hot") continue;
-      const idle = Math.max(0, this.turnCount - state.lastActiveTurn - 1);
-      if (idle >= this.config.active_skill_idle_turns) {
-        this.demote(id, "warm");
-      }
-    }
-
-    // 3. Evict idle warm → cold
-    for (const [id, state] of this.runtimeStates) {
-      if (state.residency !== "warm") continue;
-      const idle = Math.max(0, this.turnCount - state.lastActiveTurn - 1);
-      if (idle >= this.config.warm_skill_eviction_turns) {
-        this.evict(id);
-      }
-    }
-  }
-
-  markSkillActive(skillId: string): void {
-    const state = this.runtimeStates.get(skillId);
-    if (state) {
-      state.lastActiveTurn = this.turnCount;
-    }
-  }
-
-  // ---- Prompt assembly ----
-
-  getSnapshot(tokenBudget: number): SkillRuntimeSnapshot {
-    const hot: SkillRuntimeState[] = [];
-    const warm: SkillRuntimeState[] = [];
-    let tokenUsage = 0;
-
-    for (const state of this.runtimeStates.values()) {
-      if (state.residency === "hot") {
-        hot.push(state);
-        tokenUsage += state.tokenCost;
-      } else if (state.residency === "warm") {
-        warm.push(state);
-      }
-    }
-
-    return {
-      hot: hot.sort((a, b) => a.entry.name.localeCompare(b.entry.name)),
-      warm: warm.sort((a, b) => a.entry.name.localeCompare(b.entry.name)),
-      tokenUsage,
-      tokenBudget,
-    };
-  }
-
-  /** Build the skills section for the compiled prompt. */
-  buildPromptSection(tokenBudget: number): string {
-    if (!this.config.enabled) return "";
-    // Enforce budget before building
-    this.setBudgetBase(tokenBudget);
-    const snapshot = this.getSnapshot(tokenBudget);
-    const lines: string[] = ["## Loaded Skills"];
-
-    if (snapshot.hot.length === 0 && snapshot.warm.length === 0) {
-      const cold = [...this.runtimeStates.values()]
-        .filter((s) => s.residency === "cold")
-        .sort((a, b) => a.entry.name.localeCompare(b.entry.name));
-
-      if (cold.length === 0) {
-        lines.push("", "(no skills loaded)");
-        return lines.join("\n");
-      }
-
-      lines.push("", "### Available Skills");
-      for (const state of cold) {
-        lines.push(`- **${state.entry.name}**: ${state.entry.description}`);
-      }
-      return lines.join("\n");
-    }
-
-    // HOT skills — full bodies of loaded sections
-    for (const state of snapshot.hot) {
-      lines.push("", `### ${state.entry.name} [HOT]`);
-      lines.push(`Tags: ${state.entry.tags.join(", ") || "(none)"}`);
-      if (state.entry.trigger) lines.push(`Trigger: ${state.entry.trigger}`);
-
-      // Progressive sections
-      for (const section of state.loadedSections) {
-        const sectionContent = this.getSectionContent(state, section);
-        if (sectionContent) {
-          lines.push("", sectionContent);
-        }
-      }
-
-      // If no sections loaded, load full body
-      if (state.loadedSections.length === 0 && state.body) {
-        lines.push("", state.body);
-      }
-    }
-
-    // WARM skills — one-line stubs
-    if (snapshot.warm.length > 0) {
-      lines.push("", "### Standing By");
-      for (const state of snapshot.warm) {
-        const tags = state.entry.tags.length > 0 ? ` [${state.entry.tags.slice(0, 3).join(", ")}]` : "";
-        lines.push(`- ${state.entry.name}${tags}`);
-      }
-    }
-
-    return lines.join("\n");
-  }
-
-  private getSectionContent(state: SkillRuntimeState, section: SkillSection): string {
-    if (!state.entry.sectionRanges) return "";
-    const range = state.entry.sectionRanges[section];
-    if (!range) return "";
-    return extractSection(state.body, range);
-  }
-
-  // ---- Residency management ----
-
-  private setResidency(id: string, target: SkillResidency): void {
-    const state = this.runtimeStates.get(id);
-    if (!state || state.residency === target) return;
-
-    const prev = state.residency;
-    state.residency = target;
-    state.lastActiveTurn = this.turnCount;
-
-    if (target === "hot") {
-      // Progressive hydration: load planner first, execution on active use
-      this.hydrateSkill(id);
-    }
-
-    if (target === "hot") {
-      this.emit({
-        type: "skill_loaded",
-        skill_id: id,
-        residency: target,
-        prev_residency: prev,
-        sections: state.loadedSections,
-        token_cost: state.tokenCost,
+        type: "skill_reloaded",
+        skill_id: skillId,
+        loaded_turn: currentTurn,
+        reload_count: existing.reloadCount,
         timestamp: Date.now(),
       });
     } else {
+      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
+      this.everLoaded.add(skillId);
       this.emit({
-        type: "skill_promoted",
-        skill_id: id,
-        residency: target,
-        prev_residency: prev,
-        sections: state.loadedSections,
-        token_cost: state.tokenCost,
+        type: "skill_loaded",
+        skill_id: skillId,
+        loaded_turn: currentTurn,
         timestamp: Date.now(),
       });
     }
+    this.enforceSkillBudget();
   }
 
-  private demote(id: string, target: "warm" | "cold"): void {
-    const state = this.runtimeStates.get(id);
-    if (!state) return;
-
-    const prev = state.residency;
-    state.residency = target;
-    state.loadedSections = [];
-    state.tokenCost = 0;
-
-    this.emit({
-      type: "skill_demoted",
-      skill_id: id,
-      residency: target,
-      prev_residency: prev,
-      timestamp: Date.now(),
-    });
-  }
-
-  private evict(id: string): void {
-    const state = this.runtimeStates.get(id);
-    if (!state) return;
-
-    state.residency = "cold";
-    state.loadedSections = [];
-    state.tokenCost = 0;
-
-    this.emit({
-      type: "skill_evicted",
-      skill_id: id,
-      residency: "cold",
-      timestamp: Date.now(),
-    });
-  }
-
-  // ---- Progressive Hydration ----
-
-  private hydrateSkill(id: string): void {
-    const state = this.runtimeStates.get(id);
-    if (!state) return;
-
-    // Load planner when present; otherwise leave sections empty so the prompt
-    // builder falls back to the full skill body.
-    if (state.entry.sectionRanges?.planner && !state.loadedSections.includes("planner")) {
-      state.loadedSections.push("planner");
-      this.emit({
-        type: "skill_hydrated",
-        skill_id: id,
-        sections: ["planner"],
-        timestamp: Date.now(),
-      });
-    }
-
-    // Recompute token cost
-    state.tokenCost = this.computeTokenCost(state);
-  }
-
-  /** Load execution section (called when tool execution starts) */
-  hydrateExecution(id: string): void {
-    const state = this.runtimeStates.get(id);
-    if (!state || state.residency !== "hot") return;
-
-    if (!state.loadedSections.includes("execution")) {
-      state.loadedSections.push("execution");
-      state.tokenCost = this.computeTokenCost(state);
-      this.emit({
-        type: "skill_hydrated",
-        skill_id: id,
-        sections: ["execution"],
-        timestamp: Date.now(),
-      });
+  /** Evict skills older than stale_threshold_turns. Called at turn end. */
+  cleanupStaleSkills(currentTurn: number): void {
+    for (const [id, skill] of this.loadedSkills) {
+      if (currentTurn - skill.loadedTurn > this.config.stale_threshold_turns) {
+        this.loadedSkills.delete(id);
+        this.totalEvictions++;
+        this.emit({
+          type: "skill_evicted",
+          skill_id: id,
+          loaded_turn: skill.loadedTurn,
+          timestamp: Date.now(),
+        });
+      }
     }
   }
 
-  /** HOT skill IDs for the current turn. */
-  getHotSkillIds(): string[] {
-    return [...this.runtimeStates.entries()]
-      .filter(([, state]) => state.residency === "hot")
-      .map(([id]) => id);
-  }
-
-  /** Load execution sections for all HOT skills (called when tool execution starts). */
-  hydrateExecutionForHotSkills(): void {
-    for (const id of this.getHotSkillIds()) {
-      this.hydrateExecution(id);
-      this.markSkillActive(id);
+  /** Evict oldest-by-loadedTurn until <= max_loaded_skills. */
+  private enforceSkillBudget(): void {
+    while (this.loadedSkills.size > this.config.max_loaded_skills) {
+      let oldest: LoadedSkill | null = null;
+      for (const skill of this.loadedSkills.values()) {
+        if (!oldest || skill.loadedTurn < oldest.loadedTurn) oldest = skill;
+      }
+      if (oldest) {
+        this.loadedSkills.delete(oldest.skillId);
+        this.totalEvictions++;
+        this.emit({
+          type: "skill_evicted",
+          skill_id: oldest.skillId,
+          loaded_turn: oldest.loadedTurn,
+          timestamp: Date.now(),
+        });
+      }
     }
-  }
-
-  /** Load recovery sections for all HOT skills (called on tool failure). */
-  hydrateRecoveryForHotSkills(): void {
-    for (const id of this.getHotSkillIds()) {
-      this.hydrateRecovery(id);
-      this.markSkillActive(id);
-    }
-  }
-
-  /** Load recovery section (called on failure) */
-  hydrateRecovery(id: string): void {
-    const state = this.runtimeStates.get(id);
-    if (!state || state.residency !== "hot") return;
-
-    if (!state.loadedSections.includes("recovery")) {
-      state.loadedSections.push("recovery");
-      state.tokenCost = this.computeTokenCost(state);
-      this.emit({
-        type: "skill_hydrated",
-        skill_id: id,
-        sections: ["recovery"],
-        timestamp: Date.now(),
-      });
-    }
-  }
-
-  // ---- Budget ----
-
-  private computeTokenCost(state: SkillRuntimeState): number {
-    let total = 0;
-    for (const section of state.loadedSections) {
-      const content = this.getSectionContent(state, section);
-      total += estimateTokens(content);
-    }
-    if (state.loadedSections.length === 0 && state.body) {
-      total = estimateTokens(state.body);
-    }
-    return Math.min(total, state.entry.maxTokens);
-  }
-
-  private getSkillsTokenBudget(): number {
-    return Math.floor(this.budgetBase * this.config.max_token_budget_ratio);
-  }
-
-  private enforceBudget(): void {
-    const budget = this.getSkillsTokenBudget();
-    const hotStates = [...this.runtimeStates.values()]
-      .filter((s) => s.residency === "hot")
-      .sort((a, b) => a.lastActiveTurn - b.lastActiveTurn);
-
-    let totalCost = hotStates.reduce((sum, s) => sum + s.tokenCost, 0);
-
-    while (totalCost > budget && hotStates.length > 0) {
-      const victim = hotStates.shift()!;
-      this.emit({
-        type: "skill_budget_exceeded",
-        skill_id: victim.entry.id,
-        token_cost: victim.tokenCost,
-        timestamp: Date.now(),
-      });
-      this.demote(victim.entry.id, "warm");
-      totalCost -= victim.tokenCost;
-    }
-  }
-
-  /** Update the budget base (called each turn with compiler.token_budget). */
-  setBudgetBase(totalTokenBudget: number): void {
-    this.budgetBase = totalTokenBudget;
-    this.enforceBudget();
   }
 
   // ---- Telemetry ----
@@ -964,27 +381,32 @@ export class SkillRuntime {
     return [...this.index];
   }
 
-  getRuntimeStates(): Map<string, SkillRuntimeState> {
-    return new Map(this.runtimeStates);
-  }
-
   getSkillCount(): number {
     return this.index.length;
   }
 
-  getResidencyCounts(): { hot: number; warm: number; cold: number } {
-    let hot = 0;
-    let warm = 0;
-    let cold = 0;
-    for (const state of this.runtimeStates.values()) {
-      if (state.residency === "hot") hot++;
-      else if (state.residency === "warm") warm++;
-      else cold++;
-    }
-    return { hot, warm, cold };
-  }
-
   isEnabled(): boolean {
     return this.config.enabled;
+  }
+
+  /** Currently-loaded skill names, most-recently-loaded first (status-bar display). */
+  getLoadedSkillNames(): string[] {
+    return [...this.loadedSkills.values()]
+      .sort((a, b) => b.loadedTurn - a.loadedTurn)
+      .map((s) => s.skillId);
+  }
+
+  /**
+   * Session-end summary data for measurement_mode.
+   * Reads from monotonic counters (everLoaded, totalReloads, totalEvictions)
+   * that survive drainEvents().
+   */
+  getLoadedSkillStats(): { catalogSize: number; loadedCount: number; reloadedCount: number; evictedCount: number } {
+    return {
+      catalogSize: this.records.length,
+      loadedCount: this.everLoaded.size,
+      reloadedCount: this.totalReloads,
+      evictedCount: this.totalEvictions,
+    };
   }
 }

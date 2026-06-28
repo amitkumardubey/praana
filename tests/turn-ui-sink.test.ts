@@ -89,10 +89,7 @@ function mockSession(): Session {
     isContextEngineEnabled: vi.fn(() => false),
     getTurnCount: vi.fn(() => 0),
     skillRuntime: {
-      setBudgetBase: vi.fn(),
-      processUserInput: vi.fn(),
-      buildPromptSection: vi.fn(() => null),
-      endTurn: vi.fn(),
+      cleanupStaleSkills: vi.fn(),
       drainEvents: vi.fn(() => []),
     },
     agentsContext: null,

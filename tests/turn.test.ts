@@ -183,8 +183,8 @@ function makeConfig(overrides?: Partial<PraanaConfig>): PraanaConfig {
     skills: {
       enabled: true,
       max_token_budget_ratio: 0.2,
-      active_skill_idle_turns: 5,
-      warm_skill_eviction_turns: 20,
+      max_loaded_skills: 3,
+      stale_threshold_turns: 10,
       max_depth: 6,
     },
     ui: { mode: "readline", screen: "preserve" },
@@ -955,10 +955,7 @@ describe("runTurn", () => {
   });
 
   it("passes the full compiler token budget to skill prompt building", async () => {
-    const buildPromptSection = vi.fn(() => "## Loaded Skills\n\n(no skills loaded)");
-    const processUserInput = vi.fn();
-    const setBudgetBase = vi.fn();
-    const endTurn = vi.fn();
+    const cleanupStaleSkills = vi.fn();
     const drainEvents = vi.fn(() => []);
     const session = makeMockSession({
       config: makeConfig({
@@ -975,20 +972,14 @@ describe("runTurn", () => {
         captureStateSnapshot: vi.fn(),
       },
       skillRuntime: {
-        setBudgetBase,
-        processUserInput,
-        buildPromptSection,
-        endTurn,
+        cleanupStaleSkills,
         drainEvents,
       },
     });
 
     await runTurn(session, "use a skill");
 
-    expect(setBudgetBase).toHaveBeenCalledWith(100_000);
-    expect(processUserInput).toHaveBeenCalledWith("use a skill");
-    expect(buildPromptSection).toHaveBeenCalledWith(100_000);
-    expect(endTurn).toHaveBeenCalled();
+    expect(cleanupStaleSkills).toHaveBeenCalled();
     expect(drainEvents).toHaveBeenCalled();
   });
 

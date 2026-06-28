@@ -116,28 +116,22 @@ export async function runTurn(
     searchCode: session.config.search_code,
     getAbortSignal: () => options?.signal,
     shellLiveStream: s.shellLiveStream ?? true,
+    skills: session.skills ?? [],
+    skillRuntime: session.skillRuntime,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
   const contextWindowTokens = await session.ensureModelContextWindow(modelName);
   const reservedOutputTokens = session.config.compiler.reserved_output_tokens ?? 0;
 
-  // 2b. Match skills against user input (engine mode only)
-  const tokenBudget = session.config.compiler.token_budget;
-  if (!classicMode) {
-    session.skillRuntime?.setBudgetBase(tokenBudget);
-    session.skillRuntime?.processUserInput(userInput);
-  }
 
-  // 3. Compile prompt (system only, user input passed as message)
   const recentEvents = session.eventLog.readLastUncompressed(
     session.config.compiler.recent_turns
   );
   const toolDescs = describeTools({ contextEngineEnabled, classicMode });
 
-  const skillsSection = classicMode
-    ? buildSkillMetadataCatalog(session.skills) || null
-    : session.skillRuntime?.buildPromptSection(tokenBudget) ?? null;
+  const skillsSection = buildSkillMetadataCatalog(session.skills) || null;
+  const tokenBudget = session.config.compiler.token_budget;
   const agentsBudgetRatio = session.config.compiler.agents_budget_ratio;
 
   const engineConfig = resolveContextEngineConfig(session.config);
@@ -433,11 +427,6 @@ export async function runTurn(
       let result: unknown;
       let isError = false;
 
-      if (!executionHydrated && !classicMode) {
-        session.skillRuntime?.hydrateExecutionForHotSkills();
-        executionHydrated = true;
-      }
-
       if (!toolDef || typeof toolDef.execute !== "function") {
         isError = true;
         result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
@@ -451,7 +440,7 @@ export async function runTurn(
       }
 
       if (isError && !classicMode) {
-        session.skillRuntime?.hydrateRecoveryForHotSkills();
+        // no skill recovery hook in pull model
       }
 
       if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
@@ -624,7 +613,7 @@ export async function runTurn(
   session.incrementTurn();
   if (!classicMode) {
     applyTierManagement(session);
-    session.skillRuntime?.endTurn();
+    session.skillRuntime?.cleanupStaleSkills(session.getTurnCount());
     flushSkillTelemetry(session);
   }
   session.persistStateGraphCheckpoint();
@@ -683,7 +672,7 @@ function finalizeInterruptedTurn(
   session.incrementTurn();
   if (!classicMode) {
     applyTierManagement(session);
-    session.skillRuntime?.endTurn();
+    session.skillRuntime?.cleanupStaleSkills(session.getTurnCount());
     flushSkillTelemetry(session);
   }
   session.persistStateGraphCheckpoint();

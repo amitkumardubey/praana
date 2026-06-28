@@ -76,8 +76,8 @@ const DEFAULT_CONFIG: PraanaConfig = {
   skills: {
     enabled: true,
     max_token_budget_ratio: 0.2,
-    active_skill_idle_turns: 5,
-    warm_skill_eviction_turns: 20,
+    max_loaded_skills: 3,
+    stale_threshold_turns: 10,
     max_depth: 6,
   },
   ui: {
