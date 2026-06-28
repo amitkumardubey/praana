@@ -9,28 +9,54 @@ import { isMemoryKind } from "./types.js";
 import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
-Given a session transcript, extract 0-5 concise learnings.
-Output ONLY a JSON object with two keys: "learnings" and "used_ids". No prose outside the object.
+Your job: distill a session transcript into 0-5 learnings the agent will need in future sessions on this project.
 
-"learnings" is an array of: { "kind": "fact" | "preference" | "decision" | "pattern" | "mistake" | "constraint", "content": "...", "certainty": "high" | "medium" | "low" }
-"used_ids" is an array of entry IDs (from the provided surfaced list) that the agent actually acted on during this session.
+## Output format
+Output ONLY a JSON object. No prose, no markdown, no code fences.
 
-Rules for learnings:
-- "fact": verifiable project knowledge ("uses Vitest for testing")
-- "preference": user or agent preference ("prefers dark mode UI")
-- "decision": architectural choice ("chose JWT over session cookies")
-- "pattern": recurring approach ("validates with Zod before DB writes")
-- "mistake": failure + lesson learned ("forgot await on verify() → 401s")
-- "constraint": hard rule ("never commits .env files")
-- Be conservative. Skip vague or low-signal items.
-- Content should be one sentence, max 120 characters.
-- certainty reflects how strongly the transcript supports this.
+{
+  "learnings": [
+    { "kind": "...", "content": "...", "certainty": "..." }
+  ],
+  "used_ids": []
+}
 
-Rules for used_ids:
-- Only include IDs from the surfaced list provided in the prompt.
-- An entry was "acted on" if the agent used the information to make a decision, take an action, follow advice, or reference the fact in a tool call or response.
-- Be conservative — only include entries clearly acted on.
-- If none were acted on, return an empty array.`;
+## Learning kinds
+
+- fact — verifiable project-specific knowledge
+  good: "session log is events.jsonl, not current.log"
+  bad: "TypeScript is a typed language"
+
+- preference — user or team preference expressed in this session
+  good: "user wants in-process rate limiting, no Redis"
+  bad: "user likes clean code"
+
+- decision — architectural or design choice made
+  good: "chose sliding window over token bucket for /recall rate limiting"
+  bad: "decided to use a rate limiter"
+
+- pattern — recurring approach observed in this session
+  good: "writes test first, then implementation"
+  bad: "tests are important"
+
+- mistake — error that occurred + root cause + fix
+  good: "forgot to initialize timestamps Map in constructor → TypeError"
+  bad: "there was a bug"
+
+- constraint — hard rule or guardrail, often from user feedback
+  good: "never use Redis for rate limiting — keep in-process only"
+  bad: "be careful with dependencies"
+
+## Rules
+
+1. ONLY extract learnings grounded in this transcript. Do not hallucinate project facts not present here.
+2. Each learning must be one clear sentence, max 120 chars.
+3. Be conservative — return 0-3 if the session is routine. Return 5 only for rich sessions with decisions, bugs, and constraints.
+4. certainty: high = stated explicitly or demonstrated clearly. medium = implied but not explicit. low = inferred with some uncertainty.
+5. If nothing project-specific was learned, return { "learnings": [], "used_ids": [] }.
+
+## used_ids
+If the prompt includes a list of surfaced memory entries with IDs, list only those the agent clearly acted on (used in a tool call, referenced in a decision, or followed as advice). If none, return [].`;
 
 
 function transcriptToPrompt(events: SessionEvent[]): string {
