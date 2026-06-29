@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import type { PressureMode } from "./types.js";
 import {
@@ -36,7 +36,7 @@ export class TelemetryRecorder {
   private readonly contextEngineEnabled: boolean;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: Database,
     private readonly sessionId: string,
     contextEngineEnabled = true,
     private readonly scorecard?: Pick<ScorecardTracker, "inc">,
@@ -212,7 +212,7 @@ export class ScorecardTracker {
   private startSnapshotCaptured = false;
 
   constructor(
-    private readonly db: Database.Database | null,
+    private readonly db: Database | null,
     private readonly sessionId: string,
     private readonly engineOn: boolean,
     private readonly options: ScorecardTrackerOptions = {},
@@ -385,11 +385,11 @@ export class ScorecardTracker {
     if (!this.db) return;
 
     const existing = this.db
-      .prepare("SELECT created_at FROM scorecard WHERE session_id = ?")
+      .query("SELECT created_at FROM scorecard WHERE session_id = ?")
       .get(this.sessionId) as { created_at: number } | undefined;
     const createdAt = existing?.created_at ?? Date.now();
 
-    this.db.prepare(
+    this.db.query(
       `INSERT OR REPLACE INTO scorecard (
         session_id, context_engine_on, created_at,
         artifact_retrieve_calls, artifact_cards_produced, repeat_file_reads,
@@ -402,43 +402,43 @@ export class ScorecardTracker {
         skill_reload_count, skill_tokens_consumed, skill_load_events,
         read_path_digests, skills_ever_loaded
       ) VALUES (
-        @sessionId, @engineOn, @createdAt,
-        @artifactRetrieveCalls, @artifactCardsProduced, @repeatFileReads,
-        @decisionContradictions, @turnEventSearches, @totalTurns,
-        @pressureEvents, @compactionTriggers,
-        @recallCalls, @recallUsedCount,
-        @validityAvgStart, @validityAvgEnd,
-        @usefulnessAvgStart, @usefulnessAvgEnd,
-        @skillsLoaded, @skillsUsed, @skillUnderloadEvents,
-        @skillReloadCount, @skillTokensConsumed, @skillLoadEvents,
-        @readPathDigests, @skillsEverLoaded
+        $sessionId, $engineOn, $createdAt,
+        $artifactRetrieveCalls, $artifactCardsProduced, $repeatFileReads,
+        $decisionContradictions, $turnEventSearches, $totalTurns,
+        $pressureEvents, $compactionTriggers,
+        $recallCalls, $recallUsedCount,
+        $validityAvgStart, $validityAvgEnd,
+        $usefulnessAvgStart, $usefulnessAvgEnd,
+        $skillsLoaded, $skillsUsed, $skillUnderloadEvents,
+        $skillReloadCount, $skillTokensConsumed, $skillLoadEvents,
+        $readPathDigests, $skillsEverLoaded
       )`,
     ).run({
-      sessionId: this.sessionId,
-      engineOn: this.engineOn ? 1 : 0,
-      createdAt,
-      artifactRetrieveCalls: this.counters.artifactRetrieveCalls,
-      artifactCardsProduced: this.counters.artifactCardsProduced,
-      repeatFileReads: this.counters.repeatFileReads,
-      decisionContradictions: this.counters.decisionContradictions,
-      turnEventSearches: this.counters.turnEventSearches,
-      totalTurns: this.counters.totalTurns,
-      pressureEvents: this.counters.pressureEvents,
-      compactionTriggers: this.counters.compactionTriggers,
-      recallCalls: this.counters.recallCalls,
-      recallUsedCount: this.recallUsedCount,
-      validityAvgStart: this.validityAvgStart,
-      validityAvgEnd: this.validityAvgEnd,
-      usefulnessAvgStart: this.usefulnessAvgStart,
-      usefulnessAvgEnd: this.usefulnessAvgEnd,
-      skillsLoaded: this.counters.skillsLoaded,
-      skillsUsed: this.counters.skillsUsed,
-      skillUnderloadEvents: this.counters.skillUnderloadEvents,
-      skillReloadCount: this.counters.skillReloadCount,
-      skillTokensConsumed: this.counters.skillTokensConsumed,
-      skillLoadEvents: this.counters.skillLoadEvents,
-      readPathDigests: encodeCsv(this.readPathDigests),
-      skillsEverLoaded: encodeCsv(this.skillsEverLoaded),
+      $sessionId: this.sessionId,
+      $engineOn: this.engineOn ? 1 : 0,
+      $createdAt: createdAt,
+      $artifactRetrieveCalls: this.counters.artifactRetrieveCalls,
+      $artifactCardsProduced: this.counters.artifactCardsProduced,
+      $repeatFileReads: this.counters.repeatFileReads,
+      $decisionContradictions: this.counters.decisionContradictions,
+      $turnEventSearches: this.counters.turnEventSearches,
+      $totalTurns: this.counters.totalTurns,
+      $pressureEvents: this.counters.pressureEvents,
+      $compactionTriggers: this.counters.compactionTriggers,
+      $recallCalls: this.counters.recallCalls,
+      $recallUsedCount: this.recallUsedCount,
+      $validityAvgStart: this.validityAvgStart,
+      $validityAvgEnd: this.validityAvgEnd,
+      $usefulnessAvgStart: this.usefulnessAvgStart,
+      $usefulnessAvgEnd: this.usefulnessAvgEnd,
+      $skillsLoaded: this.counters.skillsLoaded,
+      $skillsUsed: this.counters.skillsUsed,
+      $skillUnderloadEvents: this.counters.skillUnderloadEvents,
+      $skillReloadCount: this.counters.skillReloadCount,
+      $skillTokensConsumed: this.counters.skillTokensConsumed,
+      $skillLoadEvents: this.counters.skillLoadEvents,
+      $readPathDigests: encodeCsv(this.readPathDigests),
+      $skillsEverLoaded: encodeCsv(this.skillsEverLoaded),
     });
   }
 

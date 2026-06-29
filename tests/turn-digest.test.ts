@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { StateGraph } from "../src/state-graph.js";
 import { deriveActivityEntries } from "../src/context-engine/activity-log.js";
 import { TurnExtraction } from "../src/context-engine/extraction.js";

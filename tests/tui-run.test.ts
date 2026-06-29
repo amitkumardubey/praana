@@ -1,16 +1,16 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn, type Mock } from "bun:test";
 
 // Mock Ink before importing runTui so the real renderer is never started.
-const waitUntilExit = vi.fn<() => Promise<void>>();
-const unmount = vi.fn();
+const waitUntilExit = mock<() => Promise<void>>();
+const unmount = mock();
 
-vi.mock("ink", () => ({
+mock.module("ink", () => ({
   render: () => ({ waitUntilExit, unmount }),
 }));
 
 // Mock the AppController with the minimum surface runTui uses.
-const shutdown = vi.fn();
-const getStatusBarInput = vi.fn(() => ({ model: "test/model" }));
+const shutdown = mock();
+const getStatusBarInput = mock(() => ({ model: "test/model" }));
 
 const fakeController = {
   config: {
@@ -34,14 +34,14 @@ const fakeController = {
 };
 
 // Mock the React entrypoint so the import doesn't require a real DOM.
-vi.mock("react", () => ({
-  default: { createElement: vi.fn(() => "element") },
-  createElement: vi.fn(() => "element"),
+mock.module("react", () => ({
+  default: { createElement: mock(() => "element") },
+  createElement: mock(() => "element"),
 }));
 
 // Mock TuiApp (imported transitively by runTui). We never render it, but the
 // import must succeed.
-vi.mock("../src/ui/tui/app.js", () => ({ TuiApp: function TuiApp() {} }));
+mock.module("../src/ui/tui/app.js", () => ({ TuiApp: function TuiApp() {} }));
 
 import { runTui } from "../src/ui/tui/run.js";
 import type { StartupInfo } from "../src/app-controller.js";
@@ -57,18 +57,18 @@ const fakeInfo: StartupInfo = {
 };
 
 describe("runTui shutdown feedback", () => {
-  let stderrSpy: ReturnType<typeof vi.spyOn>;
-  let stdoutSpy: ReturnType<typeof vi.spyOn>;
-  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof spyOn>;
+  let stdoutSpy: ReturnType<typeof spyOn>;
+  let exitSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     waitUntilExit.mockReset();
     unmount.mockReset();
     shutdown.mockReset();
     getStatusBarInput.mockClear();
-    stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    stdoutSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as any);
+    stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    stdoutSpy = spyOn(console, "log").mockImplementation(() => {});
+    exitSpy = spyOn(process, "exit").mockImplementation((() => {}) as any);
   });
 
   afterEach(() => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { createAllTools, describeTools } from '../src/tools/index.js';
 import { createMemoryTools, mirrorToCognitiveMemory } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
@@ -9,6 +9,8 @@ import type { StateGraph } from '../src/state-graph.js';
 import type { MemoryStore } from '../src/memory/index.js';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { setUiWriters } from '../src/ui.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -16,11 +18,11 @@ import { join } from 'node:path';
 
 function mockEventLog(): EventLog {
   return {
-    append: vi.fn(),
-    search: vi.fn().mockReturnValue([]),
-    readLast: vi.fn().mockReturnValue([]),
-    close: vi.fn(),
-    eventCount: vi.fn().mockReturnValue(0),
+    append: mock(),
+    search: mock().mockReturnValue([]),
+    readLast: mock().mockReturnValue([]),
+    close: mock(),
+    eventCount: mock().mockReturnValue(0),
   } as unknown as EventLog;
 }
 
@@ -30,7 +32,7 @@ function mockStateGraph(): StateGraph {
   let counter = 0;
 
   return {
-    create: vi.fn((kind: string, payload: any) => {
+    create: mock((kind: string, payload: any) => {
       counter++;
       const id = `test-${counter}`;
       const obj = {
@@ -45,32 +47,32 @@ function mockStateGraph(): StateGraph {
       store.set(id, obj);
       return obj;
     }),
-    get: vi.fn((id: string) => store.get(id) ?? null),
-    update: vi.fn((id: string, updates: any) => {
+    get: mock((id: string) => store.get(id) ?? null),
+    update: mock((id: string, updates: any) => {
       const obj = store.get(id);
       if (!obj) return null;
       const updated = { ...obj, ...updates, updated: Date.now(), lastTouched: Date.now() };
       store.set(id, updated);
       return updated;
     }),
-    setTier: vi.fn((id: string, tier: string) => {
+    setTier: mock((id: string, tier: string) => {
       const obj = store.get(id);
       if (!obj) return false;
       obj.tier = tier;
       obj.lastTouched = Date.now();
       return true;
     }),
-    retractObject: vi.fn((id: string) => {
+    retractObject: mock((id: string) => {
       const obj = store.get(id);
       if (!obj) return false;
       obj.retracted = true;
       obj.updated = Date.now();
       return true;
     }),
-    list: vi.fn(() => Array.from(store.values())),
-    getActive: vi.fn(() => Array.from(store.values()).filter((o: any) => o.tier === 'active')),
-    getPeripheral: vi.fn(() => Array.from(store.values()).filter((o: any) => o.tier !== 'active')),
-    getById: vi.fn((id: string) => store.get(id) ?? null),
+    list: mock(() => Array.from(store.values())),
+    getActive: mock(() => Array.from(store.values()).filter((o: any) => o.tier === 'active')),
+    getPeripheral: mock(() => Array.from(store.values()).filter((o: any) => o.tier !== 'active')),
+    getById: mock((id: string) => store.get(id) ?? null),
   } as unknown as StateGraph;
 }
 
@@ -78,18 +80,18 @@ function mockMemoryStore(): MemoryStore {
   const store = new Map<string, any>();
   
   return {
-    recall: vi.fn().mockResolvedValue({ entries: [] }),
-    remember: vi.fn().mockImplementation((content: string, opts?: any) => {
+    recall: mock().mockResolvedValue({ entries: [] }),
+    remember: mock().mockImplementation((content: string, opts?: any) => {
       const id = 'mem-' + (store.size + 1);
       store.set(id, { id, content, ...opts });
       return Promise.resolve({ id });
     }),
-    digest: vi.fn().mockResolvedValue(null),
-    sessionStart: vi.fn().mockResolvedValue(undefined),
-    sessionEnd: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn(),
-    hasEntry: vi.fn((id: string) => store.has(id)),
-    retractMemory: vi.fn((id: string) => {
+    digest: mock().mockResolvedValue(null),
+    sessionStart: mock().mockResolvedValue(undefined),
+    sessionEnd: mock().mockResolvedValue(undefined),
+    close: mock(),
+    hasEntry: mock((id: string) => store.has(id)),
+    retractMemory: mock((id: string) => {
       store.delete(id);
     }),
   } as unknown as MemoryStore;
@@ -269,7 +271,7 @@ describe('Memory Tools (createMemoryTools)', () => {
     });
 
     it('still succeeds when cognitive write fails', async () => {
-      vi.mocked(memoryStore.remember).mockRejectedValueOnce(new Error('db down'));
+      (memoryStore.remember as ReturnType<typeof mock>).mockRejectedValueOnce(new Error('db down'));
       const result = await tools.add_constraint.execute({ text: 'Must be safe' });
       expect(result).toEqual({ ok: true, id: expect.any(String) });
       expect(stateGraph.create).toHaveBeenCalledWith('constraint', { text: 'Must be safe' });
@@ -867,14 +869,12 @@ describe('System Tools (createSystemTools)', () => {
       writeFileSync(join(testDir, 'linenum.txt'), 'line1\nline2\nHello World');
       const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
 
-      const { Readable } = await import('node:stream');
       const mockStdin = Readable.from(['y\n']);
       const originalStdin = process.stdin;
       Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
 
       // Capture diff preview output via UI stderr channel
       const stderrChunks: string[] = [];
-      const { setUiWriters } = await import("../../src/ui.js");
       setUiWriters({
         stderr: (line) => {
           stderrChunks.push(line);

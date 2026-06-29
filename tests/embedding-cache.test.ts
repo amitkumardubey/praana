@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { Embedder } from "../src/memory/types.js";
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, spyOn } from "bun:test";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 
@@ -171,7 +171,7 @@ describe("memory pruning", () => {
 
     await store.sessionStart(ctx);
 
-    const pruneSpy = vi.spyOn(store, "prune").mockResolvedValue(0);
+    const pruneSpy = spyOn(store, "prune").mockResolvedValue(0);
     const now = Date.now();
     const insert = store["db"].prepare(`
       INSERT INTO entries (

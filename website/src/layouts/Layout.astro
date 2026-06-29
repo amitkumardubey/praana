@@ -10,7 +10,7 @@ interface Props {
 
 const {
   title,
-  description = "PRAANA is an open-source terminal coding agent with Adaptive Context and Cognitive Memory (memory that learns). It runs in your CLI, works with Claude, GPT, DeepSeek, Gemini, Groq, Mistral, Ollama and more, keeps long sessions on track, and remembers what it learned between sessions.",
+  description = "PRAANA is an open-source terminal coding agent that curates its own prompt every turn and stores learnings across sessions in a local SQLite database. Runs on Bun. Works with Claude, GPT, DeepSeek, Gemini, Groq, Mistral, Ollama and more. Local-first, MIT-licensed.",
   keywords = "terminal coding agent, CLI coding agent, AI coding agent, coding agent with memory, cross-session memory, context management, open source coding agent, TypeScript coding agent, local-first AI agent, command line LLM agent, agent that remembers, adaptive context",
   current,
 } = Astro.props;
@@ -27,7 +27,7 @@ const structuredData = {
   name: "PRAANA",
   applicationCategory: "DeveloperApplication",
   applicationSubCategory: "Terminal coding agent",
-  operatingSystem: "Linux, macOS, Windows (Node.js 22+)",
+  operatingSystem: "Linux, macOS, Windows (Bun ≥ 1.2)",
   description:
     "Open-source terminal coding agent with adaptive context and cross-session memory. Works with multiple LLM providers and runs entirely in your CLI.",
   url: "https://amitkumardubey.github.io/praana/",

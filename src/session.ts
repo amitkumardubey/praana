@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
-import Database from "better-sqlite3";
+import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { PraanaConfig, SkillRecord, Event } from "./types.js";
@@ -530,7 +530,7 @@ export class Session {
     const configuredPath = this.config.memory?.db_path;
     if (configuredPath) {
       const p = expandHome(configuredPath);
-      return p.startsWith("/") ? p : join(this.cwd, p);
+      return p === ":memory:" || p.startsWith("/") ? p : join(this.cwd, p);
     }
     return resolveDefaultMemoryDbPath();
   }
@@ -1056,7 +1056,7 @@ export class Session {
 
     if (configuredPath) {
       dbPath = expandHome(configuredPath);
-      if (!dbPath.startsWith("/")) dbPath = join(this.cwd, dbPath);
+      if (dbPath !== ":memory:" && !dbPath.startsWith("/")) dbPath = join(this.cwd, dbPath);
     } else {
       dbPath = resolveDefaultMemoryDbPath();
     }
@@ -1151,7 +1151,7 @@ function readScopedMemoryAverages(
   contextScope: string,
 ): { validityAvg: number; usefulnessAvg: number } {
   try {
-    const memDb = new Database(memoryDbPath, { readonly: true });
+    const memDb = openDatabase(memoryDbPath, { readonly: true });
     try {
       return getMemorySignalAverages(memDb, contextScope);
     } finally {

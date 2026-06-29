@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -342,7 +342,7 @@ describe('parseRipgrepEvents', () => {
   });
 
   it('sets truncated and fires onTruncate when max_results is reached', () => {
-    const onTruncate = vi.fn();
+    const onTruncate = mock();
     const mk = (n: number) =>
       JSON.stringify({
         type: 'match',
@@ -368,7 +368,7 @@ describe('parseRipgrepEvents', () => {
 
   it('feedParseState accumulates state across multiple feed calls', () => {
     const state = createParseState();
-    const onTruncate = vi.fn();
+    const onTruncate = mock();
 
     // Split a single multi-file log across 3 feed calls
     const log = [
@@ -407,7 +407,7 @@ describe('parseRipgrepEvents', () => {
 
   it('feedParseState stops processing further lines once truncated', () => {
     const state = createParseState();
-    const onTruncate = vi.fn();
+    const onTruncate = mock();
     const mk = (n: number) =>
       JSON.stringify({
         type: 'match',

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, mock } from "bun:test";
 import {
   eventsToSessionEvents,
   maybeAutoCompactClassic,
@@ -42,14 +42,14 @@ describe("auto-compact", () => {
         llm: { context_window: 10_000 },
       },
       memoryEnabled: true,
-      memoryStore: { compressTurns: vi.fn() },
+      memoryStore: { compressTurns: mock() },
       eventLog: {
-        readAllUncompressed: vi.fn(() => []),
-        markEventsAsCompressed: vi.fn(),
-        append: vi.fn(),
+        readAllUncompressed: mock(() => []),
+        markEventsAsCompressed: mock(),
+        append: mock(),
       },
       isCompactionArmed: () => false,
-      setCompactionArmed: vi.fn(),
+      setCompactionArmed: mock(),
       getContextWindowTokens: () => 10_000,
       debug: false,
     } as unknown as Session;
@@ -69,10 +69,10 @@ describe("auto-compact", () => {
       makeEvent("agent_message", { text: "c" }, "e5"),
     ];
 
-    const compressTurns = vi.fn().mockResolvedValue(2);
-    const markEventsAsCompressed = vi.fn();
-    const append = vi.fn();
-    const setCompactionArmed = vi.fn();
+    const compressTurns = mock().mockResolvedValue(2);
+    const markEventsAsCompressed = mock();
+    const append = mock();
+    const setCompactionArmed = mock();
 
     const session = {
       config: {
@@ -87,7 +87,7 @@ describe("auto-compact", () => {
       memoryEnabled: true,
       memoryStore: { compressTurns },
       eventLog: {
-        readAllUncompressed: vi.fn(() => events),
+        readAllUncompressed: mock(() => events),
         markEventsAsCompressed,
         append,
       },

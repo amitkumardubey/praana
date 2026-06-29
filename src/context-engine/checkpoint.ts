@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import {
   getSessionCheckpoint,
   listAllActivityEntries,
@@ -669,14 +669,14 @@ export class CheckpointStore {
   private checkpoint: SessionCheckpoint;
 
   private constructor(
-    private readonly db: Database.Database,
+    private readonly db: Database,
     private readonly sessionId: string,
     checkpoint: SessionCheckpoint,
   ) {
     this.checkpoint = checkpoint;
   }
 
-  static open(db: Database.Database, sessionId: string): CheckpointStore {
+  static open(db: Database, sessionId: string): CheckpointStore {
     const saved = getSessionCheckpoint(db, sessionId);
     if (saved) {
       const normalized: SessionCheckpoint = {

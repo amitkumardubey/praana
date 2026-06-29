@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "bun:test";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { listHighValueArtifacts } from "../src/context-engine/db.js";

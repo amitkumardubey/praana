@@ -13,36 +13,36 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 ## Setup & Build
 
 ```bash
-npm install
-npm run build    # TypeScript compile → dist/
-npm run dev      # Run with tsx (no build step)
-npm test         # 74 files, 851 tests, ~5s
+bun install
+bun typecheck    # TypeScript type-check (no emit)
+bun dev          # Run without build step
+bun test         # 83 files, 1010 tests, ~8s
 ```
 
-Requires Node 22+. Native dependencies are optional (see Embedder Config below).
+Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config below).
 
 ---
 
-### Global CLI (`npm link`)
+### Global CLI (`bun link`)
 
-`package.json` exposes `praana` and `pran` via `bin/praana.js`. After `npm run build`, run `npm link` and add `$(npm config get prefix)/bin` to your PATH (fnm/nvm users often need this explicitly).
+`package.json` exposes `praana` and `pran` via `bin/praana.js`. Run `bun link` and add `$(bun pm bin -g)` to your PATH.
 
 ## Running
 
 ```bash
 # Start a new session
-npm start
+bun start
 
-# Global CLI (after npm run build && npm link)
+# Global CLI (after bun link)
 praana
 pran
 praana resume <session_id>
 
 # Resume a previous session
-npm start -- resume <session_id>
+bun start -- resume <session_id>
 
 # Debug mode (saves compiled prompts, verbose tool blocks)
-PRAANA_DEBUG=true npm start
+PRAANA_DEBUG=true bun start
 
 # Explicit config file
 praana --config /path/to/praana.config.toml
@@ -128,17 +128,17 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 ## Testing
 
 ```bash
-npm test                                          # Full suite
-npx vitest run tests/compiler.test.ts             # Single file
-npx vitest run -t "should compile prompt"         # Single test
-npx vitest                                        # Watch mode
+bun test                                              # Full suite
+bun test tests/compiler.test.ts                       # Single file
+bun test --test-name-pattern "should compile prompt"  # Single test
+bun test --watch                                      # Watch mode
 ```
 
 Tests live in `tests/`. Keep the full suite passing before committing.
 
 **Conventions:**
 - Add tests for any new logic before committing.
-- Use in-memory SQLite (`:memory:`) for memory-layer tests — never use a real db path.
+- Use in-memory SQLite (`:memory:`) for memory-layer tests — always via `openDatabase()` (see Common Gotchas), never a real db path.
 - Integration tests for session lifecycle → `tests/resume.test.ts`
 - State graph unit tests → `tests/state-graph.test.ts`
 - Compiler tests → `tests/compiler.test.ts`, `tests/compile-classic.test.ts`
@@ -280,6 +280,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`.
 - The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
+- **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
 
 ---
 
@@ -290,4 +291,4 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - **Tags:** Semver — `v0.4.0` (release-please creates tags)
 - **Branch:** `main`
 - **Issue work:** Create a dedicated branch for each GitHub issue before making code changes (example: `feat/phase1-issue-56`).
-- **Before commit:** `npm run build && npm test` — both must pass clean
+- **Before commit:** `bun typecheck && bun test` — both must pass clean

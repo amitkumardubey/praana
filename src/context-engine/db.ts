@@ -1,4 +1,5 @@
-import Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
+import { openDatabase } from "../sqlite.js";
 import type {
   ActivityEntry,
   ContextArtifact,
@@ -166,9 +167,9 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
 ];
 
-function ensureScorecardResumeColumns(db: Database.Database): void {
+function ensureScorecardResumeColumns(db: Database): void {
   const existing = new Set(
-    (db.prepare("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
+    (db.query("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
       (col) => col.name,
     ),
   );
@@ -191,9 +192,9 @@ export interface DistillerStatRow {
   turn: number;
 }
 
-export function openContextEngineDb(dbPath: string): Database.Database {
-  const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
+export function openContextEngineDb(dbPath: string): Database {
+  const db = openDatabase(dbPath);
+  db.run("PRAGMA journal_mode = WAL");
   db.exec(ARTIFACT_SCHEMA);
   ensureScorecardResumeColumns(db);
   return db;
@@ -232,119 +233,119 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
 }
 
 export function findArtifactByHash(
-  db: Database.Database,
+  db: Database,
   sha256: string,
 ): ContextArtifact | null {
   const row = db
-    .prepare("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
+    .query("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
     .get(sha256) as ArtifactRow | undefined;
   return row ? rowToArtifact(row) : null;
 }
 
 export function getArtifactById(
-  db: Database.Database,
+  db: Database,
   id: string,
 ): ContextArtifact | null {
   const row = db
-    .prepare("SELECT * FROM context_artifacts WHERE id = ?")
+    .query("SELECT * FROM context_artifacts WHERE id = ?")
     .get(id) as ArtifactRow | undefined;
   return row ? rowToArtifact(row) : null;
 }
 
 export function insertArtifact(
-  db: Database.Database,
+  db: Database,
   artifact: ContextArtifact,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO context_artifacts (
       id, sha256, session_id, source_tool, command, created_turn,
       raw_tokens, raw_text, summary, content_type,
       last_accessed_turn, access_count, created_at
     ) VALUES (
-      @id, @sha256, @sessionId, @sourceTool, @command, @createdTurn,
-      @rawTokens, @rawText, @summary, @contentType,
-      @lastAccessedTurn, @accessCount, @createdAt
+      $id, $sha256, $sessionId, $sourceTool, $command, $createdTurn,
+      $rawTokens, $rawText, $summary, $contentType,
+      $lastAccessedTurn, $accessCount, $createdAt
     )`,
   ).run({
-    id: artifact.id,
-    sha256: artifact.sha256,
-    sessionId: artifact.sessionId,
-    sourceTool: artifact.sourceTool,
-    command: artifact.command ?? null,
-    createdTurn: artifact.createdTurn,
-    rawTokens: artifact.rawTokens,
-    rawText: artifact.rawText,
-    summary: artifact.summary,
-    contentType: artifact.contentType,
-    lastAccessedTurn: artifact.lastAccessedTurn,
-    accessCount: artifact.accessCount,
-    createdAt: Date.now(),
+    $id: artifact.id,
+    $sha256: artifact.sha256,
+    $sessionId: artifact.sessionId,
+    $sourceTool: artifact.sourceTool,
+    $command: artifact.command ?? null,
+    $createdTurn: artifact.createdTurn,
+    $rawTokens: artifact.rawTokens,
+    $rawText: artifact.rawText,
+    $summary: artifact.summary,
+    $contentType: artifact.contentType,
+    $lastAccessedTurn: artifact.lastAccessedTurn,
+    $accessCount: artifact.accessCount,
+    $createdAt: Date.now(),
   });
 }
 
 export function touchArtifactAccess(
-  db: Database.Database,
+  db: Database,
   id: string,
   turn: number,
 ): void {
-  db.prepare(
+  db.query(
     `UPDATE context_artifacts
-     SET last_accessed_turn = @turn, access_count = access_count + 1
-     WHERE id = @id`,
-  ).run({ id, turn });
+     SET last_accessed_turn = $turn, access_count = access_count + 1
+     WHERE id = $id`,
+  ).run({ $id: id, $turn: turn });
 }
 
 export function updateArtifactSummary(
-  db: Database.Database,
+  db: Database,
   id: string,
   summary: string,
 ): void {
-  db.prepare("UPDATE context_artifacts SET summary = @summary WHERE id = @id").run({
-    id,
-    summary,
+  db.query("UPDATE context_artifacts SET summary = $summary WHERE id = $id").run({
+    $id: id,
+    $summary: summary,
   });
 }
 
 export function insertDistillerStat(
-  db: Database.Database,
+  db: Database,
   row: DistillerStatRow,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO distiller_stats (
       session_id, tool, content_type, distiller,
       input_tokens, output_tokens, savings_pct, exec_time_ms, turn, created_at
     ) VALUES (
-      @sessionId, @tool, @contentType, @distiller,
-      @inputTokens, @outputTokens, @savingsPct, @execTimeMs, @turn, @createdAt
+      $sessionId, $tool, $contentType, $distiller,
+      $inputTokens, $outputTokens, $savingsPct, $execTimeMs, $turn, $createdAt
     )`,
   ).run({
-    sessionId: row.sessionId,
-    tool: row.tool,
-    contentType: row.contentType,
-    distiller: row.distiller,
-    inputTokens: row.inputTokens,
-    outputTokens: row.outputTokens,
-    savingsPct: row.savingsPct,
-    execTimeMs: row.execTimeMs,
-    turn: row.turn,
-    createdAt: Date.now(),
+    $sessionId: row.sessionId,
+    $tool: row.tool,
+    $contentType: row.contentType,
+    $distiller: row.distiller,
+    $inputTokens: row.inputTokens,
+    $outputTokens: row.outputTokens,
+    $savingsPct: row.savingsPct,
+    $execTimeMs: row.execTimeMs,
+    $turn: row.turn,
+    $createdAt: Date.now(),
   });
 }
 
 export function evictStaleArtifacts(
-  db: Database.Database,
+  db: Database,
   currentTurn: number,
   ttlTurns: number,
 ): number {
   const cutoff = currentTurn - ttlTurns;
   const extendedCutoff = currentTurn - ttlTurns * 2;
   const result = db
-    .prepare(
+    .query(
       `DELETE FROM context_artifacts
-       WHERE (access_count < 4 AND last_accessed_turn < @cutoff)
-          OR (access_count >= 4 AND last_accessed_turn < @extendedCutoff)`,
+       WHERE (access_count < 4 AND last_accessed_turn < $cutoff)
+          OR (access_count >= 4 AND last_accessed_turn < $extendedCutoff)`,
     )
-    .run({ cutoff, extendedCutoff });
+    .run({ $cutoff: cutoff, $extendedCutoff: extendedCutoff });
   return result.changes;
 }
 
@@ -358,7 +359,7 @@ export function evictStaleArtifacts(
  * if multiple promoted artifacts collide.
  */
 export function listHighValueArtifacts(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   minAccessCount: number,
 ): ContextArtifact[] {
@@ -368,7 +369,7 @@ export function listHighValueArtifacts(
     );
   }
   const rows = db
-    .prepare(
+    .query(
       `SELECT * FROM context_artifacts
        WHERE session_id = ?
          AND access_count >= ?
@@ -409,64 +410,64 @@ function rowToTurnRecord(row: TurnLedgerRow): TurnRecord {
 }
 
 export function getMaxLedgerTurn(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): number | null {
   const row = db
-    .prepare("SELECT MAX(turn) AS max_turn FROM turn_ledger WHERE session_id = ?")
+    .query("SELECT MAX(turn) AS max_turn FROM turn_ledger WHERE session_id = ?")
     .get(sessionId) as { max_turn: number | null } | undefined;
   return row?.max_turn ?? null;
 }
 
 export function hasLedgerTurn(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   turn: number,
 ): boolean {
   const row = db
-    .prepare("SELECT 1 FROM turn_ledger WHERE session_id = ? AND turn = ? LIMIT 1")
+    .query("SELECT 1 FROM turn_ledger WHERE session_id = ? AND turn = ? LIMIT 1")
     .get(sessionId, turn);
   return !!row;
 }
 
 export function insertTurnRecord(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   record: TurnRecord,
   searchText: string,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO turn_ledger (
       session_id, turn, user_message, assistant_message,
       tool_calls_json, artifact_ids_json, files_read_json, files_written_json,
       errors_json, token_count, search_text, timestamp
     ) VALUES (
-      @sessionId, @turn, @userMessage, @assistantMessage,
-      @toolCallsJson, @artifactIdsJson, @filesReadJson, @filesWrittenJson,
-      @errorsJson, @tokenCount, @searchText, @timestamp
+      $sessionId, $turn, $userMessage, $assistantMessage,
+      $toolCallsJson, $artifactIdsJson, $filesReadJson, $filesWrittenJson,
+      $errorsJson, $tokenCount, $searchText, $timestamp
     )`,
   ).run({
-    sessionId,
-    turn: record.turn,
-    userMessage: record.userMessage,
-    assistantMessage: record.assistantMessage,
-    toolCallsJson: JSON.stringify(record.toolCalls),
-    artifactIdsJson: JSON.stringify(record.artifactIds),
-    filesReadJson: JSON.stringify(record.filesRead),
-    filesWrittenJson: JSON.stringify(record.filesWritten),
-    errorsJson: JSON.stringify(record.errors),
-    tokenCount: record.tokenCount,
-    searchText,
-    timestamp: record.timestamp,
+    $sessionId: sessionId,
+    $turn: record.turn,
+    $userMessage: record.userMessage,
+    $assistantMessage: record.assistantMessage,
+    $toolCallsJson: JSON.stringify(record.toolCalls),
+    $artifactIdsJson: JSON.stringify(record.artifactIds),
+    $filesReadJson: JSON.stringify(record.filesRead),
+    $filesWrittenJson: JSON.stringify(record.filesWritten),
+    $errorsJson: JSON.stringify(record.errors),
+    $tokenCount: record.tokenCount,
+    $searchText: searchText,
+    $timestamp: record.timestamp,
   });
 }
 
 export function listTurnRecords(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): TurnRecord[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT * FROM turn_ledger
        WHERE session_id = ?
        ORDER BY turn ASC`,
@@ -476,23 +477,23 @@ export function listTurnRecords(
 }
 
 export function getTurnRecord(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   turn: number,
 ): TurnRecord | null {
   const row = db
-    .prepare("SELECT * FROM turn_ledger WHERE session_id = ? AND turn = ?")
+    .query("SELECT * FROM turn_ledger WHERE session_id = ? AND turn = ?")
     .get(sessionId, turn) as TurnLedgerRow | undefined;
   return row ? rowToTurnRecord(row) : null;
 }
 
 export function listArtifactIdsForTurn(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   turn: number,
 ): string[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT id FROM context_artifacts
        WHERE session_id = ? AND created_turn = ?`,
     )
@@ -501,51 +502,51 @@ export function listArtifactIdsForTurn(
 }
 
 export function insertTurnDigest(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   digest: TurnDigest,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT OR REPLACE INTO turn_digests (session_id, turn, digest_json, created_at)
-     VALUES (@sessionId, @turn, @digestJson, @createdAt)`,
+     VALUES ($sessionId, $turn, $digestJson, $createdAt)`,
   ).run({
-    sessionId,
-    turn: digest.turnId,
-    digestJson: JSON.stringify(digest),
-    createdAt: Date.now(),
+    $sessionId: sessionId,
+    $turn: digest.turnId,
+    $digestJson: JSON.stringify(digest),
+    $createdAt: Date.now(),
   });
 }
 
 export function insertActivityEntries(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   entries: ActivityEntry[],
 ): void {
   if (entries.length === 0) return;
-  const stmt = db.prepare(
+  const stmt = db.query(
     `INSERT INTO activity_log (session_id, turn, type, summary, artifact_ref, created_at)
-     VALUES (@sessionId, @turn, @type, @summary, @artifactRef, @createdAt)`,
+     VALUES ($sessionId, $turn, $type, $summary, $artifactRef, $createdAt)`,
   );
   const createdAt = Date.now();
   for (const entry of entries) {
     stmt.run({
-      sessionId,
-      turn: entry.turn,
-      type: entry.type,
-      summary: entry.summary,
-      artifactRef: entry.artifactRef ?? null,
-      createdAt,
+      $sessionId: sessionId,
+      $turn: entry.turn,
+      $type: entry.type,
+      $summary: entry.summary,
+      $artifactRef: entry.artifactRef ?? null,
+      $createdAt: createdAt,
     });
   }
 }
 
 export function listActivityEntries(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   limit: number,
 ): ActivityEntry[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT turn, type, summary, artifact_ref
        FROM activity_log
        WHERE session_id = ?
@@ -575,81 +576,81 @@ export interface PersistedExtractionState {
 }
 
 export function getExtractionState(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): PersistedExtractionState | null {
   const row = db
-    .prepare("SELECT state_json FROM extraction_state WHERE session_id = ?")
+    .query("SELECT state_json FROM extraction_state WHERE session_id = ?")
     .get(sessionId) as { state_json: string } | undefined;
   if (!row) return null;
   return JSON.parse(row.state_json) as PersistedExtractionState;
 }
 
 export function upsertExtractionState(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   state: PersistedExtractionState,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO extraction_state (session_id, state_json, updated_at)
-     VALUES (@sessionId, @stateJson, @updatedAt)
+     VALUES ($sessionId, $stateJson, $updatedAt)
      ON CONFLICT(session_id) DO UPDATE SET
        state_json = excluded.state_json,
        updated_at = excluded.updated_at`,
   ).run({
-    sessionId,
-    stateJson: JSON.stringify(state),
-    updatedAt: Date.now(),
+    $sessionId: sessionId,
+    $stateJson: JSON.stringify(state),
+    $updatedAt: Date.now(),
   });
 }
 
 export function getSessionCheckpoint(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): SessionCheckpoint | null {
   const row = db
-    .prepare("SELECT checkpoint_json FROM session_checkpoints WHERE session_id = ?")
+    .query("SELECT checkpoint_json FROM session_checkpoints WHERE session_id = ?")
     .get(sessionId) as { checkpoint_json: string } | undefined;
   if (!row) return null;
   return JSON.parse(row.checkpoint_json) as SessionCheckpoint;
 }
 
 export function upsertSessionCheckpoint(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   checkpoint: SessionCheckpoint,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO session_checkpoints (session_id, checkpoint_json, updated_at)
-     VALUES (@sessionId, @checkpointJson, @updatedAt)
+     VALUES ($sessionId, $checkpointJson, $updatedAt)
      ON CONFLICT(session_id) DO UPDATE SET
        checkpoint_json = excluded.checkpoint_json,
        updated_at = excluded.updated_at`,
   ).run({
-    sessionId,
-    checkpointJson: JSON.stringify(checkpoint),
-    updatedAt: Date.now(),
+    $sessionId: sessionId,
+    $checkpointJson: JSON.stringify(checkpoint),
+    $updatedAt: Date.now(),
   });
 }
 
 export function getTurnDigest(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   turn: number,
 ): TurnDigest | null {
   const row = db
-    .prepare("SELECT digest_json FROM turn_digests WHERE session_id = ? AND turn = ?")
+    .query("SELECT digest_json FROM turn_digests WHERE session_id = ? AND turn = ?")
     .get(sessionId, turn) as { digest_json: string } | undefined;
   if (!row) return null;
   return normalizeStoredTurnDigest(JSON.parse(row.digest_json));
 }
 
 export function listTurnDigests(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): TurnDigest[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT digest_json FROM turn_digests
        WHERE session_id = ?
        ORDER BY turn ASC`,
@@ -670,11 +671,11 @@ function normalizeStoredTurnDigest(raw: TurnDigest): TurnDigest {
 }
 
 export function listSessionArtifacts(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): ContextArtifact[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT * FROM context_artifacts
        WHERE session_id = ?
        ORDER BY created_turn ASC, id ASC`,
@@ -684,21 +685,21 @@ export function listSessionArtifacts(
 }
 
 export function countSessionArtifacts(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): number {
   const row = db
-    .prepare("SELECT COUNT(*) AS count FROM context_artifacts WHERE session_id = ?")
+    .query("SELECT COUNT(*) AS count FROM context_artifacts WHERE session_id = ?")
     .get(sessionId) as { count: number };
   return row.count;
 }
 
 export function listAllActivityEntries(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): ActivityEntry[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT turn, type, summary, artifact_ref
        FROM activity_log
        WHERE session_id = ?
@@ -731,30 +732,30 @@ export interface SessionStatsRow {
 }
 
 export function insertArtifactAccess(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   artifactId: string,
   accessType: ArtifactAccessType,
   turn: number,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO artifact_access (artifact_id, session_id, access_type, turn, created_at)
-     VALUES (@artifactId, @sessionId, @accessType, @turn, @createdAt)`,
+     VALUES ($artifactId, $sessionId, $accessType, $turn, $createdAt)`,
   ).run({
-    artifactId,
-    sessionId,
-    accessType,
-    turn,
-    createdAt: Date.now(),
+    $artifactId: artifactId,
+    $sessionId: sessionId,
+    $accessType: accessType,
+    $turn: turn,
+    $createdAt: Date.now(),
   });
 }
 
 export function getSessionStatsRow(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): SessionStatsRow | null {
   const row = db
-    .prepare(
+    .query(
       `SELECT session_id, context_engine_enabled, pressure_events, compaction_triggers, artifact_retrievals,
               total_distiller_savings, total_turns
        FROM session_stats WHERE session_id = ?`,
@@ -783,20 +784,24 @@ export function getSessionStatsRow(
 }
 
 function ensureSessionStatsRow(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   contextEngineEnabled = false,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO session_stats (
       session_id, context_engine_enabled, pressure_events, compaction_triggers, artifact_retrievals,
       total_distiller_savings, total_turns, updated_at
-    ) VALUES (@sessionId, @contextEngineEnabled, 0, 0, 0, 0, 0, @updatedAt)`,
-  ).run({ sessionId, contextEngineEnabled: contextEngineEnabled ? 1 : 0, updatedAt: Date.now() });
+    ) VALUES ($sessionId, $contextEngineEnabled, 0, 0, 0, 0, 0, $updatedAt)`,
+  ).run({
+    $sessionId: sessionId,
+    $contextEngineEnabled: contextEngineEnabled ? 1 : 0,
+    $updatedAt: Date.now(),
+  });
 }
 
 export function incrementSessionStat(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   field: "pressure_events" | "compaction_triggers" | "artifact_retrievals",
   amount = 1,
@@ -805,38 +810,38 @@ export function incrementSessionStat(
   ensureSessionStatsRow(db, sessionId, contextEngineEnabled);
   db.prepare(
     `UPDATE session_stats
-     SET ${field} = ${field} + @amount, updated_at = @updatedAt
-     WHERE session_id = @sessionId`,
-  ).run({ sessionId, amount, updatedAt: Date.now() });
+     SET ${field} = ${field} + $amount, updated_at = $updatedAt
+     WHERE session_id = $sessionId`,
+  ).run({ $sessionId: sessionId, $amount: amount, $updatedAt: Date.now() });
 }
 
 export function finalizeSessionStats(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   totalTurns: number,
   contextEngineEnabled = false,
 ): SessionStatsRow {
   ensureSessionStatsRow(db, sessionId, contextEngineEnabled);
   const savingsRow = db
-    .prepare(
+    .query(
       `SELECT COALESCE(SUM(input_tokens - output_tokens), 0) AS savings
        FROM distiller_stats WHERE session_id = ?`,
     )
     .get(sessionId) as { savings: number };
 
-  db.prepare(
+  db.query(
     `UPDATE session_stats
-     SET total_turns = @totalTurns,
-         total_distiller_savings = @savings,
-         context_engine_enabled = @contextEngineEnabled,
-         updated_at = @updatedAt
-     WHERE session_id = @sessionId`,
+     SET total_turns = $totalTurns,
+         total_distiller_savings = $savings,
+         context_engine_enabled = $contextEngineEnabled,
+         updated_at = $updatedAt
+     WHERE session_id = $sessionId`,
   ).run({
-    sessionId,
-    totalTurns,
-    savings: savingsRow.savings,
-    contextEngineEnabled: contextEngineEnabled ? 1 : 0,
-    updatedAt: Date.now(),
+    $sessionId: sessionId,
+    $totalTurns: totalTurns,
+    $savings: savingsRow.savings,
+    $contextEngineEnabled: contextEngineEnabled ? 1 : 0,
+    $updatedAt: Date.now(),
   });
 
   return getSessionStatsRow(db, sessionId)!;
@@ -852,11 +857,11 @@ export interface DistillerCostRow {
 }
 
 export function listDistillerCostRanking(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): DistillerCostRow[] {
   const rows = db
-    .prepare(
+    .query(
       `SELECT distiller, tool,
               COUNT(*) AS runs,
               AVG(input_tokens) AS avg_input,
@@ -887,12 +892,12 @@ export function listDistillerCostRanking(
 }
 
 export function countArtifactAccessByType(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
   accessType: ArtifactAccessType,
 ): number {
   const row = db
-    .prepare(
+    .query(
       `SELECT COUNT(*) AS count FROM artifact_access
        WHERE session_id = ? AND access_type = ?`,
     )

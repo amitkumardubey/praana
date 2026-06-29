@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, spyOn } from "bun:test";
 import { renderMarkdown, writeMarkdown } from '../src/render.js';
 import { extractCellText, computeColWidths } from '../src/ui/tui/markdown-render.js';
 import type { Tokens } from 'marked';
@@ -157,7 +157,7 @@ describe('writeMarkdown', () => {
   });
 
   it('should default to process.stdout', () => {
-    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const spy = spyOn(process.stdout, 'write').mockImplementation(() => true);
     writeMarkdown('test');
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();

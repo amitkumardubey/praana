@@ -1,8 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { Database } from "bun:sqlite";
 import {
   ScorecardTracker,
   createNullScorecard,
@@ -23,7 +23,7 @@ function memoryAveragesProvider(contextScope?: string) {
 
 describe("ScorecardTracker", () => {
   let dbPath: string;
-  let db: Database.Database;
+  let db: Database;
 
   afterEach(() => {
     try {
@@ -38,7 +38,7 @@ describe("ScorecardTracker", () => {
     }
   });
 
-  function createDb(): Database.Database {
+  function createDb(): Database {
     dbPath = join(mkdtempSync(join(tmpdir(), "praana-scorecard-")), "context.db");
     db = openContextEngineDb(dbPath);
     return db;

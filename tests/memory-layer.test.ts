@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 import { effectiveValidity, HALF_LIFE_DAYS } from "../src/memory/confidence.js";

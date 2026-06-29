@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, it, expect, afterEach, mock } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -74,22 +74,22 @@ describe("Session.clearState", () => {
 
 describe("clear slash commands", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    mock.restore();
   });
 
   it.each(["/clear", "/new"])("%s clears state and logs the triggering command", async (command) => {
     const appended: unknown[] = [];
-    const clearState = vi.fn();
+    const clearState = mock();
     const session = {
       clearState,
-      persistStateGraphCheckpoint: vi.fn(),
+      persistStateGraphCheckpoint: mock(),
       eventLog: {
-        append: vi.fn((event: unknown) => appended.push(event)),
+        append: mock((event: unknown) => appended.push(event)),
       },
     } as unknown as Session;
     const result = await executeSlashCommand(command, session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 

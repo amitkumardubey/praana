@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { MemoryStore } from "../src/memory/index.js";
 import { createMemoryTools, mirrorToCognitiveMemory } from "../src/tools/memory.js";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
@@ -7,18 +7,18 @@ import type { StateGraph } from "../src/state-graph.js";
 
 function mockEventLog(): EventLog {
   return {
-    append: vi.fn(),
-    search: vi.fn().mockReturnValue([]),
-    readLast: vi.fn().mockReturnValue([]),
-    close: vi.fn(),
-    eventCount: vi.fn().mockReturnValue(0),
+    append: mock(),
+    search: mock().mockReturnValue([]),
+    readLast: mock().mockReturnValue([]),
+    close: mock(),
+    eventCount: mock().mockReturnValue(0),
   } as unknown as EventLog;
 }
 
 function mockStateGraph(): StateGraph {
   let counter = 0;
   return {
-    create: vi.fn((kind: string, payload: Record<string, unknown>) => {
+    create: mock((kind: string, payload: Record<string, unknown>) => {
       counter++;
       return {
         id: `state-${counter}`,

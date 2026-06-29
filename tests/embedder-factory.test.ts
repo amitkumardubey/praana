@@ -1,4 +1,4 @@
-import { beforeAll, describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "bun:test";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
 import {
   TransformersEmbedder,

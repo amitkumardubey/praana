@@ -1,14 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
+import * as compileClassicActual from "../src/compile-classic.js";
+import * as llmActual from "../src/llm.js";
+import * as toolsActual from "../src/tools/index.js";
+import * as piAiActual from "@earendil-works/pi-ai";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 
-vi.mock("@earendil-works/pi-ai", () => ({
-  stream: vi.fn(),
+// Snapshot real exports BEFORE mock.module updates live bindings
+const ccReal = { ...compileClassicActual };
+const llmReal = { ...llmActual };
+const toolsReal = { ...toolsActual };
+const piAiReal = { ...piAiActual };
+
+mock.module("@earendil-works/pi-ai", () => ({
+  stream: mock(),
 }));
 
-vi.mock("../src/compiler.js", () => ({}));
+mock.module("../src/compiler.js", () => ({}));
 
-vi.mock("../src/compile-classic.js", () => ({
-  compileClassicWithMetrics: vi.fn(() => ({
+mock.module("../src/compile-classic.js", () => ({
+  compileClassicWithMetrics: mock(() => ({
     prompt: "classic compiled",
     metrics: {
       totalTokens: 100,
@@ -31,16 +41,16 @@ vi.mock("../src/compile-classic.js", () => ({
   })),
 }));
 
-vi.mock("../src/tools/index.js", () => ({
-  createAllTools: vi.fn(() => ({})),
-  describeTools: vi.fn(() => []),
+mock.module("../src/tools/index.js", () => ({
+  createAllTools: mock(() => ({})),
+  describeTools: mock(() => []),
 }));
 
-vi.mock("../src/llm.js", () => ({
-  createProvider: vi.fn(() => vi.fn(() => ({}))),
-  resolveModel: vi.fn((name: string) => name),
-  inferReasoningModel: vi.fn(() => false),
-  getReasoningEffort: vi.fn(() => undefined),
+mock.module("../src/llm.js", () => ({
+  createProvider: mock(() => mock(() => ({}))),
+  resolveModel: mock((name: string) => name),
+  inferReasoningModel: mock(() => false),
+  getReasoningEffort: mock(() => undefined),
 }));
 
 import { stream as piStream } from "@earendil-works/pi-ai";
@@ -50,22 +60,22 @@ import type { Session } from "../src/session.js";
 function mockSession(): Session {
   return {
     eventLog: {
-      append: vi.fn(),
-      readLast: vi.fn(() => []),
-      readLastUncompressed: vi.fn(() => []),
-      readAll: vi.fn(() => []),
-      readAllUncompressed: vi.fn(() => []),
-      markEventsAsCompressed: vi.fn(),
+      append: mock(),
+      readLast: mock(() => []),
+      readLastUncompressed: mock(() => []),
+      readAll: mock(() => []),
+      readAllUncompressed: mock(() => []),
+      markEventsAsCompressed: mock(),
     },
     stateGraph: {
-      autoHydrate: vi.fn(() => []),
-      get: vi.fn(),
-      getTurnCount: vi.fn(() => 0),
-      getActive: vi.fn(() => []),
-      getPeripheral: vi.fn(() => []),
-      getTouchedTurn: vi.fn(() => 0),
-      setTier: vi.fn(),
-      list: vi.fn(() => []),
+      autoHydrate: mock(() => []),
+      get: mock(),
+      getTurnCount: mock(() => 0),
+      getActive: mock(() => []),
+      getPeripheral: mock(() => []),
+      getTouchedTurn: mock(() => 0),
+      setTier: mock(),
+      list: mock(() => []),
     },
     config: {
       llm: { provider: "openrouter", model: "test/model" },
@@ -87,54 +97,54 @@ function mockSession(): Session {
     memoryStore: null,
     contextEngine: null,
     scorecard: createNullScorecard(),
-    isIncognito: vi.fn(() => false),
-    isContextEngineEnabled: vi.fn(() => false),
-    getTurnCount: vi.fn(() => 0),
+    isIncognito: mock(() => false),
+    isContextEngineEnabled: mock(() => false),
+    getTurnCount: mock(() => 0),
     skillRuntime: {
-      cleanupStaleSkills: vi.fn(),
-      drainEvents: vi.fn(() => []),
-      trackLoad: vi.fn(),
-      getLoadedSkillNames: vi.fn(() => []),
+      cleanupStaleSkills: mock(),
+      drainEvents: mock(() => []),
+      trackLoad: mock(),
+      getLoadedSkillNames: mock(() => []),
     },
     agentsContext: null,
     skills: [],
     promptDir: "/tmp",
-    setLastCompileMetrics: vi.fn(),
+    setLastCompileMetrics: mock(),
     setLastCompileScoreRecords(_records?: unknown, _mode?: unknown, _ratio?: unknown) {},
-    setLastUserInput: vi.fn(),
-    getLastUserInput: vi.fn(() => ""),
-    isCompactionArmed: vi.fn(() => false),
-    setCompactionArmed: vi.fn(),
-    recordInputTokens: vi.fn(),
-    recordOutputTokens: vi.fn(),
-    incrementTurn: vi.fn(),
-    persistStateGraphCheckpoint: vi.fn(),
-    getMemoryStats: vi.fn(() => ({
+    setLastUserInput: mock(),
+    getLastUserInput: mock(() => ""),
+    isCompactionArmed: mock(() => false),
+    setCompactionArmed: mock(),
+    recordInputTokens: mock(),
+    recordOutputTokens: mock(),
+    incrementTurn: mock(),
+    persistStateGraphCheckpoint: mock(),
+    getMemoryStats: mock(() => ({
       total: 0,
       active: 0,
       soft: 0,
       hard: 0,
       byKind: {},
     })),
-    ensureModelContextWindow: vi.fn(async () => 128_000),
-    getContextWindowTokens: vi.fn(() => 128_000),
-    getEffectiveProvider: vi.fn(() => "openrouter"),
-    getEffectiveLlmConfig: vi.fn(function (this: { config: { llm: unknown } }) {
+    ensureModelContextWindow: mock(async () => 128_000),
+    getContextWindowTokens: mock(() => 128_000),
+    getEffectiveProvider: mock(() => "openrouter"),
+    getEffectiveLlmConfig: mock(function (this: { config: { llm: unknown } }) {
       return this.config.llm;
     }),
-    getActiveModelId: vi.fn(() => "test/model"),
-    getActiveModelLabel: vi.fn(() => "openrouter/test/model"),
+    getActiveModelId: mock(() => "test/model"),
+    getActiveModelLabel: mock(() => "openrouter/test/model"),
   } as unknown as Session;
 }
 
 describe("runTurn with UI sink", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    mock.clearAllMocks();
+    spyOn(process.stdout, "write").mockImplementation(() => true);
   });
 
   it("routes text deltas through sink instead of stdout", async () => {
-    const stdoutWrite = vi.mocked(process.stdout.write);
+    const stdoutWrite = (process.stdout.write as ReturnType<typeof mock>);
     stdoutWrite.mockClear();
 
     async function* mockStream() {
@@ -145,10 +155,10 @@ describe("runTurn with UI sink", () => {
         message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
       };
     }
-    vi.mocked(piStream).mockReturnValue(mockStream() as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(mockStream() as any);
 
-    const onTextDelta = vi.fn();
-    const onMemoryBanner = vi.fn();
+    const onTextDelta = mock();
+    const onMemoryBanner = mock();
     const session = mockSession();
 
     await runTurn(session, "hi", undefined, {
@@ -162,4 +172,12 @@ describe("runTurn with UI sink", () => {
     );
     expect(stdoutTextCalls).toHaveLength(0);
   });
+});
+// Restore real modules after this file to prevent cross-test pollution
+afterAll(() => {
+  mock.module("../src/compile-classic.js", () => ccReal);
+  mock.module("../src/llm.js", () => llmReal);
+  mock.module("../src/tools/index.js", () => toolsReal);
+  mock.module("@earendil-works/pi-ai", () => piAiReal);
+  mock.module("../src/compiler.js", () => ({}));
 });

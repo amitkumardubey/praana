@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { parseCliArgs, resolveUiMode, resolveScreenMode } from "../src/cli-args.js";
 
 describe("parseCliArgs", () => {

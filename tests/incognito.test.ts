@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { Session } from "../src/session.js";
 import type { PraanaConfig } from "../src/types.js";
 import { join } from "node:path";

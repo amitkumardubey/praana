@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import type { StateGraph } from "../state-graph.js";
 import type { ContextEngineConfig } from "../types.js";
 import { ActivityLog, deriveActivityEntries } from "./activity-log.js";
@@ -29,7 +29,7 @@ export class TurnExtraction {
   private lastDigest: TurnDigest | null = null;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: Database,
     private readonly sessionId: string,
     private readonly config: ContextEngineConfig,
   ) {

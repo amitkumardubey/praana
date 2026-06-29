@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { createSummarizer } from "../src/memory/summarizer-factory.js";
 import { pickDefaultChatModel } from "../src/memory/ollama-summarizer.js";
 import type { MemoryConfig } from "../src/types.js";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import { createDefaultDistillerRegistry, inferContentTypeFromTool } from "../domain/coding-domain.js";
 import { classifyContentType } from "./classify.js";
 import { buildPendingSummary } from "./distiller.js";
@@ -74,7 +74,7 @@ interface PendingBackfill {
 }
 
 export class ArtifactStore {
-  private readonly db: Database.Database;
+  private readonly db: Database;
   private readonly sessionId: string;
   private readonly config: ContextEngineConfig;
   private readonly distillers: DistillerRegistry;
@@ -82,7 +82,7 @@ export class ArtifactStore {
   private readonly pendingBackfills: PendingBackfill[] = [];
 
   constructor(
-    db: Database.Database,
+    db: Database,
     sessionId: string,
     config: ContextEngineConfig,
     distillers: DistillerRegistry,
@@ -107,7 +107,7 @@ export class ArtifactStore {
     this.db.close();
   }
 
-  getDb(): Database.Database {
+  getDb(): Database {
     return this.db;
   }
 

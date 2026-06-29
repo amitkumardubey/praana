@@ -2,7 +2,8 @@
 // PRAANA Memory — SQLite Schema
 // ============================================================
 
-import Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
+import { openDatabase } from "../sqlite.js";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryEntry, MemoryKind } from "./types.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
@@ -77,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_scopes_scope      ON entry_scopes(scope);
 `;
 
 export interface OpenMemoryDbResult {
-  db: Database.Database;
+  db: Database;
   needsReembed: boolean;
 }
 
@@ -86,10 +87,10 @@ export function openMemoryDb(
   embeddingDim: number = EMBEDDING_DIM,
   embeddingBackend?: string,
 ): OpenMemoryDbResult {
-  const db = new Database(path);
+  const db = openDatabase(path);
   sqliteVec.load(db);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA foreign_keys = ON");
   db.exec(BASE_SCHEMA);
   ensureLayerColumns(db);
   ensureSignalColumns(db);
@@ -107,9 +108,9 @@ export function openMemoryDb(
   };
 }
 
-function ensureLayerColumns(db: Database.Database): void {
+function ensureLayerColumns(db: Database): void {
   const columns = db
-    .prepare("PRAGMA table_info(entries)")
+    .query("PRAGMA table_info(entries)")
     .all() as Array<{ name: string }>;
   const names = new Set(columns.map((c) => c.name));
 
@@ -131,11 +132,11 @@ function ensureLayerColumns(db: Database.Database): void {
  * Uses SQLite ALTER TABLE RENAME COLUMN (requires SQLite >= 3.25.0).
  * Idempotent: tracks migration via memory_meta key.
  */
-function ensureSignalColumns(db: Database.Database): void {
+function ensureSignalColumns(db: Database): void {
   if (getMemoryMeta(db, SIGNAL_COLUMNS_MIGRATED_KEY) === "1") return;
 
   const columns = db
-    .prepare("PRAGMA table_info(entries)")
+    .query("PRAGMA table_info(entries)")
     .all() as Array<{ name: string }>;
   const names = new Set(columns.map((c) => c.name));
 
@@ -156,11 +157,11 @@ function ensureSignalColumns(db: Database.Database): void {
  * M2-part-2 migration: Add used/good columns to pending_reinforcements
  * for utility tracking. Idempotent.
  */
-function ensureUtilityColumns(db: Database.Database): void {
+function ensureUtilityColumns(db: Database): void {
   if (getMemoryMeta(db, UTILITY_COLUMNS_MIGRATED_KEY) === "1") return;
 
   const columns = db
-    .prepare("PRAGMA table_info(pending_reinforcements)")
+    .query("PRAGMA table_info(pending_reinforcements)")
     .all() as Array<{ name: string }>;
   const names = new Set(columns.map((c) => c.name));
 
@@ -179,7 +180,7 @@ function ensureUtilityColumns(db: Database.Database): void {
  * Idempotent — CREATE TABLE IF NOT EXISTS plus a memory_meta flag for older DBs
  * that pre-date the schema having it inline.
  */
-function ensureConfirmationsTable(db: Database.Database): void {
+function ensureConfirmationsTable(db: Database): void {
   if (getMemoryMeta(db, CONFIRMATIONS_TABLE_MIGRATED_KEY) === "1") return;
   db.exec(`
     CREATE TABLE IF NOT EXISTS confirmations (
@@ -194,7 +195,7 @@ function ensureConfirmationsTable(db: Database.Database): void {
   setMemoryMeta(db, CONFIRMATIONS_TABLE_MIGRATED_KEY, "1");
 }
 
-function ensureFtsBackfill(db: Database.Database): void {
+function ensureFtsBackfill(db: Database): void {
   db.exec(`
     DELETE FROM entries_fts
     WHERE entry_id NOT IN (SELECT id FROM entries);
@@ -208,17 +209,17 @@ function ensureFtsBackfill(db: Database.Database): void {
   `);
 }
 
-function ensureVectorTable(db: Database.Database, dim: number): boolean {
+function ensureVectorTable(db: Database, dim: number): boolean {
   const row = db
-    .prepare("SELECT value FROM memory_meta WHERE key = 'embedding_dim'")
+    .query("SELECT value FROM memory_meta WHERE key = 'embedding_dim'")
     .get() as { value: string } | undefined;
   const storedDim = row ? parseInt(row.value, 10) : EMBEDDING_DIM;
   const reembedFlag = db
-    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .query("SELECT value FROM memory_meta WHERE key = ?")
     .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
 
   const vecExists = db
-    .prepare(
+    .query(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
     )
     .get();
@@ -239,28 +240,28 @@ function ensureVectorTable(db: Database.Database, dim: number): boolean {
     )
   `);
 
-  db.prepare(
+  db.query(
     "INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('embedding_dim', ?)",
   ).run(String(dim));
 
   return Boolean(vecExists) || reembedFlag?.value === "1";
 }
 
-export function getStoredEmbeddingBackend(db: Database.Database): string | null {
+export function getStoredEmbeddingBackend(db: Database): string | null {
   const row = db
-    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .query("SELECT value FROM memory_meta WHERE key = ?")
     .get(EMBEDDING_BACKEND_KEY) as { value: string } | undefined;
   return row?.value ?? null;
 }
 
-export function setStoredEmbeddingBackend(db: Database.Database, backend: string): void {
-  db.prepare(
+export function setStoredEmbeddingBackend(db: Database, backend: string): void {
+  db.query(
     "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, ?)",
   ).run(EMBEDDING_BACKEND_KEY, backend);
 }
 
 export function ensureEmbeddingBackend(
-  db: Database.Database,
+  db: Database,
   backend: string,
 ): boolean {
   const stored = getStoredEmbeddingBackend(db);
@@ -275,49 +276,49 @@ export function ensureEmbeddingBackend(
   return true;
 }
 
-export function markReembedNeeded(db: Database.Database): void {
-  db.prepare("INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, '1')").run(
+export function markReembedNeeded(db: Database): void {
+  db.query("INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, '1')").run(
     REEMBED_NEEDED_KEY,
   );
 }
 
-export function clearReembedNeeded(db: Database.Database): void {
-  db.prepare("DELETE FROM memory_meta WHERE key = ?").run(REEMBED_NEEDED_KEY);
+export function clearReembedNeeded(db: Database): void {
+  db.query("DELETE FROM memory_meta WHERE key = ?").run(REEMBED_NEEDED_KEY);
 }
 
-export function isReembedPending(db: Database.Database): boolean {
+export function isReembedPending(db: Database): boolean {
   const row = db
-    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .query("SELECT value FROM memory_meta WHERE key = ?")
     .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
   return row?.value === "1";
 }
 
 export function getMemoryMeta(
-  db: Database.Database,
+  db: Database,
   key: string,
 ): string | undefined {
   const row = db
-    .prepare("SELECT value FROM memory_meta WHERE key = ?")
+    .query("SELECT value FROM memory_meta WHERE key = ?")
     .get(key) as { value: string } | undefined;
   return row?.value;
 }
 
 export function setMemoryMeta(
-  db: Database.Database,
+  db: Database,
   key: string,
   value: string,
 ): void {
-  db.prepare(
+  db.query(
     "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, ?)",
   ).run(key, value);
 }
 
 export function incrementConfirmationCount(
-  db: Database.Database,
+  db: Database,
   id: string,
   delta = 1,
 ): void {
-  db.prepare(
+  db.query(
     "UPDATE entries SET confirmation_count = confirmation_count + ? WHERE id = ?",
   ).run(delta, id);
 }
@@ -331,12 +332,12 @@ export function incrementConfirmationCount(
  * session in `countDistinctConfirmingSessions`.
  */
 export function recordConfirmation(
-  db: Database.Database,
+  db: Database,
   entryId: string,
   sessionId: string,
   now: number,
 ): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO confirmations (entry_id, session_id, ts)
      VALUES (?, ?, ?)`,
   ).run(entryId, sessionId, now);
@@ -347,11 +348,11 @@ export function recordConfirmation(
  * Used by the M4 promotion gate (>= 2 distinct sessions required).
  */
 export function countDistinctConfirmingSessions(
-  db: Database.Database,
+  db: Database,
   entryId: string,
 ): number {
   const row = db
-    .prepare(
+    .query(
       "SELECT COUNT(*) AS c FROM confirmations WHERE entry_id = ?",
     )
     .get(entryId) as { c: number };
@@ -363,7 +364,7 @@ export function countDistinctConfirmingSessions(
  * Single query — avoids N+1 at session end.
  */
 export function distinctConfirmationCountsByEntry(
-  db: Database.Database,
+  db: Database,
   entryIds: string[],
 ): Map<string, number> {
   const result = new Map<string, number>();
@@ -384,7 +385,7 @@ export function distinctConfirmationCountsByEntry(
 }
 
 export function mergeEntryMetadata(
-  db: Database.Database,
+  db: Database,
   keeperId: string,
   duplicate: MemoryEntry,
 ): void {
@@ -393,29 +394,29 @@ export function mergeEntryMetadata(
   const keeper = getEntryById(db, keeperId);
   if (!keeper) return;
   const lastSeenAt = Math.max(keeper.last_seen_at, duplicate.last_seen_at);
-  db.prepare("UPDATE entries SET last_seen_at = ? WHERE id = ?").run(
+  db.query("UPDATE entries SET last_seen_at = ? WHERE id = ?").run(
     lastSeenAt,
     keeperId,
   );
   if (duplicate.pinned) {
-    db.prepare("UPDATE entries SET pinned = 1 WHERE id = ?").run(keeperId);
+    db.query("UPDATE entries SET pinned = 1 WHERE id = ?").run(keeperId);
   }
 }
 
 export function getEmbedding(
-  db: Database.Database,
+  db: Database,
   entryId: string,
 ): Float32Array | null {
   const vecExists = db
-    .prepare(
+    .query(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
     )
     .get();
   if (!vecExists) return null;
 
   const row = db
-    .prepare("SELECT embedding FROM entries_vec WHERE entry_id = ?")
-    .get(entryId) as { embedding: Buffer } | undefined;
+    .query("SELECT embedding FROM entries_vec WHERE entry_id = ?")
+    .get(entryId) as { embedding: Uint8Array } | null;
   if (!row) return null;
   return new Float32Array(
     row.embedding.buffer,
@@ -424,14 +425,14 @@ export function getEmbedding(
   );
 }
 
-export function countVectorEmbeddings(db: Database.Database): number {
+export function countVectorEmbeddings(db: Database): number {
   const vecExists = db
-    .prepare(
+    .query(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
     )
     .get();
   if (!vecExists) return 0;
-  const row = db.prepare("SELECT COUNT(*) as c FROM entries_vec").get() as {
+  const row = db.query("SELECT COUNT(*) as c FROM entries_vec").get() as {
     c: number;
   };
   return row.c;
@@ -439,8 +440,8 @@ export function countVectorEmbeddings(db: Database.Database): number {
 
 // ---- Entry CRUD ----
 
-export function insertEntry(db: Database.Database, e: MemoryEntry): void {
-  const stmt = db.prepare(
+export function insertEntry(db: Database, e: MemoryEntry): void {
+  const stmt = db.query(
     `INSERT INTO entries (id, kind, content, validity, usefulness, pinned, layer, confirmation_count, created_at, last_seen_at, session_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
@@ -458,24 +459,24 @@ export function insertEntry(db: Database.Database, e: MemoryEntry): void {
     e.session_id,
   );
 
-  const scopeStmt = db.prepare(
+  const scopeStmt = db.query(
     `INSERT OR IGNORE INTO entry_scopes (entry_id, scope) VALUES (?, ?)`,
   );
   for (const scope of e.scopes) {
     scopeStmt.run(e.id, scope);
   }
 
-  db.prepare(
+  db.query(
     "INSERT INTO entries_fts (content, entry_id) VALUES (?, ?)",
   ).run(e.content, e.id);
 }
 
-export function touchEntry(db: Database.Database, id: string, now: number): void {
-  db.prepare("UPDATE entries SET last_seen_at = ? WHERE id = ?").run(now, id);
+export function touchEntry(db: Database, id: string, now: number): void {
+  db.query("UPDATE entries SET last_seen_at = ? WHERE id = ?").run(now, id);
 }
 
-export function reinforceEntry(db: Database.Database, id: string, alpha = 0.15): void {
-  db.prepare(
+export function reinforceEntry(db: Database, id: string, alpha = 0.15): void {
+  db.query(
     `
     UPDATE entries
     SET validity = MIN(1.0, validity + (1.0 - validity) * ?), last_seen_at = ?
@@ -485,18 +486,18 @@ export function reinforceEntry(db: Database.Database, id: string, alpha = 0.15):
 }
 
 // TODO: wire into a scheduled validity-decay pass (not yet called from production code).
-export function weakenEntry(db: Database.Database, id: string, beta = 0.3): void {
-  db.prepare(
+export function weakenEntry(db: Database, id: string, beta = 0.3): void {
+  db.query(
     `UPDATE entries SET validity = validity * (1.0 - ?) WHERE id = ?`,
   ).run(beta, id);
 }
 
 export function stampReinforcement(
-  db: Database.Database,
+  db: Database,
   entryId: string,
   sessionId: string,
 ): void {
-  db.prepare(
+  db.query(
     `
     INSERT OR IGNORE INTO pending_reinforcements (entry_id, session_id, ts, used, good)
     VALUES (?, ?, ?, 0, 0)
@@ -506,12 +507,12 @@ export function stampReinforcement(
 
 /** Mark whether a surfaced entry was actually used (acted on) during the session. */
 export function markReinforcementUsed(
-  db: Database.Database,
+  db: Database,
   entryId: string,
   sessionId: string,
   used: boolean,
 ): void {
-  db.prepare(
+  db.query(
     `UPDATE pending_reinforcements SET used = ? WHERE entry_id = ? AND session_id = ?`,
   ).run(used ? 1 : 0, entryId, sessionId);
 }
@@ -522,18 +523,18 @@ const UTILITY_BETA_IDLE = 0.05;  // decay when ¬used
 
 /** Apply a delta update to a single entry's usefulness, clamped to [0, 1]. */
 function updateUsefulness(
-  db: Database.Database,
+  db: Database,
   id: string,
   mode: "boost" | "decay" | "neutral",
 ): void {
   if (mode === "neutral") return;
 
   if (mode === "boost") {
-    db.prepare(
+    db.query(
       `UPDATE entries SET usefulness = MIN(1.0, usefulness + (1.0 - usefulness) * ?) WHERE id = ?`,
     ).run(UTILITY_ALPHA_USE, id);
   } else {
-    db.prepare(
+    db.query(
       `UPDATE entries SET usefulness = usefulness * (1.0 - ?) WHERE id = ?`,
     ).run(UTILITY_BETA_IDLE, id);
   }
@@ -541,12 +542,12 @@ function updateUsefulness(
 
 /** Count recalled entries marked used before session-end flush deletes the rows. */
 export function countPendingReinforcementsUsed(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): number {
   try {
     const row = db
-      .prepare(
+      .query(
         "SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1",
       )
       .get(sessionId) as { c: number } | undefined;
@@ -556,9 +557,9 @@ export function countPendingReinforcementsUsed(
   }
 }
 
-export function flushReinforcements(db: Database.Database, sessionId: string): void {
+export function flushReinforcements(db: Database, sessionId: string): void {
   const rows = db
-    .prepare(
+    .query(
       "SELECT entry_id, used, good FROM pending_reinforcements WHERE session_id = ?",
     )
     .all(sessionId) as { entry_id: string; used: number; good: number }[];
@@ -580,7 +581,7 @@ export function flushReinforcements(db: Database.Database, sessionId: string): v
     }
   }
 
-  db.prepare("DELETE FROM pending_reinforcements WHERE session_id = ?").run(sessionId);
+  db.query("DELETE FROM pending_reinforcements WHERE session_id = ?").run(sessionId);
 }
 
 /**
@@ -588,11 +589,11 @@ export function flushReinforcements(db: Database.Database, sessionId: string): v
  * with their content in a single JOIN — avoids N+1 getEntryById calls at session end.
  */
 export function getSurfacedEntriesWithContent(
-  db: Database.Database,
+  db: Database,
   sessionId: string,
 ): Array<{ id: string; content: string }> {
   return (db
-    .prepare(
+    .query(
       `SELECT pr.entry_id AS id, e.content
        FROM pending_reinforcements pr
        JOIN entries e ON e.id = pr.entry_id
@@ -601,8 +602,8 @@ export function getSurfacedEntriesWithContent(
     .all(sessionId) as { id: string; content: string }[]);
 }
 
-export function getEntryById(db: Database.Database, id: string): MemoryEntry | undefined {
-  const row = db.prepare("SELECT * FROM entries WHERE id = ?").get(id) as Record<
+export function getEntryById(db: Database, id: string): MemoryEntry | undefined {
+  const row = db.query("SELECT * FROM entries WHERE id = ?").get(id) as Record<
     string,
     unknown
   > | undefined;
@@ -610,14 +611,14 @@ export function getEntryById(db: Database.Database, id: string): MemoryEntry | u
   return rowToEntry(db, row);
 }
 
-export function getAllEntries(db: Database.Database): MemoryEntry[] {
+export function getAllEntries(db: Database): MemoryEntry[] {
   const rows = db
-    .prepare("SELECT * FROM entries ORDER BY created_at DESC")
+    .query("SELECT * FROM entries ORDER BY created_at DESC")
     .all() as Record<string, unknown>[];
   return rows.map((r) => rowToEntry(db, r));
 }
 
-export function getEntriesByScope(db: Database.Database, scopes: string[]): MemoryEntry[] {
+export function getEntriesByScope(db: Database, scopes: string[]): MemoryEntry[] {
   const placeholders = scopes.map(() => "?").join(",");
   const sql = `
     SELECT e.* FROM entries e
@@ -631,20 +632,20 @@ export function getEntriesByScope(db: Database.Database, scopes: string[]): Memo
   return rows.map((r) => rowToEntry(db, r));
 }
 
-export function deleteEntry(db: Database.Database, id: string): void {
-  db.prepare("DELETE FROM entries WHERE id = ?").run(id);
-  db.prepare("DELETE FROM entries_vec WHERE entry_id = ?").run(id);
-  db.prepare("DELETE FROM entries_fts WHERE entry_id = ?").run(id);
+export function deleteEntry(db: Database, id: string): void {
+  db.query("DELETE FROM entries WHERE id = ?").run(id);
+  db.query("DELETE FROM entries_vec WHERE entry_id = ?").run(id);
+  db.query("DELETE FROM entries_fts WHERE entry_id = ?").run(id);
 }
 
-export function retractMemory(db: Database.Database, id: string): void {
-  db.prepare("UPDATE entries SET retracted = 1 WHERE id = ?").run(id);
+export function retractMemory(db: Database, id: string): void {
+  db.query("UPDATE entries SET retracted = 1 WHERE id = ?").run(id);
 }
 
-export function rowToEntry(db: Database.Database, row: Record<string, unknown>): MemoryEntry {
+export function rowToEntry(db: Database, row: Record<string, unknown>): MemoryEntry {
   const scopes = db
-    .prepare("SELECT scope FROM entry_scopes WHERE entry_id = ?")
-    .all(row.id) as { scope: string }[];
+    .query("SELECT scope FROM entry_scopes WHERE entry_id = ?")
+    .all(row.id as string) as { scope: string }[];
   return {
     id: row.id as string,
     kind: row.kind as MemoryKind,
@@ -665,7 +666,7 @@ export function rowToEntry(db: Database.Database, row: Record<string, unknown>):
 // ---- Sessions ----
 
 export function startSessionRow(
-  db: Database.Database,
+  db: Database,
   s: {
     id: string;
     agent: string;
@@ -674,19 +675,19 @@ export function startSessionRow(
     started_at: number;
   },
 ): void {
-  db.prepare(
+  db.query(
     `INSERT INTO sessions (id, agent, user_id, context_id, started_at)
      VALUES (?, ?, ?, ?, ?)`,
   ).run(s.id, s.agent, s.user_id, s.context_id, s.started_at);
 }
 
 export function endSessionRow(
-  db: Database.Database,
+  db: Database,
   id: string,
   endedAt: number,
   reason: string,
 ): void {
-  db.prepare("UPDATE sessions SET ended_at = ?, reason = ? WHERE id = ?").run(
+  db.query("UPDATE sessions SET ended_at = ?, reason = ? WHERE id = ?").run(
     endedAt,
     reason,
     id,
@@ -696,26 +697,26 @@ export function endSessionRow(
 // ---- Embeddings ----
 
 export function upsertEmbedding(
-  db: Database.Database,
+  db: Database,
   entryId: string,
   embedding: Float32Array,
 ): void {
   const buf = Buffer.from(embedding.buffer);
-  db.prepare("DELETE FROM entries_vec WHERE entry_id = ?").run(entryId);
-  db.prepare("INSERT INTO entries_vec (entry_id, embedding) VALUES (?, ?)").run(
+  db.query("DELETE FROM entries_vec WHERE entry_id = ?").run(entryId);
+  db.query("INSERT INTO entries_vec (entry_id, embedding) VALUES (?, ?)").run(
     entryId,
     buf,
   );
 }
 
 export function searchByVector(
-  db: Database.Database,
+  db: Database,
   query: Float32Array,
   k: number,
 ): Array<{ entry_id: string; distance: number }> {
   const buf = Buffer.from(query.buffer);
   return db
-    .prepare(
+    .query(
       `SELECT entry_id, distance FROM entries_vec
      WHERE embedding MATCH ? AND k = ?
      ORDER BY distance`,
@@ -724,7 +725,7 @@ export function searchByVector(
 }
 
 export function searchByFts(
-  db: Database.Database,
+  db: Database,
   query: string,
   k: number,
   filters: { scopes?: string[]; kinds?: MemoryKind[] } = {},
@@ -774,13 +775,13 @@ export function searchByFts(
  * When contextScope is set (e.g. context:<hash>), averages project-scoped entries only.
  */
 export function getMemorySignalAverages(
-  db: Database.Database,
+  db: Database,
   contextScope?: string,
 ): { validityAvg: number; usefulnessAvg: number } {
   try {
     const row = contextScope
       ? (db
-          .prepare(
+          .query(
             `SELECT AVG(e.validity) as v, AVG(e.usefulness) as u
              FROM entries e
              INNER JOIN entry_scopes s ON s.entry_id = e.id
@@ -788,7 +789,7 @@ export function getMemorySignalAverages(
           )
           .get(contextScope) as { v: number | null; u: number | null } | undefined)
       : (db
-          .prepare(
+          .query(
             "SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1",
           )
           .get() as { v: number | null; u: number | null } | undefined);
