@@ -106,4 +106,47 @@ describe("append backend live region (preserve mode)", () => {
     expect(seq).toContain("final committed line");
     expect(state.renderedLiveCount).toBe(0);
   });
+  it("counts physical (wrapped) rows when a line exceeds terminal width", () => {
+    // width=20 cols; a 45-char ASCII line occupies ceil(45/20)=3 physical rows.
+    const state = createAppendBackendState(20, 2);
+    const writes: string[] = [];
+    const backend = createAppendBackend(state, { write: (s) => writes.push(s) });
+
+    const longLine = "A".repeat(45); // 45 visible cols → 3 rows at width 20
+    backend.setLiveLines([longLine]);
+    expect(state.renderedLiveCount).toBe(3);
+
+    // Second paint must move the cursor up by 3 (the physical row count),
+    // not by 1 (the logical line count) — the core of the duplicate-line bug.
+    writes.length = 0;
+    backend.setLiveLines([longLine]);
+    const seq = writes.join("");
+    expect(seq).toContain("\x1b[3A");
+    expect(seq).not.toContain("\x1b[1A");
+  });
+
+  it("counts physical rows for ANSI-decorated lines (strips escape codes before measuring)", () => {
+    // 20-col terminal; line has ANSI colour codes but 45 visible chars → 3 rows.
+    const state = createAppendBackendState(20, 2);
+    const writes: string[] = [];
+    const backend = createAppendBackend(state, { write: (s) => writes.push(s) });
+
+    const decorated = `\x1b[32m${"B".repeat(45)}\x1b[0m`; // green 45-char text
+    backend.setLiveLines([decorated]);
+    expect(state.renderedLiveCount).toBe(3);
+
+    writes.length = 0;
+    backend.setLiveLines([decorated]);
+    expect(writes.join("")).toContain("\x1b[3A");
+  });
+
+  it("counts CJK wide chars as 2 columns each when computing physical rows", () => {
+    // 10-col terminal; "日本語テスト" = 6 chars × 2 cols = 12 visible cols → 2 rows.
+    const state = createAppendBackendState(10, 2);
+    const writes: string[] = [];
+    const backend = createAppendBackend(state, { write: (s) => writes.push(s) });
+
+    backend.setLiveLines(["日本語テスト"]); // 12 display cols → ceil(12/10) = 2 rows
+    expect(state.renderedLiveCount).toBe(2);
+  });
 });

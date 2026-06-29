@@ -31,6 +31,7 @@ import {
 import { renderTranscriptLines } from "./render-lines.js";
 import { formatStatusLine } from "../../status-bar.js";
 import * as readline from "node:readline";
+import { strWidth } from "../../terminal/core/text.js";
 
 export async function runChatShell(
   controller: AppController,
@@ -322,6 +323,12 @@ async function runPreserveShell(
   const appendState = createAppendBackendState(process.stdout.columns ?? 80, 2);
   const appendBackend = createAppendBackend(appendState);
 
+  // Keep state.width current so physicalRows() wraps correctly on resize.
+  const onResize = () => {
+    appendBackend.resize(process.stdout.columns ?? 80, process.stdout.rows ?? 24);
+  };
+  process.stdout.on("resize", onResize);
+
   function printEntry(entry: TranscriptEntry): void {
     // appendLines internally erases any rendered live region first (see
     // backend/append.ts), so committed text always sits above the live area.
@@ -382,9 +389,12 @@ async function runPreserveShell(
     prompt: "❯ ",
   });
 
+  // Print status to stdout immediately before the readline prompt so both
+  // land on the same stream in the right order. Previously status went to
+  // stderr which could interleave unpredictably with stdout.
   const printStatus = () => {
     const line = formatStatusLine(controller.getStatusBarInput());
-    process.stderr.write(line + "\n");
+    process.stdout.write(line + "\n");
   };
 
   printStatus();
@@ -401,7 +411,7 @@ async function runPreserveShell(
     if (trimmed.startsWith("/")) {
       const result = await controller.executeSlashCommand(trimmed);
       if (result.lines.length > 0) {
-        for (const l of result.lines) console.log(l);
+        appendBackend.appendLines(result.lines);
       }
       if (result.action === "clear_transcript") {
         dispatch({ type: "clear_transcript" });
@@ -416,6 +426,17 @@ async function runPreserveShell(
       return;
     }
 
+    // Erase the readline-echoed "❯ <input>" line(s) from scrollback so the
+    // rendered transcript entry is the only representation of this input.
+    // On Enter, readline wrote "❯ <input>\n" and the cursor is 1 row below.
+    // Compute the visual row count to handle wrapped inputs, then move up
+    // and clear to end of screen before the backend writes the "You / hi" entry.
+    if (process.stdout.isTTY) {
+      const cols = process.stdout.columns || 80;
+      const promptVisWidth = strWidth("❯ ") + strWidth(trimmed);
+      const rows = Math.max(1, Math.ceil(promptVisWidth / cols));
+      process.stdout.write(`\x1b[${rows}A\x1b[0G\x1b[0J`);
+    }
     // dispatch is the sole printer — no manual printEntry calls here.
     dispatch({ type: "user_message", text: trimmed });
     dispatch({ type: "set_busy", busy: true });
@@ -434,9 +455,9 @@ async function runPreserveShell(
       });
     } catch (err) {
       if (err instanceof TurnAbortedError) {
-        console.log("\n[interrupted]");
+        appendBackend.appendLines(["", "[interrupted]"]);
       } else {
-        console.error((err as Error).message);
+        appendBackend.appendLines([`[error] ${(err as Error).message}`]);
       }
     } finally {
       dispatch({ type: "set_busy", busy: false });
@@ -460,6 +481,7 @@ async function runPreserveShell(
     rl.on("close", () => resolve());
   });
 
+  process.stdout.removeListener("resize", onResize);
   await shutdownShell(controller);
 }
 

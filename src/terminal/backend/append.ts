@@ -1,3 +1,5 @@
+import stripAnsi from "strip-ansi";
+import { strWidth } from "../core/text.js";
 import { Buffer } from "../core/buffer.js";
 import type { TerminalBackend } from "./types.js";
 
@@ -37,6 +39,8 @@ export interface AppendBackend extends TerminalBackend {
   /** Clear live region. */
   clearLive(): void;
   flush(write?: (data: string) => void): void;
+  /** Required override — updates state.width for physicalRows wrapping. */
+  resize(width: number, height: number): void;
 }
 
 /**
@@ -105,6 +109,11 @@ function eraseLiveRegion(state: AppendBackendState, write: (data: string) => voi
   state.renderedLiveCount = 0;
 }
 
+function physicalRows(line: string, cols: number): number {
+  const w = strWidth(stripAnsi(line));
+  return Math.max(1, Math.ceil(w / cols));
+}
+
 function rewriteLive(state: AppendBackendState, write: (data: string) => void): void {
   // Repaint in place: drop the previous region, then write each line followed
   // by CRLF so multi-line content occupies its own rows (the old single-row
@@ -115,7 +124,14 @@ function rewriteLive(state: AppendBackendState, write: (data: string) => void): 
   const seq = state.liveLines.map((line) => `${line}\r\n`).join("");
   state.writes.push(seq);
   write(seq);
-  state.renderedLiveCount = state.liveLines.length;
+  // Track physical (wrapped) rows, not logical line count. Each logical line
+  // may wrap across ceil(displayWidth/cols) terminal rows. Undercounting here
+  // causes ESC[NA to not move the cursor up far enough on the next erase, so
+  // the top lines survive and accumulate as visible duplicates.
+  state.renderedLiveCount = state.liveLines.reduce(
+    (sum, line) => sum + physicalRows(line, state.width),
+    0,
+  );
 }
 
 /** Render pinned footer lines at bottom. */
