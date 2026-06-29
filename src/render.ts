@@ -1,45 +1,27 @@
 /**
- * Markdown rendering for the terminal.
- * Uses marked + marked-terminal to convert Markdown to styled terminal output.
+ * Application adapter for the ANSI markdown renderer.
  *
- * Only active when stdout/stderr is a TTY (chalk auto-detects).
+ * Wires the standalone @praana/markdown renderer (src/markdown/) to the
+ * app's syntax-theme configuration. All markdown rendering in the app goes
+ * through these two exports; nothing imports from src/markdown/ directly.
  */
+import { renderMarkdown as _render, createRenderer } from "./markdown/index.js";
+import { resolveSyntaxTheme } from "./ui/chat-shell/syntax-themes.js";
 
-import { marked } from "marked";
-import { markedTerminal } from "marked-terminal";
-import { NORD_SYNTAX } from "./ui/tui/syntax-themes.js";
-
-let initialized = false;
-
-function ensureInit(): void {
-  if (initialized) return;
-  marked.use(
-    new markedTerminal(
-      {
-        // Disable reflow — we want to preserve the original line breaks
-        reflowText: false,
-        // Don't add section prefixes like "h1. "
-        showSectionPrefix: false,
-        // Unescape HTML entities
-        unescape: true,
-      },
-      // highlightOptions → forwarded to cli-highlight. The Nord theme object
-      // is what actually colours fenced code blocks (name strings are no-ops).
-      { theme: NORD_SYNTAX, ignoreIllegals: true }
-    )
-  );
-  initialized = true;
-}
+// Pre-built renderer using the app's configured syntax theme.
+// Syntax highlighting is enabled; the theme is resolved once at module load.
+const _renderer = createRenderer({
+  syntaxHighlight: true,
+  syntaxTheme: resolveSyntaxTheme("nord"),
+});
 
 /**
- * Render Markdown text to a terminal-formatted string with ANSI styles.
- * Returns plain text when not in a TTY (chalk strips colors automatically).
+ * Render Markdown text to a terminal-formatted ANSI string.
+ * Returns styled ANSI — callers in the buffer/alternate path should
+ * strip it with strip-ansi; the preserve/TTY path keeps it as-is.
  */
 export function renderMarkdown(text: string): string {
-  if (!text) return "";
-  ensureInit();
-  // marked.parse returns string when used with synchronous renderer
-  return marked.parse(text) as string;
+  return _renderer(text);
 }
 
 /**
@@ -48,6 +30,5 @@ export function renderMarkdown(text: string): string {
 export function writeMarkdown(text: string, stream: NodeJS.WriteStream = process.stdout): void {
   if (!text) return;
   const rendered = renderMarkdown(text);
-  stream.write(rendered);
-  if (!rendered.endsWith("\n")) stream.write("\n");
+  stream.write(rendered.endsWith("\n") ? rendered : rendered + "\n");
 }

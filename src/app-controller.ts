@@ -14,7 +14,7 @@ import {
   formatRecentConversationLines,
   formatSessionBannerLines,
 } from "./app-banner.js";
-import { buildTranscriptFromEvents } from "./ui/tui/transcript-replay.js";
+import { buildTranscriptFromEvents } from "./ui/chat-shell/transcript-replay.js";
 
 export interface StartupInfo {
   session: Session;
@@ -23,7 +23,7 @@ export interface StartupInfo {
   bannerLines: string[];
   recentConversationLines: string[];
   /** Full transcript entries rebuilt from event log on resume (TUI). */
-  transcriptBootstrap: import("./ui/tui/reducer.js").TranscriptEntry[];
+  transcriptBootstrap: import("./ui/chat-shell/reducer.js").TranscriptEntry[];
   isResume: boolean;
 }
 

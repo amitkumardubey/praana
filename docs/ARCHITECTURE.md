@@ -425,7 +425,7 @@ log_dir = "~/.praana/sessions"
 
 PRAANA supports two terminal interfaces (see `[ui] mode` in config):
 
-- **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
+- **TUI (default when TTY)** — Custom terminal chat shell (`src/ui/chat-shell/` on `src/terminal/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window. Supports `preserve` (append scrollback) and `alternate` (fullscreen buffer) modes.
 - **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `praana --ui readline`.
 
 Both support slash commands via `src/slash-commands.ts`:

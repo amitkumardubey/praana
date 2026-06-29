@@ -4,7 +4,7 @@ import {
   buildTranscriptFromEvents,
   estimateEntryLines,
   sliceEntriesByLineBudget,
-} from "../src/ui/tui/transcript-replay.js";
+} from "../src/ui/chat-shell/transcript-replay.js";
 
 function ev(kind: Event["kind"], payload: Record<string, unknown>): Event {
   return {

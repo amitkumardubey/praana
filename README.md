@@ -53,7 +53,7 @@ praana
 ```
 
 > **First time?** PRAANA auto-detects your provider from the environment. If no key is found, it runs an interactive setup wizard (TTY) or shows clear instructions.
-> Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
+> Default UI is the custom terminal chat shell when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic line interface.
 > Requires **Bun ≥ 1.2**. Install at [bun.sh/install](https://bun.sh/install).
 
 ### Global CLI alias

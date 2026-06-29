@@ -3,7 +3,7 @@ import {
   createInitialTranscriptState,
   formatMemoryBannerLine,
   transcriptReducer,
-} from "../src/ui/tui/reducer.js";
+} from "../src/ui/chat-shell/reducer.js";
 
 describe("transcriptReducer", () => {
   it("adds user messages to completed entries", () => {

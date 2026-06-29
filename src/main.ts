@@ -11,7 +11,7 @@ import {
 import { printHelp } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
 import { runReadlineUi } from "./ui/readline-ui.js";
-import { runTui } from "./ui/tui/run.js";
+import { runChatShell } from "./ui/chat-shell/run.js";
 import { handleInit } from "./init.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
@@ -99,7 +99,7 @@ export async function main() {
     const info = await controller.start({ uiMode });
 
     if (uiMode === "tui") {
-      await runTui(controller, info, screenMode);
+      await runChatShell(controller, info, screenMode);
     } else {
       await runReadlineUi(controller, info);
     }

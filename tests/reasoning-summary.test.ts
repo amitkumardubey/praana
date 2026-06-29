@@ -3,7 +3,7 @@ import {
   formatThinkingDuration,
   reasoningSummary,
   truncateThinkingBody,
-} from "../src/ui/tui/reasoning-summary.js";
+} from "../src/ui/chat-shell/reasoning-summary.js";
 
 describe("reasoningSummary", () => {
   it("extracts bold title and body", () => {

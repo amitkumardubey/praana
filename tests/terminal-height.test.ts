@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   getTerminalRows,
   getTranscriptLineBudget,
-} from "../src/ui/tui/terminal-height.js";
+} from "../src/ui/chat-shell/terminal-height.js";
 
 describe("getTranscriptLineBudget", () => {
   it("reserves chrome below terminal row count", () => {

@@ -1,7 +1,5 @@
 import { describe, it, expect, spyOn } from "bun:test";
 import { renderMarkdown, writeMarkdown } from '../src/render.js';
-import { extractCellText, computeColWidths } from '../src/ui/tui/markdown-render.js';
-import type { Tokens } from 'marked';
 describe('renderMarkdown', () => {
   it('should return empty string for empty input', () => {
     expect(renderMarkdown('')).toBe('');

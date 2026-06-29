@@ -7,7 +7,7 @@ import {
   formatShellOutputForDisplay,
   needsTopMargin,
   summarizeResultForDisplay,
-} from "../src/ui/tui/tool-display.js";
+} from "../src/ui/chat-shell/formatters.js";
 
 describe("formatToolDisplay", () => {
   it("formats shell commands", () => {
@@ -20,7 +20,7 @@ describe("formatToolDisplay", () => {
 
   it("shortens long shell commands", () => {
     const info = formatToolDisplay("shell", {
-      command: "cd /very/long/path && cat src/ui/tui/app.tsx",
+      command: "cd /very/long/path && cat src/ui/chat-shell/run.ts",
     });
     expect(info.label.length).toBeLessThanOrEqual(56);
     expect(info.label).toContain("cat");

@@ -36,7 +36,7 @@ See [AGENTS.md](./AGENTS.md) for architecture, memory systems, and common gotcha
 
 | Area | Entry points |
 |------|----------------|
-| TUI | `src/ui/tui/` |
+| TUI | `src/ui/chat-shell/` + `src/terminal/` |
 | Memory | `src/memory/`, `tests/memory*.test.ts` |
 | Context engine | `src/context-engine/`, `tests/context-engine*.test.ts` |
 | Tools | `src/tools/` |

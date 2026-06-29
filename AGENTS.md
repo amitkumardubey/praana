@@ -166,7 +166,7 @@ src/
   types.ts       — Shared TypeScript types
   ui/
     readline-ui.ts — Classic readline loop
-    tui/           — Ink TUI (default when TTY): transcript, status bar, thinking blocks
+    tui/           — Custom terminal chat shell (src/ui/chat-shell/) on src/terminal/
   skills/
     index.ts     — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     types.ts     — Skill metadata, runtime state, telemetry types
