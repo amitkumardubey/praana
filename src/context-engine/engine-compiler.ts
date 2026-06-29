@@ -472,8 +472,12 @@ async function compileEnginePass(
     ];
     try {
       precomputedVectors = await precomputeVectors(candidateTexts, input.embedder, cache);
-    } catch {
+    } catch (err) {
       // Semantic scoring is best-effort; fallback to BM25-only if embedding fails.
+      getAppLogger().child("compiler").debug(
+        "semantic embedding precompute failed; using BM25-only scoring",
+        { details: { err: err instanceof Error ? err.message : String(err) } },
+      );
       precomputedVectors = undefined;
     }
   }
@@ -514,8 +518,9 @@ async function compileEnginePass(
       breakdown: {
         pin: Number(unit.breakdown.pin.toFixed(4)),
         recency: Number(unit.breakdown.recency.toFixed(4)),
-        relevance: Number(unit.breakdown.relevance.toFixed(4)),
+        bm25: Number(unit.breakdown.bm25.toFixed(4)),
         semantic: Number(unit.breakdown.semantic.toFixed(4)),
+        relevance: Number(unit.breakdown.relevance.toFixed(4)),
         hydrate_boost: Number((unit.breakdown.hydrate_boost).toFixed(4)),
       },
     });
@@ -817,8 +822,9 @@ export function explainUnitScore(
     `Score: ${record.score} (${record.included ? "included" : "excluded"} in prompt)`,
     `  pin:       ${record.breakdown.pin.toFixed(2)}`,
     `  recency:   ${record.breakdown.recency.toFixed(2)} (weight ${weights.w_recency})`,
-    `  relevance: ${record.breakdown.relevance.toFixed(2)} (weight ${weights.w_relevance})`,
+    `  bm25:      ${record.breakdown.bm25.toFixed(2)} (weight ${weights.w_relevance})`,
     `  semantic:  ${record.breakdown.semantic.toFixed(2)} (weight ${weights.w_semantic ?? 0})`,
+    `  relevance: ${record.breakdown.relevance.toFixed(2)} (max of bm25, semantic)`,
     `Budget band ${record.band}: ${bandUsedTokens}/${bandTokenBudget} tokens used`,
   ];
 

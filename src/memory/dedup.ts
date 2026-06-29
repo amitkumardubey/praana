@@ -11,6 +11,9 @@
 
 import type { SummarizerLLM, Embedder } from "./types.js";
 import nlp from "compromise";
+import { cosineSimilarity } from "../cosine-similarity.js";
+
+export { cosineSimilarity };
 
 const NEGATION_PATTERN =
   /\b(not|never|no|without|isn't|aren't|doesn't|don't|won't|cannot|can't|missing|absent|disabled)\b/i;
@@ -54,23 +57,6 @@ class EmbeddingCache {
 
 // Module-level singleton cache for M7 Layer 2
 const embeddingCache = new EmbeddingCache();
-
-/**
- * Cosine similarity between two vectors (0 = orthogonal, 1 = identical).
- */
-export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  if (a.length !== b.length) return 0;
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dotProduct / denom;
-}
 
 // Replacement cue patterns for M7 Layer 2
 const REPLACEMENT_PATTERN = /\b(switch.*to|replace.*with|instead of|moved? (?:from|to)|no longer|now using)\b/i;

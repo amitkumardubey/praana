@@ -59,6 +59,7 @@ export { extractTurnDigest, extractUserIntent } from "./turn-digest.js";
 export { snapshotStateGraph } from "./state-snapshot.js";
 export { compileEngineWithMetrics, explainUnitScore } from "./engine-compiler.js";
 export { scoreContextUnit, recencyScore } from "./scoring.js";
+export { EmbeddingCache, precomputeVectors } from "./embedding-cache.js";
 export { buildEventLineage, formatEventLineage, type EventLineage } from "./event-lineage.js";
 export {
   TelemetryRecorder,
@@ -87,6 +88,7 @@ const CONTEXT_ENGINE_DEFAULTS: ContextEngineConfig = {
     w_recency: 0.5,
     w_relevance: 0.3,
     w_semantic: 0.3,
+    w_hydrate_boost: 0.2,
   },
   pressure: {
     compact_at: 0.7,

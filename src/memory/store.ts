@@ -68,6 +68,7 @@ import { isMemoryKind, MEMORY_KINDS } from "./types.js";
 import { effectiveValidity, digestScore, MS_PER_DAY } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
+import { cosineSimilarity } from "../cosine-similarity.js";
 
 function certaintyToValidity(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -135,19 +136,6 @@ export interface RememberResult {
 export interface ReconcileDuplicatesResult {
   clustersMerged: number;
   entriesRemoved: number;
-}
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
 }
 
 function lexicalMatchScore(

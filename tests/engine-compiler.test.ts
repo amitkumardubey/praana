@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
 import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
+import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { ContextEngineConfig } from "../src/types.js";
 import type { ContextUnit, SessionCheckpoint } from "../src/context-engine/types.js";
 import type { DomainClassifier } from "../src/domain/types.js";
+import type { Embedder } from "../src/memory/types.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -277,6 +279,105 @@ describe("engine compiler", () => {
 
     expect(semantic.breakdown.semantic).toBeGreaterThan(0);
     expect(semantic.score).toBeGreaterThan(baseline.score);
+    expect(semantic.breakdown.relevance).toBe(
+      Math.max(semantic.breakdown.bm25, semantic.breakdown.semantic),
+    );
+  });
+
+  it("keeps BM25 as relevance when keyword match beats semantic similarity", () => {
+    const unit: ContextUnit = {
+      id: "turn_keyword",
+      type: "turn_digest",
+      content: "read_file path src/auth.ts",
+      tokens: 30,
+      sourceTurn: 6,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const weights = { ...ENGINE_CONFIG.scoring, w_semantic: 0.3 };
+    const vectors = new Map<string, Float32Array>([
+      ["read_file src/auth.ts", new Float32Array([0, 1, 0])],
+      ["read_file path src/auth.ts", new Float32Array([1, 0, 0])],
+    ]);
+
+    const scored = scoreContextUnit(
+      unit,
+      10,
+      "read_file src/auth.ts",
+      weights,
+      undefined,
+      vectors,
+    );
+
+    expect(scored.breakdown.bm25).toBeGreaterThan(scored.breakdown.semantic);
+    expect(scored.breakdown.relevance).toBe(scored.breakdown.bm25);
+  });
+
+  it("applies semantic scoring through compileEngineWithMetrics when embedder is provided", async () => {
+    const embedder: Embedder = {
+      dim: 3,
+      embed: async (text: string) => {
+        if (text.trim() === "authentication handler") return new Float32Array([1, 0, 0]);
+        if (text.trim().includes("auth middleware")) return new Float32Array([1, 0, 0]);
+        return new Float32Array([0, 0, 1]);
+      },
+    };
+    const cache = new EmbeddingCache();
+
+    const result = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "authentication handler",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-semantic",
+      tokenBudget: 100_000,
+      checkpointSection: "",
+      currentTurn: 10,
+      turnRecords: [
+        {
+          turn: 5,
+          userMessage: "fix auth middleware",
+          assistantMessage: "updated auth middleware handler",
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 50,
+          timestamp: 1,
+        },
+      ],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      embedder,
+      embeddingCache: cache,
+    });
+
+    const digestRecord = result.scoreRecords.find((r) => r.unitId === "turn_5");
+    expect(digestRecord).toBeDefined();
+    expect(digestRecord!.breakdown.semantic).toBeGreaterThan(0);
+    expect(digestRecord!.breakdown.relevance).toBe(
+      Math.max(digestRecord!.breakdown.bm25, digestRecord!.breakdown.semantic),
+    );
+  });
+
+  it("precomputeVectors with cached embeddings completes scoring within budget", async () => {
+    const embedder: Embedder = {
+      dim: 8,
+      embed: async () => new Float32Array(8).fill(0.5),
+    };
+    const cache = new EmbeddingCache();
+    const texts = Array.from({ length: 40 }, (_, i) => `context unit text ${i}`);
+
+    const start = performance.now();
+    await precomputeVectors(texts, embedder, cache);
+    await precomputeVectors(texts, embedder, cache);
+    const elapsed = performance.now() - start;
+
+    expect(elapsed).toBeLessThan(50);
   });
 
   it("hydratedTexts flow through compileEngineWithMetrics to scoring", async () => {

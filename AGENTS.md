@@ -217,7 +217,7 @@ Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true`
 ```
 User input
   → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
-  → compileEngineWithMetrics: system frame | skills catalog | checkpoint | verbatim turns | scored context | active state | memory digest
+  → compileEngineWithMetrics: system frame | skills catalog | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
