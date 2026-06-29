@@ -302,7 +302,7 @@ export class SkillRuntime {
    * Track a skill load (called by the load_skill tool in ENGINE mode only).
    * The tool reads the file from disk; this method records the load + enforces budget.
    */
-  trackLoad(skillId: string, currentTurn: number): void {
+  trackLoad(skillId: string, currentTurn: number, tokens = 0): void {
     const existing = this.loadedSkills.get(skillId);
     if (existing) {
       existing.reloadCount++;
@@ -316,6 +316,17 @@ export class SkillRuntime {
         reload_count: existing.reloadCount,
         timestamp: Date.now(),
       });
+    } else if (this.everLoaded.has(skillId)) {
+      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
+      this.totalReloads++;
+      this.skillLoads++;
+      this.emit({
+        type: "skill_reloaded",
+        skill_id: skillId,
+        loaded_turn: currentTurn,
+        reload_count: 0,
+        timestamp: Date.now(),
+      });
     } else {
       this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
       this.everLoaded.add(skillId);
@@ -326,6 +337,9 @@ export class SkillRuntime {
         loaded_turn: currentTurn,
         timestamp: Date.now(),
       });
+    }
+    if (tokens > 0) {
+      this.addSkillTokens(tokens);
     }
     this.enforceSkillBudget();
   }
@@ -423,10 +437,9 @@ export class SkillRuntime {
    * Includes loaded, reloaded, underloaded, and tokens consumed.
    */
   getSkillScorecard(): { loaded: number; used: number; reloaded: number; evicted: number; underload: number; tokensConsumed: number } {
-    const used = this.everLoaded.size - this.skillUnderloadEvents;
     return {
       loaded: this.skillLoads,
-      used: used > 0 ? used : 0,
+      used: this.everLoaded.size,
       reloaded: this.totalReloads,
       evicted: this.totalEvictions,
       underload: this.skillUnderloadEvents,

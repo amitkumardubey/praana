@@ -169,8 +169,13 @@ export class ContextEngine {
     const checkpoint = resolved.checkpoint_enabled
       ? CheckpointStore.open(store.getDb(), sessionId)
       : null;
-    const telemetry = new TelemetryRecorder(store.getDb(), sessionId, resolved.enabled);
     const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled);
+    const telemetry = new TelemetryRecorder(
+      store.getDb(),
+      sessionId,
+      resolved.enabled,
+      scorecard,
+    );
     return new ContextEngine(store, ledger, extraction, checkpoint, telemetry, scorecard, resolved);
   }
 
@@ -191,7 +196,11 @@ export class ContextEngine {
   }
 
   ingestToolResult(input: IngestToolResultInput): IngestToolResultOutput {
-    return this.store.ingestToolResult(input);
+    const result = this.store.ingestToolResult(input);
+    if (!result.inlined) {
+      this.scorecard.inc("artifactCardsProduced");
+    }
+    return result;
   }
 
   async flushDeferredDistillation(): Promise<number> {

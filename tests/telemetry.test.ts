@@ -67,6 +67,30 @@ describe("context engine telemetry", () => {
     expect(summary.retrievalRate).toBe(1);
   });
 
+  it("mirrors pressure and compaction events into the scorecard", () => {
+    engine = openEngine();
+    engine.recordCompileTelemetry({
+      turn: 1,
+      pressureMode: "compact",
+      excludedScoredUnits: 3,
+    });
+    const counters = engine.scorecard.getCounters();
+    expect(counters.pressureEvents).toBe(1);
+    expect(counters.compactionTriggers).toBe(1);
+  });
+
+  it("increments artifact_cards_produced when ingest returns a card", () => {
+    engine = openEngine();
+    const raw = "x".repeat(400);
+    engine.ingestToolResult({
+      sourceTool: "shell",
+      command: "npm test",
+      rawText: raw,
+      createdTurn: 0,
+    });
+    expect(engine.scorecard.getCounters().artifactCardsProduced).toBe(1);
+  });
+
   it("aggregates distiller savings and renders a session summary", () => {
     engine = openEngine();
     insertDistillerStat(engine.store.getDb(), {

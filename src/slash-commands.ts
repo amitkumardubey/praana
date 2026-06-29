@@ -202,17 +202,22 @@ export async function executeSlashCommand(
         const counters = session.scorecard.getCounters();
         const hasData = counters.totalTurns > 0 || counters.artifactRetrieveCalls > 0 || counters.recallCalls > 0;
         if (hasData) {
+          const recallUsed = session.getRecallUsedCount?.() ?? counters.recallUsedCount;
+          const skillSnapshot = session.skillRuntime?.getSkillScorecard();
+          const skillsLoaded = skillSnapshot?.loaded ?? counters.skillsLoaded;
+          const skillsUsed = skillSnapshot?.used ?? counters.skillsUsed;
+          const skillUnderloads = skillSnapshot?.underload ?? counters.skillUnderloadEvents;
           lines.push("", "Scorecard (this session):");
           lines.push(`  Context    retrieve_artifact: ${counters.artifactRetrieveCalls}  repeat_reads: ${counters.repeatFileReads}  searches: ${counters.turnEventSearches}`);
           const recallUsagePct = counters.recallCalls > 0
-            ? ` (${Math.round((counters.recallCalls / (counters.recallCalls || 1)) * 100)}%)`
+            ? ` (${Math.round((recallUsed / counters.recallCalls) * 100)}%)`
             : "";
-          lines.push(`  Memory     recalls: ${counters.recallCalls}  used: ${counters.skillsUsed}${recallUsagePct}`);
-          if (counters.skillsLoaded > 0) {
-            const skillUsagePct = counters.skillsUsed > 0 && counters.skillsLoaded > 0
-              ? ` (${Math.round((counters.skillsUsed / counters.skillsLoaded) * 100)}%)`
+          lines.push(`  Memory     recalls: ${counters.recallCalls}  used: ${recallUsed}${recallUsagePct}`);
+          if (skillsLoaded > 0) {
+            const skillUsagePct = skillsUsed > 0 && skillsLoaded > 0
+              ? ` (${Math.round((skillsUsed / skillsLoaded) * 100)}%)`
               : "";
-            lines.push(`  Skills     loaded: ${counters.skillsLoaded}  used: ${counters.skillsUsed}${skillUsagePct}  underloads: ${counters.skillUnderloadEvents}`);
+            lines.push(`  Skills     loaded: ${skillsLoaded}  used: ${skillsUsed}${skillUsagePct}  underloads: ${skillUnderloads}`);
           }
         }
       }

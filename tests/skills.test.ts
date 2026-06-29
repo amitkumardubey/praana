@@ -159,6 +159,22 @@ describe("trackLoad", () => {
     expect(reloaded).toBeDefined();
     expect(reloaded!.reload_count).toBe(1);
   });
+
+  it("counts reload after stale eviction when skill is loaded again", async () => {
+    const skillsDir = join(tmpBase, "skills");
+    mkdirSync(skillsDir);
+    writeSkill(skillsDir, "git", "Git operations");
+
+    const rt = new SkillRuntime(makeConfig({ stale_threshold_turns: 5 }), tmpBase);
+    await rt.initialize();
+    rt.trackLoad("git", 1);
+    rt.cleanupStaleSkills(10);
+    expect(rt.getLoadedSkillNames()).toEqual([]);
+
+    rt.trackLoad("git", 11);
+    expect(rt.getLoadedSkillStats().reloadedCount).toBe(1);
+    expect(rt.getSkillScorecard().used).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

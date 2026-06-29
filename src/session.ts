@@ -535,6 +535,33 @@ export class Session {
     return resolveDefaultMemoryDbPath();
   }
 
+  /**
+   * Snapshot recall-used count before memory sessionEnd deletes pending_reinforcements.
+   */
+  getRecallUsedCount(): number {
+    return this.countRecallUsedBeforeMemoryFlush();
+  }
+
+  private countRecallUsedBeforeMemoryFlush(): number {
+    if (!this.memoryStore) return 0;
+    try {
+      const db = (this.memoryStore as unknown as { db: import("better-sqlite3").Database }).db;
+      const rows = db
+        .prepare("SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1")
+        .get(this.id) as { c: number } | undefined;
+      return rows?.c ?? 0;
+    } catch {
+      // pending_reinforcements might not exist yet
+      return 0;
+    }
+  }
+
+  private syncScorecardFromRuntime(): void {
+    if (this.skillRuntime) {
+      this.scorecard.applySkillSnapshot(this.skillRuntime.getSkillScorecard());
+    }
+  }
+
   getRepoRoot(): string {
     return findGitRoot(this.cwd);
   }
@@ -746,6 +773,7 @@ export class Session {
     this.ended = true;
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
+    const recallUsedCount = this.countRecallUsedBeforeMemoryFlush();
 
     if (this.memoryEnabled && this.memoryStore) {
       const store = this.memoryStore;
@@ -916,38 +944,33 @@ export class Session {
           });
         }
       }
-
-      try {
-        this.contextEngine.close();
-        this.contextEngine = null;
-      } catch (err) {
-        this.getLogger().child("context_engine").warn("Context engine close failed", {
-          cause: err as Error,
-        });
-        this.contextEngine = null;
-      }
     }
 
-    // Flush scorecard if enabled (measurement_mode or context engine active)
+    const contextEngineToClose = this.contextEngine;
+
+    // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
     try {
+      this.syncScorecardFromRuntime();
+      this.scorecard.setRecallUsedCount(recallUsedCount);
       const memPath = this.getMemoryDbPath();
-      let recallUsedCount = 0;
-      if (this.memoryStore) {
-        try {
-          const db = (this.memoryStore as unknown as { db: import("better-sqlite3").Database }).db;
-          const rows = db
-            .prepare("SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1")
-            .get(this.id) as { c: number } | undefined;
-          recallUsedCount = rows?.c ?? 0;
-        } catch {
-          // pending_reinforcements might not exist yet
-        }
-      }
       await this.scorecard.flush(memPath ?? undefined, recallUsedCount);
     } catch (err) {
       this.getLogger().child("context_engine").warn("Scorecard flush failed", {
         cause: err as Error,
       });
+    }
+
+    if (contextEngineToClose) {
+      try {
+        contextEngineToClose.close();
+      } catch (err) {
+        this.getLogger().child("context_engine").warn("Context engine close failed", {
+          cause: err as Error,
+        });
+      }
+      this.contextEngine = null;
+    } else {
+      this.scorecard.close();
     }
 
     this.persistStateGraphCheckpoint();

@@ -51,6 +51,8 @@ export interface SystemToolContext {
   getCurrentTurn: () => number;
   /** Track files that have been read to detect repeat reads. Created lazily. */
   readFileSet?: Set<string>;
+  /** Classic-mode skill loads for reload detection when SkillRuntime is absent. */
+  skillEverLoaded?: Set<string>;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
@@ -373,19 +375,21 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `Skill file not found: ${skill.name}` };
           }
           const body = readFileSync(skill.location, "utf-8");
-          
-          // Track skill load in scorecard
-          const isReload = skillRuntime?.getLoadedSkillNames().includes(skill_id);
-          skillScorecard?.inc("skillsLoaded");
-          if (isReload) {
-            skillScorecard?.inc("skillReloadCount");
-          }
-          
-          // Track token consumption (approximate)
           const bodyTokens = estimateTokens(body);
-          skillScorecard?.inc("skillTokensConsumed", bodyTokens);
-          
-          skillRuntime?.trackLoad(skill_id, getCurrentTurn());
+
+          if (skillRuntime) {
+            skillRuntime.trackLoad(skill_id, getCurrentTurn(), bodyTokens);
+          } else if (skillScorecard) {
+            if (!ctx.skillEverLoaded) ctx.skillEverLoaded = new Set();
+            const isReload = ctx.skillEverLoaded.has(skill_id);
+            skillScorecard.inc("skillsLoaded");
+            if (isReload) {
+              skillScorecard.inc("skillReloadCount");
+            }
+            skillScorecard.inc("skillTokensConsumed", bodyTokens);
+            ctx.skillEverLoaded.add(skill_id);
+          }
+
           return { ok: true, body };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? `Failed to load skill: ${skill.name}` };

@@ -27,6 +27,7 @@ export interface SessionTelemetrySummary {
   skillsLoaded: number;
   skillReloadCount: number;
   skillTokensConsumed: number;
+  /** TODO(M7): semantic flip detection — column kept at 0 until M7 lands. */
   decisionContradictions: number;
 }
 
@@ -36,12 +37,14 @@ export class TelemetryRecorder {
   private skillsLoaded = 0;
   private skillReloadCount = 0;
   private skillTokensConsumed = 0;
+  // TODO(M7): wire real contradiction detection once semantic flip detection lands.
   private decisionContradictions = 0;
 
   constructor(
     private readonly db: Database.Database,
     private readonly sessionId: string,
     contextEngineEnabled = true,
+    private readonly scorecard?: Pick<ScorecardTracker, "inc">,
   ) {
     this.contextEngineEnabled = contextEngineEnabled;
   }
@@ -60,14 +63,17 @@ export class TelemetryRecorder {
   recordCompileTelemetry(input: CompileTelemetryInput): void {
     if (input.pressureMode !== "normal" && this.lastPressureMode === "normal") {
       incrementSessionStat(this.db, this.sessionId, "pressure_events", 1, this.contextEngineEnabled);
+      this.scorecard?.inc("pressureEvents");
     }
     if (input.pressureMode === "emergency" && this.lastPressureMode === "compact") {
       incrementSessionStat(this.db, this.sessionId, "pressure_events", 1, this.contextEngineEnabled);
+      this.scorecard?.inc("pressureEvents");
     }
     this.lastPressureMode = input.pressureMode;
 
     if (input.excludedScoredUnits > 0) {
       incrementSessionStat(this.db, this.sessionId, "compaction_triggers", 1, this.contextEngineEnabled);
+      this.scorecard?.inc("compactionTriggers");
     }
   }
 
@@ -113,12 +119,14 @@ export interface ScorecardCounters {
   artifactRetrieveCalls: number;
   artifactCardsProduced: number;
   repeatFileReads: number;
+  /** TODO(M7): semantic flip detection — column kept at 0 until M7 lands. */
   decisionContradictions: number;
   turnEventSearches: number;
   totalTurns: number;
   pressureEvents: number;
   compactionTriggers: number;
   recallCalls: number;
+  recallUsedCount: number;
   skillsLoaded: number;
   skillsUsed: number;
   skillUnderloadEvents: number;
@@ -143,6 +151,7 @@ export class ScorecardTracker {
     pressureEvents: 0,
     compactionTriggers: 0,
     recallCalls: 0,
+    recallUsedCount: 0,
     skillsLoaded: 0,
     skillsUsed: 0,
     skillUnderloadEvents: 0,
@@ -180,6 +189,38 @@ export class ScorecardTracker {
   setSkillUnderloadEvents(count: number): void {
     if (!this.db) return;
     this.counters.skillUnderloadEvents = count;
+  }
+
+  /** Snapshot recall-used count for /stats and flush. */
+  setRecallUsedCount(count: number): void {
+    if (!this.db) return;
+    this.recallUsedCount = count;
+    this.counters.recallUsedCount = count;
+  }
+
+  /** Apply skill counters from SkillRuntime at session end (engine mode). */
+  applySkillSnapshot(snapshot: {
+    loaded: number;
+    used: number;
+    reloaded: number;
+    underload: number;
+    tokensConsumed: number;
+  }): void {
+    if (!this.db) return;
+    this.counters.skillsLoaded = snapshot.loaded;
+    this.counters.skillsUsed = snapshot.used;
+    this.counters.skillReloadCount = snapshot.reloaded;
+    this.counters.skillUnderloadEvents = snapshot.underload;
+    this.counters.skillTokensConsumed = snapshot.tokensConsumed;
+  }
+
+  /** Close the scorecard DB (measurement-only mode; engine mode closes via ContextEngine). */
+  close(): void {
+    try {
+      this.db?.close();
+    } catch {
+      // ignore double-close
+    }
   }
 
   /**
@@ -228,7 +269,7 @@ export class ScorecardTracker {
     const endAvgs = this.getMemoryAverages(memoryDbPath);
     this.validityAvgEnd = endAvgs.validityAvg;
     this.usefulnessAvgEnd = endAvgs.usefulnessAvg;
-    this.recallUsedCount = recallUsedCount;
+    this.setRecallUsedCount(recallUsedCount);
 
     this.db.prepare(
       `INSERT OR REPLACE INTO scorecard (

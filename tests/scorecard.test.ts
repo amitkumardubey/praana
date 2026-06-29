@@ -45,6 +45,7 @@ describe("ScorecardTracker", () => {
     expect(counters.pressureEvents).toBe(0);
     expect(counters.compactionTriggers).toBe(0);
     expect(counters.recallCalls).toBe(0);
+    expect(counters.recallUsedCount).toBe(0);
     expect(counters.skillsLoaded).toBe(0);
     expect(counters.skillsUsed).toBe(0);
     expect(counters.skillUnderloadEvents).toBe(0);
@@ -225,11 +226,44 @@ describe("ScorecardTracker", () => {
     expect(row!.skill_tokens_consumed).toBe(1200);
   });
 
-  it("recall_used_count is pulled correctly", async () => {
+  it("setRecallUsedCount is reflected in getCounters and flush", async () => {
     const db = createDb();
     const tracker = new ScorecardTracker(db, "test-session", true);
 
-    // Create pending_reinforcements table and insert some rows
+    tracker.setRecallUsedCount(4);
+    expect(tracker.getCounters().recallUsedCount).toBe(4);
+
+    await tracker.flush(undefined, 4);
+    const row = db
+      .prepare("SELECT recall_used_count FROM scorecard WHERE session_id = ?")
+      .get("test-session") as { recall_used_count: number } | undefined;
+    expect(row?.recall_used_count).toBe(4);
+  });
+
+  it("applySkillSnapshot overwrites skill counters for session-end sync", async () => {
+    const db = createDb();
+    const tracker = new ScorecardTracker(db, "test-session", true);
+
+    tracker.applySkillSnapshot({
+      loaded: 5,
+      used: 3,
+      reloaded: 2,
+      underload: 1,
+      tokensConsumed: 900,
+    });
+
+    const counters = tracker.getCounters();
+    expect(counters.skillsLoaded).toBe(5);
+    expect(counters.skillsUsed).toBe(3);
+    expect(counters.skillReloadCount).toBe(2);
+    expect(counters.skillUnderloadEvents).toBe(1);
+    expect(counters.skillTokensConsumed).toBe(900);
+  });
+
+  it("recall_used_count must be snapshotted before pending_reinforcements flush", async () => {
+    const db = createDb();
+    const tracker = new ScorecardTracker(db, "test-session", true);
+
     db.exec(`
       CREATE TABLE IF NOT EXISTS pending_reinforcements (
         entry_id TEXT NOT NULL,
@@ -239,16 +273,30 @@ describe("ScorecardTracker", () => {
         PRIMARY KEY (entry_id, session_id)
       )
     `);
+    db.prepare(
+      "INSERT INTO pending_reinforcements (entry_id, session_id, ts, used) VALUES (?, ?, ?, ?)",
+    ).run("e1", "test-session", Date.now(), 1);
+    db.prepare(
+      "INSERT INTO pending_reinforcements (entry_id, session_id, ts, used) VALUES (?, ?, ?, ?)",
+    ).run("e2", "test-session", Date.now(), 0);
 
-    tracker.inc("recallCalls", 10);
-    await tracker.flush(undefined, 5);
+    const usedBeforeFlush = (
+      db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1",
+        )
+        .get("test-session") as { c: number }
+    ).c;
+    expect(usedBeforeFlush).toBe(1);
+
+    db.prepare("DELETE FROM pending_reinforcements WHERE session_id = ?").run("test-session");
+
+    await tracker.flush(undefined, usedBeforeFlush);
 
     const row = db
-      .prepare("SELECT * FROM scorecard WHERE session_id = ?")
-      .get("test-session") as Record<string, unknown> | undefined;
-    expect(row).toBeDefined();
-    expect(row!.recall_calls).toBe(10);
-    expect(row!.recall_used_count).toBe(5);
+      .prepare("SELECT recall_used_count FROM scorecard WHERE session_id = ?")
+      .get("test-session") as { recall_used_count: number } | undefined;
+    expect(row?.recall_used_count).toBe(1);
   });
 });
 
