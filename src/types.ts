@@ -236,6 +236,8 @@ export interface ContextEngineScoringConfig {
   w_pin: number;
   w_recency: number;
   w_relevance: number;
+  /** Weight for embedding-based semantic similarity relevance. */
+  w_semantic?: number;
   /** Boost for context units whose content overlaps with auto-hydrated object text. */
   w_hydrate_boost?: number;
 }

@@ -86,6 +86,7 @@ const CONTEXT_ENGINE_DEFAULTS: ContextEngineConfig = {
     w_pin: 1.0,
     w_recency: 0.5,
     w_relevance: 0.3,
+    w_semantic: 0.3,
   },
   pressure: {
     compact_at: 0.7,

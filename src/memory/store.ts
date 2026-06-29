@@ -167,7 +167,7 @@ function lexicalMatchScore(
 
 export class MemoryStore {
   private db: Database.Database;
-  private embedder: Embedder | null;
+  readonly embedder: Embedder | null;
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
   private sessionId: string = "";

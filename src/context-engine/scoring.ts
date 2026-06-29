@@ -9,17 +9,48 @@ export function recencyScore(ageTurns: number): number {
   return 1 / (1 + Math.max(0, ageTurns));
 }
 
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+  const len = Math.min(a.length, b.length);
+  if (len === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < len; i++) {
+    const ai = a[i] ?? 0;
+    const bi = b[i] ?? 0;
+    dot += ai * bi;
+    normA += ai * ai;
+    normB += bi * bi;
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (!Number.isFinite(denom) || denom <= 0) return 0;
+  const raw = dot / denom;
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.min(1, raw));
+}
+
 export function scoreContextUnit(
   unit: ContextUnit,
   currentTurn: number,
   userInput: string,
   weights: ContextEngineScoringConfig,
   hydratedTexts?: string[],
+  precomputedVectors?: Map<string, Float32Array>,
 ): { score: number; breakdown: ScoreBreakdown } {
   const pin = unit.pinned ? PIN_BOOST * weights.w_pin : 0;
   const age = Math.max(0, currentTurn - unit.sourceTurn);
   const recency = recencyScore(age) * weights.w_recency;
-  const relevance = bm25Relevance(userInput, unit.content) * weights.w_relevance;
+  const bm25Score = bm25Relevance(userInput, unit.content) * weights.w_relevance;
+
+  const wSemantic = weights.w_semantic ?? 0;
+  const userVec = precomputedVectors?.get(userInput.trim());
+  const unitVec = precomputedVectors?.get(unit.content.trim());
+  const semantic =
+    wSemantic > 0 && userVec && unitVec
+      ? cosineSimilarity(userVec, unitVec) * wSemantic
+      : 0;
+
+  const relevance = Math.max(bm25Score, semantic);
 
   let hydrate_boost = 0;
   const wHydrate = weights.w_hydrate_boost ?? 0;
@@ -32,7 +63,7 @@ export function scoreContextUnit(
 
   return {
     score: pin + recency + relevance + hydrate_boost,
-    breakdown: { pin, recency, relevance, hydrate_boost },
+    breakdown: { pin, recency, relevance: bm25Score, semantic, hydrate_boost },
   };
 }
 
@@ -42,10 +73,18 @@ export function rankContextUnits(
   userInput: string,
   weights: ContextEngineScoringConfig,
   hydratedTexts?: string[],
+  precomputedVectors?: Map<string, Float32Array>,
 ): ScoredContextUnit[] {
   return units
     .map((unit) => {
-      const scored = scoreContextUnit(unit, currentTurn, userInput, weights, hydratedTexts);
+      const scored = scoreContextUnit(
+        unit,
+        currentTurn,
+        userInput,
+        weights,
+        hydratedTexts,
+        precomputedVectors,
+      );
       return { ...unit, ...scored };
     })
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
