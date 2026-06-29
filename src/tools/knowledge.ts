@@ -10,6 +10,7 @@ export interface KnowledgeToolContext {
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
+  skillScorecard?: { inc: (field: string, by?: number) => void };
   getCurrentTurn: () => number;
 }
 
@@ -38,6 +39,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               limit ?? 20,
               getCurrentTurn(),
             );
+            ctx.skillScorecard?.inc("turnEventSearches");
             eventLog.append({
               kind: "system_note",
               actor: "kernel",
@@ -99,6 +101,8 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             if (!retrieved.ok) {
               return { ok: false, error: retrieved.error };
             }
+
+            ctx.skillScorecard?.inc("artifactRetrieveCalls");
 
             eventLog.append({
               kind: "system_note",
@@ -177,6 +181,8 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               : "Cognitive Memory is not available.",
           };
         }
+
+        ctx.skillScorecard?.inc("recallCalls");
 
         try {
           const result = await memoryStore.recall(query, { limit: 10, kinds: kinds as any });

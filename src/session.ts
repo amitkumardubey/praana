@@ -28,9 +28,12 @@ import {
 } from "./memory/index.js";
 import { buildProjectContext } from "./project-detector.js";
 import { runConsolidation, type ConsolidationConfig } from "./memory/consolidation.js";
+import { openContextEngineDb } from "./context-engine/db.js";
 import {
   ContextEngine,
   isContextEngineEnabled,
+  ScorecardTracker,
+  createNullScorecard,
   renderSessionTelemetrySummary,
   resolveContextDbPath,
   resolveContextEngineConfig,
@@ -65,6 +68,7 @@ export class Session {
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
   contextEngine: ContextEngine | null = null;
+  scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
   private ended = false;
   private readonly startedAt: number;
@@ -166,6 +170,11 @@ export class Session {
         });
 
         session.digest = d.markdown;
+        // Record memory start averages for scorecard
+        const memDbPath = session.getMemoryDbPath();
+        if (memDbPath) {
+          await session.scorecard.recordMemoryStart(memDbPath);
+        }
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -270,6 +279,11 @@ export class Session {
         });
 
         session.digest = d.markdown;
+        // Record memory start averages for scorecard
+        const memDbPath = session.getMemoryDbPath();
+        if (memDbPath) {
+          await session.scorecard.recordMemoryStart(memDbPath);
+        }
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -914,6 +928,28 @@ export class Session {
       }
     }
 
+    // Flush scorecard if enabled (measurement_mode or context engine active)
+    try {
+      const memPath = this.getMemoryDbPath();
+      let recallUsedCount = 0;
+      if (this.memoryStore) {
+        try {
+          const db = (this.memoryStore as unknown as { db: import("better-sqlite3").Database }).db;
+          const rows = db
+            .prepare("SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1")
+            .get(this.id) as { c: number } | undefined;
+          recallUsedCount = rows?.c ?? 0;
+        } catch {
+          // pending_reinforcements might not exist yet
+        }
+      }
+      await this.scorecard.flush(memPath ?? undefined, recallUsedCount);
+    } catch (err) {
+      this.getLogger().child("context_engine").warn("Scorecard flush failed", {
+        cause: err as Error,
+      });
+    }
+
     this.persistStateGraphCheckpoint();
     this.eventLog.close();
     return { memory: memoryStatus };
@@ -1013,7 +1049,27 @@ export class Session {
 // ---- Helpers ----
 
 function initContextEngine(session: Session): void {
-  if (!session.isContextEngineEnabled()) return;
+  const engineConfig = resolveContextEngineConfig(session.config);
+  const measurementMode = engineConfig.measurement_mode;
+
+  if (!session.isContextEngineEnabled()) {
+    // Measurement mode: open a minimal context DB just for the scorecard
+    if (measurementMode) {
+      try {
+        const dbPath = resolveContextDbPath(session.config, session.cwd);
+        mkdirSync(dirname(dbPath), { recursive: true });
+        const db = openContextEngineDb(dbPath);
+        session.scorecard = new ScorecardTracker(db, session.id, false);
+        session.getLogger().child("context_engine").notice("measurement mode enabled (scorecard only)");
+      } catch (err) {
+        session.getLogger().child("context_engine").warn("Failed to initialize measurement mode", {
+          cause: err as Error,
+        });
+        session.scorecard = createNullScorecard();
+      }
+    }
+    return;
+  }
 
   try {
     const dbPath = resolveContextDbPath(session.config, session.cwd);
@@ -1021,8 +1077,9 @@ function initContextEngine(session: Session): void {
     session.contextEngine = ContextEngine.open(
       dbPath,
       session.id,
-      resolveContextEngineConfig(session.config),
+      engineConfig,
     );
+    session.scorecard = session.contextEngine.scorecard;
     const evicted = session.contextEngine.runStartupMaintenance(session.getTurnCount());
     const migrated = session.contextEngine.migrateLedgerFromEvents(
       session.eventLog.readAll(),
@@ -1040,6 +1097,9 @@ function initContextEngine(session: Session): void {
       cause: err as Error,
     });
     session.contextEngine = null;
+    if (measurementMode) {
+      session.scorecard = createNullScorecard();
+    }
   }
 }
 

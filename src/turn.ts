@@ -108,6 +108,7 @@ export async function runTurn(
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
     contextEngine: session.contextEngine,
+    scorecard: session.scorecard,
     classicMode,
     cwd: session.cwd,
     sandbox: session.config.shell,
@@ -608,6 +609,7 @@ export async function runTurn(
 
   // 7. Increment turn and run tier management (engine mode only)
   session.incrementTurn();
+  session.scorecard.inc("totalTurns");
   if (!classicMode) {
     applyTierManagement(session);
     session.skillRuntime?.cleanupStaleSkills(session.getTurnCount());
@@ -667,6 +669,7 @@ function finalizeInterruptedTurn(
   }
 
   session.incrementTurn();
+  session.scorecard.inc("totalTurns");
   if (!classicMode) {
     applyTierManagement(session);
     session.skillRuntime?.cleanupStaleSkills(session.getTurnCount());

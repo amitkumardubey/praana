@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createNullScorecard } from "../src/context-engine/telemetry.js";
 
 vi.mock("@earendil-works/pi-ai", () => ({
   stream: vi.fn(),
@@ -85,6 +86,7 @@ function mockSession(): Session {
     memoryEnabled: false,
     memoryStore: null,
     contextEngine: null,
+    scorecard: createNullScorecard(),
     isIncognito: vi.fn(() => false),
     isContextEngineEnabled: vi.fn(() => false),
     getTurnCount: vi.fn(() => 0),

@@ -15,6 +15,7 @@ import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
+import { estimateTokens } from "../token-estimate.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
@@ -46,11 +47,14 @@ export interface SystemToolContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
+  skillScorecard?: { inc: (field: string, by?: number) => void };
   getCurrentTurn: () => number;
+  /** Track files that have been read to detect repeat reads. Created lazily. */
+  readFileSet?: Set<string>;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, getCurrentTurn } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, getCurrentTurn } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -236,6 +240,14 @@ export function createSystemTools(ctx: SystemToolContext) {
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
         try {
+          if (ctx.skillScorecard) {
+            if (!ctx.readFileSet) ctx.readFileSet = new Set();
+            if (ctx.readFileSet.has(absPath)) {
+              ctx.skillScorecard.inc("repeatFileReads");
+            }
+            ctx.readFileSet.add(absPath);
+          }
+          
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
           }
@@ -361,6 +373,18 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `Skill file not found: ${skill.name}` };
           }
           const body = readFileSync(skill.location, "utf-8");
+          
+          // Track skill load in scorecard
+          const isReload = skillRuntime?.getLoadedSkillNames().includes(skill_id);
+          skillScorecard?.inc("skillsLoaded");
+          if (isReload) {
+            skillScorecard?.inc("skillReloadCount");
+          }
+          
+          // Track token consumption (approximate)
+          const bodyTokens = estimateTokens(body);
+          skillScorecard?.inc("skillTokensConsumed", bodyTokens);
+          
           skillRuntime?.trackLoad(skill_id, getCurrentTurn());
           return { ok: true, body };
         } catch (err: any) {

@@ -122,6 +122,37 @@ CREATE TABLE IF NOT EXISTS session_stats (
   total_turns             INTEGER NOT NULL DEFAULT 0,
   updated_at              INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scorecard (
+  session_id           TEXT PRIMARY KEY,
+  context_engine_on    INTEGER NOT NULL DEFAULT 0,
+  created_at           INTEGER NOT NULL,
+
+  -- context engine
+  artifact_retrieve_calls   INTEGER DEFAULT 0,
+  artifact_cards_produced   INTEGER DEFAULT 0,
+  repeat_file_reads         INTEGER DEFAULT 0,
+  decision_contradictions   INTEGER DEFAULT 0,
+  turn_event_searches       INTEGER DEFAULT 0,
+  total_turns               INTEGER DEFAULT 0,
+  pressure_events           INTEGER DEFAULT 0,
+  compaction_triggers       INTEGER DEFAULT 0,
+
+  -- memory
+  recall_calls              INTEGER DEFAULT 0,
+  recall_used_count         INTEGER DEFAULT 0,
+  validity_avg_start        REAL    DEFAULT 0,
+  validity_avg_end          REAL    DEFAULT 0,
+  usefulness_avg_start      REAL    DEFAULT 0,
+  usefulness_avg_end        REAL    DEFAULT 0,
+
+  -- skills
+  skills_loaded             INTEGER DEFAULT 0,
+  skills_used               INTEGER DEFAULT 0,
+  skill_underload_events    INTEGER DEFAULT 0,
+  skill_reload_count        INTEGER DEFAULT 0,
+  skill_tokens_consumed     INTEGER DEFAULT 0
+);
 `;
 
 export interface DistillerStatRow {

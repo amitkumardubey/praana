@@ -17,6 +17,7 @@ export interface ToolRegistryContext {
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
+  scorecard?: { inc: (field: string, by?: number) => void };
   classicMode?: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
@@ -55,6 +56,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     memoryEnabled: ctx.memoryEnabled,
     incognito: ctx.incognito,
     contextEngine: ctx.contextEngine,
+    skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const systemTools = createSystemTools({
@@ -65,6 +67,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     shellLiveStream: ctx.shellLiveStream,
     skills: ctx.skills,
     skillRuntime: ctx.skillRuntime,
+    skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const searchCodeTools = createSearchCodeTool({

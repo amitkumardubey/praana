@@ -15,6 +15,7 @@ import { getTurnDigest, listSessionArtifacts } from "./db.js";
 import {
   renderSessionTelemetrySummary,
   TelemetryRecorder,
+  ScorecardTracker,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
 import { TurnExtraction } from "./extraction.js";
@@ -61,6 +62,8 @@ export { scoreContextUnit, recencyScore } from "./scoring.js";
 export { buildEventLineage, formatEventLineage, type EventLineage } from "./event-lineage.js";
 export {
   TelemetryRecorder,
+  ScorecardTracker,
+  createNullScorecard,
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
@@ -133,6 +136,7 @@ export class ContextEngine {
   readonly extraction: TurnExtraction;
   readonly checkpoint: CheckpointStore | null;
   readonly telemetry: TelemetryRecorder;
+  readonly scorecard: ScorecardTracker;
   private readonly config: ContextEngineConfig;
 
   private constructor(
@@ -141,6 +145,7 @@ export class ContextEngine {
     extraction: TurnExtraction,
     checkpoint: CheckpointStore | null,
     telemetry: TelemetryRecorder,
+    scorecard: ScorecardTracker,
     config: ContextEngineConfig,
   ) {
     this.store = store;
@@ -148,6 +153,7 @@ export class ContextEngine {
     this.extraction = extraction;
     this.checkpoint = checkpoint;
     this.telemetry = telemetry;
+    this.scorecard = scorecard;
     this.config = config;
   }
 
@@ -164,7 +170,8 @@ export class ContextEngine {
       ? CheckpointStore.open(store.getDb(), sessionId)
       : null;
     const telemetry = new TelemetryRecorder(store.getDb(), sessionId, resolved.enabled);
-    return new ContextEngine(store, ledger, extraction, checkpoint, telemetry, resolved);
+    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled);
+    return new ContextEngine(store, ledger, extraction, checkpoint, telemetry, scorecard, resolved);
   }
 
   runStartupMaintenance(currentTurn: number): number {

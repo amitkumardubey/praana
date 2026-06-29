@@ -256,6 +256,11 @@ export class SkillRuntime {
   private totalReloads = 0;
   private totalEvictions = 0;
 
+  // Skills-specific counters (for scorecard)
+  private skillLoads = 0;
+  private skillUnderloadEvents = 0;
+  private skillTokensConsumed = 0;
+
   // Telemetry
   private events: SkillTelemetryEvent[] = [];
 
@@ -303,6 +308,7 @@ export class SkillRuntime {
       existing.reloadCount++;
       existing.loadedTurn = currentTurn;
       this.totalReloads++;
+      this.skillLoads++;
       this.emit({
         type: "skill_reloaded",
         skill_id: skillId,
@@ -313,6 +319,7 @@ export class SkillRuntime {
     } else {
       this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
       this.everLoaded.add(skillId);
+      this.skillLoads++;
       this.emit({
         type: "skill_loaded",
         skill_id: skillId,
@@ -329,6 +336,7 @@ export class SkillRuntime {
       if (currentTurn - skill.loadedTurn > this.config.stale_threshold_turns) {
         this.loadedSkills.delete(id);
         this.totalEvictions++;
+        this.skillUnderloadEvents++;
         this.emit({
           type: "skill_evicted",
           skill_id: id,
@@ -408,5 +416,29 @@ export class SkillRuntime {
       reloadedCount: this.totalReloads,
       evictedCount: this.totalEvictions,
     };
+  }
+
+  /**
+   * Return the full scorecard counters for this session (skills).
+   * Includes loaded, reloaded, underloaded, and tokens consumed.
+   */
+  getSkillScorecard(): { loaded: number; used: number; reloaded: number; evicted: number; underload: number; tokensConsumed: number } {
+    const used = this.everLoaded.size - this.skillUnderloadEvents;
+    return {
+      loaded: this.skillLoads,
+      used: used > 0 ? used : 0,
+      reloaded: this.totalReloads,
+      evicted: this.totalEvictions,
+      underload: this.skillUnderloadEvents,
+      tokensConsumed: this.skillTokensConsumed,
+    };
+  }
+
+  /**
+   * Add to the skill tokens consumed counter.
+   * Call this whenever skill content (e.g. skill_prompt section) is included in the prompt.
+   */
+  addSkillTokens(tokens: number): void {
+    this.skillTokensConsumed += tokens;
   }
 }

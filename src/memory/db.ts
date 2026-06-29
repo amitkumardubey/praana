@@ -752,6 +752,28 @@ export function searchByFts(
     .all(...params) as Array<{ entry_id: string; rank: number }>;
 }
 
+/**
+ * Query memory signal averages for the scorecard.
+ * Returns AVG(validity) and AVG(usefulness) across all non-retracted entries.
+ */
+export function getMemorySignalAverages(
+  db: Database.Database,
+): { validityAvg: number; usefulnessAvg: number } {
+  try {
+    const row = db
+      .prepare(
+        "SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1",
+      )
+      .get() as { v: number | null; u: number | null } | undefined;
+    return {
+      validityAvg: row?.v ?? 0,
+      usefulnessAvg: row?.u ?? 0,
+    };
+  } catch {
+    return { validityAvg: 0, usefulnessAvg: 0 };
+  }
+}
+
 function buildFtsQuery(query: string): string {
   const terms = query
     .toLowerCase()

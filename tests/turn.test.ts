@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { z } from "zod";
+import { createNullScorecard } from "../src/context-engine/telemetry.js";
 
 // ── Mock all external dependencies ──────────────────────────────────
 
@@ -238,6 +239,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     memoryEnabled: false,
     incognito: false,
     contextEngine: null,
+    scorecard: createNullScorecard(),
     digest: null,
     agentsContext: null,
     debug: false,

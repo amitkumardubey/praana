@@ -145,6 +145,9 @@ export function reconcileCheckpoint(
     }
   }
 
+  // Track decision contradictions for scorecard
+  let decisionContradictions = 0;
+
   for (const decision of normalizedDigest.decisions) {
     const summary = decisionSummary(decision);
     const rationale =
@@ -153,11 +156,35 @@ export function reconcileCheckpoint(
       (d) => d.summary === summary && d.turn === turn,
     );
     if (existingIdx < 0) {
+      // Check if this new decision contradicts any existing decision
+      const existingDecision = next.decisions.find((d) =>
+        d.summary.toLowerCase().trim() === summary.toLowerCase().trim()
+      );
+      
+      if (existingDecision) {
+        const oldRationale = existingDecision.rationale || '';
+        const newRationale = rationale || '';
+        const isContradiction = 
+          oldRationale.toLowerCase().includes('not') ||
+          newRationale.toLowerCase().includes('not') ||
+          oldRationale.toLowerCase().includes('don\'t') ||
+          newRationale.toLowerCase().includes('don\'t') ||
+          oldRationale.toLowerCase().includes("don't") ||
+          newRationale.toLowerCase().includes("don't");
+        
+        if (isContradiction) {
+          decisionContradictions++;
+        }
+      }
+      
       next.decisions.push({ summary, rationale, turn });
     } else if (rationale && !next.decisions[existingIdx].rationale) {
       next.decisions[existingIdx].rationale = rationale;
     }
   }
+  
+  // Store contradiction count on state for scorecard access
+  (next as any).contradictionCount = decisionContradictions;
   next.decisions = next.decisions.map((d) => ({
     ...d,
     compact: turn - d.turn >= DECISION_IDLE_TURNS,

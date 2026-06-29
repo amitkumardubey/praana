@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import type { Session } from "../src/session.js";
 
@@ -430,6 +431,7 @@ describe("executeSlashCommand", () => {
         hard: 0,
         byKind: { task: 1 },
       }),
+      scorecard: createNullScorecard(),
       memoryEnabled: false,
       isContextEngineEnabled: () => true,
       contextEngine: {
