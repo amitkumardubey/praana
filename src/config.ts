@@ -102,6 +102,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
       w_pin: 1.0,
       w_recency: 0.5,
       w_relevance: 0.3,
+      w_semantic: 0.3,
       w_hydrate_boost: 0.2,
     },
     pressure: {
@@ -436,9 +437,13 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   if (!out.context_engine.scoring) {
     out.context_engine.scoring = { ...DEFAULT_CONFIG.context_engine.scoring };
   } else {
-    for (const key of ["w_pin", "w_recency", "w_relevance"] as const) {
+    const defaultScoring = {
+      ...DEFAULT_CONFIG.context_engine.scoring,
+      w_semantic: DEFAULT_CONFIG.context_engine.scoring.w_semantic ?? 0,
+    };
+    for (const key of ["w_pin", "w_recency", "w_relevance", "w_semantic"] as const) {
       if (!Number.isFinite(out.context_engine.scoring[key])) {
-        out.context_engine.scoring[key] = DEFAULT_CONFIG.context_engine.scoring[key];
+        out.context_engine.scoring[key] = defaultScoring[key];
       }
     }
   }

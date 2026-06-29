@@ -203,6 +203,11 @@ export interface ContextUnit {
 export interface ScoreBreakdown {
   pin: number;
   recency: number;
+  /** BM25 keyword relevance component (weighted). */
+  bm25: number;
+  /** Embedding similarity component (weighted); 0 when embeddings are unavailable. */
+  semantic: number;
+  /** Effective relevance term: max(bm25, semantic). */
   relevance: number;
   /** Boost from auto-hydrated object text overlap; 0 when feature is off. */
   hydrate_boost: number;

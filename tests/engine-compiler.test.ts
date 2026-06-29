@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
 import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
+import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { ContextEngineConfig } from "../src/types.js";
 import type { ContextUnit, SessionCheckpoint } from "../src/context-engine/types.js";
 import type { DomainClassifier } from "../src/domain/types.js";
+import type { Embedder } from "../src/memory/types.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -15,7 +17,7 @@ const ENGINE_CONFIG: ContextEngineConfig = {
   llm_digest: false,
   activity_log_max_entries: 15,
   checkpoint_enabled: true,
-  scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3, w_hydrate_boost: 0.2 },
+  scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3, w_semantic: 0.3, w_hydrate_boost: 0.2 },
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };
 
@@ -29,7 +31,7 @@ function emptyStateGraph() {
 }
 
 describe("engine compiler", () => {
-  it("is deterministic for the same input", () => {
+  it("is deterministic for the same input", async () => {
     const input = {
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
@@ -80,8 +82,8 @@ describe("engine compiler", () => {
 
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2025-01-01T12:00:00Z"));
-    const a = compileEngineWithMetrics(input);
-    const b = compileEngineWithMetrics(input);
+    const a = await compileEngineWithMetrics(input);
+    const b = await compileEngineWithMetrics(input);
     expect(a.prompt).toBe(b.prompt);
     vi.useRealTimers();
     expect(a.scoreRecords).toEqual(b.scoreRecords);
@@ -89,7 +91,7 @@ describe("engine compiler", () => {
     expect(a.taskType).toBe("debugging");
   });
 
-  it("passes through custom classifier task labels without narrowing", () => {
+  it("passes through custom classifier task labels without narrowing", async () => {
     const customClassifier: DomainClassifier = {
       domainId: "prose",
       tieBreakOrder: ["prose"],
@@ -100,7 +102,7 @@ describe("engine compiler", () => {
       }),
     };
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -120,8 +122,8 @@ describe("engine compiler", () => {
     expect(result.taskClassification.taskType).toBe("prose");
   });
 
-  it("includes checkpoint and verbatim recent turns in the prompt", () => {
-    const result = compileEngineWithMetrics({
+  it("includes checkpoint and verbatim recent turns in the prompt", async () => {
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -237,10 +239,151 @@ describe("engine compiler", () => {
     expect(r2.breakdown.hydrate_boost).toBe(0);
   });
 
-  it("hydratedTexts flow through compileEngineWithMetrics to scoring", () => {
+  it("uses semantic similarity when vectors are available", () => {
+    const unit: ContextUnit = {
+      id: "turn_semantic",
+      type: "turn_digest",
+      content: "auth middleware handler",
+      tokens: 30,
+      sourceTurn: 6,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const withSemanticWeights = {
+      ...ENGINE_CONFIG.scoring,
+      w_semantic: 0.3,
+    } as ContextEngineConfig["scoring"] & { w_semantic: number };
+
+    const baseline = scoreContextUnit(
+      unit,
+      10,
+      "authentication handler",
+      withSemanticWeights,
+    );
+
+    // userInput and unit.content vectors are identical to force max similarity.
+    const vectors = new Map<string, Float32Array>([
+      ["authentication handler", new Float32Array([1, 0, 0])],
+      ["auth middleware handler", new Float32Array([1, 0, 0])],
+    ]);
+
+    const semantic = scoreContextUnit(
+      unit,
+      10,
+      "authentication handler",
+      withSemanticWeights,
+      undefined,
+      vectors,
+    );
+
+    expect(semantic.breakdown.semantic).toBeGreaterThan(0);
+    expect(semantic.score).toBeGreaterThan(baseline.score);
+    expect(semantic.breakdown.relevance).toBe(
+      Math.max(semantic.breakdown.bm25, semantic.breakdown.semantic),
+    );
+  });
+
+  it("keeps BM25 as relevance when keyword match beats semantic similarity", () => {
+    const unit: ContextUnit = {
+      id: "turn_keyword",
+      type: "turn_digest",
+      content: "read_file path src/auth.ts",
+      tokens: 30,
+      sourceTurn: 6,
+      score: 0,
+      pinned: false,
+      artifactRefs: [],
+    };
+    const weights = { ...ENGINE_CONFIG.scoring, w_semantic: 0.3 };
+    const vectors = new Map<string, Float32Array>([
+      ["read_file src/auth.ts", new Float32Array([0, 1, 0])],
+      ["read_file path src/auth.ts", new Float32Array([1, 0, 0])],
+    ]);
+
+    const scored = scoreContextUnit(
+      unit,
+      10,
+      "read_file src/auth.ts",
+      weights,
+      undefined,
+      vectors,
+    );
+
+    expect(scored.breakdown.bm25).toBeGreaterThan(scored.breakdown.semantic);
+    expect(scored.breakdown.relevance).toBe(scored.breakdown.bm25);
+  });
+
+  it("applies semantic scoring through compileEngineWithMetrics when embedder is provided", async () => {
+    const embedder: Embedder = {
+      dim: 3,
+      embed: async (text: string) => {
+        if (text.trim() === "authentication handler") return new Float32Array([1, 0, 0]);
+        if (text.trim().includes("auth middleware")) return new Float32Array([1, 0, 0]);
+        return new Float32Array([0, 0, 1]);
+      },
+    };
+    const cache = new EmbeddingCache();
+
+    const result = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "authentication handler",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-semantic",
+      tokenBudget: 100_000,
+      checkpointSection: "",
+      currentTurn: 10,
+      turnRecords: [
+        {
+          turn: 5,
+          userMessage: "fix auth middleware",
+          assistantMessage: "updated auth middleware handler",
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 50,
+          timestamp: 1,
+        },
+      ],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      embedder,
+      embeddingCache: cache,
+    });
+
+    const digestRecord = result.scoreRecords.find((r) => r.unitId === "turn_5");
+    expect(digestRecord).toBeDefined();
+    expect(digestRecord!.breakdown.semantic).toBeGreaterThan(0);
+    expect(digestRecord!.breakdown.relevance).toBe(
+      Math.max(digestRecord!.breakdown.bm25, digestRecord!.breakdown.semantic),
+    );
+  });
+
+  it("precomputeVectors with cached embeddings completes scoring within budget", async () => {
+    const embedder: Embedder = {
+      dim: 8,
+      embed: async () => new Float32Array(8).fill(0.5),
+    };
+    const cache = new EmbeddingCache();
+    const texts = Array.from({ length: 40 }, (_, i) => `context unit text ${i}`);
+
+    const start = performance.now();
+    await precomputeVectors(texts, embedder, cache);
+    await precomputeVectors(texts, embedder, cache);
+    const elapsed = performance.now() - start;
+
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it("hydratedTexts flow through compileEngineWithMetrics to scoring", async () => {
     // Turn age must be in [3, 6] to be emitted as a scored digest unit.
     // With currentTurn=10, turn=5 gives age=5 — within the scored window.
-    const baseResult = compileEngineWithMetrics({
+    const baseResult = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -255,7 +398,7 @@ describe("engine compiler", () => {
       activityEntries: [],
       engineConfig: ENGINE_CONFIG,
     });
-    const boostedResult = compileEngineWithMetrics({
+    const boostedResult = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -279,7 +422,7 @@ describe("engine compiler", () => {
     expect(boostedPick!.score).toBeGreaterThan(basePick!.score);
   });
 
-  it("uses weighted pressure lower than raw token ratio for finding-heavy checkpoint", () => {
+  it("uses weighted pressure lower than raw token ratio for finding-heavy checkpoint", async () => {
     const state = createEmptyCheckpointState();
     state.decisions = [
       { summary: "use sqlite", rationale: "local", turn: 2, compact: false },
@@ -298,7 +441,7 @@ describe("engine compiler", () => {
     const checkpoint: SessionCheckpoint = { version: 1, state };
     const smallWindow = 8_000;
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -320,7 +463,7 @@ describe("engine compiler", () => {
     expect(result.pressureRatio).toBeLessThan(rawRatio);
   });
 
-  it("emergency checkpoint in prompt omits findings when pressure is high", () => {
+  it("emergency checkpoint in prompt omits findings when pressure is high", async () => {
     const state = createEmptyCheckpointState();
     state.decisions = [
       { summary: "keep this decision", rationale: "important", turn: 1, compact: false },
@@ -333,7 +476,7 @@ describe("engine compiler", () => {
     const checkpoint: SessionCheckpoint = { version: 1, state };
     const tinyWindow = 2_000;
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -383,7 +526,7 @@ describe("engine compiler", () => {
     expect(result.prompt).not.toContain("### Findings");
   });
 
-  it("does not double-count agentsContext in weighted pressure", () => {
+  it("does not double-count agentsContext in weighted pressure", async () => {
     const largeAgents = "AGENTS ".repeat(4000);
     const base = {
       stateGraph: emptyStateGraph(),
@@ -402,8 +545,8 @@ describe("engine compiler", () => {
       engineConfig: ENGINE_CONFIG,
     };
 
-    const withoutAgents = compileEngineWithMetrics({ ...base, agentsContext: "" });
-    const withAgents = compileEngineWithMetrics({ ...base, agentsContext: largeAgents });
+    const withoutAgents = await compileEngineWithMetrics({ ...base, agentsContext: "" });
+    const withAgents = await compileEngineWithMetrics({ ...base, agentsContext: largeAgents });
     const agentsTokens = withAgents.metrics.agentsContextTokens;
     expect(agentsTokens).toBeGreaterThan(1000);
 
@@ -412,7 +555,7 @@ describe("engine compiler", () => {
     expect(delta).toBeLessThan(agentsTokens * 1.3);
   });
 
-  it("reports compact pressure mode when checkpoint renders in compact mode", () => {
+  it("reports compact pressure mode when checkpoint renders in compact mode", async () => {
     const state = createEmptyCheckpointState();
     state.decisions = [
       { summary: "keep compact decision", rationale: "important", turn: 1, compact: false },
@@ -430,7 +573,7 @@ describe("engine compiler", () => {
     const checkpoint: SessionCheckpoint = { version: 1, state };
     const window = 2_500;
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -456,7 +599,7 @@ describe("engine compiler", () => {
     expect(result.prompt).not.toContain("activity-0");
   });
 
-  it("forces emergency when raw tokens exceed usable budget despite low weighted pressure", () => {
+  it("forces emergency when raw tokens exceed usable budget despite low weighted pressure", async () => {
     const state = createEmptyCheckpointState();
     state.findings = Array.from({ length: 30 }, (_, i) => ({
       summary: `Verbose low-value trace ${i} `.repeat(50),
@@ -466,7 +609,7 @@ describe("engine compiler", () => {
     const checkpoint: SessionCheckpoint = { version: 1, state };
     const tinyWindow = 1_500;
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -517,7 +660,7 @@ describe("engine compiler", () => {
     expect(result.prompt).not.toContain("### Findings");
   });
 
-  it("budgetAllocation in result reflects the classified task type", () => {
+  it("budgetAllocation in result reflects the classified task type", async () => {
     const debugClassifier: DomainClassifier = {
       domainId: "test",
       tieBreakOrder: [],
@@ -528,7 +671,7 @@ describe("engine compiler", () => {
         : { errors: 0.10, verbatimTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20 },
     };
 
-    const result = compileEngineWithMetrics({
+    const result = await compileEngineWithMetrics({
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
@@ -549,7 +692,7 @@ describe("engine compiler", () => {
     });
   });
 
-  it("scored band caps differ between debugging and testing task types", () => {
+  it("scored band caps differ between debugging and testing task types", async () => {
     const makeClassifier = (taskType: string): DomainClassifier => ({
       domainId: "test",
       tieBreakOrder: [],
@@ -592,11 +735,11 @@ describe("engine compiler", () => {
       engineConfig: ENGINE_CONFIG,
     };
 
-    const testingResult = compileEngineWithMetrics({
+    const testingResult = await compileEngineWithMetrics({
       ...baseInput,
       domainClassifier: makeClassifier("testing"),
     });
-    const generalResult = compileEngineWithMetrics({
+    const generalResult = await compileEngineWithMetrics({
       ...baseInput,
       domainClassifier: makeClassifier("general"),
     });

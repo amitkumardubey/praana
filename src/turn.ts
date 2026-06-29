@@ -13,6 +13,7 @@ import {
   resolveContextEngineConfig,
   estimateTokens,
 } from "./context-engine/index.js";
+import { EmbeddingCache } from "./context-engine/embedding-cache.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
@@ -166,7 +167,10 @@ export async function runTurn(
   let promptMetrics: CompileMetrics;
 
   if (useEngineCompiler) {
-    const engineResult = compileEngineWithMetrics({
+    if (!session.embeddingCache) {
+      session.embeddingCache = new EmbeddingCache();
+    }
+    const engineResult = await compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
       turnRecords: session.contextEngine!.ledger.list(),
@@ -174,6 +178,8 @@ export async function runTurn(
       engineConfig,
       contextWindowTokens,
       hydratedTexts: autoHydrated.map((r) => r.text),
+      embedder: session.memoryStore?.embedder ?? null,
+      embeddingCache: session.embeddingCache,
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {

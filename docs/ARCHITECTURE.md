@@ -43,7 +43,7 @@ src/
     error-tracker.ts — Open error tracking and test-pass/fail detection
     checkpoint.ts  — SessionCheckpoint reconciliation, rendering, replay from digests
     state-snapshot.ts — StateGraph snapshot and diff for decision/constraint extraction
-    scoring.ts     — 3-term scoring (pin + recency + relevance) and budget selection
+    scoring.ts     — Context-unit scoring (pin + recency + max(BM25, semantic) + hydrate boost) and budget selection
     engine-compiler.ts — Multi-resolution budget-band compiler (engine mode)
     bm25.ts        — Re-exports shared BM25 utilities for context-unit and turn-search scoring
     density.ts     — SectionDensityKind → weight table; densityWeight() used by engine-compiler for weighted pressure
@@ -213,7 +213,7 @@ const classicMode = !useEngineCompiler;
 5. **Band 5 (scored):** Older turn digests — ~2000 tokens.
 6. **Band 6 (remaining):** Memory digest, low-priority state — remainder.
 
-Context units are scored with a 4-term model: `pin_boost × W_pin + recency(age) × W_recency + BM25(query, content) × W_relevance + hydrate_boost × W_hydrate`. The hydrate boost is the maximum `bm25Relevance(ht, unitContent)` across all auto-hydrated object texts — it gives a lift to context units (e.g. older turn digests) that discuss the same objects the user just implicitly referenced. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`, `w_hydrate_boost=0.2`.
+Context units are scored with a 5-term model: `pin_boost × W_pin + recency(age) × W_recency + max(BM25 × W_relevance, semantic_similarity × W_semantic) + hydrate_boost × W_hydrate`. BM25 handles exact keyword overlap; embedding cosine similarity handles semantic paraphrases (e.g. "auth middleware" vs "authentication handler"). The effective relevance term is `max(bm25, semantic)` so either signal can win. The hydrate boost is the maximum `bm25Relevance(ht, unitContent)` across all auto-hydrated object texts — it gives a lift to context units (e.g. older turn digests) that discuss the same objects the user just implicitly referenced. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`, `w_semantic=0.3`, `w_hydrate_boost=0.2`. Embeddings are precomputed per compile pass and cached in a session-scoped LRU cache; when the embedder is unavailable or fails, scoring falls back to BM25-only.
 
 Pressure monitoring uses **density-weighted effective tokens**: `contextPressure = weightedTokens / usableBudget`. Each section kind has a hardcoded weight in `src/context-engine/density.ts` (decisions/constraints/plans = 1.0; open errors = 0.8; narrative/file/peripheral = 0.6; verbatim turns = 0.9; turn digests/artifacts = 0.4; findings/activity/fixed errors = 0.25). Low-density filler counts less toward pressure so a prompt full of error traces does not trigger compaction as aggressively as one full of architectural decisions. `>0.70` triggers compaction (drop older digests, tighten checkpoint findings/activity budgets). `>0.85` triggers emergency (keep checkpoint decisions/constraints/plans/open errors only — omit findings, activity, fixed errors — plus last 2 verbatim turns and current artifact cards). **Raw-token safety net:** when estimated raw prompt tokens exceed the usable budget or raw fill exceeds `emergency_at`, emergency mode is forced even if weighted pressure is lower. Section token caps (findings 300, scored bands 3000/2000) bound worst-case raw size; `/stats` shows both raw and weighted fill.
 
@@ -388,6 +388,7 @@ default_intensity = "full"         # lite | full
 w_pin = 1.0
 w_recency = 0.5
 w_relevance = 0.3
+w_semantic = 0.3       # embedding similarity; combined with BM25 via max()
 w_hydrate_boost = 0.2    # boost for context units overlapping auto-hydrated objects
 
 [context_engine.pressure]

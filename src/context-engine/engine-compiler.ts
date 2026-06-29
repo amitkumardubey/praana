@@ -31,6 +31,8 @@ import {
   selectUnitsWithinBudget,
   unitTokens,
 } from "./scoring.js";
+import type { Embedder } from "../memory/types.js";
+import { EmbeddingCache, precomputeVectors } from "./embedding-cache.js";
 import type {
   ActivityEntry,
   CompileScoreRecord,
@@ -63,6 +65,10 @@ export interface EngineCompileInput extends CompileInput {
   checkpoint?: SessionCheckpoint;
   /** Override default coding-domain classifier (for tests or future domains). */
   domainClassifier?: DomainClassifier;
+  /** Optional semantic embedder used to augment BM25 scoring. */
+  embedder?: Embedder | null;
+  /** Session-scoped embedding cache for context scoring. */
+  embeddingCache?: EmbeddingCache;
 }
 
 export interface EngineCompileResult {
@@ -387,11 +393,11 @@ interface CompilePassPrecomputed {
   checkpointBudgets: CheckpointSectionBudgets;
 }
 
-function compileEnginePass(
+async function compileEnginePass(
   input: EngineCompileInput,
   checkpointPressureMode: PressureMode,
   precomputed: CompilePassPrecomputed,
-): CompilePassResult {
+): Promise<CompilePassResult> {
   const sections: string[] = [];
   const metrics: Partial<CompileMetrics> = {};
   const compileTurn = input.currentTurn + 1;
@@ -456,8 +462,42 @@ function compileEnginePass(
     (u) => input.currentTurn - u.sourceTurn > 6,
   );
 
-  const rankedRecent = rankContextUnits(recentUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
-  const rankedOlder = rankContextUnits(olderUnits, input.currentTurn, userInput, weights, input.hydratedTexts);
+  let precomputedVectors: Map<string, Float32Array> | undefined;
+  if (input.embedder && input.userInput?.trim()) {
+    const cache = input.embeddingCache ?? new EmbeddingCache();
+    const candidateTexts = [
+      userInput,
+      ...recentUnits.map((u) => u.content),
+      ...olderUnits.map((u) => u.content),
+    ];
+    try {
+      precomputedVectors = await precomputeVectors(candidateTexts, input.embedder, cache);
+    } catch (err) {
+      // Semantic scoring is best-effort; fallback to BM25-only if embedding fails.
+      getAppLogger().child("compiler").debug(
+        "semantic embedding precompute failed; using BM25-only scoring",
+        { details: { err: err instanceof Error ? err.message : String(err) } },
+      );
+      precomputedVectors = undefined;
+    }
+  }
+
+  const rankedRecent = rankContextUnits(
+    recentUnits,
+    input.currentTurn,
+    userInput,
+    weights,
+    input.hydratedTexts,
+    precomputedVectors,
+  );
+  const rankedOlder = rankContextUnits(
+    olderUnits,
+    input.currentTurn,
+    userInput,
+    weights,
+    input.hydratedTexts,
+    precomputedVectors,
+  );
 
   const recentPick = selectUnitsWithinBudget(rankedRecent, precomputed.bandScoredRecentTokens);
   const olderPick = selectUnitsWithinBudget(rankedOlder, precomputed.bandScoredOlderTokens);
@@ -478,6 +518,8 @@ function compileEnginePass(
       breakdown: {
         pin: Number(unit.breakdown.pin.toFixed(4)),
         recency: Number(unit.breakdown.recency.toFixed(4)),
+        bm25: Number(unit.breakdown.bm25.toFixed(4)),
+        semantic: Number(unit.breakdown.semantic.toFixed(4)),
         relevance: Number(unit.breakdown.relevance.toFixed(4)),
         hydrate_boost: Number((unit.breakdown.hydrate_boost).toFixed(4)),
       },
@@ -581,9 +623,9 @@ function buildCompilePassPrecomputed(
   };
 }
 
-export function compileEngineWithMetrics(
+export async function compileEngineWithMetrics(
   input: EngineCompileInput,
-): EngineCompileResult {
+): Promise<EngineCompileResult> {
   const classifier = input.domainClassifier ?? getDefaultDomainClassifier();
   const taskClassification = classifyTask(classifier, {
     userInput: input.userInput ?? "",
@@ -672,7 +714,7 @@ export function compileEngineWithMetrics(
     input.engineConfig,
   );
 
-  let pass = compileEnginePass(input, checkpointPressureMode, precomputed);
+  let pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
   let weightedTokens = computeWeightedTokens(
     pass.metrics,
     pass.checkpointEffective,
@@ -683,7 +725,7 @@ export function compileEngineWithMetrics(
 
   if (pressureModeRank(pressureMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = pressureMode;
-    pass = compileEnginePass(input, checkpointPressureMode, precomputed);
+    pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,
@@ -712,7 +754,7 @@ export function compileEngineWithMetrics(
 
   if (pressureModeRank(rawSafetyMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = rawSafetyMode;
-    pass = compileEnginePass(input, checkpointPressureMode, precomputed);
+    pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,
@@ -780,7 +822,9 @@ export function explainUnitScore(
     `Score: ${record.score} (${record.included ? "included" : "excluded"} in prompt)`,
     `  pin:       ${record.breakdown.pin.toFixed(2)}`,
     `  recency:   ${record.breakdown.recency.toFixed(2)} (weight ${weights.w_recency})`,
-    `  relevance: ${record.breakdown.relevance.toFixed(2)} (weight ${weights.w_relevance})`,
+    `  bm25:      ${record.breakdown.bm25.toFixed(2)} (weight ${weights.w_relevance})`,
+    `  semantic:  ${record.breakdown.semantic.toFixed(2)} (weight ${weights.w_semantic ?? 0})`,
+    `  relevance: ${record.breakdown.relevance.toFixed(2)} (max of bm25, semantic)`,
     `Budget band ${record.band}: ${bandUsedTokens}/${bandTokenBudget} tokens used`,
   ];
 

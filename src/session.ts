@@ -42,6 +42,7 @@ import {
   type ScorecardTrackerOptions,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
+import { EmbeddingCache } from "./context-engine/embedding-cache.js";
 import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
@@ -71,6 +72,7 @@ export class Session {
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
   contextEngine: ContextEngine | null = null;
+  embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
   private ended = false;
