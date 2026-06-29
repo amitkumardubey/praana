@@ -539,6 +539,23 @@ function updateUsefulness(
   }
 }
 
+/** Count recalled entries marked used before session-end flush deletes the rows. */
+export function countPendingReinforcementsUsed(
+  db: Database.Database,
+  sessionId: string,
+): number {
+  try {
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1",
+      )
+      .get(sessionId) as { c: number } | undefined;
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function flushReinforcements(db: Database.Database, sessionId: string): void {
   const rows = db
     .prepare(

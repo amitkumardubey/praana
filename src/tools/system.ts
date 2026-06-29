@@ -15,6 +15,7 @@ import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
+import type { ScorecardInc } from "../context-engine/telemetry.js";
 import { estimateTokens } from "../token-estimate.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
@@ -47,16 +48,15 @@ export interface SystemToolContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
-  skillScorecard?: { inc: (field: string, by?: number) => void };
+  skillScorecard?: ScorecardInc;
+  onScorecardFileRead?: (absPath: string) => void;
   getCurrentTurn: () => number;
-  /** Track files that have been read to detect repeat reads. Created lazily. */
-  readFileSet?: Set<string>;
   /** Classic-mode skill loads for reload detection when SkillRuntime is absent. */
   skillEverLoaded?: Set<string>;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, getCurrentTurn } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, getCurrentTurn } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -242,13 +242,7 @@ export function createSystemTools(ctx: SystemToolContext) {
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
         try {
-          if (ctx.skillScorecard) {
-            if (!ctx.readFileSet) ctx.readFileSet = new Set();
-            if (ctx.readFileSet.has(absPath)) {
-              ctx.skillScorecard.inc("repeatFileReads");
-            }
-            ctx.readFileSet.add(absPath);
-          }
+          onScorecardFileRead?.(absPath);
           
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
@@ -388,6 +382,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             }
             skillScorecard.inc("skillTokensConsumed", bodyTokens);
             ctx.skillEverLoaded.add(skill_id);
+            skillScorecard.setSkillsUsed(ctx.skillEverLoaded.size);
           }
 
           return { ok: true, body };

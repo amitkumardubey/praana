@@ -9,6 +9,7 @@ import { ulid } from "ulid";
 import {
   clearReembedNeeded,
   countVectorEmbeddings,
+  countPendingReinforcementsUsed,
   DEDUP_RECONCILED_KEY,
   endSessionRow,
   flushReinforcements,
@@ -212,6 +213,12 @@ export class MemoryStore {
   getEntryCount(): number {
     const row = this.db.prepare("SELECT COUNT(*) AS c FROM entries").get() as { c: number } | undefined;
     return row?.c ?? 0;
+  }
+
+  /** Count recall results marked used in the current memory session (before sessionEnd flush). */
+  countPendingReinforcementsUsed(): number {
+    if (!this.sessionId) return 0;
+    return countPendingReinforcementsUsed(this.db, this.sessionId);
   }
 
   // ---- Session lifecycle ----

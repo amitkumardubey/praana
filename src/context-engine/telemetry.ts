@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import DatabaseConstructor from "better-sqlite3";
 import type { PressureMode } from "./types.js";
+import { getMemorySignalAverages } from "../memory/db.js";
 import {
   countSessionArtifacts,
   finalizeSessionStats,
@@ -34,11 +35,6 @@ export interface SessionTelemetrySummary {
 export class TelemetryRecorder {
   private lastPressureMode: PressureMode = "normal";
   private readonly contextEngineEnabled: boolean;
-  private skillsLoaded = 0;
-  private skillReloadCount = 0;
-  private skillTokensConsumed = 0;
-  // TODO(M7): wire real contradiction detection once semantic flip detection lands.
-  private decisionContradictions = 0;
 
   constructor(
     private readonly db: Database.Database,
@@ -77,21 +73,13 @@ export class TelemetryRecorder {
     }
   }
 
-  recordSkillLoad(skillId: string, isReload: boolean, tokens?: number): void {
-    this.skillsLoaded++;
-    if (isReload) {
-      this.skillReloadCount++;
-    }
-    if (tokens) {
-      this.skillTokensConsumed += tokens;
-    }
-  }
-
-  recordDecisionContradiction(): void {
-    this.decisionContradictions++;
-  }
-
-  finalize(totalTurns: number): SessionTelemetrySummary {
+  finalize(
+    totalTurns: number,
+    scorecardSnapshot?: Pick<
+      ScorecardCounters,
+      "skillsLoaded" | "skillReloadCount" | "skillTokensConsumed" | "decisionContradictions"
+    >,
+  ): SessionTelemetrySummary {
     const stats = finalizeSessionStats(this.db, this.sessionId, totalTurns, this.contextEngineEnabled);
     const artifactsProduced = countSessionArtifacts(this.db, this.sessionId);
     const retrievalRate =
@@ -103,10 +91,10 @@ export class TelemetryRecorder {
       artifactsProduced,
       retrievalRate,
       distillerRanking,
-      skillsLoaded: this.skillsLoaded,
-      skillReloadCount: this.skillReloadCount,
-      skillTokensConsumed: this.skillTokensConsumed,
-      decisionContradictions: this.decisionContradictions,
+      skillsLoaded: scorecardSnapshot?.skillsLoaded ?? 0,
+      skillReloadCount: scorecardSnapshot?.skillReloadCount ?? 0,
+      skillTokensConsumed: scorecardSnapshot?.skillTokensConsumed ?? 0,
+      decisionContradictions: scorecardSnapshot?.decisionContradictions ?? 0,
     };
   }
 }
@@ -133,6 +121,33 @@ export interface ScorecardCounters {
   skillReloadCount: number;
   skillTokensConsumed: number;
 }
+
+interface ScorecardDbRow {
+  session_id: string;
+  context_engine_on: number;
+  created_at: number;
+  artifact_retrieve_calls: number;
+  artifact_cards_produced: number;
+  repeat_file_reads: number;
+  decision_contradictions: number;
+  turn_event_searches: number;
+  total_turns: number;
+  pressure_events: number;
+  compaction_triggers: number;
+  recall_calls: number;
+  recall_used_count: number;
+  validity_avg_start: number;
+  validity_avg_end: number;
+  usefulness_avg_start: number;
+  usefulness_avg_end: number;
+  skills_loaded: number;
+  skills_used: number;
+  skill_underload_events: number;
+  skill_reload_count: number;
+  skill_tokens_consumed: number;
+}
+
+export type ScorecardInc = Pick<ScorecardTracker, "inc" | "setSkillsUsed">;
 
 /**
  * In-memory counter tracker that flushes one row to the scorecard table
@@ -171,12 +186,9 @@ export class ScorecardTracker {
   ) {}
 
   /** Increment a counter field. No-op when db is null (null-object pattern). */
-  inc(field: string, by = 1): void {
+  inc(field: keyof ScorecardCounters, by = 1): void {
     if (!this.db) return; // null-object: no-op
-    const key = field as keyof ScorecardCounters;
-    if (key in this.counters) {
-      this.counters[key] = (this.counters[key] ?? 0) + by;
-    }
+    this.counters[field] = (this.counters[field] ?? 0) + by;
   }
 
   /** Set skillsUsed directly (computed from reference count at session end). */
@@ -232,19 +244,51 @@ export class ScorecardTracker {
     try {
       const memDb = new DatabaseConstructor(memoryDbPath, { readonly: true });
       try {
-        const row = memDb
-          .prepare("SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1")
-          .get() as { v: number | null; u: number | null } | undefined;
-        return {
-          validityAvg: row?.v ?? 0,
-          usefulnessAvg: row?.u ?? 0,
-        };
+        return getMemorySignalAverages(memDb);
       } finally {
         memDb.close();
       }
     } catch {
       return { validityAvg: 0, usefulnessAvg: 0 };
     }
+  }
+
+  /** Restore in-memory counters from a previously persisted scorecard row (resume). */
+  restoreFromDb(): boolean {
+    if (!this.db) return false;
+    const row = this.db
+      .prepare("SELECT * FROM scorecard WHERE session_id = ?")
+      .get(this.sessionId) as ScorecardDbRow | undefined;
+    if (!row) return false;
+
+    this.counters = {
+      artifactRetrieveCalls: row.artifact_retrieve_calls ?? 0,
+      artifactCardsProduced: row.artifact_cards_produced ?? 0,
+      repeatFileReads: row.repeat_file_reads ?? 0,
+      decisionContradictions: row.decision_contradictions ?? 0,
+      turnEventSearches: row.turn_event_searches ?? 0,
+      totalTurns: row.total_turns ?? 0,
+      pressureEvents: row.pressure_events ?? 0,
+      compactionTriggers: row.compaction_triggers ?? 0,
+      recallCalls: row.recall_calls ?? 0,
+      recallUsedCount: row.recall_used_count ?? 0,
+      skillsLoaded: row.skills_loaded ?? 0,
+      skillsUsed: row.skills_used ?? 0,
+      skillUnderloadEvents: row.skill_underload_events ?? 0,
+      skillReloadCount: row.skill_reload_count ?? 0,
+      skillTokensConsumed: row.skill_tokens_consumed ?? 0,
+    };
+    this.recallUsedCount = row.recall_used_count ?? 0;
+    this.validityAvgStart = row.validity_avg_start ?? 0;
+    this.usefulnessAvgStart = row.usefulness_avg_start ?? 0;
+    this.validityAvgEnd = row.validity_avg_end ?? 0;
+    this.usefulnessAvgEnd = row.usefulness_avg_end ?? 0;
+    return true;
+  }
+
+  /** Persist current counters without final memory end-state (called each turn). */
+  persistProgress(): void {
+    this.writeScorecardRow({ final: false });
   }
 
   /**
@@ -266,10 +310,22 @@ export class ScorecardTracker {
   async flush(memoryDbPath?: string, recallUsedCount = 0): Promise<void> {
     if (!this.db) return; // null-object: no-op
 
-    const endAvgs = this.getMemoryAverages(memoryDbPath);
-    this.validityAvgEnd = endAvgs.validityAvg;
-    this.usefulnessAvgEnd = endAvgs.usefulnessAvg;
+    if (memoryDbPath) {
+      const endAvgs = this.getMemoryAverages(memoryDbPath);
+      this.validityAvgEnd = endAvgs.validityAvg;
+      this.usefulnessAvgEnd = endAvgs.usefulnessAvg;
+    }
     this.setRecallUsedCount(recallUsedCount);
+    this.writeScorecardRow({ final: true });
+  }
+
+  private writeScorecardRow(_opts: { final: boolean }): void {
+    if (!this.db) return;
+
+    const existing = this.db
+      .prepare("SELECT created_at FROM scorecard WHERE session_id = ?")
+      .get(this.sessionId) as { created_at: number } | undefined;
+    const createdAt = existing?.created_at ?? Date.now();
 
     this.db.prepare(
       `INSERT OR REPLACE INTO scorecard (
@@ -296,7 +352,7 @@ export class ScorecardTracker {
     ).run({
       sessionId: this.sessionId,
       engineOn: this.engineOn ? 1 : 0,
-      createdAt: Date.now(),
+      createdAt,
       artifactRetrieveCalls: this.counters.artifactRetrieveCalls,
       artifactCardsProduced: this.counters.artifactCardsProduced,
       repeatFileReads: this.counters.repeatFileReads,

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
 import type { ContextEngine } from "../context-engine/index.js";
+import type { ScorecardInc } from "../context-engine/telemetry.js";
 
 export interface KnowledgeToolContext {
   eventLog: EventLog;
@@ -10,7 +11,7 @@ export interface KnowledgeToolContext {
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
-  skillScorecard?: { inc: (field: string, by?: number) => void };
+  skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
 }
 

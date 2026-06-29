@@ -69,6 +69,8 @@ export class Session {
   skillRuntime: SkillRuntime | null = null;
   contextEngine: ContextEngine | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
+  /** Session-scoped paths already read (scorecard repeat-read signal). */
+  private readonly scorecardReadPaths = new Set<string>();
   debug = false;
   private ended = false;
   private readonly startedAt: number;
@@ -279,11 +281,6 @@ export class Session {
         });
 
         session.digest = d.markdown;
-        // Record memory start averages for scorecard
-        const memDbPath = session.getMemoryDbPath();
-        if (memDbPath) {
-          await session.scorecard.recordMemoryStart(memDbPath);
-        }
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -539,21 +536,19 @@ export class Session {
    * Snapshot recall-used count before memory sessionEnd deletes pending_reinforcements.
    */
   getRecallUsedCount(): number {
-    return this.countRecallUsedBeforeMemoryFlush();
-  }
-
-  private countRecallUsedBeforeMemoryFlush(): number {
-    if (!this.memoryStore) return 0;
-    try {
-      const db = (this.memoryStore as unknown as { db: import("better-sqlite3").Database }).db;
-      const rows = db
-        .prepare("SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1")
-        .get(this.id) as { c: number } | undefined;
-      return rows?.c ?? 0;
-    } catch {
-      // pending_reinforcements might not exist yet
+    const store = this.memoryStore;
+    if (!store || typeof store.countPendingReinforcementsUsed !== "function") {
       return 0;
     }
+    return store.countPendingReinforcementsUsed();
+  }
+
+  /** Track read_file paths for repeat-read scorecard signal (session-scoped). */
+  trackScorecardFileRead(absPath: string): void {
+    if (this.scorecardReadPaths.has(absPath)) {
+      this.scorecard.inc("repeatFileReads");
+    }
+    this.scorecardReadPaths.add(absPath);
   }
 
   private syncScorecardFromRuntime(): void {
@@ -773,7 +768,7 @@ export class Session {
     this.ended = true;
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
-    const recallUsedCount = this.countRecallUsedBeforeMemoryFlush();
+    const recallUsedCount = this.getRecallUsedCount();
 
     if (this.memoryEnabled && this.memoryStore) {
       const store = this.memoryStore;
@@ -910,6 +905,7 @@ export class Session {
     if (this.contextEngine) {
       try {
         const engineConfig = resolveContextEngineConfig(this.config);
+        this.syncScorecardFromRuntime();
         if (this.debug || engineConfig.measurement_mode) {
           const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
           this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(summary));
@@ -1083,6 +1079,7 @@ function initContextEngine(session: Session): void {
         mkdirSync(dirname(dbPath), { recursive: true });
         const db = openContextEngineDb(dbPath);
         session.scorecard = new ScorecardTracker(db, session.id, false);
+        session.scorecard.restoreFromDb();
         session.getLogger().child("context_engine").notice("measurement mode enabled (scorecard only)");
       } catch (err) {
         session.getLogger().child("context_engine").warn("Failed to initialize measurement mode", {
@@ -1103,6 +1100,7 @@ function initContextEngine(session: Session): void {
       engineConfig,
     );
     session.scorecard = session.contextEngine.scorecard;
+    session.scorecard.restoreFromDb();
     const evicted = session.contextEngine.runStartupMaintenance(session.getTurnCount());
     const migrated = session.contextEngine.migrateLedgerFromEvents(
       session.eventLog.readAll(),

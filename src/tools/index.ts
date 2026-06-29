@@ -2,6 +2,7 @@ import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { ContextEngine } from "../context-engine/index.js";
+import type { ScorecardInc } from "../context-engine/telemetry.js";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
@@ -17,7 +18,8 @@ export interface ToolRegistryContext {
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
-  scorecard?: { inc: (field: string, by?: number) => void };
+  scorecard?: ScorecardInc;
+  onScorecardFileRead?: (absPath: string) => void;
   classicMode?: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
@@ -68,6 +70,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     skills: ctx.skills,
     skillRuntime: ctx.skillRuntime,
     skillScorecard: ctx.scorecard,
+    onScorecardFileRead: ctx.onScorecardFileRead,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const searchCodeTools = createSearchCodeTool({

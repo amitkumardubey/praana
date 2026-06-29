@@ -645,6 +645,26 @@ describe('System Tools (createSystemTools)', () => {
       expect(result.ok).toBe(false);
     });
 
+    it('counts repeat reads across tool invocations via session callback', async () => {
+      writeFileSync(join(testDir, 'repeat.txt'), 'content');
+      const readPaths = new Set<string>();
+      let repeatReads = 0;
+      const scorecardTools = createSystemTools({
+        cwd: testDir,
+        skills: [],
+        skillRuntime: null,
+        getCurrentTurn: () => 0,
+        onScorecardFileRead: (absPath) => {
+          if (readPaths.has(absPath)) repeatReads++;
+          readPaths.add(absPath);
+        },
+      });
+
+      await scorecardTools.read_file.execute({ path: 'repeat.txt' });
+      await scorecardTools.read_file.execute({ path: 'repeat.txt' });
+      expect(repeatReads).toBe(1);
+    });
+
     it('should handle limit without offset', async () => {
       writeFileSync(join(testDir, 'lines.txt'), 'a\nb\nc\nd\ne\n');
       const result = await tools.read_file.execute({ path: 'lines.txt', limit: 3 });

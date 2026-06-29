@@ -64,6 +64,7 @@ export {
   TelemetryRecorder,
   ScorecardTracker,
   createNullScorecard,
+  type ScorecardInc,
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
@@ -295,7 +296,13 @@ export class ContextEngine {
   }
 
   finalizeTelemetry(totalTurns: number): SessionTelemetrySummary {
-    return this.telemetry.finalize(totalTurns);
+    const counters = this.scorecard.getCounters();
+    return this.telemetry.finalize(totalTurns, {
+      skillsLoaded: counters.skillsLoaded,
+      skillReloadCount: counters.skillReloadCount,
+      skillTokensConsumed: counters.skillTokensConsumed,
+      decisionContradictions: counters.decisionContradictions,
+    });
   }
 
   renderTelemetrySummary(totalTurns: number): string {
