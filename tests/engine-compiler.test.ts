@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
 import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
@@ -78,9 +78,12 @@ describe("engine compiler", () => {
       engineConfig: ENGINE_CONFIG,
     };
 
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2025-01-01T12:00:00Z"));
     const a = compileEngineWithMetrics(input);
     const b = compileEngineWithMetrics(input);
     expect(a.prompt).toBe(b.prompt);
+    vi.useRealTimers();
     expect(a.scoreRecords).toEqual(b.scoreRecords);
     expect(a.taskType).toBe(b.taskType);
     expect(a.taskType).toBe("debugging");

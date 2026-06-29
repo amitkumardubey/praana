@@ -4,10 +4,10 @@
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
 [![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
 
-**A terminal coding agent with Adaptive Ccontext and Cognitive Memory.**
+**A terminal coding agent with Adaptive Context and Cognitive Memory.**
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="PRAANA terminal — Adaptive Ccontext and Cognitive Memory" width="720" />
+  <img src="docs/assets/demo.png" alt="PRAANA terminal — Adaptive Context and Cognitive Memory" width="720" />
 </p>
 
 PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it extracts learnings from transcripts, scores and consolidates them — a Cognitive Memory that gets sharper with use.

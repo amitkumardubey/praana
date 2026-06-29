@@ -237,6 +237,7 @@ export function buildSystemFrame(
     "You are PRAANA, a coding agent with Cognitive Memory — memory that learns.",
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
+    `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext && agentsContext.trim()) {
