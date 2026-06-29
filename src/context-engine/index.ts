@@ -15,6 +15,7 @@ import { getTurnDigest, listSessionArtifacts } from "./db.js";
 import {
   renderSessionTelemetrySummary,
   TelemetryRecorder,
+  ScorecardTracker,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
 import { TurnExtraction } from "./extraction.js";
@@ -61,6 +62,13 @@ export { scoreContextUnit, recencyScore } from "./scoring.js";
 export { buildEventLineage, formatEventLineage, type EventLineage } from "./event-lineage.js";
 export {
   TelemetryRecorder,
+  ScorecardTracker,
+  createNullScorecard,
+  formatScorecardLines,
+  scorecardHasData,
+  type ScorecardInc,
+  type ScorecardTrackerOptions,
+  type MemoryAveragesProvider,
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
@@ -133,6 +141,7 @@ export class ContextEngine {
   readonly extraction: TurnExtraction;
   readonly checkpoint: CheckpointStore | null;
   readonly telemetry: TelemetryRecorder;
+  readonly scorecard: ScorecardTracker;
   private readonly config: ContextEngineConfig;
 
   private constructor(
@@ -141,6 +150,7 @@ export class ContextEngine {
     extraction: TurnExtraction,
     checkpoint: CheckpointStore | null,
     telemetry: TelemetryRecorder,
+    scorecard: ScorecardTracker,
     config: ContextEngineConfig,
   ) {
     this.store = store;
@@ -148,6 +158,7 @@ export class ContextEngine {
     this.extraction = extraction;
     this.checkpoint = checkpoint;
     this.telemetry = telemetry;
+    this.scorecard = scorecard;
     this.config = config;
   }
 
@@ -155,6 +166,7 @@ export class ContextEngine {
     dbPath: string,
     sessionId: string,
     config: Partial<ContextEngineConfig> & Pick<ContextEngineConfig, "enabled">,
+    scorecardOptions?: import("./telemetry.js").ScorecardTrackerOptions,
   ): ContextEngine {
     const resolved = normalizeContextEngineConfig(config);
     const store = ArtifactStore.open(dbPath, sessionId, resolved);
@@ -163,8 +175,14 @@ export class ContextEngine {
     const checkpoint = resolved.checkpoint_enabled
       ? CheckpointStore.open(store.getDb(), sessionId)
       : null;
-    const telemetry = new TelemetryRecorder(store.getDb(), sessionId, resolved.enabled);
-    return new ContextEngine(store, ledger, extraction, checkpoint, telemetry, resolved);
+    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled, scorecardOptions);
+    const telemetry = new TelemetryRecorder(
+      store.getDb(),
+      sessionId,
+      resolved.enabled,
+      scorecard,
+    );
+    return new ContextEngine(store, ledger, extraction, checkpoint, telemetry, scorecard, resolved);
   }
 
   runStartupMaintenance(currentTurn: number): number {
@@ -184,7 +202,11 @@ export class ContextEngine {
   }
 
   ingestToolResult(input: IngestToolResultInput): IngestToolResultOutput {
-    return this.store.ingestToolResult(input);
+    const result = this.store.ingestToolResult(input);
+    if (!result.inlined) {
+      this.scorecard.inc("artifactCardsProduced");
+    }
+    return result;
   }
 
   async flushDeferredDistillation(): Promise<number> {
@@ -279,7 +301,14 @@ export class ContextEngine {
   }
 
   finalizeTelemetry(totalTurns: number): SessionTelemetrySummary {
-    return this.telemetry.finalize(totalTurns);
+    const counters = this.scorecard.getCounters();
+    return this.telemetry.finalize(totalTurns, {
+      skillsLoaded: counters.skillsLoaded,
+      skillLoadEvents: counters.skillLoadEvents,
+      skillReloadCount: counters.skillReloadCount,
+      skillTokensConsumed: counters.skillTokensConsumed,
+      decisionContradictions: counters.decisionContradictions,
+    });
   }
 
   renderTelemetrySummary(totalTurns: number): string {

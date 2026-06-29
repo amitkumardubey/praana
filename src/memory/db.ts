@@ -539,6 +539,23 @@ function updateUsefulness(
   }
 }
 
+/** Count recalled entries marked used before session-end flush deletes the rows. */
+export function countPendingReinforcementsUsed(
+  db: Database.Database,
+  sessionId: string,
+): number {
+  try {
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1",
+      )
+      .get(sessionId) as { c: number } | undefined;
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function flushReinforcements(db: Database.Database, sessionId: string): void {
   const rows = db
     .prepare(
@@ -750,6 +767,38 @@ export function searchByFts(
        LIMIT ?`,
     )
     .all(...params) as Array<{ entry_id: string; rank: number }>;
+}
+
+/**
+ * Query memory signal averages for the scorecard.
+ * When contextScope is set (e.g. context:<hash>), averages project-scoped entries only.
+ */
+export function getMemorySignalAverages(
+  db: Database.Database,
+  contextScope?: string,
+): { validityAvg: number; usefulnessAvg: number } {
+  try {
+    const row = contextScope
+      ? (db
+          .prepare(
+            `SELECT AVG(e.validity) as v, AVG(e.usefulness) as u
+             FROM entries e
+             INNER JOIN entry_scopes s ON s.entry_id = e.id
+             WHERE e.retracted IS NOT 1 AND s.scope = ?`,
+          )
+          .get(contextScope) as { v: number | null; u: number | null } | undefined)
+      : (db
+          .prepare(
+            "SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1",
+          )
+          .get() as { v: number | null; u: number | null } | undefined);
+    return {
+      validityAvg: row?.v ?? 0,
+      usefulnessAvg: row?.u ?? 0,
+    };
+  } catch {
+    return { validityAvg: 0, usefulnessAvg: 0 };
+  }
 }
 
 function buildFtsQuery(query: string): string {

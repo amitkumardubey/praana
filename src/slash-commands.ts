@@ -4,7 +4,11 @@ import { EVENT_LOG_FILENAME, migrateLegacyEventLog } from "./event-log.js";
 import type { Session } from "./session.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
-import { resolveContextEngineConfig } from "./context-engine/index.js";
+import { resolveContextEngineConfig, resolveContextDbPath } from "./context-engine/index.js";
+import {
+  formatScorecardLines,
+  scorecardHasData,
+} from "./context-engine/telemetry.js";
 import {
   formatContextPressureStats,
   resolveEnginePressureMode,
@@ -196,6 +200,48 @@ export async function executeSlashCommand(
           );
         }
       }
+
+      // Scorecard section (when available)
+      if (session.isScorecardEnabled()) {
+        const counters = session.scorecard.getCounters();
+        if (scorecardHasData(counters)) {
+          lines.push(
+            "",
+            ...formatScorecardLines({
+              counters,
+              recallUsed: session.getRecallUsedCount(),
+              memory: session.scorecard.getMemorySnapshot(),
+              engineOn: session.getScorecardEngineOn(),
+            }),
+          );
+        }
+      }
+      break;
+    }
+
+    case "/scorecard": {
+      if (!session.isScorecardEnabled()) {
+        lines.push(
+          "Scorecard is not active. Enable context_engine or set measurement_mode = true in praana.config.toml.",
+        );
+        break;
+      }
+      const counters = session.scorecard.getCounters();
+      if (!scorecardHasData(counters)) {
+        lines.push("No scorecard data yet this session.");
+        break;
+      }
+      lines.push(
+        "",
+        ...formatScorecardLines({
+          counters,
+          recallUsed: session.getRecallUsedCount(),
+          memory: session.scorecard.getMemorySnapshot(),
+          engineOn: session.getScorecardEngineOn(),
+        }),
+        "",
+        `  DB         ${resolveContextDbPath(session.config, session.cwd)}`,
+      );
       break;
     }
 

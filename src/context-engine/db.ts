@@ -122,7 +122,62 @@ CREATE TABLE IF NOT EXISTS session_stats (
   total_turns             INTEGER NOT NULL DEFAULT 0,
   updated_at              INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS scorecard (
+  session_id           TEXT PRIMARY KEY,
+  context_engine_on    INTEGER NOT NULL DEFAULT 0,
+  created_at           INTEGER NOT NULL,
+
+  -- context engine
+  artifact_retrieve_calls   INTEGER DEFAULT 0,
+  artifact_cards_produced   INTEGER DEFAULT 0,
+  repeat_file_reads         INTEGER DEFAULT 0,
+  decision_contradictions   INTEGER DEFAULT 0,
+  turn_event_searches       INTEGER DEFAULT 0,
+  total_turns               INTEGER DEFAULT 0,
+  pressure_events           INTEGER DEFAULT 0,
+  compaction_triggers       INTEGER DEFAULT 0,
+
+  -- memory
+  recall_calls              INTEGER DEFAULT 0,
+  recall_used_count         INTEGER DEFAULT 0,
+  validity_avg_start        REAL    DEFAULT 0,
+  validity_avg_end          REAL    DEFAULT 0,
+  usefulness_avg_start      REAL    DEFAULT 0,
+  usefulness_avg_end        REAL    DEFAULT 0,
+
+  -- skills
+  skills_loaded             INTEGER DEFAULT 0,
+  skills_used               INTEGER DEFAULT 0,
+  skill_underload_events    INTEGER DEFAULT 0,
+  skill_reload_count        INTEGER DEFAULT 0,
+  skill_tokens_consumed     INTEGER DEFAULT 0,
+  skill_load_events         INTEGER DEFAULT 0,
+
+  -- resume state (digests / catalog ids — no file paths)
+  read_path_digests         TEXT NOT NULL DEFAULT '',
+  skills_ever_loaded        TEXT NOT NULL DEFAULT ''
+);
 `;
+
+const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: "skill_load_events", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "read_path_digests", ddl: "TEXT NOT NULL DEFAULT ''" },
+  { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
+];
+
+function ensureScorecardResumeColumns(db: Database.Database): void {
+  const existing = new Set(
+    (db.prepare("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
+      (col) => col.name,
+    ),
+  );
+  for (const col of SCORECARD_RESUME_COLUMNS) {
+    if (!existing.has(col.name)) {
+      db.exec(`ALTER TABLE scorecard ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+}
 
 export interface DistillerStatRow {
   sessionId: string;
@@ -140,6 +195,7 @@ export function openContextEngineDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.exec(ARTIFACT_SCHEMA);
+  ensureScorecardResumeColumns(db);
   return db;
 }
 

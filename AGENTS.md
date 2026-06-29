@@ -108,6 +108,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/exit` | End session cleanly (triggers summariser, prints summary) |
 | `/state` | List state objects and tiers, or show empty-state guidance |
 | `/stats` | Session metadata + working-memory + Cognitive Memory stats |
+| `/scorecard` | Per-session telemetry scorecard (numeric signals only; issue #99) |
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
@@ -194,9 +195,18 @@ src/
 - At each turn end, `cleanupStaleSkills(currentTurn)` evicts skills idle longer than `stale_threshold_turns`.
 - Telemetry events (`skill_loaded`, `skill_reloaded`, `skill_evicted`) are drained per turn via `flushSkillTelemetry()` to the event log. Session-end summary (under `measurement_mode`) prints: `catalog=N loaded=M reloaded=R evicted=E under_load=U`.
 
-**Classic mode** has no `SkillRuntime` — `load_skill` reads the body, no tracking, no eviction. Plain agent behavior (like pi/omp/opencode).
+**Classic mode** has no `SkillRuntime` — `load_skill` reads the body, no tracking, no eviction. Plain agent behavior (like pi/omp/opencode). When `measurement_mode=true`, classic sessions still record skill load/reload/token counters via `ScorecardTracker.trackSkillLoad()`.
 
 Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceiling), `max_loaded_skills`, `stale_threshold_turns`, `max_depth`. Resume re-discovers skills; loaded state does **not** persist across sessions.
+
+### Telemetry scorecard (issue #99)
+
+**Local-only numeric signals** for comparing engine vs classic and before/after changes. Rows live in the context-engine SQLite `scorecard` table (one row per session). No prompts, file contents, or paths are stored — only counts, averages, path digests, and skill catalog ids for resume deduplication.
+
+- **Active when:** `context_engine.enabled=true` (always persists) **or** `measurement_mode=true` (classic/debug — scorecard-only DB, no full engine).
+- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost).
+- **Resume:** counters + memory start averages + read-path digests + skill ids restored from DB; `persistProgress()` after each turn.
+- **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#17).
 
 ### Turn flow (per turn)
 

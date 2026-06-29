@@ -2,6 +2,7 @@ import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { ContextEngine } from "../context-engine/index.js";
+import type { ScorecardInc } from "../context-engine/telemetry.js";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
@@ -17,6 +18,9 @@ export interface ToolRegistryContext {
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
+  scorecard?: ScorecardInc;
+  onScorecardFileRead?: (absPath: string) => void;
+  onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   classicMode?: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
@@ -55,6 +59,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     memoryEnabled: ctx.memoryEnabled,
     incognito: ctx.incognito,
     contextEngine: ctx.contextEngine,
+    skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const systemTools = createSystemTools({
@@ -65,6 +70,9 @@ export function createAllTools(ctx: ToolRegistryContext) {
     shellLiveStream: ctx.shellLiveStream,
     skills: ctx.skills,
     skillRuntime: ctx.skillRuntime,
+    skillScorecard: ctx.scorecard,
+    onScorecardFileRead: ctx.onScorecardFileRead,
+    onScorecardSkillLoad: ctx.onScorecardSkillLoad,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const searchCodeTools = createSearchCodeTool({

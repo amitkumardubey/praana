@@ -15,6 +15,8 @@ import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
+import type { ScorecardInc } from "../context-engine/telemetry.js";
+import { estimateTokens } from "../token-estimate.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
@@ -46,11 +48,14 @@ export interface SystemToolContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
+  skillScorecard?: ScorecardInc;
+  onScorecardFileRead?: (absPath: string) => void;
+  onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, getCurrentTurn } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, onScorecardSkillLoad, getCurrentTurn } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -236,6 +241,8 @@ export function createSystemTools(ctx: SystemToolContext) {
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
         try {
+          onScorecardFileRead?.(absPath);
+          
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
           }
@@ -361,7 +368,14 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `Skill file not found: ${skill.name}` };
           }
           const body = readFileSync(skill.location, "utf-8");
-          skillRuntime?.trackLoad(skill_id, getCurrentTurn());
+          const bodyTokens = estimateTokens(body);
+
+          if (skillRuntime) {
+            skillRuntime.trackLoad(skill_id, getCurrentTurn(), bodyTokens);
+          } else {
+            onScorecardSkillLoad?.(skill_id, bodyTokens);
+          }
+
           return { ok: true, body };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? `Failed to load skill: ${skill.name}` };

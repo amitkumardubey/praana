@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
+import Database from "better-sqlite3";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { PraanaConfig, SkillRecord, Event } from "./types.js";
@@ -28,12 +29,17 @@ import {
 } from "./memory/index.js";
 import { buildProjectContext } from "./project-detector.js";
 import { runConsolidation, type ConsolidationConfig } from "./memory/consolidation.js";
+import { getMemorySignalAverages } from "./memory/db.js";
+import { openContextEngineDb } from "./context-engine/db.js";
 import {
   ContextEngine,
   isContextEngineEnabled,
+  ScorecardTracker,
+  createNullScorecard,
   renderSessionTelemetrySummary,
   resolveContextDbPath,
   resolveContextEngineConfig,
+  type ScorecardTrackerOptions,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import {
@@ -65,6 +71,7 @@ export class Session {
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
   contextEngine: ContextEngine | null = null;
+  scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
   private ended = false;
   private readonly startedAt: number;
@@ -166,6 +173,11 @@ export class Session {
         });
 
         session.digest = d.markdown;
+        // Record memory start averages for scorecard
+        const memDbPath = session.getMemoryDbPath();
+        if (memDbPath) {
+          await session.scorecard.recordMemoryStart(memDbPath);
+        }
         session.eventLog.append({
           kind: "system_note",
           actor: "kernel",
@@ -521,6 +533,38 @@ export class Session {
     return resolveDefaultMemoryDbPath();
   }
 
+  /**
+   * Snapshot recall-used count before memory sessionEnd deletes pending_reinforcements.
+   */
+  getRecallUsedCount(): number {
+    const store = this.memoryStore;
+    if (!store || typeof store.countPendingReinforcementsUsed !== "function") {
+      return 0;
+    }
+    return store.countPendingReinforcementsUsed();
+  }
+
+  /** Track read_file paths for repeat-read scorecard signal (session-scoped digests). */
+  trackScorecardFileRead(absPath: string): void {
+    this.scorecard.trackReadPath(absPath);
+  }
+
+  /** Whether scorecard persistence is active for this session. */
+  isScorecardEnabled(): boolean {
+    return this.scorecard.isActive();
+  }
+
+  getScorecardEngineOn(): boolean {
+    return this.contextEngine !== null && this.isContextEngineEnabled();
+  }
+
+  private syncScorecardFromRuntime(): void {
+    if (this.skillRuntime) {
+      const snapshot = this.skillRuntime.getSkillScorecard();
+      this.scorecard.applySkillSnapshot(snapshot);
+    }
+  }
+
   getRepoRoot(): string {
     return findGitRoot(this.cwd);
   }
@@ -732,6 +776,7 @@ export class Session {
     this.ended = true;
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
+    const recallUsedCount = this.getRecallUsedCount();
 
     if (this.memoryEnabled && this.memoryStore) {
       const store = this.memoryStore;
@@ -869,6 +914,7 @@ export class Session {
       try {
         const engineConfig = resolveContextEngineConfig(this.config);
         if (this.debug || engineConfig.measurement_mode) {
+          this.syncScorecardFromRuntime();
           const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
           this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(summary));
 
@@ -902,16 +948,32 @@ export class Session {
           });
         }
       }
+    }
 
+    const contextEngineToClose = this.contextEngine;
+
+    // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
+    try {
+      this.syncScorecardFromRuntime();
+      const memPath = this.getMemoryDbPath();
+      await this.scorecard.flush(memPath ?? undefined, recallUsedCount);
+    } catch (err) {
+      this.getLogger().child("context_engine").warn("Scorecard flush failed", {
+        cause: err as Error,
+      });
+    }
+
+    if (contextEngineToClose) {
       try {
-        this.contextEngine.close();
-        this.contextEngine = null;
+        contextEngineToClose.close();
       } catch (err) {
         this.getLogger().child("context_engine").warn("Context engine close failed", {
           cause: err as Error,
         });
-        this.contextEngine = null;
       }
+      this.contextEngine = null;
+    } else {
+      this.scorecard.close();
     }
 
     this.persistStateGraphCheckpoint();
@@ -1013,7 +1075,29 @@ export class Session {
 // ---- Helpers ----
 
 function initContextEngine(session: Session): void {
-  if (!session.isContextEngineEnabled()) return;
+  const engineConfig = resolveContextEngineConfig(session.config);
+  const measurementMode = engineConfig.measurement_mode;
+  const scorecardOptions = createScorecardOptions(session.cwd);
+
+  if (!session.isContextEngineEnabled()) {
+    // Measurement mode: open a minimal context DB just for the scorecard
+    if (measurementMode) {
+      try {
+        const dbPath = resolveContextDbPath(session.config, session.cwd);
+        mkdirSync(dirname(dbPath), { recursive: true });
+        const db = openContextEngineDb(dbPath);
+        session.scorecard = new ScorecardTracker(db, session.id, false, scorecardOptions);
+        session.scorecard.restoreFromDb();
+        session.getLogger().child("context_engine").notice("measurement mode enabled (scorecard only)");
+      } catch (err) {
+        session.getLogger().child("context_engine").warn("Failed to initialize measurement mode", {
+          cause: err as Error,
+        });
+        session.scorecard = createNullScorecard();
+      }
+    }
+    return;
+  }
 
   try {
     const dbPath = resolveContextDbPath(session.config, session.cwd);
@@ -1021,8 +1105,11 @@ function initContextEngine(session: Session): void {
     session.contextEngine = ContextEngine.open(
       dbPath,
       session.id,
-      resolveContextEngineConfig(session.config),
+      engineConfig,
+      scorecardOptions,
     );
+    session.scorecard = session.contextEngine.scorecard;
+    session.scorecard.restoreFromDb();
     const evicted = session.contextEngine.runStartupMaintenance(session.getTurnCount());
     const migrated = session.contextEngine.migrateLedgerFromEvents(
       session.eventLog.readAll(),
@@ -1040,11 +1127,37 @@ function initContextEngine(session: Session): void {
       cause: err as Error,
     });
     session.contextEngine = null;
+    if (measurementMode) {
+      session.scorecard = createNullScorecard();
+    }
   }
 }
 
 function hashString(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 12);
+}
+
+function createScorecardOptions(cwd: string): ScorecardTrackerOptions {
+  const contextScope = `context:${hashString(cwd)}`;
+  return {
+    memoryAverages: (memoryDbPath) => readScopedMemoryAverages(memoryDbPath, contextScope),
+  };
+}
+
+function readScopedMemoryAverages(
+  memoryDbPath: string,
+  contextScope: string,
+): { validityAvg: number; usefulnessAvg: number } {
+  try {
+    const memDb = new Database(memoryDbPath, { readonly: true });
+    try {
+      return getMemorySignalAverages(memDb, contextScope);
+    } finally {
+      memDb.close();
+    }
+  } catch {
+    return { validityAvg: 0, usefulnessAvg: 0 };
+  }
 }
 
 function basename(p: string): string {
