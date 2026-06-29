@@ -436,14 +436,25 @@ export class SkillRuntime {
    * Return the full scorecard counters for this session (skills).
    * Includes loaded, reloaded, underloaded, and tokens consumed.
    */
-  getSkillScorecard(): { loaded: number; used: number; reloaded: number; evicted: number; underload: number; tokensConsumed: number } {
+  getSkillScorecard(): {
+    loaded: number;
+    loadEvents: number;
+    used: number;
+    reloaded: number;
+    evicted: number;
+    underload: number;
+    tokensConsumed: number;
+    skillIds: string[];
+  } {
     return {
-      loaded: this.skillLoads,
+      loaded: this.everLoaded.size,
+      loadEvents: this.skillLoads,
       used: this.everLoaded.size,
       reloaded: this.totalReloads,
       evicted: this.totalEvictions,
       underload: this.skillUnderloadEvents,
       tokensConsumed: this.skillTokensConsumed,
+      skillIds: [...this.everLoaded],
     };
   }
 

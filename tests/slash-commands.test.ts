@@ -432,6 +432,9 @@ describe("executeSlashCommand", () => {
         byKind: { task: 1 },
       }),
       scorecard: createNullScorecard(),
+      isScorecardEnabled: () => false,
+      getScorecardEngineOn: () => true,
+      getRecallUsedCount: () => 0,
       memoryEnabled: false,
       isContextEngineEnabled: () => true,
       contextEngine: {
@@ -485,5 +488,52 @@ describe("executeSlashCommand", () => {
     expect(output).toContain("Weighted fill: 21,000 tokens (42%)");
     expect(output).toContain("Raw fill: 50,000 / 100,000 tokens (50%)");
     expect(output).toContain("42% weighted · emergency (escalated)");
+  });
+
+  it("/scorecard prints scorecard lines when active", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { ScorecardTracker } = await import("../src/context-engine/telemetry.js");
+    const { openContextEngineDb } = await import("../src/context-engine/db.js");
+
+    const dbPath = join(mkdtempSync(join(tmpdir(), "praana-slash-scorecard-")), "context.db");
+    const db = openContextEngineDb(dbPath);
+    const scorecard = new ScorecardTracker(db, "sess-scorecard", false);
+    scorecard.inc("totalTurns", 2);
+    scorecard.inc("recallCalls", 3);
+
+    const session = {
+      id: "sess-scorecard",
+      getTurnCount: () => 2,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 1000,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
+      getPersistentMemoryEntryCount: () => 0,
+      memoryEnabled: false,
+      isContextEngineEnabled: () => false,
+      isScorecardEnabled: () => true,
+      getScorecardEngineOn: () => false,
+      getRecallUsedCount: () => 1,
+      scorecard,
+      config: { session: { log_dir: "/tmp" }, context_engine: { pressure: {} } },
+      cwd: "/tmp",
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/scorecard", session, {
+      setModel: vi.fn(),
+      setThinking: vi.fn(),
+      getThinking: () => true,
+    });
+
+    db.close();
+    rmSync(dbPath, { force: true });
+
+    const output = result.lines.join("\n");
+    expect(output).toContain("Scorecard (this session):");
+    expect(output).toContain("recalls: 3");
+    expect(output).toContain("measurement");
   });
 });

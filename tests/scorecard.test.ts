@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,18 @@ import {
   createNullScorecard,
 } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
+import { getMemorySignalAverages } from "../src/memory/db.js";
+
+function memoryAveragesProvider(contextScope?: string) {
+  return (memoryDbPath: string) => {
+    const memDb = new Database(memoryDbPath, { readonly: true });
+    try {
+      return getMemorySignalAverages(memDb, contextScope);
+    } finally {
+      memDb.close();
+    }
+  };
+}
 
 describe("ScorecardTracker", () => {
   let dbPath: string;
@@ -47,6 +59,7 @@ describe("ScorecardTracker", () => {
     expect(counters.recallCalls).toBe(0);
     expect(counters.recallUsedCount).toBe(0);
     expect(counters.skillsLoaded).toBe(0);
+    expect(counters.skillLoadEvents).toBe(0);
     expect(counters.skillsUsed).toBe(0);
     expect(counters.skillUnderloadEvents).toBe(0);
     expect(counters.skillReloadCount).toBe(0);
@@ -67,6 +80,7 @@ describe("ScorecardTracker", () => {
     tracker.inc("compactionTriggers");
     tracker.inc("recallCalls", 7);
     tracker.inc("skillsLoaded", 3);
+    tracker.inc("skillLoadEvents", 4);
     tracker.inc("skillUnderloadEvents");
     tracker.inc("skillReloadCount", 2);
     tracker.inc("skillTokensConsumed", 500);
@@ -82,22 +96,53 @@ describe("ScorecardTracker", () => {
     expect(counters.compactionTriggers).toBe(1);
     expect(counters.recallCalls).toBe(7);
     expect(counters.skillsLoaded).toBe(3);
+    expect(counters.skillLoadEvents).toBe(4);
     expect(counters.skillsUsed).toBe(0);
     expect(counters.skillUnderloadEvents).toBe(1);
     expect(counters.skillReloadCount).toBe(2);
     expect(counters.skillTokensConsumed).toBe(500);
   });
 
+  it("trackSkillLoad counts unique loads, reloads, and tokens", () => {
+    const db = createDb();
+    const tracker = new ScorecardTracker(db, "test-session", true);
+
+    tracker.trackSkillLoad("git", 100);
+    tracker.trackSkillLoad("aws", 200);
+    tracker.trackSkillLoad("git", 100);
+
+    const counters = tracker.getCounters();
+    expect(counters.skillsLoaded).toBe(2);
+    expect(counters.skillLoadEvents).toBe(3);
+    expect(counters.skillReloadCount).toBe(1);
+    expect(counters.skillsUsed).toBe(2);
+    expect(counters.skillTokensConsumed).toBe(400);
+  });
+
+  it("trackReadPath detects repeat reads and restores digests on resume", () => {
+    const db = createDb();
+    const tracker = new ScorecardTracker(db, "test-session", true);
+
+    tracker.trackReadPath("/tmp/a.txt");
+    tracker.trackReadPath("/tmp/b.txt");
+    tracker.trackReadPath("/tmp/a.txt");
+    expect(tracker.getCounters().repeatFileReads).toBe(1);
+    tracker.persistProgress();
+
+    const resumed = new ScorecardTracker(db, "test-session", true);
+    resumed.restoreFromDb();
+    resumed.trackReadPath("/tmp/a.txt");
+    expect(resumed.getCounters().repeatFileReads).toBe(2);
+  });
+
   it("flush() writes exactly one row with correct values", async () => {
     const db = createDb();
     const tracker = new ScorecardTracker(db, "test-session", true);
 
-    // Increment some counters
     tracker.inc("artifactRetrieveCalls", 2);
     tracker.inc("totalTurns", 3);
     tracker.inc("recallCalls", 5);
-    tracker.inc("skillsLoaded", 1);
-    tracker.setSkillsUsed(1);
+    tracker.trackSkillLoad("git", 50);
 
     await tracker.flush(undefined, 3);
 
@@ -112,6 +157,7 @@ describe("ScorecardTracker", () => {
     expect(row!.recall_used_count).toBe(3);
     expect(row!.skills_loaded).toBe(1);
     expect(row!.skills_used).toBe(1);
+    expect(row!.skill_load_events).toBe(1);
   });
 
   it("a second flush() upserts rather than errors", async () => {
@@ -121,16 +167,13 @@ describe("ScorecardTracker", () => {
     tracker.inc("totalTurns", 3);
     await tracker.flush(undefined, 0);
 
-    // Second flush — should upsert, not error
-    // Counter is accumulated: 3 + 5 = 8
     tracker.inc("totalTurns", 5);
     await tracker.flush(undefined, 0);
 
     const row = db
       .prepare("SELECT total_turns FROM scorecard WHERE session_id = ?")
       .get("test-session") as { total_turns: number } | undefined;
-    expect(row).toBeDefined();
-    expect(row!.total_turns).toBe(8);
+    expect(row?.total_turns).toBe(8);
   });
 
   it("persistProgress + restoreFromDb survives simulated resume", () => {
@@ -156,7 +199,7 @@ describe("ScorecardTracker", () => {
     expect(row?.recall_calls).toBe(4);
   });
 
-  it("restoreFromDb preserves memory start averages across resume", async () => {
+  it("restoreFromDb preserves memory start averages and skips recordMemoryStart", async () => {
     const memDbPath = join(mkdtempSync(join(tmpdir(), "praana-mem-resume-")), "memory.db");
     const memDb = new Database(memDbPath);
     memDb.exec(`
@@ -177,13 +220,19 @@ describe("ScorecardTracker", () => {
     `);
 
     const db = createDb();
-    const tracker = new ScorecardTracker(db, "test-session", true);
+    const tracker = new ScorecardTracker(db, "test-session", true, {
+      memoryAverages: memoryAveragesProvider(),
+    });
     await tracker.recordMemoryStart(memDbPath);
     tracker.inc("totalTurns", 1);
     tracker.persistProgress();
 
-    const resumed = new ScorecardTracker(db, "test-session", true);
+    const resumed = new ScorecardTracker(db, "test-session", true, {
+      memoryAverages: memoryAveragesProvider(),
+    });
     resumed.restoreFromDb();
+    await resumed.recordMemoryStart(memDbPath);
+
     const row = db
       .prepare("SELECT validity_avg_start FROM scorecard WHERE session_id = ?")
       .get("test-session") as { validity_avg_start: number } | undefined;
@@ -203,24 +252,20 @@ describe("ScorecardTracker", () => {
     const row = db
       .prepare("SELECT context_engine_on FROM scorecard WHERE session_id = ?")
       .get("test-session") as { context_engine_on: number } | undefined;
-    expect(row).toBeDefined();
-    expect(row!.context_engine_on).toBe(0);
+    expect(row?.context_engine_on).toBe(0);
   });
 
   it("null-object pattern: inc() and flush() are no-ops when db is null", async () => {
     const nullTracker = createNullScorecard();
     expect(nullTracker.getCounters().totalTurns).toBe(0);
 
-    // These should not throw
     nullTracker.inc("totalTurns", 5);
     await nullTracker.flush(undefined, 0);
 
-    // Still zero because null-object
     expect(nullTracker.getCounters().totalTurns).toBe(0);
   });
 
-  it("recordMemoryStart/end snapshots memory averages when memory db is provided", async () => {
-    // Create a memory DB with some entries
+  it("recordMemoryStart/end snapshots memory averages when provider is configured", async () => {
     const memDbPath = join(mkdtempSync(join(tmpdir(), "praana-mem-")), "memory.db");
     const memDb = new Database(memDbPath);
     memDb.exec(`
@@ -243,7 +288,9 @@ describe("ScorecardTracker", () => {
     `);
 
     const db = createDb();
-    const tracker = new ScorecardTracker(db, "test-session", true);
+    const tracker = new ScorecardTracker(db, "test-session", true, {
+      memoryAverages: memoryAveragesProvider(),
+    });
 
     await tracker.recordMemoryStart(memDbPath);
     await tracker.flush(memDbPath, 0);
@@ -251,39 +298,13 @@ describe("ScorecardTracker", () => {
     const row = db
       .prepare("SELECT * FROM scorecard WHERE session_id = ?")
       .get("test-session") as Record<string, unknown> | undefined;
-    expect(row).toBeDefined();
-    expect(row!.validity_avg_start).toBeCloseTo(0.7, 1);
-    expect(row!.usefulness_avg_start).toBeCloseTo(0.6, 1);
-    expect(row!.validity_avg_end).toBeCloseTo(0.7, 1);
-    expect(row!.usefulness_avg_end).toBeCloseTo(0.6, 1);
+    expect(row?.validity_avg_start).toBeCloseTo(0.7, 1);
+    expect(row?.usefulness_avg_start).toBeCloseTo(0.6, 1);
+    expect(row?.validity_avg_end).toBeCloseTo(0.7, 1);
+    expect(row?.usefulness_avg_end).toBeCloseTo(0.6, 1);
 
     memDb.close();
     rmSync(memDbPath, { force: true });
-  });
-
-  it("setSkillsUsed and setSkillUnderloadEvents are reflected in flush", async () => {
-    const db = createDb();
-    const tracker = new ScorecardTracker(db, "test-session", true);
-
-    tracker.setSkillsUsed(3);
-    tracker.setSkillUnderloadEvents(2);
-
-    // Also inc the regular skill counters
-    tracker.inc("skillsLoaded", 5);
-    tracker.inc("skillReloadCount", 1);
-    tracker.inc("skillTokensConsumed", 1200);
-
-    await tracker.flush(undefined, 0);
-
-    const row = db
-      .prepare("SELECT * FROM scorecard WHERE session_id = ?")
-      .get("test-session") as Record<string, unknown> | undefined;
-    expect(row).toBeDefined();
-    expect(row!.skills_used).toBe(3);
-    expect(row!.skill_underload_events).toBe(2);
-    expect(row!.skills_loaded).toBe(5);
-    expect(row!.skill_reload_count).toBe(1);
-    expect(row!.skill_tokens_consumed).toBe(1200);
   });
 
   it("setRecallUsedCount is reflected in getCounters and flush", async () => {
@@ -300,21 +321,24 @@ describe("ScorecardTracker", () => {
     expect(row?.recall_used_count).toBe(4);
   });
 
-  it("applySkillSnapshot overwrites skill counters for session-end sync", async () => {
+  it("applySkillSnapshot overwrites skill counters for session-end sync", () => {
     const db = createDb();
     const tracker = new ScorecardTracker(db, "test-session", true);
 
     tracker.applySkillSnapshot({
-      loaded: 5,
-      used: 3,
+      loaded: 2,
+      loadEvents: 4,
+      used: 2,
       reloaded: 2,
       underload: 1,
       tokensConsumed: 900,
+      skillIds: ["git", "aws"],
     });
 
     const counters = tracker.getCounters();
-    expect(counters.skillsLoaded).toBe(5);
-    expect(counters.skillsUsed).toBe(3);
+    expect(counters.skillsLoaded).toBe(2);
+    expect(counters.skillLoadEvents).toBe(4);
+    expect(counters.skillsUsed).toBe(2);
     expect(counters.skillReloadCount).toBe(2);
     expect(counters.skillUnderloadEvents).toBe(1);
     expect(counters.skillTokensConsumed).toBe(900);
@@ -324,33 +348,7 @@ describe("ScorecardTracker", () => {
     const db = createDb();
     const tracker = new ScorecardTracker(db, "test-session", true);
 
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS pending_reinforcements (
-        entry_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        used INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (entry_id, session_id)
-      )
-    `);
-    db.prepare(
-      "INSERT INTO pending_reinforcements (entry_id, session_id, ts, used) VALUES (?, ?, ?, ?)",
-    ).run("e1", "test-session", Date.now(), 1);
-    db.prepare(
-      "INSERT INTO pending_reinforcements (entry_id, session_id, ts, used) VALUES (?, ?, ?, ?)",
-    ).run("e2", "test-session", Date.now(), 0);
-
-    const usedBeforeFlush = (
-      db
-        .prepare(
-          "SELECT COUNT(*) AS c FROM pending_reinforcements WHERE session_id = ? AND used = 1",
-        )
-        .get("test-session") as { c: number }
-    ).c;
-    expect(usedBeforeFlush).toBe(1);
-
-    db.prepare("DELETE FROM pending_reinforcements WHERE session_id = ?").run("test-session");
-
+    const usedBeforeFlush = 1;
     await tracker.flush(undefined, usedBeforeFlush);
 
     const row = db
@@ -361,26 +359,66 @@ describe("ScorecardTracker", () => {
 });
 
 describe("Scorecard schema privacy invariant", () => {
-  it("no TEXT column in scorecard table except session_id and TEXT-type fields", () => {
-    // Scorecard should only have INTEGER, REAL, or TEXT PRIMARY KEY session_id
+  const ALLOWED_TEXT_COLUMNS = new Set([
+    "session_id",
+    "read_path_digests",
+    "skills_ever_loaded",
+  ]);
+
+  it("stores only numeric metrics plus digests and skill catalog ids", () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "praana-schema-")), "context.db");
     const db = openContextEngineDb(dbPath);
 
     const columns = db
       .prepare("PRAGMA table_info(scorecard)")
-      .all() as Array<{ name: string; type: string; pk: number }>;
+      .all() as Array<{ name: string; type: string }>;
 
     for (const col of columns) {
-      if (col.name === "session_id") {
-        // session_id is TEXT PRIMARY KEY — that's allowed
-        continue;
-      }
-      // All other columns must be INTEGER or REAL
+      if (ALLOWED_TEXT_COLUMNS.has(col.name)) continue;
       expect(["INTEGER", "REAL"]).toContain(col.type);
     }
 
     db.close();
     rmSync(dbPath, { force: true });
+  });
+});
+
+describe("getMemorySignalAverages", () => {
+  it("scopes averages to a context scope when provided", () => {
+    const memDbPath = join(mkdtempSync(join(tmpdir(), "praana-mem-scope-")), "memory.db");
+    const memDb = new Database(memDbPath);
+    memDb.exec(`
+      CREATE TABLE IF NOT EXISTS entries (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'fact',
+        content TEXT NOT NULL,
+        validity REAL NOT NULL DEFAULT 0.5,
+        usefulness REAL NOT NULL DEFAULT 0.5,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        retracted INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        session_id TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS entry_scopes (
+        entry_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        PRIMARY KEY (entry_id, scope)
+      );
+      INSERT INTO entries VALUES ('e1', 'fact', 'project', 0.9, 0.8, 0, 0, 1, 1, 's1');
+      INSERT INTO entries VALUES ('e2', 'fact', 'global', 0.1, 0.1, 0, 0, 1, 1, 's1');
+      INSERT INTO entry_scopes VALUES ('e1', 'context:proj');
+      INSERT INTO entry_scopes VALUES ('e2', 'context:other');
+    `);
+
+    const scoped = getMemorySignalAverages(memDb, "context:proj");
+    expect(scoped.validityAvg).toBeCloseTo(0.9, 1);
+
+    const global = getMemorySignalAverages(memDb);
+    expect(global.validityAvg).toBeCloseTo(0.5, 1);
+
+    memDb.close();
+    rmSync(memDbPath, { force: true });
   });
 });
 
@@ -391,7 +429,6 @@ describe("End-to-end: minimal session with retrieve_artifact", () => {
 
     const tracker = new ScorecardTracker(db, "test-session", true);
 
-    // Simulate: user makes a turn that calls retrieve_artifact
     tracker.inc("totalTurns", 1);
     tracker.inc("artifactRetrieveCalls", 1);
     tracker.inc("turnEventSearches");
@@ -402,12 +439,11 @@ describe("End-to-end: minimal session with retrieve_artifact", () => {
     const row = db
       .prepare("SELECT * FROM scorecard WHERE session_id = ?")
       .get("test-session") as Record<string, unknown> | undefined;
-    expect(row).toBeDefined();
-    expect(row!.artifact_retrieve_calls).toBe(1);
-    expect(row!.total_turns).toBe(1);
-    expect(row!.turn_event_searches).toBe(1);
-    expect(row!.recall_calls).toBe(3);
-    expect(row!.recall_used_count).toBe(2);
+    expect(row?.artifact_retrieve_calls).toBe(1);
+    expect(row?.total_turns).toBe(1);
+    expect(row?.turn_event_searches).toBe(1);
+    expect(row?.recall_calls).toBe(3);
+    expect(row?.recall_used_count).toBe(2);
 
     db.close();
     rmSync(dbPath, { force: true });

@@ -20,6 +20,7 @@ export interface ToolRegistryContext {
   contextEngine: ContextEngine | null;
   scorecard?: ScorecardInc;
   onScorecardFileRead?: (absPath: string) => void;
+  onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   classicMode?: boolean;
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
@@ -71,6 +72,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     skillRuntime: ctx.skillRuntime,
     skillScorecard: ctx.scorecard,
     onScorecardFileRead: ctx.onScorecardFileRead,
+    onScorecardSkillLoad: ctx.onScorecardSkillLoad,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
   });
   const searchCodeTools = createSearchCodeTool({

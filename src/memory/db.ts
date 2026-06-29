@@ -771,17 +771,27 @@ export function searchByFts(
 
 /**
  * Query memory signal averages for the scorecard.
- * Returns AVG(validity) and AVG(usefulness) across all non-retracted entries.
+ * When contextScope is set (e.g. context:<hash>), averages project-scoped entries only.
  */
 export function getMemorySignalAverages(
   db: Database.Database,
+  contextScope?: string,
 ): { validityAvg: number; usefulnessAvg: number } {
   try {
-    const row = db
-      .prepare(
-        "SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1",
-      )
-      .get() as { v: number | null; u: number | null } | undefined;
+    const row = contextScope
+      ? (db
+          .prepare(
+            `SELECT AVG(e.validity) as v, AVG(e.usefulness) as u
+             FROM entries e
+             INNER JOIN entry_scopes s ON s.entry_id = e.id
+             WHERE e.retracted IS NOT 1 AND s.scope = ?`,
+          )
+          .get(contextScope) as { v: number | null; u: number | null } | undefined)
+      : (db
+          .prepare(
+            "SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1",
+          )
+          .get() as { v: number | null; u: number | null } | undefined);
     return {
       validityAvg: row?.v ?? 0,
       usefulnessAvg: row?.u ?? 0,

@@ -110,6 +110,7 @@ export async function runTurn(
     contextEngine: session.contextEngine,
     scorecard: session.scorecard,
     onScorecardFileRead: (absPath) => session.trackScorecardFileRead(absPath),
+    onScorecardSkillLoad: (skillId, bodyTokens) => session.scorecard.trackSkillLoad(skillId, bodyTokens),
     classicMode,
     cwd: session.cwd,
     sandbox: session.config.shell,

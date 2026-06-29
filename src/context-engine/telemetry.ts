@@ -1,7 +1,6 @@
 import type Database from "better-sqlite3";
-import DatabaseConstructor from "better-sqlite3";
+import { createHash } from "node:crypto";
 import type { PressureMode } from "./types.js";
-import { getMemorySignalAverages } from "../memory/db.js";
 import {
   countSessionArtifacts,
   finalizeSessionStats,
@@ -77,7 +76,7 @@ export class TelemetryRecorder {
     totalTurns: number,
     scorecardSnapshot?: Pick<
       ScorecardCounters,
-      "skillsLoaded" | "skillReloadCount" | "skillTokensConsumed" | "decisionContradictions"
+      "skillsLoaded" | "skillLoadEvents" | "skillReloadCount" | "skillTokensConsumed" | "decisionContradictions"
     >,
   ): SessionTelemetrySummary {
     const stats = finalizeSessionStats(this.db, this.sessionId, totalTurns, this.contextEngineEnabled);
@@ -103,6 +102,14 @@ export class TelemetryRecorder {
 // ScorecardTracker — per-session telemetry counter (issue #99)
 // ============================================================
 
+export type MemoryAveragesProvider = (
+  memoryDbPath: string,
+) => { validityAvg: number; usefulnessAvg: number };
+
+export interface ScorecardTrackerOptions {
+  memoryAverages?: MemoryAveragesProvider;
+}
+
 export interface ScorecardCounters {
   artifactRetrieveCalls: number;
   artifactCardsProduced: number;
@@ -115,11 +122,21 @@ export interface ScorecardCounters {
   compactionTriggers: number;
   recallCalls: number;
   recallUsedCount: number;
+  /** Unique skills ever loaded this session. */
   skillsLoaded: number;
+  /** Total load_skill invocations (includes reloads). */
+  skillLoadEvents: number;
   skillsUsed: number;
   skillUnderloadEvents: number;
   skillReloadCount: number;
   skillTokensConsumed: number;
+}
+
+export interface ScorecardMemorySnapshot {
+  validityAvgStart: number;
+  validityAvgEnd: number;
+  usefulnessAvgStart: number;
+  usefulnessAvgEnd: number;
 }
 
 interface ScorecardDbRow {
@@ -145,15 +162,26 @@ interface ScorecardDbRow {
   skill_underload_events: number;
   skill_reload_count: number;
   skill_tokens_consumed: number;
+  skill_load_events?: number;
+  read_path_digests?: string;
+  skills_ever_loaded?: string;
 }
 
-export type ScorecardInc = Pick<ScorecardTracker, "inc" | "setSkillsUsed">;
+export type ScorecardInc = Pick<ScorecardTracker, "inc" | "trackReadPath" | "trackSkillLoad">;
+
+function encodeCsv(values: Iterable<string>): string {
+  return [...values].join(",");
+}
+
+function decodeCsv(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(",").filter(Boolean);
+}
 
 /**
  * In-memory counter tracker that flushes one row to the scorecard table
- * at session end. Created only when measurement_mode or context_engine is
- * enabled. When both are false, callers get a no-op null object so no guards
- * are needed at call sites.
+ * at session end. Active when measurement_mode or context_engine is enabled.
+ * When both are false, callers get a no-op null object.
  */
 export class ScorecardTracker {
   private counters: ScorecardCounters = {
@@ -168,6 +196,7 @@ export class ScorecardTracker {
     recallCalls: 0,
     recallUsedCount: 0,
     skillsLoaded: 0,
+    skillLoadEvents: 0,
     skillsUsed: 0,
     skillUnderloadEvents: 0,
     skillReloadCount: 0,
@@ -178,29 +207,52 @@ export class ScorecardTracker {
   private validityAvgEnd = 0;
   private usefulnessAvgEnd = 0;
   private recallUsedCount = 0;
+  private readPathDigests = new Set<string>();
+  private skillsEverLoaded = new Set<string>();
+  private startSnapshotCaptured = false;
 
   constructor(
     private readonly db: Database.Database | null,
     private readonly sessionId: string,
     private readonly engineOn: boolean,
+    private readonly options: ScorecardTrackerOptions = {},
   ) {}
+
+  isActive(): boolean {
+    return this.db !== null;
+  }
 
   /** Increment a counter field. No-op when db is null (null-object pattern). */
   inc(field: keyof ScorecardCounters, by = 1): void {
-    if (!this.db) return; // null-object: no-op
+    if (!this.db) return;
     this.counters[field] = (this.counters[field] ?? 0) + by;
   }
 
-  /** Set skillsUsed directly (computed from reference count at session end). */
-  setSkillsUsed(count: number): void {
+  /** Track read_file paths for repeat-read scorecard signal (stores digests only). */
+  trackReadPath(absPath: string): void {
     if (!this.db) return;
-    this.counters.skillsUsed = count;
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    if (this.readPathDigests.has(digest)) {
+      this.inc("repeatFileReads");
+    }
+    this.readPathDigests.add(digest);
   }
 
-  /** Set skillUnderloadEvents directly. */
-  setSkillUnderloadEvents(count: number): void {
+  /** Classic-mode skill load tracking (engine mode uses SkillRuntime + applySkillSnapshot). */
+  trackSkillLoad(skillId: string, bodyTokens: number): void {
     if (!this.db) return;
-    this.counters.skillUnderloadEvents = count;
+    const isReload = this.skillsEverLoaded.has(skillId);
+    this.inc("skillLoadEvents");
+    if (isReload) {
+      this.inc("skillReloadCount");
+    } else {
+      this.inc("skillsLoaded");
+    }
+    if (bodyTokens > 0) {
+      this.inc("skillTokensConsumed", bodyTokens);
+    }
+    this.skillsEverLoaded.add(skillId);
+    this.counters.skillsUsed = this.skillsEverLoaded.size;
   }
 
   /** Snapshot recall-used count for /stats and flush. */
@@ -213,17 +265,30 @@ export class ScorecardTracker {
   /** Apply skill counters from SkillRuntime at session end (engine mode). */
   applySkillSnapshot(snapshot: {
     loaded: number;
+    loadEvents: number;
     used: number;
     reloaded: number;
     underload: number;
     tokensConsumed: number;
+    skillIds: string[];
   }): void {
     if (!this.db) return;
     this.counters.skillsLoaded = snapshot.loaded;
+    this.counters.skillLoadEvents = snapshot.loadEvents;
     this.counters.skillsUsed = snapshot.used;
     this.counters.skillReloadCount = snapshot.reloaded;
     this.counters.skillUnderloadEvents = snapshot.underload;
     this.counters.skillTokensConsumed = snapshot.tokensConsumed;
+    this.skillsEverLoaded = new Set(snapshot.skillIds);
+  }
+
+  getMemorySnapshot(): ScorecardMemorySnapshot {
+    return {
+      validityAvgStart: this.validityAvgStart,
+      validityAvgEnd: this.validityAvgEnd,
+      usefulnessAvgStart: this.usefulnessAvgStart,
+      usefulnessAvgEnd: this.usefulnessAvgEnd,
+    };
   }
 
   /** Close the scorecard DB (measurement-only mode; engine mode closes via ContextEngine). */
@@ -235,19 +300,12 @@ export class ScorecardTracker {
     }
   }
 
-  /**
-   * Query memory signal averages from the memory DB. Opens a temporary
-   * read-only connection if a memoryDbPath is provided.
-   */
   private getMemoryAverages(memoryDbPath?: string): { validityAvg: number; usefulnessAvg: number } {
-    if (!memoryDbPath) return { validityAvg: 0, usefulnessAvg: 0 };
+    if (!memoryDbPath || !this.options.memoryAverages) {
+      return { validityAvg: 0, usefulnessAvg: 0 };
+    }
     try {
-      const memDb = new DatabaseConstructor(memoryDbPath, { readonly: true });
-      try {
-        return getMemorySignalAverages(memDb);
-      } finally {
-        memDb.close();
-      }
+      return this.options.memoryAverages(memoryDbPath);
     } catch {
       return { validityAvg: 0, usefulnessAvg: 0 };
     }
@@ -273,6 +331,7 @@ export class ScorecardTracker {
       recallCalls: row.recall_calls ?? 0,
       recallUsedCount: row.recall_used_count ?? 0,
       skillsLoaded: row.skills_loaded ?? 0,
+      skillLoadEvents: row.skill_load_events ?? 0,
       skillsUsed: row.skills_used ?? 0,
       skillUnderloadEvents: row.skill_underload_events ?? 0,
       skillReloadCount: row.skill_reload_count ?? 0,
@@ -283,6 +342,10 @@ export class ScorecardTracker {
     this.usefulnessAvgStart = row.usefulness_avg_start ?? 0;
     this.validityAvgEnd = row.validity_avg_end ?? 0;
     this.usefulnessAvgEnd = row.usefulness_avg_end ?? 0;
+    this.readPathDigests = new Set(decodeCsv(row.read_path_digests));
+    this.skillsEverLoaded = new Set(decodeCsv(row.skills_ever_loaded));
+    this.startSnapshotCaptured =
+      this.validityAvgStart > 0 || this.usefulnessAvgStart > 0;
     return true;
   }
 
@@ -292,23 +355,22 @@ export class ScorecardTracker {
   }
 
   /**
-   * Call at session start — snaps memory averages.
-   * Optionally pass the memory db path to query averages.
+   * Call at new session start — snaps memory averages.
+   * Skipped when a start snapshot was restored from a resumed scorecard row.
    */
   async recordMemoryStart(memoryDbPath?: string): Promise<void> {
-    if (!this.db) return; // null-object: no-op
+    if (!this.db || this.startSnapshotCaptured) return;
     const avgs = this.getMemoryAverages(memoryDbPath);
     this.validityAvgStart = avgs.validityAvg;
     this.usefulnessAvgStart = avgs.usefulnessAvg;
+    this.startSnapshotCaptured = true;
   }
 
   /**
    * Call at session end — snapshots memory end-state and writes the scorecard row.
-   * @param memoryDbPath Path to the memory DB for end-state averages.
-   * @param recallUsedCount Number of recalled entries marked as 'used' in this session.
    */
   async flush(memoryDbPath?: string, recallUsedCount = 0): Promise<void> {
-    if (!this.db) return; // null-object: no-op
+    if (!this.db) return;
 
     if (memoryDbPath) {
       const endAvgs = this.getMemoryAverages(memoryDbPath);
@@ -337,7 +399,8 @@ export class ScorecardTracker {
         validity_avg_start, validity_avg_end,
         usefulness_avg_start, usefulness_avg_end,
         skills_loaded, skills_used, skill_underload_events,
-        skill_reload_count, skill_tokens_consumed
+        skill_reload_count, skill_tokens_consumed, skill_load_events,
+        read_path_digests, skills_ever_loaded
       ) VALUES (
         @sessionId, @engineOn, @createdAt,
         @artifactRetrieveCalls, @artifactCardsProduced, @repeatFileReads,
@@ -347,8 +410,9 @@ export class ScorecardTracker {
         @validityAvgStart, @validityAvgEnd,
         @usefulnessAvgStart, @usefulnessAvgEnd,
         @skillsLoaded, @skillsUsed, @skillUnderloadEvents,
-        @skillReloadCount, @skillTokensConsumed
-      )`
+        @skillReloadCount, @skillTokensConsumed, @skillLoadEvents,
+        @readPathDigests, @skillsEverLoaded
+      )`,
     ).run({
       sessionId: this.sessionId,
       engineOn: this.engineOn ? 1 : 0,
@@ -372,10 +436,13 @@ export class ScorecardTracker {
       skillUnderloadEvents: this.counters.skillUnderloadEvents,
       skillReloadCount: this.counters.skillReloadCount,
       skillTokensConsumed: this.counters.skillTokensConsumed,
+      skillLoadEvents: this.counters.skillLoadEvents,
+      readPathDigests: encodeCsv(this.readPathDigests),
+      skillsEverLoaded: encodeCsv(this.skillsEverLoaded),
     });
   }
 
-  /** Return current counters for /stats display. */
+  /** Return current counters for /stats and /scorecard display. */
   getCounters(): ScorecardCounters {
     return { ...this.counters };
   }
@@ -384,6 +451,59 @@ export class ScorecardTracker {
 /** Create a no-op ScorecardTracker when neither measurement_mode nor engine is enabled. */
 export function createNullScorecard(): ScorecardTracker {
   return new ScorecardTracker(null, "", false);
+}
+
+export function scorecardHasData(counters: ScorecardCounters): boolean {
+  return (
+    counters.totalTurns > 0
+    || counters.artifactRetrieveCalls > 0
+    || counters.recallCalls > 0
+    || counters.skillLoadEvents > 0
+  );
+}
+
+export interface FormatScorecardLinesInput {
+  counters: ScorecardCounters;
+  recallUsed?: number;
+  memory?: ScorecardMemorySnapshot;
+  engineOn?: boolean;
+}
+
+/** Render scorecard lines for /stats and /scorecard. */
+export function formatScorecardLines(input: FormatScorecardLinesInput): string[] {
+  const { counters, memory, engineOn } = input;
+  const recallUsed = input.recallUsed ?? counters.recallUsedCount;
+  const lines = [
+    "Scorecard (this session):",
+    `  Engine     ${engineOn === undefined ? "n/a" : engineOn ? "on" : "off (measurement)"}`,
+    `  Context    retrieve_artifact: ${counters.artifactRetrieveCalls}  artifact_cards: ${counters.artifactCardsProduced}  repeat_reads: ${counters.repeatFileReads}  searches: ${counters.turnEventSearches}`,
+    `  Context    pressure: ${counters.pressureEvents}  compaction: ${counters.compactionTriggers}  contradictions: ${counters.decisionContradictions}`,
+  ];
+
+  const recallUsagePct = counters.recallCalls > 0
+    ? ` (${Math.round((recallUsed / counters.recallCalls) * 100)}%)`
+    : "";
+  lines.push(
+    `  Memory     recalls: ${counters.recallCalls}  used: ${recallUsed}${recallUsagePct}`,
+  );
+
+  if (memory && (memory.validityAvgStart > 0 || memory.usefulnessAvgStart > 0)) {
+    const validityDelta = memory.validityAvgEnd - memory.validityAvgStart;
+    const usefulnessDelta = memory.usefulnessAvgEnd - memory.usefulnessAvgStart;
+    lines.push(
+      `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} → ${memory.validityAvgEnd.toFixed(2)} (${validityDelta >= 0 ? "+" : ""}${validityDelta.toFixed(2)})`,
+      `  Memory     usefulness: ${memory.usefulnessAvgStart.toFixed(2)} → ${memory.usefulnessAvgEnd.toFixed(2)} (${usefulnessDelta >= 0 ? "+" : ""}${usefulnessDelta.toFixed(2)})`,
+    );
+  }
+
+  if (counters.skillLoadEvents > 0 || counters.skillsLoaded > 0) {
+    lines.push(
+      `  Skills     unique: ${counters.skillsLoaded}  load_events: ${counters.skillLoadEvents}  reloads: ${counters.skillReloadCount}  underloads: ${counters.skillUnderloadEvents}  tokens: ~${counters.skillTokensConsumed}`,
+    );
+  }
+
+  lines.push(`  Turns      ${counters.totalTurns}`);
+  return lines;
 }
 
 export function renderSessionTelemetrySummary(summary: SessionTelemetrySummary): string {

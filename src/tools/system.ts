@@ -50,13 +50,12 @@ export interface SystemToolContext {
   skillRuntime: SkillRuntime | null;
   skillScorecard?: ScorecardInc;
   onScorecardFileRead?: (absPath: string) => void;
+  onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
-  /** Classic-mode skill loads for reload detection when SkillRuntime is absent. */
-  skillEverLoaded?: Set<string>;
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, getCurrentTurn } = ctx;
+  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, onScorecardSkillLoad, getCurrentTurn } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
@@ -373,16 +372,8 @@ export function createSystemTools(ctx: SystemToolContext) {
 
           if (skillRuntime) {
             skillRuntime.trackLoad(skill_id, getCurrentTurn(), bodyTokens);
-          } else if (skillScorecard) {
-            if (!ctx.skillEverLoaded) ctx.skillEverLoaded = new Set();
-            const isReload = ctx.skillEverLoaded.has(skill_id);
-            skillScorecard.inc("skillsLoaded");
-            if (isReload) {
-              skillScorecard.inc("skillReloadCount");
-            }
-            skillScorecard.inc("skillTokensConsumed", bodyTokens);
-            ctx.skillEverLoaded.add(skill_id);
-            skillScorecard.setSkillsUsed(ctx.skillEverLoaded.size);
+          } else {
+            onScorecardSkillLoad?.(skill_id, bodyTokens);
           }
 
           return { ok: true, body };

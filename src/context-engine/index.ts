@@ -64,7 +64,11 @@ export {
   TelemetryRecorder,
   ScorecardTracker,
   createNullScorecard,
+  formatScorecardLines,
+  scorecardHasData,
   type ScorecardInc,
+  type ScorecardTrackerOptions,
+  type MemoryAveragesProvider,
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
@@ -162,6 +166,7 @@ export class ContextEngine {
     dbPath: string,
     sessionId: string,
     config: Partial<ContextEngineConfig> & Pick<ContextEngineConfig, "enabled">,
+    scorecardOptions?: import("./telemetry.js").ScorecardTrackerOptions,
   ): ContextEngine {
     const resolved = normalizeContextEngineConfig(config);
     const store = ArtifactStore.open(dbPath, sessionId, resolved);
@@ -170,7 +175,7 @@ export class ContextEngine {
     const checkpoint = resolved.checkpoint_enabled
       ? CheckpointStore.open(store.getDb(), sessionId)
       : null;
-    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled);
+    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled, scorecardOptions);
     const telemetry = new TelemetryRecorder(
       store.getDb(),
       sessionId,
@@ -299,6 +304,7 @@ export class ContextEngine {
     const counters = this.scorecard.getCounters();
     return this.telemetry.finalize(totalTurns, {
       skillsLoaded: counters.skillsLoaded,
+      skillLoadEvents: counters.skillLoadEvents,
       skillReloadCount: counters.skillReloadCount,
       skillTokensConsumed: counters.skillTokensConsumed,
       decisionContradictions: counters.decisionContradictions,

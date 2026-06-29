@@ -173,7 +173,10 @@ describe("trackLoad", () => {
 
     rt.trackLoad("git", 11);
     expect(rt.getLoadedSkillStats().reloadedCount).toBe(1);
-    expect(rt.getSkillScorecard().used).toBe(1);
+    const scorecard = rt.getSkillScorecard();
+    expect(scorecard.loaded).toBe(1);
+    expect(scorecard.loadEvents).toBe(2);
+    expect(scorecard.used).toBe(1);
   });
 });
 
