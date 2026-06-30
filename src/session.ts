@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -9,6 +8,8 @@ import type { CompileMetrics } from "./compiler.js";
 import type { PraanaConfig, SkillRecord, Event } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
+import { SkillStatsStore } from "./skills/skill-stats-store.js";
+import { hashString } from "./hash.js";
 import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
@@ -22,6 +23,7 @@ import {
 import { loadConfig } from "./config.js";
 import {
   MemoryStore,
+  isSessionGood,
   createEmbedder,
   resolveEmbeddingBackend,
   createSummarizer,
@@ -71,6 +73,8 @@ export class Session {
   projectContext: string | null = null; // stack fingerprint from package.json, README, etc.
   skills: SkillRecord[] = [];           // discovered skills (re-discovered on resume; residency resets)
   skillRuntime: SkillRuntime | null = null;
+  skillStatsStore: SkillStatsStore | null = null;
+  skillUsefulness: Map<string, number> | null = null;
   contextEngine: ContextEngine | null = null;
   embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
@@ -979,6 +983,24 @@ export class Session {
       }
     }
 
+    // Flush skill effectiveness (issue #77): update usefulness in skill_stats.
+    // Engine mode only (skillRuntime is null in classic). Runs after memory store
+    // sessionEnd (Step A) so isSessionGood has the full event log, and before
+    // scorecard flush (Step C) so syncScorecardFromRuntime captures the real used count.
+    if (this.skillRuntime && this.skillStatsStore) {
+      try {
+        const endEvents = events ?? this.getTranscriptEvents();
+        const good = isSessionGood(reason, endEvents);
+        const effects = this.skillRuntime.getSkillEffects();
+        const cooc = this.skillRuntime.getCooccurrencePairs();
+        this.skillStatsStore.flush(this.id, good, effects, cooc);
+      } catch (err) {
+        this.getLogger().child("skills").warn("Skill effectiveness flush failed", {
+          cause: err as Error,
+        });
+      }
+    }
+
     const contextEngineToClose = this.contextEngine;
 
     // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
@@ -1162,10 +1184,6 @@ function initContextEngine(session: Session): void {
   }
 }
 
-function hashString(s: string): string {
-  return createHash("sha256").update(s).digest("hex").slice(0, 12);
-}
-
 function createScorecardOptions(cwd: string): ScorecardTrackerOptions {
   const contextScope = `context:${hashString(cwd)}`;
   return {
@@ -1337,6 +1355,21 @@ async function initSkills(session: Session, cfg: PraanaConfig, cwd: string): Pro
     await session.skillRuntime.initialize();
   } else {
     session.skillRuntime = null;
+  }
+
+  // Initialize SkillStatsStore for both engine and classic modes (read path;
+  // write path / flush only fires from engine mode at session end).
+  try {
+    const memPath = session.getMemoryDbPath();
+    const projectScope = `context:${hashString(findGitRoot(cwd))}`;
+    session.skillStatsStore = new SkillStatsStore(memPath, projectScope);
+    session.skillUsefulness = session.skillStatsStore.loadUsefulness();
+  } catch (err) {
+    session.getLogger().child("skills").warn("Failed to load skill usefulness, continuing without ranking", {
+      cause: err as Error,
+    });
+    session.skillStatsStore = null;
+    session.skillUsefulness = null;
   }
 
   if (session.skills.length > 0) {

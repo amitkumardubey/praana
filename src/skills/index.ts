@@ -11,7 +11,9 @@ import type {
   SkillTelemetryEvent,
   SkillsRuntimeConfig,
   LoadedSkill,
+  SkillEffect,
 } from "./types.js";
+import { hashString } from "../hash.js";
 
 // ========================================================================
 // Helpers
@@ -93,6 +95,7 @@ export function parseSkillMdContent(content: string, filePath: string): SkillRec
     directory: dirname(filePath),
     body,
     metadata,
+    scope: "",
   };
 }
 
@@ -181,6 +184,7 @@ function scanSkillsDir(skillsDir: string, maxDepth: number): SkillRecord[] {
 
 export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): SkillRecord[] {
   if (_paths) {
+    // Test / override paths: no scope context available — leave scope as "" (default from parser).
     const merged = new Map<string, SkillRecord>();
     for (const dir of _paths) {
       for (const skill of scanSkillsDir(dir, maxDepth)) {
@@ -194,18 +198,25 @@ export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): Sk
   const projectPaths = paths.slice(0, 4);
   const userPaths = paths.slice(4);
 
+  // Project scope is keyed on the git root so it stays stable across subdirs.
+  const projectScope = `context:${hashString(findGitRoot(cwd))}`;
+
   const projectSkills = new Map<string, SkillRecord>();
   const userSkills = new Map<string, SkillRecord>();
 
   for (const dir of projectPaths) {
     for (const skill of scanSkillsDir(dir, maxDepth)) {
-      if (!projectSkills.has(skill.name)) projectSkills.set(skill.name, skill);
+      if (!projectSkills.has(skill.name)) {
+        projectSkills.set(skill.name, { ...skill, scope: projectScope });
+      }
     }
   }
 
   for (const dir of userPaths) {
     for (const skill of scanSkillsDir(dir, maxDepth)) {
-      if (!userSkills.has(skill.name)) userSkills.set(skill.name, skill);
+      if (!userSkills.has(skill.name)) {
+        userSkills.set(skill.name, skill); // scope stays "" (global)
+      }
     }
   }
 
@@ -220,9 +231,20 @@ export function discoverSkills(cwd: string, maxDepth = 6, _paths?: string[]): Sk
   return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** Metadata-only skill catalog for the compiled prompt (both modes). */
-export function buildSkillMetadataCatalog(records: SkillRecord[]): string {
+/**
+ * Metadata-only skill catalog for the compiled prompt (both modes).
+ * When `usefulness` is provided, skills are sorted descending by score
+ * (stable sort — ties keep discovery order).
+ */
+export function buildSkillMetadataCatalog(
+  records: SkillRecord[],
+  usefulness?: Map<string, number>,
+): string {
   if (records.length === 0) return "";
+
+  const sorted = usefulness && usefulness.size > 0
+    ? [...records].sort((a, b) => (usefulness.get(b.name) ?? 0.5) - (usefulness.get(a.name) ?? 0.5))
+    : records;
 
   const lines = [
     "## Available Skills",
@@ -231,7 +253,7 @@ export function buildSkillMetadataCatalog(records: SkillRecord[]): string {
     "",
   ];
 
-  for (const skill of records) {
+  for (const skill of sorted) {
     lines.push(`- **${skill.name}**: ${skill.description}`);
   }
 
@@ -255,6 +277,13 @@ export class SkillRuntime {
   private everLoaded = new Set<string>();
   private totalReloads = 0;
   private totalEvictions = 0;
+
+  // Used tracking: skills that had ≥1 non-load_skill tool call during residency.
+  private usedSkills = new Set<string>();
+
+  // Co-residency pairs — both resident at same turn-end snapshot.
+  // Encoded as "a\x00b" with a < b lexicographically.
+  private coResidencies = new Set<string>();
 
   // Skills-specific counters (for scorecard)
   private skillLoads = 0;
@@ -281,12 +310,10 @@ export class SkillRuntime {
   async initialize(): Promise<void> {
     if (!this.config.enabled) return;
 
-    // Discover skills
     this.records = this.config.searchPaths
       ? discoverSkills(this.cwd, this.config.max_depth, this.config.searchPaths)
       : discoverSkills(this.cwd, this.config.max_depth);
 
-    // Build lightweight index (name → path lookup for load_skill)
     this.index = this.records.map((s) => ({
       id: s.name,
       name: s.name,
@@ -317,7 +344,7 @@ export class SkillRuntime {
         timestamp: Date.now(),
       });
     } else if (this.everLoaded.has(skillId)) {
-      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
+      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0, used: false });
       this.totalReloads++;
       this.skillLoads++;
       this.emit({
@@ -328,7 +355,7 @@ export class SkillRuntime {
         timestamp: Date.now(),
       });
     } else {
-      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0 });
+      this.loadedSkills.set(skillId, { skillId, loadedTurn: currentTurn, reloadCount: 0, used: false });
       this.everLoaded.add(skillId);
       this.skillLoads++;
       this.emit({
@@ -359,6 +386,7 @@ export class SkillRuntime {
         });
       }
     }
+    this.recordCoResidencies();
   }
 
   /** Evict oldest-by-loadedTurn until <= max_loaded_skills. */
@@ -377,6 +405,56 @@ export class SkillRuntime {
           loaded_turn: oldest.loadedTurn,
           timestamp: Date.now(),
         });
+      }
+    }
+  }
+
+  // ---- Used-signal tracking ----
+
+  /**
+   * Mark every currently-resident skill as used.
+   * Called at turn end when ≥1 non-load_skill tool call ran during the turn.
+   * Idempotent per skill per session.
+   */
+  markResidentSkillsUsed(): void {
+    for (const [id, skill] of this.loadedSkills) {
+      skill.used = true;
+      this.usedSkills.add(id);
+    }
+  }
+
+  /**
+   * SkillEffect records for every skill ever loaded this session.
+   * Used by SkillStatsStore.flush at session end.
+   */
+  getSkillEffects(): SkillEffect[] {
+    const scopeMap = new Map<string, string>(this.records.map((r) => [r.name, r.scope]));
+    const effects: SkillEffect[] = [];
+    for (const id of this.everLoaded) {
+      effects.push({
+        skillId: id,
+        scope: scopeMap.get(id) ?? "",
+        loaded: true,
+        used: this.usedSkills.has(id),
+      });
+    }
+    return effects;
+  }
+
+  /**
+   * Co-occurrence pairs (both resident at same turn-end snapshot), a < b.
+   * Data-collection for a future ranking consumer; no boost applied this issue.
+   */
+  getCooccurrencePairs(): Array<[string, string]> {
+    return [...this.coResidencies].map((key) => key.split("\x00") as [string, string]);
+  }
+
+  /** Snapshot currently-loaded pairs into coResidencies after eviction. */
+  private recordCoResidencies(): void {
+    const ids = [...this.loadedSkills.keys()].sort();
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        this.coResidencies.add(`${ids[i]}\x00${ids[j]}`);
       }
     }
   }
@@ -420,8 +498,6 @@ export class SkillRuntime {
 
   /**
    * Session-end summary data for measurement_mode.
-   * Reads from monotonic counters (everLoaded, totalReloads, totalEvictions)
-   * that survive drainEvents().
    */
   getLoadedSkillStats(): { catalogSize: number; loadedCount: number; reloadedCount: number; evictedCount: number } {
     return {
@@ -433,8 +509,8 @@ export class SkillRuntime {
   }
 
   /**
-   * Return the full scorecard counters for this session (skills).
-   * Includes loaded, reloaded, underloaded, and tokens consumed.
+   * Scorecard counters for this session.
+   * `used` is the real count of skills that had a tool call during residency.
    */
   getSkillScorecard(): {
     loaded: number;
@@ -449,7 +525,7 @@ export class SkillRuntime {
     return {
       loaded: this.everLoaded.size,
       loadEvents: this.skillLoads,
-      used: this.everLoaded.size,
+      used: this.usedSkills.size,
       reloaded: this.totalReloads,
       evicted: this.totalEvictions,
       underload: this.skillUnderloadEvents,
@@ -460,7 +536,6 @@ export class SkillRuntime {
 
   /**
    * Add to the skill tokens consumed counter.
-   * Call this whenever skill content (e.g. skill_prompt section) is included in the prompt.
    */
   addSkillTokens(tokens: number): void {
     this.skillTokensConsumed += tokens;

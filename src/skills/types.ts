@@ -26,6 +26,8 @@ export interface SkillRecord {
   directory: string;
   body: string;
   metadata: SkillMetadata;
+  /** Scope key for skill_stats isolation: "context:<hash>" for project skills, "" for user-global. */
+  scope: string;
 }
 
 // ---- Runtime types ----
@@ -43,6 +45,17 @@ export interface LoadedSkill {
   skillId: string;
   loadedTurn: number;
   reloadCount: number;
+  /** True once markResidentSkillsUsed() is called while this skill is resident. */
+  used: boolean;
+}
+
+/** Effect record for session-end skill usefulness flush. */
+export interface SkillEffect {
+  skillId: string;
+  /** Scope from the SkillRecord ("context:<hash>" or ""). */
+  scope: string;
+  loaded: boolean;
+  used: boolean;
 }
 
 // ---- Config ----
