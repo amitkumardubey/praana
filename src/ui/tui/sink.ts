@@ -22,7 +22,7 @@ export interface SinkOpts {
   onLiveContextGrowth?: (extraTokens: number) => void;
   /** Getter for the current model label — used in the turn footer. */
   getModel?: () => string;
-  projection?: TranscriptProjection;
+  projection: TranscriptProjection;
   persistEntry?: (entry: TranscriptEntry) => void;
 }
 
@@ -77,15 +77,10 @@ export class PiTuiSink implements TurnUiSink {
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
     this.ctxBeforePct = this.ctxPct(this.opts.ctxUsedTokens());
-    this.opts.projection?.apply({ type: "turn_started", group: this.group });
+    this.opts.projection.apply({ type: "turn_started", group: this.group });
   }
 
   appendUser(text: string): void {
-    if (!this.opts.projection) {
-      this.transcript.appendUser(text, this.group);
-      return;
-    }
-
     this.applyTranscriptEvent({
       type: "user_submitted",
       id: this.nextId("user"),
@@ -96,47 +91,31 @@ export class PiTuiSink implements TurnUiSink {
 
   onTextDelta(delta: string): void {
     this.opts.onSpinnerMessage("replying…");
-    if (this.opts.projection) {
-      this.assistantStreamId ??= this.nextId("assistant");
-      this.applyTranscriptEvent({
-        type: "assistant_delta",
-        id: this.assistantStreamId,
-        group: this.group,
-        delta,
-      });
-      return;
-    }
-
-    this.transcript.appendAssistantDelta(delta, this.group);
+    this.assistantStreamId ??= this.nextId("assistant");
+    this.applyTranscriptEvent({
+      type: "assistant_delta",
+      id: this.assistantStreamId,
+      group: this.group,
+      delta,
+    });
   }
 
   onThinkingDelta(delta: string): void {
     this.opts.onSpinnerMessage("thinking…");
     if (this.opts.showThinking()) {
-      if (this.opts.projection) {
-        this.thinkingStreamId ??= this.nextId("thinking");
-        this.applyTranscriptEvent({
-          type: "thinking_delta",
-          id: this.thinkingStreamId,
-          group: this.group,
-          delta,
-        });
-        return;
-      }
-
-      this.transcript.appendThinkingDelta(delta, this.group);
+      this.thinkingStreamId ??= this.nextId("thinking");
+      this.applyTranscriptEvent({
+        type: "thinking_delta",
+        id: this.thinkingStreamId,
+        group: this.group,
+        delta,
+      });
     }
   }
 
   onToolCallsStart(): void {
     this.opts.onSpinnerMessage("working…");
-    if (this.opts.projection) {
-      this.finalizeStreams();
-      return;
-    }
-
-    this.transcript.flushAssistant();
-    this.transcript.flushThinking();
+    this.finalizeStreams();
   }
 
   onToolCall(toolCallId: string, toolName: string, args: Record<string, unknown>): void {
@@ -144,35 +123,26 @@ export class PiTuiSink implements TurnUiSink {
     if (toolName === "recall") {
       this.recallQuery = typeof args.query === "string" ? args.query : null;
     }
-    if (this.opts.projection) {
-      this.applyTranscriptEvent({
-        type: "tool_call_started",
-        id: toolCallId,
-        group: this.group,
-        toolName,
-        args,
-      });
-      return;
-    }
-
-    this.transcript.addToolRow(toolName, args, this.group);
+    this.applyTranscriptEvent({
+      type: "tool_call_started",
+      id: toolCallId,
+      group: this.group,
+      toolName,
+      args,
+    });
   }
 
   onToolResult(toolCallId: string, toolName: string, resultText: string, isError = false): void {
     const args = this.pendingToolArgs.get(toolCallId);
-    if (this.opts.projection) {
-      this.applyTranscriptEvent({
-        type: "tool_call_finished",
-        id: toolCallId,
-        group: this.group,
-        toolName,
-        resultText,
-        isError,
-        args,
-      });
-    } else {
-      this.transcript.setToolResult(toolName, resultText, isError, args);
-    }
+    this.applyTranscriptEvent({
+      type: "tool_call_finished",
+      id: toolCallId,
+      group: this.group,
+      toolName,
+      resultText,
+      isError,
+      args,
+    });
 
     if (!isError) {
       if (toolName === "edit_file") this.editCount++;
@@ -202,24 +172,14 @@ export class PiTuiSink implements TurnUiSink {
         (stats.recallHits > 0
           ? `${stats.recallHits} hit${stats.recallHits === 1 ? "" : "s"}`
           : "memory");
-      if (this.opts.projection) {
-        this.applyTranscriptEvent({
-          type: "recall_chip",
-          id: this.nextId("recall"),
-          group: this.group,
-          preview,
-          count: stats.recallHits || stats.recallCalls,
-          query: this.recallQuery,
-        });
-        return;
-      }
-
-      this.transcript.addRecallChip(
+      this.applyTranscriptEvent({
+        type: "recall_chip",
+        id: this.nextId("recall"),
+        group: this.group,
         preview,
-        stats.recallHits || stats.recallCalls,
-        this.recallQuery,
-        this.group,
-      );
+        count: stats.recallHits || stats.recallCalls,
+        query: this.recallQuery,
+      });
     }
   }
 
@@ -228,17 +188,12 @@ export class PiTuiSink implements TurnUiSink {
   onNewline(): void {}
 
   onFallback(text: string): void {
-    if (this.opts.projection) {
-      this.applyTranscriptEvent({
-        type: "system_line",
-        id: this.nextId("system"),
-        group: this.group,
-        text,
-      });
-      return;
-    }
-
-    this.transcript.addSystemLine(text);
+    this.applyTranscriptEvent({
+      type: "system_line",
+      id: this.nextId("system"),
+      group: this.group,
+      text,
+    });
   }
 
   onSystemLines(lines: string[]): void {
@@ -250,16 +205,12 @@ export class PiTuiSink implements TurnUiSink {
   onError(entry: LogEntry): void {
     if (entry.level === "error" || entry.level === "warn") {
       const msg = `[${entry.domain}] ${entry.message}`;
-      if (this.opts.projection) {
-        this.applyTranscriptEvent({
-          type: "system_line",
-          id: this.nextId("system"),
-          group: this.group,
-          text: msg,
-        });
-      } else {
-        this.transcript.addSystemLine(msg);
-      }
+      this.applyTranscriptEvent({
+        type: "system_line",
+        id: this.nextId("system"),
+        group: this.group,
+        text: msg,
+      });
       this.toast.show(msg, "error");
       this.tui.requestRender();
     }
@@ -287,20 +238,13 @@ export class PiTuiSink implements TurnUiSink {
       ctxAfterPct,
       model,
     });
-    if (this.opts.projection) {
-      this.applyTranscriptEvent({
-        type: "turn_footer",
-        id: this.nextId("footer"),
-        group: this.group,
-        text,
-      });
-      this.finalizeStreams();
-      return;
-    }
-
-    this.transcript.addTurnFooter(text, this.group);
-    this.transcript.flushAssistant();
-    this.transcript.flushThinking();
+    this.applyTranscriptEvent({
+      type: "turn_footer",
+      id: this.nextId("footer"),
+      group: this.group,
+      text,
+    });
+    this.finalizeStreams();
   }
 
   private nextId(prefix: string): string {
@@ -309,8 +253,6 @@ export class PiTuiSink implements TurnUiSink {
 
   private applyTranscriptEvent(event: Parameters<TranscriptProjection["apply"]>[0]): void {
     const projection = this.opts.projection;
-    if (!projection) return;
-
     const changed = projection.apply(event);
     this.transcript.renderEntries(projection.entries());
     if (changed && event.type !== "assistant_delta" && event.type !== "thinking_delta") {
@@ -320,8 +262,6 @@ export class PiTuiSink implements TurnUiSink {
 
   private finalizeStreams(): void {
     const projection = this.opts.projection;
-    if (!projection) return;
-
     projection.apply({ type: "streams_finalized", group: this.group });
     this.transcript.renderEntries(projection.entries());
     const entries = projection.entries();

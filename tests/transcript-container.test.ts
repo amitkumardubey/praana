@@ -18,52 +18,6 @@ function fakeTui() {
 }
 
 describe("TranscriptContainer", () => {
-  it("appends retained user and assistant components as children", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-
-    container.appendUser("hello", 1);
-    container.appendAssistantDelta("world", 1);
-
-    expect(container.children.length).toBeGreaterThanOrEqual(2);
-    expect(container.children[0]).toBeInstanceOf(UserMessageComponent);
-    const assistant = container.children.find(
-      (c) => c instanceof AssistantMessageComponent,
-    );
-    expect(assistant).toBeDefined();
-    expect((assistant as AssistantMessageComponent).getText()).toBe("world");
-  });
-
-  it("updates the same assistant component while streaming", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-
-    container.appendAssistantDelta("hel", 1);
-    container.appendAssistantDelta("lo", 1);
-
-    const assistants = container.children.filter(
-      (c) => c instanceof AssistantMessageComponent,
-    );
-    expect(assistants.length).toBe(1);
-    expect((assistants[0] as AssistantMessageComponent).getText()).toBe("hello");
-  });
-
-  it("patches tool results on the pending row component", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-
-    container.addToolRow("shell", { command: "true" }, 1);
-    container.setToolResult(
-      "shell",
-      JSON.stringify({ stdout: "", stderr: "", exitCode: 0 }),
-      false,
-    );
-
-    const tool = container.children.find((c) => c instanceof ToolRowComponent);
-    expect(tool).toBeDefined();
-    expect((tool as ToolRowComponent).hasResult()).toBe(true);
-  });
-
   it("hydrates bootstrap entries into component children", () => {
     const tui = fakeTui();
     const container = new TranscriptContainer(tui as never, defaultOpts, [
@@ -136,7 +90,7 @@ describe("TranscriptContainer", () => {
   it("clear removes all children and resets streaming state", () => {
     const tui = fakeTui();
     const container = new TranscriptContainer(tui as never, defaultOpts);
-    container.appendUser("x", 1);
+    container.renderEntries([{ id: "x", role: "user", group: 1, text: "x" }]);
     container.clear();
     expect(container.children.length).toBe(0);
   });
