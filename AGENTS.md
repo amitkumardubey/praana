@@ -161,6 +161,8 @@ src/
   event-log.ts   — Append-only events.jsonl, fsyncSync durability; in-memory parse cache
   token-estimate.ts — Canonical Unicode-aware token heuristic (Latin/CJK/emoji/ZWJ)
   context-pressure.ts — Density-weighted effective-token accounting and raw-token safety net
+  cosine-similarity.ts — Cosine similarity for embedding vectors (context scoring + memory dedup)
+  hash.ts        — Shared SHA-256 hashing utility (session scopes, skill scope keys)
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
@@ -168,8 +170,9 @@ src/
     readline-ui.ts — Classic readline loop
     tui/           — Ink TUI (default when TTY): transcript, status bar, thinking blocks
   skills/
-    index.ts     — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
-    types.ts     — Skill metadata, runtime state, telemetry types
+    index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
+    skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall
+    types.ts          — Skill metadata, runtime state, telemetry types
   tools/
     index.ts     — Tool registry
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
@@ -178,24 +181,30 @@ src/
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle
-    db.ts        — SQLite schema, CRUD, vector search
+    db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables
     embeddings.ts — OllamaEmbedder
     transformers-embedder.ts — Transformers.js in-process semantic embedder
     transformers-models.ts — Model presets (MiniLM, nomic)
     summarizer.ts — extractLearnings: transcript → structured learnings via LLM
     types.ts     — Memory-specific types
+  context-engine/
+    embedding-cache.ts  — Per-turn embedding cache: precomputes vectors for all context units concurrently; invalidated when unit set changes
+    workflow-tracker.ts — Workflow pattern tracking: records tool sequences + artifact types per task type; persists to workflow_patterns table; renderWorkflowContext() injects a compact section before checkpoint
+    (+ existing engine files: scoring.ts, engine-compiler.ts, db.ts, checkpoint.ts, telemetry.ts, …)
 ```
 
-### Skills (issue #96)
+### Skills (issues #96, #77, #92)
 
-**Pull model — engine & classic modes share a tiny catalog.** `discoverSkills()` scans project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents) and builds a lightweight `SkillRecord[]` catalog. The catalog is rendered into the prompt via `buildSkillMetadataCatalog()` in both modes: a list of `- **name**: description` lines with a `Load a skill with load_skill(skill_id)` header. No full bodies, no file paths, no residency tiers.
+**Pull model — engine & classic modes share a tiny catalog.** `discoverSkills()` scans project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents) and builds a lightweight `SkillRecord[]` catalog. Each `SkillRecord` carries a `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global). The catalog is rendered into the prompt via `buildSkillMetadataCatalog()` in both modes: a list of `- **name**: description` lines with a `Load a skill with load_skill(skill_id)` header. **Catalog order is sorted descending by usefulness score** when a usefulness map is available; falls back to discovery order. No full bodies, no file paths, no residency tiers.
 
 **Engine mode** additionally creates a `SkillRuntime` for load tracking + eviction:
-- The new `load_skill(skill_id)` tool looks up the skill by name, reads `SKILL.md` from disk, and returns the body. It calls `SkillRuntime.trackLoad()` to record the load and enforce the `max_loaded_skills` budget (oldest-by-turn evicted).
+- The `load_skill(skill_id)` tool looks up the skill by name, reads `SKILL.md` from disk, and returns the body. It calls `SkillRuntime.trackLoad()` to record the load and enforce the `max_loaded_skills` budget (oldest-by-turn evicted).
 - At each turn end, `cleanupStaleSkills(currentTurn)` evicts skills idle longer than `stale_threshold_turns`.
 - Telemetry events (`skill_loaded`, `skill_reloaded`, `skill_evicted`) are drained per turn via `flushSkillTelemetry()` to the event log. Session-end summary (under `measurement_mode`) prints: `catalog=N loaded=M reloaded=R evicted=E under_load=U`.
 
 **Classic mode** has no `SkillRuntime` — `load_skill` reads the body, no tracking, no eviction. Plain agent behavior (like pi/omp/opencode). When `measurement_mode=true`, classic sessions still record skill load/reload/token counters via `ScorecardTracker.trackSkillLoad()`.
+
+**Skill effectiveness feedback loop** (`src/skills/skill-stats-store.ts`): At session start, `SkillStatsStore.loadUsefulness()` reads `skill_stats(skill_id, scope, usefulness, load_count, used_count)` from `memory.db` using dual-scope lookup (global first, project overrides). At session end (engine mode only), `flush()` applies a confidence-style boost (α=0.15) when a skill was used alongside non-load-skill tool calls, decay (β=0.05) when loaded but idle, or no change when never loaded. Co-occurrence pairs are recorded in `skill_cooccurrence(scope, skill_a, skill_b, count)` for future ranking (data-collection only; consumer in #161). The `scope` isolation prevents cross-project bleed — project skill scores are scoped to `context:<hash(gitRoot)>`.
 
 Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceiling), `max_loaded_skills`, `stale_threshold_turns`, `max_depth`. Resume re-discovers skills; loaded state does **not** persist across sessions.
 
@@ -208,6 +217,10 @@ Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceilin
 - **Resume:** counters + memory start averages + read-path digests + skill ids restored from DB; `persistProgress()` after each turn.
 - **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#17).
 
+### Workflow pattern tracking (issue #92)
+
+At session end, the context engine records which tools were called and which artifact types were produced for the session's classified task type. These patterns survive to `workflow_patterns(task_type, tool_sequence, artifact_types, hit_count, last_seen_at)` in the context-engine DB (30-day expiry pruned on shutdown). At compile time, `renderWorkflowContext()` selects matching patterns by task type and injects a compact **Workflow Context** section just before the session checkpoint — giving the engine a prior over what context items will be needed before the session starts. Patterns are filtered by the current task type classification, so a coding session does not pollute a debugging session's prompt.
+
 ### Turn flow (per turn)
 
 Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true` **and** `session.contextEngine` is initialized; otherwise classic.
@@ -217,11 +230,14 @@ Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true`
 ```
 User input
   → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
-  → compileEngineWithMetrics: system frame | skills catalog | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
+  → fetch all workflow patterns; classify task type
+  → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
+  → markResidentSkillsUsed() if non-load-skill tools ran
+  → persist scorecard progress
   → print memory banner
 ```
 

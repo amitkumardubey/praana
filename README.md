@@ -122,7 +122,7 @@ Provider resolution precedence:
 |---|--------------------------|--------|
 | **Long sessions** | Full history in the prompt; context window fills up | **Engine mode**: PRAANA summarises tool output and trims stale context every turn. Long sessions stay coherent. |
 | **Next session** | Starts cold unless you paste notes | **Cognitive memory**: at `/exit`, PRAANA extracts what you decided and learned. Start tomorrow in the same repo and it surfaces without re-explaining. |
-| **Skills** | Manual or always-on | Engine mode: BM25-ranked `SKILL.md` residency (hot / warm / cold) |
+| **Skills** | Manual or always-on | Pull model: tiny catalog injected every turn (usefulness-ranked); `load_skill` fetches body on demand. Effectiveness scores persist across sessions. |
 | **Claims** | Often marketed as solved | [Known limitations](#known-limitations-honest) published upfront. No benchmark claims we can't back. |
 
 **Example workflow:** On day 1, `decide` records "use Vitest, in-memory SQLite in tests." Start a new session the next day in the same repo and `/digest` surfaces it without re-explaining. Engine mode stubs yesterday's task graph instead of replaying every tool result.
@@ -154,7 +154,7 @@ Provider resolution precedence:
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` plus an optional stack fingerprint (`package.json`, `go.mod`, etc.) on session start.
 
-**Skills:** in engine mode, discovers `SKILL.md` files and loads them by relevance; in classic mode, lists paths only.
+**Skills:** discovers `SKILL.md` files in the project and user paths. A compact catalog is injected every turn. Use `load_skill(id)` to load the full body on demand. Engine mode tracks whether each skill was actually used and updates a per-skill usefulness score in `memory.db` — the catalog is sorted by that score next session.
 
 Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [concepts.md](./docs/concepts.md)
 

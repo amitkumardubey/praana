@@ -21,6 +21,8 @@ src/
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability; in-memory parse cache (re-reads disk only on mtime/size change)
   token-estimate.ts — Unicode-aware token heuristic (Latin/CJK/emoji/ZWJ); canonical shared estimator for all budget calculations
   context-pressure.ts — Density-weighted effective-token accounting; raw-token safety net; resolves compaction config
+  cosine-similarity.ts — Cosine similarity for Float32Array embedding vectors; shared by context scoring and memory dedup
+  hash.ts        — SHA-256 hashing utility; shared by session scope construction and skill scope keys
   model-resolver.ts — /model parsing and provider+model resolution
   provider-catalog.ts — live /models fetch + 6h cache for OpenAI-compatible providers
   llm.ts         — Provider registry and model building via pi-ai
@@ -30,27 +32,29 @@ src/
   utils/
     bm25.ts      — Shared BM25 tokenization, scoring, and corpus statistics
   context-engine/
-    index.ts       — ContextEngine facade (store, ledger, extraction, checkpoint, telemetry)
-    types.ts       — Engine-level interfaces
+    index.ts          — ContextEngine facade (store, ledger, extraction, checkpoint, telemetry, workflow patterns)
+    types.ts          — Engine-level interfaces; WorkflowPattern
     artifact-store.ts — Content-addressed blob store with distiller integration
-    turn-ledger.ts — Append-only typed turn records with BM25 search
-    distiller.ts   — DistillerRegistry, sync/deferred dispatch, intensity selection
-    classify.ts    — Fast regex-based content-type classification
-    summarize.ts   — Generic head/tail summarisation; re-exports estimateTokens from token-estimate.ts
-    extraction.ts  — Post-turn deterministic extraction (TurnDigest, activity, errors)
-    turn-digest.ts  — TurnDigest extraction and state-graph diffing
-    activity-log.ts — ActivityEntry derivation and rolling buffer
-    error-tracker.ts — Open error tracking and test-pass/fail detection
-    checkpoint.ts  — SessionCheckpoint reconciliation, rendering, replay from digests
+    turn-ledger.ts    — Append-only typed turn records with BM25 search
+    distiller.ts      — DistillerRegistry, sync/deferred dispatch, intensity selection
+    classify.ts       — Fast regex-based content-type classification
+    summarize.ts      — Generic head/tail summarisation; re-exports estimateTokens from token-estimate.ts
+    extraction.ts     — Post-turn deterministic extraction (TurnDigest, activity, errors)
+    turn-digest.ts    — TurnDigest extraction and state-graph diffing
+    activity-log.ts   — ActivityEntry derivation and rolling buffer
+    error-tracker.ts  — Open error tracking and test-pass/fail detection
+    checkpoint.ts     — SessionCheckpoint reconciliation, rendering, replay from digests
     state-snapshot.ts — StateGraph snapshot and diff for decision/constraint extraction
-    scoring.ts     — Context-unit scoring (pin + recency + max(BM25, semantic) + hydrate boost) and budget selection
-    engine-compiler.ts — Multi-resolution budget-band compiler (engine mode)
-    bm25.ts        — Re-exports shared BM25 utilities for context-unit and turn-search scoring
-    density.ts     — SectionDensityKind → weight table; densityWeight() used by engine-compiler for weighted pressure
-    turn-recorder.ts — Per-turn event recording for the turn ledger
-    event-lineage.ts — Trace artifacts back to producing turns, decisions, files
-    telemetry.ts   — Per-session telemetry: pressure events, retrieval rates, distiller savings
-    db.ts          — SQLite schema and operations for all engine tables
+    scoring.ts        — Context-unit scoring (pin + recency + max(BM25, semantic) + hydrate boost) and budget selection
+    embedding-cache.ts — Per-turn embedding cache; precomputes vectors for all context units concurrently; invalidated when unit set changes between turns
+    engine-compiler.ts — Multi-resolution budget-band compiler; injects workflow context section when matching patterns exist
+    bm25.ts           — Re-exports shared BM25 utilities for context-unit and turn-search scoring
+    density.ts        — SectionDensityKind → weight table; densityWeight() used by engine-compiler for weighted pressure
+    turn-recorder.ts  — Per-turn event recording for the turn ledger
+    event-lineage.ts  — Trace artifacts back to producing turns, decisions, files
+    telemetry.ts      — Per-session telemetry: pressure events, retrieval rates, distiller savings
+    workflow-tracker.ts — Workflow pattern tracking: extract tool sequences + artifact types, persist to workflow_patterns table, render compact Workflow Context section
+    db.ts             — SQLite schema for all engine tables: artifacts, turns, checkpoint, scorecard, workflow_patterns
   distillers/
     index.ts       — Default distiller registry factory
     git-diff.ts     — Diff hunk compaction with context reduction
@@ -67,12 +71,16 @@ src/
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   memory/
     index.ts     — Memory store exports
-    store.ts     — High-level MemoryStore API (remember, recall, session start/end)
-    db.ts        — SQLite schema and operations (entries, entry_scopes, sessions, entries_vec)
+    store.ts     — High-level MemoryStore API (remember, recall, session start/end); isSessionGood export
+    db.ts        — SQLite schema: entries, entry_scopes, sessions, entries_vec, skill_stats, skill_cooccurrence
     embeddings.ts — Ollama embedder adapter (optional, opt-in)
     types.ts     — Memory-specific types
     summarizer.ts — LLM-based extraction logic (conversation transcript → learnings JSON)
     openai-summarizer.ts — Chat completion fetch adapter for summarization
+  skills/
+    index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode); buildSkillMetadataCatalog with usefulness-ranked ordering
+    skill-stats-store.ts — Cross-session skill effectiveness: loadUsefulness (dual-scope), flush (boost/decay), co-occurrence recording
+    types.ts          — SkillRecord (with scope), LoadedSkill (with used flag), SkillEffect, telemetry types
 ```
 
 ## Runtime Architecture (Turn Flow)
@@ -346,6 +354,47 @@ The memory retrieval system fuses multiple signals into a unified search score:
 
 ### Schema Migrations
 The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
+
+## Skill Effectiveness Feedback Loop
+
+**Source:** `src/skills/skill-stats-store.ts`, `src/memory/db.ts`
+
+At session start, `SkillStatsStore.loadUsefulness()` performs a dual-scope read from `memory.db`'s `skill_stats(skill_id, scope, usefulness, load_count, used_count, last_loaded_at)` table — global skills first, project overrides on collision — and returns a `Map<string, number>` used to sort the skill catalog by descending usefulness. At session end (engine mode only), `flush()` updates each skill's score:
+
+- **Boost** (α = 0.15): skill was loaded and `markResidentSkillsUsed()` fired after a non-`load_skill` tool ran.
+- **Decay** (β = 0.05): skill was loaded but never used.
+- **No change**: skill was never loaded this session.
+
+Co-occurrence pairs (skills resident together during a used turn) are recorded to `skill_cooccurrence(scope, skill_a, skill_b, count)` for a future ranking consumer (#161). The `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global) prevents cross-project bleed — a project's custom skill score does not pollute scores in other repos.
+
+## Workflow Pattern Tracking
+
+**Source:** `src/context-engine/workflow-tracker.ts`, `src/context-engine/db.ts`
+
+After each session ends, `persistSessionPattern()` extracts:
+1. **Tool sequence** — globally-deduplicated first-occurrence-ordered list of tools called this session.
+2. **Artifact types** — frequency-sorted list of artifact kind labels (e.g. `git_diff`, `tsc_errors`, `shell_output`).
+
+Both are stored in `workflow_patterns(task_type, tool_sequence_json, artifact_types_json, hit_count, last_seen_at)` keyed by `hash(taskType + toolSequence + artifactTypes)`. Rows older than 30 days are pruned via `pruneExpiredPatterns()` inside `runShutdownMaintenance()`.
+
+At compile time, `renderWorkflowContext()` queries patterns matching the current `taskType`, selects the top-N by `hit_count`, and renders a compact **Workflow Context** section injected into the prompt just before the session checkpoint. This gives the engine a prior over which tools and artifact types are likely to appear — without adding it to the scored pool. Patterns for a different task type are never included, so a coding session's workflow history does not bleed into a debugging session.
+
+## Telemetry Scorecard
+
+**Source:** `src/context-engine/db.ts` (`scorecard` table), `src/context-engine/telemetry.ts`, `ScorecardTracker` in session/turn
+
+One row per session in the context-engine SQLite DB. No text content is stored — only numeric signals:
+
+| Signal group | What's tracked |
+|---|---|
+| Context | `retrieve_artifact` calls, repeat file-reads, `search_turn_events` calls, pressure events, compaction triggers |
+| Memory | recall call count, recall-used %, project-scoped validity/usefulness deltas at session start and end |
+| Skills | unique skill loads, total load events, reloads, underloads (loaded but never used), token cost |
+| Resume | read-path digests and skill catalog ids for dedup across resumed sessions |
+
+**Active when:** `context_engine.enabled = true` (always) or `measurement_mode = true` (classic/debug — scorecard-only DB, no engine tables). Counters persist across resume via `persistProgress()` called after every turn.
+
+**Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly (see #17).
 
 ## Configuration
 
