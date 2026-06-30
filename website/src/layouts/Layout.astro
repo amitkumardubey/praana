@@ -10,12 +10,15 @@ interface Props {
 
 const {
   title,
-  description = "PRAANA is an open-source terminal coding agent that curates its own prompt every turn and stores learnings across sessions in a local SQLite database. Runs on Bun. Works with Claude, GPT, DeepSeek, Gemini, Groq, Mistral, Ollama and more. Local-first, MIT-licensed.",
-  keywords = "terminal coding agent, CLI coding agent, AI coding agent, coding agent with memory, cross-session memory, context management, open source coding agent, TypeScript coding agent, local-first AI agent, command line LLM agent, agent that remembers, adaptive context",
+  description = "PRAANA is an open-source terminal coding agent that curates what the model sees on every turn and carries learnings across sessions in a local SQLite database. Pure TypeScript, local-first, runs on Bun. Works with Claude, GPT, DeepSeek, Gemini, Groq, Mistral, Ollama and more. MIT-licensed.",
+  keywords = "terminal coding agent, CLI coding agent, AI coding agent, coding agent with memory, cross-session memory, adaptive context, context management, open source coding agent, TypeScript coding agent, local-first AI, Bun coding agent, agent that remembers, deterministic prompt compiler",
   current,
 } = Astro.props;
 
-const pageTitle = current === "home" ? "PRAANA — terminal coding agent with adaptive context and memory" : `${title} · PRAANA`;
+const pageTitle =
+  current === "home"
+    ? "PRAANA — terminal coding agent with adaptive context and memory"
+    : `${title} · PRAANA`;
 
 const siteUrl = Astro.site ?? new URL("https://amitkumardubey.github.io/praana/");
 const canonical = new URL(Astro.url.pathname, siteUrl).href;
@@ -29,7 +32,7 @@ const structuredData = {
   applicationSubCategory: "Terminal coding agent",
   operatingSystem: "Linux, macOS, Windows (Bun ≥ 1.2)",
   description:
-    "Open-source terminal coding agent with adaptive context and cross-session memory. Works with multiple LLM providers and runs entirely in your CLI.",
+    "Open-source terminal coding agent with adaptive context and cross-session memory. Deterministic prompt compiler, tiered working memory, local SQLite. Works with multiple LLM providers.",
   url: "https://amitkumardubey.github.io/praana/",
   downloadUrl: "https://www.npmjs.com/package/praana",
   softwareHelp: "https://github.com/amitkumardubey/praana#quick-start",
@@ -58,7 +61,6 @@ const structuredData = {
     <link rel="icon" href={`${import.meta.env.BASE_URL}favicon.svg`} type="image/svg+xml" />
     <link rel="sitemap" href={`${import.meta.env.BASE_URL}sitemap.xml`} />
 
-    <!-- Geist + Sora -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -66,22 +68,20 @@ const structuredData = {
       href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Outfit:wght@500;600;700&display=swap"
     />
 
-    <!-- Open Graph -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="PRAANA" />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={ogImage} />
-    <meta property="og:image:alt" content="PRAANA terminal coding agent demo" />
+    <meta property="og:image:alt" content="PRAANA terminal coding agent — adaptive context and cognitive memory" />
     <meta property="og:locale" content="en_US" />
 
-    <!-- Twitter / X card -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage} />
-    <meta name="twitter:image:alt" content="PRAANA terminal coding agent demo" />
+    <meta name="twitter:image:alt" content="PRAANA terminal coding agent — adaptive context and cognitive memory" />
 
     <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
   </head>
@@ -100,8 +100,10 @@ const structuredData = {
       <slot />
     </main>
     <footer class="site-footer">
-      MIT · <a href="https://github.com/amitkumardubey/praana">GitHub</a> ·
-      <a href="https://github.com/amitkumardubey/praana/blob/main/CHANGELOG.md">CHANGELOG</a>
+      MIT ·
+      <a href="https://github.com/amitkumardubey/praana">GitHub</a> ·
+      <a href="https://www.npmjs.com/package/praana">npm</a> ·
+      <a href="https://github.com/amitkumardubey/praana/blob/main/CHANGELOG.md">Changelog</a>
     </footer>
   </body>
 </html>

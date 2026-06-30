@@ -1,18 +1,18 @@
 :root {
   color-scheme: dark;
-  /* Nord palette */
-  --bg: #2e3440;          /* nord0  - Polar Night */
-  --bg-elevated: #3b4252; /* nord1 */
-  --border: #434c5e;      /* nord2 */
-  --text: #d8dee9;        /* nord4  - Snow Storm */
-  --muted: #8893a5;       /* nord3-ish, lifted for readability */
-  --accent: #81a1c1;      /* nord9  - Frost blue */
-  --accent-dim: #81a1c155;
-  --code-bg: #353c4a;     /* between nord0/nord1 */
-  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --bg:           #2e3440;
+  --bg-elevated:  #3b4252;
+  --border:       #434c5e;
+  --text:         #d8dee9;
+  --muted:        #8893a5;
+  --accent:       #81a1c1;
+  --accent-dim:   #81a1c155;
+  --green:        #a3be8c;
+  --code-bg:      #353c4a;
+  --font-sans:    "Geist", system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --font-mono:    "Geist Mono", ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
   --font-display: "Outfit", "Geist", system-ui, sans-serif;
-  --max-width: 52rem;
+  --max-width:    52rem;
 }
 
 *,
@@ -44,6 +44,8 @@ a {
 a:hover {
   text-decoration: underline;
 }
+
+/* ─── Header ─────────────────────────────────────────────── */
 
 .site-header {
   border-bottom: 1px solid var(--border);
@@ -81,30 +83,70 @@ a:hover {
   text-decoration: none;
 }
 
+/* ─── Main ────────────────────────────────────────────────── */
+
 main {
   max-width: calc(var(--max-width) + 4rem);
   margin: 0 auto;
   padding: 2rem 1.5rem 4rem;
 }
 
+/* ─── Hero ────────────────────────────────────────────────── */
+
 .hero {
   text-align: center;
-  margin-bottom: 2.5rem;
+  margin-bottom: 3rem;
 }
 
 .hero h1 {
-  font-family: var(--font-sans);
-  font-size: clamp(2rem, 5vw, 2.75rem);
+  font-family: var(--font-display);
+  font-size: clamp(2.25rem, 6vw, 3.25rem);
   font-weight: 700;
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.75rem;
   letter-spacing: 0.06em;
 }
 
 .hero .lead {
   color: var(--muted);
   font-size: 1.125rem;
-  max-width: 38rem;
-  margin: 0 auto 1.5rem;
+  max-width: 40rem;
+  margin: 0 auto 1.75rem;
+  line-height: 1.65;
+}
+
+.install-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.install-block pre {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+
+.install-block pre code {
+  background: none;
+  padding: 0;
+  color: var(--green);
+}
+
+.install-or {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.prereq {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 1.75rem;
 }
 
 .hero img {
@@ -114,16 +156,25 @@ main {
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
 }
 
-.prose h1,
-.prose h2,
-.prose h3 {
+/* ─── Prose ───────────────────────────────────────────────── */
+
+.prose h2 {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 600;
   line-height: 1.25;
-  margin-top: 2rem;
+  margin-top: 2.5rem;
   margin-bottom: 0.75rem;
+  color: var(--text);
 }
 
-.prose h1:first-child {
-  margin-top: 0;
+.prose h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--text);
 }
 
 .prose p,
@@ -133,49 +184,88 @@ main {
   margin: 0 0 1rem;
 }
 
+.prose ul,
+.prose ol {
+  padding-left: 1.5rem;
+}
+
+.prose li {
+  margin-bottom: 0.25rem;
+}
+
 .prose code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: 0.875em;
   background: var(--code-bg);
-  padding: 0.15em 0.35em;
+  padding: 0.15em 0.4em;
   border-radius: 4px;
+  color: var(--green);
 }
 
 .prose pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 1rem;
+  padding: 1rem 1.125rem;
   overflow-x: auto;
+  margin: 0 0 1.25rem;
 }
 
 .prose pre code {
   background: none;
   padding: 0;
+  font-size: 0.875rem;
+  color: var(--text);
 }
 
 .prose table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }
 
 .prose th,
 .prose td {
   border: 1px solid var(--border);
-  padding: 0.5rem 0.75rem;
+  padding: 0.5rem 0.875rem;
   text-align: left;
+  vertical-align: top;
 }
 
 .prose th {
   background: var(--bg-elevated);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
+
+/* ─── Provider grid ───────────────────────────────────────── */
+
+.provider-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1.25rem;
+}
+
+.provider-grid span {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+/* ─── Doc cards ───────────────────────────────────────────── */
 
 .card-grid {
   display: grid;
   gap: 1rem;
   grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  margin: 1.5rem 0;
+  margin: 1rem 0 1.5rem;
 }
 
 .card {
@@ -183,17 +273,26 @@ main {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.125rem;
+  transition: border-color 0.15s;
+}
+
+.card:hover {
+  border-color: var(--accent);
+  text-decoration: none;
 }
 
 .card strong {
   display: block;
   margin-bottom: 0.25rem;
+  color: var(--text);
 }
 
 .card span {
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.875rem;
 }
+
+/* ─── Footer ──────────────────────────────────────────────── */
 
 .site-footer {
   border-top: 1px solid var(--border);
@@ -201,4 +300,17 @@ main {
   font-size: 0.875rem;
   text-align: center;
   padding: 1.5rem;
+}
+
+/* ─── Responsive ──────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+  .install-block {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .install-or {
+    display: none;
+  }
 }

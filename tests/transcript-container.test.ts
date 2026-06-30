@@ -1,12 +1,12 @@
 import { describe, it, expect, mock } from "bun:test";
+import { Spacer } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import { UserMessageComponent } from "../src/ui/tui/transcript/components/user-message.js";
 import { AssistantMessageComponent } from "../src/ui/tui/transcript/components/assistant-message.js";
 import { ToolRowComponent } from "../src/ui/tui/transcript/components/tool-row.js";
 import { ThinkingMessageComponent } from "../src/ui/tui/transcript/components/thinking-message.js";
 import { TurnFooterComponent } from "../src/ui/tui/transcript/components/turn-footer.js";
-import { Spacer } from "@earendil-works/pi-tui";
-import stripAnsi from "strip-ansi";
 
 const defaultOpts = {
   markdownRendering: false,

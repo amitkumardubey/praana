@@ -438,7 +438,10 @@ export async function runTurn(
         payload: { toolCallId: tc.toolCallId, tool: tc.toolName, args: tc.args },
       });
 
-      if (!session.debug) s.onSpinnerStart?.(tc.toolName);
+      // Always notify the UI about the incoming tool call (show pending row in TUI,
+      // print compact line in terminal mode). Then start the spinner while it executes.
+      s.onToolCall?.(tc.toolCallId, tc.toolName, tc.args);
+      s.onSpinnerStart?.(tc.toolName);
       if (tc.toolName !== "load_skill") hadNonLoadSkillTool = true;
 
       const toolDef = (tools as Record<string, any>)[tc.toolName];
@@ -457,6 +460,7 @@ export async function runTurn(
         }
       }
 
+      s.onSpinnerStop?.();
 
       if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
         const entries = (result as { entries?: Array<{ id?: string }> }).entries;
@@ -475,11 +479,6 @@ export async function runTurn(
         session.memoryStore?.reinforceFromSuccessfulToolOutcome(
           Array.from(recalledEntryIdsThisTurn),
         );
-      }
-
-      if (!session.debug) {
-        s.onSpinnerStop?.();
-        s.onToolCall?.(tc.toolCallId, tc.toolName, tc.args);
       }
 
       toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });

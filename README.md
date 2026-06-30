@@ -4,33 +4,27 @@
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
 [![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
 
-**A terminal coding agent that manages context like memory, within a session and across sessions.**
+**A terminal coding agent that manages context like memory — curating what the model sees on every turn, and carrying learnings across sessions in a local database.**
 
 <p align="center">
   <img src="docs/assets/demo.png" alt="PRAANA terminal — adaptive context and cognitive memory" width="720" />
 </p>
 
-Long sessions fill up fast. The prompt accumulates stale tool output and repeated context; the model loses track. Come back the next day and you re-explain everything from scratch.
+Long coding sessions burn tokens faster as they grow. The prompt fills with stale tool output and repeated context, the model drifts, and you lose the thread. Come back the next day and you re-explain everything from scratch.
 
-PRAANA compiles a fresh prompt on every turn: tiered working memory, tool-output distillation, a session checkpoint. The full transcript never goes in. At `/exit`, a summariser extracts learnings from the transcript and writes them to a local SQLite database. Start the next session in the same repo and you get a ranked digest back.
+PRAANA takes a different approach. A deterministic compiler curates what the model sees on every turn — tiered working memory, tool-output distillation, and a session checkpoint — instead of stuffing the full transcript into the prompt. An optional Cognitive Memory extracts learnings when a session ends and surfaces a ranked digest the next time you start, in the same repo or anywhere.
 
 Runs on Bun. One binary, pure TypeScript, local-first, any provider.
 
 > **Status:** v0.9.0 <!-- x-release-please-version --> — experimental. The context engine and memory are ideas we're proving in real use, not solved problems. We publish [known limitations](#known-limitations-honest) and make no benchmark claims we can't back.
 
-> **How it was built:** vibecoded. Written by coding agents with human direction and review.
-
-**Three problems it solves:**
-
-- **Sessions that drift:** PRAANA summarises tool output (diffs, test results, type errors, search results) before it reaches the prompt. The agent stays sharp as the session grows.
-- **Cold starts every day:** Record a decision once and PRAANA surfaces it in a ranked digest the next time you open the same project. No re-explaining your stack or conventions.
-- **Terminal noise choking context:** Run `git diff` on 200 files or hit 50 test failures. The agent gets a focused summary. Full output stays stored and fetchable if it needs to dig in.
+> **How it was built:** vibecoded — written by coding agents with human direction and review, not hand-coded line by line.
 
 ---
 
 ## Quick Start
 
-### Install (recommended)
+### Install
 
 ```bash
 # Install globally
@@ -40,61 +34,48 @@ bun add -g praana
 bunx praana
 ```
 
-Set up your API key and launch:
+Requires **Bun ≥ 1.2**. Install at [bun.sh/install](https://bun.sh/install).
+
+### Set a provider key and launch
 
 ```bash
-# Set any provider API key (PRAANA auto-detects which one)
-export ANTHROPIC_API_KEY="sk-ant-..."       # or
-export OPENAI_API_KEY="sk-..."              # or
-export OPENROUTER_API_KEY="sk-or-v1-..."    # or many others
-
-# Launch the agent
+export ANTHROPIC_API_KEY="sk-ant-..."    # or any supported provider below
 praana
 ```
 
-> **First time?** PRAANA auto-detects your provider from the environment. If no key is found, it runs an interactive setup wizard (TTY) or shows clear instructions.
-> Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
-> Requires **Bun ≥ 1.2**. Install at [bun.sh/install](https://bun.sh/install).
+PRAANA auto-detects which provider key is set. On first run with no config file, it runs an interactive setup wizard. The interactive UI is a terminal-native `pi-tui` shell with native scrollback, slash-command autocomplete, transcript rendering, and full thinking-text display when `/thinking on` is enabled.
 
-### Global CLI alias
+### Global alias
 
-After installing with `bun add -g praana`, both `praana` and `pran` are on your PATH. If Bun's global bin is not in your PATH, add it:
+Both `praana` and `pran` are on your PATH after a global install. If Bun's global bin directory isn't in your PATH:
 
 ```bash
 export PATH="$HOME/.bun/bin:$PATH"
-praana    # or the short alias: pran
 ```
 
-### Build from source (for development)
+### Build from source
 
 ```bash
 git clone https://github.com/amitkumardubey/praana.git
 cd praana
 bun install
-
-# Create a config file (auto-detects provider from environment)
-bun src/main.ts init
-
-# Set your API key and launch
 export ANTHROPIC_API_KEY="sk-ant-..."
 bun src/main.ts
 ```
 
 ### Configuration
 
-PRAANA auto-detects provider API keys from the environment. No config file is needed to get started.
-
-If you want to customize settings, create a config file:
+No config file is needed to start. To customise:
 
 ```bash
 praana init   # Creates praana.config.toml with detected provider
 ```
 
-See [`praana.config.example.toml`](./praana.config.example.toml) for all available settings.
+See [`praana.config.example.toml`](./praana.config.example.toml) for all settings.
 
-#### Supported Providers
+#### Supported providers
 
-| Provider | Environment Variable |
+| Provider | Environment variable |
 |---|---|
 | Anthropic | `ANTHROPIC_API_KEY` |
 | OpenAI | `OPENAI_API_KEY` |
@@ -107,54 +88,58 @@ See [`praana.config.example.toml`](./praana.config.example.toml) for all availab
 | Together | `TOGETHER_API_KEY` |
 | OpenCode | `OPENCODE_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| Ollama | *(local, no key needed)* |
+| Ollama | *(local — no key needed)* |
 
-Provider resolution precedence:
-1. Explicit config file setting
-2. Environment-detected key (in the order above)
-3. Interactive setup (TTY) or clear instructions (non-TTY)
+Provider resolution order: explicit config → environment-detected key → interactive setup.
 
 ---
 
 ## Why PRAANA vs a plain transcript agent?
 
 | | Typical transcript agent | PRAANA |
-|---|--------------------------|--------|
-| **Long sessions** | Full history in the prompt; context window fills up | **Engine mode**: PRAANA summarises tool output and trims stale context every turn. Long sessions stay coherent. |
-| **Next session** | Starts cold unless you paste notes | **Cognitive memory**: at `/exit`, PRAANA extracts what you decided and learned. Start tomorrow in the same repo and it surfaces without re-explaining. |
-| **Skills** | Manual or always-on | Pull model: tiny catalog injected every turn (usefulness-ranked); `load_skill` fetches body on demand. Effectiveness scores persist across sessions. |
-| **Claims** | Often marketed as solved | [Known limitations](#known-limitations-honest) published upfront. No benchmark claims we can't back. |
+|---|---|---|
+| **Long sessions** | Full history in the prompt; context window fills up | **Engine mode:** curates the prompt every turn — tiered state, tool-output distillation, session checkpoint |
+| **Next session** | Starts cold unless you paste notes | **Cognitive Memory:** at `/exit` PRAANA extracts what you decided and learned; start tomorrow and it surfaces without re-explaining |
+| **Skills** | Manual or always-on | Pull model: compact catalog injected every turn (usefulness-ranked); `load_skill` fetches body on demand; effectiveness scores persist across sessions |
+| **Claims** | Often marketed as solved | Known limitations published upfront; no benchmark claims we can't back |
 
-**Example workflow:** On day 1, `decide` records "use Vitest, in-memory SQLite in tests." Start a new session the next day in the same repo and `/digest` surfaces it without re-explaining. Engine mode stubs yesterday's task graph instead of replaying every tool result.
+**Example workflow:** session 1 — `decide "use Vitest, in-memory SQLite in tests"` then `/exit`. Session 2, same repo — `/digest` surfaces the decision. Engine mode stubs yesterday's task graph instead of replaying every tool result.
+
+---
+
+## Five things that are genuinely different
+
+1. **Per-turn deterministic compiler with per-section token budgets.** The prompt is assembled fresh every turn across five sections — system frame, memory digest, active state, peripheral stubs, recent turns — each with its own cap. Context pressure is density-weighted, not a raw token count.
+
+2. **Tiered working memory with auto-hydration.** State objects (tasks, decisions, constraints, notes) demote from `active` to `soft` to `hard` based on idle turns. Two-pass hydration before each turn — substring keyword match, then BM25 — promotes them back when the current turn references them.
+
+3. **Tool-output distillers with a content-addressed artifact store.** Git diffs, npm test output, TypeScript errors, ripgrep results hit built-in distillers at ingestion. The model sees a focused summary. Full bytes live in an artifact store; `retrieve_artifact` fetches them on demand.
+
+4. **Session resume by O(1) checkpoint + event replay.** A deterministic checkpoint is written every turn — active request, rolling narrative, decisions with rationale, constraints. Resume restores the checkpoint and replays only post-checkpoint events.
+
+5. **Agent-native cross-session memory in local SQLite.** At `/exit`, PRAANA's summariser extracts learnings from the transcript — not bolted-on notes, not an MCP plugin. Six taxonomy kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Semantic search via Transformers.js (in-process, no sidecar). Project and global scopes queried and merged.
 
 ---
 
 ## What it does
 
-**Concrete differences from a standard transcript agent:**
+**Two compile modes** (set `[context_engine] enabled` in config):
 
-1. Per-turn deterministic compiler with per-section token budgets.
-2. Tiered working memory (`active` / `soft` / `hard`) with BM25 + substring auto-hydration before each turn.
-3. **Automatic output compression:** when you run `git diff`, your test suite, or the type checker, the agent sees a focused summary. Full output stays stored and fetchable with `retrieve_artifact`. Built-in distillers cover git diffs, npm test output, TypeScript errors, ripgrep results, and generic logs.
-4. Session resume by replay: O(1) state-graph checkpoint, then only post-checkpoint events replay.
-5. Cross-session memory in local SQLite; at `/exit` a summariser extracts learnings, and the next session starts with a ranked digest.
-
-**Two compile modes** (see `[context_engine] enabled` in config):
-
-| Mode | Default? | Behaviour |
+| Mode | Default | Behaviour |
 |---|---|---|
-| **Classic** | Yes (`enabled = false`) | Full verbatim transcript in the prompt. Same general shape as many coding agents. |
-| **Engine** | Opt-in | Tiered working memory, tool-output distillation, session checkpoint, scored prompt compilation, progressive skills. |
+| **Engine** | Yes | Tiered working memory, tool-output distillation, session checkpoint, scored prompt compilation, progressive skills. |
+| **Classic** | Fallback / explicit disable | Full verbatim transcript. Same shape as most coding agents. |
 
-**Cognitive Memory** (optional, `[memory] enabled = true`):
+**Cognitive Memory** (optional — `[memory] enabled = true`):
 
-- At `/exit`, a summariser extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
+- At `/exit`, extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
 - Next session starts with a ranked digest in the prompt.
-- In project sessions, PRAANA queries both project and global scopes and merges the results (#56).
+- Project sessions query both project-scoped and global memories and merge results.
+- Confidence decays 5%/day. Entries confirmed across two or more sessions promote to Consolidated Memory (10x slower decay).
 
-**Project context:** loads `AGENTS.md` / `CLAUDE.md` plus an optional stack fingerprint (`package.json`, `go.mod`, etc.) on session start.
+**Skills:** discovers `SKILL.md` files in project and user paths. Compact catalog injected every turn, sorted by usefulness score. `load_skill(id)` fetches the full body on demand. Engine mode tracks whether each skill was used and updates its score in `memory.db`.
 
-**Skills:** discovers `SKILL.md` files in the project and user paths. A compact catalog is injected every turn. Use `load_skill(id)` to load the full body on demand. Engine mode tracks whether each skill was actually used and updates a per-skill usefulness score in `memory.db` — the catalog is sorted by that score next session.
+**Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
 
 Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [concepts.md](./docs/concepts.md)
 
@@ -162,19 +147,19 @@ Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [
 
 ## Known limitations (honest)
 
-These are real gaps today—not a roadmap dressed up as marketing.
+These are real gaps, not a roadmap dressed as marketing.
 
 | Area | What's weak |
 |---|---|
-| **Memory recall** | Semantic recall uses `@huggingface/transformers` by default (`embedder = "auto"`); model weights download on first run. Ollama is an opt-in alternative. Global and project memories merge in project sessions, but near-duplicate or conflicting entries are not automatically reconciled. |
-| **Context engine** | Off by default. Enabling it adds complexity; fallback to classic if init fails. |
-| **Long sessions** | Tiering and distillation help but don't guarantee the model stays on track. |
-| **Hydration** | Demoted state can be hidden until you mention it or the agent calls `hydrate`—the model doesn't always recover context proactively. |
-| **Summariser** | Session-end learning needs a configured summariser and API access; can run in background on exit. |
-| **Shell tool** | Optional path/command sandbox (`[shell]` in config); **off by default**. When disabled, runs with your user permissions. |
-| **Comparison** | No published evals. We don't know if memory beats a plain transcript agent for your workflows. |
+| **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#162). |
+| **No published evals** | The telemetry scorecard is live. The A/B eval harness — comparing engine vs classic on a fixed task suite — doesn't exist yet. We don't know if engine mode beats classic for your workflows. |
+| **Semantic recall** | `@huggingface/transformers` weights download on first run (~80MB, cached in `~/.praana/models/`). Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
+| **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
+| **Background Consolidation Processor** | Schema exists, not scalable yet. The learning loop is incomplete. |
+| **Intelligent Router** | Not started. Planned for after memory is proven. |
+| **Shell tool** | Runs with your user permissions. Optional path/command sandbox via `[shell]` in config — off by default. |
 
-If Cognitive Memory doesn't help you after a few real projects, that's useful feedback—not a surprise.
+If Cognitive Memory doesn't help you after a few real projects, tell us. That's useful feedback, not a surprise.
 
 ---
 
@@ -183,14 +168,15 @@ If Cognitive Memory doesn't help you after a few real projects, that's useful fe
 | Command | Purpose |
 |---|---|
 | `/help` | Full list |
-| `/exit` | End session (runs summariser when memory is on) |
-| `/clear`, `/new` | Reset working memory (engine state / checkpoint) |
+| `/exit` | End session — runs summariser when memory is on |
+| `/clear`, `/new` | Reset working memory |
 | `/state` | Working-memory objects (engine mode) |
 | `/digest` | Cognitive Memory digest |
 | `/recall <query>` | Search Cognitive Memory |
 | `/stats` | Session + memory stats |
+| `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
-| `/model [provider] <id>` | Switch model and optionally provider mid-session |
+| `/model [provider] <id>` | Switch model or provider mid-session |
 | `/sessions` | List sessions to resume |
 | `/thinking <on\|off>` | Show or hide reasoning text |
 | `/incognito <on\|off>` | Disable Cognitive Memory writes |
@@ -199,44 +185,42 @@ If Cognitive Memory doesn't help you after a few real projects, that's useful fe
 
 ### `/model` syntax
 
-Switch the active model on the current provider, or switch provider and model together:
-
 ```text
 /model                          # show current provider/model
-/model gpt-4o                     # model on current provider
+/model gpt-4o                   # model on current provider
 /model openai gpt-4o            # switch to OpenAI native
-/model opencode mimo-v2.5-free  # switch to OpenCode Zen
+/model opencode mimo-v2.5-free  # switch to OpenCode
 /model openrouter openai/gpt-4o # route via OpenRouter
 ```
 
-Unknown ids are validated against the bundled pi-ai catalog first, then against the provider's live `/models` list (cached 6 hours at `~/.praana/provider-catalog-cache.json`). OpenAI-compatible providers with live catalogs: OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, and Ollama. Anthropic, Google, Mistral, and Bedrock still rely on the static pi-ai catalog.
+Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live `/models` list (cached 6 hours at `~/.praana/provider-catalog-cache.json`).
 
 ---
 
 ## Development
 
 ```bash
-bun dev
-bun typecheck
-bun test
+bun dev          # run without build step
+bun typecheck    # TypeScript type-check (no emit)
+bun test         # 997 tests across 83 files, ~11s
 ```
 
 ### Docs site (Astro)
 
-GitHub Pages is built from [`website/`](./website/) with [Astro](https://astro.build/). Markdown sources in [`docs/`](./docs/) are rendered at build time (no duplication).
+GitHub Pages is built from [`website/`](./website/). Markdown sources in [`docs/`](./docs/) are rendered at build time.
 
 ```bash
-cd website && bun install && bun dev    # http://localhost:4321/praana/
-cd website && bun run build             # output → website/dist/
+cd website && bun install && bun run dev    # http://localhost:4321/praana/
+cd website && bun run build                 # output → website/dist/
 ```
 
 ---
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md). High level: making Cognitive Memory and the context engine actually pay off, semantic recall by default, and the measurement to tell honestly whether they help.
+See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#162), building the A/B eval harness (#17), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
 
-**Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions) (Q&A, ideas, releases)
+**Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions)
 
 Issues and PRs welcome.
 
@@ -244,4 +228,4 @@ Issues and PRs welcome.
 
 ## License
 
-MIT — [LICENSE](./LICENSE). Version history: [CHANGELOG.md](./CHANGELOG.md) (auto-generated by release-please on each release).
+MIT — [LICENSE](./LICENSE). Version history: [CHANGELOG.md](./CHANGELOG.md) (auto-generated by release-please).

@@ -29,7 +29,7 @@ Copy-paste PRs for curated awesome lists. Edit if a list has specific format req
 **Section:** Applications / CLI
 
 ```markdown
-- [PRAANA](https://github.com/amitkumardubey/praana) - Open-source terminal coding agent (Ink TUI, pi-ai providers, local memory)
+- [PRAANA](https://github.com/amitkumardubey/praana) - Open-source terminal coding agent (pi-tui shell, pi-ai providers, local memory)
 ```
 
 ## awesome-llm / AI agent lists

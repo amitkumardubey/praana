@@ -20,7 +20,7 @@ These exist and work — we're not claiming they're solved problems, just that t
 - **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching
 - **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local)
 - **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox
-- **Two context modes** — *classic* (full transcript, like most agents) and an opt-in *engine* (tiered working memory, tool-output distillation, session checkpoint, skills)
+- **Two context modes** — default *engine* mode (tiered working memory, tool-output distillation, session checkpoint, skills) and a *classic* fallback/disable mode (full transcript, like most agents)
 - **Cognitive Memory** (optional) — extracts learnings at the end of a session, scores and consolidates them, and surfaces a ranked digest at the start of the next; project and global scopes
 
 ---

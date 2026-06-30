@@ -6,7 +6,7 @@ This document explains the key ideas behind PRAANA's two adaptive systems.
 
 ## Adaptive Context
 
-**Adaptive Context** is PRAANA's within-session working memory, active in **engine mode only**. Rather than treating all prior state equally, PRAANA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
+**Adaptive Context** is PRAANA's within-session working memory, active in **engine mode**. Engine mode is the default; classic mode is available by setting `[context_engine] enabled = false` or when engine initialization fails. Rather than treating all prior state equally, PRAANA organises state objects into three tiers. The result: what you're actively working on gets full representation; older context compresses to stubs. The model always gets a clean, high-signal context window — not a growing dump of everything that has happened.
 
 In **classic mode**, Adaptive Context is not exposed — no StateGraph tools, no tier sections in the prompt. The full event log serves as working memory instead.
 
@@ -76,7 +76,7 @@ The checkpoint is written from `TurnDigest` data only — never by the LLM — t
 
 ### Current status (honest)
 
-Engine mode is **off by default** (`context_engine.enabled = false`). We have not benchmarked it against classic mode or other agents. The table below reflects real behaviour today, not a marketing claim.
+Engine mode is **on by default** (`context_engine.enabled = true`). We have not benchmarked it against classic mode or other agents. The table below reflects real behaviour today, not a marketing claim.
 
 | Area | Status | Notes |
 |---|---|---|
@@ -90,7 +90,7 @@ Engine mode is **off by default** (`context_engine.enabled = false`). We have no
 | Contradiction detection | Gap | Old and new decisions can coexist in the checkpoint without an explicit alert |
 | Cross-session continuity | Memory layer | Within-session checkpoint does not replace Cognitive Memory for the next session |
 
-Classic mode remains the simpler baseline: full verbatim transcript, no checkpoint or tiering. Enable the engine when you want structured session state and distillation; expect rough edges on long conversational threads.
+Classic mode remains the simpler fallback: full verbatim transcript, no checkpoint or tiering. Disable the engine when you want the plain transcript baseline; expect rough edges on long conversational threads in either mode.
 
 ---
 
@@ -156,7 +156,7 @@ Recalled memories are ranked by a fusion of three signals:
 - **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays at 5% per day
 - **Recency** — entries accessed recently receive a small boost
 - **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
-- **Tool outcomes** — memories recalled before a successful tool call receive a confidence boost (#45). More broadly, every entry **surfaced** in a session — whether shown in the session-start digest or returned by `recall()` — has its validity reinforced and its usefulness boosted (if acted on) or decayed (if ignored) at session end. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory, 4× slower decay)
+- **Tool outcomes** — every entry **surfaced** in a session — whether shown in the session-start digest or returned by `recall()` — has its validity reinforced at session end. Usefulness is boosted only when the entry was acted on and the placeholder session-success signal is positive; acted-on entries in sessions without that signal are neutral, and ignored entries decay. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory, 4× slower decay).
 
 ### Embeddings — Honest Note
 
