@@ -29,6 +29,8 @@ export const TUI_STYLE = {
   border: chalk.dim,
 } as const satisfies Record<string, TextStyle>;
 
+export const EDITOR_BORDER_STYLE: TextStyle = () => "";
+
 // ─── Elevation zones (design §9) ───────────────────────────────────────────
 
 export type ZoneKind = "chrome" | "raised" | "canvas";

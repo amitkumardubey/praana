@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import stripAnsi from "strip-ansi";
-import { paintZoneLine, TUI_STYLE } from "../src/ui/tui/theme.js";
+import { EDITOR_BORDER_STYLE, paintZoneLine, TUI_STYLE } from "../src/ui/tui/theme.js";
 
 describe("TUI_STYLE", () => {
   it("leaves normal text to the terminal default theme", () => {
@@ -20,6 +20,12 @@ describe("TUI_STYLE", () => {
 
     expect(rendered).not.toMatch(/\u001b\[(?:38|48);2;/);
     expect(stripAnsi(rendered)).toContain("error");
+  });
+});
+
+describe("EDITOR_BORDER_STYLE", () => {
+  it("hides pi-tui editor border rules in the terminal-native TUI", () => {
+    expect(EDITOR_BORDER_STYLE("────")).toBe("");
   });
 });
 

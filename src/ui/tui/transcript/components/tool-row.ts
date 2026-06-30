@@ -2,7 +2,6 @@ import { wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { TUI_STYLE, paintZoneLine } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
-import { accentBar } from "../render-utils.js";
 
 const BODY_PREVIEW_LINES = 24;
 
@@ -44,23 +43,21 @@ export class ToolRowComponent implements Component {
   render(width: number): string[] {
     const { state } = this;
     const bg = false;
-    const bar = accentBar("tool");
     const indent = "    ";
-    const icon = TUI_STYLE.tool(state.toolIcon);
-    const label = TUI_STYLE.tool(state.toolLabel);
+    const icon = TUI_STYLE.faint(state.toolIcon);
+    const label = TUI_STYLE.muted(state.toolLabel);
     const lines: string[] = [];
 
     if (state.resultSummary === undefined) {
-      const row = `${bar}  ${icon}  ${label}  ${chalk.dim(state.toolPending)}`;
+      const row = `  ${icon} ${label} ${chalk.dim(state.toolPending)}`;
       lines.push(paintZoneLine(row, "raised", bg, width));
-      const blank = paintZoneLine("", "raised", bg, width);
-      return [blank, ...lines, blank];
+      return lines;
     }
 
     const summaryStyle = state.isError
       ? TUI_STYLE.error
       : TUI_STYLE.success;
-    const row = `${bar}  ${icon}  ${label}  ${summaryStyle(state.resultSummary)}`;
+    const row = `  ${icon} ${label} ${summaryStyle(state.resultSummary)}`;
     lines.push(paintZoneLine(row, "raised", bg, width));
 
     if (
@@ -83,7 +80,6 @@ export class ToolRowComponent implements Component {
       }
     }
 
-    const blank = paintZoneLine("", "raised", bg, width);
-    return [blank, ...lines, blank];
+    return lines;
   }
 }

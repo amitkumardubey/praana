@@ -20,7 +20,7 @@ import {
   formatSessionEndSummary,
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./boot-summary.js";
-import { TUI_STYLE } from "./theme.js";
+import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
@@ -122,7 +122,7 @@ export async function runTui(
   );
 
   const editorTheme = {
-    borderColor: TUI_STYLE.border,
+    borderColor: EDITOR_BORDER_STYLE,
     selectList: {
       selectedPrefix: TUI_STYLE.assistant,
       selectedText: (s: string) => chalk.bold(s),

@@ -3,6 +3,7 @@ import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import { UserMessageComponent } from "../src/ui/tui/transcript/components/user-message.js";
 import { AssistantMessageComponent } from "../src/ui/tui/transcript/components/assistant-message.js";
 import { ToolRowComponent } from "../src/ui/tui/transcript/components/tool-row.js";
+import stripAnsi from "strip-ansi";
 
 const defaultOpts = {
   markdownRendering: false,
@@ -60,6 +61,25 @@ describe("TranscriptContainer", () => {
     const tool = container.children.find((c) => c instanceof ToolRowComponent);
     expect(tool).toBeDefined();
     expect((tool as ToolRowComponent).hasResult()).toBe(true);
+  });
+
+  it("renders tool rows compactly without accent gutters or blank padding", () => {
+    const tool = new ToolRowComponent(
+      {
+        toolName: "read_file",
+        toolIcon: "◇",
+        toolLabel: "read src/turn.ts",
+        toolPending: "running…",
+        resultSummary: "60 lines",
+      },
+      defaultOpts,
+    );
+
+    const lines = tool.render(80).map(stripAnsi);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("◇ read src/turn.ts 60 lines");
+    expect(lines[0]).not.toContain("▌");
   });
 
   it("hydrates bootstrap entries into component children", () => {
