@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { PALETTE } from "../../theme.js";
 import { buildMarkdownTheme } from "../markdown-theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
-import { renderAccentLines, wrapContent } from "../render-utils.js";
+import { wrapContent } from "../render-utils.js";
 
 /** Streaming assistant prose — canvas zone. */
 export class AssistantMessageComponent implements Component {
@@ -39,12 +39,6 @@ export class AssistantMessageComponent implements Component {
     } else {
       lines = wrapContent(this.text, width, (s) => chalk.hex(PALETTE.text)(s));
     }
-    return renderAccentLines(
-      lines,
-      "assistant",
-      "canvas",
-      false,
-      width,
-    );
+    return lines;
   }
 }

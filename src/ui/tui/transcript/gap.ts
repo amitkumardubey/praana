@@ -6,19 +6,10 @@ export function needsGap(
   prevRole: TranscriptRole | undefined,
 ): boolean {
   if (!prevRole) return false;
-  if (role === "user") return true;
-  if (role === "turn_footer") return false;
-  if (role === "tool") return prevRole !== "tool";
-  if (role === "thinking" && prevRole !== "thinking") return true;
-  if (role === "recall") return prevRole !== "recall";
-  if (
-    role === "assistant" &&
-    (prevRole === "tool" ||
-      prevRole === "thinking" ||
-      prevRole === "user" ||
-      prevRole === "recall")
-  ) {
-    return true;
-  }
-  return false;
+  // Tool rows and consecutive thinking/recall blocks stay tight.
+  if (role === "tool" && prevRole === "tool") return false;
+  if (role === "thinking" && prevRole === "thinking") return false;
+  if (role === "recall" && prevRole === "recall") return false;
+  // Everything else gets a blank line above it.
+  return true;
 }

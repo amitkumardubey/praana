@@ -39,7 +39,7 @@ export function renderBootBanner(opts: BootBannerOpts): string[] {
     lines.push("");
   }
 
-  lines.push(useColor ? chalk.dim(`v${opts.version}`) : `v${opts.version}`);
+  lines.push(useColor ? chalk.dim(`  v${opts.version}`) : `  v${opts.version}`);
   lines.push("");
 
   for (const summaryLine of opts.summaryLines) {

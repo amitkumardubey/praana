@@ -86,7 +86,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     syntax_theme: "nord",
     ambient: "inline" as const,
     tool_icons: "unicode" as const,
-    background_zones: true,
+    background_zones: false,
     show_cost: true,
     banner: true,
   },

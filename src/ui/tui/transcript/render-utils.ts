@@ -25,7 +25,7 @@ export function renderAccentLines(
   width: number,
 ): string[] {
   const bar = accentBar(role);
-  const indent = "   ";
+  const indent = "  ";
   return lines.map((line, i) => {
     const row = (i === 0 ? `${bar} ` : indent) + line;
     return paintZoneLine(row, zone, backgroundZones, width);

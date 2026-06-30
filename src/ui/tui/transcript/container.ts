@@ -162,7 +162,9 @@ export class TranscriptContainer extends Container {
 
   addTurnFooter(text: string, _group: number): void {
     this.finalizeStreaming();
+    this.addGap("turn_footer");
     this.addChild(new TurnFooterComponent(text));
+    this.addChild(new Spacer(1));
     this.lastRole = "turn_footer";
     this.requestRender();
   }
