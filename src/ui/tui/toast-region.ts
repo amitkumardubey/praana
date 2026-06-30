@@ -86,7 +86,7 @@ export class ToastRegion implements Component {
             : t.tone === "success"
               ? chalk.hex(PALETTE.success)
               : chalk.hex(PALETTE.info);
-      return ` ${color(glyph)} ${t.message}`;
+      return `  ${color(glyph)} ${t.message}`;
     });
   }
 }

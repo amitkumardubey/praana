@@ -16,16 +16,20 @@ export class UserMessageComponent implements Component {
 
   render(width: number): string[] {
     const lines = wrapContent(
-      `› ${this.text}`,
+      ` › ${this.text}`,
       width,
       (s) => chalk.hex(PALETTE.user)(s),
     );
-    return lines.map((line) => {
-      // Always paint the neutral-gray bg — no zone-system indirection.
-      const truncated = truncateToWidth(line, width, "…", false);
-      const actual = visibleWidth(truncated);
-      const padding = " ".repeat(Math.max(0, width - actual));
-      return chalk.bgHex(PALETTE.userBg)(truncated + padding);
-    });
+    const blankLine = chalk.bgHex(PALETTE.userBg)(" ".repeat(width));
+    return [
+      blankLine,
+      ...lines.map((line) => {
+        const truncated = truncateToWidth(line, width, "…", false);
+        const actual = visibleWidth(truncated);
+        const padding = " ".repeat(Math.max(0, width - actual));
+        return chalk.bgHex(PALETTE.userBg)(truncated + padding);
+      }),
+      blankLine,
+    ];
   }
 }

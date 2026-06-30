@@ -45,7 +45,7 @@ export class GlanceBar implements Component {
         })
       : chalk.dim("initializing…");
     const painted = paintZoneLine(
-      truncateToWidth(line, width, "…"),
+      truncateToWidth(" " + line, width, "…"),
       "chrome",
       this.backgroundZones,
       width,

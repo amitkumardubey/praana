@@ -45,28 +45,29 @@ export class ToolRowComponent implements Component {
     const { state } = this;
     const bg = false;
     const bar = accentBar("tool");
-    const indent = "   ";
+    const indent = "    ";
     const icon = chalk.hex(PALETTE.tool)(state.toolIcon);
     const label = chalk.hex(PALETTE.tool)(state.toolLabel);
     const lines: string[] = [];
 
     if (state.resultSummary === undefined) {
-      const row = `${bar} ${icon}  ${label}  ${chalk.dim(state.toolPending)}`;
+      const row = `${bar}  ${icon}  ${label}  ${chalk.dim(state.toolPending)}`;
       lines.push(paintZoneLine(row, "raised", bg, width));
-      return lines;
+      const blank = paintZoneLine("", "raised", bg, width);
+      return [blank, ...lines, blank];
     }
 
     const summaryStyle = state.isError
       ? chalk.hex(PALETTE.error)
       : chalk.hex(PALETTE.success);
-    const row = `${bar} ${icon}  ${label}  ${summaryStyle(state.resultSummary)}`;
+    const row = `${bar}  ${icon}  ${label}  ${summaryStyle(state.resultSummary)}`;
     lines.push(paintZoneLine(row, "raised", bg, width));
 
     if (
       state.resultBody &&
       (state.isError || state.toolName === "shell")
     ) {
-      const bodyWidth = Math.max(10, width - 6);
+      const bodyWidth = Math.max(10, width - 7);
       const rawLines = state.resultBody.split("\n");
       const shown = rawLines.slice(0, BODY_PREVIEW_LINES);
       for (const l of shown) {
@@ -82,6 +83,7 @@ export class ToolRowComponent implements Component {
       }
     }
 
-    return lines;
+    const blank = paintZoneLine("", "raised", bg, width);
+    return [blank, ...lines, blank];
   }
 }

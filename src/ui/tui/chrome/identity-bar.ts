@@ -27,7 +27,7 @@ export class IdentityBar implements Component {
       ? formatTuiIdentityLine(this.input)
       : "praana";
     const painted = paintZoneLine(
-      truncateToWidth(line, width, "…"),
+      truncateToWidth(" " + line, width, "…"),
       "chrome" satisfies ZoneKind,
       this.backgroundZones,
       width,

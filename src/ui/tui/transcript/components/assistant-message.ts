@@ -29,7 +29,8 @@ export class AssistantMessageComponent implements Component {
   invalidate(): void {}
 
   render(width: number): string[] {
-    const contentWidth = Math.max(10, width - 4);
+    const PAD = "  ";
+    const contentWidth = Math.max(10, width - 4 - PAD.length);
     let lines: string[];
     if (this.opts.markdownRendering) {
       const md = new Markdown(this.text, 0, 0, this.markdownTheme, {
@@ -37,8 +38,8 @@ export class AssistantMessageComponent implements Component {
       });
       lines = md.render(contentWidth);
     } else {
-      lines = wrapContent(this.text, width, (s) => chalk.hex(PALETTE.text)(s));
+      lines = wrapContent(this.text, width - PAD.length, (s) => chalk.hex(PALETTE.text)(s));
     }
-    return lines;
+    return ["", ...lines.map((l) => PAD + l), ""];
   }
 }

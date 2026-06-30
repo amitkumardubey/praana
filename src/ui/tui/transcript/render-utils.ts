@@ -25,11 +25,13 @@ export function renderAccentLines(
   width: number,
 ): string[] {
   const bar = accentBar(role);
-  const indent = "  ";
-  return lines.map((line, i) => {
-    const row = (i === 0 ? `${bar} ` : indent) + line;
+  const indent = "   ";
+  const blank = paintZoneLine("", zone, backgroundZones, width);
+  const painted = lines.map((line, i) => {
+    const row = (i === 0 ? `${bar}  ` : indent) + line;
     return paintZoneLine(row, zone, backgroundZones, width);
   });
+  return [blank, ...painted, blank];
 }
 
 export function wrapContent(
