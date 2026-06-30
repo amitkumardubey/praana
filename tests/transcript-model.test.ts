@@ -125,4 +125,24 @@ describe("buildTranscriptFromEvents", () => {
       { id: "ui-footer-1", role: "turn_footer", group: 1, text: "1.0s · ctx 1%→2%" },
     ]);
   });
+
+  it("uses persisted ui transcript entries as authoritative when mixed with semantic events", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("ui_transcript", {
+        type: "entry",
+        entry: { id: "ui-user-1", role: "user", group: 1, text: "hi" },
+      }),
+      ev("user_message", { text: "hi" }),
+      ev("agent_message", { text: "legacy answer" }),
+      ev("ui_transcript", {
+        type: "entry",
+        entry: { id: "ui-assistant-1", role: "assistant", group: 1, text: "projected answer" },
+      }),
+    ]);
+
+    expect(entries).toEqual([
+      { id: "ui-user-1", role: "user", group: 1, text: "hi" },
+      { id: "ui-assistant-1", role: "assistant", group: 1, text: "projected answer" },
+    ]);
+  });
 });

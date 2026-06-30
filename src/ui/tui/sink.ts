@@ -238,13 +238,13 @@ export class PiTuiSink implements TurnUiSink {
       ctxAfterPct,
       model,
     });
+    this.finalizeStreams();
     this.applyTranscriptEvent({
       type: "turn_footer",
       id: this.nextId("footer"),
       group: this.group,
       text,
     });
-    this.finalizeStreams();
   }
 
   private nextId(prefix: string): string {

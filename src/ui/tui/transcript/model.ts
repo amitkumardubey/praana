@@ -1,6 +1,6 @@
 /**
  * Transcript entry model — used only for resume bootstrap (`buildTranscriptFromEvents`).
- * Live sessions mutate `TranscriptContainer` children directly.
+ * Live sessions flow through `TranscriptProjection`; the container renders entries.
  */
 import type { Event } from "../../../types.js";
 import { formatToolResultRawText } from "../../../tool-summary.js";
@@ -104,6 +104,12 @@ export function buildTranscriptFromEvents(
   events: Event[],
   opts?: { useUnicode?: boolean },
 ): TranscriptEntry[] {
+  const persistedEntries = events.flatMap((ev) => {
+    if (ev.kind !== "ui_transcript") return [];
+    return isPersistedTuiTranscriptPayload(ev.payload) ? [ev.payload.entry] : [];
+  });
+  if (persistedEntries.length > 0) return persistedEntries;
+
   const projection = new TranscriptProjection({ useUnicode: opts?.useUnicode ?? true });
   let groupCounter = 0;
   let userFallbackId = 1;
@@ -142,13 +148,6 @@ export function buildTranscriptFromEvents(
 
   for (const ev of events) {
     switch (ev.kind) {
-      case "ui_transcript": {
-        if (isPersistedTuiTranscriptPayload(ev.payload)) {
-          const current = projection.entries();
-          projection.load([...current, ev.payload.entry]);
-        }
-        break;
-      }
       case "user_message": {
         groupCounter++;
         const text = String(ev.payload.text ?? "").trim();

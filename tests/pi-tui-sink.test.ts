@@ -59,4 +59,18 @@ describe("PiTuiSink", () => {
     ]);
     expect(persistEntry).toHaveBeenCalled();
   });
+
+  it("persists streaming assistant text before the footer when no tools run", () => {
+    const { sink, persistEntry } = makeSink();
+    sink.nextGroup();
+    sink.appendUser("hello");
+    sink.onTextDelta("hi");
+    sink.appendTurnFooter(1000);
+
+    expect(persistEntry.mock.calls.map((call) => call[0]?.role)).toEqual([
+      "user",
+      "assistant",
+      "turn_footer",
+    ]);
+  });
 });
