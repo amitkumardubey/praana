@@ -1,20 +1,17 @@
 import { resolve } from "node:path";
 import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
-import type { UiMode } from "./types.js";
 import { Session, type SessionEndStatus } from "./session.js";
 import { runTurn } from "./turn.js";
 import { TurnController } from "./turn-control.js";
-import { buildStatusBarInput } from "./status-bar.js";
-import type { StatusBarInput } from "./status-bar.js";
+import { buildStatusBarInput, type StatusBarInput } from "./status-bar.js";
 import { executeSlashCommand, type SlashCommandResult } from "./slash-commands.js";
-import type { TurnUiSink } from "./ui-events.js";
-import { createDefaultTurnSink } from "./ui-events.js";
+import { createDefaultTurnSink, type TurnUiSink } from "./ui-events.js";
 import {
   formatRecentConversationLines,
   formatSessionBannerLines,
 } from "./app-banner.js";
-import { buildTranscriptFromEvents } from "./ui/tui/transcript-replay.js";
+import { buildTranscriptFromEvents, type TranscriptEntry } from "./ui/tui/transcript/model.js";
 
 export interface StartupInfo {
   session: Session;
@@ -23,7 +20,7 @@ export interface StartupInfo {
   bannerLines: string[];
   recentConversationLines: string[];
   /** Full transcript entries rebuilt from event log on resume (TUI). */
-  transcriptBootstrap: import("./ui/tui/reducer.js").TranscriptEntry[];
+  transcriptBootstrap: TranscriptEntry[];
   isResume: boolean;
 }
 
@@ -45,10 +42,9 @@ export class AppController {
     this.parsed = opts.parsed;
   }
 
-  async start(opts?: { uiMode?: UiMode }): Promise<StartupInfo> {
+  async start(): Promise<StartupInfo> {
     const { sessionId, resumeMode, debug } = this.parsed;
-    const captureNotice =
-      opts?.uiMode === "tui" ? (_line: string) => {} : undefined;
+    const captureNotice = (_line: string) => {};
 
     if (resumeMode && sessionId) {
       this.session = await Session.resume(sessionId, this.cwd, this.config, {

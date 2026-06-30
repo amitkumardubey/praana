@@ -7,9 +7,8 @@ import {
   stopSpinner,
 } from "./ui.js";
 import type { LogEntry } from "./logger.js";
-import type { computeMemoryStats } from "./turn.js";
-
-export type MemoryBannerStats = ReturnType<typeof computeMemoryStats>;
+import type { MemoryBannerStats } from "./turn.js";
+export type { MemoryBannerStats };
 
 /** UI sink for turn execution — replaces direct stdout/stderr writes when provided. */
 export interface TurnUiSink {

@@ -215,15 +215,20 @@ export interface SearchCodeConfig {
   rg_path?: string;
 }
 
-export type UiMode = "readline" | "tui";
-export type UiScreenMode = "preserve" | "alternate";
-
 export interface UiConfig {
-  mode: UiMode;
-  screen: UiScreenMode;
   markdown_rendering: boolean;
   syntax_highlighting: boolean;
   syntax_theme: string;
+  /** How recall/memory signals surface in the transcript. */
+  ambient: "inline" | "quiet";
+  /** Glyph set for tool rows. */
+  tool_icons: "unicode" | "ascii";
+  /** Elevation zones (OSC11 bg detection → per-role bg tinting). */
+  background_zones: boolean;
+  /** Show cumulative session token counts in the glance bar. */
+  show_cost: boolean;
+  /** Show the figlet boot banner. */
+  banner: boolean;
 }
 
 export type DistillerIntensity = "lite" | "full";

@@ -62,7 +62,7 @@ const baseConfig: PraanaConfig = {
   },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: "/tmp/praana-test" },
-  ui: { mode: "tui", screen: "preserve" },
+  ui: { markdown_rendering: true, syntax_highlighting: true, syntax_theme: "nord", ambient: "inline", tool_icons: "unicode", background_zones: true, show_cost: true, banner: true },
 };
 
 const baseParsed: CliArgs = {
@@ -72,8 +72,9 @@ const baseParsed: CliArgs = {
   incognito: false,
   configPath: undefined,
   showHelp: false,
-  uiMode: undefined,
-  screenMode: undefined,
+  force: false,
+  initMode: false,
+  memoryDedupeMode: false,
 };
 
 describe("AppController", () => {

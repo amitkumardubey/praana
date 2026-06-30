@@ -771,12 +771,7 @@ export function applyTierManagement(session: Session): void {
   }
 }
 
-export function computeMemoryStats(
-  session: Session,
-  autoHydrated: number,
-  promptTokens?: number,
-  outputTokens?: number
-): {
+export interface MemoryBannerStats {
   activeState: number;
   totalState: number;
   digestLen: number;
@@ -785,7 +780,14 @@ export function computeMemoryStats(
   autoHydrated: number;
   promptTokens: number;
   outputTokens: number;
-} {
+}
+
+export function computeMemoryStats(
+  session: Session,
+  autoHydrated: number,
+  promptTokens?: number,
+  outputTokens?: number
+): MemoryBannerStats {
   const memStats = session.getMemoryStats();
   const recentEvents = session.eventLog.readLast(50);
   let recallCalls = 0;
