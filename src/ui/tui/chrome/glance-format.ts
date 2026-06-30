@@ -6,7 +6,7 @@
 import chalk from "chalk";
 import type { StatusBarInput } from "../../../status-bar.js";
 import { formatModelStatusLabel } from "../../../status-bar.js";
-import { PALETTE } from "../theme.js";
+import { TUI_STYLE } from "../theme.js";
 
 export interface GlanceFormatOpts {
   showCost: boolean;
@@ -28,12 +28,12 @@ export function formatTuiGlanceLine(
 
   const ctxSeg =
     pct >= 90
-      ? chalk.hex(PALETTE.error)(`ctx ${pct}%`)
+      ? TUI_STYLE.error(`ctx ${pct}%`)
       : pct >= 70
-        ? chalk.hex(PALETTE.warning)(`ctx ${pct}%`)
+        ? TUI_STYLE.warning(`ctx ${pct}%`)
         : pct >= 50
           ? chalk.dim(`ctx ${pct}%`)
-          : chalk.hex(PALETTE.success)(`ctx ${pct}%`);
+          : TUI_STYLE.success(`ctx ${pct}%`);
 
   const parts: string[] = [ctxSeg];
 
@@ -43,7 +43,7 @@ export function formatTuiGlanceLine(
     if (active > 0) tiers.push(`${active}A`);
     if (soft > 0) tiers.push(`${soft}S`);
     if (hard > 0) tiers.push(`${hard}H`);
-    parts.push(chalk.hex(PALETTE.info)(`wm ${tiers.join("·")}`));
+    parts.push(TUI_STYLE.info(`wm ${tiers.join("·")}`));
   }
 
   const loadedCount = input.loadedSkills?.length ?? 0;
@@ -68,9 +68,9 @@ export function formatTuiGlanceLine(
   if (input.thinking) parts.push(chalk.dim("think"));
 
   if (input.incognito) {
-    parts.push(chalk.hex(PALETTE.memory)("incognito"));
+    parts.push(TUI_STYLE.memory("incognito"));
   } else if (input.memoryEnabled) {
-    parts.push(chalk.hex(PALETTE.success)("mem on"));
+    parts.push(TUI_STYLE.success("mem on"));
   } else {
     parts.push(chalk.dim("mem off"));
   }
@@ -89,8 +89,8 @@ export function formatTuiIdentityLine(input: StatusBarInput): string {
   const repoPart = input.branch ? `${repo} · ${input.branch}` : repo;
 
   return [
-    chalk.hex(PALETTE.memory)("praana"),
-    chalk.hex(PALETTE.assistant)(modelPart),
+    TUI_STYLE.heading("praana"),
+    modelPart,
     chalk.dim(repoPart),
   ].join(chalk.dim(" · "));
 }

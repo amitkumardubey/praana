@@ -1,6 +1,5 @@
 import { Markdown, type Component } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE } from "../../theme.js";
+import { TUI_STYLE } from "../../theme.js";
 import { buildMarkdownTheme } from "../markdown-theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
 import { wrapContent } from "../render-utils.js";
@@ -34,11 +33,11 @@ export class AssistantMessageComponent implements Component {
     let lines: string[];
     if (this.opts.markdownRendering) {
       const md = new Markdown(this.text, 0, 0, this.markdownTheme, {
-        color: chalk.hex(PALETTE.text),
+        color: TUI_STYLE.text,
       });
       lines = md.render(contentWidth);
     } else {
-      lines = wrapContent(this.text, width - PAD.length, (s) => chalk.hex(PALETTE.text)(s));
+      lines = wrapContent(this.text, width - PAD.length, TUI_STYLE.text);
     }
     return ["", ...lines.map((l) => PAD + l), ""];
   }

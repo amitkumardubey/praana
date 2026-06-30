@@ -1,20 +1,19 @@
 import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE, paintZoneLine, type ZoneKind } from "../theme.js";
+import { TUI_STYLE, paintZoneLine, type ZoneKind, type TextStyle } from "../theme.js";
 import type { TranscriptRole } from "./model.js";
 
-const ACCENT: Record<TranscriptRole, string> = {
-  user: PALETTE.user,
-  assistant: PALETTE.assistant,
-  thinking: PALETTE.thinking,
-  tool: PALETTE.tool,
-  recall: PALETTE.memory,
-  system: PALETTE.muted,
-  turn_footer: PALETTE.faint,
+const ACCENT: Record<TranscriptRole, TextStyle> = {
+  user: TUI_STYLE.user,
+  assistant: TUI_STYLE.assistant,
+  thinking: TUI_STYLE.thinking,
+  tool: TUI_STYLE.tool,
+  recall: TUI_STYLE.memory,
+  system: TUI_STYLE.muted,
+  turn_footer: TUI_STYLE.faint,
 };
 
 export function accentBar(role: TranscriptRole): string {
-  return chalk.hex(ACCENT[role])("▌");
+  return ACCENT[role]("▌");
 }
 
 export function renderAccentLines(
