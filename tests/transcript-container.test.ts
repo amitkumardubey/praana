@@ -3,8 +3,10 @@ import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import { UserMessageComponent } from "../src/ui/tui/transcript/components/user-message.js";
 import { AssistantMessageComponent } from "../src/ui/tui/transcript/components/assistant-message.js";
 import { ToolRowComponent } from "../src/ui/tui/transcript/components/tool-row.js";
+import { ThinkingMessageComponent } from "../src/ui/tui/transcript/components/thinking-message.js";
 import { TurnFooterComponent } from "../src/ui/tui/transcript/components/turn-footer.js";
 import { Spacer } from "@earendil-works/pi-tui";
+import stripAnsi from "strip-ansi";
 
 const defaultOpts = {
   markdownRendering: false,
@@ -93,5 +95,39 @@ describe("TranscriptContainer", () => {
     container.renderEntries([{ id: "x", role: "user", group: 1, text: "x" }]);
     container.clear();
     expect(container.children.length).toBe(0);
+  });
+
+  it("renders tool rows compactly without accent gutters or blank padding", () => {
+    const tool = new ToolRowComponent(
+      {
+        toolName: "read_file",
+        toolIcon: "◇",
+        toolLabel: "read src/turn.ts",
+        toolPending: "running…",
+        resultSummary: "60 lines",
+      },
+      defaultOpts,
+    );
+
+    const lines = tool.render(80).map(stripAnsi);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("◇ read src/turn.ts 60 lines");
+    expect(lines[0]).not.toContain("▌");
+  });
+
+  it("renders the full thinking text instead of only a preview", () => {
+    const text = [
+      "First I will inspect the input path and identify the relevant module.",
+      "Then I will compare the current rendering behavior with the expected behavior.",
+      "Finally I will implement the smallest fix and verify it with tests.",
+    ].join("\n");
+    const thinking = new ThinkingMessageComponent(text, defaultOpts);
+
+    const rendered = thinking.render(120).map(stripAnsi).join("\n");
+
+    expect(rendered).toContain("First I will inspect the input path");
+    expect(rendered).toContain("Then I will compare the current rendering behavior");
+    expect(rendered).toContain("Finally I will implement the smallest fix");
   });
 });
