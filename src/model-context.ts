@@ -1,4 +1,4 @@
-import { getModel, getProviders } from "@earendil-works/pi-ai";
+import { getModel, getProviders } from "@earendil-works/pi-ai/compat";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";

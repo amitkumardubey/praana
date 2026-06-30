@@ -17,14 +17,14 @@ export interface TurnUiSink {
   onTextDelta?(delta: string): void;
   onThinkingDelta?(delta: string): void;
   onToolCallsStart?(): void;
-  onToolCall?(toolName: string, args: Record<string, unknown>): void;
+  onToolCall?(toolCallId: string, toolName: string, args: Record<string, unknown>): void;
   /** Notify UI of the raw tool result text for rendering as a distinct block. */
-  onToolResult?(toolName: string, resultText: string, isError?: boolean): void;
+  onToolResult?(toolCallId: string, toolName: string, resultText: string, isError?: boolean): void;
   onDebug?(message: string): void;
   onDebugBlock?(
     stepIndex: number,
-    toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>,
-    toolResults: Array<{ toolName: string; result: unknown }>
+    toolCalls: Array<{ toolCallId?: string; toolName: string; args: Record<string, unknown> }>,
+    toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }>
   ): void;
   onMemoryBanner?(stats: MemoryBannerStats): void;
   onSpinnerStart?(text: string): void;
@@ -56,7 +56,7 @@ export function createDefaultTurnSink(options?: {
     },
     onThinkingDelta: (delta) => options?.onThinkingDelta?.(delta),
     onToolCallsStart: () => options?.onToolCallsStart?.(),
-    onToolCall: (toolName, args) => printToolCall(toolName, args),
+    onToolCall: (_toolCallId, toolName, args) => printToolCall(toolName, args),
     onToolResult: () => {
       /* terminal mode doesn't need a separate result block; it streams naturally */
     },

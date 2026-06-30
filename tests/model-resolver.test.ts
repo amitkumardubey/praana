@@ -8,6 +8,9 @@ import {
 } from "../src/model-resolver.js";
 import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
 
+const liveOnlyOpenRouterModelId = "praanafuture/model-never-in-static-catalog";
+const liveOnlyOpenCodeModelId = "praana-opencode-live-only-free";
+
 describe("formatActiveModelLabel", () => {
   it("returns model id unchanged when it already has the provider routing prefix", () => {
     expect(formatActiveModelLabel("openrouter", "openrouter/openai/gpt-4o")).toBe(
@@ -150,13 +153,12 @@ describe("resolveModelSpecifierSync", () => {
   });
 
   it("marks unknown vendor/model ids on current openrouter for async catalog lookup", () => {
-    const result = resolveModelSpecifierSync(
-      "moonshotai/kimi-k2.7-code",
-      "openrouter",
-    );
+    expect(catalogHasModel("openrouter", liveOnlyOpenRouterModelId)).toBe(false);
+
+    const result = resolveModelSpecifierSync(liveOnlyOpenRouterModelId, "openrouter");
     expect(result).toEqual({
       provider: "openrouter",
-      modelId: "moonshotai/kimi-k2.7-code",
+      modelId: liveOnlyOpenRouterModelId,
       switchedProvider: false,
       source: "model-only",
       known: false,
@@ -165,13 +167,13 @@ describe("resolveModelSpecifierSync", () => {
 
   it("routes explicit openrouter vendor/model without double prefix", () => {
     const result = resolveModelSpecifierSync(
-      "moonshotai/kimi-k2.7-code",
+      liveOnlyOpenRouterModelId,
       "anthropic",
       "openrouter",
     );
     expect(result).toEqual({
       provider: "openrouter",
-      modelId: "moonshotai/kimi-k2.7-code",
+      modelId: liveOnlyOpenRouterModelId,
       switchedProvider: true,
       source: "provider-fallback",
       known: false,
@@ -179,10 +181,15 @@ describe("resolveModelSpecifierSync", () => {
   });
 
   it("strips opencode routing prefix on current provider", () => {
-    const result = resolveModelSpecifierSync("opencode/mimo-v2.5-free", "opencode");
+    expect(catalogHasModel("opencode", liveOnlyOpenCodeModelId)).toBe(false);
+
+    const result = resolveModelSpecifierSync(
+      `opencode/${liveOnlyOpenCodeModelId}`,
+      "opencode",
+    );
     expect(result).toEqual({
       provider: "opencode",
-      modelId: "mimo-v2.5-free",
+      modelId: liveOnlyOpenCodeModelId,
       switchedProvider: false,
       source: "model-only",
       known: false,
@@ -223,17 +230,19 @@ describe("resolveModelSpecifier", () => {
       ok: true,
       json: async () => ({
         data: [
-          { id: "mimo-v2.5-free" },
+          { id: liveOnlyOpenCodeModelId },
           { id: "nemotron-3-ultra-free" },
           { id: "north-mini-code-free" },
         ],
       }),
     } as Response);
 
-    const result = await resolveModelSpecifier("mimo-v2.5-free", "opencode");
+    expect(catalogHasModel("opencode", liveOnlyOpenCodeModelId)).toBe(false);
+
+    const result = await resolveModelSpecifier(liveOnlyOpenCodeModelId, "opencode");
     expect(result).toEqual({
       provider: "opencode",
-      modelId: "mimo-v2.5-free",
+      modelId: liveOnlyOpenCodeModelId,
       switchedProvider: false,
       source: "provider-catalog",
       known: true,

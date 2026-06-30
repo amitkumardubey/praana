@@ -89,7 +89,10 @@ export function buildFullConversationHistory(events: Event[]): string {
 
   const lines: string[] = ["# Conversation History"];
   const filtered = events.filter(
-    (event) => event.kind !== "context_action" && event.kind !== "system_note",
+    (event) =>
+      event.kind !== "context_action" &&
+      event.kind !== "system_note" &&
+      event.kind !== "ui_transcript",
   );
 
   let lastToolName: string | undefined;

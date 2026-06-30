@@ -67,11 +67,62 @@ describe("buildTranscriptFromEvents", () => {
     expect(tool?.role === "tool" && tool.resultSummary).toBeTruthy();
   });
 
+  it("replays tool results by tool call id when available", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("tool_call", { toolCallId: "a", tool: "shell", args: { command: "first" } }),
+      ev("tool_call", { toolCallId: "b", tool: "shell", args: { command: "second" } }),
+      ev("tool_result", {
+        toolCallId: "b",
+        tool: "shell",
+        result: { ok: true, stdout: "second\n", stderr: "", exitCode: 0 },
+      }),
+      ev("tool_result", {
+        toolCallId: "a",
+        tool: "shell",
+        result: { ok: true, stdout: "first\n", stderr: "", exitCode: 0 },
+      }),
+    ]);
+
+    expect(entries[0]).toMatchObject({ id: "a", role: "tool", resultBody: "first" });
+    expect(entries[1]).toMatchObject({ id: "b", role: "tool", resultBody: "second" });
+  });
+
+  it("replays multiple legacy tool results without tool call ids", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("tool_call", { tool: "shell", args: { command: "first" } }),
+      ev("tool_call", { tool: "shell", args: { command: "second" } }),
+      ev("tool_result", {
+        tool: "shell",
+        result: { ok: true, stdout: "first\n", stderr: "", exitCode: 0 },
+      }),
+      ev("tool_result", {
+        tool: "shell",
+        result: { ok: true, stdout: "second\n", stderr: "", exitCode: 0 },
+      }),
+    ]);
+
+    expect(entries[0]).toMatchObject({ id: "replay-tool-1", role: "tool", resultBody: "first" });
+    expect(entries[1]).toMatchObject({ id: "replay-tool-2", role: "tool", resultBody: "second" });
+  });
+
   it("ignores unknown event kinds without throwing", () => {
     expect(() =>
       buildTranscriptFromEvents([
         ev("system_note" as Event["kind"], { type: "debug", message: "ignored" }),
       ])
     ).not.toThrow();
+  });
+
+  it("replays persisted ui transcript entries", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("ui_transcript", {
+        type: "entry",
+        entry: { id: "ui-footer-1", role: "turn_footer", group: 1, text: "1.0s · ctx 1%→2%" },
+      }),
+    ]);
+
+    expect(entries).toEqual([
+      { id: "ui-footer-1", role: "turn_footer", group: 1, text: "1.0s · ctx 1%→2%" },
+    ]);
   });
 });

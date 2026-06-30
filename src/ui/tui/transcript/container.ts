@@ -41,7 +41,7 @@ export class TranscriptContainer extends Container {
     this.tui = tui;
     this.opts = opts;
     if (bootstrap && bootstrap.length > 0) {
-      this.hydrateFromEntries(bootstrap);
+      this.renderEntries(bootstrap);
     }
   }
 
@@ -184,6 +184,16 @@ export class TranscriptContainer extends Container {
     this.requestRender();
   }
 
+  renderEntries(entries: TranscriptEntry[]): void {
+    super.clear();
+    this.streamingAssistant = null;
+    this.streamingThinking = null;
+    this.toolRows.length = 0;
+    this.lastRole = null;
+    this.hydrateFromEntries(entries);
+    this.requestRender();
+  }
+
   // ─── Resume bootstrap ────────────────────────────────────────────────────
 
   private hydrateFromEntries(entries: TranscriptEntry[]): void {
@@ -245,6 +255,7 @@ export class TranscriptContainer extends Container {
         break;
       case "turn_footer":
         this.addChild(new TurnFooterComponent(entry.text));
+        this.addChild(new Spacer(1));
         this.lastRole = "turn_footer";
         break;
     }

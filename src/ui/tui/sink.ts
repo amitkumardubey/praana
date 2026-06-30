@@ -88,7 +88,7 @@ export class PiTuiSink implements TurnUiSink {
     this.transcript.flushThinking();
   }
 
-  onToolCall(toolName: string, args: Record<string, unknown>): void {
+  onToolCall(_toolCallId: string, toolName: string, args: Record<string, unknown>): void {
     this.pendingToolArgs.set(toolName, args);
     if (toolName === "recall") {
       this.recallQuery = typeof args.query === "string" ? args.query : null;
@@ -96,7 +96,7 @@ export class PiTuiSink implements TurnUiSink {
     this.transcript.addToolRow(toolName, args, this.group);
   }
 
-  onToolResult(toolName: string, resultText: string, isError = false): void {
+  onToolResult(_toolCallId: string, toolName: string, resultText: string, isError = false): void {
     const args = this.pendingToolArgs.get(toolName);
     this.transcript.setToolResult(toolName, resultText, isError, args);
 

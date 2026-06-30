@@ -3,12 +3,9 @@
  * Live sessions mutate `TranscriptContainer` children directly.
  */
 import type { Event } from "../../../types.js";
-import {
-  formatToolDisplay,
-  formatShellOutputForDisplay,
-  summarizeResultForDisplay,
-} from "../tool-icons.js";
 import { formatToolResultRawText } from "../../../tool-summary.js";
+import { isPersistedTuiTranscriptPayload } from "./events.js";
+import { TranscriptProjection } from "./projection.js";
 
 // ─── Entry types ───────────────────────────────────────────────────────────
 
@@ -107,79 +104,118 @@ export function buildTranscriptFromEvents(
   events: Event[],
   opts?: { useUnicode?: boolean },
 ): TranscriptEntry[] {
-  const useUnicode = opts?.useUnicode ?? true;
-  const entries: TranscriptEntry[] = [];
-  let nextId = 1;
+  const projection = new TranscriptProjection({ useUnicode: opts?.useUnicode ?? true });
   let groupCounter = 0;
+  let userFallbackId = 1;
+  let assistantFallbackId = 1;
+  let toolFallbackId = 1;
+  let toolResultFallbackId = 1;
+  const pendingLegacyToolCallIds: string[] = [];
 
-  const push = (entry: UserEntry | AssistantEntry | ThinkingEntry | ToolEntry | RecallEntry | SystemEntry | TurnFooterEntry) => {
-    entries.push(entry);
+  const nextFallbackId = (kind: "user" | "assistant" | "tool" | "tool-result") => {
+    switch (kind) {
+      case "user":
+        return `replay-user-${userFallbackId++}`;
+      case "assistant":
+        return `replay-assistant-${assistantFallbackId++}`;
+      case "tool":
+        return `replay-tool-${toolFallbackId++}`;
+      case "tool-result":
+        return `replay-tool-result-${toolResultFallbackId++}`;
+    }
   };
-  let entryId = 1;
-  const nextEntry = <T extends TranscriptEntry>(partial: Omit<T, "id" | "group">) =>
-    ({ ...partial, id: `replay-${entryId++}`, group: groupCounter } as T);
+
+  const getToolCallId = (payload: Record<string, unknown>, kind: "tool" | "tool-result") => {
+    const toolCallId = payload.toolCallId;
+    if (typeof toolCallId === "string" && toolCallId) return toolCallId;
+    if (kind === "tool") {
+      const fallback = nextFallbackId(kind);
+      pendingLegacyToolCallIds.push(fallback);
+      return fallback;
+    }
+    if (kind === "tool-result") {
+      const pending = pendingLegacyToolCallIds.shift();
+      if (pending) return pending;
+    }
+    return nextFallbackId(kind);
+  };
 
   for (const ev of events) {
     switch (ev.kind) {
+      case "ui_transcript": {
+        if (isPersistedTuiTranscriptPayload(ev.payload)) {
+          const current = projection.entries();
+          projection.load([...current, ev.payload.entry]);
+        }
+        break;
+      }
       case "user_message": {
         groupCounter++;
         const text = String(ev.payload.text ?? "").trim();
-        if (text) push(nextEntry<UserEntry>({ role: "user", text }));
+        if (text) {
+          const payload = ev.payload as Record<string, unknown>;
+          projection.apply({
+            type: "user_submitted",
+            id: typeof payload.transcriptId === "string" && payload.transcriptId ? payload.transcriptId : nextFallbackId("user"),
+            group: groupCounter,
+            text,
+          });
+        }
         break;
       }
       case "tool_call": {
-        const toolName = String(ev.payload.tool ?? "tool");
-        const args = (ev.payload.args !== null &&
-          typeof ev.payload.args === "object" &&
-          !Array.isArray(ev.payload.args))
-          ? (ev.payload.args as Record<string, unknown>)
+        const payload = ev.payload as Record<string, unknown>;
+        const toolName = String(payload.tool ?? "tool");
+        const args = payload.args !== null && typeof payload.args === "object" && !Array.isArray(payload.args)
+          ? (payload.args as Record<string, unknown>)
           : {};
-        const display = formatToolDisplay(toolName, args, { useUnicode });
-        push(nextEntry<ToolEntry>({
-          role: "tool",
+        const id = getToolCallId(payload, "tool");
+        projection.apply({
+          type: "tool_call_started",
+          id,
+          group: groupCounter,
           toolName,
-          toolIcon: display.icon,
-          toolLabel: display.label,
-          toolPending: display.pending,
-        }));
+          args,
+        });
         break;
       }
       case "tool_result": {
-        const toolName = String(ev.payload.tool ?? "tool");
-        const raw = formatToolResultRawText(ev.payload.result);
-        const shellDisplay =
-          toolName === "shell" ? formatShellOutputForDisplay(raw) : null;
-        const summary = shellDisplay?.summary ?? summarizeResultForDisplay(raw);
-
-        const result = ev.payload.result;
+        const payload = ev.payload as Record<string, unknown>;
+        const toolName = String(payload.tool ?? "tool");
+        const result = payload.result;
         const isError =
           result !== null &&
           typeof result === "object" &&
           "ok" in result &&
-          result.ok === false;
+          (result as { ok?: unknown }).ok === false;
+        const id = getToolCallId(payload, "tool-result");
 
-        for (let i = entries.length - 1; i >= 0; i--) {
-          const entry = entries[i];
-          if (
-            entry?.role === "tool" &&
-            entry.toolName === toolName &&
-            entry.resultSummary === undefined
-          ) {
-            entries[i] = {
-              ...entry,
-              resultSummary: summary,
-              resultText: raw,
-              resultBody: shellDisplay?.body ?? undefined,
-              isError: isError || (shellDisplay?.isError ?? false),
-            };
-            break;
-          }
-        }
+        projection.apply({
+          type: "tool_call_finished",
+          id,
+          group: groupCounter,
+          toolName,
+          resultText: formatToolResultRawText(result),
+          isError,
+        });
         break;
       }
       case "agent_message": {
         const text = String(ev.payload.text ?? "").trim();
-        if (text) push(nextEntry<AssistantEntry>({ role: "assistant", text }));
+        if (text) {
+          const payload = ev.payload as Record<string, unknown>;
+          const id =
+            typeof payload.transcriptId === "string" && payload.transcriptId
+              ? payload.transcriptId
+              : nextFallbackId("assistant");
+          projection.apply({
+            type: "assistant_delta",
+            id,
+            group: groupCounter,
+            delta: text,
+          });
+          projection.apply({ type: "streams_finalized", group: groupCounter });
+        }
         break;
       }
       default:
@@ -187,5 +223,5 @@ export function buildTranscriptFromEvents(
     }
   }
 
-  return entries;
+  return projection.entries();
 }

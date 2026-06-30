@@ -356,6 +356,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
               "agent_message",
               "tool_call",
               "tool_result",
+              "ui_transcript",
               "context_action",
               "system_note",
             ])

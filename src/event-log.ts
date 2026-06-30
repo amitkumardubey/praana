@@ -300,6 +300,8 @@ function eventSearchText(event: Event): string {
       return `${String(p.tool ?? "")} ${JSON.stringify(p.args ?? {})}`;
     case "tool_result":
       return `${String(p.tool ?? "")} ${JSON.stringify(p.result ?? {})}`;
+    case "ui_transcript":
+      return JSON.stringify(p.entry ?? p);
     case "context_action":
       return JSON.stringify(p);
     case "system_note":

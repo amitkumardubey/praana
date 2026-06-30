@@ -1,4 +1,4 @@
-import { stream as piStream, type Message } from "@earendil-works/pi-ai";
+import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -419,7 +419,7 @@ export async function runTurn(
       s.onSystemLines?.([limitBanner]);
     }
 
-    const toolResults: Array<{ toolName: string; result: unknown }> = [];
+    const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
     const recalledEntryIdsThisTurn = new Set<string>();
 
 
@@ -435,7 +435,7 @@ export async function runTurn(
       session.eventLog.append({
         kind: "tool_call",
         actor: "tool",
-        payload: { tool: tc.toolName, args: tc.args },
+        payload: { toolCallId: tc.toolCallId, tool: tc.toolName, args: tc.args },
       });
 
       if (!session.debug) s.onSpinnerStart?.(tc.toolName);
@@ -479,10 +479,10 @@ export async function runTurn(
 
       if (!session.debug) {
         s.onSpinnerStop?.();
-        s.onToolCall?.(tc.toolName, tc.args);
+        s.onToolCall?.(tc.toolCallId, tc.toolName, tc.args);
       }
 
-      toolResults.push({ toolName: tc.toolName, result });
+      toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });
 
       let promptResultText = toolResultRawText(result);
       let artifactId: string | undefined;
@@ -517,14 +517,14 @@ export async function runTurn(
       session.eventLog.append({
         kind: "tool_result",
         actor: "tool",
-        payload: { tool: tc.toolName, result },
+        payload: { toolCallId: tc.toolCallId, tool: tc.toolName, result },
       });
 
       // Notify UI sink of tool result for distinct rendering (e.g. TUI).
       // Shell uses raw result so TUI shows stdout/stderr even when context engine artifacts.
       const uiResultText =
         tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
-      s.onToolResult?.(tc.toolName, uiResultText, isError);
+      s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
 
       if (options?.signal?.aborted) {
         interrupted = true;

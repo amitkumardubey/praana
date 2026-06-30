@@ -52,6 +52,7 @@ export type EventKind =
   | "tool_call"
   | "tool_result"
   | "context_action"
+  | "ui_transcript"
   | "system_note";
 
 export type EventActor = "user" | "agent" | "kernel" | "tool";
