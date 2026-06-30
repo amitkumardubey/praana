@@ -142,19 +142,28 @@ export class AppController {
       spinnerStopped = true;
     };
 
+    // Do NOT use `{ ...uiSink }` — uiSink may be a class instance (PiTuiSink)
+    // whose methods live on the prototype, not as own properties, so spread
+    // silently drops onToolCall, onToolResult, onMemoryBanner, onError, etc.
+    // Build an explicit delegate that forwards every TurnUiSink member.
     const wrappedSink: TurnUiSink = {
-      ...uiSink,
-      onTextDelta: (delta) => {
-        stopSpinnerOnce();
-        uiSink.onTextDelta?.(delta);
-      },
-      onThinkingDelta: (delta) => {
-        stopSpinnerOnce();
-        uiSink.onThinkingDelta?.(delta);
-      },
-      onToolCallsStart: () => {
-        uiSink.onToolCallsStart?.();
-      },
+      shellLiveStream: uiSink.shellLiveStream,
+      onTextDelta: (delta) => { stopSpinnerOnce(); uiSink.onTextDelta?.(delta); },
+      onThinkingDelta: (delta) => { stopSpinnerOnce(); uiSink.onThinkingDelta?.(delta); },
+      onToolCallsStart: () => uiSink.onToolCallsStart?.(),
+      onToolCall: (name, args) => uiSink.onToolCall?.(name, args),
+      onToolResult: (name, text, isError) => uiSink.onToolResult?.(name, text, isError),
+      onDebug: (msg) => uiSink.onDebug?.(msg),
+      onDebugBlock: (step, calls, results) => uiSink.onDebugBlock?.(step, calls, results),
+      onMemoryBanner: (stats) => uiSink.onMemoryBanner?.(stats),
+      onSpinnerStart: (text) => uiSink.onSpinnerStart?.(text),
+      onSpinnerStop: () => uiSink.onSpinnerStop?.(),
+      onNewline: () => uiSink.onNewline?.(),
+      onFallback: (text) => uiSink.onFallback?.(text),
+      onSystemLines: (lines) => uiSink.onSystemLines?.(lines),
+      onError: (entry) => uiSink.onError?.(entry),
+      flushText: () => uiSink.flushText?.(),
+      consumeTurnStats: () => uiSink.consumeTurnStats?.() ?? null,
     };
 
     try {

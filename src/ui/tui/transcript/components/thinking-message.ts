@@ -1,6 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE } from "../../theme.js";
+import { TUI_STYLE } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
 import { renderAccentLines, wrapContent } from "../render-utils.js";
 
@@ -27,7 +26,7 @@ export class ThinkingMessageComponent implements Component {
     const lines = wrapContent(
       header,
       width,
-      (s) => chalk.dim.italic.hex(PALETTE.thinking)(s),
+      TUI_STYLE.thinking,
     );
     return renderAccentLines(
       lines,

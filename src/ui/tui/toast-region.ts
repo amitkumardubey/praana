@@ -10,8 +10,7 @@
  */
 import type { Component } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE } from "./theme.js";
+import { TUI_STYLE } from "./theme.js";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
 
@@ -80,12 +79,12 @@ export class ToastRegion implements Component {
       const glyph = TONE_GLYPH[t.tone];
       const color =
         t.tone === "error"
-          ? chalk.hex(PALETTE.error)
+          ? TUI_STYLE.error
           : t.tone === "warn"
-            ? chalk.hex(PALETTE.warning)
+            ? TUI_STYLE.warning
             : t.tone === "success"
-              ? chalk.hex(PALETTE.success)
-              : chalk.hex(PALETTE.info);
+              ? TUI_STYLE.success
+              : TUI_STYLE.info;
       return `  ${color(glyph)} ${t.message}`;
     });
   }

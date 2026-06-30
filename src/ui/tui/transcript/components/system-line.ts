@@ -1,6 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE } from "../../theme.js";
+import { TUI_STYLE } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
 import { renderAccentLines, wrapContent } from "../render-utils.js";
 
@@ -8,19 +7,19 @@ import { renderAccentLines, wrapContent } from "../render-utils.js";
 function detectIcon(text: string): { icon: string; color: (s: string) => string } {
   const t = text.toLowerCase();
   if (/^(error|\[error\]|\u2715|fail|exception|crash)/.test(t) || /\berror\b/.test(t)) {
-    return { icon: "\u2715 ", color: (s) => chalk.hex(PALETTE.error)(s) };
+    return { icon: "\u2715 ", color: TUI_STYLE.error };
   }
   if (/^(warn|\[warn\]|warning|\u25b2)/.test(t)) {
-    return { icon: "\u25b2 ", color: (s) => chalk.hex(PALETTE.warning)(s) };
+    return { icon: "\u25b2 ", color: TUI_STYLE.warning };
   }
   if (/^(\u2713|ok |done|success|saved|completed|resumed)/.test(t)) {
-    return { icon: "\u2713 ", color: (s) => chalk.hex(PALETTE.success)(s) };
+    return { icon: "\u2713 ", color: TUI_STYLE.success };
   }
   if (/^(\u26a1|aborted|interrupted)/.test(t)) {
-    return { icon: "\u26a1 ", color: (s) => chalk.hex(PALETTE.warning)(s) };
+    return { icon: "\u26a1 ", color: TUI_STYLE.warning };
   }
   // default: neutral info bullet
-  return { icon: "\xb7 ", color: (s) => chalk.hex(PALETTE.system)(s) };
+  return { icon: "\xb7 ", color: TUI_STYLE.system };
 }
 
 /** Slash-command output and system notices. */

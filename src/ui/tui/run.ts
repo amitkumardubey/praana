@@ -20,7 +20,7 @@ import {
   formatSessionEndSummary,
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./boot-summary.js";
-import { PALETTE, NORD_COLORS } from "./theme.js";
+import { TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
@@ -115,20 +115,20 @@ export async function runTui(
 
   const spinner = new Loader(
     tui,
-    (s) => chalk.hex(PALETTE.assistant)(s),
-    (s) => chalk.hex(PALETTE.muted)(s),
+    TUI_STYLE.assistant,
+    TUI_STYLE.muted,
     "thinking…",
     { frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], intervalMs: 80 },
   );
 
   const editorTheme = {
-    borderColor: chalk.hex(PALETTE.border),
+    borderColor: TUI_STYLE.border,
     selectList: {
-      selectedPrefix: (s: string) => chalk.hex(PALETTE.assistant)(s),
+      selectedPrefix: TUI_STYLE.assistant,
       selectedText: (s: string) => chalk.bold(s),
-      description: (s: string) => chalk.hex(PALETTE.muted)(s),
-      scrollInfo: (s: string) => chalk.hex(PALETTE.faint)(s),
-      noMatch: (s: string) => chalk.hex(PALETTE.muted)(s),
+      description: TUI_STYLE.muted,
+      scrollInfo: TUI_STYLE.faint,
+      noMatch: TUI_STYLE.muted,
     },
   };
   const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
@@ -285,11 +285,7 @@ export async function runTui(
     const shortId = session.id.slice(0, 4);
 
     console.log("");
-    console.log(
-      chalk.hex(NORD_COLORS.nord15)(
-        " ◆ consolidation — what this session taught praana",
-      ),
-    );
+    console.log(TUI_STYLE.memory(" ◆ consolidation — what this session taught praana"));
     console.log("");
 
     const outcomeParts: string[] = [];
