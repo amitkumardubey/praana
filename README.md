@@ -16,7 +16,7 @@ PRAANA takes a different approach. A deterministic compiler curates what the mod
 
 Runs on Bun. One binary, pure TypeScript, local-first, any provider.
 
-> **Status:** v0.9.0 <!-- x-release-please-version --> — experimental. The context engine and memory are ideas we're proving in real use, not solved problems. We publish [known limitations](#known-limitations-honest) and make no benchmark claims we can't back.
+> **Status:** v0.10.0 <!-- x-release-please-version --> — experimental. The context engine and memory are ideas we're proving in real use, not solved problems. We publish [known limitations](#known-limitations-honest) and make no benchmark claims we can't back.
 
 > **How it was built:** vibecoded — written by coding agents with human direction and review, not hand-coded line by line.
 
