@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { parseCliArgs, resolveUiMode, resolveScreenMode } from "../src/cli-args.js";
+import { parseCliArgs } from "../src/cli-args.js";
 
 describe("parseCliArgs", () => {
   it("parses help flag", () => {
@@ -29,19 +29,14 @@ describe("parseCliArgs", () => {
     expect(parsed.sessionId).toBe("01ABC");
   });
 
-  it("parses ui and screen flags", () => {
-    const parsed = parseCliArgs(["--ui", "tui", "--screen", "alternate"]);
-    expect(parsed.uiMode).toBe("tui");
-    expect(parsed.screenMode).toBe("alternate");
+  it("ignores unknown flags gracefully", () => {
+    const parsed = parseCliArgs(["--unknown-flag", "value"]);
+    expect(parsed.showHelp).toBe(false);
+    expect(parsed.debug).toBe(false);
   });
 
-  it("falls back to readline when tui is not interactive", () => {
-    expect(resolveUiMode("tui", undefined, false)).toBe("readline");
-    expect(resolveUiMode("tui", undefined, true)).toBe("tui");
-  });
-
-  it("resolves screen mode with CLI override", () => {
-    expect(resolveScreenMode("preserve", "alternate")).toBe("alternate");
-    expect(resolveScreenMode("preserve", undefined)).toBe("preserve");
+  it("parses force flag", () => {
+    expect(parseCliArgs(["--force"]).force).toBe(true);
+    expect(parseCliArgs(["-f"]).force).toBe(true);
   });
 });

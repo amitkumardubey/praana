@@ -402,7 +402,10 @@ function buildRecentTurnsWithTruncationFlag(events: Event[], tokenBudget?: numbe
 
   const lines: string[] = ["# Recent Turns"];
   const filtered = events.filter(
-    (e) => e.kind !== "context_action" && e.kind !== "system_note"
+    (e) =>
+      e.kind !== "context_action" &&
+      e.kind !== "system_note" &&
+      e.kind !== "ui_transcript"
   );
 
   let lastToolName: string | undefined;

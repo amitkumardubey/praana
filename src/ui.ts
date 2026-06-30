@@ -13,7 +13,6 @@
 import chalk from "chalk";
 import ora, { type Ora } from "ora";
 import boxen, { type Options as BoxenOptions } from "boxen";
-import { renderMarkdown } from "./render.js";
 import { summarizeArgs, summarizeResult } from "./tool-summary.js";
 type UiWriters = {
   stderr: (line: string) => void;
@@ -105,15 +104,6 @@ export function printBox(
   stderr(boxen(content, opts) + "\n");
 }
 
-/**
- * Render Markdown text to terminal (writes to stderr).
- */
-export function printMarkdown(text: string): void {
-  if (!text) return;
-  const rendered = renderMarkdown(text);
-  stderr(rendered);
-  if (!rendered.endsWith("\n")) stderr("\n");
-}
 
 /** Compact tool indicator — shown in normal mode. */
 export function printToolCall(toolName: string, args: Record<string, unknown>): void {

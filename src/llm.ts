@@ -1,4 +1,4 @@
-import { getModel, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai";
+import { getModel, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import type { PraanaConfig } from "./types.js";
 import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";

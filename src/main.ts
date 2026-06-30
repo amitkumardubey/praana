@@ -1,16 +1,11 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getMissingKeyMessage, listAvailableProviders, listKnownProviders } from "./llm.js";
+import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig } from "./config.js";
 import { getAppLogger, initAppLogFile } from "./logger.js";
-import {
-  parseCliArgs,
-  resolveUiMode,
-  resolveScreenMode,
-} from "./cli-args.js";
+import { parseCliArgs } from "./cli-args.js";
 import { printHelp } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
-import { runReadlineUi } from "./ui/readline-ui.js";
 import { runTui } from "./ui/tui/run.js";
 import { handleInit } from "./init.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
@@ -50,33 +45,28 @@ export async function main() {
     }
   }
 
+  const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
+
   // ── Provider validation ────────────────────────────────────
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
-    const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
-
     if (isInteractive) {
-      // Interactive: run guided setup
       const setupResult = await runInteractiveSetup(cwd);
       if (!setupResult.success) {
         getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
         process.exit(1);
       }
-      // After setup, try to reload config
       const newConfig = loadConfig(parsed.configPath);
       const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
       if (newKeyError) {
-        // Still no key — show instructions and exit
         console.error("");
         console.error("Key still not detected. Please set the environment variable and restart.");
         console.error("");
         getAppLogger().error(newKeyError, { code: "SESSION_START_FAILED" });
         process.exit(1);
       }
-      // Success — continue with new config
       Object.assign(config, newConfig);
     } else {
-      // Non-interactive: clean scannable message, no traceback
       console.error("PRAANA needs a model provider to run — no API key found.");
       console.error("");
       console.error("Fastest options:");
@@ -89,20 +79,17 @@ export async function main() {
     }
   }
 
-  const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
-  const uiMode = resolveUiMode(config.ui.mode, parsed.uiMode, isInteractive);
-  const screenMode = resolveScreenMode(config.ui.screen, parsed.screenMode);
+  // ── TTY guard ──────────────────────────────────────────────
+  if (!isInteractive) {
+    process.stderr.write("praana requires an interactive terminal (TTY)\n");
+    process.exit(1);
+  }
 
   const controller = new AppController({ cwd, config, parsed });
 
   try {
-    const info = await controller.start({ uiMode });
-
-    if (uiMode === "tui") {
-      await runTui(controller, info, screenMode);
-    } else {
-      await runReadlineUi(controller, info);
-    }
+    const info = await controller.start();
+    await runTui(controller, info);
   } catch (err) {
     getAppLogger().error("Failed to start session", {
       code: "SESSION_START_FAILED",

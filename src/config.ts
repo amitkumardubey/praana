@@ -81,11 +81,14 @@ const DEFAULT_CONFIG: PraanaConfig = {
     max_depth: 6,
   },
   ui: {
-    mode: "tui",
-    screen: "preserve",
     markdown_rendering: true,
     syntax_highlighting: true,
     syntax_theme: "nord",
+    ambient: "inline" as const,
+    tool_icons: "unicode" as const,
+    background_zones: false,
+    show_cost: true,
+    banner: true,
   },
   context_engine: {
     enabled: true,
@@ -513,6 +516,21 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
         // If any error occurs, default back safely
         out.ui.syntax_theme = DEFAULT_CONFIG.ui.syntax_theme;
       }
+    }
+    if (out.ui.ambient !== "inline" && out.ui.ambient !== "quiet") {
+      out.ui.ambient = DEFAULT_CONFIG.ui.ambient;
+    }
+    if (out.ui.tool_icons !== "unicode" && out.ui.tool_icons !== "ascii") {
+      out.ui.tool_icons = DEFAULT_CONFIG.ui.tool_icons;
+    }
+    if (typeof out.ui.background_zones !== "boolean") {
+      out.ui.background_zones = DEFAULT_CONFIG.ui.background_zones;
+    }
+    if (typeof out.ui.show_cost !== "boolean") {
+      out.ui.show_cost = DEFAULT_CONFIG.ui.show_cost;
+    }
+    if (typeof out.ui.banner !== "boolean") {
+      out.ui.banner = DEFAULT_CONFIG.ui.banner;
     }
   }
 

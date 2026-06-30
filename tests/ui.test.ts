@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   setUiWriters,
   printBox,
-  printMarkdown,
   printToolCall,
   printDebugBlock,
   printToolBlockStart,
@@ -14,9 +13,6 @@ import {
   startSpinner,
   stopSpinner,
 } from '../src/ui.js';
-
-// We don't want real chalk color codes in test output — chalk auto-detects.
-// We test that the right content is written via spy writers.
 
 describe('UI', () => {
   let stderrOutput: string;
@@ -39,7 +35,6 @@ describe('UI', () => {
     it('should output content in a box', () => {
       printBox('Hello world');
       expect(stderrOutput).toContain('Hello world');
-      // boxen wraps with border chars
       expect(stderrOutput).toContain('│');
     });
 
@@ -62,32 +57,8 @@ describe('UI', () => {
     it('should support custom padding', () => {
       printBox('Content', { padding: 2 });
       expect(stderrOutput).toContain('Content');
-      // With padding=2 there should be more blank lines around content
       const lines = stderrOutput.split('\n');
       expect(lines.length).toBeGreaterThan(4);
-    });
-  });
-
-  describe('printMarkdown', () => {
-    it('should render markdown text', () => {
-      printMarkdown('# Hello\nThis is **bold**');
-      expect(stderrOutput).toContain('Hello');
-    });
-
-    it('should do nothing for empty text', () => {
-      printMarkdown('');
-      expect(stderrOutput).toBe('');
-    });
-
-    it('should add trailing newline if missing', () => {
-      printMarkdown('hello');
-      expect(stderrOutput.endsWith('\n')).toBe(true);
-    });
-
-    it('should not double-newline if already present', () => {
-      printMarkdown('hello\n');
-      // The function checks if rendered ends with \n — if it does, skips adding
-      expect(stderrOutput).toBeTruthy();
     });
   });
 
@@ -101,7 +72,7 @@ describe('UI', () => {
     it('should break stdout before and after', () => {
       const before = stdoutBreaks;
       printToolCall('shell', { command: 'ls' });
-      expect(stdoutBreaks).toBe(before + 2); // break before + break after
+      expect(stdoutBreaks).toBe(before + 2);
     });
 
     it('should handle empty args gracefully', () => {

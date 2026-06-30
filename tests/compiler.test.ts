@@ -160,6 +160,56 @@ describe('Compiler', () => {
     expect(prompt).toContain('Result: ' + 'W'.repeat(200) + '...');
   });
 
+  it('should exclude ui_transcript events from recent turns', () => {
+    const events: Event[] = [
+      {
+        event_id: 'evt-1',
+        session_id: 'test',
+        timestamp: Date.now(),
+        kind: 'user_message',
+        actor: 'user',
+        payload: { text: 'hello' },
+      },
+      {
+        event_id: 'evt-2',
+        session_id: 'test',
+        timestamp: Date.now(),
+        kind: 'ui_transcript',
+        actor: 'kernel',
+        payload: {
+          type: 'entry',
+          entry: { id: 'ui-1', role: 'turn_footer', group: 1, text: 'ui-only footer' },
+        },
+      },
+      {
+        event_id: 'evt-3',
+        session_id: 'test',
+        timestamp: Date.now(),
+        kind: 'agent_message',
+        actor: 'agent',
+        payload: { text: 'hi' },
+      },
+    ];
+
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: events,
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).toContain('User: hello');
+    expect(prompt).toContain('PRAANA: hi');
+    expect(prompt).not.toContain('ui-only footer');
+  });
+
   it('should include evidence-first assertion checklist in system frame', () => {
     const prompt = compile({
       stateGraph: {
