@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { openDatabase } from "../sqlite.js";
+import type { WorkflowPattern } from "./types.js";
 import type {
   ActivityEntry,
   ContextArtifact,
@@ -113,6 +114,21 @@ CREATE TABLE IF NOT EXISTS artifact_access (
 CREATE INDEX IF NOT EXISTS idx_artifact_access_session
   ON artifact_access(session_id, artifact_id);
 
+CREATE TABLE IF NOT EXISTS workflow_patterns (
+  id             TEXT PRIMARY KEY,
+  task_type      TEXT NOT NULL,
+  tool_sequence  TEXT NOT NULL,
+  artifact_types TEXT NOT NULL,
+  hit_count      INTEGER NOT NULL DEFAULT 1,
+  last_seen      INTEGER NOT NULL,
+  created_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_patterns_task_type
+  ON workflow_patterns(task_type);
+CREATE INDEX IF NOT EXISTS idx_workflow_patterns_last_seen
+  ON workflow_patterns(last_seen);
+
 CREATE TABLE IF NOT EXISTS session_stats (
   session_id              TEXT PRIMARY KEY,
   context_engine_enabled  INTEGER NOT NULL DEFAULT 0,
@@ -167,6 +183,28 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
 ];
 
+/**
+ * Migrate existing DBs that pre-date the workflow_patterns table.
+ * Safe to call on fresh DBs (CREATE TABLE IF NOT EXISTS handles them).
+ */
+function ensureWorkflowPatternsTable(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_patterns (
+      id             TEXT PRIMARY KEY,
+      task_type      TEXT NOT NULL,
+      tool_sequence  TEXT NOT NULL,
+      artifact_types TEXT NOT NULL,
+      hit_count      INTEGER NOT NULL DEFAULT 1,
+      last_seen      INTEGER NOT NULL,
+      created_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_patterns_task_type
+      ON workflow_patterns(task_type);
+    CREATE INDEX IF NOT EXISTS idx_workflow_patterns_last_seen
+      ON workflow_patterns(last_seen);
+  `);
+}
+
 function ensureScorecardResumeColumns(db: Database): void {
   const existing = new Set(
     (db.query("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
@@ -197,6 +235,7 @@ export function openContextEngineDb(dbPath: string): Database {
   db.run("PRAGMA journal_mode = WAL");
   db.exec(ARTIFACT_SCHEMA);
   ensureScorecardResumeColumns(db);
+  ensureWorkflowPatternsTable(db);
   return db;
 }
 
@@ -903,4 +942,96 @@ export function countArtifactAccessByType(
     )
     .get(sessionId, accessType) as { count: number };
   return row.count;
+}
+
+// ---------------------------------------------------------------------------
+// Workflow patterns (issue #92)
+// ---------------------------------------------------------------------------
+
+interface WorkflowPatternRow {
+  id: string;
+  task_type: string;
+  tool_sequence: string;
+  artifact_types: string;
+  hit_count: number;
+  last_seen: number;
+  created_at: number;
+}
+
+function rowToWorkflowPattern(row: WorkflowPatternRow): WorkflowPattern {
+  return {
+    id: row.id,
+    taskType: row.task_type,
+    toolSequence: JSON.parse(row.tool_sequence) as string[],
+    artifactTypes: JSON.parse(row.artifact_types) as string[],
+    hitCount: row.hit_count,
+    lastSeen: row.last_seen,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Upsert a workflow pattern. If a pattern with the same id already exists,
+ * increment hit_count and update last_seen.
+ */
+export function upsertWorkflowPattern(
+  db: Database,
+  pattern: WorkflowPattern,
+): void {
+  db.query(
+    `INSERT INTO workflow_patterns
+       (id, task_type, tool_sequence, artifact_types, hit_count, last_seen, created_at)
+     VALUES
+       ($id, $taskType, $toolSequence, $artifactTypes, $hitCount, $lastSeen, $createdAt)
+     ON CONFLICT(id) DO UPDATE SET
+       hit_count = hit_count + 1,
+       last_seen = excluded.last_seen`,
+  ).run({
+    $id: pattern.id,
+    $taskType: pattern.taskType,
+    $toolSequence: JSON.stringify(pattern.toolSequence),
+    $artifactTypes: JSON.stringify(pattern.artifactTypes),
+    $hitCount: pattern.hitCount,
+    $lastSeen: pattern.lastSeen,
+    $createdAt: pattern.createdAt,
+  });
+}
+
+/** List all stored workflow patterns, ordered by hit_count DESC. */
+export function listWorkflowPatterns(db: Database): WorkflowPattern[] {
+  const rows = db
+    .query(
+      `SELECT * FROM workflow_patterns ORDER BY hit_count DESC, last_seen DESC`,
+    )
+    .all() as WorkflowPatternRow[];
+  return rows.map(rowToWorkflowPattern);
+}
+
+/** List patterns for a specific task type, ordered by hit_count DESC. */
+export function listWorkflowPatternsByTaskType(
+  db: Database,
+  taskType: string,
+): WorkflowPattern[] {
+  const rows = db
+    .query(
+      `SELECT * FROM workflow_patterns
+       WHERE task_type = ?
+       ORDER BY hit_count DESC, last_seen DESC`,
+    )
+    .all(taskType) as WorkflowPatternRow[];
+  return rows.map(rowToWorkflowPattern);
+}
+
+/**
+ * Delete patterns whose last_seen is older than beforeMs (unix ms).
+ * Returns the number of rows deleted.
+ */
+export function deleteExpiredWorkflowPatterns(
+  db: Database,
+  beforeMs: number,
+): number {
+  const result = db
+    .query(`DELETE FROM workflow_patterns WHERE last_seen < ?`)
+    .run(beforeMs);
+  return result.changes;
 }

@@ -170,6 +170,9 @@ export async function runTurn(
     if (!session.embeddingCache) {
       session.embeddingCache = new EmbeddingCache();
     }
+    // Pre-fetch all stored workflow patterns for injection into the compiled prompt
+    // (issue #92). The compiler filters them to the classified task type internally.
+    const workflowPatterns = session.contextEngine!.listAllWorkflowPatterns();
     const engineResult = await compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
@@ -180,12 +183,15 @@ export async function runTurn(
       hydratedTexts: autoHydrated.map((r) => r.text),
       embedder: session.memoryStore?.embedder ?? null,
       embeddingCache: session.embeddingCache,
+      workflowPatterns,
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {
       ...engineResult.metrics,
       taskType: engineResult.taskType,
     };
+    // Track task type for workflow pattern persistence at session end (issue #92).
+    session.lastKnownTaskType = engineResult.taskType;
     session.setLastCompileScoreRecords(
       engineResult.scoreRecords,
       engineResult.pressureMode,

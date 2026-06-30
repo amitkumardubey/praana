@@ -40,6 +40,7 @@ import {
   resolveContextDbPath,
   resolveContextEngineConfig,
   type ScorecardTrackerOptions,
+  type WorkflowPattern,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
@@ -75,6 +76,8 @@ export class Session {
   embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
+  /** Last task type classified during compilation (issue #92 — workflow tracking). */
+  lastKnownTaskType: string | null = null;
   private ended = false;
   private readonly startedAt: number;
   private turnCount = 0;
@@ -933,6 +936,26 @@ export class Session {
         this.contextEngine.runShutdownMaintenance(this.getTurnCount());
       } catch (err) {
         this.getLogger().child("context_engine").warn("Shutdown maintenance failed", {
+          cause: err as Error,
+        });
+      }
+
+      // Workflow pattern tracking (issue #92): persist session pattern before
+      // the engine closes its DB, so it is available for future sessions.
+      try {
+        const sessionArtifacts = this.contextEngine.listSessionArtifacts();
+        const taskType = this.lastKnownTaskType ?? "general";
+        const _pattern: WorkflowPattern | null = this.contextEngine.persistWorkflowPattern(
+          taskType,
+          sessionArtifacts,
+        );
+        if (_pattern) {
+          this.getLogger().child("context_engine").debug(
+            `Workflow pattern persisted: taskType=${_pattern.taskType} tools=[${_pattern.toolSequence.join(",")}]`,
+          );
+        }
+      } catch (err) {
+        this.getLogger().child("context_engine").warn("Workflow pattern persistence failed", {
           cause: err as Error,
         });
       }

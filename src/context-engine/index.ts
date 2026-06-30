@@ -11,7 +11,7 @@ import {
   formatEventLineage,
   type EventLineage,
 } from "./event-lineage.js";
-import { getTurnDigest, listSessionArtifacts } from "./db.js";
+import { getTurnDigest, listSessionArtifacts, listWorkflowPatterns } from "./db.js";
 import {
   renderSessionTelemetrySummary,
   TelemetryRecorder,
@@ -33,6 +33,7 @@ import type {
   TurnDigest,
   TurnRecord,
   TurnSearchMatch,
+  WorkflowPattern,
 } from "./types.js";
 
 export type {
@@ -47,6 +48,7 @@ export type {
   TurnDigest,
   TurnRecord,
   TurnSearchMatch,
+  WorkflowPattern,
 } from "./types.js";
 export type { ContextEngineConfig } from "../types.js";
 export { CheckpointStore, renderCheckpoint, renderContextSummary } from "./checkpoint.js";
@@ -73,6 +75,20 @@ export {
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
+import {
+  persistSessionPattern,
+  pruneExpiredPatterns,
+} from "./workflow-tracker.js";
+export {
+  WORKFLOW_PATTERN_EXPIRY_DAYS,
+  hashPatternKey,
+  extractToolSequence,
+  extractArtifactTypes,
+  persistSessionPattern,
+  pruneExpiredPatterns,
+  queryPatternsForTaskType,
+  renderWorkflowContext,
+} from "./workflow-tracker.js";
 
 const CONTEXT_ENGINE_DEFAULTS: ContextEngineConfig = {
   enabled: true,
@@ -193,7 +209,10 @@ export class ContextEngine {
   }
 
   runShutdownMaintenance(currentTurn: number): number {
-    return this.store.runEviction(currentTurn);
+    const evicted = this.store.runEviction(currentTurn);
+    // Prune workflow patterns older than WORKFLOW_PATTERN_EXPIRY_DAYS.
+    pruneExpiredPatterns(this.store.getDb());
+    return evicted;
   }
 
   migrateLedgerFromEvents(events: Event[]): number {
@@ -383,6 +402,13 @@ export class ContextEngine {
   }
 
   /**
+   * List all artifacts created in this session (for workflow pattern extraction).
+   */
+  listSessionArtifacts(): ContextArtifact[] {
+    return listSessionArtifacts(this.store.getDb(), this.store.getSessionId());
+  }
+
+  /**
    * M4 artifact promotion: list this session's high-value artifacts (those
    * accessed >= minAccessCount times). The actual promotion into Cognitive Memory
    * is done by the session via MemoryStore.remember, since the ContextEngine
@@ -391,5 +417,38 @@ export class ContextEngine {
    */
   listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
     return this.store.listHighValueArtifacts(minAccessCount);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Workflow pattern tracking (issue #92)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Extract a WorkflowPattern from the current session's turn records and
+   * session artifacts, then upsert it into the context engine DB.
+   *
+   * Returns the extracted pattern, or null if the task type is "general"
+   * or no tool calls were made this session.
+   */
+  persistWorkflowPattern(
+    taskType: string,
+    sessionArtifacts: ContextArtifact[],
+  ): WorkflowPattern | null {
+    const turnRecords = this.ledger.list();
+    return persistSessionPattern(
+      this.store.getDb(),
+      taskType,
+      turnRecords,
+      sessionArtifacts,
+    );
+  }
+
+  /**
+   * List all stored workflow patterns from the context engine DB, ordered
+   * by hit_count DESC. Used by the compile step to pre-fetch patterns for
+   * workflow context injection.
+   */
+  listAllWorkflowPatterns(): WorkflowPattern[] {
+    return listWorkflowPatterns(this.store.getDb());
   }
 }

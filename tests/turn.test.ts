@@ -601,6 +601,7 @@ describe("runTurn", () => {
         getSessionCheckpoint: mock(() => null),
         recordCompileTelemetry: mock(),
         captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
       },
     });
 
@@ -1000,6 +1001,7 @@ describe("runTurn", () => {
         getSessionCheckpoint: mock(() => null),
         recordCompileTelemetry: mock(),
         captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
       },
       skillRuntime: {
         cleanupStaleSkills,

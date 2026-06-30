@@ -44,6 +44,8 @@ export interface CompileMetrics {
   agentsContextTruncated: boolean;
   /** If true, skills section was trimmed to section ceiling. */
   skillsTruncated: boolean;
+  /** Tokens used by the workflow context section (issue #92). */
+  workflowContextTokens?: number;
   /** Domain-agnostic classified task type (raw label from the active classifier). */
   taskType?: string;
 }
