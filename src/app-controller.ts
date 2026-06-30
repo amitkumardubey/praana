@@ -71,7 +71,9 @@ export class AppController {
         ? formatRecentConversationLines(this.session)
         : [],
       transcriptBootstrap: resumeMode
-        ? buildTranscriptFromEvents(this.session.eventLog.readAll())
+        ? buildTranscriptFromEvents(this.session.eventLog.readAll(), {
+            useUnicode: this.config.ui.tool_icons === "unicode",
+          })
         : [],
       isResume: !!resumeMode,
     };

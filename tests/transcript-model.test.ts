@@ -22,7 +22,7 @@ describe("buildTranscriptFromEvents", () => {
       ev("agent_message", { text: "Here you go." }),
     ]);
     expect(entries.map((e) => e.role)).toEqual(["user", "tool", "assistant"]);
-    expect(entries[1]?.role === "tool" && entries[1].resultSummary).toContain("exit 0");
+    expect(entries[1]?.role === "tool" && entries[1].resultSummary).toBe("ok");
   });
 
   it("sets isError on failed results", () => {

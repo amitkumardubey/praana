@@ -1,144 +1,145 @@
 /**
- * TurnUiSink implementation for the pi-tui TUI.
- *
- * Translates every TurnUiSink callback into a TranscriptStore mutation plus
- * tui.requestRender(). The store drives the actual Component rendering;
- * this file is pure routing logic.
- *
- * Turn state (group counter, stashed stats, per-tool args) lives here;
- * the store is stateless from this boundary's perspective.
+ * TurnUiSink → TranscriptContainer routing (design §4 ambient signals).
  */
 import type { TUI } from "@earendil-works/pi-tui";
 import type { TurnUiSink, MemoryBannerStats } from "../../ui-events.js";
 import type { LogEntry } from "../../logger.js";
-import type { TranscriptStore } from "./transcript/store.js";
+import type { TranscriptContainer } from "./transcript/container.js";
 import type { ToastRegion } from "./toast-region.js";
-import { formatTurnStatsSuffix } from "./tool-icons.js";
+import { formatTurnFooterDigest } from "./tool-icons.js";
 
 export interface SinkOpts {
-  /** Whether memory recall chips appear inline or are folded into the footer. */
   ambient: "inline" | "quiet";
-  /** Whether to materialise thinking blocks (controlled by /thinking). */
   showThinking: () => boolean;
-  /** Called whenever the spinner label should change. */
   onSpinnerMessage: (msg: string) => void;
+  ctxWindowTokens: number;
+  ctxUsedTokens: () => number;
 }
 
 export class PiTuiSink implements TurnUiSink {
-  readonly shellLiveStream = true;
+  /** Buffer shell output into tool rows — raw stdout corrupts pi-tui redraws. */
+  readonly shellLiveStream = false;
 
   private readonly tui: TUI;
-  private readonly store: TranscriptStore;
+  private readonly transcript: TranscriptContainer;
   private readonly toast: ToastRegion;
   private readonly opts: SinkOpts;
 
-  /** Current turn group — incremented at each user message boundary. */
   private group = 1;
-  /** Per-tool args stash for edit-count derivation (shell/edit counters). */
   private pendingToolArgs = new Map<string, Record<string, unknown>>();
-  /** Stashed stats waiting for consumeTurnStats(). */
   private bufferedStats: MemoryBannerStats | null = null;
+  private recallPreview: string | null = null;
+  private editCount = 0;
+  private writeCount = 0;
+  private ctxBeforePct = 0;
 
-  constructor(tui: TUI, store: TranscriptStore, toast: ToastRegion, opts: SinkOpts) {
+  constructor(
+    tui: TUI,
+    transcript: TranscriptContainer,
+    toast: ToastRegion,
+    opts: SinkOpts,
+  ) {
     this.tui = tui;
-    this.store = store;
+    this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
   }
 
-  /** Call before each user turn to advance the group. */
+  get currentGroup(): number {
+    return this.group;
+  }
+
   nextGroup(): void {
     this.group++;
     this.bufferedStats = null;
     this.pendingToolArgs.clear();
+    this.recallPreview = null;
+    this.editCount = 0;
+    this.writeCount = 0;
+    this.ctxBeforePct = this.ctxPct(this.opts.ctxUsedTokens());
   }
-
-  // ─── TurnUiSink callbacks ───────────────────────────────────────────────
 
   onTextDelta(delta: string): void {
     this.opts.onSpinnerMessage("replying…");
-    this.store.appendAssistantDelta(delta, this.group);
+    this.transcript.appendAssistantDelta(delta, this.group);
   }
 
   onThinkingDelta(delta: string): void {
     this.opts.onSpinnerMessage("thinking…");
     if (this.opts.showThinking()) {
-      this.store.appendThinkingDelta(delta, this.group);
+      this.transcript.appendThinkingDelta(delta, this.group);
     }
   }
 
   onToolCallsStart(): void {
     this.opts.onSpinnerMessage("working…");
-    this.store.flushAssistant();
-    this.store.flushThinking();
+    this.transcript.flushAssistant();
+    this.transcript.flushThinking();
   }
 
   onToolCall(toolName: string, args: Record<string, unknown>): void {
     this.pendingToolArgs.set(toolName, args);
-    this.store.addToolRow(toolName, args, this.group);
+    this.transcript.addToolRow(toolName, args, this.group);
   }
 
   onToolResult(toolName: string, resultText: string, isError = false): void {
-    this.store.setToolResult(toolName, resultText, isError);
+    const args = this.pendingToolArgs.get(toolName);
+    this.transcript.setToolResult(toolName, resultText, isError, args);
+
+    if (!isError) {
+      if (toolName === "edit_file") this.editCount++;
+      if (toolName === "write_file") this.writeCount++;
+    }
+
+    if (toolName === "recall") {
+      this.recallPreview = this.extractRecallPreview(resultText);
+    }
   }
 
-  onDebug(_message: string): void {
-    // Debug output goes to the app logger / PRAANA_DEBUG file; not in transcript.
-  }
-
-  onDebugBlock(
-    _stepIndex: number,
-    _toolCalls: Array<{ toolName: string; args: Record<string, unknown> }>,
-    _toolResults: Array<{ toolName: string; result: unknown }>
-  ): void {
-    // Debug blocks are not surfaced in the TUI transcript.
-  }
+  onDebug(): void {}
+  onDebugBlock(): void {}
 
   onMemoryBanner(stats: MemoryBannerStats): void {
     this.bufferedStats = stats;
 
     if (this.opts.ambient === "inline" && stats.recallCalls > 0) {
-      // Best-effort preview: use first few chars of digest as quote placeholder.
-      const preview = stats.digestLen > 0 ? `${stats.digestLen}c digest` : "memory";
-      this.store.addRecallChip(preview, stats.recallCalls, this.group);
+      const preview =
+        this.recallPreview ??
+        (stats.recallHits > 0
+          ? `${stats.recallHits} hit${stats.recallHits === 1 ? "" : "s"}`
+          : "memory");
+      this.transcript.addRecallChip(
+        preview,
+        stats.recallHits || stats.recallCalls,
+        this.group,
+      );
     }
   }
 
-  onSpinnerStart(_text: string): void {
-    // Spinner is managed externally (AppController wraps the sink).
-  }
-
-  onSpinnerStop(): void {
-    // Same — external management.
-  }
-
-  onNewline(): void {
-    // In the TUI the transcript handles layout; no raw newline needed.
-  }
+  onSpinnerStart(): void {}
+  onSpinnerStop(): void {}
+  onNewline(): void {}
 
   onFallback(text: string): void {
-    this.store.addSystemLine(text);
+    this.transcript.addSystemLine(text);
   }
 
   onSystemLines(lines: string[]): void {
     for (const line of lines) {
-      this.store.addSystemLine(line);
+      this.transcript.addSystemLine(line);
     }
   }
 
   onError(entry: LogEntry): void {
     if (entry.level === "error" || entry.level === "warn") {
-      // Errors are sticky: always go to transcript AND show a toast.
       const msg = `[${entry.domain}] ${entry.message}`;
-      this.store.addSystemLine(msg);
+      this.transcript.addSystemLine(msg);
       this.toast.show(msg, "error");
       this.tui.requestRender();
     }
   }
 
-  flushText(): void {
-    // No buffering — deltas are applied immediately.
-  }
+  flushText(): void {}
 
   consumeTurnStats(): MemoryBannerStats | null {
     const s = this.bufferedStats;
@@ -146,37 +147,39 @@ export class PiTuiSink implements TurnUiSink {
     return s;
   }
 
-  // ─── Turn footer ────────────────────────────────────────────────────────
-
-  /**
-   * Append the turn-end footer.  Called by run.ts after assistant_complete.
-   * `durationMs` is wall-clock ms for the full turn.
-   */
   appendTurnFooter(durationMs: number): void {
     const stats = this.bufferedStats ?? undefined;
-    const duration =
-      durationMs < 1000
-        ? `${Math.max(0, Math.round(durationMs))}ms`
-        : `${(durationMs / 1000).toFixed(1)}s`;
+    const ctxAfterPct = this.ctxPct(this.opts.ctxUsedTokens());
+    const text = formatTurnFooterDigest({
+      durationMs,
+      stats,
+      ambient: this.opts.ambient,
+      editCount: this.editCount,
+      writeCount: this.writeCount,
+      ctxBeforePct: this.ctxBeforePct,
+      ctxAfterPct,
+    });
+    this.transcript.addTurnFooter(text, this.group);
+    this.transcript.flushAssistant();
+    this.transcript.flushThinking();
+  }
 
-    const parts: string[] = [`✓`];
+  private ctxPct(usedTokens: number): number {
+    const window = this.opts.ctxWindowTokens;
+    if (window <= 0) return 0;
+    return Math.min(100, Math.round((usedTokens / window) * 100));
+  }
 
-    // Recall count (quiet mode shows it here, inline mode already has a chip)
-    if (this.opts.ambient === "quiet" && stats && stats.recallCalls > 0) {
-      parts.push(`recall ${stats.recallCalls}`);
+  private extractRecallPreview(resultText: string): string | null {
+    try {
+      const parsed = JSON.parse(resultText) as {
+        entries?: Array<{ content?: string }>;
+      };
+      const first = parsed.entries?.[0]?.content?.trim();
+      if (!first) return null;
+      return first.length > 72 ? `${first.slice(0, 71)}…` : first;
+    } catch {
+      return null;
     }
-
-    // Context window pressure
-    if (stats && stats.promptTokens > 0) {
-      const suffix = formatTurnStatsSuffix(stats);
-      if (suffix) parts.push(suffix);
-    }
-
-    parts.push(duration);
-
-    const text = parts.join(" · ");
-    this.store.addTurnFooter(text, this.group);
-    this.store.flushAssistant();
-    this.store.flushThinking();
   }
 }

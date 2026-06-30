@@ -1,42 +1,55 @@
 /**
- * One-line bottom glance bar: surfaces model, ctx, repo, mode, memory, skills.
- *
- * Renders the same content as the readline `formatStatusLine` helper so the
- * bottom strip stays consistent with the legacy readline UI. The bar is
- * stateless w.r.t. caching — it derives lines from the current input on
- * every render. `update` triggers a re-render via `tui.requestRender()`.
+ * Bottom glance chrome — ctx%, tiers, skills, cost, flags (design §5).
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { StatusBarInput } from "../../../status-bar.js";
-import { formatStatusLine } from "../../../status-bar.js";
+import { formatTuiGlanceLine } from "./glance-format.js";
+import { paintZoneLine } from "../theme.js";
 
-/** Bottom-of-screen glance strip. Falls back to a dim placeholder pre-resolve. */
+export interface GlanceBarInput {
+  status: StatusBarInput;
+  showCost: boolean;
+  sessionInputTokens: number;
+  sessionOutputTokens: number;
+}
+
 export class GlanceBar implements Component {
-  private input: StatusBarInput | null;
-  private tui: TUI;
+  private input: GlanceBarInput | null = null;
+  private backgroundZones = true;
+  private readonly tui: TUI;
 
   constructor(tui: TUI) {
     this.tui = tui;
-    this.input = null;
   }
 
-  /** Replace the rendered status and request a re-render. */
-  update(input: StatusBarInput): void {
+  update(input: GlanceBarInput): void {
     this.input = input;
     this.tui.requestRender();
   }
 
-  invalidate(): void {
-    // Stateless: nothing to drop. Render is derived from current input.
+  setBackgroundZones(enabled: boolean): void {
+    this.backgroundZones = enabled;
   }
+
+  invalidate(): void {}
 
   render(width: number): string[] {
     if (width <= 0) return [""];
     const line = this.input
-      ? formatStatusLine(this.input)
+      ? formatTuiGlanceLine(this.input.status, {
+          showCost: this.input.showCost,
+          sessionInputTokens: this.input.sessionInputTokens,
+          sessionOutputTokens: this.input.sessionOutputTokens,
+        })
       : chalk.dim("initializing…");
-    return [truncateToWidth(line, width, "…")];
+    const painted = paintZoneLine(
+      truncateToWidth(line, width, "…"),
+      "chrome",
+      this.backgroundZones,
+      width,
+    );
+    return [painted];
   }
 }

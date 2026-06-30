@@ -1,9 +1,6 @@
 /**
- * Transcript entry model for the pi-tui TUI.
- *
- * One flat union — no Ink reducer, no line-budget scroll windowing (pi-tui
- * provides native scrollback).  `buildTranscriptFromEvents` is the only
- * consumer of raw event-log data; everything else mutates a TranscriptStore.
+ * Transcript entry model — used only for resume bootstrap (`buildTranscriptFromEvents`).
+ * Live sessions mutate `TranscriptContainer` children directly.
  */
 import type { Event } from "../../../types.js";
 import {
@@ -70,6 +67,8 @@ export interface ToolEntry {
   /** Expanded body (shell output etc.). */
   resultBody?: string | null;
   isError?: boolean;
+  /** Passed at render time — not stored in replay bootstrap. */
+  backgroundZones?: boolean;
 }
 
 export interface RecallEntry {
@@ -102,7 +101,11 @@ export interface TurnFooterEntry {
  * Maps only the event kinds relevant to display; skips scoring/engine events.
  * No line-budget windowing — pi-tui handles scrollback natively.
  */
-export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
+export function buildTranscriptFromEvents(
+  events: Event[],
+  opts?: { useUnicode?: boolean },
+): TranscriptEntry[] {
+  const useUnicode = opts?.useUnicode ?? true;
   const entries: TranscriptEntry[] = [];
   let nextId = 1;
   let groupCounter = 0;
@@ -129,7 +132,7 @@ export function buildTranscriptFromEvents(events: Event[]): TranscriptEntry[] {
           !Array.isArray(ev.payload.args))
           ? (ev.payload.args as Record<string, unknown>)
           : {};
-        const display = formatToolDisplay(toolName, args);
+        const display = formatToolDisplay(toolName, args, { useUnicode });
         push(nextEntry<ToolEntry>({
           role: "tool",
           toolName,

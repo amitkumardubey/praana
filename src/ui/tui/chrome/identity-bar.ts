@@ -1,40 +1,37 @@
 /**
- * One-line top identity bar: brand mark, version, active model.
- *
- * Renders as a single line. The caller is expected to drive a re-render
- * (via tui.requestRender()) after mutating the bar (e.g. on setModel).
+ * Top identity chrome — brand, model, cwd · branch (design §5).
  */
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
-import chalk from "chalk";
-import { PALETTE } from "../theme.js";
+import type { StatusBarInput } from "../../../status-bar.js";
+import { formatTuiIdentityLine } from "./glance-format.js";
+import { paintZoneLine, type ZoneKind } from "../theme.js";
 
-/** Top-of-screen brand bar. Brand violet + dim version + cyan model. */
 export class IdentityBar implements Component {
-  private model: string;
-  private version: string;
+  private input: StatusBarInput | null = null;
+  private backgroundZones = true;
 
-  constructor(model: string, version: string) {
-    this.model = model;
-    this.version = version;
+  setInput(input: StatusBarInput): void {
+    this.input = input;
   }
 
-  /** Replace the active model label. Caller triggers tui.requestRender(). */
-  setModel(model: string): void {
-    this.model = model;
+  setBackgroundZones(enabled: boolean): void {
+    this.backgroundZones = enabled;
   }
 
-  invalidate(): void {
-    // Stateless: nothing to drop. Render is derived from current fields.
-  }
+  invalidate(): void {}
 
   render(width: number): string[] {
     if (width <= 0) return [""];
-    const line = [
-      chalk.hex(PALETTE.memory)("praana"),
-      chalk.dim(`v${this.version}`),
-      chalk.hex(PALETTE.assistant)(this.model),
-    ].join("  ");
-    return [truncateToWidth(line, width, "…")];
+    const line = this.input
+      ? formatTuiIdentityLine(this.input)
+      : "praana";
+    const painted = paintZoneLine(
+      truncateToWidth(line, width, "…"),
+      "chrome" satisfies ZoneKind,
+      this.backgroundZones,
+      width,
+    );
+    return [painted];
   }
 }

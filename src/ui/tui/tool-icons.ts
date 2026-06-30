@@ -1,18 +1,9 @@
 /**
- * Per-tool glyph map + display helpers for the pi-tui transcript.
- *
- * Two icon sets:
- *   "unicode" (default) — box-drawing / math glyphs
- *   "ascii"             — plain ASCII 2-char codes (no-frills fallback)
- *
- * Moved verbatim logic from the old tool-display.ts; formatTurnFooter /
- * formatTurnStatsSuffix are redesigned in the new sink/store — not carried.
+ * Per-tool glyph map + compact display helpers (design §6).
  */
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
 import stripAnsi from "strip-ansi";
-
-// ─── Glyph map ─────────────────────────────────────────────────────────────
 
 const UNICODE_ICONS: Record<string, string> = {
   read_file: "◇",
@@ -23,7 +14,6 @@ const UNICODE_ICONS: Record<string, string> = {
   recall: "◆",
   remember: "◆",
   load_skill: "✦",
-  // state/task tools
   create_task: "•",
   complete_task: "•",
   decide: "•",
@@ -32,8 +22,8 @@ const UNICODE_ICONS: Record<string, string> = {
   hydrate: "•",
   soft_unload: "•",
   hard_unload: "•",
-  search_session_log: "◈",
-  retrieve_artifact: "◈",
+  search_session_log: "•",
+  retrieve_artifact: "•",
 };
 
 const ASCII_ICONS: Record<string, string> = {
@@ -57,12 +47,31 @@ const ASCII_ICONS: Record<string, string> = {
   retrieve_artifact: "ar",
 };
 
+const TOOL_SHORT: Record<string, string> = {
+  read_file: "read",
+  search_code: "search",
+  edit_file: "edit",
+  write_file: "write",
+  shell: "shell",
+  recall: "recall",
+  remember: "remember",
+  load_skill: "skill",
+  create_task: "task",
+  complete_task: "task",
+  decide: "decide",
+  add_note: "note",
+  add_constraint: "constraint",
+  hydrate: "hydrate",
+  soft_unload: "unload",
+  hard_unload: "unload",
+  search_session_log: "log",
+  retrieve_artifact: "artifact",
+};
+
 export function toolIcon(toolName: string, useUnicode: boolean): string {
   const map = useUnicode ? UNICODE_ICONS : ASCII_ICONS;
   return map[toolName] ?? (useUnicode ? "⚙" : "?·");
 }
-
-// ─── ToolDisplayInfo ───────────────────────────────────────────────────────
 
 export interface ToolDisplayInfo {
   icon: string;
@@ -70,100 +79,138 @@ export interface ToolDisplayInfo {
   pending: string;
 }
 
+export interface ToolDisplayOpts {
+  useUnicode?: boolean;
+}
+
 function shellShortLabel(command: string): string {
   const trimmed = command.trim();
-  if (trimmed.length <= 64) return trimmed;
+  if (trimmed.length <= 56) return trimmed;
   const segments = trimmed.split("&&").map((s) => s.trim());
   const last = segments[segments.length - 1] ?? trimmed;
-  const short = last.split(/\s+/).slice(0, 4).join(" ");
-  return short.length > 56 ? `${short.slice(0, 55)}…` : short;
+  const short = last.split(/\s+/).slice(0, 5).join(" ");
+  return short.length > 52 ? `${short.slice(0, 51)}…` : short;
 }
 
 function formatPath(path: unknown): string {
   const value = String(path ?? "");
   if (!value) return "";
-  return value.length > 60 ? "…" + value.slice(-57) : value;
+  return value.length > 48 ? "…" + value.slice(-45) : value;
+}
+
+function toolShortName(toolName: string): string {
+  return TOOL_SHORT[toolName] ?? toolName;
 }
 
 export function formatToolDisplay(
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  opts: ToolDisplayOpts = {},
 ): ToolDisplayInfo {
+  const useUnicode = opts.useUnicode ?? true;
+  const icon = toolIcon(toolName, useUnicode);
+  const short = toolShortName(toolName);
+
   switch (toolName) {
     case "shell": {
       const command = String(args.command ?? "");
       return {
-        icon: "$",
-        label: command ? shellShortLabel(command) : "shell",
-        pending: "Running command…",
-      };
-    }
-    case "retrieve_artifact": {
-      const id = String(args.id ?? args.artifact_id ?? "").slice(0, 16);
-      return {
-        icon: "◆",
-        label: id ? `Artifact ${id}` : "Retrieve artifact",
-        pending: "Retrieving artifact…",
+        icon,
+        label: command ? shellShortLabel(command) : short,
+        pending: "running…",
       };
     }
     case "read_file": {
       const path = formatPath(args.path);
-      return { icon: "→", label: `Read ${path}`, pending: "Reading file…" };
+      return { icon, label: path ? `${short}  ${path}` : short, pending: "reading…" };
     }
     case "write_file": {
       const path = formatPath(args.path);
-      return { icon: "←", label: `Write ${path}`, pending: "Writing file…" };
+      return { icon, label: path ? `${short}  ${path}` : short, pending: "writing…" };
     }
     case "edit_file": {
       const path = formatPath(args.path);
-      return { icon: "✎", label: `Edit ${path}`, pending: "Editing file…" };
+      return { icon, label: path ? `${short}  ${path}` : short, pending: "editing…" };
     }
     case "search_code": {
-      const pattern = String(args.pattern ?? "");
-      const path = args.path ? ` in ${formatPath(args.path)}` : "";
+      const pattern = String(args.pattern ?? "").slice(0, 40);
       return {
-        icon: "✱",
-        label: `Grep "${pattern}"${path}`,
-        pending: "Searching…",
+        icon,
+        label: pattern ? `${short}  "${pattern}"` : short,
+        pending: "searching…",
       };
     }
     case "recall": {
-      const query = String(args.query ?? "").slice(0, 80);
-      return { icon: "◈", label: `Recall "${query}"`, pending: "Recalling…" };
-    }
-    case "search_session_log": {
-      const query = String(args.query ?? "").slice(0, 80);
-      return { icon: "◈", label: `Search log "${query}"`, pending: "Searching log…" };
-    }
-    case "create_task": {
-      const title = String(args.title ?? "").slice(0, 80);
-      return { icon: "◇", label: `Task ${title}`, pending: "Creating task…" };
-    }
-    case "complete_task":
-    case "hydrate":
-    case "soft_unload":
-    case "hard_unload": {
-      const id = String(args.id ?? "").slice(0, 26);
-      return { icon: "◇", label: `${toolName} ${id}`, pending: "Updating state…" };
+      const query = String(args.query ?? "").slice(0, 60);
+      return {
+        icon,
+        label: query ? `${short}  "${query}"` : short,
+        pending: "recalling…",
+      };
     }
     case "remember": {
-      const content = String(args.content ?? "").slice(0, 60);
-      return { icon: "◈", label: `Remember ${content}`, pending: "Storing memory…" };
+      const content = String(args.content ?? "").slice(0, 50);
+      return {
+        icon,
+        label: content ? `${short}  ${content}` : short,
+        pending: "storing…",
+      };
+    }
+    case "load_skill": {
+      const id = String(args.skill_id ?? args.name ?? "").slice(0, 40);
+      return { icon, label: id ? `${short}  ${id}` : short, pending: "loading…" };
     }
     default: {
       const summary = summarizeArgs(toolName, args);
       return {
-        icon: "⚙",
-        label: summary ? `${toolName} ${summary}` : toolName,
-        pending: "Running…",
+        icon,
+        label: summary ? `${short}  ${summary}` : short,
+        pending: "running…",
       };
     }
   }
 }
 
-// ─── Result display helpers (moved verbatim from tool-display.ts) ──────────
+/** Diff line counts for edit_file results (+added −removed). */
+export function formatEditDiffSummary(
+  args: Record<string, unknown> | undefined,
+): string | null {
+  if (!args) return null;
+  const oldText = String(args.oldText ?? "");
+  const newText = String(args.newText ?? "");
+  if (!oldText && !newText) return null;
+  const added = newText ? newText.split("\n").length : 0;
+  const removed = oldText ? oldText.split("\n").length : 0;
+  return `+${added} −${removed}`;
+}
 
-/** Compact one-line summary of a tool result for display. */
+/** Compact shell result: pass/fail counts when detectable, else exit code. */
+export function formatShellCompactSummary(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const stdout = stripAnsi(String(parsed.stdout ?? ""));
+    const exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : 0;
+
+    const passMatch = stdout.match(/(\d+)\s+pass/i);
+    const failMatch = stdout.match(/(\d+)\s+fail/i);
+    if (passMatch || failMatch) {
+      const pass = passMatch?.[1] ?? "0";
+      const fail = failMatch?.[1] ?? "0";
+      return `${pass} pass · ${fail} fail`;
+    }
+
+    const testsMatch = stdout.match(/(\d+)\s+tests?\s+passed/i);
+    if (testsMatch) {
+      return `${testsMatch[1]} pass · 0 fail`;
+    }
+
+    if (exitCode === 0) return "ok";
+    return `exit ${exitCode}`;
+  } catch {
+    return summarizeResultForDisplay(text);
+  }
+}
+
 export function summarizeResultForDisplay(text: string): string {
   if (!text) return "(empty)";
 
@@ -172,47 +219,42 @@ export function summarizeResultForDisplay(text: string): string {
     const tokenMatch = text.match(/([\d,]+)\s*tokens?\b/i);
     const id = artifactMatch[1]!;
     return tokenMatch
-      ? `artifact ${id.slice(0, 12)}… · ${tokenMatch[1]!.replace(/,/g, "")} tokens`
+      ? `artifact ${id.slice(0, 12)}… · ${tokenMatch[1]!.replace(/,/g, "")} tok`
       : `artifact ${id.slice(0, 16)}…`;
   }
 
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (typeof parsed.stdout === "string" || typeof parsed.stderr === "string") {
-      const stdout = stripAnsi(String(parsed.stdout ?? "")).trimEnd();
-      const stderr = stripAnsi(String(parsed.stderr ?? "")).trimEnd();
-      const primary = stdout || stderr;
-      const lineCount = primary ? primary.split("\n").filter(Boolean).length : 0;
-      const preview = primary.split("\n")[0]?.slice(0, 56) ?? "";
-      const suffix = preview ? ` — ${preview}${primary.length > 56 ? "…" : ""}` : "";
-      return `exit ${parsed.exitCode ?? 0} · ${lineCount} line(s)${suffix}`;
+      return formatShellCompactSummary(text);
     }
     if (parsed.ok === false) {
-      return `error: ${String(parsed.error ?? "failed").slice(0, 72)}`;
+      return `error: ${String(parsed.error ?? "failed").slice(0, 60)}`;
     }
     if (typeof parsed.content === "string") {
       const content = parsed.content;
       const lineCount = content.split("\n").length;
-      const preview = content.split("\n")[0]?.slice(0, 56) ?? "";
-      return `${lineCount} line(s) · ${preview}${content.length > 56 ? "…" : ""}`;
+      const preview = content.split("\n")[0]?.slice(0, 48) ?? "";
+      return `${lineCount} lines · ${preview}${content.length > 48 ? "…" : ""}`;
     }
     if (parsed.id) {
-      return `ok · ${String(parsed.id).slice(0, 28)}`;
+      return `ok · ${String(parsed.id).slice(0, 24)}`;
+    }
+    if (parsed.ok === true) {
+      return "ok";
     }
   } catch {
     /* plain text */
   }
 
   const lines = text.split("\n").length;
-  const chars = text.length;
-  const preview = text.slice(0, 200).split("\n")[0]!;
-  const previewText = preview.length > 72 ? `${preview.slice(0, 71)}…` : preview;
-  const size = lines > 1 ? `${lines} lines, ${chars} chars` : `${chars} chars`;
-  return `${size} — ${previewText}`;
+  const preview = text.slice(0, 120).split("\n")[0]!;
+  const previewText = preview.length > 56 ? `${preview.slice(0, 55)}…` : preview;
+  return lines > 1 ? `${lines} lines — ${previewText}` : previewText;
 }
 
-const SHELL_OUTPUT_MAX_LINES = 30;
-const SHELL_OUTPUT_MAX_CHARS = 4096;
+const SHELL_OUTPUT_MAX_LINES = 24;
+const SHELL_OUTPUT_MAX_CHARS = 3072;
 
 export interface ShellOutputDisplay {
   summary: string;
@@ -220,7 +262,6 @@ export interface ShellOutputDisplay {
   isError: boolean;
 }
 
-/** Format shell tool JSON result for TUI transcript display. */
 export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | null {
   if (!text) return null;
 
@@ -233,12 +274,14 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
     const stdout = stripAnsi(String(parsed.stdout ?? "")).trimEnd();
     const stderr = stripAnsi(String(parsed.stderr ?? "")).trimEnd();
     const exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : 0;
-    const summary = summarizeResultForDisplay(text);
+    const summary = formatShellCompactSummary(text);
 
     const bodyParts: string[] = [];
     if (stdout) bodyParts.push(stdout);
     if (stderr) {
-      bodyParts.push(stderr.split("\n").map((line) => `[stderr] ${line}`).join("\n"));
+      bodyParts.push(
+        stderr.split("\n").map((line) => `[stderr] ${line}`).join("\n"),
+      );
     }
 
     const fullBody = bodyParts.join("\n");
@@ -249,23 +292,13 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
     const lines = fullBody.split("\n");
     let body = fullBody;
     if (lines.length > SHELL_OUTPUT_MAX_LINES || body.length > SHELL_OUTPUT_MAX_CHARS) {
-      const truncatedLines = lines.slice(0, SHELL_OUTPUT_MAX_LINES);
-      const joined = truncatedLines.join("\n");
-      body = joined;
-      const charTruncated = body.length > SHELL_OUTPUT_MAX_CHARS;
-      if (charTruncated) {
+      body = lines.slice(0, SHELL_OUTPUT_MAX_LINES).join("\n");
+      if (body.length > SHELL_OUTPUT_MAX_CHARS) {
         body = body.slice(0, SHELL_OUTPUT_MAX_CHARS);
       }
-      const remaining = lines.length - truncatedLines.length;
-      const suffixParts: string[] = [];
+      const remaining = lines.length - SHELL_OUTPUT_MAX_LINES;
       if (remaining > 0) {
-        suffixParts.push(`+${remaining} more line${remaining === 1 ? "" : "s"}`);
-      }
-      if (charTruncated) {
-        suffixParts.push("truncated");
-      }
-      if (suffixParts.length > 0) {
-        body += `\n… ${suffixParts.join(", ")}`;
+        body += `\n… +${remaining} more lines`;
       }
     }
 
@@ -275,37 +308,66 @@ export function formatShellOutputForDisplay(text: string): ShellOutputDisplay | 
   }
 }
 
-/** Whether this entry role should have extra top margin. */
-export function needsTopMargin(role: string, prevRole: string | undefined): boolean {
-  const BLOCK_ROLES = new Set(["user","assistant","tool","tool_result","thinking","turn_footer","system"]);
-  if (role === "user") return true;
-  if (!prevRole) return false;
-  if (role === prevRole) return false;
-  if (role === "turn_footer") return true;
-  if (role === "thinking" && prevRole !== "thinking") return true;
-  if (role === "tool" && prevRole !== "tool" && prevRole !== "tool_result") return true;
-  if (role === "assistant" && BLOCK_ROLES.has(prevRole)) return true;
-  return false;
+export interface TurnFooterInput {
+  durationMs: number;
+  stats?: MemoryBannerStats;
+  ambient: "inline" | "quiet";
+  editCount: number;
+  writeCount: number;
+  ctxBeforePct: number;
+  ctxAfterPct: number;
 }
 
-// ─── Turn stats suffix ─────────────────────────────────────────────────────
+/** Dim one-line turn digest (design §5). */
+export function formatTurnFooterDigest(input: TurnFooterInput): string {
+  const parts: string[] = [];
 
-function fmtToken(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+  const fileEdits = input.editCount + input.writeCount;
+  if (fileEdits > 0) {
+    parts.push(`${fileEdits} edit${fileEdits === 1 ? "" : "s"}`);
+  }
+
+  if (input.ctxAfterPct > 0 || input.ctxBeforePct > 0) {
+    if (input.ctxBeforePct > 0 && input.ctxBeforePct !== input.ctxAfterPct) {
+      parts.push(`ctx ${input.ctxBeforePct}%→${input.ctxAfterPct}%`);
+    } else {
+      parts.push(`ctx ${input.ctxAfterPct}%`);
+    }
+  }
+
+  if (input.stats && input.stats.recallCalls > 0) {
+    if (input.ambient === "quiet") {
+      parts.push(`recall ${input.stats.recallHits || input.stats.recallCalls}`);
+    } else if (input.stats.recallHits > 0) {
+      parts.push(`recall ${input.stats.recallHits}`);
+    }
+  }
+
+  const duration =
+    input.durationMs < 1000
+      ? `${Math.max(0, Math.round(input.durationMs))}ms`
+      : `${(input.durationMs / 1000).toFixed(1)}s`;
+
+  if (parts.length === 0) {
+    return `✓ · ${duration}`;
+  }
+
+  return `✓ ${parts.join(" · ")} · ${duration}`;
 }
 
-/** Compact stats string for turn footer (token counts + recall). */
+/** @deprecated Use formatTurnFooterDigest */
 export function formatTurnStatsSuffix(stats?: MemoryBannerStats): string {
   if (!stats) return "";
   const parts: string[] = [];
   if (stats.promptTokens > 0) parts.push(`prompt ~${fmtToken(stats.promptTokens)}`);
   if (stats.outputTokens > 0) parts.push(`out ~${fmtToken(stats.outputTokens)}`);
-  if (stats.digestLen > 0) parts.push(`digest ${stats.digestLen}c`);
   if (stats.recallCalls > 0) {
     parts.push(`recall ${stats.recallHits}/${stats.recallCalls}`);
   }
-  if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   return parts.join(" · ");
+}
+
+function fmtToken(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
 }

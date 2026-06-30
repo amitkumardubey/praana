@@ -1,9 +1,5 @@
 /**
- * pi-tui TUI entry point.
- *
- * Constructs the full pi-tui component tree, seeds transcript from resume
- * bootstrap, runs the main event loop, and handles shutdown with the
- * consolidation epilogue.
+ * pi-tui TUI entry — ambient intelligence layout (design §5).
  */
 import {
   TUI,
@@ -13,26 +9,26 @@ import {
   Editor,
   CombinedAutocompleteProvider,
   type SlashCommand,
+  type AutocompleteProvider,
+  type AutocompleteItem,
   matchesKey,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { AppController, StartupInfo } from "../../app-controller.js";
 import {
-  formatSessionEpilogue,
+  APP_VERSION,
   formatSessionEndSummary,
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { PALETTE, NORD_COLORS } from "./theme.js";
-import { TranscriptStore } from "./transcript/store.js";
-import { TranscriptView } from "./transcript/view.js";
+import { TranscriptContainer } from "./transcript/container.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
 import { renderBootBanner } from "./banner.js";
-import { estimateTokens } from "../../token-estimate.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 
-/** Slash commands exposed to the Editor autocomplete provider. */
 const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/exit", description: "End session" },
   { name: "/state", description: "List working-memory state objects" },
@@ -51,6 +47,10 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/help", description: "Show all commands" },
 ];
 
+function versionNumber(): string {
+  return APP_VERSION.replace(/^v/, "");
+}
+
 export async function runTui(
   controller: AppController,
   info: StartupInfo,
@@ -58,23 +58,18 @@ export async function runTui(
   const config = controller.config;
   const session = controller.session;
   const width = process.stdout.columns ?? 80;
+  const useUnicode = config.ui.tool_icons === "unicode";
 
-  // ── Boot banner ──────────────────────────────────────────────────────────
-  const bootSummaryText = formatTuiBootSummary({
-    sessionId: session.id,
-    contextTokens: session.agentsContext
-      ? estimateTokens(session.agentsContext)
-      : undefined,
-    engineEnabled: session.isContextEngineEnabled(),
-    skillCount: session.skills.length,
-    memoryEnabled: session.memoryEnabled,
-    incognito: session.isIncognito(),
+  const bootSummaryLines = formatTuiBootSummary({
+    session,
+    model: session.getActiveModelLabel(),
+    cwd: info.cwd,
+    isResume: info.isResume,
   });
 
   const bannerLines = renderBootBanner({
-    version: "0.9.0",
-    summary: bootSummaryText,
-    isResume: info.isResume,
+    version: versionNumber(),
+    summaryLines: bootSummaryLines,
     width,
     noColor: !!process.env.NO_COLOR,
     banner: config.ui.banner,
@@ -83,29 +78,41 @@ export async function runTui(
     process.stdout.write(line + "\n");
   }
 
-  // ── pi-tui setup ─────────────────────────────────────────────────────────
   const terminal = new ProcessTerminal();
   const tui = new TUI(terminal, true);
 
-  // ── Chrome ───────────────────────────────────────────────────────────────
-  const model = controller.session.getActiveModelLabel();
-  const identityBar = new IdentityBar(model, "0.9.0");
-  const glanceBar = new GlanceBar(tui);
-  glanceBar.update(controller.getStatusBarInput());
+  const identityBar = new IdentityBar();
+  identityBar.setBackgroundZones(config.ui.background_zones);
+  identityBar.setInput(controller.getStatusBarInput());
 
-  // ── Transcript ───────────────────────────────────────────────────────────
-  const store = new TranscriptStore(tui, info.transcriptBootstrap);
-  const transcriptView = new TranscriptView(store, tui, {
+  const glanceBar = new GlanceBar(tui);
+  glanceBar.setBackgroundZones(config.ui.background_zones);
+
+  const refreshChrome = () => {
+    identityBar.setInput(controller.getStatusBarInput());
+    glanceBar.update({
+      status: controller.getStatusBarInput(),
+      showCost: config.ui.show_cost,
+      sessionInputTokens: session.getInputTokens(),
+      sessionOutputTokens: session.getOutputTokens(),
+    });
+  };
+  refreshChrome();
+
+  const transcriptOpts = {
     markdownRendering: config.ui.markdown_rendering,
     syntaxTheme: config.ui.syntax_theme,
     backgroundZones: config.ui.background_zones,
-    toolIcons: config.ui.tool_icons,
-  });
+    useUnicode,
+  };
+  const transcript = new TranscriptContainer(
+    tui,
+    transcriptOpts,
+    info.transcriptBootstrap,
+  );
 
-  // ── Toast region ─────────────────────────────────────────────────────────
   const toast = new ToastRegion(tui);
 
-  // ── Spinner ───────────────────────────────────────────────────────────────
   const spinner = new Loader(
     tui,
     (s) => chalk.hex(PALETTE.assistant)(s),
@@ -114,7 +121,6 @@ export async function runTui(
     { frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], intervalMs: 80 },
   );
 
-  // ── Editor ───────────────────────────────────────────────────────────────
   const editorTheme = {
     borderColor: chalk.hex(PALETTE.border),
     selectList: {
@@ -126,16 +132,32 @@ export async function runTui(
     },
   };
   const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
-  const autocomplete = new CombinedAutocompleteProvider(
-    SLASH_COMMANDS,
-    controller.cwd,
-  );
+
+  const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
+  const autocomplete: AutocompleteProvider = {
+    getSuggestions: baseProvider.getSuggestions
+      ? baseProvider.getSuggestions.bind(baseProvider)
+      : async () => null,
+    shouldTriggerFileCompletion: baseProvider.shouldTriggerFileCompletion
+      ? baseProvider.shouldTriggerFileCompletion.bind(baseProvider)
+      : undefined,
+    applyCompletion(
+      lines: string[],
+      cursorLine: number,
+      cursorCol: number,
+      item: AutocompleteItem,
+      prefix: string,
+    ) {
+      const isSlashItem = prefix.startsWith("/") && !prefix.slice(1).includes("/");
+      const fixedItem =
+        isSlashItem && item.value.startsWith("/")
+          ? { ...item, value: item.value.slice(1) }
+          : item;
+      return baseProvider.applyCompletion(lines, cursorLine, cursorCol, fixedItem, prefix);
+    },
+  };
   editor.setAutocompleteProvider(autocomplete);
 
-  // ── Component tree ────────────────────────────────────────────────────────
-  // spinnerSlot is a permanent empty Container positioned just above the
-  // editor. The spinner is added into it at turn-start and removed at
-  // turn-end; the slot itself renders nothing when empty.
   const spinnerSlot = new Container();
   const body = new Container();
   tui.addChild(identityBar);
@@ -144,35 +166,44 @@ export async function runTui(
   tui.addChild(spinnerSlot);
   tui.addChild(editor);
   tui.addChild(glanceBar);
-  body.addChild(transcriptView);
-
+  body.addChild(transcript);
   tui.setFocus(editor);
 
-  // ── Sink ──────────────────────────────────────────────────────────────────
-  const sink = new PiTuiSink(tui, store, toast, {
+  const modelId = controller.currentModelOrDefault();
+  const ctxWindow =
+    session.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
+
+  const sink = new PiTuiSink(tui, transcript, toast, {
     ambient: config.ui.ambient,
     showThinking: () => controller.showThinking,
     onSpinnerMessage: (msg) => { spinner.setMessage(msg); },
+    ctxWindowTokens: ctxWindow,
+    ctxUsedTokens: () =>
+      controller.getStatusBarInput().contextUsedTokens,
   });
 
-  // ── Turn state ────────────────────────────────────────────────────────────
   let turnStartedAt = 0;
 
-  // ── Editor submit handler ─────────────────────────────────────────────────
   editor.onSubmit = async (rawInput: string) => {
     const input = rawInput.trim();
     if (!input) return;
     editor.addToHistory(input);
     toast.clearErrors();
 
-    // Slash command?
     if (input.startsWith("/")) {
       const result = await controller.executeSlashCommand(input);
 
       if (result.display === "toast" && result.toastTone) {
-        toast.show(result.lines.join(" "), result.toastTone === "error" ? "error" : result.toastTone === "success" ? "success" : "info");
+        toast.show(
+          result.lines.join(" "),
+          result.toastTone === "error"
+            ? "error"
+            : result.toastTone === "success"
+              ? "success"
+              : "info",
+        );
       } else if (result.lines.length > 0) {
-        for (const line of result.lines) store.addSystemLine(line);
+        for (const line of result.lines) transcript.addSystemLine(line);
       }
 
       if (result.action === "exit") {
@@ -180,19 +211,17 @@ export async function runTui(
         return;
       }
       if (result.action === "clear_transcript") {
-        store.clear();
+        transcript.clear();
       }
       if (result.action === "refresh_status") {
-        glanceBar.update(controller.getStatusBarInput());
-        identityBar.setModel(session.getActiveModelLabel());
+        refreshChrome();
       }
       tui.requestRender();
       return;
     }
 
-    // Regular user turn
     sink.nextGroup();
-    store.appendUser(input, 0);
+    transcript.appendUser(input, sink.currentGroup);
     editor.disableSubmit = true;
     spinnerSlot.addChild(spinner);
     spinner.setMessage("thinking…");
@@ -206,12 +235,11 @@ export async function runTui(
       spinnerSlot.removeChild(spinner);
       editor.disableSubmit = false;
       sink.appendTurnFooter(Date.now() - turnStartedAt);
-      glanceBar.update(controller.getStatusBarInput());
+      refreshChrome();
       tui.requestRender();
     }
   };
 
-  // ── Ctrl-C handler ────────────────────────────────────────────────────────
   tui.addInputListener((data) => {
     if (matchesKey(data, "ctrl+c")) {
       const action = controller.handleUserInterrupt();
@@ -219,7 +247,7 @@ export async function runTui(
         spinner.stop();
         spinnerSlot.removeChild(spinner);
         editor.disableSubmit = false;
-        store.addSystemLine("⚡ turn aborted");
+        transcript.addSystemLine("⚡ turn aborted");
         tui.requestRender();
         return { consume: true };
       }
@@ -231,36 +259,52 @@ export async function runTui(
     return undefined;
   });
 
-  // ── Shutdown helper ───────────────────────────────────────────────────────
   async function doShutdown(): Promise<void> {
     editor.disableSubmit = true;
     tui.stop();
     process.stderr.write("\nSaving session…\n");
     const { memory } = await controller.shutdown();
-    if (memory === "background") {
-      process.stderr.write("Memory save continuing in background…\n");
-    }
 
-    // Consolidation epilogue (real data only — no faked learned/reinforced counts)
+    const summary = session.getSessionSummary();
+    const shortId = session.id.slice(0, 4);
+
     console.log("");
-    console.log(chalk.hex(NORD_COLORS.nord15)("◆ consolidation"));
-    const turns = session.getTurnCount?.() ?? "?";
-    console.log(`session saved · ${turns} turns · resume with praana resume ${session.id}`);
-    if (memory === "completed") {
-      console.log("memory saved");
-    } else if (memory === "background") {
-      console.log("saving in background…");
-    } else if (memory === "skipped" || memory === "noop") {
-      console.log("memory off");
+    console.log(
+      chalk.hex(NORD_COLORS.nord15)(
+        " ◆ consolidation — what this session taught praana",
+      ),
+    );
+    console.log("");
+
+    const outcomeParts: string[] = [];
+    if (summary.memoriesStored > 0) {
+      outcomeParts.push(`learned ${summary.memoriesStored}`);
+    }
+    const recallUsed = session.getRecallUsedCount();
+    if (recallUsed > 0) {
+      outcomeParts.push(`reinforced ${recallUsed}`);
+    }
+    if (outcomeParts.length > 0) {
+      console.log(` ${outcomeParts.join(" · ")}`);
+      console.log("");
     }
 
-    for (const line of formatSessionEpilogue(session.id)) {
-      console.log(line);
+    console.log(
+      ` session saved · ${summary.turns} turns · resume with  praana resume ${shortId}`,
+    );
+
+    if (memory === "completed") {
+      console.log(chalk.dim(" memory saved"));
+    } else if (memory === "background") {
+      console.log(chalk.dim(" saving in background…"));
+    } else if (memory === "skipped" || memory === "noop") {
+      console.log(chalk.dim(" memory off"));
     }
-    console.log(formatSessionEndSummary(session));
+
+    console.log("");
+    console.log(chalk.dim(formatSessionEndSummary(session)));
     process.exit(0);
   }
 
-  // ── Start ─────────────────────────────────────────────────────────────────
   tui.start();
 }

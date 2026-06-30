@@ -1,36 +1,28 @@
-/* Colour palette + syntax themes for the PRAANA pi-tui TUI.
- *
- * Single file — palette.ts and syntax-themes.ts merged here so there are
- * no intra-tui circular imports and no external consumers need to know the
- * old split.
- */
+/* Colour palette, elevation zones, and syntax themes for the PRAANA pi-tui TUI. */
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { Theme as HighlightTheme } from "cli-highlight";
 
 // ─── Nord raw palette ──────────────────────────────────────────────────────
 
 export const NORD_COLORS = {
-  // Polar Night (dark backgrounds)
   nord0: "#2E3440",
   nord1: "#3B4252",
   nord2: "#434C5E",
   nord3: "#4C566A",
-  nord3b: "#616E88", // brightened nord3 (comments)
-  // Snow Storm (light foregrounds)
+  nord3b: "#616E88",
   nord4: "#D8DEE9",
   nord5: "#E5E9F0",
   nord6: "#ECEFF4",
-  // Frost (cool accents)
   nord7: "#8FBCBB",
   nord8: "#88C0D0",
   nord9: "#81A1C1",
   nord10: "#5E81AC",
-  // Aurora (semantic / status)
-  nord11: "#BF616A", // red
-  nord12: "#D08770", // orange
-  nord13: "#EBCB8B", // yellow
-  nord14: "#A3BE8C", // green
-  nord15: "#B48EAD", // purple / violet
+  nord11: "#BF616A",
+  nord12: "#D08770",
+  nord13: "#EBCB8B",
+  nord14: "#A3BE8C",
+  nord15: "#B48EAD",
 } as const;
 
 // ─── Palette type ──────────────────────────────────────────────────────────
@@ -50,10 +42,15 @@ export type Palette = {
   info: string;
   success: string;
   text: string;
-  /** Accent used for recall/memory highlights */
   memory: string;
   codeBg: string;
   codeSpanBg: string;
+  /** Chrome strip (identity + glance). */
+  zoneChrome: string;
+  /** User, tools, recall, thinking, input. */
+  zoneRaised: string;
+  /** Assistant prose — calmest surface. */
+  zoneCanvas: string;
 };
 
 export type TuiTheme = {
@@ -63,21 +60,20 @@ export type TuiTheme = {
   light: Palette;
 };
 
-// ─── Nord palettes ─────────────────────────────────────────────────────────
-
 const c = NORD_COLORS;
 
+/** Design §10: blue user · violet memory · amber tools · grey thinking. */
 const NORD_DARK: Palette = {
-  user: c.nord14,
-  assistant: c.nord8,
-  thinking: c.nord15,
-  tool: c.nord10,
+  user: c.nord9,
+  assistant: c.nord6,
+  thinking: c.nord3b,
+  tool: c.nord12,
   system: c.nord4,
   border: c.nord8,
   gutter: c.nord3,
   muted: c.nord4,
   faint: c.nord3b,
-  warning: c.nord12,
+  warning: c.nord13,
   error: c.nord11,
   info: c.nord9,
   success: c.nord14,
@@ -85,13 +81,16 @@ const NORD_DARK: Palette = {
   memory: c.nord15,
   codeBg: c.nord0,
   codeSpanBg: c.nord1,
+  zoneChrome: c.nord1,
+  zoneRaised: c.nord2,
+  zoneCanvas: c.nord0,
 };
 
 const NORD_LIGHT: Palette = {
-  user: c.nord14,
-  assistant: c.nord10,
-  thinking: c.nord15,
-  tool: c.nord9,
+  user: c.nord10,
+  assistant: c.nord0,
+  thinking: c.nord3,
+  tool: c.nord12,
   system: c.nord3,
   border: c.nord10,
   gutter: c.nord4,
@@ -105,6 +104,9 @@ const NORD_LIGHT: Palette = {
   memory: c.nord15,
   codeBg: c.nord5,
   codeSpanBg: c.nord4,
+  zoneChrome: c.nord4,
+  zoneRaised: c.nord5,
+  zoneCanvas: c.nord6,
 };
 
 export const NORD: TuiTheme = {
@@ -116,6 +118,40 @@ export const NORD: TuiTheme = {
 
 export const ACTIVE_THEME: TuiTheme = NORD;
 export const PALETTE: Palette = ACTIVE_THEME.dark;
+
+// ─── Elevation zones (design §9) ───────────────────────────────────────────
+
+export type ZoneKind = "chrome" | "raised" | "canvas";
+
+export function zonesEnabled(configOn: boolean): boolean {
+  return configOn && !process.env.NO_COLOR && chalk.level >= 1;
+}
+
+export function zoneBg(
+  kind: ZoneKind,
+  enabled: boolean,
+): ((text: string) => string) | undefined {
+  if (!zonesEnabled(enabled)) return undefined;
+  const hex =
+    kind === "chrome"
+      ? PALETTE.zoneChrome
+      : kind === "raised"
+        ? PALETTE.zoneRaised
+        : PALETTE.zoneCanvas;
+  return (text: string) => chalk.bgHex(hex)(text);
+}
+
+export function paintZoneLine(
+  line: string,
+  kind: ZoneKind,
+  enabled: boolean,
+  width: number,
+): string {
+  const bg = zoneBg(kind, enabled);
+  const fitted = truncateToWidth(line, width, "…", bg !== undefined);
+  if (!bg) return fitted;
+  return bg(fitted);
+}
 
 // ─── Nord syntax theme (cli-highlight) ────────────────────────────────────
 
@@ -169,7 +205,6 @@ const NAMED_SYNTAX_THEMES: Record<string, HighlightTheme> = {
   "nord-dark": NORD_SYNTAX,
 };
 
-/** Resolve a syntax-theme name to a cli-highlight Theme object or name string. */
 export function resolveSyntaxTheme(name: string): HighlightTheme | string {
   return NAMED_SYNTAX_THEMES[name] ?? name;
 }
