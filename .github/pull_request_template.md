@@ -16,7 +16,7 @@
 
 ## Checklist
 
-- [ ] `npm run build && npm test` pass locally
+- [ ] `bun typecheck && bun test` pass locally
 - [ ] New logic has tests in `tests/` (when applicable)
 - [ ] Commit messages follow conventional commits (`feat:`, `fix:`, `docs:`, …)
 - [ ] No secrets or API keys in the diff

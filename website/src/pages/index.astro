@@ -30,7 +30,7 @@ const faq = [
   },
   {
     q: "Is the context engine proven to be better than classic mode?",
-    a: "Not yet measured. Engine mode is opt-in for this reason. The telemetry scorecard shipped recently and gives session-level signals. The A/B eval harness — comparing engine vs classic on a fixed task suite — is next on the roadmap.",
+    a: "Not yet measured. Engine mode is now the default, but this is still an experimental default. The telemetry scorecard gives session-level signals. The A/B eval harness — comparing engine vs classic on a fixed task suite — is next on the roadmap.",
   },
 ];
 
@@ -113,7 +113,7 @@ const faqStructuredData = {
 
     <h2>How it works</h2>
 
-    <h3>Adaptive Context Engine (opt-in)</h3>
+    <h3>Adaptive Context Engine (default)</h3>
     <p>
       Every turn, a deterministic compiler assembles the prompt from five sections,
       each with its own token budget:
@@ -192,8 +192,8 @@ praana</code></pre>
           <td>Telemetry scorecard is live. The A/B eval harness — engine vs classic on a fixed task suite — doesn't exist yet. We don't claim the engine beats classic until we can measure it.</td>
         </tr>
         <tr>
-          <td><strong>Engine is opt-in</strong></td>
-          <td>Classic mode (full verbatim transcript) is still the default for this reason.</td>
+          <td><strong>Engine is experimental</strong></td>
+          <td>Engine mode is the default, but classic mode remains available by setting <code>[context_engine] enabled = false</code>.</td>
         </tr>
         <tr>
           <td><strong>Background Consolidation</strong></td>

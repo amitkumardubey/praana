@@ -16,7 +16,7 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 bun install
 bun typecheck    # TypeScript type-check (no emit)
 bun dev          # Run without build step
-bun test         # 83 files, 1010 tests, ~8s
+bun test         # 83 files, 997 tests, ~11s
 ```
 
 Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config below).
@@ -151,7 +151,7 @@ Full details: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Key terms: [docs/c
 
 ```
 src/
-  main.ts        — CLI entry: TUI (default) or readline, slash commands
+  main.ts        — CLI entry: TTY guard, slash commands, pi-tui launch
   turn.ts        — Per-turn orchestration: prompt → LLM → tools → tier management
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
   compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
@@ -167,8 +167,7 @@ src/
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
   types.ts       — Shared TypeScript types
   ui/
-    readline-ui.ts — Classic readline loop
-    tui/           — Ink TUI (default when TTY): transcript, status bar, thinking blocks
+    tui/           — pi-tui terminal shell: transcript, chrome bars, autocomplete, thinking blocks
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall

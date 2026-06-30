@@ -11,7 +11,7 @@ No daemon, no RPC server, no multi-process coordination.
 
 ```
 src/
-  main.ts        — CLI entry point, readline loop, slash commands
+  main.ts        — CLI entry point, TTY guard, slash commands, pi-tui launch
   turn.ts        — Per-turn orchestration (prompt → LLM → tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
@@ -87,12 +87,12 @@ src/
 
 ```
 User input
-  → main.ts readline loop
+  → main.ts interactive TTY entrypoint
   → runTurn(session, input) in turn.ts
       1) append user_message event
       2) select mode:
-         Engine: context_engine.enabled=true AND ContextEngine initialized
-         Classic: everything else (disabled, or enabled but init failed)
+         Engine: context_engine.enabled=true AND ContextEngine initialized (default)
+         Classic: context engine disabled, or enabled but init failed
       3) [engine only] auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
       4) [engine only] capture StateGraph snapshot (for post-turn diff)
       5) [engine only] ingest tool results through distillers; classic passes through
@@ -350,7 +350,7 @@ The memory retrieval system fuses multiple signals into a unified search score:
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
-- **Tool-outcome reinforcement** (#45): entries recalled before a successful tool invocation receive a confidence boost. More broadly, any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up, usefulness up if acted on / down if ignored — and an entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
+- **Tool-outcome reinforcement** (#45): any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up; usefulness boosted only when acted on and the placeholder session-success signal is positive, neutral when acted on without that signal, and decayed when ignored. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
 
 ### Schema Migrations
 The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
@@ -424,7 +424,7 @@ idle_soft_after_turns = 20
 idle_hard_after_turns = 50
 
 [context_engine]
-enabled = false                    # true = engine mode (checkpoint, distillation, scoring)
+enabled = true                     # false = classic mode (full verbatim transcript)
 measurement_mode = false           # write telemetry in classic mode (debug)
 artifact_inline_threshold = 400
 artifact_ttl_turns = 50
@@ -472,12 +472,9 @@ log_dir = "~/.praana/sessions"
 
 ## UI and Slash Commands
 
-PRAANA supports two terminal interfaces (see `[ui] mode` in config):
+PRAANA's current CLI requires an interactive TTY and launches the pi-tui terminal shell (`src/ui/tui/`). The TUI uses native scrollback, transcript replay, markdown rendering, identity/glance bars, slash-command/file autocomplete, toast overlays, buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
 
-- **TUI (default when TTY)** — Ink-based chat shell (`src/ui/tui/`): transcript replay, markdown rendering, status bar, thinking blocks, scroll window.
-- **Readline** — classic line-at-a-time CLI (`src/ui/readline-ui.ts`). Used automatically when stdout is not a TTY, or via `praana --ui readline`.
-
-Both support slash commands via `src/slash-commands.ts`:
+Slash commands are handled by `src/slash-commands.ts`:
 
 - `/exit` — ends session, triggers summarizer, saves and quits
 - `/clear`, `/new` — clears working-memory state (StateGraph + engine checkpoint)
@@ -494,4 +491,4 @@ Both support slash commands via `src/slash-commands.ts`:
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
 - `/help` — prints slash commands documentation
 
-CLI flags: `praana --incognito`, `praana --ui tui|readline`, `praana --config <path>`. See `src/app-banner.ts` for the full list.
+CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume <session_id>`, `praana init`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.

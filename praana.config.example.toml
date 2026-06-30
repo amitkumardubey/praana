@@ -177,9 +177,10 @@ log_dir = "~/.praana/sessions"
 
 [context_engine]
 # Context engine: structured checkpoint, distillation, and scored compilation.
-# When disabled (false), PRAANA runs in classic mode — full verbatim conversation
-# history, no StateGraph tools, skills loaded as metadata catalog only.
-# If enabled but initialization fails, PRAANA falls back to the same classic mode.
+# Enabled by default. When disabled (false), PRAANA runs in classic mode — full
+# verbatim conversation history, no StateGraph tools, skills loaded as metadata
+# catalog only. If enabled but initialization fails, PRAANA falls back to the
+# same classic mode.
 #
 # When enabled, SessionCheckpoint is reconciled after every turn from a
 # deterministic TurnDigest (never by the LLM). Checkpoint sections:
@@ -192,7 +193,7 @@ log_dir = "~/.praana/sessions"
 # Casual user preferences ("we use pnpm", "let's use JWT") are NOT captured by regex —
 # the system prompt nudge directs the LLM to call add_constraint for those.
 # Only the unambiguous "not X, Y" correction pattern is regex-captured.
-enabled = false
+enabled = true
 
 # Write telemetry even when engine is off (debug / comparison during development)
 measurement_mode = false
@@ -231,7 +232,13 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [ui]
-# Terminal interface: "tui" (Ink chat shell) or "readline" (classic CLI)
-mode = "tui"
-# Screen mode for TUI: "preserve" keeps scrollback (default), "alternate" uses full-screen buffer
-screen = "preserve"
+# pi-tui terminal shell. The TUI uses native scrollback; there is no alternate
+# screen mode and no readline UI switch in the current CLI.
+markdown_rendering = true
+syntax_highlighting = true
+syntax_theme = "nord"
+ambient = "inline"
+tool_icons = "unicode"
+background_zones = false
+show_cost = true
+banner = true
