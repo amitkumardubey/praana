@@ -134,7 +134,7 @@ export async function runTurn(
   );
   const toolDescs = describeTools({ contextEngineEnabled, classicMode });
 
-  const skillsSection = buildSkillMetadataCatalog(session.skills) || null;
+  const skillsSection = buildSkillMetadataCatalog(session.skills, session.skillUsefulness ?? undefined) || null;
   const tokenBudget = session.config.compiler.token_budget;
   const agentsBudgetRatio = session.config.compiler.agents_budget_ratio;
 
@@ -299,6 +299,8 @@ export async function runTurn(
   ];
   const maxSteps = session.config.turn?.max_steps ?? 25;
   let interrupted = false;
+  // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
+  let hadNonLoadSkillTool = false;
 
   for (let step = 0; step < maxSteps; step++) {
     if (options?.signal?.aborted) {
@@ -437,6 +439,7 @@ export async function runTurn(
       });
 
       if (!session.debug) s.onSpinnerStart?.(tc.toolName);
+      if (tc.toolName !== "load_skill") hadNonLoadSkillTool = true;
 
       const toolDef = (tools as Record<string, any>)[tc.toolName];
       let result: unknown;
@@ -535,6 +538,12 @@ export async function runTurn(
     if (session.debug) {
       s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
     }
+  }
+
+  // Mark resident skills as used if any non-load_skill tool call executed this turn.
+  // "loaded a skill and did nothing else" is the idle case the usefulness loop penalizes.
+  if (session.skillRuntime && hadNonLoadSkillTool) {
+    session.skillRuntime.markResidentSkillsUsed();
   }
 
   if (interrupted) {

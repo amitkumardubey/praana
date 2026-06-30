@@ -117,7 +117,7 @@ describe("buildSkillMetadataCatalog", () => {
     mkdirSync(skillsDir);
     writeSkill(skillsDir, "git", "Git operations");
     const catalog = buildSkillMetadataCatalog([
-      { name: "git", description: "Git operations", location: join(skillsDir, "git.md"), directory: skillsDir, body: "", metadata: { name: "git", description: "Git operations" } },
+      { name: "git", description: "Git operations", location: join(skillsDir, "git.md"), directory: skillsDir, body: "", metadata: { name: "git", description: "Git operations" }, scope: "" },
     ]);
     expect(catalog).toContain("## Available Skills");
     expect(catalog).toContain("load_skill(skill_id)");
@@ -176,7 +176,7 @@ describe("trackLoad", () => {
     const scorecard = rt.getSkillScorecard();
     expect(scorecard.loaded).toBe(1);
     expect(scorecard.loadEvents).toBe(2);
-    expect(scorecard.used).toBe(1);
+    expect(scorecard.used).toBe(0); // markResidentSkillsUsed was never called — no tool ran
   });
 });
 

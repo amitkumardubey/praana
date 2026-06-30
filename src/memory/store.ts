@@ -80,7 +80,7 @@ function certaintyToValidity(c: "high" | "medium" | "low"): number {
  * no error-loop, commit landed, etc.) once the scorecard (ADR-005 C1 / #99) exists.
  * Currently: reason is "normal" AND at least one tool returned ok = true.
  */
-function isSessionGood(
+export function isSessionGood(
   reason: string,
   events: Array<{ type: string; result?: unknown }> | undefined,
 ): boolean {
