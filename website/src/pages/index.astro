@@ -6,27 +6,31 @@ const base = import.meta.env.BASE_URL;
 const faq = [
   {
     q: "What is PRAANA?",
-    a: "PRAANA is an open-source terminal coding agent. It runs in your CLI, calls an LLM, executes tools (code search, multi-file edits with diff preview, optional shell), keeps long sessions usable with adaptive context, and remembers useful learnings across sessions in a local database.",
+    a: "A terminal coding agent built on two systems: an Adaptive Context Engine that curates what the model sees on every turn (tiered working memory, tool-output distillation, session checkpoint), and Cognitive Memory that extracts structured learnings when a session ends and surfaces a ranked digest at the start of the next. Runs on Bun. MIT. Local-first.",
   },
   {
-    q: "Which LLM providers does PRAANA work with?",
-    a: "Anthropic (Claude), OpenAI (GPT), DeepSeek, Groq, Google (Gemini), Mistral, xAI, Fireworks, Together, OpenCode, and OpenRouter, plus Ollama for fully local models. PRAANA auto-detects your provider API key from the environment.",
+    q: "Which providers does it work with?",
+    a: "Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, and Ollama for fully local use. PRAANA auto-detects your provider API key from the environment.",
   },
   {
-    q: "How is PRAANA different from a plain transcript coding agent?",
-    a: "An opt-in engine mode keeps long sessions on track with tiered working memory and tool-output distillation instead of stuffing the full history into the prompt. Optional cognitive memory extracts learnings when a session ends and surfaces a ranked digest at the start of the next. Known limitations are published upfront and there are no benchmark claims we can't back.",
+    q: "How is it different from a plain transcript agent?",
+    a: "Most agents append the full transcript until something breaks, then compact. PRAANA curates the prompt on every turn — tiered state objects demote and hydrate based on relevance, tool output is distilled at ingestion and stored in a content-addressed artifact store, and a deterministic checkpoint preserves decisions and intent when turns scroll out. Cognitive Memory carries learnings across sessions in local SQLite. Known limitations are published upfront. There are no benchmark claims we can't back.",
   },
   {
-    q: "Is PRAANA free and open source?",
-    a: "Yes. PRAANA is MIT-licensed, the source is on GitHub, and it is published on npm. Install it with bunx praana or bun add -g praana.",
+    q: "Is it free and open source?",
+    a: "Yes. MIT-licensed. Source on GitHub, published on npm. Install with bun add -g praana or bunx praana.",
   },
   {
     q: "Does my data leave my machine?",
-    a: "PRAANA is local-first. Cognitive memory lives in a local SQLite database on your machine. The only network calls are to the LLM provider you choose, or none at all if you run a local model with Ollama.",
+    a: "No. Cognitive Memory lives in ~/.praana/memory.db. The only network calls go to the LLM provider you choose. With Ollama, nothing leaves your machine at all.",
   },
   {
-    q: "What do I need to run PRAANA?",
-    a: "Bun ≥ 1.2 (bun.sh/install) and an API key for any supported provider, or Ollama for fully local use.",
+    q: "What do I need to run it?",
+    a: "Bun ≥ 1.2 and an API key for any supported provider. Install Bun at bun.sh/install.",
+  },
+  {
+    q: "Is the context engine proven to be better than classic mode?",
+    a: "Not yet measured. Engine mode is opt-in for this reason. The telemetry scorecard shipped recently and gives session-level signals. The A/B eval harness — comparing engine vs classic on a fixed task suite — is next on the roadmap.",
   },
 ];
 
@@ -45,27 +49,166 @@ const faqStructuredData = {
   <section class="hero">
     <h1>PRAANA</h1>
     <p class="lead">
-      A terminal coding agent that <strong>manages context like memory</strong>. It curates what the model sees on every turn and stores learnings across sessions in a local SQLite database. Pure TypeScript, local-first. Works with Claude, GPT, Gemini, DeepSeek, Groq, Mistral, Ollama and more.
+      A terminal coding agent that curates what the model sees on every turn
+      and carries learnings across sessions in a local database.
+      Pure TypeScript. Local-first. Any provider.
     </p>
-    <img src={`${base}assets/demo.png`} alt="PRAANA terminal coding agent demo" width="720" height="auto" />
+    <div class="install-block">
+      <pre><code>bun add -g praana</code></pre>
+      <span class="install-or">or</span>
+      <pre><code>bunx praana</code></pre>
+    </div>
+    <p class="prereq">Requires <a href="https://bun.sh/install">Bun ≥ 1.2</a></p>
+    <img src={`${base}assets/demo.png`} alt="PRAANA terminal — adaptive context and cognitive memory" width="720" height="auto" />
   </section>
 
   <div class="prose">
+
+    <h2>Why</h2>
     <p>
-      PRAANA runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions
-      usable by compressing old context instead of stuffing everything into the prompt. Between
-      sessions it can extract learnings from transcripts and store them in a local SQLite database.
+      Long sessions degrade. The prompt fills with stale tool output, the model drifts,
+      and by turn 15 you're repeating the objective you stated at turn 1.
+      Come back the next day and you re-explain your conventions, your decisions,
+      your constraints — everything that was obvious yesterday.
+    </p>
+    <p>
+      PRAANA addresses both with two systems. The Adaptive Context Engine curates
+      the prompt on every turn rather than waiting for it to break.
+      Cognitive Memory extracts structured learnings at session end and surfaces
+      them at the start of the next session, in the same repo or anywhere.
     </p>
 
-    <h2>Install</h2>
-    <pre><code>npm install -g praana
-export ANTHROPIC_API_KEY="sk-ant-..."   # or OPENAI_API_KEY, OPENROUTER_API_KEY, ...
+    <h2>What's different</h2>
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>Typical transcript agent</th>
+          <th>PRAANA</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Long sessions</strong></td>
+          <td>Full history in prompt; context fills up</td>
+          <td>Engine mode: tiered state, tool-output distillation, session checkpoint every turn</td>
+        </tr>
+        <tr>
+          <td><strong>Next session</strong></td>
+          <td>Starts cold unless you paste notes</td>
+          <td>Cognitive Memory: ranked digest from past sessions, project + global scopes</td>
+        </tr>
+        <tr>
+          <td><strong>Stack</strong></td>
+          <td>Often Python, daemon, vector DB required</td>
+          <td>Bun, SQLite only — no Python, no daemon, no Docker</td>
+        </tr>
+        <tr>
+          <td><strong>Claims</strong></td>
+          <td>Often marketed as solved</td>
+          <td><a href="https://github.com/amitkumardubey/praana#known-limitations-honest">Known limitations</a> published upfront; no benchmark claims we can't back</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>How it works</h2>
+
+    <h3>Adaptive Context Engine (opt-in)</h3>
+    <p>
+      Every turn, a deterministic compiler assembles the prompt from five sections,
+      each with its own token budget:
+    </p>
+    <pre><code>1. System Frame      — identity, tools, working directory
+2. Memory Digest     — cross-session learnings, ranked
+3. Active State      — current work objects at full detail
+4. Peripheral Stubs  — inactive objects, one-line anchors
+5. Recent Turns      — last N turns, budget-capped</code></pre>
+    <p>
+      State objects — tasks, decisions, constraints, notes — demote from
+      <strong>active</strong> to <strong>soft</strong> to <strong>hard</strong>
+      based on idle turns. Two-pass hydration before each turn (substring match + BM25)
+      promotes them back when the current turn references them.
+      Tool output from git, npm, tsc, and ripgrep is distilled at ingestion;
+      full bytes live in a content-addressed artifact store and are
+      retrievable on demand via <code>retrieve_artifact</code>.
+      A session checkpoint — active request, decisions with rationale, constraints,
+      rolling narrative — is reconciled deterministically every turn so turn 30
+      still knows what you asked at turn 1.
+    </p>
+
+    <h3>Cognitive Memory (opt-in)</h3>
+    <p>
+      At <code>/exit</code>, a summariser extracts structured learnings from
+      the transcript across six kinds:
+      <code>fact</code>, <code>preference</code>, <code>decision</code>,
+      <code>pattern</code>, <code>mistake</code>, <code>constraint</code>.
+      Stored in local SQLite with vector search via
+      <code>@huggingface/transformers</code> running in-process —
+      no Ollama required, no sidecar.
+      Confidence decays 5%/day. Entries confirmed across two or more sessions
+      promote to Consolidated Memory and decay ten times slower.
+      Project memories stay scoped to the repo; global preferences surface everywhere.
+      The next session starts with a ranked digest already in the prompt.
+    </p>
+
+    <h2>Quick start</h2>
+    <pre><code># Install
+bun add -g praana         # global install
+# or
+bunx praana               # no install
+
+# Set any supported provider key
+export ANTHROPIC_API_KEY="sk-ant-..."
+# or OPENAI_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, ...
+
+# Launch
 praana</code></pre>
     <p>
-      Requires <strong>Node 22+</strong>. See the
-      <a href="https://github.com/amitkumardubey/praana#quick-start">README</a> for all providers
-      and config options.
+      PRAANA auto-detects your provider from the environment.
+      On first run with no config, an interactive setup wizard runs.
+      To customise: <code>praana init</code> creates <code>praana.config.toml</code>.
     </p>
+
+    <h3>Supported providers</h3>
+    <div class="provider-grid">
+      <span>Anthropic</span><span>OpenAI</span><span>DeepSeek</span>
+      <span>Groq</span><span>Google</span><span>Mistral</span>
+      <span>xAI</span><span>Fireworks</span><span>Together</span>
+      <span>OpenCode</span><span>OpenRouter</span><span>Ollama</span>
+    </div>
+
+    <h2>Known limitations</h2>
+    <table>
+      <thead>
+        <tr><th>Area</th><th>Gap</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Memory reinforcement</strong></td>
+          <td>Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (<a href="https://github.com/amitkumardubey/praana/issues/162">#162</a>).</td>
+        </tr>
+        <tr>
+          <td><strong>No published evals</strong></td>
+          <td>Telemetry scorecard is live. The A/B eval harness — engine vs classic on a fixed task suite — doesn't exist yet. We don't claim the engine beats classic until we can measure it.</td>
+        </tr>
+        <tr>
+          <td><strong>Engine is opt-in</strong></td>
+          <td>Classic mode (full verbatim transcript) is still the default for this reason.</td>
+        </tr>
+        <tr>
+          <td><strong>Background Consolidation</strong></td>
+          <td>Schema exists, not scalable yet. The full learning loop is incomplete.</td>
+        </tr>
+        <tr>
+          <td><strong>Embedder setup</strong></td>
+          <td>Transformers.js model weights download ~80MB on first run, cached in <code>~/.praana/models/</code>. Keyword-only FTS fallback always works without a download.</td>
+        </tr>
+        <tr>
+          <td><strong>Shell sandbox</strong></td>
+          <td>Off by default. Shell tool runs with your user permissions. Optional allowlist via <code>[shell]</code> in config.</td>
+        </tr>
+      </tbody>
+    </table>
 
     <h2>Documentation</h2>
     <div class="card-grid">
@@ -79,7 +222,7 @@ praana</code></pre>
       </a>
       <a class="card" href="https://github.com/amitkumardubey/praana/blob/main/ROADMAP.md">
         <strong>Roadmap</strong>
-        <span>Direction and honest limitations</span>
+        <span>What's next and in what order</span>
       </a>
       <a class="card" href="https://github.com/amitkumardubey/praana/blob/main/CONTRIBUTING.md">
         <strong>Contributing</strong>
@@ -87,82 +230,22 @@ praana</code></pre>
       </a>
     </div>
 
-    <h2>Why PRAANA?</h2>
-    <table>
-      <thead>
-        <tr>
-          <th></th>
-          <th>Typical transcript agent</th>
-          <th>PRAANA</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Long sessions</strong></td>
-          <td>Full history in prompt; context fills up</td>
-          <td>Opt-in <strong>engine mode</strong>: tiered working memory, distillation, checkpoint</td>
-        </tr>
-        <tr>
-          <td><strong>Next day</strong></td>
-          <td>Starts cold unless you paste notes</td>
-          <td><strong>Cognitive memory</strong>: ranked digest from past sessions (project + global scope)</td>
-        </tr>
-        <tr>
-          <td><strong>Honesty</strong></td>
-          <td>Often marketed as solved</td>
-          <td>
-            <a href="https://github.com/amitkumardubey/praana#known-limitations-honest">Known limitations</a>
-            published upfront — no benchmark claims we can't back
-          </td>
-        </tr>
-      </tbody>
-    </table>
-
     <h2>Community</h2>
     <ul>
       <li><a href="https://github.com/amitkumardubey/praana/discussions">GitHub Discussions</a> — Q&amp;A, ideas, releases</li>
-      <li><a href="https://github.com/amitkumardubey/praana/issues">Issues</a> — bugs and feature tracking</li>
-      <li><a href="https://www.npmjs.com/package/praana">npm</a> — <code>npm install -g praana</code></li>
+      <li><a href="https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22">Good first issues</a> — contributions welcome</li>
+      <li><a href="https://www.npmjs.com/package/praana">npm</a></li>
     </ul>
 
-    <h2 id="faq">Frequently asked questions</h2>
-    <h3>What is PRAANA?</h3>
-    <p>
-      PRAANA is an open-source terminal coding agent. It runs in your CLI, calls an LLM,
-      executes tools (code search, multi-file edits with diff preview, optional shell),
-      keeps long sessions usable with adaptive context, and remembers useful learnings
-      across sessions in a local database.
-    </p>
-    <h3>Which LLM providers does it work with?</h3>
-    <p>
-      Anthropic (Claude), OpenAI (GPT), DeepSeek, Groq, Google (Gemini), Mistral, xAI,
-      Fireworks, Together, OpenCode, and OpenRouter — plus Ollama for fully local models.
-      PRAANA auto-detects your provider API key from the environment.
-    </p>
-    <h3>How is it different from a plain transcript coding agent?</h3>
-    <p>
-      Two things. An opt-in <strong>engine mode</strong> keeps long sessions on track with
-      tiered working memory and tool-output distillation instead of stuffing the full
-      history into the prompt. And optional <strong>cognitive memory</strong> extracts
-      learnings when a session ends and surfaces a ranked digest at the start of the next.
-      We publish <a href="https://github.com/amitkumardubey/praana#known-limitations-honest">known limitations</a> upfront and make no benchmark claims we can't back.
-    </p>
-    <h3>Is it free and open source?</h3>
-    <p>
-      Yes. PRAANA is MIT-licensed, the source is on
-      <a href="https://github.com/amitkumardubey/praana">GitHub</a>, and it's published on
-      <a href="https://www.npmjs.com/package/praana">npm</a>: <code>bunx praana</code> or <code>bun add -g praana</code>.
-    </p>
-    <h3>Does my data leave my machine?</h3>
-    <p>
-      PRAANA is local-first. Cognitive memory lives in a local SQLite database on your
-      machine. The only network calls are to the LLM provider you choose — or none at all
-      if you run a local model with Ollama.
-    </p>
-    <h3>What do I need to run it?</h3>
-    <p>
-      Bun ≥ 1.2 (<a href="https://bun.sh/install">bun.sh/install</a>) and an API key for any supported provider (or Ollama for fully local use).
-    </p>
+    <h2 id="faq">FAQ</h2>
+    {faq.map(({ q, a }) => (
+      <>
+        <h3>{q}</h3>
+        <p>{a}</p>
+      </>
+    ))}
+
   </div>
+
   <script type="application/ld+json" set:html={JSON.stringify(faqStructuredData)} />
 </Layout>
