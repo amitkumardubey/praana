@@ -160,13 +160,16 @@ export async function runTui(
 
   const spinnerSlot = new Container();
   const body = new Container();
-  tui.addChild(identityBar);
+  body.addChild(transcript);
   tui.addChild(body);
   tui.addChild(toast);
   tui.addChild(spinnerSlot);
   tui.addChild(editor);
+  // Identity bar sits below the editor, above the glance bar — all three
+  // are pinned at the bottom because they are the last children rendered
+  // and the viewport always shows the tail of the content buffer.
+  tui.addChild(identityBar);
   tui.addChild(glanceBar);
-  body.addChild(transcript);
   tui.setFocus(editor);
 
   const modelId = controller.currentModelOrDefault();
@@ -180,6 +183,19 @@ export async function runTui(
     ctxWindowTokens: ctxWindow,
     ctxUsedTokens: () =>
       controller.getStatusBarInput().contextUsedTokens,
+    getModel: () => controller.currentModelOrDefault(),
+    onLiveContextGrowth: (extraTokens) => {
+      const base = controller.getStatusBarInput();
+      glanceBar.update({
+        status: {
+          ...base,
+          contextUsedTokens: base.contextUsedTokens + extraTokens,
+        },
+        showCost: config.ui.show_cost,
+        sessionInputTokens: session.getInputTokens(),
+        sessionOutputTokens: session.getOutputTokens(),
+      });
+    },
   });
 
   let turnStartedAt = 0;

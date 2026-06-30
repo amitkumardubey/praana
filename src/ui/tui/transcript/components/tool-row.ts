@@ -4,7 +4,7 @@ import { PALETTE, paintZoneLine } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
 import { accentBar } from "../render-utils.js";
 
-const BODY_PREVIEW_LINES = 16;
+const BODY_PREVIEW_LINES = 24;
 
 export interface ToolRowState {
   toolName: string;
@@ -43,7 +43,7 @@ export class ToolRowComponent implements Component {
 
   render(width: number): string[] {
     const { state } = this;
-    const bg = this.opts.backgroundZones;
+    const bg = false;
     const bar = accentBar("tool");
     const indent = "   ";
     const icon = chalk.hex(PALETTE.tool)(state.toolIcon);

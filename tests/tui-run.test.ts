@@ -22,6 +22,7 @@ class FakeTUI {
   setFocus = tuiSetFocus;
   addChild = tuiAddChild;
   addInputListener = tuiAddInputListener;
+  showOverlay = mock(() => ({ hide: mock(), setHidden: mock(), isHidden: mock(() => false), focus: mock(), unfocus: mock(), isFocused: mock(() => false) }));
   children: unknown[] = [];
 }
 
@@ -48,6 +49,7 @@ mock.module("@earendil-works/pi-tui", () => ({
   TUI: FakeTUI,
   ProcessTerminal: FakeProcessTerminal,
   Container: FakeContainer,
+  Spacer: class { constructor(_n: number) {} invalidate = mock(); render = mock(() => []); },
   Editor: FakeEditor,
   Loader: FakeLoader,
   CombinedAutocompleteProvider: class { constructor() {} },

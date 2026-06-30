@@ -1,5 +1,5 @@
 /* Colour palette, elevation zones, and syntax themes for the PRAANA pi-tui TUI. */
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { Theme as HighlightTheme } from "cli-highlight";
 
@@ -45,6 +45,8 @@ export type Palette = {
   memory: string;
   codeBg: string;
   codeSpanBg: string;
+  /** Dim neutral-gray background for user message rows. */
+  userBg: string;
   /** Chrome strip (identity + glance). */
   zoneChrome: string;
   /** User, tools, recall, thinking, input. */
@@ -81,6 +83,7 @@ const NORD_DARK: Palette = {
   memory: c.nord15,
   codeBg: c.nord0,
   codeSpanBg: c.nord1,
+  userBg: "#333333",
   zoneChrome: c.nord1,
   zoneRaised: c.nord2,
   zoneCanvas: c.nord0,
@@ -104,6 +107,7 @@ const NORD_LIGHT: Palette = {
   memory: c.nord15,
   codeBg: c.nord5,
   codeSpanBg: c.nord4,
+  userBg: "#d8d8d8",
   zoneChrome: c.nord4,
   zoneRaised: c.nord5,
   zoneCanvas: c.nord6,
@@ -148,9 +152,15 @@ export function paintZoneLine(
   width: number,
 ): string {
   const bg = zoneBg(kind, enabled);
-  const fitted = truncateToWidth(line, width, "…", bg !== undefined);
-  if (!bg) return fitted;
-  return bg(fitted);
+  // Truncate only (no padding) — the built-in pad path in truncateToWidth
+  // miscounts double-width emoji by 1, producing a line that is width+1.
+  const truncated = truncateToWidth(line, width, "…", false);
+  if (!bg) return truncated;
+  // Pad using visibleWidth for measurement — this is the same function
+  // pi-tui uses to validate rendered lines, so the padding is always exact.
+  const actual = visibleWidth(truncated);
+  const padding = " ".repeat(Math.max(0, width - actual));
+  return bg(truncated + padding);
 }
 
 // ─── Nord syntax theme (cli-highlight) ────────────────────────────────────

@@ -9,20 +9,26 @@ export class RecallChipComponent implements Component {
   constructor(
     private readonly preview: string,
     private readonly count: number,
+    private readonly query: string | null,
     private readonly opts: TranscriptRenderOpts,
   ) {}
 
   invalidate(): void {}
 
   render(width: number): string[] {
-    const chip =
-      chalk.hex(PALETTE.memory)(`◆ recall ${this.count}`) +
-      chalk.hex(PALETTE.faint)(`  "${this.preview}"`);
+    const label = chalk.hex(PALETTE.memory)(`◆ recall ${this.count}`);
+    const queryPart = this.query
+      ? chalk.hex(PALETTE.faint)(` · "${this.query.slice(0, 40)}"`)
+      : "";
+    const previewPart = this.preview
+      ? chalk.hex(PALETTE.faint)(` → "${this.preview.slice(0, 48)}"`)
+      : "";
+    const chip = label + queryPart + previewPart;
     return renderAccentLines(
       [chip],
       "recall",
       "raised",
-      this.opts.backgroundZones,
+      false,
       width,
     );
   }

@@ -3,6 +3,7 @@
  */
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
+import { formatModelStatusLabel } from "../../status-bar.js";
 import stripAnsi from "strip-ansi";
 
 const UNICODE_ICONS: Record<string, string> = {
@@ -14,16 +15,17 @@ const UNICODE_ICONS: Record<string, string> = {
   recall: "◆",
   remember: "◆",
   load_skill: "✦",
-  create_task: "•",
-  complete_task: "•",
-  decide: "•",
-  add_note: "•",
-  add_constraint: "•",
-  hydrate: "•",
-  soft_unload: "•",
-  hard_unload: "•",
-  search_session_log: "•",
-  retrieve_artifact: "•",
+  // state/memory tools — distinct per action
+  create_task: "▸",
+  complete_task: "↩",
+  decide: "⊛",
+  add_note: "≡",
+  add_constraint: "⊘",
+  hydrate: "⇡",
+  soft_unload: "⊟",
+  hard_unload: "⊠",
+  search_session_log: "⌂",
+  retrieve_artifact: "⊞",
 };
 
 const ASCII_ICONS: Record<string, string> = {
@@ -35,14 +37,14 @@ const ASCII_ICONS: Record<string, string> = {
   recall: "m·",
   remember: "m·",
   load_skill: "sk",
-  create_task: "t·",
-  complete_task: "t·",
-  decide: "t·",
-  add_note: "t·",
-  add_constraint: "t·",
-  hydrate: "t·",
-  soft_unload: "t·",
-  hard_unload: "t·",
+  create_task: "t>",
+  complete_task: "t<",
+  decide: "d·",
+  add_note: "n·",
+  add_constraint: "c·",
+  hydrate: "hy",
+  soft_unload: "su",
+  hard_unload: "hu",
   search_session_log: "sl",
   retrieve_artifact: "ar",
 };
@@ -57,13 +59,13 @@ const TOOL_SHORT: Record<string, string> = {
   remember: "remember",
   load_skill: "skill",
   create_task: "task",
-  complete_task: "task",
+  complete_task: "done",
   decide: "decide",
   add_note: "note",
   add_constraint: "constraint",
   hydrate: "hydrate",
   soft_unload: "unload",
-  hard_unload: "unload",
+  hard_unload: "drop",
   search_session_log: "log",
   retrieve_artifact: "artifact",
 };
@@ -316,6 +318,8 @@ export interface TurnFooterInput {
   writeCount: number;
   ctxBeforePct: number;
   ctxAfterPct: number;
+  /** Active model label for this turn (e.g. "opencode/big-pickle"). */
+  model?: string;
 }
 
 /** Dim one-line turn digest (design §5). */
@@ -341,6 +345,12 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
     } else if (input.stats.recallHits > 0) {
       parts.push(`recall ${input.stats.recallHits}`);
     }
+  }
+
+  // Compact model label: strip routing prefix, show provider·model.
+  if (input.model) {
+    const { provider, modelShort } = formatModelStatusLabel(input.model);
+    parts.push(provider ? `${provider}·${modelShort}` : modelShort);
   }
 
   const duration =

@@ -153,9 +153,9 @@ export class TranscriptContainer extends Container {
     }
   }
 
-  addRecallChip(preview: string, count: number, _group: number): void {
+  addRecallChip(preview: string, count: number, query: string | null, _group: number): void {
     this.addGap("recall");
-    this.addChild(new RecallChipComponent(preview, count, this.opts));
+    this.addChild(new RecallChipComponent(preview, count, query, this.opts));
     this.lastRole = "recall";
     this.requestRender();
   }
@@ -233,7 +233,7 @@ export class TranscriptContainer extends Container {
       }
       case "recall":
         this.addChild(
-          new RecallChipComponent(entry.preview, entry.count, this.opts),
+          new RecallChipComponent(entry.preview, entry.count, entry.query ?? null, this.opts),
         );
         this.lastRole = "recall";
         break;

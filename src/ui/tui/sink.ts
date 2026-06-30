@@ -7,6 +7,7 @@ import type { LogEntry } from "../../logger.js";
 import type { TranscriptContainer } from "./transcript/container.js";
 import type { ToastRegion } from "./toast-region.js";
 import { formatTurnFooterDigest } from "./tool-icons.js";
+import { estimateTokens } from "../../token-estimate.js";
 
 export interface SinkOpts {
   ambient: "inline" | "quiet";
@@ -14,6 +15,11 @@ export interface SinkOpts {
   onSpinnerMessage: (msg: string) => void;
   ctxWindowTokens: number;
   ctxUsedTokens: () => number;
+  /** Called after each tool result with the cumulative estimated extra tokens
+   *  added this turn. Use to update the glance bar ctx% live. */
+  onLiveContextGrowth?: (extraTokens: number) => void;
+  /** Getter for the current model label — used in the turn footer. */
+  getModel?: () => string;
 }
 
 export class PiTuiSink implements TurnUiSink {
@@ -29,9 +35,12 @@ export class PiTuiSink implements TurnUiSink {
   private pendingToolArgs = new Map<string, Record<string, unknown>>();
   private bufferedStats: MemoryBannerStats | null = null;
   private recallPreview: string | null = null;
+  private recallQuery: string | null = null;
   private editCount = 0;
   private writeCount = 0;
   private ctxBeforePct = 0;
+  /** Cumulative estimated tokens added by tool results this turn. */
+  private extraContextTokens = 0;
 
   constructor(
     tui: TUI,
@@ -54,8 +63,10 @@ export class PiTuiSink implements TurnUiSink {
     this.bufferedStats = null;
     this.pendingToolArgs.clear();
     this.recallPreview = null;
+    this.recallQuery = null;
     this.editCount = 0;
     this.writeCount = 0;
+    this.extraContextTokens = 0;
     this.ctxBeforePct = this.ctxPct(this.opts.ctxUsedTokens());
   }
 
@@ -79,6 +90,9 @@ export class PiTuiSink implements TurnUiSink {
 
   onToolCall(toolName: string, args: Record<string, unknown>): void {
     this.pendingToolArgs.set(toolName, args);
+    if (toolName === "recall") {
+      this.recallQuery = typeof args.query === "string" ? args.query : null;
+    }
     this.transcript.addToolRow(toolName, args, this.group);
   }
 
@@ -93,6 +107,12 @@ export class PiTuiSink implements TurnUiSink {
 
     if (toolName === "recall") {
       this.recallPreview = this.extractRecallPreview(resultText);
+    }
+
+    // Estimate context growth from this tool result and notify the glance bar.
+    if (this.opts.onLiveContextGrowth && resultText) {
+      this.extraContextTokens += estimateTokens(resultText);
+      this.opts.onLiveContextGrowth(this.extraContextTokens);
     }
   }
 
@@ -111,6 +131,7 @@ export class PiTuiSink implements TurnUiSink {
       this.transcript.addRecallChip(
         preview,
         stats.recallHits || stats.recallCalls,
+        this.recallQuery,
         this.group,
       );
     }
@@ -150,6 +171,7 @@ export class PiTuiSink implements TurnUiSink {
   appendTurnFooter(durationMs: number): void {
     const stats = this.bufferedStats ?? undefined;
     const ctxAfterPct = this.ctxPct(this.opts.ctxUsedTokens());
+    const model = this.opts.getModel?.();
     const text = formatTurnFooterDigest({
       durationMs,
       stats,
@@ -158,6 +180,7 @@ export class PiTuiSink implements TurnUiSink {
       writeCount: this.writeCount,
       ctxBeforePct: this.ctxBeforePct,
       ctxAfterPct,
+      model,
     });
     this.transcript.addTurnFooter(text, this.group);
     this.transcript.flushAssistant();

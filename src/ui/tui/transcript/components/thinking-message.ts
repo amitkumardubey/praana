@@ -19,10 +19,13 @@ export class ThinkingMessageComponent implements Component {
   invalidate(): void {}
 
   render(width: number): string[] {
-    const preview =
-      this.text.length > 120 ? this.text.slice(0, 117) + "…" : this.text;
+    const lineCount = this.text.split("\n").filter((l) => l.trim()).length;
+    const preview = smartTruncate(this.text, 100);
+    const header = lineCount > 1
+      ? `\u25be thinking (${lineCount} lines) \xb7 ${preview}`
+      : `\u25be thinking \xb7 ${preview}`;
     const lines = wrapContent(
-      `▾ thinking · ${preview}`,
+      header,
       width,
       (s) => chalk.dim.italic.hex(PALETTE.thinking)(s),
     );
@@ -30,8 +33,24 @@ export class ThinkingMessageComponent implements Component {
       lines,
       "thinking",
       "raised",
-      this.opts.backgroundZones,
+      false,
       width,
     );
   }
+}
+
+/** Truncate at the last sentence or word boundary before maxLen. */
+function smartTruncate(text: string, maxLen: number): string {
+  // Grab only the first meaningful line for the preview.
+  const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? text;
+  if (firstLine.length <= maxLen) return firstLine.trim();
+  // Try to break at sentence end (. ! ?).
+  const sentenceEnd = firstLine.slice(0, maxLen).search(/[.!?][^.!?]*$/);
+  if (sentenceEnd > maxLen * 0.5) {
+    return firstLine.slice(0, sentenceEnd + 1).trim() + "…";
+  }
+  // Fall back to last word boundary.
+  const lastSpace = firstLine.slice(0, maxLen).lastIndexOf(" ");
+  const cut = lastSpace > maxLen * 0.5 ? lastSpace : maxLen;
+  return firstLine.slice(0, cut).trim() + "…";
 }

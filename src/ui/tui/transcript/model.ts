@@ -78,6 +78,8 @@ export interface RecallEntry {
   /** Short quote from the top recall hit. */
   preview: string;
   count: number;
+  /** The query string used for this recall, if available. */
+  query?: string | null;
 }
 
 export interface SystemEntry {

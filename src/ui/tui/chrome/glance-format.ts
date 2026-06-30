@@ -27,11 +27,13 @@ export function formatTuiGlanceLine(
       : 0;
 
   const ctxSeg =
-    pct > 90
+    pct >= 90
       ? chalk.hex(PALETTE.error)(`ctx ${pct}%`)
-      : pct > 70
+      : pct >= 70
         ? chalk.hex(PALETTE.warning)(`ctx ${pct}%`)
-        : chalk.dim(`ctx ${pct}%`);
+        : pct >= 50
+          ? chalk.dim(`ctx ${pct}%`)
+          : chalk.hex(PALETTE.success)(`ctx ${pct}%`);
 
   const parts: string[] = [ctxSeg];
 
@@ -41,7 +43,7 @@ export function formatTuiGlanceLine(
     if (active > 0) tiers.push(`${active}A`);
     if (soft > 0) tiers.push(`${soft}S`);
     if (hard > 0) tiers.push(`${hard}H`);
-    parts.push(chalk.hex(PALETTE.info)(`state ${tiers.join("·")}`));
+    parts.push(chalk.hex(PALETTE.info)(`wm ${tiers.join("·")}`));
   }
 
   const loadedCount = input.loadedSkills?.length ?? 0;

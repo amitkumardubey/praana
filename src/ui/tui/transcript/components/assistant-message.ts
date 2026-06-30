@@ -43,7 +43,7 @@ export class AssistantMessageComponent implements Component {
       lines,
       "assistant",
       "canvas",
-      this.opts.backgroundZones,
+      false,
       width,
     );
   }
