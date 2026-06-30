@@ -100,12 +100,17 @@ describe("compile-classic", () => {
     expect(metrics.activeStateTokens).toBe(0);
   });
 
-  it("excludes context_action and system_note from conversation history", () => {
+  it("excludes non-conversation events from conversation history", () => {
     const events = [
       makeEvent("user_message", { text: "hello" }, 0),
       makeEvent("context_action", { action: "setTier", id: "x" }, 1),
       makeEvent("system_note", { type: "memory_recall" }, 2),
-      makeEvent("agent_message", { text: "hi" }, 3),
+      makeEvent(
+        "ui_transcript",
+        { type: "entry", entry: { id: "ui-1", role: "turn_footer", group: 1, text: "ui-only footer" } },
+        3,
+      ),
+      makeEvent("agent_message", { text: "hi" }, 4),
     ];
 
     const history = buildFullConversationHistory(events);
@@ -113,6 +118,7 @@ describe("compile-classic", () => {
     expect(history).toContain("hi");
     expect(history).not.toContain("setTier");
     expect(history).not.toContain("memory_recall");
+    expect(history).not.toContain("ui-only footer");
   });
 
   it("excludes duplicate current user input from history", () => {

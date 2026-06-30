@@ -22,6 +22,8 @@ import {
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
+import type { TranscriptEntry } from "./transcript/model.js";
+import { TranscriptProjection } from "./transcript/projection.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
@@ -105,10 +107,12 @@ export async function runTui(
     backgroundZones: config.ui.background_zones,
     useUnicode,
   };
+  const projection = new TranscriptProjection({ useUnicode });
+  projection.load(info.transcriptBootstrap ?? []);
   const transcript = new TranscriptContainer(
     tui,
     transcriptOpts,
-    info.transcriptBootstrap,
+    projection.entries(),
   );
 
   const toast = new ToastRegion(tui);
@@ -175,6 +179,13 @@ export async function runTui(
   const modelId = controller.currentModelOrDefault();
   const ctxWindow =
     session.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
+  const persistTranscriptEntry = (entry: TranscriptEntry) => {
+    session.eventLog.append({
+      kind: "ui_transcript",
+      actor: "kernel",
+      payload: { type: "entry", entry },
+    });
+  };
 
   const sink = new PiTuiSink(tui, transcript, toast, {
     ambient: config.ui.ambient,
@@ -183,6 +194,8 @@ export async function runTui(
     ctxWindowTokens: ctxWindow,
     ctxUsedTokens: () =>
       controller.getStatusBarInput().contextUsedTokens,
+    projection,
+    persistEntry: persistTranscriptEntry,
     getModel: () => controller.currentModelOrDefault(),
     onLiveContextGrowth: (extraTokens) => {
       const base = controller.getStatusBarInput();
@@ -219,7 +232,7 @@ export async function runTui(
               : "info",
         );
       } else if (result.lines.length > 0) {
-        for (const line of result.lines) transcript.addSystemLine(line);
+        for (const line of result.lines) sink.onFallback(line);
       }
 
       if (result.action === "exit") {
@@ -227,7 +240,8 @@ export async function runTui(
         return;
       }
       if (result.action === "clear_transcript") {
-        transcript.clear();
+        projection.apply({ type: "transcript_cleared" });
+        transcript.renderEntries([]);
       }
       if (result.action === "refresh_status") {
         refreshChrome();
@@ -237,7 +251,7 @@ export async function runTui(
     }
 
     sink.nextGroup();
-    transcript.appendUser(input, sink.currentGroup);
+    sink.appendUser(input);
     editor.disableSubmit = true;
     spinnerSlot.addChild(spinner);
     spinner.setMessage("thinking…");
@@ -263,7 +277,7 @@ export async function runTui(
         spinner.stop();
         spinnerSlot.removeChild(spinner);
         editor.disableSubmit = false;
-        transcript.addSystemLine("⚡ turn aborted");
+        sink.onFallback("⚡ turn aborted");
         tui.requestRender();
         return { consume: true };
       }

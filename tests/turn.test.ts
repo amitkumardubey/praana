@@ -7,7 +7,7 @@ import * as llmActual from "../src/llm.js";
 import * as toolsActual from "../src/tools/index.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
-import * as piAiActual from "@earendil-works/pi-ai";
+import * as piAiActual from "@earendil-works/pi-ai/compat";
 import * as zodToJsonActual from "zod-to-json-schema";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
@@ -22,7 +22,7 @@ const zodReal = { ...zodToJsonActual };
 
 // ── Mock all external dependencies ──────────────────────────────────
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
   stream: mock(),
   clampThinkingLevel: mock((_model: unknown, level: string) => level),
   getSupportedThinkingLevels: mock(() => ["off", "low", "medium", "high"]),
@@ -147,7 +147,7 @@ mock.module("../src/ui.js", () => ({
 
 // ── Import after mocks ─────────────────────────────────────────────
 
-import { stream as piStream } from "@earendil-works/pi-ai";
+import { stream as piStream } from "@earendil-works/pi-ai/compat";
 import { compileClassicWithMetrics } from "../src/compile-classic.js";
 import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
@@ -171,7 +171,7 @@ afterAll(() => {
   mock.module("../src/tools/index.js", () => toolsReal);
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
-  mock.module("@earendil-works/pi-ai", () => piAiReal);
+  mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
   mock.module("zod-to-json-schema", () => zodReal);
   mock.module("../src/compiler.js", () => ({}));
 });

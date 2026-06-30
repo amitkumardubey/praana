@@ -1,4 +1,4 @@
-import { getProviders } from "@earendil-works/pi-ai";
+import { getProviders } from "@earendil-works/pi-ai/compat";
 import {
   findProviderCatalogModelId,
   isInProviderCatalog,

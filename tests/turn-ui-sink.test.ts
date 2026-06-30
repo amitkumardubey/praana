@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:tes
 import * as compileClassicActual from "../src/compile-classic.js";
 import * as llmActual from "../src/llm.js";
 import * as toolsActual from "../src/tools/index.js";
-import * as piAiActual from "@earendil-works/pi-ai";
+import * as piAiActual from "@earendil-works/pi-ai/compat";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings
@@ -11,7 +11,7 @@ const llmReal = { ...llmActual };
 const toolsReal = { ...toolsActual };
 const piAiReal = { ...piAiActual };
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
   stream: mock(),
 }));
 
@@ -42,7 +42,11 @@ mock.module("../src/compile-classic.js", () => ({
 }));
 
 mock.module("../src/tools/index.js", () => ({
-  createAllTools: mock(() => ({})),
+  createAllTools: mock(() => ({
+    shell: {
+      execute: mock(async () => ({ ok: true, stdout: "", stderr: "", exitCode: 0 })),
+    },
+  })),
   describeTools: mock(() => []),
 }));
 
@@ -53,7 +57,7 @@ mock.module("../src/llm.js", () => ({
   getReasoningEffort: mock(() => undefined),
 }));
 
-import { stream as piStream } from "@earendil-works/pi-ai";
+import { stream as piStream } from "@earendil-works/pi-ai/compat";
 import { runTurn } from "../src/turn.js";
 import type { Session } from "../src/session.js";
 
@@ -105,6 +109,7 @@ function mockSession(): Session {
       drainEvents: mock(() => []),
       trackLoad: mock(),
       getLoadedSkillNames: mock(() => []),
+      markResidentSkillsUsed: mock(),
     },
     agentsContext: null,
     skills: [],
@@ -163,7 +168,6 @@ describe("runTurn with UI sink", () => {
 
     await runTurn(session, "hi", undefined, {
       sink: { onTextDelta, onMemoryBanner },
-      onTextDelta,
     });
 
     expect(onTextDelta).toHaveBeenCalledWith("Hello");
@@ -172,12 +176,38 @@ describe("runTurn with UI sink", () => {
     );
     expect(stdoutTextCalls).toHaveLength(0);
   });
+
+  it("passes tool call ids through sink callbacks", async () => {
+    async function* mockStream() {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "true" } },
+      };
+      yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+    }
+    (piStream as ReturnType<typeof mock>).mockReturnValue(mockStream() as any);
+
+    const onToolCall = mock();
+    const onToolResult = mock();
+    const session = mockSession();
+
+    await runTurn(session, "run shell", undefined, {
+      sink: { onToolCall, onToolResult, shellLiveStream: false },
+    });
+
+    expect(onToolCall).toHaveBeenCalledWith("call-1", "shell", { command: "true" });
+    expect(onToolResult.mock.calls[0]?.slice(0, 3)).toEqual([
+      "call-1",
+      "shell",
+      JSON.stringify({ ok: true, stdout: "", stderr: "", exitCode: 0 }),
+    ]);
+  });
 });
 // Restore real modules after this file to prevent cross-test pollution
 afterAll(() => {
   mock.module("../src/compile-classic.js", () => ccReal);
   mock.module("../src/llm.js", () => llmReal);
   mock.module("../src/tools/index.js", () => toolsReal);
-  mock.module("@earendil-works/pi-ai", () => piAiReal);
+  mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
   mock.module("../src/compiler.js", () => ({}));
 });

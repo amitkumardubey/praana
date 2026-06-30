@@ -14,6 +14,7 @@ const tuiRequestRender = mock();
 const tuiSetFocus = mock();
 const tuiAddChild = mock();
 const tuiAddInputListener = mock(() => () => {});
+let latestEditor: FakeEditor | null = null;
 
 class FakeTUI {
   start = tuiStart;
@@ -27,7 +28,7 @@ class FakeTUI {
 }
 
 class FakeProcessTerminal {}
-class FakeContainer { addChild = mock(); children: unknown[] = []; }
+class FakeContainer { addChild = mock(); removeChild = mock(); children: unknown[] = []; }
 class FakeEditor {
   disableSubmit = false;
   onSubmit?: (text: string) => void;
@@ -36,6 +37,9 @@ class FakeEditor {
   setAutocompleteProvider = mock();
   invalidate = mock();
   render = mock(() => []);
+  constructor() {
+    latestEditor = this;
+  }
 }
 class FakeLoader {
   start = mock();
@@ -61,6 +65,7 @@ mock.module("@earendil-works/pi-tui", () => ({
 const shutdownMock: Mock<() => Promise<{ memory: string }>> = mock(
   async () => ({ memory: "completed" })
 );
+const eventLogAppend = mock();
 
 const fakeSession = {
   id: "sess-test",
@@ -80,6 +85,7 @@ const fakeSession = {
   getRecallUsedCount: () => 0,
   getContextWindowTokens: () => 128_000,
   getSessionSummary: () => ({ turns: 3, stateObjects: 0, memoriesStored: 0 }),
+  eventLog: { append: eventLogAppend },
 };
 
 const fakeStatusBar = {
@@ -144,6 +150,10 @@ describe("runTui", () => {
 
   beforeEach(() => {
     shutdownMock.mockReset();
+    eventLogAppend.mockReset();
+    fakeController.runUserTurn.mockReset();
+    fakeController.runUserTurn.mockImplementation(async () => {});
+    latestEditor = null;
     tuiStart.mockReset();
     tuiStop.mockReset();
     stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -228,5 +238,24 @@ describe("runTui", () => {
     // We just verify tui.start was called — the stop ordering is tested
     // by the doShutdown unit path.
     expect(tuiStart).toHaveBeenCalled();
+  });
+
+  it("persists projected transcript entries for submitted user turns", async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    tuiStart.mockImplementationOnce(() => { resolve(); });
+
+    await runTui(fakeController as never, fakeInfo);
+    await promise;
+
+    await latestEditor?.onSubmit?.("hello");
+
+    expect(eventLogAppend).toHaveBeenCalledWith({
+      kind: "ui_transcript",
+      actor: "kernel",
+      payload: {
+        type: "entry",
+        entry: expect.objectContaining({ role: "user", text: "hello" }),
+      },
+    });
   });
 });

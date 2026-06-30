@@ -38,7 +38,7 @@
     "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.80.2",
+    "@earendil-works/pi-ai": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.2",
     "@huggingface/transformers": "^4.2.0",
     "ansi-styles": "^4.3.0",
