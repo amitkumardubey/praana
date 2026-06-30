@@ -3,6 +3,7 @@ import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import { UserMessageComponent } from "../src/ui/tui/transcript/components/user-message.js";
 import { AssistantMessageComponent } from "../src/ui/tui/transcript/components/assistant-message.js";
 import { ToolRowComponent } from "../src/ui/tui/transcript/components/tool-row.js";
+import { ThinkingMessageComponent } from "../src/ui/tui/transcript/components/thinking-message.js";
 import stripAnsi from "strip-ansi";
 
 const defaultOpts = {
@@ -80,6 +81,21 @@ describe("TranscriptContainer", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("◇ read src/turn.ts 60 lines");
     expect(lines[0]).not.toContain("▌");
+  });
+
+  it("renders the full thinking text instead of only a preview", () => {
+    const text = [
+      "First I will inspect the input path and identify the relevant module.",
+      "Then I will compare the current rendering behavior with the expected behavior.",
+      "Finally I will implement the smallest fix and verify it with tests.",
+    ].join("\n");
+    const thinking = new ThinkingMessageComponent(text, defaultOpts);
+
+    const rendered = thinking.render(120).map(stripAnsi).join("\n");
+
+    expect(rendered).toContain("First I will inspect the input path");
+    expect(rendered).toContain("Then I will compare the current rendering behavior");
+    expect(rendered).toContain("Finally I will implement the smallest fix");
   });
 
   it("hydrates bootstrap entries into component children", () => {
