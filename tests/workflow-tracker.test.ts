@@ -231,37 +231,39 @@ describe("extractArtifactTypes", () => {
 // ---------------------------------------------------------------------------
 
 describe("persistSessionPattern", () => {
-  it("returns null for 'general' task type", () => {
+  it("returns false for 'general' task type", () => {
     const db = openDb();
     const records = [makeTurnRecord(1, ["read_file"])];
     const result = persistSessionPattern(db, "general", records, []);
-    expect(result).toBeNull();
+    expect(result).toBe(false);
   });
 
-  it("returns null when no successful tool calls exist", () => {
+  it("returns false when no successful tool calls exist", () => {
     const db = openDb();
     const records = [makeTurnRecord(1, ["read_file"], true)]; // all errors
     const result = persistSessionPattern(db, "testing", records, []);
-    expect(result).toBeNull();
+    expect(result).toBe(false);
   });
 
-  it("returns null for empty turn records", () => {
+  it("returns false for empty turn records", () => {
     const db = openDb();
     const result = persistSessionPattern(db, "testing", [], []);
-    expect(result).toBeNull();
+    expect(result).toBe(false);
   });
 
-  it("inserts a pattern and returns it", () => {
+  it("inserts a pattern and returns true", () => {
     const db = openDb();
     const records = [makeTurnRecord(1, ["read_file", "shell"])];
     const artifacts = [makeArtifact("test_output")];
-    const pattern = persistSessionPattern(db, "testing", records, artifacts);
+    const persisted = persistSessionPattern(db, "testing", records, artifacts);
 
-    expect(pattern).not.toBeNull();
-    expect(pattern!.taskType).toBe("testing");
-    expect(pattern!.toolSequence).toEqual(["read_file", "shell"]);
-    expect(pattern!.artifactTypes).toEqual(["test_output"]);
-    expect(pattern!.hitCount).toBe(1);
+    expect(persisted).toBe(true);
+    const stored = listWorkflowPatternsByTaskType(db, "testing");
+    expect(stored).toHaveLength(1);
+    expect(stored[0].taskType).toBe("testing");
+    expect(stored[0].toolSequence).toEqual(["read_file", "shell"]);
+    expect(stored[0].artifactTypes).toEqual(["test_output"]);
+    expect(stored[0].hitCount).toBe(1);
   });
 
   it("increments hitCount on repeated upsert with same pattern", () => {

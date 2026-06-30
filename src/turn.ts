@@ -191,7 +191,7 @@ export async function runTurn(
       taskType: engineResult.taskType,
     };
     // Track task type for workflow pattern persistence at session end (issue #92).
-    session.lastKnownTaskType = engineResult.taskType;
+    session.setLastKnownTaskType(engineResult.taskType);
     session.setLastCompileScoreRecords(
       engineResult.scoreRecords,
       engineResult.pressureMode,

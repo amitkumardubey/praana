@@ -183,28 +183,6 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
 ];
 
-/**
- * Migrate existing DBs that pre-date the workflow_patterns table.
- * Safe to call on fresh DBs (CREATE TABLE IF NOT EXISTS handles them).
- */
-function ensureWorkflowPatternsTable(db: Database): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS workflow_patterns (
-      id             TEXT PRIMARY KEY,
-      task_type      TEXT NOT NULL,
-      tool_sequence  TEXT NOT NULL,
-      artifact_types TEXT NOT NULL,
-      hit_count      INTEGER NOT NULL DEFAULT 1,
-      last_seen      INTEGER NOT NULL,
-      created_at     INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_workflow_patterns_task_type
-      ON workflow_patterns(task_type);
-    CREATE INDEX IF NOT EXISTS idx_workflow_patterns_last_seen
-      ON workflow_patterns(last_seen);
-  `);
-}
-
 function ensureScorecardResumeColumns(db: Database): void {
   const existing = new Set(
     (db.query("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
@@ -235,7 +213,6 @@ export function openContextEngineDb(dbPath: string): Database {
   db.run("PRAGMA journal_mode = WAL");
   db.exec(ARTIFACT_SCHEMA);
   ensureScorecardResumeColumns(db);
-  ensureWorkflowPatternsTable(db);
   return db;
 }
 

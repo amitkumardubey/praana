@@ -103,9 +103,9 @@ export function extractArtifactTypes(artifacts: ContextArtifact[]): string[] {
 /**
  * Extract a WorkflowPattern from a completed session and persist it.
  *
- * Returns null and skips persistence when:
+ * Returns true if a pattern was extracted and persisted, false when:
  * - taskType is "general" (not enough signal)
- * - No tool calls were made in the session
+ * - No successful tool calls were made in the session
  *
  * On upsert, hit_count increments if the same (taskType, toolSequence) was
  * seen before; otherwise a new row is inserted.
@@ -115,28 +115,26 @@ export function persistSessionPattern(
   taskType: string,
   turnRecords: TurnRecord[],
   artifacts: ContextArtifact[],
-): WorkflowPattern | null {
-  if (UNTRACKED_TASK_TYPES.has(taskType)) return null;
+): boolean {
+  if (UNTRACKED_TASK_TYPES.has(taskType)) return false;
 
   const toolSequence = extractToolSequence(turnRecords);
-  if (toolSequence.length === 0) return null;
+  if (toolSequence.length === 0) return false;
 
   const artifactTypes = extractArtifactTypes(artifacts);
   const now = Date.now();
   const id = hashPatternKey(taskType, toolSequence);
 
-  const pattern: WorkflowPattern = {
+  upsertWorkflowPattern(db, {
     id,
     taskType,
     toolSequence,
     artifactTypes,
-    hitCount: 1,      // upsert in DB will increment the actual stored count
+    hitCount: 1,
     lastSeen: now,
-    createdAt: now,   // ON CONFLICT keeps original created_at
-  };
-
-  upsertWorkflowPattern(db, pattern);
-  return pattern;
+    createdAt: now,
+  });
+  return true;
 }
 
 /**
@@ -151,14 +149,12 @@ export function pruneExpiredPatterns(db: Database): number {
 
 /**
  * Query stored patterns for a task type, ordered by hitCount DESC.
- * Returns at most `limit` patterns (default: all).
  */
 export function queryPatternsForTaskType(
   db: Database,
   taskType: string,
-  limit = Number.MAX_SAFE_INTEGER,
 ): WorkflowPattern[] {
-  return listWorkflowPatternsByTaskType(db, taskType).slice(0, limit);
+  return listWorkflowPatternsByTaskType(db, taskType);
 }
 
 // ---------------------------------------------------------------------------

@@ -79,14 +79,12 @@ import {
   persistSessionPattern,
   pruneExpiredPatterns,
 } from "./workflow-tracker.js";
+// Only the essential public surface is re-exported; internal helpers
+// (hashPatternKey, extractToolSequence, extractArtifactTypes,
+// queryPatternsForTaskType) stay internal to workflow-tracker.ts.
 export {
   WORKFLOW_PATTERN_EXPIRY_DAYS,
-  hashPatternKey,
-  extractToolSequence,
-  extractArtifactTypes,
-  persistSessionPattern,
   pruneExpiredPatterns,
-  queryPatternsForTaskType,
   renderWorkflowContext,
 } from "./workflow-tracker.js";
 
@@ -427,13 +425,13 @@ export class ContextEngine {
    * Extract a WorkflowPattern from the current session's turn records and
    * session artifacts, then upsert it into the context engine DB.
    *
-   * Returns the extracted pattern, or null if the task type is "general"
-   * or no tool calls were made this session.
+   * Returns true if a pattern was persisted, false if the task type is
+   * "general" or no tool calls were made this session.
    */
   persistWorkflowPattern(
     taskType: string,
     sessionArtifacts: ContextArtifact[],
-  ): WorkflowPattern | null {
+  ): boolean {
     const turnRecords = this.ledger.list();
     return persistSessionPattern(
       this.store.getDb(),

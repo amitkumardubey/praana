@@ -297,6 +297,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getCompileScoreRecord() { return undefined; },
     getLastPressureMode() { return "normal"; },
     getLastPressureRatio() { return 0; },
+    setLastKnownTaskType() {},
     setLastUserInput() {},
     getLastUserInput() { return ""; },
     isIncognito() { return this.incognito ?? false; },

@@ -348,6 +348,7 @@ function computeWeightedTokens(
   let weighted = 0;
   weighted += effectiveTokens(metrics.systemFrameTokens, "pinned_infra");
   weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
+  weighted += effectiveTokens(metrics.workflowContextTokens ?? 0, "pinned_infra");
   weighted += checkpointEffective;
   weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
   for (const unit of includedScored) {

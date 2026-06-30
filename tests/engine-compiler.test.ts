@@ -4,7 +4,7 @@ import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js"
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
 import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { ContextEngineConfig } from "../src/types.js";
-import type { ContextUnit, SessionCheckpoint } from "../src/context-engine/types.js";
+import type { ContextUnit, SessionCheckpoint, WorkflowPattern } from "../src/context-engine/types.js";
 import type { DomainClassifier } from "../src/domain/types.js";
 import type { Embedder } from "../src/memory/types.js";
 
@@ -760,5 +760,121 @@ describe("engine compiler", () => {
     expect(testingResult.metrics.totalTokens).not.toBe(
       generalResult.metrics.totalTokens,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow context injection (issue #92)
+// ---------------------------------------------------------------------------
+
+describe("engine compiler — workflow context injection", () => {
+  // Force a specific task type so tests are independent of keyword matching.
+  const makeClassifier = (taskType: string): DomainClassifier => ({
+    domainId: "test",
+    tieBreakOrder: [],
+    scoreKeywords: () => ({ [taskType]: 5 }),
+    scoreTools: () => ({}),
+    getBudgetAllocation: () => ({
+      errors: 0.10, verbatimTurns: 0.30, decisions: 0.15, artifacts: 0.25, narrative: 0.20,
+    }),
+  });
+
+  const BASE_INPUT = {
+    stateGraph: emptyStateGraph(),
+    memoryDigest: null,
+    recentEvents: [],
+    userInput: "run the tests",
+    toolSchemas: ["shell(command)"],
+    cwd: "/proj",
+    sessionId: "sess-wf",
+    tokenBudget: 100_000,
+    currentTurn: 2,
+    turnRecords: [],
+    activityEntries: [],
+    engineConfig: ENGINE_CONFIG,
+    domainClassifier: makeClassifier("testing"),
+  };
+
+  function makePattern(taskType: string, overrides: Partial<WorkflowPattern> = {}): WorkflowPattern {
+    return {
+      id: `${taskType}-abc`,
+      taskType,
+      toolSequence: ["read_file", "shell"],
+      artifactTypes: ["test_output"],
+      hitCount: 3,
+      lastSeen: Date.now(),
+      createdAt: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it("injects workflow context section when patterns match the classified task type", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      // "run the tests" → classified as 'testing'
+      workflowPatterns: [makePattern("testing")],
+    });
+    expect(result.prompt).toContain("## Workflow Context");
+    expect(result.prompt).toContain("testing");
+    expect(result.prompt).toContain("read_file");
+    expect(result.prompt).toContain("shell");
+    expect(result.metrics.workflowContextTokens).toBeGreaterThan(0);
+  });
+
+  it("does not inject workflow context when no patterns are provided", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      workflowPatterns: [],
+    });
+    expect(result.prompt).not.toContain("## Workflow Context");
+    expect(result.metrics.workflowContextTokens).toBe(0);
+  });
+
+  it("filters out patterns whose task type does not match the classified type", async () => {
+    // Classifier says 'testing'; debugging patterns should be dropped.
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      workflowPatterns: [
+        makePattern("debugging", { toolSequence: ["shell", "write_file"] }),
+      ],
+    });
+    expect(result.prompt).not.toContain("## Workflow Context");
+    expect(result.metrics.workflowContextTokens).toBe(0);
+  });
+
+  it("filters correctly when a mix of matching and non-matching patterns are supplied", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      workflowPatterns: [
+        makePattern("testing", { toolSequence: ["read_file", "shell"], artifactTypes: ["test_output"] }),
+        makePattern("debugging", { toolSequence: ["shell", "write_file"] }),
+      ],
+    });
+    expect(result.prompt).toContain("## Workflow Context");
+    // testing-specific tool should be present
+    expect(result.prompt).toContain("read_file");
+    // debugging-specific tool injected only via debugging pattern — must not appear
+    // unless it also appears in the testing pattern (it doesn't)
+    const workflowSection = result.prompt
+      .split("\n")
+      .filter((l) => l.includes("Workflow") || l.includes("Tools typically") || l.includes("Artifact"))
+      .join("\n");
+    expect(workflowSection).not.toContain("write_file");
+  });
+
+  it("workflowContextTokens are included in pressure-weighted token count", async () => {
+    // With patterns: prompt + workflow section
+    const withPatterns = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      workflowPatterns: [makePattern("testing", { hitCount: 10 })],
+    });
+    // Without patterns: prompt only
+    const withoutPatterns = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      workflowPatterns: [],
+    });
+    // The weighted token count should be higher when workflow section is injected.
+    expect(withPatterns.weightedTokens).toBeGreaterThan(withoutPatterns.weightedTokens);
+    expect(withPatterns.metrics.totalTokens).toBeGreaterThan(withoutPatterns.metrics.totalTokens);
   });
 });

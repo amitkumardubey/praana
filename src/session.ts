@@ -40,7 +40,6 @@ import {
   resolveContextDbPath,
   resolveContextEngineConfig,
   type ScorecardTrackerOptions,
-  type WorkflowPattern,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
@@ -77,7 +76,7 @@ export class Session {
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */
-  lastKnownTaskType: string | null = null;
+  private lastKnownTaskType: string | null = null;
   private ended = false;
   private readonly startedAt: number;
   private turnCount = 0;
@@ -330,6 +329,11 @@ export class Session {
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  /** Record the task type from the most recent compilation (issue #92). */
+  setLastKnownTaskType(taskType: string): void {
+    this.lastKnownTaskType = taskType;
   }
 
   clearState(): void {
@@ -945,13 +949,13 @@ export class Session {
       try {
         const sessionArtifacts = this.contextEngine.listSessionArtifacts();
         const taskType = this.lastKnownTaskType ?? "general";
-        const _pattern: WorkflowPattern | null = this.contextEngine.persistWorkflowPattern(
+        const persisted = this.contextEngine.persistWorkflowPattern(
           taskType,
           sessionArtifacts,
         );
-        if (_pattern) {
+        if (persisted) {
           this.getLogger().child("context_engine").debug(
-            `Workflow pattern persisted: taskType=${_pattern.taskType} tools=[${_pattern.toolSequence.join(",")}]`,
+            `Workflow pattern persisted for taskType=${taskType}`,
           );
         }
       } catch (err) {
