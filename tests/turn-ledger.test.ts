@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { TurnLedger, groupEventsIntoTurns } from "../src/context-engine/turn-ledger.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";

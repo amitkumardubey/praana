@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "bun:test";
 import {
   openMemoryDb,
   insertEntry,

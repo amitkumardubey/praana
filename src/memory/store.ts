@@ -4,7 +4,7 @@
 // Unified API: remember, recall, digest, pin, session lifecycle.
 // ============================================================
 
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import { ulid } from "ulid";
 import {
   clearReembedNeeded,
@@ -154,7 +154,7 @@ function lexicalMatchScore(
 }
 
 export class MemoryStore {
-  private db: Database.Database;
+  private db: Database;
   readonly embedder: Embedder | null;
   private summarizer: SummarizerLLM | null;
   private defaultScopes: string[] = [];
@@ -753,24 +753,24 @@ export class MemoryStore {
     const sessionId = this.sessionId;
     const agingCutoff = now - CONSOLIDATION_AGE_MS;
     const rows = this.db
-      .prepare(
+      .query(
         `SELECT e.*,
            CASE
-             WHEN e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId) THEN 0
-             WHEN e.session_id = @sessionId THEN 1
-             WHEN e.last_seen_at <= @agingCutoff THEN 2
+             WHEN e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = $sessionId) THEN 0
+             WHEN e.session_id = $sessionId THEN 1
+             WHEN e.last_seen_at <= $agingCutoff THEN 2
            END AS priority
          FROM entries e
          WHERE e.layer = 1 AND e.retracted = 0
            AND (
-             e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = @sessionId)
-             OR e.session_id = @sessionId
-             OR e.last_seen_at <= @agingCutoff
+             e.id IN (SELECT entry_id FROM pending_reinforcements WHERE session_id = $sessionId)
+             OR e.session_id = $sessionId
+             OR e.last_seen_at <= $agingCutoff
            )
          ORDER BY priority, e.last_seen_at DESC, e.created_at DESC
-         LIMIT @limit`,
+         LIMIT $limit`,
       )
-      .all({ sessionId, agingCutoff, limit: CONSOLIDATION_CANDIDATE_LIMIT }) as Record<
+      .all({ $sessionId: sessionId, $agingCutoff: agingCutoff, $limit: CONSOLIDATION_CANDIDATE_LIMIT }) as Record<
         string,
         unknown
       >[];

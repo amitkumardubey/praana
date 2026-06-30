@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "bun:test";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { classifyContentType } from "../src/context-engine/classify.js";
 import type { ContextEngineConfig } from "../src/types.js";

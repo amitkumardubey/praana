@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import {
   lookupPiAiContextWindow,
   resolveContextWindowSync,
@@ -10,11 +10,11 @@ import {
 describe("model-context", () => {
   beforeEach(() => {
     resetModelContextCacheForTests();
-    vi.restoreAllMocks();
+    mock.restore();
   });
 
   afterEach(() => {
-    vi.unstubAllGlobals();
+    mock.restore();
   });
 
   it("looks up context window from pi-ai catalog", () => {
@@ -56,44 +56,31 @@ describe("model-context", () => {
   });
 
   it("resolves context window via vendor prefix alias in OpenRouter catalog", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          data: [
-            {
-              id: "moonshotai/kimi-k2.7-code",
-              context_length: 262_144,
-            },
-          ],
-        }),
-      })),
-    );
+    spyOn(globalThis, "fetch").mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "moonshotai/kimi-k2.7-code", context_length: 262_144 }],
+      }),
+    } as Response));
 
     const window = await fetchAndCacheContextWindow("openrouter", "kimi-k2.7-code");
     expect(window).toBe(262_144);
   });
 
   it("caches fetched context windows", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "vendor/custom-model", context_length: 96_000 }],
-        }),
-      })),
-    );
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({
+        data: [{ id: "vendor/custom-model", context_length: 96_000 }],
+      }),
+    } as Response));
 
     const first = await fetchAndCacheContextWindow("openrouter", "vendor/custom-model");
     const second = await fetchAndCacheContextWindow("openrouter", "vendor/custom-model");
 
     expect(first).toBe(96_000);
     expect(second).toBe(96_000);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(
-      resolveContextWindowSync("openrouter", "vendor/custom-model"),
-    ).toBe(96_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(resolveContextWindowSync("openrouter", "vendor/custom-model")).toBe(96_000);
   });
 });

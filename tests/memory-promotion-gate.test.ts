@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "bun:test";
 import { MemoryStore } from "../src/memory/store.js";
 import type { MemoryStore as MemoryStoreType } from "../src/memory/store.js";
 import { ulid } from "ulid";
@@ -23,8 +23,8 @@ async function newStore(): Promise<MemoryStoreType> {
 }
 
 // Helper: access the underlying better-sqlite3 db for direct assertion/seed.
-function dbOf(store: MemoryStoreType): import("better-sqlite3").Database {
-  return (store as unknown as { db: import("better-sqlite3").Database }).db;
+function dbOf(store: MemoryStoreType): import("bun:sqlite").Database {
+  return (store as unknown as { db: import("bun:sqlite").Database }).db;
 }
 
 const tracked: MemoryStoreType[] = [];

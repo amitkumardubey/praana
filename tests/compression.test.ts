@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { EventLog } from "../src/event-log.js";
 import { StateGraph } from "../src/state-graph.js";
 import type { Event } from "../src/types.js";

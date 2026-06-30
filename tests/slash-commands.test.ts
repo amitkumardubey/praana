@@ -1,16 +1,20 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import type { Session } from "../src/session.js";
+import * as modelResolverActual from "../src/model-resolver.js";
 
-vi.mock("../src/model-resolver.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/model-resolver.js")>();
-  return {
-    ...actual,
-    resolveModelSpecifier: vi.fn(),
-    getProviderConfigurationError: vi.fn(() => null),
-  };
-});
+// Snapshot real exports BEFORE mock.module updates live bindings
+const mrReal = { ...modelResolverActual };
+
+const mockResolveModelSpecifier = mock<typeof modelResolverActual.resolveModelSpecifier>();
+const mockGetProviderConfigurationError = mock<typeof modelResolverActual.getProviderConfigurationError>(() => null);
+
+mock.module("../src/model-resolver.js", () => ({
+  ...mrReal,
+  resolveModelSpecifier: mockResolveModelSpecifier,
+  getProviderConfigurationError: mockGetProviderConfigurationError,
+}));
 
 import {
   resolveModelSpecifier,
@@ -18,12 +22,12 @@ import {
 } from "../src/model-resolver.js";
 
 function mockSessionLogger() {
-  const info = vi.fn();
-  const warn = vi.fn();
+  const info = mock();
+  const warn = mock();
   const childLogger = { info, warn };
   return {
-    getLogger: vi.fn(() => ({
-      child: vi.fn(() => childLogger),
+    getLogger: mock(() => ({
+      child: mock(() => childLogger),
     })),
     info,
     warn,
@@ -32,9 +36,9 @@ function mockSessionLogger() {
 
 describe("executeSlashCommand", () => {
   beforeEach(() => {
-    vi.mocked(resolveModelSpecifier).mockReset();
-    vi.mocked(getProviderConfigurationError).mockReset();
-    vi.mocked(getProviderConfigurationError).mockReturnValue(null);
+    mockResolveModelSpecifier.mockReset();
+    mockGetProviderConfigurationError.mockReset();
+    mockGetProviderConfigurationError.mockReturnValue(null);
   });
 
   it("returns exit action for /exit", async () => {
@@ -43,8 +47,8 @@ describe("executeSlashCommand", () => {
     } as unknown as Session;
 
     const result = await executeSlashCommand("/exit", session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -54,12 +58,12 @@ describe("executeSlashCommand", () => {
 
   it("shows effective provider/model when /model has no args", async () => {
     const session = {
-      getActiveModelLabel: vi.fn(() => "openrouter/deepseek/deepseek-v4-flash:free"),
+      getActiveModelLabel: mock(() => "openrouter/deepseek/deepseek-v4-flash:free"),
     } as unknown as Session;
 
     const result = await executeSlashCommand("/model", session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -67,13 +71,13 @@ describe("executeSlashCommand", () => {
   });
 
   it("returns refresh_status when model changes on same provider", async () => {
-    const setModel = vi.fn();
-    const setProviderOverride = vi.fn();
-    const setModelOverride = vi.fn();
-    const append = vi.fn();
+    const setModel = mock();
+    const setProviderOverride = mock();
+    const setModelOverride = mock();
+    const append = mock();
     const { getLogger, info } = mockSessionLogger();
 
-    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
       provider: "openrouter",
       modelId: "gpt-4o",
       switchedProvider: false,
@@ -83,17 +87,17 @@ describe("executeSlashCommand", () => {
 
     const session = {
       getEffectiveProvider: () => "openrouter",
-      getActiveModelLabel: vi.fn(() => "openrouter/deepseek/deepseek-v4-flash:free"),
+      getActiveModelLabel: mock(() => "openrouter/deepseek/deepseek-v4-flash:free"),
       setProviderOverride,
       setModelOverride,
-      refreshModelContextWindow: vi.fn(async () => 128_000),
+      refreshModelContextWindow: mock(async () => 128_000),
       eventLog: { append },
       getLogger,
     } as unknown as Session;
 
     const result = await executeSlashCommand("/model gpt-4o", session, {
       setModel,
-      setThinking: vi.fn(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -133,13 +137,13 @@ describe("executeSlashCommand", () => {
   });
 
   it("switches provider and logs provider_override when catalog resolves native provider", async () => {
-    const setModel = vi.fn();
-    const setProviderOverride = vi.fn();
-    const setModelOverride = vi.fn();
-    const append = vi.fn();
+    const setModel = mock();
+    const setProviderOverride = mock();
+    const setModelOverride = mock();
+    const append = mock();
     const { getLogger } = mockSessionLogger();
 
-    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
       provider: "openai",
       modelId: "gpt-4o",
       switchedProvider: true,
@@ -149,17 +153,17 @@ describe("executeSlashCommand", () => {
 
     const session = {
       getEffectiveProvider: () => "openrouter",
-      getActiveModelLabel: vi.fn(() => "openrouter/gpt-4o"),
+      getActiveModelLabel: mock(() => "openrouter/gpt-4o"),
       setProviderOverride,
       setModelOverride,
-      refreshModelContextWindow: vi.fn(async () => 128_000),
+      refreshModelContextWindow: mock(async () => 128_000),
       eventLog: { append },
       getLogger,
     } as unknown as Session;
 
     const result = await executeSlashCommand("/model openai gpt-4o", session, {
       setModel,
-      setThinking: vi.fn(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -196,28 +200,28 @@ describe("executeSlashCommand", () => {
   });
 
   it("shows error when target provider API key is missing", async () => {
-    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
       provider: "anthropic",
       modelId: "claude-sonnet-4-20250514",
       switchedProvider: true,
       source: "native-catalog",
       known: true,
     });
-    vi.mocked(getProviderConfigurationError).mockReturnValue(
+    (getProviderConfigurationError as ReturnType<typeof mock>).mockReturnValue(
       "Missing required env var: ANTHROPIC_API_KEY",
     );
 
-    const setProviderOverride = vi.fn();
-    const setModelOverride = vi.fn();
-    const append = vi.fn();
+    const setProviderOverride = mock();
+    const setModelOverride = mock();
+    const append = mock();
     const { getLogger, warn } = mockSessionLogger();
 
     const session = {
       getEffectiveProvider: () => "openrouter",
-      getActiveModelLabel: vi.fn(() => "openrouter/gpt-4o"),
+      getActiveModelLabel: mock(() => "openrouter/gpt-4o"),
       setProviderOverride,
       setModelOverride,
-      refreshModelContextWindow: vi.fn(),
+      refreshModelContextWindow: mock(),
       eventLog: { append },
       getLogger,
     } as unknown as Session;
@@ -226,8 +230,8 @@ describe("executeSlashCommand", () => {
       "/model anthropic claude-sonnet-4-20250514",
       session,
       {
-        setModel: vi.fn(),
-        setThinking: vi.fn(),
+        setModel: mock(),
+        setThinking: mock(),
         getThinking: () => true,
       },
     );
@@ -262,7 +266,7 @@ describe("executeSlashCommand", () => {
   });
 
   it("rejects unknown model ids without switching or faking context window", async () => {
-    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
       provider: "openrouter",
       modelId: "totally/fake-model",
       switchedProvider: false,
@@ -270,16 +274,16 @@ describe("executeSlashCommand", () => {
       known: false,
     });
 
-    const setModel = vi.fn();
-    const setModelOverride = vi.fn();
-    const refreshModelContextWindow = vi.fn();
-    const append = vi.fn();
+    const setModel = mock();
+    const setModelOverride = mock();
+    const refreshModelContextWindow = mock();
+    const append = mock();
     const { getLogger, warn } = mockSessionLogger();
 
     const session = {
       getEffectiveProvider: () => "openrouter",
-      getActiveModelLabel: vi.fn(() => "openrouter/other-model"),
-      setProviderOverride: vi.fn(),
+      getActiveModelLabel: mock(() => "openrouter/other-model"),
+      setProviderOverride: mock(),
       setModelOverride,
       refreshModelContextWindow,
       eventLog: { append },
@@ -288,7 +292,7 @@ describe("executeSlashCommand", () => {
 
     const result = await executeSlashCommand("/model totally/fake-model", session, {
       setModel,
-      setThinking: vi.fn(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -322,7 +326,7 @@ describe("executeSlashCommand", () => {
   });
 
   it("shows info toast when already on the requested model", async () => {
-    vi.mocked(resolveModelSpecifier).mockResolvedValue({
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
       provider: "openrouter",
       modelId: "moonshotai/kimi-k2.7-code",
       switchedProvider: false,
@@ -330,18 +334,18 @@ describe("executeSlashCommand", () => {
       known: true,
     });
 
-    const setModel = vi.fn();
-    const setModelOverride = vi.fn();
-    const append = vi.fn();
+    const setModel = mock();
+    const setModelOverride = mock();
+    const append = mock();
     const { getLogger, info } = mockSessionLogger();
 
     const session = {
       getEffectiveProvider: () => "openrouter",
-      getActiveModelLabel: vi.fn(() => "openrouter/moonshotai/kimi-k2.7-code"),
-      getContextWindowTokens: vi.fn(() => 262_144),
-      setProviderOverride: vi.fn(),
+      getActiveModelLabel: mock(() => "openrouter/moonshotai/kimi-k2.7-code"),
+      getContextWindowTokens: mock(() => 262_144),
+      setProviderOverride: mock(),
       setModelOverride,
-      refreshModelContextWindow: vi.fn(),
+      refreshModelContextWindow: mock(),
       eventLog: { append },
       getLogger,
     } as unknown as Session;
@@ -351,7 +355,7 @@ describe("executeSlashCommand", () => {
       session,
       {
         setModel,
-        setThinking: vi.fn(),
+        setThinking: mock(),
         getThinking: () => true,
       },
     );
@@ -383,23 +387,23 @@ describe("executeSlashCommand", () => {
   });
 
   it("shows error toast when model resolution throws", async () => {
-    vi.mocked(resolveModelSpecifier).mockRejectedValue(
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockRejectedValue(
       new Error("Provider catalog fetch timed out after 15000ms"),
     );
 
-    const append = vi.fn();
+    const append = mock();
     const { getLogger, warn } = mockSessionLogger();
 
     const session = {
       getEffectiveProvider: () => "opencode",
-      getActiveModelLabel: vi.fn(() => "opencode/mimo-v2.5-free"),
+      getActiveModelLabel: mock(() => "opencode/mimo-v2.5-free"),
       eventLog: { append },
       getLogger,
     } as unknown as Session;
 
     const result = await executeSlashCommand("/model mimo-v2.5-free", session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -478,8 +482,8 @@ describe("executeSlashCommand", () => {
     } as unknown as Session;
 
     const result = await executeSlashCommand("/stats", session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -523,8 +527,8 @@ describe("executeSlashCommand", () => {
     } as unknown as Session;
 
     const result = await executeSlashCommand("/scorecard", session, {
-      setModel: vi.fn(),
-      setThinking: vi.fn(),
+      setModel: mock(),
+      setThinking: mock(),
       getThinking: () => true,
     });
 
@@ -536,4 +540,8 @@ describe("executeSlashCommand", () => {
     expect(output).toContain("recalls: 3");
     expect(output).toContain("measurement");
   });
+});
+// Restore real module after this file to prevent cross-test pollution
+afterAll(() => {
+  mock.module("../src/model-resolver.js", () => mrReal);
 });

@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import type Database from "better-sqlite3";
+import { describe, it, expect } from "bun:test";
+import type { Database } from "bun:sqlite";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 import type { SummarizerLLM } from "../src/memory/types.js";
@@ -7,8 +7,8 @@ import { heuristicContradiction, extractHeadNoun, cosineSimilarity } from "../sr
 import { DEDUP_RECONCILED_KEY, getMemoryMeta, insertEntry, upsertEmbedding } from "../src/memory/db.js";
 import { ulid } from "ulid";
 
-function storeDb(store: MemoryStore): Database.Database {
-  return (store as MemoryStore & { db: Database.Database }).db;
+function storeDb(store: MemoryStore): Database {
+  return (store as MemoryStore & { db: Database }).db;
 }
 
 describe("extractHeadNoun", () => {

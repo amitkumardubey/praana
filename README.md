@@ -4,32 +4,40 @@
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
 [![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
 
-**A terminal coding agent with Adaptive Context and Cognitive Memory.**
+**A terminal coding agent that manages context like memory, within a session and across sessions.**
 
 <p align="center">
-  <img src="docs/assets/demo.png" alt="PRAANA terminal — Adaptive Context and Cognitive Memory" width="720" />
+  <img src="docs/assets/demo.png" alt="PRAANA terminal — adaptive context and cognitive memory" width="720" />
 </p>
 
-PRAANA is experimental software. It runs in your terminal, calls an LLM, executes tools, and tries to keep long sessions usable by compressing old context instead of stuffing everything into the prompt. Between sessions it extracts learnings from transcripts, scores and consolidates them — a Cognitive Memory that gets sharper with use.
+Long sessions fill up fast. The prompt accumulates stale tool output and repeated context; the model loses track. Come back the next day and you re-explain everything from scratch.
 
-We have **not** benchmarked PRAANA against other agents. Treat memory and the context engine as ideas we're still proving in real use—not solved problems.
+PRAANA compiles a fresh prompt on every turn: tiered working memory, tool-output distillation, a session checkpoint. The full transcript never goes in. At `/exit`, a summariser extracts learnings from the transcript and writes them to a local SQLite database. Start the next session in the same repo and you get a ranked digest back.
 
-> **Status:** v0.9.0 <!-- x-release-please-version --> — experimental. Core flows work; long or messy tasks will hit rough edges.
+Runs on Bun. One binary, pure TypeScript, local-first, any provider.
 
-> **How it was built:** Entirely vibecoded—this codebase was written by coding agents with human direction and review, not hand-coded line by line.
+> **Status:** v0.9.0 <!-- x-release-please-version --> — experimental. The context engine and memory are ideas we're proving in real use, not solved problems. We publish [known limitations](#known-limitations-honest) and make no benchmark claims we can't back.
+
+> **How it was built:** vibecoded. Written by coding agents with human direction and review.
+
+**Three problems it solves:**
+
+- **Sessions that drift:** PRAANA summarises tool output (diffs, test results, type errors, search results) before it reaches the prompt. The agent stays sharp as the session grows.
+- **Cold starts every day:** Record a decision once and PRAANA surfaces it in a ranked digest the next time you open the same project. No re-explaining your stack or conventions.
+- **Terminal noise choking context:** Run `git diff` on 200 files or hit 50 test failures. The agent gets a focused summary. Full output stays stored and fetchable if it needs to dig in.
 
 ---
 
 ## Quick Start
 
-### Install from npm (recommended)
+### Install (recommended)
 
 ```bash
 # Install globally
-npm install -g praana
+bun add -g praana
 
 # Or run without installing
-npx praana
+bunx praana
 ```
 
 Set up your API key and launch:
@@ -46,14 +54,14 @@ praana
 
 > **First time?** PRAANA auto-detects your provider from the environment. If no key is found, it runs an interactive setup wizard (TTY) or shows clear instructions.
 > Default UI is the Ink TUI when stdout is a TTY (`[ui] mode = "tui"`); use `praana --ui readline` for the classic interface.
-> Requires **Node 22+**.
+> Requires **Bun ≥ 1.2**. Install at [bun.sh/install](https://bun.sh/install).
 
 ### Global CLI alias
 
-After installing with `npm install -g praana`, both `praana` and `pran` are on your PATH automatically. If you use `fnm` or `nvm`, make sure your npm global bin directory is in your PATH:
+After installing with `bun add -g praana`, both `praana` and `pran` are on your PATH. If Bun's global bin is not in your PATH, add it:
 
 ```bash
-export PATH="$(npm config get prefix)/bin:$PATH"
+export PATH="$HOME/.bun/bin:$PATH"
 praana    # or the short alias: pran
 ```
 
@@ -62,14 +70,14 @@ praana    # or the short alias: pran
 ```bash
 git clone https://github.com/amitkumardubey/praana.git
 cd praana
-npm install && npm run build
+bun install
 
 # Create a config file (auto-detects provider from environment)
-node dist/main.js init
+bun src/main.ts init
 
 # Set your API key and launch
 export ANTHROPIC_API_KEY="sk-ant-..."
-node dist/main.js
+bun src/main.ts
 ```
 
 ### Configuration
@@ -112,16 +120,24 @@ Provider resolution precedence:
 
 | | Typical transcript agent | PRAANA |
 |---|--------------------------|--------|
-| **Long sessions** | Full history in the prompt; context window fills up | Opt-in **engine mode**: tiered working memory (`active` / `soft` / `hard`), tool-output distillation, session checkpoint |
-| **Next session** | Starts cold unless you paste notes | **Cognitive memory**: LLM summariser extracts learnings at `/exit`; ranked digest on next start (project + global scopes) |
+| **Long sessions** | Full history in the prompt; context window fills up | **Engine mode**: PRAANA summarises tool output and trims stale context every turn. Long sessions stay coherent. |
+| **Next session** | Starts cold unless you paste notes | **Cognitive memory**: at `/exit`, PRAANA extracts what you decided and learned. Start tomorrow in the same repo and it surfaces without re-explaining. |
 | **Skills** | Manual or always-on | Engine mode: BM25-ranked `SKILL.md` residency (hot / warm / cold) |
-| **Claims** | Often marketed as solved | [Known limitations](#known-limitations-honest) upfront — we have **not** benchmarked against other agents |
+| **Claims** | Often marketed as solved | [Known limitations](#known-limitations-honest) published upfront. No benchmark claims we can't back. |
 
-**Example workflow:** Day 1 — you decide “use Vitest, in-memory SQLite in tests” (`decide` / `add_constraint`). Day 2 — new session in the same repo; `/digest` surfaces those constraints without re-explaining. Engine mode keeps yesterday’s task graph stubbed instead of replaying every tool result.
+**Example workflow:** On day 1, `decide` records "use Vitest, in-memory SQLite in tests." Start a new session the next day in the same repo and `/digest` surfaces it without re-explaining. Engine mode stubs yesterday's task graph instead of replaying every tool result.
 
 ---
 
 ## What it does
+
+**Concrete differences from a standard transcript agent:**
+
+1. Per-turn deterministic compiler with per-section token budgets.
+2. Tiered working memory (`active` / `soft` / `hard`) with BM25 + substring auto-hydration before each turn.
+3. **Automatic output compression:** when you run `git diff`, your test suite, or the type checker, the agent sees a focused summary. Full output stays stored and fetchable with `retrieve_artifact`. Built-in distillers cover git diffs, npm test output, TypeScript errors, ripgrep results, and generic logs.
+4. Session resume by replay: O(1) state-graph checkpoint, then only post-checkpoint events replay.
+5. Cross-session memory in local SQLite; at `/exit` a summariser extracts learnings, and the next session starts with a ranked digest.
 
 **Two compile modes** (see `[context_engine] enabled` in config):
 
@@ -130,11 +146,11 @@ Provider resolution precedence:
 | **Classic** | Yes (`enabled = false`) | Full verbatim transcript in the prompt. Same general shape as many coding agents. |
 | **Engine** | Opt-in | Tiered working memory, tool-output distillation, session checkpoint, scored prompt compilation, progressive skills. |
 
-**Cognitive Memory** (optional, `[memory] enabled = true`) — memory that learns:
+**Cognitive Memory** (optional, `[memory] enabled = true`):
 
 - At `/exit`, a summariser extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
 - Next session starts with a ranked digest in the prompt.
-- Project-scoped and global scopes; both are queried and merged in project sessions (#56).
+- In project sessions, PRAANA queries both project and global scopes and merges the results (#56).
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` plus an optional stack fingerprint (`package.json`, `go.mod`, etc.) on session start.
 
@@ -200,9 +216,9 @@ Unknown ids are validated against the bundled pi-ai catalog first, then against 
 ## Development
 
 ```bash
-npm run dev
-npm run build
-npm test
+bun dev
+bun typecheck
+bun test
 ```
 
 ### Docs site (Astro)
@@ -210,8 +226,8 @@ npm test
 GitHub Pages is built from [`website/`](./website/) with [Astro](https://astro.build/). Markdown sources in [`docs/`](./docs/) are rendered at build time (no duplication).
 
 ```bash
-cd website && npm install && npm run dev    # http://localhost:4321/praana/
-cd website && npm run build                 # output → website/dist/
+cd website && bun install && bun dev    # http://localhost:4321/praana/
+cd website && bun run build             # output → website/dist/
 ```
 
 ---

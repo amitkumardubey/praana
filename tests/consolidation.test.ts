@@ -1,12 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, mock } from "bun:test";
 import type { ConsolidationConfig, ConsolidationResult } from "../src/memory/consolidation.js";
 
 // Mock the summarizer LLM
 function createMockLLM(response: string) {
   return {
     name: "test-llm",
-    available: vi.fn().mockResolvedValue(true),
-    complete: vi.fn().mockResolvedValue(response),
+    available: mock().mockResolvedValue(true),
+    complete: mock().mockResolvedValue(response),
   };
 }
 
@@ -19,11 +19,11 @@ describe("consolidation processor", () => {
   it("returns empty result when disabled", async () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
-      getConsolidationCandidates: vi.fn().mockReturnValue([]),
-      reinforceFromSuccessfulToolOutcome: vi.fn(),
-      weakenEntry: vi.fn(),
-      promoteToLayer2: vi.fn(),
-      remember: vi.fn(),
+      getConsolidationCandidates: mock().mockReturnValue([]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock(),
     } as any;
     const llm = createMockLLM("{}");
 
@@ -43,11 +43,11 @@ describe("consolidation processor", () => {
   it("returns empty result when no events", async () => {
     const { runConsolidation } = await import("../src/memory/consolidation.js");
     const store = {
-      getConsolidationCandidates: vi.fn().mockReturnValue([]),
-      reinforceFromSuccessfulToolOutcome: vi.fn(),
-      weakenEntry: vi.fn(),
-      promoteToLayer2: vi.fn(),
-      remember: vi.fn(),
+      getConsolidationCandidates: mock().mockReturnValue([]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock(),
     } as any;
     const llm = createMockLLM("{}");
 
@@ -99,11 +99,11 @@ describe("consolidation processor", () => {
     };
 
     const store = {
-      getConsolidationCandidates: vi.fn().mockReturnValue([entry1, entry2]),
-      reinforceFromSuccessfulToolOutcome: vi.fn(),
-      weakenEntry: vi.fn(),
-      promoteToLayer2: vi.fn(),
-      remember: vi.fn().mockResolvedValue({ id: "new-entry" }),
+      getConsolidationCandidates: mock().mockReturnValue([entry1, entry2]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock().mockResolvedValue({ id: "new-entry" }),
     } as any;
 
     const consolidationResponse = JSON.stringify({
@@ -172,11 +172,11 @@ describe("consolidation processor", () => {
     };
 
     const store = {
-      getConsolidationCandidates: vi.fn().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
-      reinforceFromSuccessfulToolOutcome: vi.fn(),
-      weakenEntry: vi.fn(),
-      promoteToLayer2: vi.fn(),
-      remember: vi.fn(),
+      getConsolidationCandidates: mock().mockReturnValue([entryBelowThreshold, entryAboveThreshold]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock(),
     } as any;
 
     const consolidationResponse = JSON.stringify({
@@ -279,8 +279,8 @@ describe("consolidation processor", () => {
     let prompt = "";
     const llm = {
       name: "test-llm",
-      available: vi.fn().mockResolvedValue(true),
-      complete: vi.fn().mockImplementation(async (req) => {
+      available: mock().mockResolvedValue(true),
+      complete: mock().mockImplementation(async (req) => {
         prompt = req.prompt;
         return JSON.stringify({
           confirmations: [],

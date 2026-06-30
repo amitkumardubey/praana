@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { DiffDistiller } from "../src/distillers/git-diff.js";
 import { GenericDistiller, LogDistiller } from "../src/distillers/generic.js";
 import { TestDistiller } from "../src/distillers/npm-test.js";

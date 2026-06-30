@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { openMemoryDb, insertEntry, upsertEmbedding } from "../src/memory/db.js";
 import { MemoryStore } from "../src/memory/store.js";
 import type { Embedder } from "../src/memory/types.js";

@@ -1,11 +1,15 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
 import { AppController } from "../src/app-controller.js";
 import type { CliArgs } from "../src/cli-args.js";
 import type { PraanaConfig } from "../src/types.js";
+import * as sessionActual from "../src/session.js";
 
-vi.mock("../src/session.js", () => ({
+// Snapshot real module BEFORE mock.module updates live bindings
+const sessionReal = { ...sessionActual };
+
+mock.module("../src/session.js", () => ({
   Session: {
-    create: vi.fn(async () => ({
+    create: mock(async () => ({
       id: "sess-1",
       cwd: "/tmp",
       debug: false,
@@ -15,7 +19,7 @@ vi.mock("../src/session.js", () => ({
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
       getContextWindowTokens: () => 128_000,
-      refreshModelContextWindow: vi.fn(async () => 128_000),
+      refreshModelContextWindow: mock(async () => 128_000),
       getMemoryStats: () => ({
         total: 0,
         active: 0,
@@ -41,10 +45,10 @@ vi.mock("../src/session.js", () => ({
       getMemoryDbPath: () => null,
       stateGraph: { list: () => [] },
       eventLog: { readLast: () => [] },
-      end: vi.fn(async () => ({ memory: "skipped" as const })),
+      end: mock(async () => ({ memory: "skipped" as const })),
       getTranscriptEvents: () => [],
     })),
-    resume: vi.fn(),
+    resume: mock(),
   },
 }));
 
@@ -74,7 +78,7 @@ const baseParsed: CliArgs = {
 
 describe("AppController", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
   });
 
   it("starts a session and exposes status bar input", async () => {
@@ -109,7 +113,7 @@ describe("AppController", () => {
       parsed: baseParsed,
     });
     await controller.start();
-    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValueOnce({ memory: "background" });
 
     const status = await controller.shutdown();
@@ -124,7 +128,7 @@ describe("AppController", () => {
       parsed: baseParsed,
     });
     await controller.start();
-    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValueOnce({ memory: "completed" });
 
     const status = await controller.shutdown();
@@ -139,11 +143,15 @@ describe("AppController", () => {
       parsed: baseParsed,
     });
     await controller.start();
-    const end = controller.session.end as ReturnType<typeof vi.fn>;
+    const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValue({ memory: "completed" });
 
     expect(await controller.shutdown()).toEqual({ memory: "completed" });
     expect(await controller.shutdown()).toEqual({ memory: "noop" });
     expect(end).toHaveBeenCalledTimes(1);
   });
+});
+// Restore real session module after this file to prevent cross-test pollution
+afterAll(() => {
+  mock.module("../src/session.js", () => sessionReal);
 });

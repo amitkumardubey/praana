@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Database } from "bun:sqlite";
 import type { Event } from "../types.js";
 import {
   getMaxLedgerTurn,
@@ -117,7 +117,7 @@ export function groupEventsIntoTurns(
 
 export class TurnLedger {
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: Database,
     private readonly sessionId: string,
   ) {}
 

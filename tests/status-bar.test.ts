@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { StateGraph } from "../src/state-graph.js";
 import {
   formatTokenCount,

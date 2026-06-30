@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { detectActivityLogNote } from "../src/tools/memory.js";
 
 describe("note quality lint", () => {

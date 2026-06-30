@@ -18,7 +18,7 @@ const faq = [
   },
   {
     q: "Is PRAANA free and open source?",
-    a: "Yes. PRAANA is MIT-licensed, the source is on GitHub, and it is published on npm. Install it with npm install -g praana.",
+    a: "Yes. PRAANA is MIT-licensed, the source is on GitHub, and it is published on npm. Install it with bunx praana or bun add -g praana.",
   },
   {
     q: "Does my data leave my machine?",
@@ -26,7 +26,7 @@ const faq = [
   },
   {
     q: "What do I need to run PRAANA?",
-    a: "Node.js 22+ and an API key for any supported provider, or Ollama for fully local use.",
+    a: "Bun ≥ 1.2 (bun.sh/install) and an API key for any supported provider, or Ollama for fully local use.",
   },
 ];
 
@@ -45,9 +45,7 @@ const faqStructuredData = {
   <section class="hero">
     <h1>PRAANA</h1>
     <p class="lead">
-      An open-source <strong>terminal coding agent</strong> with adaptive context and
-      cross-session memory. Runs in your CLI, works with Claude, GPT, Gemini, DeepSeek,
-      Groq, Mistral, Ollama and more.
+      A terminal coding agent that <strong>manages context like memory</strong>. It curates what the model sees on every turn and stores learnings across sessions in a local SQLite database. Pure TypeScript, local-first. Works with Claude, GPT, Gemini, DeepSeek, Groq, Mistral, Ollama and more.
     </p>
     <img src={`${base}assets/demo.png`} alt="PRAANA terminal coding agent demo" width="720" height="auto" />
   </section>
@@ -153,7 +151,7 @@ praana</code></pre>
     <p>
       Yes. PRAANA is MIT-licensed, the source is on
       <a href="https://github.com/amitkumardubey/praana">GitHub</a>, and it's published on
-      <a href="https://www.npmjs.com/package/praana">npm</a> — <code>npm install -g praana</code>.
+      <a href="https://www.npmjs.com/package/praana">npm</a>: <code>bunx praana</code> or <code>bun add -g praana</code>.
     </p>
     <h3>Does my data leave my machine?</h3>
     <p>
@@ -163,7 +161,7 @@ praana</code></pre>
     </p>
     <h3>What do I need to run it?</h3>
     <p>
-      Node.js 22+ and an API key for any supported provider (or Ollama for fully local use).
+      Bun ≥ 1.2 (<a href="https://bun.sh/install">bun.sh/install</a>) and an API key for any supported provider (or Ollama for fully local use).
     </p>
   </div>
   <script type="application/ld+json" set:html={JSON.stringify(faqStructuredData)} />

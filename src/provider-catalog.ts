@@ -269,7 +269,8 @@ async function fetchProviderCatalogFresh(
         response.json() as Promise<{
           data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
         }>,
-        new Promise<never>((_, reject) => {
+        (() => {
+          const { promise, reject } = Promise.withResolvers<never>();
           const onAbort = () => {
             controller.signal.removeEventListener("abort", onAbort);
             reject(controller.signal.reason ?? new Error("Provider catalog fetch aborted"));
@@ -279,7 +280,8 @@ async function fetchProviderCatalogFresh(
           } else {
             controller.signal.addEventListener("abort", onAbort);
           }
-        }),
+          return promise;
+        })(),
       ]);
 
       // Guard: if the fetch was aborted during response.json(), do not

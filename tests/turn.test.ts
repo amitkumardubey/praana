@@ -1,17 +1,35 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 import { z } from "zod";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
+import * as contextEngineActual from "../src/context-engine/index.js";
+import * as compileClassicActual from "../src/compile-classic.js";
+import * as llmActual from "../src/llm.js";
+import * as toolsActual from "../src/tools/index.js";
+import * as autoCompactActual from "../src/auto-compact.js";
+import * as uiActual from "../src/ui.js";
+import * as piAiActual from "@earendil-works/pi-ai";
+import * as zodToJsonActual from "zod-to-json-schema";
+
+// Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
+const ceReal = { ...contextEngineActual };
+const ccReal = { ...compileClassicActual };
+const llmReal = { ...llmActual };
+const toolsReal = { ...toolsActual };
+const autoCompactReal = { ...autoCompactActual };
+const uiReal = { ...uiActual };
+const piAiReal = { ...piAiActual };
+const zodReal = { ...zodToJsonActual };
 
 // ── Mock all external dependencies ──────────────────────────────────
 
-vi.mock("@earendil-works/pi-ai", () => ({
-  stream: vi.fn(),
-  clampThinkingLevel: vi.fn((_model: unknown, level: string) => level),
-  getSupportedThinkingLevels: vi.fn(() => ["off", "low", "medium", "high"]),
+mock.module("@earendil-works/pi-ai", () => ({
+  stream: mock(),
+  clampThinkingLevel: mock((_model: unknown, level: string) => level),
+  getSupportedThinkingLevels: mock(() => ["off", "low", "medium", "high"]),
 }));
 
-vi.mock("zod-to-json-schema", () => ({
-  zodToJsonSchema: vi.fn((_schema, _opts) => ({
+mock.module("zod-to-json-schema", () => ({
+  zodToJsonSchema: mock((_schema, _opts) => ({
     $schema: "http://json-schema.org/draft-07/schema#",
     type: "object",
     properties: { name: { type: "string" } },
@@ -20,54 +38,51 @@ vi.mock("zod-to-json-schema", () => ({
   })),
 }));
 
-vi.mock("../src/compiler.js", () => ({}));
+mock.module("../src/compiler.js", () => ({}));
 
-vi.mock("../src/context-engine/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/context-engine/index.js")>();
-  return {
-    ...actual,
-    compileEngineWithMetrics: vi.fn(() => ({
-      prompt: "engine compiled prompt",
-      metrics: {
-        totalTokens: 600,
-        systemFrameTokens: 100,
-        agentsContextTokens: 0,
-        skillsCatalogTokens: 0,
-        checkpointTokens: 50,
-        crossSessionTokens: 0,
-        activeStateTokens: 40,
-        peripheralStubsTokens: 0,
-        recentTurnsTokens: 300,
-        currentInputTokens: 70,
-        activeObjectCount: 0,
-        peripheralObjectCount: 0,
-        recentTurnsTruncated: false,
-        memoryTruncated: false,
-        agentsContextTruncated: false,
-        skillsTruncated: false,
-      },
-      scoreRecords: [],
-      pressureRatio: 0.2,
-      pressureMode: "normal" as const,
-      weightedTokens: 400,
-      rawPressureRatio: 0.25,
-      excludedScoredUnits: 0,
-    })),
-  };
-});
+mock.module("../src/context-engine/index.js", () => ({
+  ...contextEngineActual,
+  compileEngineWithMetrics: mock(() => ({
+    prompt: "engine compiled prompt",
+    metrics: {
+      totalTokens: 600,
+      systemFrameTokens: 100,
+      agentsContextTokens: 0,
+      skillsCatalogTokens: 0,
+      checkpointTokens: 50,
+      crossSessionTokens: 0,
+      activeStateTokens: 40,
+      peripheralStubsTokens: 0,
+      recentTurnsTokens: 300,
+      currentInputTokens: 70,
+      activeObjectCount: 0,
+      peripheralObjectCount: 0,
+      recentTurnsTruncated: false,
+      memoryTruncated: false,
+      agentsContextTruncated: false,
+      skillsTruncated: false,
+    },
+    scoreRecords: [],
+    pressureRatio: 0.2,
+    pressureMode: "normal" as const,
+    weightedTokens: 400,
+    rawPressureRatio: 0.25,
+    excludedScoredUnits: 0,
+  })),
+}));
 
-vi.mock("../src/auto-compact.js", () => ({
-  maybeAutoCompactClassic: vi.fn(async () => ({
+mock.module("../src/auto-compact.js", () => ({
+  maybeAutoCompactClassic: mock(async () => ({
     compacted: false,
     eventsCompacted: 0,
     factsStored: 0,
     pressureRatio: 0,
   })),
-  formatCompactionBanner: vi.fn(() => null),
+  formatCompactionBanner: mock(() => null),
 }));
 
-vi.mock("../src/compile-classic.js", () => ({
-  compileClassicWithMetrics: vi.fn(() => ({
+mock.module("../src/compile-classic.js", () => ({
+  compileClassicWithMetrics: mock(() => ({
     prompt: "classic compiled prompt",
     metrics: {
       totalTokens: 800,
@@ -90,44 +105,44 @@ vi.mock("../src/compile-classic.js", () => ({
   })),
 }));
 
-vi.mock("../src/tools/index.js", () => ({
-  createAllTools: vi.fn(() => ({
+mock.module("../src/tools/index.js", () => ({
+  createAllTools: mock(() => ({
     create_task: {
       description: "Create a new task",
       parameters: z.object({ title: z.string() }),
-      execute: vi.fn().mockResolvedValue({ ok: true, id: "task-1" }),
+      execute: mock().mockResolvedValue({ ok: true, id: "task-1" }),
     },
     shell: {
       description: "Execute a shell command",
       parameters: z.object({ command: z.string() }),
-      execute: vi.fn().mockResolvedValue({ ok: true, stdout: "hello" }),
+      execute: mock().mockResolvedValue({ ok: true, stdout: "hello" }),
     },
     recall: {
       description: "Search memory",
       parameters: z.object({ query: z.string() }),
-      execute: vi.fn().mockResolvedValue({ ok: true, results: [] }),
+      execute: mock().mockResolvedValue({ ok: true, results: [] }),
     },
   })),
-  describeTools: vi.fn(() => [
+  describeTools: mock(() => [
     "create_task(title) — Create a new task",
     "shell(command) — Execute a shell command",
   ]),
 }));
 
-vi.mock("../src/llm.js", () => ({
-  createProvider: vi.fn(() => vi.fn(() => ({}))),
-  resolveModel: vi.fn((name: string) => name),
-  inferReasoningModel: vi.fn(() => false),
-  getReasoningEffort: vi.fn(() => undefined),
+mock.module("../src/llm.js", () => ({
+  createProvider: mock(() => mock(() => ({}))),
+  resolveModel: mock((name: string) => name),
+  inferReasoningModel: mock(() => false),
+  getReasoningEffort: mock(() => undefined),
 }));
 
-vi.mock("../src/ui.js", () => ({
-  printDebug: vi.fn(),
-  printDebugBlock: vi.fn(),
-  printMemoryBanner: vi.fn(),
-  printToolCall: vi.fn(),
-  startSpinner: vi.fn(),
-  stopSpinner: vi.fn(),
+mock.module("../src/ui.js", () => ({
+  printDebug: mock(),
+  printDebugBlock: mock(),
+  printMemoryBanner: mock(),
+  printToolCall: mock(),
+  startSpinner: mock(),
+  stopSpinner: mock(),
 }));
 
 // ── Import after mocks ─────────────────────────────────────────────
@@ -148,6 +163,19 @@ import {
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
 import type { PraanaConfig, Event } from "../src/types.js";
+// ── Restore real modules after this file to prevent cross-test pollution ──
+afterAll(() => {
+  mock.module("../src/context-engine/index.js", () => ceReal);
+  mock.module("../src/compile-classic.js", () => ccReal);
+  mock.module("../src/llm.js", () => llmReal);
+  mock.module("../src/tools/index.js", () => toolsReal);
+  mock.module("../src/auto-compact.js", () => autoCompactReal);
+  mock.module("../src/ui.js", () => uiReal);
+  mock.module("@earendil-works/pi-ai", () => piAiReal);
+  mock.module("zod-to-json-schema", () => zodReal);
+  mock.module("../src/compiler.js", () => ({}));
+});
+
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -212,7 +240,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
   // Mock event log that stores events in memory instead of writing to disk
   const events: Event[] = [];
   const eventLog = {
-    append: vi.fn((ev: Omit<Event, "event_id" | "session_id" | "timestamp">) => {
+    append: mock((ev: Omit<Event, "event_id" | "session_id" | "timestamp">) => {
       const event: Event = {
         event_id: `evt-${events.length}`,
         session_id: "test-session",
@@ -221,12 +249,12 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
       } as Event;
       events.push(event);
     }),
-    readLast: vi.fn((n: number) => events.slice(-n)),
-    readLastUncompressed: vi.fn((n: number) => events.slice(-n)),
-    readAll: vi.fn(() => events.slice()),
-    readAllUncompressed: vi.fn(() => events.slice()),
-    search: vi.fn(),
-    clear: vi.fn(() => { events.length = 0; }),
+    readLast: mock((n: number) => events.slice(-n)),
+    readLastUncompressed: mock((n: number) => events.slice(-n)),
+    readAll: mock(() => events.slice()),
+    readAllUncompressed: mock(() => events.slice()),
+    search: mock(),
+    clear: mock(() => { events.length = 0; }),
   };
 
   const session: any = {
@@ -251,7 +279,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
       this._turnCount++;
       this.stateGraph.incrementTurn();
     },
-    persistStateGraphCheckpoint: vi.fn(),
+    persistStateGraphCheckpoint: mock(),
     getTurnCount() { return this._turnCount; },
     getMemoryStats() {
       return {
@@ -280,8 +308,8 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     recordOutputTokens(count: number) { this._outputTokens += count; },
     getInputTokens() { return this._inputTokens; },
     getOutputTokens() { return this._outputTokens; },
-    ensureModelContextWindow: vi.fn(async () => 128_000),
-    getContextWindowTokens: vi.fn(() => 128_000),
+    ensureModelContextWindow: mock(async () => 128_000),
+    getContextWindowTokens: mock(() => 128_000),
     getEffectiveProvider() {
       return this.config.llm.provider;
     },
@@ -294,8 +322,8 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getActiveModelLabel() {
       return `${this.config.llm.provider}/${this.config.llm.model}`;
     },
-    isCompactionArmed: vi.fn(() => false),
-    setCompactionArmed: vi.fn(),
+    isCompactionArmed: mock(() => false),
+    setCompactionArmed: mock(),
     ...overrides,
   };
 
@@ -445,8 +473,8 @@ describe("computeMemoryStats", () => {
     sg.create("note", { text: "n1" });
 
     const eventLog = {
-      readLast: vi.fn(() => [] as Event[]),
-      readLastUncompressed: vi.fn(() => [] as Event[]),
+      readLast: mock(() => [] as Event[]),
+      readLastUncompressed: mock(() => [] as Event[]),
     };
 
     const session: any = {
@@ -476,13 +504,13 @@ describe("computeMemoryStats", () => {
   it("counts recall calls and hits from event log", () => {
     const sg = new StateGraph();
     const eventLog = {
-      readLast: vi.fn(() => [
+      readLast: mock(() => [
         { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
         { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
-      readLastUncompressed: vi.fn(() => [
+      readLastUncompressed: mock(() => [
         { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
         { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
         { kind: "system_note", payload: { type: "other" } },
@@ -507,8 +535,8 @@ describe("computeMemoryStats", () => {
   it("handles empty event log gracefully", () => {
     const sg = new StateGraph();
     const eventLog = {
-      readLast: vi.fn(() => [] as Event[]),
-      readLastUncompressed: vi.fn(() => [] as Event[]),
+      readLast: mock(() => [] as Event[]),
+      readLastUncompressed: mock(() => [] as Event[]),
     };
 
     const session: any = {
@@ -529,7 +557,7 @@ describe("computeMemoryStats", () => {
 
 describe("runTurn", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
 
     // Default mock: a simple text response (no tool calls)
     const mockAsyncGenerator = (async function* () {
@@ -544,7 +572,7 @@ describe("runTurn", () => {
       };
     })();
 
-    vi.mocked(piStream).mockReturnValue(mockAsyncGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(mockAsyncGenerator as any);
   });
 
   it("processes user input and returns the AI response", async () => {
@@ -568,11 +596,11 @@ describe("runTurn", () => {
         },
       }),
       contextEngine: {
-        ledger: { list: vi.fn(() => []) },
-        getRecentActivity: vi.fn(() => []),
-        getSessionCheckpoint: vi.fn(() => null),
-        recordCompileTelemetry: vi.fn(),
-        captureStateSnapshot: vi.fn(),
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
       },
     });
 
@@ -610,9 +638,9 @@ describe("runTurn", () => {
   });
 
   it("passes reasoningEffort (not reasoning) to piStream for reasoning models", async () => {
-    vi.mocked(getReasoningEffort).mockReturnValue("medium");
-    vi.mocked(createProvider).mockReturnValue(
-      vi.fn(() => ({ reasoning: true, __piOptions: { apiKey: "test-key" } })) as any,
+    (getReasoningEffort as ReturnType<typeof mock>).mockReturnValue("medium");
+    (createProvider as ReturnType<typeof mock>).mockReturnValue(
+      mock(() => ({ reasoning: true, __piOptions: { apiKey: "test-key" } })) as any,
     );
 
     const session = makeMockSession({
@@ -625,7 +653,7 @@ describe("runTurn", () => {
     await runTurn(session, "hello", "moonshotai/kimi-k2.7-code");
 
     expect(piStream).toHaveBeenCalled();
-    const options = vi.mocked(piStream).mock.calls.at(-1)?.[2] as Record<string, unknown>;
+    const options = (piStream as ReturnType<typeof mock>).mock.calls.at(-1)?.[2] as Record<string, unknown>;
     expect(options).toHaveProperty("reasoningEffort", "medium");
     expect(options).not.toHaveProperty("reasoning");
   });
@@ -635,7 +663,7 @@ describe("runTurn", () => {
       yield { type: "done", reason: "stop", message: { role: "assistant", content: [] } };
     })();
 
-    vi.mocked(piStream).mockReturnValue(emptyGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(emptyGenerator as any);
 
     const session = makeMockSession();
     const response = await runTurn(session, "hello");
@@ -651,7 +679,7 @@ describe("runTurn", () => {
       };
     })();
 
-    vi.mocked(piStream).mockReturnValue(errorGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(errorGenerator as any);
 
     const session = makeMockSession();
     const response = await runTurn(session, "hello");
@@ -670,8 +698,8 @@ describe("runTurn", () => {
       yield { type: "text_delta", delta: responseText };
       yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: responseText }] } };
     })();
-    vi.mocked(piStream).mockReturnValue(generator as any);
-    vi.mocked(compileClassicWithMetrics).mockReturnValue({
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    (compileClassicWithMetrics as ReturnType<typeof mock>).mockReturnValue({
       prompt: "mock prompt",
       metrics: {
         totalTokens: 150,
@@ -699,8 +727,8 @@ describe("runTurn", () => {
     expect(session.getInputTokens()).toBe(0);
     expect(session.getOutputTokens()).toBe(0);
 
-    const spyIn = vi.spyOn(session, 'recordInputTokens');
-    const spyOut = vi.spyOn(session, 'recordOutputTokens');
+    const spyIn = spyOn(session, 'recordInputTokens');
+    const spyOut = spyOn(session, 'recordOutputTokens');
 
     await runTurn(session, "hello");
 
@@ -735,7 +763,7 @@ describe("runTurn", () => {
       };
     })();
 
-    vi.mocked(piStream).mockReturnValue(toolCallGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
 
     const session = makeMockSession();
     const response = await runTurn(session, "run command");
@@ -770,10 +798,10 @@ describe("runTurn", () => {
       };
     })();
 
-    vi.mocked(piStream).mockReturnValue(toolCallGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
 
     const session = makeMockSession();
-    const onToolCallsStart = vi.fn();
+    const onToolCallsStart = mock();
 
     await runTurn(session, "do something", undefined, {
       sink: { onToolCallsStart },
@@ -812,21 +840,21 @@ describe("runTurn", () => {
         },
       };
     })();
-    vi.mocked(piStream)
+    (piStream as ReturnType<typeof mock>)
       .mockReturnValueOnce(firstStep as any)
       .mockReturnValueOnce(secondStep as any);
 
-    const reinforceFromSuccessfulToolOutcome = vi.fn();
+    const reinforceFromSuccessfulToolOutcome = mock();
     const session = makeMockSession({
       memoryStore: { reinforceFromSuccessfulToolOutcome },
       memoryEnabled: true,
     });
 
-    vi.mocked(createAllTools).mockReturnValueOnce({
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
       recall: {
         description: "Search memory",
         parameters: z.object({ query: z.string() }),
-        execute: vi.fn().mockResolvedValue({
+        execute: mock().mockResolvedValue({
           ok: true,
           entries: [{ id: "m1", content: "streaming is implemented" }],
         }),
@@ -834,7 +862,7 @@ describe("runTurn", () => {
       shell: {
         description: "Execute a shell command",
         parameters: z.object({ command: z.string() }),
-        execute: vi.fn().mockResolvedValue({ ok: true, stdout: "ok" }),
+        execute: mock().mockResolvedValue({ ok: true, stdout: "ok" }),
       },
     } as any);
 
@@ -869,11 +897,11 @@ describe("runTurn", () => {
 
   it("handles tool execution errors gracefully", async () => {
     // Mock a tool call that fails
-    vi.mocked(createAllTools).mockReturnValueOnce({
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
       failing_tool: {
         description: "A tool that fails",
         parameters: z.object({}),
-        execute: vi.fn().mockRejectedValue(new Error("Something broke")),
+        execute: mock().mockRejectedValue(new Error("Something broke")),
       },
     } as any);
 
@@ -892,7 +920,7 @@ describe("runTurn", () => {
       };
     })();
 
-    vi.mocked(piStream).mockReturnValue(toolCallGenerator as any);
+    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
 
     const session = makeMockSession();
     // This should not throw — tool errors are caught and returned as error results
@@ -903,7 +931,7 @@ describe("runTurn", () => {
   it("stops after maxSteps tool call iterations", async () => {
     // Use mockImplementation so each piStream call creates a fresh generator
     // that yields one tool call then completes
-    vi.mocked(piStream).mockImplementation(() => {
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
       return (async function* () {
         yield {
           type: "toolcall_end",
@@ -957,8 +985,8 @@ describe("runTurn", () => {
   });
 
   it("passes the full compiler token budget to skill prompt building", async () => {
-    const cleanupStaleSkills = vi.fn();
-    const drainEvents = vi.fn(() => []);
+    const cleanupStaleSkills = mock();
+    const drainEvents = mock(() => []);
     const session = makeMockSession({
       config: makeConfig({
         context_engine: {
@@ -967,11 +995,11 @@ describe("runTurn", () => {
         },
       }),
       contextEngine: {
-        ledger: { list: vi.fn(() => []) },
-        getRecentActivity: vi.fn(() => []),
-        getSessionCheckpoint: vi.fn(() => null),
-        recordCompileTelemetry: vi.fn(),
-        captureStateSnapshot: vi.fn(),
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
       },
       skillRuntime: {
         cleanupStaleSkills,

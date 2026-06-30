@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, spyOn, type Mock } from "bun:test";
 import {
   formatActiveModelLabel,
   resolveModelSpecifier,
@@ -206,11 +206,11 @@ describe("resolveModelSpecifierSync", () => {
 });
 
 describe("resolveModelSpecifier", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     resetProviderCatalogCacheForTests();
-    fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy = spyOn(globalThis, "fetch");
   });
 
   afterEach(() => {

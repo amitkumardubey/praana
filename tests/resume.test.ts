@@ -1,5 +1,5 @@
 // Integration test: session resume with state rebuild
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll } from "bun:test";
 import { Session } from "../src/session.js";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
