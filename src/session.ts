@@ -75,6 +75,8 @@ export class Session {
   embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
+  /** Last task type classified during compilation (issue #92 — workflow tracking). */
+  private lastKnownTaskType: string | null = null;
   private ended = false;
   private readonly startedAt: number;
   private turnCount = 0;
@@ -327,6 +329,11 @@ export class Session {
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  /** Record the task type from the most recent compilation (issue #92). */
+  setLastKnownTaskType(taskType: string): void {
+    this.lastKnownTaskType = taskType;
   }
 
   clearState(): void {
@@ -933,6 +940,26 @@ export class Session {
         this.contextEngine.runShutdownMaintenance(this.getTurnCount());
       } catch (err) {
         this.getLogger().child("context_engine").warn("Shutdown maintenance failed", {
+          cause: err as Error,
+        });
+      }
+
+      // Workflow pattern tracking (issue #92): persist session pattern before
+      // the engine closes its DB, so it is available for future sessions.
+      try {
+        const sessionArtifacts = this.contextEngine.listSessionArtifacts();
+        const taskType = this.lastKnownTaskType ?? "general";
+        const persisted = this.contextEngine.persistWorkflowPattern(
+          taskType,
+          sessionArtifacts,
+        );
+        if (persisted) {
+          this.getLogger().child("context_engine").debug(
+            `Workflow pattern persisted for taskType=${taskType}`,
+          );
+        }
+      } catch (err) {
+        this.getLogger().child("context_engine").warn("Workflow pattern persistence failed", {
           cause: err as Error,
         });
       }

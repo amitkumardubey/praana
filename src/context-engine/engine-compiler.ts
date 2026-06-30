@@ -42,11 +42,13 @@ import type {
   ScoreBreakdown,
   SessionCheckpoint,
   TurnRecord,
+  WorkflowPattern,
 } from "./types.js";
 import type { ContextEngineConfig } from "../types.js";
 import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classify.js";
 import { validateBudgetAllocation } from "../domain/types.js";
 import type { BudgetAllocation, DomainClassifier, TaskClassificationResult } from "../domain/types.js";
+import { renderWorkflowContext } from "./workflow-tracker.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -69,6 +71,12 @@ export interface EngineCompileInput extends CompileInput {
   embedder?: Embedder | null;
   /** Session-scoped embedding cache for context scoring. */
   embeddingCache?: EmbeddingCache;
+  /**
+   * Pre-fetched workflow patterns from the context engine DB (issue #92).
+   * The compiler filters these to the classified task type and injects a
+   * compact "Workflow Context" section when matching patterns exist.
+   */
+  workflowPatterns?: WorkflowPattern[];
 }
 
 export interface EngineCompileResult {
@@ -340,6 +348,7 @@ function computeWeightedTokens(
   let weighted = 0;
   weighted += effectiveTokens(metrics.systemFrameTokens, "pinned_infra");
   weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
+  weighted += effectiveTokens(metrics.workflowContextTokens ?? 0, "pinned_infra");
   weighted += checkpointEffective;
   weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
   for (const unit of includedScored) {
@@ -433,6 +442,21 @@ async function compileEnginePass(
     metrics.skillsTruncated = false;
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
+
+  // Workflow context (issue #92): inject matching patterns before the checkpoint.
+  metrics.workflowContextTokens = 0;
+  if (input.workflowPatterns && input.workflowPatterns.length > 0) {
+    // Patterns are pre-filtered to the classified task type by
+    // compileEngineWithMetrics before this function is called.
+    const workflowSection = renderWorkflowContext(
+      input.workflowPatterns,
+      input.workflowPatterns[0]?.taskType ?? "general",
+    );
+    if (workflowSection) {
+      sections.push(workflowSection);
+      metrics.workflowContextTokens = estTokens(workflowSection);
+    }
+  }
 
   const checkpointRendered = renderCheckpointForMode(input, checkpointPressureMode, precomputed.checkpointBudgets);
   if (checkpointRendered.text) {
@@ -714,7 +738,17 @@ export async function compileEngineWithMetrics(
     input.engineConfig,
   );
 
-  let pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
+  // Filter workflow patterns to the classified task type before compilation passes.
+  // Both passes use the same filtered patterns so section content is stable.
+  const matchingWorkflowPatterns = (input.workflowPatterns ?? []).filter(
+    (p) => p.taskType === taskClassification.taskType,
+  );
+  const inputWithPatterns: EngineCompileInput =
+    matchingWorkflowPatterns.length > 0
+      ? { ...input, workflowPatterns: matchingWorkflowPatterns }
+      : { ...input, workflowPatterns: undefined };
+
+  let pass = await compileEnginePass(inputWithPatterns, checkpointPressureMode, precomputed);
   let weightedTokens = computeWeightedTokens(
     pass.metrics,
     pass.checkpointEffective,
@@ -725,7 +759,7 @@ export async function compileEngineWithMetrics(
 
   if (pressureModeRank(pressureMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = pressureMode;
-    pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
+    pass = await compileEnginePass(inputWithPatterns, checkpointPressureMode, precomputed);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,

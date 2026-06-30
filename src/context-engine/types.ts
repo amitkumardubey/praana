@@ -95,6 +95,24 @@ export interface ActivityEntry {
   artifactRef?: string;
 }
 
+/** Cross-session learned pattern for a task type (issue #92). */
+export interface WorkflowPattern {
+  /** Stable ID derived from task type + tool sequence (hash). */
+  id: string;
+  /** Domain task label (e.g. "testing", "debugging"). */
+  taskType: string;
+  /** Ordered, deduplicated tool names observed in the session. */
+  toolSequence: string[];
+  /** Content-type labels of artifacts created/accessed, sorted by frequency. */
+  artifactTypes: string[];
+  /** Number of sessions matching this pattern. */
+  hitCount: number;
+  /** Unix ms timestamp of the most-recent session matching this pattern. */
+  lastSeen: number;
+  /** Unix ms timestamp this pattern was first created. */
+  createdAt: number;
+}
+
 export interface StateSnapshot {
   objects: Map<string, { kind: string; updated: number; payloadJson: string }>;
 }
