@@ -6,13 +6,13 @@ import {
   ProcessTerminal,
   Container,
   Loader,
-  Editor,
   CombinedAutocompleteProvider,
   type SlashCommand,
   type AutocompleteProvider,
   type AutocompleteItem,
   matchesKey,
 } from "@earendil-works/pi-tui";
+import { InvertedEditor } from "./inverted-editor.js";
 import chalk from "chalk";
 import type { AppController, StartupInfo } from "../../app-controller.js";
 import {
@@ -35,9 +35,6 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/exit", description: "End session" },
   { name: "/state", description: "List working-memory state objects" },
   { name: "/stats", description: "Session metadata + memory stats" },
-  { name: "/scorecard", description: "Per-session telemetry scorecard" },
-  { name: "/digest", description: "Show Cognitive Memory digest" },
-  { name: "/events", description: "Show last 20 event-log entries" },
   { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>" },
   { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>" },
   { name: "/sessions", description: "List past sessions" },
@@ -135,7 +132,7 @@ export async function runTui(
       noMatch: TUI_STYLE.muted,
     },
   };
-  const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
+  const editor = new InvertedEditor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8, paddingY: 0 });
 
   const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
   const autocomplete: AutocompleteProvider = {
@@ -160,7 +157,7 @@ export async function runTui(
       return baseProvider.applyCompletion(lines, cursorLine, cursorCol, fixedItem, prefix);
     },
   };
-  editor.setAutocompleteProvider(autocomplete);
+  editor.inner.setAutocompleteProvider(autocomplete);
 
   const spinnerSlot = new Container();
   const body = new Container();
@@ -213,10 +210,10 @@ export async function runTui(
 
   let turnStartedAt = 0;
 
-  editor.onSubmit = async (rawInput: string) => {
+  editor.inner.onSubmit = async (rawInput: string) => {
     const input = rawInput.trim();
     if (!input) return;
-    editor.addToHistory(input);
+    editor.inner.addToHistory(input);
     toast.clearErrors();
 
     if (input.startsWith("/")) {
@@ -252,7 +249,7 @@ export async function runTui(
 
     sink.nextGroup();
     sink.appendUser(input);
-    editor.disableSubmit = true;
+    editor.inner.disableSubmit = true;
     spinnerSlot.addChild(spinner);
     spinner.setMessage("thinking…");
     spinner.start();
@@ -263,7 +260,7 @@ export async function runTui(
     } finally {
       spinner.stop();
       spinnerSlot.removeChild(spinner);
-      editor.disableSubmit = false;
+      editor.inner.disableSubmit = false;
       sink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
       tui.requestRender();
@@ -276,7 +273,7 @@ export async function runTui(
       if (action === "abort_turn") {
         spinner.stop();
         spinnerSlot.removeChild(spinner);
-        editor.disableSubmit = false;
+        editor.inner.disableSubmit = false;
         sink.onFallback("⚡ turn aborted");
         tui.requestRender();
         return { consume: true };
@@ -290,7 +287,7 @@ export async function runTui(
   });
 
   async function doShutdown(): Promise<void> {
-    editor.disableSubmit = true;
+    editor.inner.disableSubmit = true;
     tui.stop();
     process.stderr.write("\nSaving session…\n");
     const { memory } = await controller.shutdown();
