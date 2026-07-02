@@ -2,6 +2,7 @@ import type { Event, StateObject, TaskPayload, DecisionPayload } from "./types.j
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
+import { APP_VERSION } from "./app-banner.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -236,7 +237,7 @@ export function buildSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are PRAANA, a coding agent with Cognitive Memory — memory that learns.",
+    `You are PRAANA ${APP_VERSION}, a coding agent with Cognitive Memory — memory that learns.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
     `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,

@@ -2,6 +2,7 @@ import type { Event } from "./types.js";
 import type { CompileMetrics } from "./compiler.js";
 import { buildCrossSessionMemory } from "./compiler.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
+import { APP_VERSION } from "./app-banner.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -27,7 +28,7 @@ export function buildClassicSystemFrame(
   const lines = [
     "# System",
     "",
-    "You are PRAANA, a coding agent with Cognitive Memory — memory that learns.",
+    `You are PRAANA ${APP_VERSION}, a coding agent with Cognitive Memory — memory that learns.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
     `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
