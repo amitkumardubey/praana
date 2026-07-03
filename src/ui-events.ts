@@ -33,6 +33,8 @@ export interface TurnUiSink {
   onFallback?(text: string): void;
   /** System lines for informational messages (e.g., step limit warnings). */
   onSystemLines?(lines: string[]): void;
+  /** Slash command result output to display in a distinct overlay. */
+  onSlashCommandResult?(lines: string[]): void;
   /** Structured error for UI display (LLM failures, etc.). */
   onError?(entry: LogEntry): void;
   /** Flush any buffered text before dispatching terminal actions (e.g. assistant_complete).
@@ -69,6 +71,11 @@ export function createDefaultTurnSink(options?: {
     onNewline: () => process.stdout.write("\n"),
     onFallback: (text) => process.stdout.write(text + "\n"),
     onSystemLines: (lines) => {
+      for (const line of lines) {
+        process.stdout.write(line + "\n");
+      }
+    },
+    onSlashCommandResult: (lines) => {
       for (const line of lines) {
         process.stdout.write(line + "\n");
       }

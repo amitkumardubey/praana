@@ -4,7 +4,9 @@ import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import type { ToastRegion } from "../src/ui/tui/toast-region.js";
 
-function makeSink() {
+function makeSink(
+  extra: { onSlashCommandResult?: (lines: string[]) => void } = {},
+) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
   const persistEntry = mock(() => {});
@@ -20,6 +22,7 @@ function makeSink() {
       ctxUsedTokens: () => 0,
       projection,
       persistEntry,
+      ...extra,
     },
   );
   return { sink, projection, renderEntries, persistEntry };
@@ -72,5 +75,24 @@ describe("PiTuiSink", () => {
       "assistant",
       "turn_footer",
     ]);
+  });
+
+  it("routes slash command output to the overlay callback", () => {
+    const callback = mock((_: string[]) => {});
+    const { sink } = makeSink({ onSlashCommandResult: callback });
+
+    sink.onSlashCommandResult(["line 1", "line 2"]);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0][0]).toEqual(["line 1", "line 2"]);
+  });
+
+  it("falls back to system lines when no slash overlay callback is set", () => {
+    const { sink, projection } = makeSink();
+
+    sink.onSlashCommandResult(["line 1", "line 2"]);
+
+    const roles = projection.entries().map((entry) => entry.role);
+    expect(roles).toEqual(["system", "system"]);
   });
 });

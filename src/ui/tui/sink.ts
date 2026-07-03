@@ -24,6 +24,8 @@ export interface SinkOpts {
   getModel?: () => string;
   projection: TranscriptProjection;
   persistEntry?: (entry: TranscriptEntry) => void;
+  /** Called when a slash command wants its output shown in an overlay. */
+  onSlashCommandResult?: (lines: string[]) => void;
 }
 
 export class PiTuiSink implements TurnUiSink {
@@ -199,6 +201,14 @@ export class PiTuiSink implements TurnUiSink {
   onSystemLines(lines: string[]): void {
     for (const line of lines) {
       this.onFallback(line);
+    }
+  }
+
+  onSlashCommandResult(lines: string[]): void {
+    if (this.opts.onSlashCommandResult) {
+      this.opts.onSlashCommandResult(lines);
+    } else {
+      this.onSystemLines(lines);
     }
   }
 
