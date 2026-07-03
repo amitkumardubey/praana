@@ -10,6 +10,7 @@ import {
   type SlashCommand,
   type AutocompleteProvider,
   type AutocompleteItem,
+  type OverlayHandle,
   matchesKey,
 } from "@earendil-works/pi-tui";
 import { InvertedEditor } from "./inverted-editor.js";
@@ -28,6 +29,7 @@ import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
+import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { renderBootBanner } from "./banner.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 
@@ -113,6 +115,8 @@ export async function runTui(
   );
 
   const toast = new ToastRegion(tui);
+  const slashOverlay = new SlashCommandResultOverlay();
+  let slashOverlayHandle: OverlayHandle | null = null;
 
   const spinner = new Loader(
     tui,
@@ -184,6 +188,21 @@ export async function runTui(
     });
   };
 
+  const showSlashOverlay = (lines: string[]) => {
+    slashOverlay.setLines(lines);
+    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
+      tui.requestRender();
+      return;
+    }
+    slashOverlayHandle = tui.showOverlay(slashOverlay, {
+      anchor: "bottom-center",
+      width: "75%",
+      maxHeight: "50%",
+      margin: { top: 2, bottom: 6 },
+      nonCapturing: true,
+    });
+  };
+
   const sink = new PiTuiSink(tui, transcript, toast, {
     ambient: config.ui.ambient,
     showThinking: () => controller.showThinking,
@@ -194,6 +213,7 @@ export async function runTui(
     projection,
     persistEntry: persistTranscriptEntry,
     getModel: () => controller.currentModelOrDefault(),
+    onSlashCommandResult: showSlashOverlay,
     onLiveContextGrowth: (extraTokens) => {
       const base = controller.getStatusBarInput();
       glanceBar.update({
@@ -229,7 +249,7 @@ export async function runTui(
               : "info",
         );
       } else if (result.lines.length > 0) {
-        for (const line of result.lines) sink.onFallback(line);
+        sink.onSlashCommandResult?.(result.lines);
       }
 
       if (result.action === "exit") {
@@ -268,6 +288,22 @@ export async function runTui(
   };
 
   tui.addInputListener((data) => {
+    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
+      if (
+        data === "\r" ||
+        data === "\n" ||
+        matchesKey(data, "escape") ||
+        data === "q"
+      ) {
+        slashOverlayHandle.hide();
+        slashOverlayHandle = null;
+        return { consume: true };
+      }
+      // Any other key dismisses the overlay without consuming it.
+      slashOverlayHandle.hide();
+      slashOverlayHandle = null;
+    }
+
     if (matchesKey(data, "ctrl+c")) {
       const action = controller.handleUserInterrupt();
       if (action === "abort_turn") {
