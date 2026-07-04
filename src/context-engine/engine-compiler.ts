@@ -325,6 +325,7 @@ function renderCheckpointForMode(
     const estimate = estimateCheckpointEffectiveTokens(
       input.checkpoint.state,
       pressureMode,
+      checkpointBudgets,
     );
     return {
       text: trimmed,
@@ -788,7 +789,7 @@ export async function compileEngineWithMetrics(
 
   if (pressureModeRank(rawSafetyMode) > pressureModeRank(checkpointPressureMode)) {
     checkpointPressureMode = rawSafetyMode;
-    pass = await compileEnginePass(input, checkpointPressureMode, precomputed);
+    pass = await compileEnginePass(inputWithPatterns, checkpointPressureMode, precomputed);
     weightedTokens = computeWeightedTokens(
       pass.metrics,
       pass.checkpointEffective,
