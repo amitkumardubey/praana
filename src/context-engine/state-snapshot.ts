@@ -18,9 +18,33 @@ export function snapshotStateGraph(stateGraph: StateGraph): StateSnapshot {
 export function diffStateGraph(
   before: StateSnapshot,
   afterObjects: StateObject[],
-): { decisions: TurnDigestDecision[]; constraints: string[] } {
+): {
+  decisions: TurnDigestDecision[];
+  constraints: string[];
+  retractedDecisions: string[];
+  retractedConstraints: string[];
+} {
   const decisions: TurnDigestDecision[] = [];
   const constraints: string[] = [];
+  const retractedDecisions: string[] = [];
+  const retractedConstraints: string[] = [];
+
+  const afterMap = new Map(afterObjects.map((obj) => [obj.id, obj]));
+
+  // Detect objects that were active before but are now retracted/removed.
+  for (const [id, prev] of before.objects) {
+    const after = afterMap.get(id);
+    if (!after || after.retracted) {
+      if (prev.kind === "decision") {
+        const summary = (JSON.parse(prev.payloadJson) as DecisionPayload).summary;
+        retractedDecisions.push(summary);
+      } else if (prev.kind === "constraint") {
+        const text = (JSON.parse(prev.payloadJson) as ConstraintPayload).text;
+        retractedConstraints.push(text);
+      }
+      continue;
+    }
+  }
 
   for (const obj of afterObjects) {
     if (obj.retracted) continue;
@@ -55,5 +79,5 @@ export function diffStateGraph(
     }
   }
 
-  return { decisions, constraints };
+  return { decisions, constraints, retractedDecisions, retractedConstraints };
 }

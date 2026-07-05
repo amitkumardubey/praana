@@ -144,6 +144,10 @@ export function reconcileCheckpoint(
       next.constraints.push(constraint);
     }
   }
+  if ((normalizedDigest.retractedConstraints ?? []).length > 0) {
+    const retracted = new Set(normalizedDigest.retractedConstraints ?? []);
+    next.constraints = next.constraints.filter((c) => !retracted.has(c));
+  }
 
   for (const decision of normalizedDigest.decisions) {
     const summary = decisionSummary(decision);
@@ -157,6 +161,10 @@ export function reconcileCheckpoint(
     } else if (rationale && !next.decisions[existingIdx].rationale) {
       next.decisions[existingIdx].rationale = rationale;
     }
+  }
+  if ((normalizedDigest.retractedDecisions ?? []).length > 0) {
+    const retracted = new Set(normalizedDigest.retractedDecisions ?? []);
+    next.decisions = next.decisions.filter((d) => !retracted.has(d.summary));
   }
   next.decisions = next.decisions.map((d) => ({
     ...d,
