@@ -109,7 +109,7 @@ describe("context-engine artifact store", () => {
     expect(sliced).toEqual({ ok: true, content: "line2" });
   });
 
-  it("reuses artifact card for repeated read_file on same path", () => {
+  it("reuses artifact card for unchanged read_file but creates a new one when content changes", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = largeText(3000);
     const first = store.ingestToolResult({
@@ -118,13 +118,46 @@ describe("context-engine artifact store", () => {
       rawText: raw,
       createdTurn: 1,
     });
-    const second = store.ingestToolResult({
+    const same = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 2,
+    });
+    expect(same.artifactId).toBe(first.artifactId);
+
+    const changed = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw + "changed",
+      createdTurn: 3,
+    });
+    expect(changed.artifactId).not.toBe(first.artifactId);
+  });
+
+  it("reuses the original artifact when content changes back to a previous hash", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = largeText(3000);
+    const first = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    store.ingestToolResult({
       sourceTool: "read_file",
       command: "src/foo.ts",
       rawText: raw + "changed",
       createdTurn: 2,
     });
-    expect(second.artifactId).toBe(first.artifactId);
+    const reverted = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 3,
+    });
+
+    expect(reverted.artifactId).toBe(first.artifactId);
   });
 
   it("evicts stale artifacts by ttl", () => {

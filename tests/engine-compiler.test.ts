@@ -1,12 +1,13 @@
 import { describe, it, expect, setSystemTime } from "bun:test";
-import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
+import { compileEngineWithMetrics, buildVerbatimSection } from "../src/context-engine/engine-compiler.js";
 import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
 import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { ContextEngineConfig } from "../src/types.js";
-import type { ContextUnit, SessionCheckpoint, WorkflowPattern } from "../src/context-engine/types.js";
+import type { ContextUnit, SessionCheckpoint, WorkflowPattern, TurnRecord } from "../src/context-engine/types.js";
 import type { DomainClassifier } from "../src/domain/types.js";
 import type { Embedder } from "../src/memory/types.js";
+import type { StateGraph } from "../src/state-graph.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -21,13 +22,14 @@ const ENGINE_CONFIG: ContextEngineConfig = {
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };
 
-function emptyStateGraph() {
+
+function emptyStateGraph(): StateGraph {
   return {
     list: () => [],
     getActive: () => [],
     getPeripheral: () => [],
     snapshot: () => [],
-  } as any;
+  } as unknown as StateGraph; // test mock — only compiler-used methods are implemented
 }
 
 describe("engine compiler", () => {
@@ -691,6 +693,90 @@ describe("engine compiler", () => {
     });
   });
 
+
+  it("weighted tokens reflect task-type-aware checkpoint budgets", async () => {
+    // Build a checkpoint whose narrative section would dominate the default budget.
+    const state = createEmptyCheckpointState();
+    state.narrative = Array.from({ length: 30 }, (_, i) => ({
+      turn: i,
+      text: `Long narrative entry number ${i} with enough text to consume tokens `.repeat(5),
+    }));
+    state.activeRequest = "debug the auth bug";
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const window = 8_000;
+
+    const defaultAlloc = {
+      errors: 0.10,
+      verbatimTurns: 0.30,
+      decisions: 0.15,
+      artifacts: 0.25,
+      narrative: 0.20,
+    };
+
+    const makeClassifier = (narrativeShare: number): DomainClassifier => ({
+      domainId: "test",
+      tieBreakOrder: [],
+      scoreKeywords: () => ({ debugging: 5 }),
+      scoreTools: () => ({}),
+      getBudgetAllocation: (taskType: string) =>
+        taskType === "debugging"
+          ? {
+              errors: 0.10,
+              verbatimTurns: 0.30,
+              decisions: 0.10,
+              artifacts: Number((0.50 - narrativeShare).toFixed(2)),
+              narrative: narrativeShare,
+            }
+          : { ...defaultAlloc },
+    });
+
+    const largeNarrative = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "fix the bug",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-narrative-large",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 10,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: makeClassifier(0.40),
+    });
+
+    const smallNarrative = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "fix the bug",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-narrative-small",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 10,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: makeClassifier(0.05),
+    });
+
+    // A smaller narrative allocation should yield a lower checkpoint effective
+    // token count and therefore lower weighted pressure.
+    expect(smallNarrative.weightedTokens).toBeLessThan(largeNarrative.weightedTokens);
+    expect(smallNarrative.metrics.checkpointTokens).toBeLessThan(
+      largeNarrative.metrics.checkpointTokens,
+    );
+    // Both should still classify as debugging and render some checkpoint.
+    expect(smallNarrative.prompt).toContain("Session Checkpoint");
+    expect(largeNarrative.prompt).toContain("Session Checkpoint");
+  });
   it("scored band caps differ between debugging and testing task types", async () => {
     const makeClassifier = (taskType: string): DomainClassifier => ({
       domainId: "test",
@@ -811,7 +897,6 @@ describe("engine compiler — workflow context injection", () => {
   it("injects workflow context section when patterns match the classified task type", async () => {
     const result = await compileEngineWithMetrics({
       ...BASE_INPUT,
-      // "run the tests" → classified as 'testing'
       workflowPatterns: [makePattern("testing")],
     });
     expect(result.prompt).toContain("## Workflow Context");
@@ -876,5 +961,130 @@ describe("engine compiler — workflow context injection", () => {
     // The weighted token count should be higher when workflow section is injected.
     expect(withPatterns.weightedTokens).toBeGreaterThan(withoutPatterns.weightedTokens);
     expect(withPatterns.metrics.totalTokens).toBeGreaterThan(withoutPatterns.metrics.totalTokens);
+  });
+
+  it("filters workflow patterns even during raw-safety emergency recompilation", async () => {
+    const state = createEmptyCheckpointState();
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Verbose low-value trace ${i} `.repeat(50),
+      turn: i,
+    }));
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const tinyWindow = 1_500;
+
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      tokenBudget: tinyWindow,
+      contextWindowTokens: tinyWindow,
+      userInput: "x".repeat(2000),
+      checkpoint,
+      currentTurn: 3,
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "run",
+          assistantMessage: "ok ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 1,
+        },
+        {
+          turn: 3,
+          userMessage: "again",
+          assistantMessage: "done ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 2,
+        },
+      ],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.95, emergency_at: 0.99 },
+      },
+      workflowPatterns: [
+        makePattern("testing", { toolSequence: ["read_file", "shell"] }),
+        makePattern("debugging", { toolSequence: ["shell", "write_file"] }),
+      ],
+    });
+
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.rawPressureRatio).toBeGreaterThan(1);
+    const workflowSection = result.prompt
+      .split("\n")
+      .filter((l) => l.includes("Workflow") || l.includes("Tools typically") || l.includes("Artifact"))
+      .join("\n");
+    expect(workflowSection).toContain("## Workflow Context");
+    expect(workflowSection).toContain("read_file");
+    expect(workflowSection).not.toContain("write_file");
+  });
+});
+
+describe("buildVerbatimSection progressive trimming", () => {
+  function makeRecord(turn: number, text: string): TurnRecord {
+    return {
+      turn,
+      userMessage: text,
+      assistantMessage: "ok",
+      toolCalls: [],
+      artifactIds: [],
+      filesRead: [],
+      filesWritten: [],
+      errors: [],
+      tokenCount: 10,
+      timestamp: turn,
+    };
+  }
+
+  it("keeps all 3 recent turns when they fit", () => {
+    const records = [
+      makeRecord(1, "a".repeat(200)),
+      makeRecord(2, "b".repeat(200)),
+      makeRecord(3, "c".repeat(200)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).toContain("Turn 1");
+    expect(result.text).toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("drops the oldest turn when 3 turns exceed the cap but 2 fit", () => {
+    const records = [
+      makeRecord(1, "a".repeat(5000)),
+      makeRecord(2, "b".repeat(5000)),
+      makeRecord(3, "c".repeat(5000)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).not.toContain("Turn 1");
+    expect(result.text).toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("keeps only the current turn when 2 turns do not fit", () => {
+    const records = [
+      makeRecord(2, "b".repeat(8000)),
+      makeRecord(3, "c".repeat(8000)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).not.toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("truncates a single oversized turn from the front", () => {
+    const records = [makeRecord(3, "c".repeat(10_000))];
+    const result = buildVerbatimSection(records, 3, 500);
+    expect(result.text).toContain("Turn 3");
+    expect(result.text).toContain("...truncated...");
+    expect(result.truncated).toBe(true);
   });
 });

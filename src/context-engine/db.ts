@@ -683,6 +683,8 @@ function normalizeStoredTurnDigest(raw: TurnDigest): TurnDigest {
     ...raw,
     filesWritten: raw.filesWritten ?? [],
     decisions,
+    retractedDecisions: raw.retractedDecisions ?? [],
+    retractedConstraints: raw.retractedConstraints ?? [],
   };
 }
 

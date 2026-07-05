@@ -73,6 +73,10 @@ export interface TurnDigest {
   artifactRefs: string[];
   decisions: TurnDigestDecision[];
   constraints: string[];
+  /** Decision summaries that were retracted this turn. */
+  retractedDecisions?: string[];
+  /** Constraint texts that were retracted this turn. */
+  retractedConstraints?: string[];
   errorsNew: string[];
   errorsFixed: string[];
   toolSummary: string;

@@ -39,6 +39,8 @@ export function normalizeTurnDigest(raw: TurnDigest): TurnDigest {
     ...raw,
     filesWritten: raw.filesWritten ?? [],
     decisions,
+    retractedDecisions: raw.retractedDecisions ?? [],
+    retractedConstraints: raw.retractedConstraints ?? [],
   };
 }
 
@@ -133,11 +135,11 @@ export function buildNarrativeEntry(
 
 const PLAN_KEYWORDS =
   /\b(?:the plan|my approach|i'll start by|next i'll)\b/i;
-const NUMBERED_LIST = /(?:^|\n)\s*\d+\.\s+.+/m;
+const NUMBERED_LIST = /(?:^|\n)\s*\d+\.\s+.+$/m;
 const STEP_MARKERS =
   /(?:^|\n)\s*(?:-\s*step\s*\d+:|step\s*\d+:|first:|next:)/i;
-const MARKDOWN_TASKS = /(?:^|\n)\s*-\s*\[[ x]\]\s+.+/m;
-const BULLET_LIST = /(?:^|\n)\s*[-*]\s+.+/m;
+const MARKDOWN_TASKS = /(?:^|\n)\s*-\s*\[[ x]\]\s+.+$/m;
+const BULLET_LIST = /(?:^|\n)\s*[-*]\s+.+$/m;
 
 export function extractPlan(assistantMessage: string): string | null {
   const text = assistantMessage.trim();
@@ -287,10 +289,12 @@ export function extractTurnDigest(input: {
   errorsNew: string[];
   errorsFixed: string[];
 }): TurnDigest {
-  const { decisions, constraints: stateConstraints } = diffStateGraph(
-    input.stateBefore,
-    input.stateGraph.snapshot(),
-  );
+  const {
+    decisions,
+    constraints: stateConstraints,
+    retractedDecisions,
+    retractedConstraints,
+  } = diffStateGraph(input.stateBefore, input.stateGraph.snapshot());
 
   const implicitConstraints = extractImplicitConstraints(input.userMessage);
   const constraints = [
@@ -311,6 +315,8 @@ export function extractTurnDigest(input: {
     artifactRefs: [...input.record.artifactIds],
     decisions,
     constraints,
+    retractedDecisions,
+    retractedConstraints,
     errorsNew: input.errorsNew,
     errorsFixed: input.errorsFixed,
     toolSummary: buildToolSummary(input.record),

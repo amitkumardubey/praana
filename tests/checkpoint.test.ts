@@ -80,6 +80,60 @@ describe("session checkpoint", () => {
     ]);
   });
 
+  it("removes retracted decisions and constraints", () => {
+    let state = createEmptyCheckpointState();
+    state = reconcileCheckpoint(
+      state,
+      makeDigest({
+        turnId: 1,
+        decisions: [{ summary: "use sqlite" }],
+        constraints: ["never store plaintext passwords", "use bun"],
+      }),
+      makeDraft(),
+      1,
+    );
+
+    state = reconcileCheckpoint(
+      state,
+      makeDigest({
+        turnId: 2,
+        retractedDecisions: ["use sqlite"],
+        retractedConstraints: ["use bun"],
+      }),
+      makeDraft(),
+      2,
+    );
+
+    expect(state.decisions.map((d) => d.summary)).not.toContain("use sqlite");
+    expect(state.constraints).toContain("never store plaintext passwords");
+    expect(state.constraints).not.toContain("use bun");
+  });
+
+  it("allows a retracted decision to be re-added later", () => {
+    let state = createEmptyCheckpointState();
+    state = reconcileCheckpoint(
+      state,
+      makeDigest({ turnId: 1, decisions: [{ summary: "use sqlite" }] }),
+      makeDraft(),
+      1,
+    );
+    state = reconcileCheckpoint(
+      state,
+      makeDigest({ turnId: 2, retractedDecisions: ["use sqlite"] }),
+      makeDraft(),
+      2,
+    );
+    state = reconcileCheckpoint(
+      state,
+      makeDigest({ turnId: 3, decisions: [{ summary: "use sqlite", rationale: "changed mind" }] }),
+      makeDraft(),
+      3,
+    );
+
+    expect(state.decisions.map((d) => d.summary)).toContain("use sqlite");
+    expect(state.decisions.find((d) => d.summary === "use sqlite")?.rationale).toBe("changed mind");
+  });
+
   it("retains decision rationale after compaction", () => {
     let state = createEmptyCheckpointState();
     state = reconcileCheckpoint(
