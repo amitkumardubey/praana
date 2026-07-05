@@ -299,6 +299,46 @@ describe("turn digest", () => {
     expect(tracker.getOpenErrors().map((e) => e.message)).toContain("second failure");
     expect(tracker.getOpenErrors().map((e) => e.message)).not.toContain("first failure");
   });
+
+  it("tracks turn-level errors that are not tied to a failing tool call", () => {
+    const tracker = new ErrorTracker();
+    const result = tracker.processTurn(0, makeRecord({
+      toolCalls: [
+        {
+          tool: "decide",
+          args: { summary: "use sqlite" },
+          isError: false,
+          resultText: "ok",
+        },
+      ],
+      errors: ["model returned no content"],
+    }));
+
+    expect(result.errorsNew).toContain("model returned no content");
+    expect(tracker.getOpenErrors().map((e) => e.message)).toContain("model returned no content");
+  });
+
+  it("clears multiple open errors when their commands succeed", () => {
+    const tracker = new ErrorTracker();
+    tracker.processTurn(0, makeRecord({
+      toolCalls: [
+        { tool: "shell", args: { command: "npm test" }, isError: true, resultText: "test failed" },
+        { tool: "shell", args: { command: "npm run lint" }, isError: true, resultText: "lint failed" },
+      ],
+      errors: ["test failed", "lint failed"],
+    }));
+
+    const fixed = tracker.processTurn(1, makeRecord({
+      toolCalls: [
+        { tool: "shell", args: { command: "npm test" }, isError: false, resultText: "tests pass" },
+        { tool: "shell", args: { command: "npm run lint" }, isError: false, resultText: "lint clean" },
+      ],
+    }));
+
+    expect(fixed.errorsFixed.length).toBe(2);
+    expect(tracker.getOpenErrors().length).toBe(0);
+    expect(tracker.isTestFailed()).toBe(false);
+  });
 });
 
 describe("turn extraction", () => {

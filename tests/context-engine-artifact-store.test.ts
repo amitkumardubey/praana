@@ -135,6 +135,31 @@ describe("context-engine artifact store", () => {
     expect(changed.artifactId).not.toBe(first.artifactId);
   });
 
+  it("reuses the original artifact when content changes back to a previous hash", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = largeText(3000);
+    const first = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw + "changed",
+      createdTurn: 2,
+    });
+    const reverted = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 3,
+    });
+
+    expect(reverted.artifactId).toBe(first.artifactId);
+  });
+
   it("evicts stale artifacts by ttl", () => {
     store = ArtifactStore.open(":memory:", "sess-1", {
       ...TEST_CONFIG,

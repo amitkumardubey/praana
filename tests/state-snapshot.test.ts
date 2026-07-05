@@ -64,4 +64,31 @@ describe("diffStateGraph", () => {
 
     expect(diff.retractedDecisions).toEqual(["old way"]);
   });
+
+  it("detects additions and retractions in the same turn", () => {
+    const before = new StateGraph();
+    before.create("decision", { summary: "use sqlite", rationale: "simple" });
+
+    const after = new StateGraph();
+    after.create("decision", { summary: "use postgres", rationale: "scalable" });
+    after.create("constraint", { text: "use connection pooling" });
+
+    const diff = diffStateGraph(snapshotStateGraph(before), after.snapshot());
+
+    expect(diff.retractedDecisions).toEqual(["use sqlite"]);
+    expect(diff.decisions).toEqual([{ summary: "use postgres", rationale: "scalable" }]);
+    expect(diff.constraints).toEqual(["use connection pooling"]);
+  });
+
+  it("does not treat an updated object as a retraction", () => {
+    const graph = new StateGraph();
+    const decision = graph.create("decision", { summary: "use sqlite", rationale: "simple" });
+    graph.update(decision.id, { rationale: "very simple" });
+
+    const empty: StateSnapshot = { objects: new Map() };
+    const diff = diffStateGraph(empty, graph.snapshot());
+
+    expect(diff.retractedDecisions).toEqual([]);
+    expect(diff.decisions).toEqual([{ summary: "use sqlite", rationale: "very simple" }]);
+  });
 });
