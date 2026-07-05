@@ -159,12 +159,13 @@ export class ArtifactStore {
       return { promptText: input.rawText, inlined: true };
     }
 
+    const hash = sha256(input.rawText);
     const fileKey = this.fileReadKey(input.sourceTool, input.command);
     if (fileKey) {
       const existingId = this.fileReadIndex.get(fileKey);
       if (existingId) {
         const existing = getArtifactById(this.db, existingId);
-        if (existing) {
+        if (existing && existing.sha256 === hash) {
           touchArtifactAccess(this.db, existing.id, input.createdTurn);
           return {
             promptText: buildArtifactCard(
@@ -181,7 +182,6 @@ export class ArtifactStore {
       }
     }
 
-    const hash = sha256(input.rawText);
     const deduped = findArtifactByHash(this.db, hash);
     if (deduped) {
       touchArtifactAccess(this.db, deduped.id, input.createdTurn);
