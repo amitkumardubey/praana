@@ -243,6 +243,62 @@ describe("turn digest", () => {
     expect(passResult.errorsFixed.length).toBeGreaterThan(0);
     expect(tracker.isTestFailed()).toBe(false);
   });
+
+  it("tracks multiple distinct errors in a single turn without conflation", () => {
+    const tracker = new ErrorTracker();
+    const result = tracker.processTurn(0, makeRecord({
+      toolCalls: [
+        {
+          tool: "shell",
+          args: { command: "npm test" },
+          isError: true,
+          resultText: "2 failing",
+        },
+        {
+          tool: "shell",
+          args: { command: "npm run lint" },
+          isError: true,
+          resultText: "5 lint errors",
+        },
+      ],
+      errors: ["2 failing", "5 lint errors"],
+    }));
+
+    expect(result.errorsNew).toContain("2 failing");
+    expect(result.errorsNew).toContain("5 lint errors");
+    expect(tracker.getOpenErrors().length).toBe(2);
+  });
+
+  it("updates tracked error when the same command fails with a different message", () => {
+    const tracker = new ErrorTracker();
+    tracker.processTurn(0, makeRecord({
+      toolCalls: [
+        {
+          tool: "shell",
+          args: { command: "npm test" },
+          isError: true,
+          resultText: "first failure",
+        },
+      ],
+      errors: ["first failure"],
+    }));
+
+    const second = tracker.processTurn(1, makeRecord({
+      toolCalls: [
+        {
+          tool: "shell",
+          args: { command: "npm test" },
+          isError: true,
+          resultText: "second failure",
+        },
+      ],
+      errors: ["second failure"],
+    }));
+
+    expect(second.errorsNew).toContain("second failure");
+    expect(tracker.getOpenErrors().map((e) => e.message)).toContain("second failure");
+    expect(tracker.getOpenErrors().map((e) => e.message)).not.toContain("first failure");
+  });
 });
 
 describe("turn extraction", () => {
