@@ -233,31 +233,51 @@ function buildScoredUnits(
   return units;
 }
 
-function buildVerbatimSection(
+export function buildVerbatimSection(
   records: TurnRecord[],
   currentTurn: number,
   tokenCap = BAND_VERBATIM_TOKENS,
-): { text: string; tokens: number } {
+): { text: string; tokens: number; truncated: boolean } {
   const recent = records
     .filter((r) => currentTurn - r.turn <= 2 && currentTurn - r.turn >= 0)
     .sort((a, b) => a.turn - b.turn);
 
   if (recent.length === 0) {
-    return { text: "# Recent Turns\n\n(no recent turns)", tokens: estTokens("# Recent Turns") };
+    return { text: "# Recent Turns\n\n(no recent turns)", tokens: estTokens("# Recent Turns"), truncated: false };
   }
 
-  let body = recent.map(renderVerbatimTurn).join("\n\n");
-  let tokens = estTokens(body);
-  if (tokens > tokenCap) {
-    const last = recent[recent.length - 1];
-    body = renderVerbatimTurn(last);
-    tokens = estTokens(body);
+  // Progressive trim: keep as many recent turns as fit, dropping the oldest
+  // first. This avoids the old cliff where exceeding the cap by a few tokens
+  // discarded everything except the current turn.
+  let kept = [...recent];
+  while (kept.length > 1) {
+    const body = kept.map(renderVerbatimTurn).join("\n\n");
+    if (estTokens(body) <= tokenCap) {
+      const text = ["# Recent Turns (verbatim)", "", body].join("\n");
+      return { text, tokens: estTokens(text), truncated: kept.length < recent.length };
+    }
+    kept = kept.slice(1);
+  }
+
+  // Even a single turn may exceed the cap; truncate from the front, keeping
+  // the tail (latest assistant message and tool results are most important).
+  let body = renderVerbatimTurn(kept[0]);
+  let singleTruncated = false;
+  if (estTokens(body) > tokenCap) {
+    singleTruncated = true;
+    const lines = body.split("\n");
+    const header = lines[0];
+    const rest = lines.slice(1).join("\n");
+    // Heuristic: ~3 chars per token, leave margin for the truncation marker.
+    const maxChars = Math.max(120, Math.floor((tokenCap - 20) * 3));
+    if (rest.length > maxChars) {
+      body = `${header}\n...truncated...\n${rest.slice(rest.length - maxChars)}`;
+    }
   }
 
   const text = ["# Recent Turns (verbatim)", "", body].join("\n");
-  return { text, tokens: estTokens(text) };
+  return { text, tokens: estTokens(text), truncated: kept.length < recent.length || singleTruncated };
 }
-
 function resolvePressureMode(
   pressureRatio: number,
   config: ContextEngineConfig,
@@ -394,7 +414,7 @@ interface BuildPassBase {
   systemFrameTokens: number;
   agentsContextTokens: number;
   agentsContextTruncated: boolean;
-  verbatim: { text: string; tokens: number };
+  verbatim: { text: string; tokens: number; truncated: boolean };
 }
 
 interface CompilePassPrecomputed {
@@ -402,7 +422,7 @@ interface CompilePassPrecomputed {
   systemFrameTokens: number;
   agentsContextTokens: number;
   agentsContextTruncated: boolean;
-  verbatim: { text: string; tokens: number };
+  verbatim: { text: string; tokens: number; truncated: boolean };
   bandScoredRecentTokens: number;
   bandScoredOlderTokens: number;
   checkpointBudgets: CheckpointSectionBudgets;
@@ -469,10 +489,9 @@ async function compileEnginePass(
     sections.push(checkpointRendered.text);
   }
   metrics.checkpointTokens = checkpointRendered.tokens;
-
   sections.push(precomputed.verbatim.text);
   metrics.recentTurnsTokens = precomputed.verbatim.tokens;
-  metrics.recentTurnsTruncated = false;
+  metrics.recentTurnsTruncated = precomputed.verbatim.truncated;
 
   const activityEntries = input.activityEntries ?? [];
   const scoredUnits = buildScoredUnits(
@@ -672,8 +691,9 @@ export async function compileEngineWithMetrics(
   validateBudgetAllocation(taskAlloc);
   validateBudgetAllocation(defaultAlloc);
 
-  const SCALE_MAXIMUM = 3; // defensive clamp for custom domains (max ~2.5× for coding domain)
-
+  const MINIMUM_BAND_CAP = 50;
+  const MINIMUM_VERBATIM_CAP = 200;
+  const SCALE_MAXIMUM = 3; // defensive clamp for custom domains
   function scaleFrom(key: keyof BudgetAllocation): number {
     const baseValue = defaultAlloc[key];
     const taskValue = taskAlloc[key];
@@ -685,9 +705,7 @@ export async function compileEngineWithMetrics(
     return Math.min(taskValue / baseValue, SCALE_MAXIMUM);
   }
 
-  const MINIMUM_BAND_CAP = 50;
-
-  const scaledVerbatim = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_VERBATIM_TOKENS * scaleFrom("verbatimTurns")));
+  const scaledVerbatim = Math.max(MINIMUM_VERBATIM_CAP, Math.round(BAND_VERBATIM_TOKENS * scaleFrom("verbatimTurns")));
   const scaledScoredRecent = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_SCORED_RECENT_TOKENS * scaleFrom("artifacts")));
   const scaledScoredOlder = Math.max(MINIMUM_BAND_CAP, Math.round(BAND_SCORED_OLDER_TOKENS * scaleFrom("artifacts")));
   const checkpointBudgets: CheckpointSectionBudgets = {

@@ -1,12 +1,13 @@
 import { describe, it, expect, setSystemTime } from "bun:test";
-import { compileEngineWithMetrics } from "../src/context-engine/engine-compiler.js";
+import { compileEngineWithMetrics, buildVerbatimSection } from "../src/context-engine/engine-compiler.js";
 import { createEmptyCheckpointState } from "../src/context-engine/checkpoint.js";
 import { scoreContextUnit } from "../src/context-engine/scoring.js";
 import { EmbeddingCache, precomputeVectors } from "../src/context-engine/embedding-cache.js";
 import type { ContextEngineConfig } from "../src/types.js";
-import type { ContextUnit, SessionCheckpoint, WorkflowPattern } from "../src/context-engine/types.js";
+import type { ContextUnit, SessionCheckpoint, WorkflowPattern, TurnRecord } from "../src/context-engine/types.js";
 import type { DomainClassifier } from "../src/domain/types.js";
 import type { Embedder } from "../src/memory/types.js";
+import type { StateGraph } from "../src/state-graph.js";
 
 const ENGINE_CONFIG: ContextEngineConfig = {
   enabled: true,
@@ -21,13 +22,14 @@ const ENGINE_CONFIG: ContextEngineConfig = {
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };
 
-function emptyStateGraph() {
+
+function emptyStateGraph(): StateGraph {
   return {
     list: () => [],
     getActive: () => [],
     getPeripheral: () => [],
     snapshot: () => [],
-  } as any;
+  } as unknown as StateGraph; // test mock — only compiler-used methods are implemented
 }
 
 describe("engine compiler", () => {
@@ -1022,5 +1024,67 @@ describe("engine compiler — workflow context injection", () => {
     expect(workflowSection).toContain("## Workflow Context");
     expect(workflowSection).toContain("read_file");
     expect(workflowSection).not.toContain("write_file");
+  });
+});
+
+describe("buildVerbatimSection progressive trimming", () => {
+  function makeRecord(turn: number, text: string): TurnRecord {
+    return {
+      turn,
+      userMessage: text,
+      assistantMessage: "ok",
+      toolCalls: [],
+      artifactIds: [],
+      filesRead: [],
+      filesWritten: [],
+      errors: [],
+      tokenCount: 10,
+      timestamp: turn,
+    };
+  }
+
+  it("keeps all 3 recent turns when they fit", () => {
+    const records = [
+      makeRecord(1, "a".repeat(200)),
+      makeRecord(2, "b".repeat(200)),
+      makeRecord(3, "c".repeat(200)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).toContain("Turn 1");
+    expect(result.text).toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("drops the oldest turn when 3 turns exceed the cap but 2 fit", () => {
+    const records = [
+      makeRecord(1, "a".repeat(5000)),
+      makeRecord(2, "b".repeat(5000)),
+      makeRecord(3, "c".repeat(5000)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).not.toContain("Turn 1");
+    expect(result.text).toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("keeps only the current turn when 2 turns do not fit", () => {
+    const records = [
+      makeRecord(2, "b".repeat(8000)),
+      makeRecord(3, "c".repeat(8000)),
+    ];
+    const result = buildVerbatimSection(records, 3, 3000);
+    expect(result.text).not.toContain("Turn 2");
+    expect(result.text).toContain("Turn 3");
+    expect(result.truncated).toBe(true);
+  });
+
+  it("truncates a single oversized turn from the front", () => {
+    const records = [makeRecord(3, "c".repeat(10_000))];
+    const result = buildVerbatimSection(records, 3, 500);
+    expect(result.text).toContain("Turn 3");
+    expect(result.text).toContain("...truncated...");
+    expect(result.truncated).toBe(true);
   });
 });
