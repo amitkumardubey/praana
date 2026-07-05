@@ -175,18 +175,23 @@ function buildScoredUnits(
 
   for (const record of records) {
     const age = currentTurn - record.turn;
-    if (age <= 2) continue;
-    if (age >= 7) continue;
 
     if (pressureMode === "emergency") {
-      if (age > 0) continue;
-      for (const tc of record.toolCalls) {
-        const unit = buildArtifactUnit(tc, record.turn);
-        if (unit) units.push(unit);
+      // Under emergency pressure preserve only current-turn artifact cards;
+      // everything else is dropped or already covered by the verbatim section.
+      if (age === 0) {
+        for (const tc of record.toolCalls) {
+          const unit = buildArtifactUnit(tc, record.turn);
+          if (unit) units.push(unit);
+        }
       }
       continue;
     }
 
+    // Recent turns (age 0-2) are rendered verbatim; don't duplicate them here.
+    if (age <= 2) continue;
+
+    // Compact mode drops older turns to save tokens.
     if (pressureMode === "compact" && age > 6) {
       continue;
     }

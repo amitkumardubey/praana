@@ -691,6 +691,90 @@ describe("engine compiler", () => {
     });
   });
 
+
+  it("weighted tokens reflect task-type-aware checkpoint budgets", async () => {
+    // Build a checkpoint whose narrative section would dominate the default budget.
+    const state = createEmptyCheckpointState();
+    state.narrative = Array.from({ length: 30 }, (_, i) => ({
+      turn: i,
+      text: `Long narrative entry number ${i} with enough text to consume tokens `.repeat(5),
+    }));
+    state.activeRequest = "debug the auth bug";
+
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const window = 8_000;
+
+    const defaultAlloc = {
+      errors: 0.10,
+      verbatimTurns: 0.30,
+      decisions: 0.15,
+      artifacts: 0.25,
+      narrative: 0.20,
+    };
+
+    const makeClassifier = (narrativeShare: number): DomainClassifier => ({
+      domainId: "test",
+      tieBreakOrder: [],
+      scoreKeywords: () => ({ debugging: 5 }),
+      scoreTools: () => ({}),
+      getBudgetAllocation: (taskType: string) =>
+        taskType === "debugging"
+          ? {
+              errors: 0.10,
+              verbatimTurns: 0.30,
+              decisions: 0.10,
+              artifacts: Number((0.50 - narrativeShare).toFixed(2)),
+              narrative: narrativeShare,
+            }
+          : { ...defaultAlloc },
+    });
+
+    const largeNarrative = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "fix the bug",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-narrative-large",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 10,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: makeClassifier(0.40),
+    });
+
+    const smallNarrative = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "fix the bug",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-narrative-small",
+      tokenBudget: window,
+      contextWindowTokens: window,
+      checkpoint,
+      currentTurn: 10,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+      domainClassifier: makeClassifier(0.05),
+    });
+
+    // A smaller narrative allocation should yield a lower checkpoint effective
+    // token count and therefore lower weighted pressure.
+    expect(smallNarrative.weightedTokens).toBeLessThan(largeNarrative.weightedTokens);
+    expect(smallNarrative.metrics.checkpointTokens).toBeLessThan(
+      largeNarrative.metrics.checkpointTokens,
+    );
+    // Both should still classify as debugging and render some checkpoint.
+    expect(smallNarrative.prompt).toContain("Session Checkpoint");
+    expect(largeNarrative.prompt).toContain("Session Checkpoint");
+  });
   it("scored band caps differ between debugging and testing task types", async () => {
     const makeClassifier = (taskType: string): DomainClassifier => ({
       domainId: "test",
@@ -811,7 +895,6 @@ describe("engine compiler — workflow context injection", () => {
   it("injects workflow context section when patterns match the classified task type", async () => {
     const result = await compileEngineWithMetrics({
       ...BASE_INPUT,
-      // "run the tests" → classified as 'testing'
       workflowPatterns: [makePattern("testing")],
     });
     expect(result.prompt).toContain("## Workflow Context");
@@ -876,5 +959,68 @@ describe("engine compiler — workflow context injection", () => {
     // The weighted token count should be higher when workflow section is injected.
     expect(withPatterns.weightedTokens).toBeGreaterThan(withoutPatterns.weightedTokens);
     expect(withPatterns.metrics.totalTokens).toBeGreaterThan(withoutPatterns.metrics.totalTokens);
+  });
+
+  it("filters workflow patterns even during raw-safety emergency recompilation", async () => {
+    const state = createEmptyCheckpointState();
+    state.findings = Array.from({ length: 30 }, (_, i) => ({
+      summary: `Verbose low-value trace ${i} `.repeat(50),
+      turn: i,
+    }));
+    const checkpoint: SessionCheckpoint = { version: 1, state };
+    const tinyWindow = 1_500;
+
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      tokenBudget: tinyWindow,
+      contextWindowTokens: tinyWindow,
+      userInput: "x".repeat(2000),
+      checkpoint,
+      currentTurn: 3,
+      turnRecords: [
+        {
+          turn: 2,
+          userMessage: "run",
+          assistantMessage: "ok ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 1,
+        },
+        {
+          turn: 3,
+          userMessage: "again",
+          assistantMessage: "done ".repeat(200),
+          toolCalls: [],
+          artifactIds: [],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 10,
+          timestamp: 2,
+        },
+      ],
+      engineConfig: {
+        ...ENGINE_CONFIG,
+        pressure: { compact_at: 0.95, emergency_at: 0.99 },
+      },
+      workflowPatterns: [
+        makePattern("testing", { toolSequence: ["read_file", "shell"] }),
+        makePattern("debugging", { toolSequence: ["shell", "write_file"] }),
+      ],
+    });
+
+    expect(result.pressureMode).toBe("emergency");
+    expect(result.rawPressureRatio).toBeGreaterThan(1);
+    const workflowSection = result.prompt
+      .split("\n")
+      .filter((l) => l.includes("Workflow") || l.includes("Tools typically") || l.includes("Artifact"))
+      .join("\n");
+    expect(workflowSection).toContain("## Workflow Context");
+    expect(workflowSection).toContain("read_file");
+    expect(workflowSection).not.toContain("write_file");
   });
 });
