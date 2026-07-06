@@ -3,17 +3,25 @@ import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import type { Session } from "../src/session.js";
 import * as modelResolverActual from "../src/model-resolver.js";
+import * as systemToolsActual from "../src/tools/system.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings
 const mrReal = { ...modelResolverActual };
+const stReal = { ...systemToolsActual };
 
 const mockResolveModelSpecifier = mock<typeof modelResolverActual.resolveModelSpecifier>();
 const mockGetProviderConfigurationError = mock<typeof modelResolverActual.getProviderConfigurationError>(() => null);
+const mockExecuteShellCommand = mock<typeof systemToolsActual.executeShellCommand>();
 
 mock.module("../src/model-resolver.js", () => ({
   ...mrReal,
   resolveModelSpecifier: mockResolveModelSpecifier,
   getProviderConfigurationError: mockGetProviderConfigurationError,
+}));
+
+mock.module("../src/tools/system.js", () => ({
+  ...stReal,
+  executeShellCommand: mockExecuteShellCommand,
 }));
 
 import {
@@ -39,6 +47,7 @@ describe("executeSlashCommand", () => {
     mockResolveModelSpecifier.mockReset();
     mockGetProviderConfigurationError.mockReset();
     mockGetProviderConfigurationError.mockReturnValue(null);
+    mockExecuteShellCommand.mockReset();
   });
 
   it("returns exit action for /exit", async () => {
@@ -540,8 +549,76 @@ describe("executeSlashCommand", () => {
     expect(output).toContain("recalls: 3");
     expect(output).toContain("measurement");
   });
+
+  describe("/shell", () => {
+    function mockSession() {
+      return {
+        cwd: "/tmp",
+        config: {
+          shell: { enabled: false, allowed_paths: [] },
+        },
+      } as unknown as Session;
+    }
+
+    it("returns usage error when no command is given", async () => {
+      const session = mockSession();
+      const result = await executeSlashCommand("/shell", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+
+      expect(result.display).toBe("toast");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines[0]).toBe("Usage: /shell <command>");
+      expect(mockExecuteShellCommand).not.toHaveBeenCalled();
+    });
+
+    it("runs the command and returns output as inline transcript", async () => {
+      mockExecuteShellCommand.mockResolvedValue({
+        ok: true,
+        stdout: "hello\nworld",
+        stderr: "",
+        exitCode: 0,
+      });
+      const session = mockSession();
+      const result = await executeSlashCommand("/shell echo hello", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+
+      expect(mockExecuteShellCommand).toHaveBeenCalledWith(
+        expect.objectContaining({ command: "echo hello", cwd: "/tmp" }),
+      );
+      expect(result.display).toBe("inline_transcript");
+      expect(result.lines).toContain("$ echo hello");
+      expect(result.lines).toContain("hello");
+    });
+
+    it("flags error tone on non-zero exit", async () => {
+      mockExecuteShellCommand.mockResolvedValue({
+        ok: false,
+        stdout: "",
+        stderr: "nope",
+        exitCode: 1,
+      });
+      const session = mockSession();
+      const result = await executeSlashCommand("/shell false", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+
+      expect(result.display).toBe("inline_transcript");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines[result.lines.length - 1]).toBe("exit code: 1");
+    });
+  });
 });
-// Restore real module after this file to prevent cross-test pollution
+
+// Restore real modules after this file to prevent cross-test pollution
 afterAll(() => {
   mock.module("../src/model-resolver.js", () => mrReal);
+  mock.module("../src/tools/system.js", () => stReal);
 });
