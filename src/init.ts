@@ -1,12 +1,14 @@
-import { writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { detectProviderFromEnvironment, listAvailableProviders } from "./llm.js";
 import { DEFAULT_MODELS } from "./llm.js";
 import { getAppLogger } from "./logger.js";
+import { APP_HOME_DIR } from "./app-identity.js";
 
 export interface InitOptions {
   force: boolean;
-  cwd: string;
+  homeDir?: string;
 }
 
 export interface InitResult {
@@ -78,11 +80,13 @@ function generateConfigContent(detected: { provider: string; model: string } | n
 
 /**
  * Handle the `praana init` command.
- * Creates a config file in the current directory.
+ * Creates the global config file at ~/.praana/config.toml.
  */
 export function handleInit(opts: InitOptions): InitResult {
   const logger = getAppLogger().child("app");
-  const configPath = resolve(opts.cwd, "praana.config.toml");
+  const homeDir = opts.homeDir ?? homedir();
+  const appHomeDir = join(homeDir, APP_HOME_DIR);
+  const configPath = join(appHomeDir, "config.toml");
 
   // Check if config already exists
   if (existsSync(configPath) && !opts.force) {
@@ -104,6 +108,7 @@ export function handleInit(opts: InitOptions): InitResult {
   const content = generateConfigContent(detected);
 
   try {
+    mkdirSync(appHomeDir, { recursive: true });
     writeFileSync(configPath, content, "utf-8");
 
     let message: string;
