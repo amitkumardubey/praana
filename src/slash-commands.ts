@@ -20,11 +20,12 @@ import {
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
+import { executeShellCommand } from "./tools/system.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
-export type SlashCommandDisplay = "transcript" | "toast";
+export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
 
 export type SlashCommandToastTone = "info" | "success" | "error";
 
@@ -612,6 +613,32 @@ export async function executeSlashCommand(
         lines.push(`Memory dedupe error: ${(err as Error).message}`);
       }
       break;
+    }
+
+    case "/shell": {
+      const command = parts.slice(1).join(" ");
+      if (!command) {
+        lines.push("Usage: /shell <command>");
+        return result("none", "toast", "error");
+      }
+
+      const runResult = await executeShellCommand({
+        command,
+        cwd: session.cwd,
+        sandbox: session.config.shell,
+        timeout: 30000,
+      });
+
+      lines.push(`$ ${command}`);
+      if (runResult.stdout) lines.push(...runResult.stdout.split("\n"));
+      if (runResult.stderr) lines.push(...runResult.stderr.split("\n"));
+      if (!runResult.ok && !runResult.stdout && !runResult.stderr) {
+        lines.push(runResult.stderr || `Command failed with exit code ${runResult.exitCode}`);
+      } else if (runResult.exitCode !== 0) {
+        lines.push(`exit code: ${runResult.exitCode}`);
+      }
+
+      return result("none", "inline_transcript", runResult.ok ? undefined : "error");
     }
 
     case "/help": {
