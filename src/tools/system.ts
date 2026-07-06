@@ -54,6 +54,172 @@ export interface SystemToolContext {
   getCurrentTurn: () => number;
 }
 
+export interface ShellRunOptions {
+  command: string;
+  cwd: string;
+  sandbox?: SandboxConfig;
+  timeout?: number;
+  abortSignal?: AbortSignal;
+  onStdout?(chunk: Buffer): void;
+  onStderr?(chunk: Buffer): void;
+}
+
+export interface ShellRunResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export async function executeShellCommand(
+  opts: ShellRunOptions,
+): Promise<ShellRunResult> {
+  const { command, cwd, sandbox, timeout, abortSignal, onStdout, onStderr } = opts;
+
+  if (abortSignal?.aborted) {
+    return { ok: false, stdout: "", stderr: "Interrupted", exitCode: 130 };
+  }
+
+  // Sandbox validation
+  if (sandbox?.enabled) {
+    const dangerousPatterns = [
+      /\bsudo\b/,
+      /\brm\b.*-r.*\//,
+      /\brm\b.*-f.*\//,
+      /\bmkfs\b/,
+      /\bdd\b.*if=/,
+      /\bdd\b.*of=/,
+      /\bshutdown\b/,
+      /\breboot\b/,
+      /\bhalt\b/,
+      /\bpoweroff\b/,
+      /\bfdisk\b/,
+      /\bparted\b/,
+      /\bwipefs\b/,
+      /\bcryptsetup\b/,
+      /\bchmod\b.*-R.*777.*\//,
+      /\bchown\b.*-R.*\//,
+      />\s*\/dev\/sd[a-z]/,
+      /:\(\)\{\s*:\|\&\s*\};/,
+    ];
+    for (const pattern of dangerousPatterns) {
+      if (pattern.test(command)) {
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "Blocked by sandbox: dangerous command detected",
+          exitCode: 1,
+        };
+      }
+    }
+    if (sandbox.allowed_paths.length > 0) {
+      const pathPattern = /(?:["']([^"']+)["']|(\/[\w.\/-]+|\~\/[\w.\/-]+))/g;
+      let match: RegExpExecArray | null;
+      while ((match = pathPattern.exec(command)) !== null) {
+        const rawPath = match[1] ?? match[2];
+        if (!rawPath) continue;
+        const expanded = rawPath.replace(/^~/, homedir());
+        const normalized = normalize(expanded);
+        let resolved: string;
+        try {
+          resolved = existsSync(normalized) ? realpathSync(normalized) : normalized;
+        } catch {
+          resolved = normalized;
+        }
+        const isAllowed = sandbox.allowed_paths.some((ap) => {
+          const apExpanded = ap.replace(/^~/, homedir());
+          const apNormalized = normalize(apExpanded);
+          let apResolved: string;
+          try {
+            apResolved = existsSync(apNormalized) ? realpathSync(apNormalized) : apNormalized;
+          } catch {
+            apResolved = apNormalized;
+          }
+          return resolved === apResolved || resolved.startsWith(apResolved + "/");
+        });
+        if (!isAllowed) {
+          return {
+            ok: false,
+            stdout: "",
+            stderr: `Blocked by sandbox: path not in allowed list: ${rawPath}`,
+            exitCode: 1,
+          };
+        }
+      }
+    }
+  }
+
+  const ms = timeout ?? 30000;
+  return new Promise((resolve) => {
+    const child = spawn(command, [], {
+      cwd,
+      shell: "/bin/bash",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const maxBuf = 10 * 1024 * 1024;
+
+    const finish = (result: ShellRunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      abortSignal?.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 3000);
+    };
+
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 3000);
+    }, ms);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      onStdout?.(chunk);
+      if (stdout.length < maxBuf) stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      onStderr?.(chunk);
+      if (stderr.length < maxBuf) stderr += chunk.toString();
+    });
+
+    child.on("close", (code) => {
+      if (abortSignal?.aborted) {
+        finish({
+          ok: false,
+          stdout: stdout.slice(0, maxBuf),
+          stderr: stderr.slice(0, maxBuf) || "Interrupted",
+          exitCode: 130,
+        });
+        return;
+      }
+      finish({
+        ok: code === 0,
+        stdout: stdout.slice(0, maxBuf),
+        stderr: stderr.slice(0, maxBuf),
+        exitCode: code ?? 1,
+      });
+    });
+
+    child.on("error", (err) => {
+      finish({
+        ok: false,
+        stdout,
+        stderr: err.message,
+        exitCode: 1,
+      });
+    });
+  });
+}
+
 export function createSystemTools(ctx: SystemToolContext) {
   const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, onScorecardSkillLoad, getCurrentTurn } = ctx;
 
@@ -79,147 +245,18 @@ export function createSystemTools(ctx: SystemToolContext) {
           return { ok: false, stdout: "", stderr: "Interrupted", exitCode: 130 };
         }
 
-        // Sandbox validation
-        if (sandbox?.enabled) {
-          const dangerousPatterns = [
-            /\bsudo\b/,
-            /\brm\b.*-r.*\//,
-            /\brm\b.*-f.*\//,
-            /\bmkfs\b/,
-            /\bdd\b.*if=/,
-            /\bdd\b.*of=/,
-            /\bshutdown\b/,
-            /\breboot\b/,
-            /\bhalt\b/,
-            /\bpoweroff\b/,
-            /\bfdisk\b/,
-            /\bparted\b/,
-            /\bwipefs\b/,
-            /\bcryptsetup\b/,
-            /\bchmod\b.*-R.*777.*\//,
-            /\bchown\b.*-R.*\//,
-            /\>\s*\/dev\/sd[a-z]/,
-            /\:\(\)\{\s*:\|\&\s*\};/,
-          ];
-          for (const pattern of dangerousPatterns) {
-            if (pattern.test(command)) {
-              return { ok: false, stdout: "", stderr: "Blocked by sandbox: dangerous command detected", exitCode: 1 };
-            }
-          }
-          if (sandbox.allowed_paths.length > 0) {
-            const pathPattern = /(?:["']([^"']+)["']|(\/[\w./-]+|~\/[\w./-]+))/g;
-            let match: RegExpExecArray | null;
-            while ((match = pathPattern.exec(command)) !== null) {
-              const rawPath = match[1] ?? match[2];
-              if (!rawPath) continue;
-              const expanded = rawPath.replace(/^~/, homedir());
-              const normalized = normalize(expanded);
-              let resolved: string;
-              try {
-                resolved = existsSync(normalized) ? realpathSync(normalized) : normalized;
-              } catch {
-                resolved = normalized;
-              }
-              const isAllowed = sandbox.allowed_paths.some(ap => {
-                const apExpanded = ap.replace(/^~/, homedir());
-                const apNormalized = normalize(apExpanded);
-                let apResolved: string;
-                try {
-                  apResolved = existsSync(apNormalized) ? realpathSync(apNormalized) : apNormalized;
-                } catch {
-                  apResolved = apNormalized;
-                }
-                return resolved === apResolved || resolved.startsWith(apResolved + "/");
-              });
-              if (!isAllowed) {
-                return { ok: false, stdout: "", stderr: `Blocked by sandbox: path not in allowed list: ${rawPath}`, exitCode: 1 };
-              }
-            }
-          }
-        }
-
-        const ms = timeout ?? 30000;
-        return new Promise((resolve) => {
-          const child = spawn(command, [], {
-            cwd,
-            shell: "/bin/bash",
-            stdio: ["ignore", "pipe", "pipe"],
-          });
-
-          let stdout = "";
-          let stderr = "";
-          let settled = false;
-          const maxBuf = 10 * 1024 * 1024; // 10MB
-
-          const finish = (result: {
-            ok: boolean;
-            stdout: string;
-            stderr: string;
-            exitCode: number;
-          }) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            signal?.removeEventListener("abort", onAbort);
-            resolve(result);
-          };
-
-          const onAbort = () => {
-            child.kill("SIGTERM");
-            setTimeout(() => child.kill("SIGKILL"), 3000);
-          };
-
-          signal?.addEventListener("abort", onAbort, { once: true });
-
-          const timer = setTimeout(() => {
-            child.kill("SIGTERM");
-            setTimeout(() => child.kill("SIGKILL"), 3000);
-          }, ms);
-
-          child.stdout?.on("data", (chunk: Buffer) => {
-            // Stream raw output to terminal so long-running commands show progress.
-            // ANSI escape sequences from child processes pass through unmodified —
-            // this matches standard terminal multiplexer behavior (script(1), tee).
-            // In TUI mode shellLiveStream is false — output is buffered and shown in transcript.
-            // Default (undefined) = stream; explicit false = buffer only.
-            if (shellLiveStream !== false) {
-              process.stdout.write(chunk);
-            }
-            if (stdout.length < maxBuf) stdout += chunk.toString();
-          });
-          child.stderr?.on("data", (chunk: Buffer) => {
-            if (shellLiveStream !== false) {
-              process.stderr.write(chunk);
-            }
-            if (stderr.length < maxBuf) stderr += chunk.toString();
-          });
-
-          child.on("close", (code) => {
-            if (signal?.aborted) {
-              finish({
-                ok: false,
-                stdout: stdout.slice(0, maxBuf),
-                stderr: stderr.slice(0, maxBuf) || "Interrupted",
-                exitCode: 130,
-              });
-              return;
-            }
-            finish({
-              ok: code === 0,
-              stdout: stdout.slice(0, maxBuf),
-              stderr: stderr.slice(0, maxBuf),
-              exitCode: code ?? 1,
-            });
-          });
-
-          child.on("error", (err) => {
-            finish({
-              ok: false,
-              stdout,
-              stderr: err.message,
-              exitCode: 1,
-            });
-          });
+        return executeShellCommand({
+          command,
+          cwd,
+          sandbox,
+          timeout,
+          abortSignal: signal,
+          onStdout: shellLiveStream !== false
+            ? (chunk) => process.stdout.write(chunk)
+            : undefined,
+          onStderr: shellLiveStream !== false
+            ? (chunk) => process.stderr.write(chunk)
+            : undefined,
         });
       },
     }),
