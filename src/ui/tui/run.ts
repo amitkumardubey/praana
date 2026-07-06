@@ -137,7 +137,7 @@ export async function runTui(
       noMatch: TUI_STYLE.muted,
     },
   };
-  const editor = new InvertedEditor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8, paddingY: 0 });
+  const editor = new InvertedEditor(tui, editorTheme, { autocompleteMaxVisible: 8, paddingY: 0 });
 
   const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
   const autocomplete: AutocompleteProvider = {
