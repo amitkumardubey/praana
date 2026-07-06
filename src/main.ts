@@ -23,7 +23,11 @@ export async function main() {
   // Handle init command early (before config loading)
   if (parsed.initMode) {
     const result = handleInit({ force: parsed.force });
-    console.log(result.message);
+    if (result.success) {
+      console.log(result.message);
+    } else {
+      console.error(result.message);
+    }
     process.exit(result.success ? 0 : 1);
   }
 

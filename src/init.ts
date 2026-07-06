@@ -91,7 +91,7 @@ export function handleInit(opts: InitOptions): InitResult {
   // Check if config already exists
   if (existsSync(configPath) && !opts.force) {
     const message = `Config file already exists: ${configPath}\nUse --force to overwrite.`;
-    logger.warn(message);
+    logger.info(message);
     return {
       success: false,
       path: configPath,
@@ -129,7 +129,7 @@ export function handleInit(opts: InitOptions): InitResult {
     };
   } catch (err) {
     const message = `Failed to create config file: ${(err as Error).message}`;
-    logger.error(message, { cause: err as Error });
+    logger.info(message, { details: { cause: (err as Error).message } });
     return {
       success: false,
       path: configPath,
