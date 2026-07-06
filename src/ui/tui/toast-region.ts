@@ -8,8 +8,7 @@
  * Design §8:
  *   info/success → 3s, warn → 5s, error → sticky (until next user input)
  */
-import type { Component } from "@earendil-works/pi-tui";
-import type { TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import { TUI_STYLE } from "./theme.js";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
@@ -70,7 +69,7 @@ export class ToastRegion implements Component {
     // No cache; render() is pure.
   }
 
-  render(_width: number): string[] {
+  render(width: number): string[] {
     // Expire any timed-out toasts inline before render.
     const now = Date.now();
     this.toasts = this.toasts.filter((t) => t.expiresAt === null || t.expiresAt > now);
@@ -85,7 +84,8 @@ export class ToastRegion implements Component {
             : t.tone === "success"
               ? TUI_STYLE.success
               : TUI_STYLE.info;
-      return `  ${color(glyph)} ${t.message}`;
+      const line = `  ${color(glyph)} ${t.message}`;
+      return truncateToWidth(line, width, "…", false);
     });
   }
 }
