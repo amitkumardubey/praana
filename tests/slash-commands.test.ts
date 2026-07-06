@@ -594,6 +594,13 @@ describe("executeSlashCommand", () => {
       expect(result.display).toBe("inline_transcript");
       expect(result.lines).toContain("$ echo hello");
       expect(result.lines).toContain("hello");
+      expect(result.shellRun).toMatchObject({
+        command: "echo hello",
+        stdout: "hello\nworld",
+        stderr: "",
+        exitCode: 0,
+        ok: true,
+      });
     });
 
     it("flags error tone on non-zero exit", async () => {
@@ -613,6 +620,13 @@ describe("executeSlashCommand", () => {
       expect(result.display).toBe("inline_transcript");
       expect(result.toastTone).toBe("error");
       expect(result.lines[result.lines.length - 1]).toBe("exit code: 1");
+      expect(result.shellRun).toMatchObject({
+        command: "false",
+        stdout: "",
+        stderr: "nope",
+        exitCode: 1,
+        ok: false,
+      });
     });
   });
 });

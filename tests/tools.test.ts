@@ -1182,6 +1182,17 @@ describe('System Tools (createSystemTools)', () => {
       expect(result.ok).toBe(true);
     });
 
+    it('should report timeout with a clear message', async () => {
+      const start = Date.now();
+      const result = await tools.shell.execute({ command: 'sleep 1', timeout: 50 });
+      const elapsed = Date.now() - start;
+      expect(result.ok).toBe(false);
+      expect((result as any).exitCode).toBe(124);
+      expect((result as any).stderr).toContain('Timed out');
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+      expect(elapsed).toBeLessThan(500);
+    });
+
     it('should handle empty command output', async () => {
       const result = await tools.shell.execute({ command: 'true' });
       expect(result.ok).toBe(true);

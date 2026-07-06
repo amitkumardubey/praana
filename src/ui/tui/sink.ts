@@ -212,6 +212,40 @@ export class PiTuiSink implements TurnUiSink {
     }
   }
 
+  appendShellRun(run: {
+    command: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    ok: boolean;
+  }): void {
+    const id = this.nextId("shell");
+    const args = { command: run.command };
+    const resultText = JSON.stringify({
+      ok: run.ok,
+      stdout: run.stdout,
+      stderr: run.stderr,
+      exitCode: run.exitCode,
+    });
+
+    this.applyTranscriptEvent({
+      type: "tool_call_started",
+      id,
+      group: this.group,
+      toolName: "shell",
+      args,
+    });
+    this.applyTranscriptEvent({
+      type: "tool_call_finished",
+      id,
+      group: this.group,
+      toolName: "shell",
+      resultText,
+      isError: !run.ok,
+      args,
+    });
+  }
+
   onError(entry: LogEntry): void {
     if (entry.level === "error" || entry.level === "warn") {
       const msg = `[${entry.domain}] ${entry.message}`;

@@ -34,6 +34,14 @@ export interface SlashCommandResult {
   lines: string[];
   display?: SlashCommandDisplay;
   toastTone?: SlashCommandToastTone;
+  /** Structured shell-run output for TUI tool-row rendering. */
+  shellRun?: {
+    command: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    ok: boolean;
+  };
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
@@ -638,7 +646,19 @@ export async function executeSlashCommand(
         lines.push(`exit code: ${runResult.exitCode}`);
       }
 
-      return result("none", "inline_transcript", runResult.ok ? undefined : "error");
+      return {
+        action: "none",
+        lines,
+        display: "inline_transcript",
+        toastTone: runResult.ok ? undefined : "error",
+        shellRun: {
+          command,
+          stdout: runResult.stdout,
+          stderr: runResult.stderr,
+          exitCode: runResult.exitCode,
+          ok: runResult.ok,
+        },
+      };
     }
 
     case "/help": {

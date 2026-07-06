@@ -160,26 +160,30 @@ export async function executeShellCommand(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
     const maxBuf = 10 * 1024 * 1024;
 
     const finish = (result: ShellRunResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       abortSignal?.removeEventListener("abort", onAbort);
       resolve(result);
     };
 
     const onAbort = () => {
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 3000);
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
     };
 
     abortSignal?.addEventListener("abort", onAbort, { once: true });
 
     const timer = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 3000);
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
     }, ms);
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -198,6 +202,15 @@ export async function executeShellCommand(
           stdout: stdout.slice(0, maxBuf),
           stderr: stderr.slice(0, maxBuf) || "Interrupted",
           exitCode: 130,
+        });
+        return;
+      }
+      if (timedOut) {
+        finish({
+          ok: false,
+          stdout: stdout.slice(0, maxBuf),
+          stderr: stderr.slice(0, maxBuf) || `Timed out after ${ms}ms`,
+          exitCode: code ?? 124,
         });
         return;
       }

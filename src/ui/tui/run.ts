@@ -247,12 +247,26 @@ export async function runTui(
     }
 
     if (input.startsWith("/")) {
-      const result = await controller.executeSlashCommand(input);
+      editor.inner.disableSubmit = true;
+      spinnerSlot.addChild(spinner);
+      spinner.setMessage("running command…");
+      spinner.start();
+
+      let result: import("../../slash-commands.js").SlashCommandResult;
+      try {
+        result = await controller.executeSlashCommand(input);
+      } finally {
+        spinner.stop();
+        spinnerSlot.removeChild(spinner);
+        editor.inner.disableSubmit = false;
+      }
 
       if (result.display === "inline_transcript") {
         sink.nextGroup();
         sink.appendUser(input);
-        if (result.lines.length > 0) {
+        if (result.shellRun) {
+          sink.appendShellRun(result.shellRun);
+        } else if (result.lines.length > 0) {
           sink.onSystemLines(result.lines);
         }
       } else if (result.display === "toast" && result.toastTone) {

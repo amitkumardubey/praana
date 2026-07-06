@@ -95,4 +95,26 @@ describe("PiTuiSink", () => {
     const roles = projection.entries().map((entry) => entry.role);
     expect(roles).toEqual(["system", "system"]);
   });
+
+  it("appends shell slash runs as tool rows with stdout/stderr/exit code", () => {
+    const { sink, projection } = makeSink();
+    sink.nextGroup();
+
+    sink.appendShellRun({
+      command: "echo hello",
+      stdout: "hello",
+      stderr: "",
+      exitCode: 0,
+      ok: true,
+    });
+
+    const entries = projection.entries();
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!;
+    expect(entry.role).toBe("tool");
+    expect(entry.toolName).toBe("shell");
+    expect((entry as any).resultSummary).toBe("ok");
+    expect((entry as any).resultBody).toBe("hello");
+    expect((entry as any).isError).toBe(false);
+  });
 });
