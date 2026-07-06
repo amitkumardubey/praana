@@ -20,11 +20,12 @@ import {
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
+import { executeShellCommand } from "./tools/system.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
-export type SlashCommandDisplay = "transcript" | "toast";
+export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
 
 export type SlashCommandToastTone = "info" | "success" | "error";
 
@@ -33,6 +34,14 @@ export interface SlashCommandResult {
   lines: string[];
   display?: SlashCommandDisplay;
   toastTone?: SlashCommandToastTone;
+  /** Structured shell-run output for TUI tool-row rendering. */
+  shellRun?: {
+    command: string;
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    ok: boolean;
+  };
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
@@ -612,6 +621,44 @@ export async function executeSlashCommand(
         lines.push(`Memory dedupe error: ${(err as Error).message}`);
       }
       break;
+    }
+
+    case "/shell": {
+      const command = parts.slice(1).join(" ");
+      if (!command) {
+        lines.push("Usage: /shell <command>");
+        return result("none", "toast", "error");
+      }
+
+      const runResult = await executeShellCommand({
+        command,
+        cwd: session.cwd,
+        sandbox: session.config.shell,
+        timeout: 30000,
+      });
+
+      lines.push(`$ ${command}`);
+      if (runResult.stdout) lines.push(...runResult.stdout.split("\n"));
+      if (runResult.stderr) lines.push(...runResult.stderr.split("\n"));
+      if (!runResult.ok && !runResult.stdout && !runResult.stderr) {
+        lines.push(runResult.stderr || `Command failed with exit code ${runResult.exitCode}`);
+      } else if (runResult.exitCode !== 0) {
+        lines.push(`exit code: ${runResult.exitCode}`);
+      }
+
+      return {
+        action: "none",
+        lines,
+        display: "inline_transcript",
+        toastTone: runResult.ok ? undefined : "error",
+        shellRun: {
+          command,
+          stdout: runResult.stdout,
+          stderr: runResult.stderr,
+          exitCode: runResult.exitCode,
+          ok: runResult.ok,
+        },
+      };
     }
 
     case "/help": {

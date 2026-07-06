@@ -40,6 +40,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>" },
   { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>" },
   { name: "/sessions", description: "List past sessions" },
+  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>" },
   { name: "/debug", description: "Toggle debug mode" },
   { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
   { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
@@ -136,7 +137,7 @@ export async function runTui(
       noMatch: TUI_STYLE.muted,
     },
   };
-  const editor = new InvertedEditor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8, paddingY: 0 });
+  const editor = new InvertedEditor(tui, editorTheme, { autocompleteMaxVisible: 8, paddingY: 0 });
 
   const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
   const autocomplete: AutocompleteProvider = {
@@ -231,15 +232,44 @@ export async function runTui(
   let turnStartedAt = 0;
 
   editor.inner.onSubmit = async (rawInput: string) => {
-    const input = rawInput.trim();
+    let input = rawInput.trim();
     if (!input) return;
     editor.inner.addToHistory(input);
     toast.clearErrors();
 
-    if (input.startsWith("/")) {
-      const result = await controller.executeSlashCommand(input);
+    if (input.startsWith("!")) {
+      const command = input.slice(1).trim();
+      if (!command) {
+        toast.show("Usage: !<command>", "error");
+        return;
+      }
+      input = `/shell ${command}`;
+    }
 
-      if (result.display === "toast" && result.toastTone) {
+    if (input.startsWith("/")) {
+      editor.inner.disableSubmit = true;
+      spinnerSlot.addChild(spinner);
+      spinner.setMessage("running command…");
+      spinner.start();
+
+      let result: import("../../slash-commands.js").SlashCommandResult;
+      try {
+        result = await controller.executeSlashCommand(input);
+      } finally {
+        spinner.stop();
+        spinnerSlot.removeChild(spinner);
+        editor.inner.disableSubmit = false;
+      }
+
+      if (result.display === "inline_transcript") {
+        sink.nextGroup();
+        sink.appendUser(input);
+        if (result.shellRun) {
+          sink.appendShellRun(result.shellRun);
+        } else if (result.lines.length > 0) {
+          sink.onSystemLines(result.lines);
+        }
+      } else if (result.display === "toast" && result.toastTone) {
         toast.show(
           result.lines.join(" "),
           result.toastTone === "error"
