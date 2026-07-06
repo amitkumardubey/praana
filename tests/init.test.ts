@@ -18,29 +18,33 @@ describe("praana init", () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
-  it("should create a config file in the specified directory", () => {
-    const result = handleInit({ force: false, cwd: testDir });
+  function configPath(): string {
+    return join(testDir, ".praana", "config.toml");
+  }
+
+  it("should create the global config file in ~/.praana/", () => {
+    const result = handleInit({ force: false, homeDir: testDir });
     expect(result.success).toBe(true);
     expect(result.action).toBe("created");
-    expect(existsSync(join(testDir, "praana.config.toml"))).toBe(true);
+    expect(existsSync(configPath())).toBe(true);
   });
 
   it("should refuse to overwrite existing config without --force", () => {
     // Create initial config
-    handleInit({ force: false, cwd: testDir });
-    
+    handleInit({ force: false, homeDir: testDir });
+
     // Try to create again without --force
-    const result = handleInit({ force: false, cwd: testDir });
+    const result = handleInit({ force: false, homeDir: testDir });
     expect(result.success).toBe(false);
     expect(result.action).toBe("skipped");
   });
 
   it("should overwrite existing config with --force", () => {
     // Create initial config
-    handleInit({ force: false, cwd: testDir });
-    
+    handleInit({ force: false, homeDir: testDir });
+
     // Overwrite with --force
-    const result = handleInit({ force: true, cwd: testDir });
+    const result = handleInit({ force: true, homeDir: testDir });
     expect(result.success).toBe(true);
     expect(result.action).toBe("overwritten");
   });
@@ -57,15 +61,15 @@ describe("praana init", () => {
     delete process.env.FIREWORKS_API_KEY;
     delete process.env.TOGETHER_API_KEY;
     delete process.env.OPENCODE_API_KEY;
-    
+
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const result = handleInit({ force: false, cwd: testDir });
-    
+    const result = handleInit({ force: false, homeDir: testDir });
+
     expect(result.success).toBe(true);
-    const content = readFileSync(join(testDir, "praana.config.toml"), "utf-8");
+    const content = readFileSync(configPath(), "utf-8");
     expect(content).toContain('provider = "anthropic"');
     expect(content).toContain('model = "claude-sonnet-4-20250514"');
-    
+
     delete process.env.ANTHROPIC_API_KEY;
   });
 
@@ -83,15 +87,15 @@ describe("praana init", () => {
     delete process.env.FIREWORKS_API_KEY;
     delete process.env.TOGETHER_API_KEY;
     delete process.env.OPENCODE_API_KEY;
-    
-    const result = handleInit({ force: false, cwd: testDir });
-    
+
+    const result = handleInit({ force: false, homeDir: testDir });
+
     expect(result.success).toBe(true);
-    const content = readFileSync(join(testDir, "praana.config.toml"), "utf-8");
+    const content = readFileSync(configPath(), "utf-8");
     // ollama is always detected as a keyless provider
     expect(content).toContain('provider = "ollama"');
     expect(content).toContain('model = "llama3"');
-    
+
     // Restore environment
     process.env = originalEnv;
   });
