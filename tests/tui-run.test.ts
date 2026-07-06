@@ -258,4 +258,22 @@ describe("runTui", () => {
       },
     });
   });
+
+  it("rewrites !<command> to /shell before executing", async () => {
+    fakeController.executeSlashCommand.mockImplementation(async (input: string) => ({
+      action: "none" as const,
+      lines: ["$ git status", "nothing to commit"],
+      display: "inline_transcript" as const,
+    }));
+
+    const { promise, resolve } = Promise.withResolvers<void>();
+    tuiStart.mockImplementationOnce(() => { resolve(); });
+
+    await runTui(fakeController as never, fakeInfo);
+    await promise;
+
+    await latestEditor?.onSubmit?.("!git status");
+
+    expect(fakeController.executeSlashCommand).toHaveBeenCalledWith("/shell git status");
+  });
 });
