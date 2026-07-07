@@ -151,6 +151,35 @@ describe("AppController", () => {
     expect(await controller.shutdown()).toEqual({ memory: "noop" });
     expect(end).toHaveBeenCalledTimes(1);
   });
+
+  it("handleUserInterrupt clears input when no turn is active", () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    expect(controller.handleUserInterrupt()).toBe("clear_input");
+  });
+
+  it("handleUserInterrupt debounces repeated calls", () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    expect(controller.handleUserInterrupt()).toBe("clear_input");
+    expect(controller.handleUserInterrupt()).toBe("noop");
+  });
+
+  it("handleUserInterrupt aborts an active turn", () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    (controller as any).turnController.begin();
+    expect(controller.handleUserInterrupt()).toBe("abort_turn");
+  });
 });
 // Restore real session module after this file to prevent cross-test pollution
 afterAll(() => {
