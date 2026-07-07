@@ -344,8 +344,9 @@ export async function runTui(
         tui.requestRender();
         return { consume: true };
       }
-      if (action === "prompt_exit") {
-        doShutdown().catch(() => {});
+      if (action === "clear_input") {
+        editor.inner.setText("");
+        tui.requestRender();
         return { consume: true };
       }
     }

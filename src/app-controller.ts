@@ -102,7 +102,7 @@ export class AppController {
     this.turnController.abort();
   }
 
-  handleUserInterrupt(onPromptExit?: () => void): "abort_turn" | "prompt_exit" | "noop" {
+  handleUserInterrupt(): "abort_turn" | "clear_input" | "noop" {
     if (this.interruptHandling) return "noop";
     this.interruptHandling = true;
     setImmediate(() => {
@@ -114,8 +114,7 @@ export class AppController {
       return "abort_turn";
     }
 
-    onPromptExit?.();
-    return "prompt_exit";
+    return "clear_input";
   }
 
   async executeSlashCommand(input: string): Promise<SlashCommandResult> {
