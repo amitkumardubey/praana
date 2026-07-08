@@ -22,11 +22,29 @@ interface SetupResult {
  * Run interactive provider setup when no API key is found.
  * Guides the user through selecting a provider and setting up their key.
  */
+const PAGE_SIZE = 10;
+
+/** Render one page of the provider list as printable lines. */
+export function providerPageLines(providers: string[], page: number, pageSize: number): string[] {
+  const totalPages = Math.max(1, Math.ceil(providers.length / pageSize));
+  const start = page * pageSize;
+  const end = Math.min(start + pageSize, providers.length);
+  const lines: string[] = [];
+  for (let i = start; i < end; i++) {
+    lines.push(`  ${i + 1}. ${providers[i]}`);
+  }
+  lines.push("");
+  if (totalPages > 1) {
+    lines.push(`  Page ${page + 1}/${totalPages}. Type 'n' for next, 'p' for previous.`);
+  }
+  return lines;
+}
+
 export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
   const logger = getAppLogger().child("app");
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stderr,
+    output: process.stdout,
   });
 
   const sigintHandler = () => {
@@ -37,60 +55,88 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
   process.on("SIGINT", sigintHandler);
 
   try {
-    console.error("");
-    console.error("═══════════════════════════════════════════════════════════════");
-    console.error("  PRAANA — Provider Setup");
-    console.error("═══════════════════════════════════════════════════════════════");
-    console.error("");
-    console.error("No provider API key found. Let's set one up.");
-    console.error("");
+    console.log("");
+    console.log("═══════════════════════════════════════════════════════════════");
+    console.log("  PRAANA — Provider Setup");
+    console.log("═══════════════════════════════════════════════════════════════");
+    console.log("");
+    console.log("No provider API key found. Let's set one up.");
+    console.log("");
 
     const allProviders = listKnownProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
     const available = listAvailableProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
 
     if (available.length > 0) {
-      console.error("Detected in environment:");
+      console.log("Detected in environment:");
       for (const provider of available) {
-        console.error(`  ✓ ${provider}`);
+        console.log(`  ✓ ${provider}`);
       }
-      console.error("");
+      console.log("");
     }
-    console.error("Supported providers:");
-    for (let i = 0; i < allProviders.length; i++) {
-      console.error(`  ${i + 1}. ${allProviders[i]}`);
-    }
-    console.error("");
-    console.error("  Type a number to choose a provider, or 'q' to quit.");
-    console.error("");
+    console.log("Supported providers:");
+    console.log("");
+
+    let page = 0;
+    const totalPages = Math.max(1, Math.ceil(allProviders.length / PAGE_SIZE));
+
+    const renderPage = (p: number) => {
+      for (const line of providerPageLines(allProviders, p, PAGE_SIZE)) {
+        console.log(line);
+      }
+    };
+
+    renderPage(page);
 
     let selectedProvider: string | null = null;
     while (selectedProvider === null) {
-      const providerChoice = await askQuestion(rl,
-        "Which provider would you like to use? (number or name, or 'q' to quit): "
+      const providerChoice = await askQuestion(
+        rl,
+        "Which provider would you like to use? (number/name, 'n'/'p' to page, 'q' to quit): ",
       );
+      const lower = providerChoice.toLowerCase();
 
-      if (providerChoice.toLowerCase() === "q" || providerChoice.toLowerCase() === "quit") {
+      if (lower === "q" || lower === "quit") {
         return { success: false, message: "Setup cancelled." };
+      }
+
+      if ((lower === "n" || lower === "next") && totalPages > 1) {
+        if (page < totalPages - 1) {
+          page++;
+          renderPage(page);
+        } else {
+          console.error("Already on the last page.");
+        }
+        continue;
+      }
+
+      if ((lower === "p" || lower === "prev" || lower === "previous") && totalPages > 1) {
+        if (page > 0) {
+          page--;
+          renderPage(page);
+        } else {
+          console.error("Already on the first page.");
+        }
+        continue;
       }
 
       const choiceNum = parseInt(providerChoice, 10);
       if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= allProviders.length) {
         selectedProvider = allProviders[choiceNum - 1];
-      } else if (allProviders.includes(providerChoice.toLowerCase())) {
-        selectedProvider = providerChoice.toLowerCase();
+      } else if (allProviders.includes(lower)) {
+        selectedProvider = lower;
       } else {
         console.error(`Invalid choice: "${providerChoice}". Try again.`);
       }
     }
 
-    console.error("");
-    console.error(`Selected: ${selectedProvider}`);
+    console.log("");
+    console.log(`Selected: ${selectedProvider}`);
 
     const envKey = getProviderEnvKey(selectedProvider);
     if (!envKey) {
-      console.error("");
-      console.error(`Provider ${selectedProvider} does not use a single API key.`);
-      console.error("Configure it separately, then restart PRAANA.");
+      console.log("");
+      console.log(`Provider ${selectedProvider} does not use a single API key.`);
+      console.log("Configure it separately, then restart PRAANA.");
       return {
         success: true,
         provider: selectedProvider,
@@ -100,10 +146,10 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
 
     // Check if key is already available
     if (isProviderAvailable(selectedProvider)) {
-      console.error(`\n✓ ${selectedProvider} API key already detected in environment!`);
-      console.error(`\nTo use this provider, run:`);
-      console.error(`  export ${envKey}=<your-key>`);
-      console.error(`\nOr restart PRAANA — it should auto-detect the key.`);
+      console.log(`\n✓ ${selectedProvider} API key already detected in environment!`);
+      console.log(`\nTo use this provider, run:`);
+      console.log(`  export ${envKey}=<your-key>`);
+      console.log(`\nOr restart PRAANA — it should auto-detect the key.`);
       return {
         success: true,
         provider: selectedProvider,
@@ -113,12 +159,12 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
 
     const model = DEFAULT_MODELS[selectedProvider] ?? pickFirstCatalogModel(selectedProvider) ?? "";
 
-    console.error("");
-    console.error(`To use ${selectedProvider}, set this environment variable:`);
-    console.error("");
-    console.error(`  export ${envKey}=<your-api-key>`);
-    console.error("");
-    console.error(`Then restart PRAANA. It will auto-detect the key.`);
+    console.log("");
+    console.log(`To use ${selectedProvider}, set this environment variable:`);
+    console.log("");
+    console.log(`  export ${envKey}=<your-api-key>`);
+    console.log("");
+    console.log(`Then restart PRAANA. It will auto-detect the key.`);
 
     // Offer to save to config
     const saveToConfig = await askQuestion(rl, "Would you like me to create a config file? (y/n): ");
@@ -128,7 +174,7 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
       if (existsSync(configPath)) {
         const overwrite = await askQuestion(rl, `Config already exists at ${configPath}. Overwrite? (y/n): `);
         if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
-          console.error("\nConfig left unchanged.");
+          console.log("\nConfig left unchanged.");
           return {
             success: true,
             provider: selectedProvider,
@@ -151,22 +197,22 @@ ${modelLine}
       try {
         mkdirSync(appHomePath(), { recursive: true });
         writeFileSync(configPath, configContent, "utf-8");
-        console.error(`\n✓ Created config file: ${configPath}`);
-        console.error(`\nNext steps:`);
-        console.error(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
-        console.error(`  2. Restart PRAANA:   praana`);
+        console.log(`\n✓ Created config file: ${configPath}`);
+        console.log(`\nNext steps:`);
+        console.log(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
+        console.log(`  2. Restart PRAANA:   praana`);
       } catch (err) {
         console.error(`\nFailed to create config file: ${(err as Error).message}`);
         console.error("Please create it manually.");
       }
     } else {
-      console.error("");
-      console.error("Quick start:");
-      console.error(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
-      console.error(`  2. Restart PRAANA:   praana`);
+      console.log("");
+      console.log("Quick start:");
+      console.log(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
+      console.log(`  2. Restart PRAANA:   praana`);
     }
 
-    console.error("");
+    console.log("");
     logger.info(`Interactive setup completed for provider: ${selectedProvider}`, {
       details: { provider: selectedProvider },
     });
