@@ -81,18 +81,16 @@ describe("status-bar", () => {
       sessionInputTokens: 12_000,
       sessionOutputTokens: 3_400,
     });
-    expect(lines.length).toBe(5);
-    expect(lines[0]).toContain("in 12k");
-    expect(lines[0]).toContain("out 3.4k");
+    expect(lines.length).toBe(4);
     expect(lines[1]).toContain("8 active");
     expect(lines[1]).toContain("23 soft");
     expect(lines[1]).toContain("91 hard");
-    expect(lines[2]).toContain("18.4k");
-    expect(lines[2]).toContain("128k");
-    expect(lines[3]).toContain("2 skills");
-    expect(lines[4]).toContain("implement auth middleware");
-    expect(lines[0]).toContain("praana");
+    expect(lines[2]).toContain("2 skills");
+    expect(lines[3]).toContain("implement auth middleware");
+    expect(lines[0]).toContain("gpt-4o");
     expect(lines[0]).toContain("feat/foo");
+    expect(lines[0]).not.toContain("18.4k");
+    expect(lines[0]).not.toContain("in 12k");
   });
 
   it("buildStatusBarInput reads session metrics and memory", () => {

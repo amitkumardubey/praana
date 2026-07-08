@@ -1,11 +1,15 @@
 /**
  * Bottom glance bar formatter — design §5 ambient chrome.
  *
- * Example: ctx 43% · state 3A·1S · skills 1 · in 12k · out 3k · think · mem on
+ * Example: ctx 18.4k/128k 14% · wm 3A·1S · skills 1 · in 12k · out 3k · mem on
  */
 import chalk from "chalk";
 import type { StatusBarInput } from "../../../status-bar.js";
-import { formatModelStatusLabel, formatSessionTokenBreakdown } from "../../../status-bar.js";
+import {
+  formatModelStatusLabel,
+  formatSessionTokenBreakdown,
+  formatTokenCount,
+} from "../../../status-bar.js";
 import { TUI_STYLE } from "../theme.js";
 
 export interface GlanceFormatOpts {
@@ -24,14 +28,19 @@ export function formatTuiGlanceLine(
         )
       : 0;
 
+  const ctxLabel =
+    input.contextWindowTokens > 0
+      ? `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
+      : `ctx ${pct}%`;
+
   const ctxSeg =
     pct >= 90
-      ? TUI_STYLE.error(`ctx ${pct}%`)
+      ? TUI_STYLE.error(ctxLabel)
       : pct >= 70
-        ? TUI_STYLE.warning(`ctx ${pct}%`)
+        ? TUI_STYLE.warning(ctxLabel)
         : pct >= 50
-          ? chalk.dim(`ctx ${pct}%`)
-          : TUI_STYLE.success(`ctx ${pct}%`);
+          ? chalk.dim(ctxLabel)
+          : TUI_STYLE.success(ctxLabel);
 
   const parts: string[] = [ctxSeg];
 

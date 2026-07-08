@@ -156,7 +156,6 @@ export function buildStatusBarInput(
 
 /** Render status bar lines (no trailing newline on last line — caller adds newline). */
 export function formatStatusBarLines(input: StatusBarInput): string[] {
-  const ctx = `${formatTokenCount(input.contextUsedTokens)} / ${formatTokenCount(input.contextWindowTokens)}`;
   const repo = formatRepoLabel(input.repoPath, input.cwd);
   const repoLabel = input.branch ? `${repo} · ${input.branch}` : repo;
   const memFlag = input.incognito
@@ -168,21 +167,12 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
 
   const { provider: statusProvider, modelShort: statusModelShort } = formatModelStatusLabel(input.model);
   const statusModelLabel = statusProvider ? `${statusProvider} · ${statusModelShort}` : statusModelShort;
-  const tokenBreakdown = formatSessionTokenBreakdown(
-    input.sessionInputTokens,
-    input.sessionOutputTokens,
-  );
-  const line1Parts = [
+  const line1 = [
     chalk.cyan(statusModelLabel),
-    chalk.dim(ctx),
-  ];
-  if (tokenBreakdown) line1Parts.push(chalk.dim(tokenBreakdown));
-  line1Parts.push(
     chalk.yellow(formatMode(input.debug, input.thinking)),
     chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,
-  );
-  const line1 = line1Parts.join(chalk.dim(" · "));
+  ].join(chalk.dim(" · "));
 
   const line2 = [
     chalk.bold("Memory:"),
@@ -190,8 +180,6 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
     `${input.memoryStats.soft} soft`,
     `${input.memoryStats.hard} hard`,
   ].join(chalk.dim(" · "));
-
-  const line3 = [chalk.bold("Context:"), ctx].join(" ");
 
   const skillsLabel =
     input.skills.length === 0
@@ -201,14 +189,14 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
         : input.loadedSkills.length > 0
           ? `${input.skills.length} skills (loaded: ${input.loadedSkills.join(", ")})`
           : `${input.skills.length} skills (none loaded)`;
-  const line4 = [chalk.bold("Skills:"), skillsLabel].join(" ");
+  const line3 = [chalk.bold("Skills:"), skillsLabel].join(" ");
 
   const taskLabel = input.currentTask
     ? chalk.white(input.currentTask)
     : chalk.dim("(none — create_task)");
-  const line5 = [chalk.bold("Current task:"), taskLabel].join(" ");
+  const line4 = [chalk.bold("Current task:"), taskLabel].join(" ");
 
-  return [line1, line2, line3, line4, line5];
+  return [line1, line2, line3, line4];
 }
 
 /** Write the status bar to stderr (no-op when not a TTY). */
@@ -221,18 +209,10 @@ export function renderStatusBar(input: StatusBarInput): void {
   }
 }
 
-/** One-line status bar — mono colour, text labels, ` · ` separators.
- * Mirrors the TUI footer (StatusBarView): the only colour is the ctx
- * threshold warning; everything else is dimmed. */
+/** One-line status bar — mono colour, text labels, ` · ` separators. */
 export function formatStatusLine(input: StatusBarInput): string {
   const { provider, modelShort } = formatModelStatusLabel(input.model);
   const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
-  const pct = input.contextWindowTokens > 0
-    ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
-    : 0;
-  const ctxStr = input.contextWindowTokens > 0
-    ? `${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
-    : `${pct}%`;
   const skillsCount = input.skills.length;
   let stateStr = "";
   if (input.memoryStats && (input.memoryStats.active > 0 || input.memoryStats.soft > 0 || input.memoryStats.hard > 0)) {
@@ -246,23 +226,10 @@ export function formatStatusLine(input: StatusBarInput): string {
   const repoStr = formatRepoLabel(input.repoPath, input.cwd);
   const repoLabel = input.branch ? `${repoStr} · ${input.branch}` : repoStr;
 
-  // ctx keeps its threshold colour as a fill-up warning; everything else mono.
-  const ctxSeg = pct > 90
-    ? chalk.red(`ctx ${ctxStr}`)
-    : pct > 70
-      ? chalk.yellow(`ctx ${ctxStr}`)
-      : chalk.dim(`ctx ${ctxStr}`);
-
   const parts = [
     chalk.dim(repoLabel),
     chalk.dim(modelLabel),
-    ctxSeg,
   ];
-  const tokenBreakdown = formatSessionTokenBreakdown(
-    input.sessionInputTokens,
-    input.sessionOutputTokens,
-  );
-  if (tokenBreakdown) parts.push(chalk.dim(tokenBreakdown));
   if (input.thinking) parts.push(chalk.dim("think"));
   if (input.incognito) {
     parts.push(chalk.dim("incognito"));

@@ -191,9 +191,10 @@ describe("formatTuiGlanceLine", () => {
     sessionOutputTokens: 0,
   };
 
-  it("shows ctx percent and state tiers", () => {
+  it("shows ctx usage as tokens, window, and percent", () => {
     const line = formatTuiGlanceLine(base, { showCost: false });
     expect(line).toContain("ctx");
+    expect(line).toContain("43k/100k");
     expect(line).toContain("43%");
     expect(line).toContain("3A");
     expect(line).toContain("mem on");
