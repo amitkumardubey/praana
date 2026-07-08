@@ -89,6 +89,40 @@ describe("TranscriptContainer", () => {
     expect(container.children[footerIndex + 1]).toBeInstanceOf(Spacer);
   });
 
+  it("inserts a spacer between consecutive tool rows", () => {
+    const tui = fakeTui();
+    const container = new TranscriptContainer(tui as never, defaultOpts);
+
+    container.renderEntries([
+      {
+        id: "tool-1",
+        role: "tool",
+        group: 1,
+        toolName: "read_file",
+        toolIcon: "◇",
+        toolLabel: "read src/a.ts",
+        toolPending: "running…",
+        resultSummary: "10 lines",
+      },
+      {
+        id: "tool-2",
+        role: "tool",
+        group: 1,
+        toolName: "read_file",
+        toolIcon: "◇",
+        toolLabel: "read src/b.ts",
+        toolPending: "running…",
+        resultSummary: "20 lines",
+      },
+    ]);
+
+    const toolIndices = container.children
+      .map((child, index) => (child instanceof ToolRowComponent ? index : -1))
+      .filter((index) => index >= 0);
+    expect(toolIndices).toHaveLength(2);
+    expect(container.children[toolIndices[1]! - 1]).toBeInstanceOf(Spacer);
+  });
+
   it("clear removes all children and resets streaming state", () => {
     const tui = fakeTui();
     const container = new TranscriptContainer(tui as never, defaultOpts);
