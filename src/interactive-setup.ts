@@ -7,7 +7,7 @@ import {
   isProviderAvailable,
 } from "./llm.js";
 import { DEFAULT_MODELS } from "./llm.js";
-import { formatProviderListForDisplay } from "./provider-registry.js";
+import { PROVIDER_REGISTRY } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
 import { appHomePath } from "./app-identity.js";
 
@@ -52,9 +52,13 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     console.error("No provider API key found. Let's set one up.");
     console.error("");
 
-    // Get all known providers (excluding ollama which is always available)
-    const allProviders = listKnownProviders().filter((p) => p !== "ollama");
-    const available = listAvailableProviders().filter((p) => p !== "ollama");
+    // Interactive setup only covers providers with first-class PRAANA support
+    // (explicit baseUrl, api type, env key, and default model).
+    // Pi-ai-only providers are excluded — they have no defaults and would produce broken configs.
+    const allProviders = Object.keys(PROVIDER_REGISTRY).sort().filter((p) => p !== "ollama");
+    const available = listAvailableProviders().filter(
+      (p) => p !== "ollama" && Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, p),
+    );
 
     if (available.length > 0) {
       console.error("Detected in environment:");
@@ -64,11 +68,8 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
       console.error("");
     }
     console.error("Supported providers:");
-    const displayProviders = formatProviderListForDisplay().filter((p) => p.name !== "ollama");
-    for (let i = 0; i < displayProviders.length; i++) {
-      const { name, envKey } = displayProviders[i];
-      const label = `${i + 1}. ${name}`;
-      console.error(`  ${label.padEnd(14)} (${envKey ?? "local, no key needed"})`);
+    for (let i = 0; i < allProviders.length; i++) {
+      console.error(`  ${i + 1}. ${allProviders[i]}`);
     }
     console.error("");
     console.error("  Type a number to choose a provider, or 'q' to quit.");
@@ -92,6 +93,13 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
         selectedProvider = allProviders[choiceNum - 1];
       } else if (allProviders.includes(providerChoice.toLowerCase())) {
         selectedProvider = providerChoice.toLowerCase();
+      } else if (listKnownProviders().includes(providerChoice.toLowerCase())) {
+        console.error(`  "${providerChoice}" is supported by pi-ai but not yet configured for`);
+        console.error(`  interactive setup. Add it manually to ~/.praana/config.toml:`);
+        console.error(`    [llm]`);
+        console.error(`    provider = "${providerChoice.toLowerCase()}"`);
+        console.error(`    model    = "<model-id>"`);
+        console.error(``);
       } else {
         console.error(`Invalid choice: "${providerChoice}". Try again.`);
       }
@@ -115,7 +123,7 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
 
     // Show the env var to set
     const envKey = getProviderEnvKey(selectedProvider);
-    const model = DEFAULT_MODELS[selectedProvider] ?? "default";
+    const model = DEFAULT_MODELS[selectedProvider] ?? "";
 
     console.error("");
     console.error(`To use ${selectedProvider}, set this environment variable:`);
@@ -141,13 +149,13 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
         }
       }
 
+      const modelLine = model ? `model = "${model}"\n` : `# model = "<model-id>"  # set this if PRAANA doesn't auto-detect\n`;
       const configContent = `# PRAANA Configuration
 # https://github.com/amitkumardubey/praana
 
 [llm]
 provider = "${selectedProvider}"
-model = "${model}"
-
+${modelLine}
 # Set your API key as an environment variable:
 # export ${envKey}=<your-api-key>
 `;
