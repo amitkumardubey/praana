@@ -3,6 +3,8 @@ import {
   PROVIDER_REGISTRY,
   formatProviderListForDisplay,
   REASONING_MODEL_HINTS,
+  getProviderEnvKey,
+  SETUP_UNSUPPORTED_PROVIDERS,
 } from "../src/provider-registry.js";
 
 describe("provider registry", () => {
@@ -33,5 +35,25 @@ describe("provider registry", () => {
     const patterns = umansHints.map((h) => h.pattern.source);
     expect(patterns).toContain("umans-coder");
     expect(patterns).toContain("umans-kimi");
+  });
+
+  it("getProviderEnvKey returns the registry env key for known providers", () => {
+    expect(getProviderEnvKey("anthropic")).toBe("ANTHROPIC_API_KEY");
+    expect(getProviderEnvKey("openai")).toBe("OPENAI_API_KEY");
+    expect(getProviderEnvKey("umans")).toBe("UMANS_AI_CODING_PLAN_API_KEY");
+  });
+
+  it("getProviderEnvKey returns null for keyless providers", () => {
+    expect(getProviderEnvKey("ollama")).toBeNull();
+    expect(getProviderEnvKey("amazon-bedrock")).toBeNull();
+  });
+
+  it("getProviderEnvKey returns the first pi-ai env key for pi-ai-only providers", () => {
+    expect(getProviderEnvKey("nvidia")).toBe("NVIDIA_API_KEY");
+  });
+
+  it("SETUP_UNSUPPORTED_PROVIDERS hides ollama and amazon-bedrock from setup", () => {
+    expect(SETUP_UNSUPPORTED_PROVIDERS.has("ollama")).toBe(true);
+    expect(SETUP_UNSUPPORTED_PROVIDERS.has("amazon-bedrock")).toBe(true);
   });
 });

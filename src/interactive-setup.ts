@@ -3,13 +3,14 @@ import * as readline from "node:readline";
 import {
   listKnownProviders,
   listAvailableProviders,
-  getProviderEnvKey,
   isProviderAvailable,
   DEFAULT_MODELS,
   pickFirstCatalogModel,
 } from "./llm.js";
 import { getAppLogger } from "./logger.js";
 import { appHomePath } from "./app-identity.js";
+import { getProviderEnvKey, SETUP_UNSUPPORTED_PROVIDERS } from "./provider-registry.js";
+import { askQuestion } from "./terminal.js";
 
 interface SetupResult {
   success: boolean;
@@ -28,14 +29,6 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     output: process.stderr,
   });
 
-  const question = (prompt: string): Promise<string> => {
-    const { promise, resolve } = Promise.withResolvers<string>();
-    rl.question(prompt, (answer) => {
-      resolve(answer.trim());
-    });
-    return promise;
-  };
-
   const sigintHandler = () => {
     console.error("\n\nSetup cancelled. Run praana init to create a config manually.");
     rl.close();
@@ -52,8 +45,8 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     console.error("No provider API key found. Let's set one up.");
     console.error("");
 
-    const allProviders = listKnownProviders().filter((p) => p !== "ollama");
-    const available = listAvailableProviders().filter((p) => p !== "ollama");
+    const allProviders = listKnownProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
+    const available = listAvailableProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
 
     if (available.length > 0) {
       console.error("Detected in environment:");
@@ -72,7 +65,7 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
 
     let selectedProvider: string | null = null;
     while (selectedProvider === null) {
-      const providerChoice = await question(
+      const providerChoice = await askQuestion(rl,
         "Which provider would you like to use? (number or name, or 'q' to quit): "
       );
 
@@ -93,11 +86,23 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     console.error("");
     console.error(`Selected: ${selectedProvider}`);
 
+    const envKey = getProviderEnvKey(selectedProvider);
+    if (!envKey) {
+      console.error("");
+      console.error(`Provider ${selectedProvider} does not use a single API key.`);
+      console.error("Configure it separately, then restart PRAANA.");
+      return {
+        success: true,
+        provider: selectedProvider,
+        message: `Provider ${selectedProvider} skipped interactive setup.`,
+      };
+    }
+
     // Check if key is already available
     if (isProviderAvailable(selectedProvider)) {
       console.error(`\n✓ ${selectedProvider} API key already detected in environment!`);
       console.error(`\nTo use this provider, run:`);
-      console.error(`  export ${getProviderEnvKey(selectedProvider)}=<your-key>`);
+      console.error(`  export ${envKey}=<your-key>`);
       console.error(`\nOr restart PRAANA — it should auto-detect the key.`);
       return {
         success: true,
@@ -106,8 +111,6 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
       };
     }
 
-    // Show the env var to set
-    const envKey = getProviderEnvKey(selectedProvider);
     const model = DEFAULT_MODELS[selectedProvider] ?? pickFirstCatalogModel(selectedProvider) ?? "";
 
     console.error("");
@@ -118,12 +121,12 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     console.error(`Then restart PRAANA. It will auto-detect the key.`);
 
     // Offer to save to config
-    const saveToConfig = await question("Would you like me to create a config file? (y/n): ");
+    const saveToConfig = await askQuestion(rl, "Would you like me to create a config file? (y/n): ");
     if (saveToConfig.toLowerCase() === "y" || saveToConfig.toLowerCase() === "yes") {
       const configPath = appHomePath("config.toml");
 
       if (existsSync(configPath)) {
-        const overwrite = await question(`Config already exists at ${configPath}. Overwrite? (y/n): `);
+        const overwrite = await askQuestion(rl, `Config already exists at ${configPath}. Overwrite? (y/n): `);
         if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
           console.error("\nConfig left unchanged.");
           return {

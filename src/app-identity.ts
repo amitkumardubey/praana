@@ -15,17 +15,24 @@ export const CLI_SHORT = "pran";
 
 export function appHomePath(...parts: string[]): string {
   const praanaHome = envOverride("PRAANA_HOME");
-  if (praanaHome) return join(praanaHome, ...parts);
-  return join(homedir(), APP_HOME_DIR, ...parts);
+  const base = praanaHome
+    ? join(praanaHome, APP_HOME_DIR)
+    : join(homedir(), APP_HOME_DIR);
+  return join(base, ...parts);
 }
 
 export function isFirstRun(): boolean {
   return !existsSync(appHomePath(".initialized"));
 }
 
-export function markInitialized(): void {
-  mkdirSync(appHomePath(), { recursive: true });
-  writeFileSync(appHomePath(".initialized"), new Date().toISOString());
+export function markInitialized(): boolean {
+  try {
+    mkdirSync(appHomePath(), { recursive: true });
+    writeFileSync(appHomePath(".initialized"), new Date().toISOString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveDefaultMemoryDbPath(): string {

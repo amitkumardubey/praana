@@ -174,17 +174,23 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "ollama",
 ];
 
+/** Providers that should not appear in the interactive setup picker. */
+export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama", "amazon-bedrock"]);
+
+/** Return the env var name required by a provider, or null. */
+export function getProviderEnvKey(provider: string): string | null {
+  const registryEntry = PROVIDER_REGISTRY[provider];
+  if (registryEntry) return registryEntry.envKey;
+  if ((getProviders() as string[]).includes(provider)) {
+    return findEnvKeys(provider as never)?.[0] ?? null;
+  }
+  return null;
+}
 
 /** Format all known providers (PRAANA registry + pi-ai) for display in help/init text. */
 export function formatProviderListForDisplay(): { name: string; envKey: string | null }[] {
   const registryIds = Object.keys(PROVIDER_REGISTRY);
   const piAiIds = getProviders() as string[];
   const all = Array.from(new Set([...registryIds, ...piAiIds])).sort();
-  return all.map((name) => {
-    const registryEntry = PROVIDER_REGISTRY[name];
-    const envKey = registryEntry
-      ? registryEntry.envKey
-      : (findEnvKeys(name)?.[0] ?? null);
-    return { name, envKey };
-  });
+  return all.map((name) => ({ name, envKey: getProviderEnvKey(name) }));
 }

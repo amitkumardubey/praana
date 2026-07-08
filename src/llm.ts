@@ -5,6 +5,7 @@ import { getAppLogger } from "./logger.js";
 import {
   PROVIDER_REGISTRY,
   REASONING_MODEL_HINTS,
+  getProviderEnvKey,
   type ProviderConfig,
 } from "./provider-registry.js";
 
@@ -14,6 +15,7 @@ export {
   DEFAULT_MODEL_CONTEXT_WINDOW,
 } from "./model-context.js";
 
+export { getProviderEnvKey } from "./provider-registry.js";
 export type { ProviderConfig } from "./provider-registry.js";
 
 // ── Provider auto-detection ───────────────────────────────────
@@ -129,16 +131,6 @@ export function listKnownProviders(): string[] {
   const registryIds = Object.keys(PROVIDER_REGISTRY);
   const piAiIds = getProviders() as string[];
   return Array.from(new Set([...registryIds, ...piAiIds])).sort();
-}
-
-/** Return the env var name required by a provider, or null. */
-export function getProviderEnvKey(provider: string): string | null {
-  const registryEntry = PROVIDER_REGISTRY[provider];
-  if (registryEntry) return registryEntry.envKey;
-  if ((getProviders() as string[]).includes(provider)) {
-    return findEnvKeys(provider as never)?.[0] ?? null;
-  }
-  return null;
 }
 
 /** Check whether the provider's API key is available in the environment. */

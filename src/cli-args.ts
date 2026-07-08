@@ -1,7 +1,7 @@
 export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
-  initMode: boolean;
+  setupMode: boolean;
   memoryDedupeMode: boolean;
   providersMode: boolean;
   allMode: boolean;
@@ -18,7 +18,7 @@ export interface CliArgs {
 export function parseCliArgs(args: string[]): CliArgs {
   let sessionId: string | null = null;
   let resumeMode = false;
-  let initMode = false;
+  let setupMode = false;
   let memoryDedupeMode = false;
   let providersMode = false;
   let allMode = false;
@@ -76,8 +76,8 @@ export function parseCliArgs(args: string[]): CliArgs {
       i++;
       continue;
     }
-    if (args[i] === "init") {
-      initMode = true;
+    if (args[i] === "setup" || args[i] === "init") {
+      setupMode = true;
       continue;
     }
     if (args[i] === "doctor") {
@@ -94,7 +94,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   return {
     sessionId,
     resumeMode,
-    initMode,
+    setupMode,
     memoryDedupeMode,
     providersMode,
     allMode,

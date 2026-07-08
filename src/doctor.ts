@@ -45,8 +45,7 @@ export async function handleDoctor(
   if (await isTransformersAvailable()) {
     lines.push("✓ embedder: transformers available");
   } else {
-    lines.push("✗ embedder: transformers not installed (keyword-only mode)");
-    success = false;
+    lines.push("⚠ embedder: transformers not installed (keyword-only mode)");
   }
 
   // Config warnings

@@ -6,6 +6,7 @@ import { DEFAULT_MODELS } from "./llm.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
 import { APP_HOME_DIR, appHomePath } from "./app-identity.js";
+import { askQuestion, isInteractiveTerminal } from "./terminal.js";
 
 export interface InitOptions {
   force: boolean;
@@ -20,13 +21,6 @@ export interface InitResult {
 }
 
 
-function question(rl: readline.Interface, prompt: string): Promise<string> {
-  const { promise, resolve } = Promise.withResolvers<string>();
-  rl.question(prompt, (answer) => {
-    resolve(answer.trim());
-  });
-  return promise;
-}
 /**
  * Generate a config file content based on detected providers.
  */
@@ -106,8 +100,7 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
     }
 
     // Show a preview of the first few changed lines in interactive mode
-    const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
-    if (isInteractive) {
+    if (isInteractiveTerminal()) {
       const existing = readFileSync(configPath, "utf-8");
       const existingLines = existing.split("\n");
       const newLines = content.split("\n");
@@ -130,7 +123,7 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
         output: process.stderr,
       });
       try {
-        const answer = await question(rl, "Overwrite? (y/n): ");
+        const answer = await askQuestion(rl, "Overwrite? (y/n): ");
         if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
           return {
             success: true,

@@ -6,13 +6,14 @@ import { getAppLogger, initAppLogFile } from "./logger.js";
 import { parseCliArgs } from "./cli-args.js";
 import { printHelp, APP_VERSION } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
+import { SessionNotFoundError } from "./session.js";
 import { runTui } from "./ui/tui/run.js";
-import { handleInit } from "./init.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay, PROVIDER_REGISTRY } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
+import { isInteractiveTerminal } from "./terminal.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -56,14 +57,14 @@ export async function main() {
 
   await initAppLogFile();
 
-  // Handle init command early (before config loading)
-  if (parsed.initMode) {
-    const result = await handleInit({ force: parsed.force, homeDir: parsed.homeDir });
-    if (result.success) {
-      console.log(result.message);
-    } else {
-      console.error(result.message);
+  // Handle setup command early (before config loading, needs a TTY)
+  if (parsed.setupMode) {
+    if (!isInteractiveTerminal()) {
+      console.error("praana setup requires an interactive terminal.");
+      process.exit(1);
     }
+    const cwd = resolve(process.cwd());
+    const result = await runInteractiveSetup(cwd);
     process.exit(result.success ? 0 : 1);
   }
 
@@ -99,7 +100,7 @@ export async function main() {
     }
   }
 
-  const isInteractive = !!(process.stdin.isTTY && process.stdout.isTTY);
+  const isInteractive = isInteractiveTerminal();
 
   // ── Provider validation ────────────────────────────────────
   const keyError = getMissingKeyMessage(config.llm.provider);
@@ -114,6 +115,13 @@ export async function main() {
         process.exit(1);
       }
       const newConfig = loadConfig(parsed.configPath);
+      const newWarnings = getConfigWarnings();
+      if (newWarnings.length > 0) {
+        console.error("");
+        console.error("Configuration warnings:");
+        for (const w of newWarnings) console.error(`  ⚠ ${w}`);
+        console.error("");
+      }
       const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
       if (newKeyError) {
         const envKey = getProviderEnvKey(newConfig.llm.provider);
@@ -150,6 +158,18 @@ export async function main() {
     }
   }
 
+  // ── Empty-model guard ─────────────────────────────────────
+  if (!config.llm.model || !config.llm.model.trim()) {
+    getAppLogger().error("No LLM model configured", {
+      code: "SESSION_START_FAILED",
+    });
+    console.error("");
+    console.error("No model is configured for provider:", config.llm.provider);
+    console.error('Set [llm] model = "..." in your config or run `praana init`.');
+    console.error("");
+    process.exit(1);
+  }
+
   // ── First-run welcome ──────────────────────────────────────
   if (isFirstRun()) {
     markInitialized();
@@ -165,6 +185,16 @@ export async function main() {
   }
 
   // ── TTY guard ──────────────────────────────────────────────
+  if (!isInteractive) {
+    getAppLogger().error("Session start requires an interactive terminal", {
+      code: "SESSION_START_FAILED",
+    });
+    console.error("");
+    console.error("PRAANA requires an interactive terminal to start a session.");
+    console.error("Run `praana --help` for non-interactive commands.");
+    console.error("");
+    process.exit(1);
+  }
 
   const controller = new AppController({ cwd, config, parsed });
 
@@ -172,13 +202,13 @@ export async function main() {
     const info = await controller.start();
     await runTui(controller, info);
   } catch (err) {
-    const msg = (err as Error).message;
-    if (msg.includes("not found")) {
-      console.error(`Session not found: ${parsed.sessionId}`);
+    if (err instanceof SessionNotFoundError) {
+      console.error(`Session not found: ${err.sessionId}`);
       console.error("");
       console.error("List available sessions with:  praana");
       console.error("Then resume with:  praana resume <session-id>");
     } else {
+      const msg = (err as Error).message;
       getAppLogger().error("Failed to start session", {
         code: "SESSION_START_FAILED",
         cause: err as Error,

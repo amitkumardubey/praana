@@ -32,4 +32,15 @@ describe("handleDoctor", () => {
     expect(result.success).toBe(false);
     expect(result.lines.some((l) => l.includes("model: not set"))).toBe(true);
   });
+
+  it("treats missing transformers as a warning, not a failure", async () => {
+    const result = await handleDoctor(baseConfig);
+    const embedderLine = result.lines.find((l) => l.includes("embedder:"));
+    expect(embedderLine).toBeDefined();
+    if (embedderLine!.includes("not installed")) {
+      expect(embedderLine).toContain("⚠");
+      expect(embedderLine).toContain("keyword-only mode");
+    }
+    expect(result.success).toBe(true);
+  });
 });

@@ -59,6 +59,16 @@ export type SessionEndStatus = {
   memory: "completed" | "background" | "skipped" | "failed";
 };
 
+/** Thrown when a requested session does not exist on disk. */
+export class SessionNotFoundError extends Error {
+  readonly sessionId: string;
+  constructor(sessionId: string) {
+    super(`Session ${sessionId} not found.`);
+    this.name = "SessionNotFoundError";
+    this.sessionId = sessionId;
+  }
+}
+
 export class Session {
   id: string;
   cwd: string;
@@ -234,7 +244,7 @@ export class Session {
     const cfg = config ?? loadConfig();
     const meta = readSessionMeta(cfg.session.log_dir, sessionId);
     if (!meta) {
-      throw new Error(`Session ${sessionId} not found.`);
+      throw new SessionNotFoundError(sessionId);
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
