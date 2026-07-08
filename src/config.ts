@@ -10,7 +10,7 @@ import {
   resolveDefaultMemoryDbPath,
   resolveDefaultSessionLogDir,
 } from "./app-identity.js";
-import { detectProviderFromEnvironment, DEFAULT_MODELS } from "./llm.js";
+import { detectProviderFromEnvironment, DEFAULT_MODELS, pickFirstCatalogModel } from "./llm.js";
 
 function configWarn(message: string, cause?: Error): void {
   _configWarnings.push(message);
@@ -275,7 +275,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   // Model fallback: if provider is set but model is empty, use provider-specific default
   if (!out.llm.model || !out.llm.model.trim()) {
     if (out.llm.provider) {
-      const defaultModel = DEFAULT_MODELS[out.llm.provider];
+      const defaultModel = DEFAULT_MODELS[out.llm.provider] ?? pickFirstCatalogModel(out.llm.provider);
       if (defaultModel) {
         out.llm.model = defaultModel;
       } else {

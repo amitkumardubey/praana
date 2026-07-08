@@ -55,7 +55,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   "amazon-bedrock": "anthropic.claude-sonnet-4-20250514-v1:0",
 };
 
-function pickFirstCatalogModel(provider: string): string | undefined {
+export function pickFirstCatalogModel(provider: string): string | undefined {
   const piProvider = mapProviderToPiAi(provider) ?? provider;
   if (!(getProviders() as string[]).includes(piProvider)) return undefined;
   const models = getModels(piProvider as never);

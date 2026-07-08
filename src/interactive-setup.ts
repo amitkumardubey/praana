@@ -5,9 +5,9 @@ import {
   listAvailableProviders,
   getProviderEnvKey,
   isProviderAvailable,
+  DEFAULT_MODELS,
+  pickFirstCatalogModel,
 } from "./llm.js";
-import { DEFAULT_MODELS } from "./llm.js";
-import { PROVIDER_REGISTRY } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
 import { appHomePath } from "./app-identity.js";
 
@@ -52,13 +52,8 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
     console.error("No provider API key found. Let's set one up.");
     console.error("");
 
-    // Interactive setup only covers providers with first-class PRAANA support
-    // (explicit baseUrl, api type, env key, and default model).
-    // Pi-ai-only providers are excluded — they have no defaults and would produce broken configs.
-    const allProviders = Object.keys(PROVIDER_REGISTRY).sort().filter((p) => p !== "ollama");
-    const available = listAvailableProviders().filter(
-      (p) => p !== "ollama" && Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, p),
-    );
+    const allProviders = listKnownProviders().filter((p) => p !== "ollama");
+    const available = listAvailableProviders().filter((p) => p !== "ollama");
 
     if (available.length > 0) {
       console.error("Detected in environment:");
@@ -82,10 +77,7 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
       );
 
       if (providerChoice.toLowerCase() === "q" || providerChoice.toLowerCase() === "quit") {
-        return {
-          success: false,
-          message: "Setup cancelled.",
-        };
+        return { success: false, message: "Setup cancelled." };
       }
 
       const choiceNum = parseInt(providerChoice, 10);
@@ -93,13 +85,6 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
         selectedProvider = allProviders[choiceNum - 1];
       } else if (allProviders.includes(providerChoice.toLowerCase())) {
         selectedProvider = providerChoice.toLowerCase();
-      } else if (listKnownProviders().includes(providerChoice.toLowerCase())) {
-        console.error(`  "${providerChoice}" is supported by pi-ai but not yet configured for`);
-        console.error(`  interactive setup. Add it manually to ~/.praana/config.toml:`);
-        console.error(`    [llm]`);
-        console.error(`    provider = "${providerChoice.toLowerCase()}"`);
-        console.error(`    model    = "<model-id>"`);
-        console.error(``);
       } else {
         console.error(`Invalid choice: "${providerChoice}". Try again.`);
       }
@@ -123,7 +108,7 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
 
     // Show the env var to set
     const envKey = getProviderEnvKey(selectedProvider);
-    const model = DEFAULT_MODELS[selectedProvider] ?? "";
+    const model = DEFAULT_MODELS[selectedProvider] ?? pickFirstCatalogModel(selectedProvider) ?? "";
 
     console.error("");
     console.error(`To use ${selectedProvider}, set this environment variable:`);
