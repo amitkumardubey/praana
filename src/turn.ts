@@ -260,7 +260,7 @@ export async function runTurn(
 
   session.setLastCompileMetrics(promptMetrics);
 
-  // Track input tokens
+  // Track input tokens (heuristic — provider usage includes multi-step tool results)
   session.recordInputTokens(promptMetrics.totalTokens);
 
   if (session.debug) {
@@ -290,6 +290,7 @@ export async function runTurn(
   let stepIndex = 0;
   let lastStreamReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop";
   let lastLlmErrorMessage: string | undefined;
+  let providerUsage: { input: number; output: number; totalTokens: number } | null = null;
   const history: Message[] = [
     {
       role: "user",
@@ -366,6 +367,15 @@ export async function runTurn(
       if (event.type === "done") {
         finalReason = event.reason;
         finalMessage = event.message as unknown as Message;
+        // Capture actual provider usage when available (replaces heuristic estimates)
+        const msg = event.message as any;
+        if (msg?.usage && typeof msg.usage.input === "number") {
+          providerUsage = {
+            input: msg.usage.input,
+            output: msg.usage.output,
+            totalTokens: msg.usage.totalTokens,
+          };
+        }
       }
       if (event.type === "error") {
         finalReason = event.reason;
@@ -608,8 +618,8 @@ export async function runTurn(
     payload: { text: fullResponse },
   });
 
-  // Track output tokens (estimate from response)
-  const outputTokens = estimateTokens(fullResponse);
+  // Track output tokens — prefer actual provider count over heuristic estimate
+  const outputTokens = providerUsage?.output ?? estimateTokens(fullResponse);
   session.recordOutputTokens(outputTokens);
 
   // 6b. Backfill deferred distillations and persist ledger + turn digest
