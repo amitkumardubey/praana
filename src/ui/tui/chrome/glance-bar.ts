@@ -11,8 +11,6 @@ import { paintZoneLine } from "../theme.js";
 export interface GlanceBarInput {
   status: StatusBarInput;
   showCost: boolean;
-  sessionInputTokens: number;
-  sessionOutputTokens: number;
 }
 
 export class GlanceBar implements Component {
@@ -40,8 +38,6 @@ export class GlanceBar implements Component {
     const line = this.input
       ? formatTuiGlanceLine(this.input.status, {
           showCost: this.input.showCost,
-          sessionInputTokens: this.input.sessionInputTokens,
-          sessionOutputTokens: this.input.sessionOutputTokens,
         })
       : chalk.dim("initializing…");
     const painted = paintZoneLine(

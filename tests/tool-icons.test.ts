@@ -125,6 +125,8 @@ describe("formatTurnFooterDigest", () => {
       },
     });
     expect(line).toContain("2 edits");
+    expect(line).toContain("in 1k");
+    expect(line).toContain("out 200");
     expect(line).toContain("38%→43%");
     expect(line).toContain("9.4s");
   });
@@ -185,6 +187,8 @@ describe("formatTuiGlanceLine", () => {
     loadedSkills: ["a"],
     currentTask: null,
     agentsContextLoaded: false,
+    sessionInputTokens: 0,
+    sessionOutputTokens: 0,
   };
 
   it("shows ctx percent and state tiers", () => {
@@ -193,6 +197,15 @@ describe("formatTuiGlanceLine", () => {
     expect(line).toContain("43%");
     expect(line).toContain("3A");
     expect(line).toContain("mem on");
+  });
+
+  it("shows separate input and output session tokens when showCost is on", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
+      { showCost: true },
+    );
+    expect(line).toContain("in 12k");
+    expect(line).toContain("out 3.4k");
   });
 });
 
@@ -214,6 +227,8 @@ describe("formatTuiIdentityLine", () => {
       loadedSkills: null,
       currentTask: null,
       agentsContextLoaded: false,
+      sessionInputTokens: 0,
+      sessionOutputTokens: 0,
     });
     expect(line).toContain("praana");
     expect(line).toContain("openrouter");

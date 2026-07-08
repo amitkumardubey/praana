@@ -30,6 +30,8 @@ export interface StatusBarInput {
   loadedSkills: string[] | null;
   currentTask: string | null;
   agentsContextLoaded: boolean;
+  sessionInputTokens: number;
+  sessionOutputTokens: number;
 }
 
 /**
@@ -54,6 +56,18 @@ export function formatModelStatusLabel(model: string): {
     };
   }
   return { provider: null, modelShort: model };
+}
+
+/** Compact `in 12k · out 3k` label for session or turn token totals. */
+export function formatSessionTokenBreakdown(
+  inputTokens: number,
+  outputTokens: number,
+): string | null {
+  if (inputTokens <= 0 && outputTokens <= 0) return null;
+  const parts: string[] = [];
+  if (inputTokens > 0) parts.push(`in ${formatTokenCount(inputTokens)}`);
+  if (outputTokens > 0) parts.push(`out ${formatTokenCount(outputTokens)}`);
+  return parts.join(" · ");
 }
 
 /** Format token counts for compact display (e.g. 18400 → "18.4k"). */
@@ -135,6 +149,8 @@ export function buildStatusBarInput(
     loadedSkills: loadedSkillNames,
     currentTask: getCurrentTaskTitle(session.stateGraph),
     agentsContextLoaded: !!session.agentsContext,
+    sessionInputTokens: session.getInputTokens(),
+    sessionOutputTokens: session.getOutputTokens(),
   };
 }
 
@@ -152,13 +168,21 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
 
   const { provider: statusProvider, modelShort: statusModelShort } = formatModelStatusLabel(input.model);
   const statusModelLabel = statusProvider ? `${statusProvider} · ${statusModelShort}` : statusModelShort;
-  const line1 = [
+  const tokenBreakdown = formatSessionTokenBreakdown(
+    input.sessionInputTokens,
+    input.sessionOutputTokens,
+  );
+  const line1Parts = [
     chalk.cyan(statusModelLabel),
     chalk.dim(ctx),
+  ];
+  if (tokenBreakdown) line1Parts.push(chalk.dim(tokenBreakdown));
+  line1Parts.push(
     chalk.yellow(formatMode(input.debug, input.thinking)),
     chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,
-  ].join(chalk.dim(" · "));
+  );
+  const line1 = line1Parts.join(chalk.dim(" · "));
 
   const line2 = [
     chalk.bold("Memory:"),
@@ -234,6 +258,11 @@ export function formatStatusLine(input: StatusBarInput): string {
     chalk.dim(modelLabel),
     ctxSeg,
   ];
+  const tokenBreakdown = formatSessionTokenBreakdown(
+    input.sessionInputTokens,
+    input.sessionOutputTokens,
+  );
+  if (tokenBreakdown) parts.push(chalk.dim(tokenBreakdown));
   if (input.thinking) parts.push(chalk.dim("think"));
   if (input.incognito) {
     parts.push(chalk.dim("incognito"));

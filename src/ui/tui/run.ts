@@ -95,8 +95,6 @@ export async function runTui(
     glanceBar.update({
       status: controller.getStatusBarInput(),
       showCost: config.ui.show_cost,
-      sessionInputTokens: session.getInputTokens(),
-      sessionOutputTokens: session.getOutputTokens(),
     });
   };
   refreshChrome();
@@ -223,17 +221,12 @@ export async function runTui(
           contextUsedTokens,
         },
         showCost: config.ui.show_cost,
-        sessionInputTokens: session.getInputTokens(),
-        sessionOutputTokens: session.getOutputTokens(),
       });
     },
     onProviderUsage: () => {
-      const base = controller.getStatusBarInput();
       glanceBar.update({
-        status: base,
+        status: controller.getStatusBarInput(),
         showCost: config.ui.show_cost,
-        sessionInputTokens: session.getInputTokens(),
-        sessionOutputTokens: session.getOutputTokens(),
       });
     },
   });

@@ -8,6 +8,7 @@ import {
   getCurrentTaskTitle,
   formatStatusBarLines,
   buildStatusBarInput,
+  formatSessionTokenBreakdown,
 } from "../src/status-bar.js";
 import type { Session } from "../src/session.js";
 
@@ -16,6 +17,13 @@ describe("status-bar", () => {
     expect(formatTokenCount(500)).toBe("500");
     expect(formatTokenCount(18400)).toBe("18.4k");
     expect(formatTokenCount(128000)).toBe("128k");
+  });
+
+  it("formats session token breakdown with separate in and out", () => {
+    expect(formatSessionTokenBreakdown(12_000, 3_400)).toBe("in 12k · out 3.4k");
+    expect(formatSessionTokenBreakdown(0, 200)).toBe("out 200");
+    expect(formatSessionTokenBreakdown(500, 0)).toBe("in 500");
+    expect(formatSessionTokenBreakdown(0, 0)).toBeNull();
   });
 
   it("formats repo label for monorepo subdirs", () => {
@@ -70,8 +78,12 @@ describe("status-bar", () => {
       loadedSkills: null,
       currentTask: "implement auth middleware",
       agentsContextLoaded: true,
+      sessionInputTokens: 12_000,
+      sessionOutputTokens: 3_400,
     });
     expect(lines.length).toBe(5);
+    expect(lines[0]).toContain("in 12k");
+    expect(lines[0]).toContain("out 3.4k");
     expect(lines[1]).toContain("8 active");
     expect(lines[1]).toContain("23 soft");
     expect(lines[1]).toContain("91 hard");
@@ -108,6 +120,8 @@ describe("status-bar", () => {
         agentsContextTruncated: false,
         skillsTruncated: false,
       }),
+      getInputTokens: () => 500,
+      getOutputTokens: () => 120,
       isIncognito: () => false,
       skills: [],
       stateGraph: new StateGraph(),
@@ -119,6 +133,8 @@ describe("status-bar", () => {
       thinking: false,
     });
     expect(input.contextUsedTokens).toBe(9000);
+    expect(input.sessionInputTokens).toBe(500);
+    expect(input.sessionOutputTokens).toBe(120);
     expect(input.memoryEnabled).toBe(false);
     expect(input.memoryStats).toEqual({ active: 1, soft: 2, hard: 3 });
   });
@@ -133,6 +149,8 @@ describe("status-bar", () => {
       getGitBranch: () => null,
       getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
       getLastCompileMetrics: () => null,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
       isIncognito: () => false,
       skills: [],
       stateGraph: new StateGraph(),
