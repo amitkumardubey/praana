@@ -4,6 +4,7 @@ export interface CliArgs {
   initMode: boolean;
   memoryDedupeMode: boolean;
   providersMode: boolean;
+  allMode: boolean;
   force: boolean;
   debug: boolean;
   incognito: boolean;
@@ -20,6 +21,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   let initMode = false;
   let memoryDedupeMode = false;
   let providersMode = false;
+  let allMode = false;
   let force = false;
   let debug = false;
   let incognito = false;
@@ -40,6 +42,10 @@ export function parseCliArgs(args: string[]): CliArgs {
     }
     if (args[i] === "--providers" || args[i] === "-p") {
       providersMode = true;
+      continue;
+    }
+    if (args[i] === "--all") {
+      allMode = true;
       continue;
     }
     if (args[i] === "--force" || args[i] === "-f") {
@@ -91,6 +97,7 @@ export function parseCliArgs(args: string[]): CliArgs {
     initMode,
     memoryDedupeMode,
     providersMode,
+    allMode,
     force,
     debug,
     incognito,

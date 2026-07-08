@@ -11,7 +11,7 @@ import { handleInit } from "./init.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
-import { formatProviderListForDisplay } from "./provider-registry.js";
+import { formatProviderListForDisplay, PROVIDER_REGISTRY } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 
 export async function main() {
@@ -27,10 +27,29 @@ export async function main() {
   }
 
   if (parsed.providersMode) {
-    const entries = formatProviderListForDisplay();
-    console.log("Supported providers:");
-    for (const { name, envKey } of entries) {
-      console.log(`  ${name.padEnd(20)} ${envKey ?? "(local)"}`);
+    if (parsed.allMode) {
+      const all = formatProviderListForDisplay();
+      const registrySet = new Set(Object.keys(PROVIDER_REGISTRY));
+      const extra = all.filter((e) => !registrySet.has(e.name));
+      console.log("Supported providers:");
+      for (const { name } of all.filter((e) => registrySet.has(e.name))) {
+        console.log(`  ${name}`);
+      }
+      if (extra.length > 0) {
+        console.log("");
+        console.log("Additional providers via pi-ai (experimental, no PRAANA defaults):");
+        for (const { name } of extra) console.log(`  ${name}`);
+      }
+    } else {
+      const names = Object.keys(PROVIDER_REGISTRY).sort();
+      console.log("Supported providers:");
+      for (const name of names) console.log(`  ${name}`);
+      const piOnlyCount = formatProviderListForDisplay().filter(
+        (e) => !Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, e.name),
+      ).length;
+      if (piOnlyCount > 0) {
+        console.log(`\n  (${piOnlyCount} more via pi-ai — run with --all to see them)`);
+      }
     }
     process.exit(0);
   }

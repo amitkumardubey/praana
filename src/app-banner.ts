@@ -78,7 +78,7 @@ function usageLines(): string[] {
     `  ${CLI_NAME} init                Create a default config file`,
     `  ${CLI_NAME} init --force        Overwrite existing config file`,
     `  ${CLI_NAME} doctor              Check setup and provider configuration`,
-    `  ${CLI_NAME} --providers         List all supported providers`,
+    `  ${CLI_NAME} --providers [--all]  List supported providers (--all includes pi-ai extras)`,
     `  ${CLI_NAME} resume <session>    Resume an existing session`,
     `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
