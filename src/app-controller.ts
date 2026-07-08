@@ -157,6 +157,7 @@ export class AppController {
       onToolCallsStart: () => uiSink.onToolCallsStart?.(),
       onToolCall: (id, name, args) => uiSink.onToolCall?.(id, name, args),
       onToolResult: (id, name, text, isError) => uiSink.onToolResult?.(id, name, text, isError),
+      onProviderUsage: (update) => uiSink.onProviderUsage?.(update),
       onDebug: (msg) => uiSink.onDebug?.(msg),
       onDebugBlock: (step, calls, results) => uiSink.onDebugBlock?.(step, calls, results),
       onMemoryBanner: (stats) => uiSink.onMemoryBanner?.(stats),

@@ -762,11 +762,14 @@ describe("runTurn", () => {
     (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
 
     const session = makeMockSession();
+    const spyIn = spyOn(session, "recordInputTokens");
     const spyOut = spyOn(session, "recordOutputTokens");
 
     await runTurn(session, "hello");
 
+    expect(spyIn).toHaveBeenCalledWith(100);
     expect(spyOut).toHaveBeenCalledWith(42);
+    expect(session.getInputTokens()).toBe(100);
     expect(session.getOutputTokens()).toBe(42);
   });
 
@@ -804,11 +807,18 @@ describe("runTurn", () => {
       .mockReturnValueOnce(secondStep as any);
 
     const session = makeMockSession();
+    const spyIn = spyOn(session, "recordInputTokens");
     const spyOut = spyOn(session, "recordOutputTokens");
 
     await runTurn(session, "multi-step");
 
-    expect(spyOut).toHaveBeenCalledWith(25);
+    expect(spyIn).toHaveBeenCalledTimes(2);
+    expect(spyIn).toHaveBeenNthCalledWith(1, 50);
+    expect(spyIn).toHaveBeenNthCalledWith(2, 80);
+    expect(spyOut).toHaveBeenCalledTimes(2);
+    expect(spyOut).toHaveBeenNthCalledWith(1, 10);
+    expect(spyOut).toHaveBeenNthCalledWith(2, 15);
+    expect(session.getInputTokens()).toBe(130);
     expect(session.getOutputTokens()).toBe(25);
   });
 

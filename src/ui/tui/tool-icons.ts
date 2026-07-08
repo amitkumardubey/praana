@@ -221,7 +221,7 @@ export function summarizeResultForDisplay(text: string): string {
     const tokenMatch = text.match(/([\d,]+)\s*tokens?\b/i);
     const id = artifactMatch[1]!;
     return tokenMatch
-      ? `artifact ${id.slice(0, 12)}… · ${tokenMatch[1]!.replace(/,/g, "")} tok`
+      ? `artifact ${id.slice(0, 12)}… · ~${tokenMatch[1]!.replace(/,/g, "")} tok`
       : `artifact ${id.slice(0, 16)}…`;
   }
 

@@ -77,6 +77,35 @@ describe("PiTuiSink", () => {
     ]);
   });
 
+  it("uses provider context for live usage and resets pending tool growth", () => {
+    const onLiveContextUsage = mock((_: number) => {});
+    const onProviderUsage = mock((_: unknown) => {});
+    const { sink } = makeSink({
+      onLiveContextUsage,
+      onProviderUsage,
+      ctxUsedTokens: () => 1000,
+    });
+
+    sink.nextGroup();
+    sink.onProviderUsage({
+      step: { input: 5000, output: 50, totalTokens: 5050 },
+      cumulative: { input: 5000, output: 50, totalTokens: 5050 },
+      latestContextTokens: 5000,
+    });
+    expect(onLiveContextUsage).toHaveBeenCalledWith(5000);
+
+    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
+    expect(onLiveContextUsage).toHaveBeenLastCalledWith(5010);
+
+    sink.onProviderUsage({
+      step: { input: 8000, output: 120, totalTokens: 8120 },
+      cumulative: { input: 13000, output: 170, totalTokens: 13170 },
+      latestContextTokens: 8000,
+    });
+    expect(onLiveContextUsage).toHaveBeenLastCalledWith(8000);
+    expect(onProviderUsage).toHaveBeenCalledTimes(2);
+  });
+
   it("routes slash command output to the overlay callback", () => {
     const callback = mock((_: string[]) => {});
     const { sink } = makeSink({ onSlashCommandResult: callback });

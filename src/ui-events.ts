@@ -8,7 +8,7 @@ import {
 } from "./ui.js";
 import type { LogEntry } from "./logger.js";
 import type { MemoryBannerStats } from "./turn.js";
-export type { MemoryBannerStats };
+export type { MemoryBannerStats, ProviderUsageUpdate } from "./turn.js";
 
 /** UI sink for turn execution — replaces direct stdout/stderr writes when provided. */
 export interface TurnUiSink {
@@ -20,6 +20,8 @@ export interface TurnUiSink {
   onToolCall?(toolCallId: string, toolName: string, args: Record<string, unknown>): void;
   /** Notify UI of the raw tool result text for rendering as a distinct block. */
   onToolResult?(toolCallId: string, toolName: string, resultText: string, isError?: boolean): void;
+  /** Fired after each LLM step when the provider reports token usage. */
+  onProviderUsage?(update: import("./turn.js").ProviderUsageUpdate): void;
   onDebug?(message: string): void;
   onDebugBlock?(
     stepIndex: number,
