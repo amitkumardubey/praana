@@ -22,34 +22,34 @@ describe("praana init", () => {
     return join(testDir, ".praana", "config.toml");
   }
 
-  it("should create the global config file in ~/.praana/", () => {
-    const result = handleInit({ force: false, homeDir: testDir });
+  it("should create the global config file in ~/.praana/", async () => {
+    const result = await handleInit({ force: false, homeDir: testDir });
     expect(result.success).toBe(true);
     expect(result.action).toBe("created");
     expect(existsSync(configPath())).toBe(true);
   });
 
-  it("should refuse to overwrite existing config without --force", () => {
+  it("should refuse to overwrite existing config without --force", async () => {
     // Create initial config
-    handleInit({ force: false, homeDir: testDir });
+    await handleInit({ force: false, homeDir: testDir });
 
     // Try to create again without --force
-    const result = handleInit({ force: false, homeDir: testDir });
+    const result = await handleInit({ force: false, homeDir: testDir });
     expect(result.success).toBe(false);
     expect(result.action).toBe("skipped");
   });
 
-  it("should overwrite existing config with --force", () => {
+  it("should overwrite existing config with --force", async () => {
     // Create initial config
-    handleInit({ force: false, homeDir: testDir });
+    await handleInit({ force: false, homeDir: testDir });
 
     // Overwrite with --force
-    const result = handleInit({ force: true, homeDir: testDir });
+    const result = await handleInit({ force: true, homeDir: testDir });
     expect(result.success).toBe(true);
     expect(result.action).toBe("overwritten");
   });
 
-  it("should create a config with provider info when env key is detected", () => {
+  it("should create a config with provider info when env key is detected", async () => {
     // Clear all provider keys first
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
@@ -61,9 +61,10 @@ describe("praana init", () => {
     delete process.env.FIREWORKS_API_KEY;
     delete process.env.TOGETHER_API_KEY;
     delete process.env.OPENCODE_API_KEY;
+    delete process.env.UMANS_AI_CODING_PLAN_API_KEY;
 
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    const result = handleInit({ force: false, homeDir: testDir });
+    const result = await handleInit({ force: false, homeDir: testDir });
 
     expect(result.success).toBe(true);
     const content = readFileSync(configPath(), "utf-8");
@@ -73,7 +74,7 @@ describe("praana init", () => {
     delete process.env.ANTHROPIC_API_KEY;
   });
 
-  it("should create config with ollama when no env keys are set (keyless provider)", () => {
+  it("should create config with ollama when no env keys are set (keyless provider)", async () => {
     // Ensure no provider keys are set (ollama is always available as keyless)
     const originalEnv = { ...process.env };
     delete process.env.ANTHROPIC_API_KEY;
@@ -87,8 +88,9 @@ describe("praana init", () => {
     delete process.env.FIREWORKS_API_KEY;
     delete process.env.TOGETHER_API_KEY;
     delete process.env.OPENCODE_API_KEY;
+    delete process.env.UMANS_AI_CODING_PLAN_API_KEY;
 
-    const result = handleInit({ force: false, homeDir: testDir });
+    const result = await handleInit({ force: false, homeDir: testDir });
 
     expect(result.success).toBe(true);
     const content = readFileSync(configPath(), "utf-8");
@@ -99,4 +101,5 @@ describe("praana init", () => {
     // Restore environment
     process.env = originalEnv;
   });
+
 });

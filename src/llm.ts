@@ -1,4 +1,4 @@
-import { getModel, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
+import { getModel, getModels, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import type { PraanaConfig } from "./types.js";
 import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
@@ -33,11 +33,11 @@ const DETECTION_PRECEDENCE: string[] = [
   "fireworks",
   "together",
   "opencode",
+  "umans",
   "openrouter",
-  "ollama",
+  "amazon-bedrock",  // AWS credentials (envKey: null, special check in isProviderAvailable)
+  "ollama",          // local, no key (PRAANA-specific, not in pi-ai)
 ];
-
-/** Default model for each provider when auto-detecting. */
 export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
@@ -51,7 +51,16 @@ export const DEFAULT_MODELS: Record<string, string> = {
   opencode: "gpt-4o",
   openrouter: "deepseek/deepseek-v4-flash:free",
   ollama: "llama3",
+  umans: "umans-coder",
+  "amazon-bedrock": "anthropic.claude-sonnet-4-20250514-v1:0",
 };
+
+function pickFirstCatalogModel(provider: string): string | undefined {
+  const piProvider = mapProviderToPiAi(provider) ?? provider;
+  if (!(getProviders() as string[]).includes(piProvider)) return undefined;
+  const models = getModels(piProvider as never);
+  return models?.[0]?.id;
+}
 
 /**
  * Auto-detect the first available provider from environment variables.
@@ -60,9 +69,23 @@ export const DEFAULT_MODELS: Record<string, string> = {
 export function detectProviderFromEnvironment(): { provider: string; model: string } | null {
   const logger = getAppLogger().child("llm");
 
+  // Phase 1: curated precedence (PRAANA-specific ordering + keyless providers)
   for (const provider of DETECTION_PRECEDENCE) {
     if (isProviderAvailable(provider)) {
-      const model = DEFAULT_MODELS[provider] ?? "";
+      const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
+      logger.info(`Auto-detected provider "${provider}" from environment`, {
+        details: { provider, model },
+      });
+      return { provider, model };
+    }
+  }
+
+  // Phase 2: remaining pi-ai providers not already checked
+  const checked = new Set(DETECTION_PRECEDENCE);
+  for (const provider of (getProviders() as string[])) {
+    if (checked.has(provider)) continue;
+    if (isProviderAvailable(provider)) {
+      const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
       logger.info(`Auto-detected provider "${provider}" from environment`, {
         details: { provider, model },
       });
@@ -74,9 +97,17 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
   return null;
 }
 
-/** Return all available providers in detection-precedence order. */
+/** Return all available providers, curated precedence first, then remaining pi-ai providers. */
 export function listAvailableProviders(): string[] {
-  return DETECTION_PRECEDENCE.filter(isProviderAvailable);
+  const all = listKnownProviders();
+  const precedence = new Set(DETECTION_PRECEDENCE);
+  const ordered: string[] = DETECTION_PRECEDENCE.filter(isProviderAvailable);
+  for (const provider of all) {
+    if (!precedence.has(provider) && isProviderAvailable(provider)) {
+      ordered.push(provider);
+    }
+  }
+  return ordered;
 }
 
 // ── Exported helpers ───────────────────────────────────────────
@@ -93,33 +124,42 @@ export function getProviderConfig(provider: string): ProviderConfig {
   return entry;
 }
 
-/** Return all known provider IDs (for docs / help text). */
+/** Return all known provider IDs (union of PROVIDER_REGISTRY and pi-ai). */
 export function listKnownProviders(): string[] {
-  return Object.keys(PROVIDER_REGISTRY).sort();
+  const registryIds = Object.keys(PROVIDER_REGISTRY);
+  const piAiIds = getProviders() as string[];
+  return Array.from(new Set([...registryIds, ...piAiIds])).sort();
 }
 
 /** Return the env var name required by a provider, or null. */
 export function getProviderEnvKey(provider: string): string | null {
-  return getProviderConfig(provider).envKey;
+  const registryEntry = PROVIDER_REGISTRY[provider];
+  if (registryEntry) return registryEntry.envKey;
+  if ((getProviders() as string[]).includes(provider)) {
+    return findEnvKeys(provider as never)?.[0] ?? null;
+  }
+  return null;
 }
+
 /** Check whether the provider's API key is available in the environment. */
 export function isProviderAvailable(provider: string): boolean {
   const registryEntry = PROVIDER_REGISTRY[provider];
 
-  // 1. Providers explicitly marked keyless in the registry (ollama, bedrock).
+  // Special-case AWS Bedrock: needs actual AWS credentials, not just envKey === null.
+  if (provider === "amazon-bedrock") {
+    return !!(process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE || process.env.AWS_SESSION_TOKEN);
+  }
+
+  // 1. Providers explicitly marked keyless in the registry (ollama).
   if (registryEntry && registryEntry.envKey === null) return true;
 
   // 2. Registry entry with an env key — check if that env var is set.
-  //    This takes precedence over pi-ai's detection to avoid false positives
-  //    for providers that ARE in our registry (e.g. opencode).
   if (registryEntry?.envKey) {
     return !!process.env[registryEntry.envKey];
   }
 
   // 3. For providers known to pi-ai but NOT in our registry, use pi-ai's
-  //    key detection.  Only treat as available when pi-ai confirms the key
-  //    is present; otherwise default to unavailable (safer for providers we
-  //    don't explicitly manage).
+  //    key detection.
   const piProviders = getProviders() as string[];
   if (piProviders.includes(provider)) {
     return !!getEnvApiKey(provider as never);
@@ -185,7 +225,7 @@ function buildFromPiAiCatalog(
       resolveContextWindowSync(config.provider, modelId, config.context_window),
   };
 
-  const apiKey = getEnvApiKey(piProvider as never) ?? "no-key";
+  const apiKey = getEnvApiKey(piProvider as never) ?? "";
 
   model.__piOptions = {
     apiKey,

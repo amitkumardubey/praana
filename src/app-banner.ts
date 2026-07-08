@@ -77,12 +77,15 @@ function usageLines(): string[] {
     `  ${CLI_SHORT}                      Short alias for ${CLI_NAME}`,
     `  ${CLI_NAME} init                Create a default config file`,
     `  ${CLI_NAME} init --force        Overwrite existing config file`,
+    `  ${CLI_NAME} doctor              Check setup and provider configuration`,
+    `  ${CLI_NAME} --providers         List all supported providers`,
     `  ${CLI_NAME} resume <session>    Resume an existing session`,
     `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
     `  ${CLI_NAME} --incognito         Start without Cognitive Memory persistence`,
     `  ${CLI_NAME} -I                  Short alias for --incognito`,
     `  ${CLI_NAME} --config <path>     Load config from specific .json/.toml path`,
+    `  ${CLI_NAME} --version           Show version`,
     `  ${CLI_NAME} --help              Show this help`,
   ];
 }
@@ -103,6 +106,7 @@ export function getHelpLines(): string[] {
     "  /events                  Show last 20 events",
     "  /recall <query>          Search Cognitive Memory",
     "  /memory dedupe           Merge near-duplicate Cognitive Memory entries",
+    "  /init                    Create or overwrite the global config file",
     "  /model [provider] <id>   Switch model (e.g., gpt-4o or openai gpt-4o)",
     "  /sessions                List recent sessions",
     "  /shell <command>         Run a shell command directly",
@@ -117,6 +121,8 @@ export function getHelpLines(): string[] {
     "  Status bar: model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
     "  /help                    Show this help",
+    "",
+    "Tip: ~/.praana/AGENTS.md — global personal instructions loaded every session",
   ];
 }
 
@@ -131,6 +137,7 @@ export function printHelp(): void {
     "  /events                  Show last 20 events",
     "  /recall <query>          Search Cognitive Memory",
     "  /memory dedupe           Merge near-duplicate Cognitive Memory entries",
+    "  /init                    Create or overwrite the global config file",
     "  /model [provider] <id>   Switch model (e.g., gpt-4o or openai gpt-4o)",
     "  /sessions                List recent sessions",
     "  /shell <command>         Run a shell command directly",
@@ -145,6 +152,8 @@ export function printHelp(): void {
     "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
     "  /help                    Show this help",
+    "",
+    "  Tip: ~/.praana/AGENTS.md — global personal instructions loaded every session",
   ].join("\n");
   console.log(
     chalk.bold(`  ${APP_NAME} — ${APP_TAGLINE}`) +

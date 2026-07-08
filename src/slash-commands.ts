@@ -21,6 +21,7 @@ import {
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
 import { executeShellCommand } from "./tools/system.js";
+import { handleInit } from "./init.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
 
@@ -621,6 +622,12 @@ export async function executeSlashCommand(
         lines.push(`Memory dedupe error: ${(err as Error).message}`);
       }
       break;
+    }
+
+    case "/init": {
+      const initResult = await handleInit({ force: false });
+      lines.push(initResult.message);
+      return result("none", initResult.success ? "toast" : "toast", initResult.success ? "success" : "error");
     }
 
     case "/shell": {

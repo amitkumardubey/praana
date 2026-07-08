@@ -13,14 +13,21 @@ import {
 import { detectProviderFromEnvironment, DEFAULT_MODELS } from "./llm.js";
 
 function configWarn(message: string, cause?: Error): void {
-  getAppLogger().child("config").warn(message, {
-    code: "CONFIG_INVALID",
-    ...(cause ? { cause } : {}),
-  });
+  _configWarnings.push(message);
+  getAppLogger().child("config").warn(message, { cause });
 }
 
 /** Tracks which config files were loaded in the last loadConfig() call. */
 let _loadedSources: string[] = [];
+
+/** Warnings emitted during the last validateConfig() call. */
+let _configWarnings: string[] = [];
+
+export function getConfigWarnings(): string[] {
+  const out = _configWarnings;
+  _configWarnings = [];
+  return out;
+}
 
 export function getLoadedConfigSources(): string[] {
   return _loadedSources;
@@ -268,7 +275,12 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   // Model fallback: if provider is set but model is empty, use provider-specific default
   if (!out.llm.model || !out.llm.model.trim()) {
     if (out.llm.provider) {
-      out.llm.model = DEFAULT_MODELS[out.llm.provider] ?? "deepseek/deepseek-v4-flash:free";
+      const defaultModel = DEFAULT_MODELS[out.llm.provider];
+      if (defaultModel) {
+        out.llm.model = defaultModel;
+      } else {
+        configWarn(`No default model for provider "${out.llm.provider}". Set [llm] model = "..." in your config.`);
+      }
     }
     // If both empty, leave empty — main.ts will handle the no-key flow
   }
@@ -290,6 +302,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
         fireworks: "openrouter",
         together: "openrouter",
         opencode: "openai",
+        umans: "openrouter",
       };
       out.memory.summarizer = summarizerMap[out.llm.provider] ?? "disabled";
     }

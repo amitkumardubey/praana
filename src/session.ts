@@ -67,6 +67,7 @@ export class Session {
   stateGraph: StateGraph;
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
+  memoryInitError: string | null = null;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -196,6 +197,12 @@ export class Session {
           },
         });
       } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes("EACCES") || msg.includes("permission")) {
+          session.memoryInitError = `Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.`;
+        } else {
+          session.memoryInitError = msg;
+        }
         session.getLogger().child("memory").warn("Failed to initialize, continuing without memory", {
           code: "MEMORY_INIT_FAILED",
           cause: err as Error,
@@ -300,6 +307,12 @@ export class Session {
           },
         });
       } catch (err) {
+        const msg = (err as Error).message;
+        if (msg.includes("EACCES") || msg.includes("permission")) {
+          session.memoryInitError = `Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.`;
+        } else {
+          session.memoryInitError = msg;
+        }
         session.getLogger().child("memory").warn("Failed to initialize for resumed session", {
           code: "MEMORY_INIT_FAILED",
           cause: err as Error,
@@ -1298,7 +1311,7 @@ export function loadAgentsContext(cwd: string): string | null {
 
   const combined = parts.join("\n\n");
   if (combined.length > MAX_CHARS) {
-    getAppLogger().child("session").warn("AGENTS.md content truncated to ~4000 tokens", {
+    getAppLogger().child("session").notice("AGENTS.md content truncated to ~4000 tokens", {
       details: { tokenEstimate: estimateTokens(combined) },
     });
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
@@ -1306,7 +1319,6 @@ export function loadAgentsContext(cwd: string): string | null {
   return combined;
 }
 export { buildProjectContext };
-
 function loadProjectContextField(session: Session, cwd: string): void {
   if (!session.config.project_detection?.enabled) {
     session.projectContext = null;
