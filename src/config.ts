@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as toml from "toml";
 import type { PraanaConfig } from "./types.js";
-import { getAppLogger } from "./logger.js";
+import { getAppLogger, type ErrorCode } from "./logger.js";
 import {
   APP_HOME_DIR,
   envFlag,
@@ -10,17 +10,30 @@ import {
   resolveDefaultMemoryDbPath,
   resolveDefaultSessionLogDir,
 } from "./app-identity.js";
-import { detectProviderFromEnvironment, DEFAULT_MODELS } from "./llm.js";
+import { detectProviderFromEnvironment } from "./llm.js";
 
-function configWarn(message: string, cause?: Error): void {
+function configWarn(
+  message: string,
+  opts?: { cause?: Error; code?: ErrorCode },
+): void {
+  _configWarnings.push(message);
   getAppLogger().child("config").warn(message, {
-    code: "CONFIG_INVALID",
-    ...(cause ? { cause } : {}),
+    cause: opts?.cause,
+    code: opts?.code ?? "CONFIG_INVALID",
   });
 }
 
 /** Tracks which config files were loaded in the last loadConfig() call. */
 let _loadedSources: string[] = [];
+
+/** Warnings emitted during the last validateConfig() call. */
+let _configWarnings: string[] = [];
+
+export function getConfigWarnings(): string[] {
+  const out = _configWarnings;
+  _configWarnings = [];
+  return out;
+}
 
 export function getLoadedConfigSources(): string[] {
   return _loadedSources;
@@ -150,7 +163,7 @@ function loadJsonConfig(path: string): Record<string, unknown> {
     try {
       return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
     } catch (err) {
-      configWarn(`Failed to parse JSON config ${path}`, err as Error);
+      configWarn(`Failed to parse JSON config ${path}`, { cause: err as Error });
     }
   }
   return {};
@@ -161,7 +174,7 @@ function loadTomlConfig(path: string): Record<string, unknown> {
     try {
       return toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
     } catch (err) {
-      configWarn(`Failed to parse TOML config ${path}`, err as Error);
+      configWarn(`Failed to parse TOML config ${path}`, { cause: err as Error });
     }
   }
   return {};
@@ -265,14 +278,6 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     out.llm.provider = "";
   }
 
-  // Model fallback: if provider is set but model is empty, use provider-specific default
-  if (!out.llm.model || !out.llm.model.trim()) {
-    if (out.llm.provider) {
-      out.llm.model = DEFAULT_MODELS[out.llm.provider] ?? "deepseek/deepseek-v4-flash:free";
-    }
-    // If both empty, leave empty — main.ts will handle the no-key flow
-  }
-
   // Summarizer fallback: auto-select from provider if not explicitly set
   if (!opts?.userExplicitlySetSummarizer && (!out.memory.summarizer || !out.memory.summarizer.trim())) {
     if (out.llm.provider) {
@@ -290,6 +295,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
         fireworks: "openrouter",
         together: "openrouter",
         opencode: "openai",
+        umans: "openrouter",
       };
       out.memory.summarizer = summarizerMap[out.llm.provider] ?? "disabled";
     }

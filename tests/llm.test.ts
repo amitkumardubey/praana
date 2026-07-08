@@ -45,4 +45,29 @@ describe("llm provider registry", () => {
   it("treats keyless registry providers as available", () => {
     expect(isProviderAvailable("ollama")).toBe(true);
   });
+
+  it("includes pi-ai providers in the known list", () => {
+    const providers = listKnownProviders();
+    expect(providers).toContain("cerebras");
+    expect(providers).toContain("umans");
+    expect(providers).toContain("huggingface");
+  });
+
+  it("treats amazon-bedrock as unavailable without AWS credentials", () => {
+    const original = { ...process.env };
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_PROFILE;
+    delete process.env.AWS_SESSION_TOKEN;
+    expect(isProviderAvailable("amazon-bedrock")).toBe(false);
+    process.env = original;
+  });
+
+  it("treats amazon-bedrock as available with AWS credentials", () => {
+    const original = { ...process.env };
+    delete process.env.AWS_PROFILE;
+    delete process.env.AWS_SESSION_TOKEN;
+    process.env.AWS_ACCESS_KEY_ID = "test";
+    expect(isProviderAvailable("amazon-bedrock")).toBe(true);
+    process.env = original;
+  });
 });

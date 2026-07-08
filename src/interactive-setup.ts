@@ -1,14 +1,16 @@
-import { writeFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
 import * as readline from "node:readline";
 import {
   listKnownProviders,
   listAvailableProviders,
-  getProviderEnvKey,
   isProviderAvailable,
+  DEFAULT_MODELS,
+  pickFirstCatalogModel,
 } from "./llm.js";
-import { DEFAULT_MODELS } from "./llm.js";
 import { getAppLogger } from "./logger.js";
+import { appHomePath } from "./app-identity.js";
+import { getProviderEnvKey, SETUP_UNSUPPORTED_PROVIDERS } from "./provider-registry.js";
+import { askQuestion } from "./terminal.js";
 
 interface SetupResult {
   success: boolean;
@@ -20,96 +22,134 @@ interface SetupResult {
  * Run interactive provider setup when no API key is found.
  * Guides the user through selecting a provider and setting up their key.
  */
+const PAGE_SIZE = 10;
+
+/** Render one page of the provider list as printable lines. */
+export function providerPageLines(providers: string[], page: number, pageSize: number): string[] {
+  const totalPages = Math.max(1, Math.ceil(providers.length / pageSize));
+  const start = page * pageSize;
+  const end = Math.min(start + pageSize, providers.length);
+  const lines: string[] = [];
+  for (let i = start; i < end; i++) {
+    lines.push(`  ${i + 1}. ${providers[i]}`);
+  }
+  lines.push("");
+  if (totalPages > 1) {
+    lines.push(`  Page ${page + 1}/${totalPages}. Type 'n' for next, 'p' for previous.`);
+  }
+  return lines;
+}
+
 export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
   const logger = getAppLogger().child("app");
   const rl = readline.createInterface({
     input: process.stdin,
-    output: process.stderr,
+    output: process.stdout,
   });
 
-  const question = (prompt: string): Promise<string> => {
-    return new Promise((resolve) => {
-      rl.question(prompt, (answer) => {
-        resolve(answer.trim());
-      });
-    });
+  const sigintHandler = () => {
+    console.error("\n\nSetup cancelled. Run praana init to create a config manually.");
+    rl.close();
+    process.exit(130);
   };
+  process.on("SIGINT", sigintHandler);
 
   try {
-    console.error("");
-    console.error("═══════════════════════════════════════════════════════════════");
-    console.error("  PRAANA — Provider Setup");
-    console.error("═══════════════════════════════════════════════════════════════");
-    console.error("");
-    console.error("No provider API key found. Let's set one up.");
-    console.error("");
+    console.log("");
+    console.log("═══════════════════════════════════════════════════════════════");
+    console.log("  PRAANA — Provider Setup");
+    console.log("═══════════════════════════════════════════════════════════════");
+    console.log("");
+    console.log("No provider API key found. Let's set one up.");
+    console.log("");
 
-    // Get all known providers (excluding ollama which is always available)
-    const allProviders = listKnownProviders().filter((p) => p !== "ollama");
-    const available = listAvailableProviders().filter((p) => p !== "ollama");
+    const allProviders = listKnownProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
+    const available = listAvailableProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
 
     if (available.length > 0) {
-      console.error("Detected in environment:");
+      console.log("Detected in environment:");
       for (const provider of available) {
-        console.error(`  ✓ ${provider}`);
+        console.log(`  ✓ ${provider}`);
       }
-      console.error("");
+      console.log("");
     }
+    console.log("Supported providers:");
+    console.log("");
 
-    console.error("Supported providers:");
-    console.error("  1. anthropic    (requires ANTHROPIC_API_KEY)");
-    console.error("  2. openai       (requires OPENAI_API_KEY)");
-    console.error("  3. deepseek     (requires DEEPSEEK_API_KEY)");
-    console.error("  4. groq         (requires GROQ_API_KEY)");
-    console.error("  5. google       (requires GOOGLE_GENERATIVE_AI_API_KEY)");
-    console.error("  6. mistral      (requires MISTRAL_API_KEY)");
-    console.error("  7. xai          (requires XAI_API_KEY)");
-    console.error("  8. fireworks    (requires FIREWORKS_API_KEY)");
-    console.error("  9. together     (requires TOGETHER_API_KEY)");
-    console.error("  10. openrouter  (requires OPENROUTER_API_KEY)");
-    console.error("  11. ollama      (local, no key needed)");
-    console.error("");
+    let page = 0;
+    const totalPages = Math.max(1, Math.ceil(allProviders.length / PAGE_SIZE));
 
-    // Ask which provider
-    const providerChoice = await question(
-      "Which provider would you like to use? (number or name, or 'q' to quit): "
-    );
+    const renderPage = (p: number) => {
+      for (const line of providerPageLines(allProviders, p, PAGE_SIZE)) {
+        console.log(line);
+      }
+    };
 
-    if (providerChoice.toLowerCase() === "q" || providerChoice.toLowerCase() === "quit") {
-      return {
-        success: false,
-        message: "Setup cancelled.",
-      };
-    }
+    renderPage(page);
 
-    // Parse provider choice
     let selectedProvider: string | null = null;
-    const choiceNum = parseInt(providerChoice, 10);
+    while (selectedProvider === null) {
+      const providerChoice = await askQuestion(
+        rl,
+        "Which provider would you like to use? (number/name, 'n'/'p' to page, 'q' to quit): ",
+      );
+      const lower = providerChoice.toLowerCase();
 
-    if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= allProviders.length) {
-      selectedProvider = allProviders[choiceNum - 1];
-    } else if (allProviders.includes(providerChoice.toLowerCase())) {
-      selectedProvider = providerChoice.toLowerCase();
+      if (lower === "q" || lower === "quit") {
+        return { success: false, message: "Setup cancelled." };
+      }
+
+      if ((lower === "n" || lower === "next") && totalPages > 1) {
+        if (page < totalPages - 1) {
+          page++;
+          renderPage(page);
+        } else {
+          console.error("Already on the last page.");
+        }
+        continue;
+      }
+
+      if ((lower === "p" || lower === "prev" || lower === "previous") && totalPages > 1) {
+        if (page > 0) {
+          page--;
+          renderPage(page);
+        } else {
+          console.error("Already on the first page.");
+        }
+        continue;
+      }
+
+      const choiceNum = parseInt(providerChoice, 10);
+      if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= allProviders.length) {
+        selectedProvider = allProviders[choiceNum - 1];
+      } else if (allProviders.includes(lower)) {
+        selectedProvider = lower;
+      } else {
+        console.error(`Invalid choice: "${providerChoice}". Try again.`);
+      }
     }
 
-    if (!selectedProvider) {
-      console.error("");
-      console.error(`Invalid choice: "${providerChoice}"`);
+    console.log("");
+    console.log(`Selected: ${selectedProvider}`);
+
+    const envKey = getProviderEnvKey(selectedProvider);
+    if (!envKey) {
+      console.log("");
+      console.log(`Provider ${selectedProvider} does not use a single API key.`);
+      console.log("Configure it separately, then restart PRAANA.");
       return {
-        success: false,
-        message: "Invalid provider choice.",
+        success: true,
+        provider: selectedProvider,
+        message: `Provider ${selectedProvider} skipped interactive setup.`,
       };
     }
-
-    console.error("");
-    console.error(`Selected: ${selectedProvider}`);
 
     // Check if key is already available
     if (isProviderAvailable(selectedProvider)) {
-      console.error(`\n✓ ${selectedProvider} API key already detected in environment!`);
-      console.error(`\nTo use this provider, run:`);
-      console.error(`  export ${getProviderEnvKey(selectedProvider)}=<your-key>`);
-      console.error(`\nOr restart PRAANA — it should auto-detect the key.`);
+      console.log(`\n✓ ${selectedProvider} API key already detected in environment!`);
+      console.log(`\nTo use this provider, run:`);
+      console.log(`  export ${envKey}=<your-key>`);
+      console.log(`\nOr restart PRAANA — it should auto-detect the key.`);
       return {
         success: true,
         provider: selectedProvider,
@@ -117,60 +157,62 @@ export async function runInteractiveSetup(cwd: string): Promise<SetupResult> {
       };
     }
 
-    // Show the env var to set
-    const envKey = getProviderEnvKey(selectedProvider);
-    const model = DEFAULT_MODELS[selectedProvider] ?? "default";
+    const model = DEFAULT_MODELS[selectedProvider] ?? pickFirstCatalogModel(selectedProvider) ?? "";
 
-    console.error("");
-    console.error(`To use ${selectedProvider}, set this environment variable:`);
-    console.error("");
-    console.error(`  export ${envKey}=<your-api-key>`);
-    console.error("");
-    console.error(`Then restart PRAANA. It will auto-detect the key.`);
-    console.error("");
-    console.error(`Default model: ${model}`);
-    console.error("");
+    console.log("");
+    console.log(`To use ${selectedProvider}, set this environment variable:`);
+    console.log("");
+    console.log(`  export ${envKey}=<your-api-key>`);
+    console.log("");
+    console.log(`Then restart PRAANA. It will auto-detect the key.`);
 
     // Offer to save to config
-    const saveToConfig = await question("Would you like me to create a config file? (y/n): ");
-
+    const saveToConfig = await askQuestion(rl, "Would you like me to create a config file? (y/n): ");
     if (saveToConfig.toLowerCase() === "y" || saveToConfig.toLowerCase() === "yes") {
-      const configPath = resolve(cwd, "praana.config.toml");
+      const configPath = appHomePath("config.toml");
 
       if (existsSync(configPath)) {
-        console.error(`\nConfig file already exists: ${configPath}`);
-        console.error("Please edit it manually to add your provider settings.");
-      } else {
-        const configContent = `# PRAANA Configuration
+        const overwrite = await askQuestion(rl, `Config already exists at ${configPath}. Overwrite? (y/n): `);
+        if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
+          console.log("\nConfig left unchanged.");
+          return {
+            success: true,
+            provider: selectedProvider,
+            message: `Config left unchanged at ${configPath}.`,
+          };
+        }
+      }
+
+      const modelLine = model ? `model = "${model}"\n` : `# model = "<model-id>"  # set this if PRAANA doesn't auto-detect\n`;
+      const configContent = `# PRAANA Configuration
 # https://github.com/amitkumardubey/praana
 
 [llm]
 provider = "${selectedProvider}"
-model = "${model}"
-
+${modelLine}
 # Set your API key as an environment variable:
 # export ${envKey}=<your-api-key>
 `;
 
-        try {
-          writeFileSync(configPath, configContent, "utf-8");
-          console.error(`\n✓ Created config file: ${configPath}`);
-          console.error(`\nNext steps:`);
-          console.error(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
-          console.error(`  2. Restart PRAANA:   praana`);
-        } catch (err) {
-          console.error(`\nFailed to create config file: ${(err as Error).message}`);
-          console.error("Please create it manually.");
-        }
+      try {
+        mkdirSync(appHomePath(), { recursive: true });
+        writeFileSync(configPath, configContent, "utf-8");
+        console.log(`\n✓ Created config file: ${configPath}`);
+        console.log(`\nNext steps:`);
+        console.log(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
+        console.log(`  2. Restart PRAANA:   praana`);
+      } catch (err) {
+        console.error(`\nFailed to create config file: ${(err as Error).message}`);
+        console.error("Please create it manually.");
       }
     } else {
-      console.error("");
-      console.error("Quick start:");
-      console.error(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
-      console.error(`  2. Restart PRAANA:   praana`);
+      console.log("");
+      console.log("Quick start:");
+      console.log(`  1. Set your API key:  export ${envKey}=<your-api-key>`);
+      console.log(`  2. Restart PRAANA:   praana`);
     }
 
-    console.error("");
+    console.log("");
     logger.info(`Interactive setup completed for provider: ${selectedProvider}`, {
       details: { provider: selectedProvider },
     });
@@ -181,6 +223,7 @@ model = "${model}"
       message: `Setup completed for ${selectedProvider}.`,
     };
   } finally {
+    process.removeListener("SIGINT", sigintHandler);
     rl.close();
   }
 }

@@ -1,10 +1,12 @@
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import * as readline from "node:readline";
 import { detectProviderFromEnvironment, listAvailableProviders } from "./llm.js";
 import { DEFAULT_MODELS } from "./llm.js";
+import { formatProviderListForDisplay } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
-import { APP_HOME_DIR } from "./app-identity.js";
+import { APP_HOME_DIR, appHomePath } from "./app-identity.js";
+import { askQuestion, isInteractiveTerminal } from "./terminal.js";
 
 export interface InitOptions {
   force: boolean;
@@ -17,6 +19,7 @@ export interface InitResult {
   action: "created" | "overwritten" | "skipped" | "error";
   message: string;
 }
+
 
 /**
  * Generate a config file content based on detected providers.
@@ -42,19 +45,10 @@ function generateConfigContent(detected: { provider: string; model: string } | n
       "# model = \"deepseek/deepseek-v4-flash:free\"",
       "",
       "# Supported providers (set the corresponding env var):",
-      "#   anthropic    → ANTHROPIC_API_KEY",
-      "#   openai       → OPENAI_API_KEY",
-      "#   deepseek     → DEEPSEEK_API_KEY",
-      "#   groq         → GROQ_API_KEY",
-      "#   google       → GOOGLE_GENERATIVE_AI_API_KEY",
-      "#   mistral      → MISTRAL_API_KEY",
-      "#   xai          → XAI_API_KEY",
-      "#   fireworks    → FIREWORKS_API_KEY",
-      "#   together     → TOGETHER_API_KEY",
-      "#   opencode     → OPENCODE_API_KEY",
-      "#   openrouter   → OPENROUTER_API_KEY",
-      "#   ollama       → (local, no key needed)",
     );
+    for (const { name, envKey } of formatProviderListForDisplay()) {
+      lines.push(`#   ${name.padEnd(20)} → ${envKey ?? "(local)"}`);
+    }
   }
 
   lines.push(
@@ -82,34 +76,81 @@ function generateConfigContent(detected: { provider: string; model: string } | n
  * Handle the `praana init` command.
  * Creates the global config file at ~/.praana/config.toml.
  */
-export function handleInit(opts: InitOptions): InitResult {
+export async function handleInit(opts: InitOptions): Promise<InitResult> {
   const logger = getAppLogger().child("app");
-  const homeDir = opts.homeDir ?? homedir();
-  const appHomeDir = join(homeDir, APP_HOME_DIR);
+  const appHomeDir = opts.homeDir ? join(opts.homeDir, APP_HOME_DIR) : appHomePath();
   const configPath = join(appHomeDir, "config.toml");
 
-  // Check if config already exists
-  if (existsSync(configPath) && !opts.force) {
-    const message = `Config file already exists: ${configPath}\nUse --force to overwrite.`;
-    logger.info(message);
-    return {
-      success: false,
-      path: configPath,
-      action: "skipped",
-      message,
-    };
-  }
-
-  // Detect available providers
+  // Detect available providers before generating content
   const detected = detectProviderFromEnvironment();
   const available = listAvailableProviders();
-
-  // Generate config content
   const content = generateConfigContent(detected);
+
+  // Check if config already exists
+  if (existsSync(configPath)) {
+    if (!opts.force) {
+      const message = `Config file already exists: ${configPath}\nUse --force to overwrite.`;
+      logger.info(message);
+      return {
+        success: false,
+        path: configPath,
+        action: "skipped",
+        message,
+      };
+    }
+
+    // Show a preview of the first few changed lines in interactive mode
+    if (isInteractiveTerminal()) {
+      const existing = readFileSync(configPath, "utf-8");
+      const existingLines = existing.split("\n");
+      const newLines = content.split("\n");
+      const changed: string[] = [];
+      for (let i = 0; i < Math.max(existingLines.length, newLines.length); i++) {
+        if (existingLines[i] !== newLines[i]) {
+          if (existingLines[i] !== undefined) changed.push(`- ${existingLines[i]}`);
+          if (newLines[i] !== undefined) changed.push(`+ ${newLines[i]}`);
+          if (changed.length >= 10) break;
+        }
+      }
+      if (changed.length > 0) {
+        console.error("");
+        console.error("Config changes preview:");
+        for (const line of changed.slice(0, 10)) console.error(`  ${line}`);
+        console.error("");
+      }
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stderr,
+      });
+      try {
+        const answer = await askQuestion(rl, "Overwrite? (y/n): ");
+        if (answer.toLowerCase() !== "y" && answer.toLowerCase() !== "yes") {
+          return {
+            success: true,
+            path: configPath,
+            action: "skipped",
+            message: `Config left unchanged at ${configPath}.`,
+          };
+        }
+      } finally {
+        rl.close();
+      }
+    }
+  }
 
   try {
     mkdirSync(appHomeDir, { recursive: true });
+    const existed = existsSync(configPath);
     writeFileSync(configPath, content, "utf-8");
+
+    // Create a global AGENTS.md template if none exists
+    const agentsPath = join(appHomeDir, "AGENTS.md");
+    let agentsCreated = false;
+    if (!existsSync(agentsPath)) {
+      const agentsTemplate = `# Personal Instructions\n\n# Add your global preferences, coding style, or context here.\n# This file is loaded into every PRAANA session.\n`;
+      writeFileSync(agentsPath, agentsTemplate, "utf-8");
+      agentsCreated = true;
+    }
 
     let message: string;
     if (detected) {
@@ -119,12 +160,14 @@ export function handleInit(opts: InitOptions): InitResult {
     } else {
       message = `Created config template at ${configPath}\nNo provider API keys detected. Set a key (e.g., export OPENROUTER_API_KEY=sk-or-...) and edit the config.`;
     }
-
+    if (agentsCreated) {
+      message += `\nAlso created ${agentsPath} for global personal instructions.`;
+    }
     logger.info(message, { details: { path: configPath } });
     return {
       success: true,
       path: configPath,
-      action: existsSync(configPath) && !opts.force ? "created" : "overwritten",
+      action: existed ? "overwritten" : "created",
       message,
     };
   } catch (err) {

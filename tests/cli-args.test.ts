@@ -39,4 +39,23 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--force"]).force).toBe(true);
     expect(parseCliArgs(["-f"]).force).toBe(true);
   });
+
+  it("parses version flag", () => {
+    expect(parseCliArgs(["--version"]).versionMode).toBe(true);
+    expect(parseCliArgs(["-v"]).versionMode).toBe(true);
+  });
+
+  it("parses doctor subcommand", () => {
+    expect(parseCliArgs(["doctor"]).doctorMode).toBe(true);
+  });
+
+  it("parses home-dir flag", () => {
+    expect(parseCliArgs(["--home-dir", "/tmp/praana"]).homeDir).toBe("/tmp/praana");
+    expect(parseCliArgs(["-H", "/tmp/praana"]).homeDir).toBe("/tmp/praana");
+  });
+
+  it("parses providers flag", () => {
+    expect(parseCliArgs(["--providers"]).providersMode).toBe(true);
+    expect(parseCliArgs(["-p"]).providersMode).toBe(true);
+  });
 });

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 
 /** Product identity — single source of truth for rename-sensitive strings. */
 export const APP_NAME = "PRAANA";
@@ -13,7 +14,25 @@ export const CLI_NAME = "praana";
 export const CLI_SHORT = "pran";
 
 export function appHomePath(...parts: string[]): string {
-  return join(homedir(), APP_HOME_DIR, ...parts);
+  const praanaHome = envOverride("PRAANA_HOME");
+  const base = praanaHome
+    ? join(praanaHome, APP_HOME_DIR)
+    : join(homedir(), APP_HOME_DIR);
+  return join(base, ...parts);
+}
+
+export function isFirstRun(): boolean {
+  return !existsSync(appHomePath(".initialized"));
+}
+
+export function markInitialized(): boolean {
+  try {
+    mkdirSync(appHomePath(), { recursive: true });
+    writeFileSync(appHomePath(".initialized"), new Date().toISOString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveDefaultMemoryDbPath(): string {

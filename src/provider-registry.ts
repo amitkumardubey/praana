@@ -1,3 +1,5 @@
+import { getProviders, findEnvKeys } from "@earendil-works/pi-ai/compat";
+
 /**
  * Single source of truth for provider configuration.
  *
@@ -73,6 +75,12 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: "TOGETHER_API_KEY",
     baseUrl: "https://api.together.xyz/v1",
   },
+  umans: {
+    api: "openai-completions",
+    provider: "umans",
+    envKey: "UMANS_AI_CODING_PLAN_API_KEY",
+    baseUrl: "https://api.code.umans.ai/v1",
+  },
   ollama: {
     api: "openai-completions",
     provider: "openai",
@@ -144,6 +152,7 @@ export const REASONING_MODEL_HINTS: Record<
   Array<{ pattern: RegExp }>
 > = {
   "*": [{ pattern: /kimi-k2/i }],
+  umans: [{ pattern: /umans-coder/i }, { pattern: /umans-kimi/i }],
 };
 
 /**
@@ -164,3 +173,24 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "together",
   "ollama",
 ];
+
+/** Providers that should not appear in the interactive setup picker. */
+export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama", "amazon-bedrock"]);
+
+/** Return the env var name required by a provider, or null. */
+export function getProviderEnvKey(provider: string): string | null {
+  const registryEntry = PROVIDER_REGISTRY[provider];
+  if (registryEntry) return registryEntry.envKey;
+  if ((getProviders() as string[]).includes(provider)) {
+    return findEnvKeys(provider as never)?.[0] ?? null;
+  }
+  return null;
+}
+
+/** Format all known providers (PRAANA registry + pi-ai) for display in help/init text. */
+export function formatProviderListForDisplay(): { name: string; envKey: string | null }[] {
+  const registryIds = Object.keys(PROVIDER_REGISTRY);
+  const piAiIds = getProviders() as string[];
+  const all = Array.from(new Set([...registryIds, ...piAiIds])).sort();
+  return all.map((name) => ({ name, envKey: getProviderEnvKey(name) }));
+}

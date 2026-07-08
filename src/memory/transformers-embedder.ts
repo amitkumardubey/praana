@@ -79,6 +79,11 @@ async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExt
 
     let spinnerStarted = false;
 
+    if (process.stderr.isTTY) {
+      startSpinner("Loading embedding model…");
+      spinnerStarted = true;
+    }
+
     const pipe = await mod.pipeline("feature-extraction", preset.id, {
       progress_callback: (progress) => {
         if (!process.stderr.isTTY) return;
