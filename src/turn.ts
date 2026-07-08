@@ -34,6 +34,35 @@ import {
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
 
+type ProviderUsage = { input: number; output: number; totalTokens: number };
+
+function parseProviderUsage(message: unknown): ProviderUsage | null {
+  if (typeof message !== "object" || message === null) return null;
+  const usage = (message as { usage?: unknown }).usage;
+  if (typeof usage !== "object" || usage === null) return null;
+  const u = usage as Record<string, unknown>;
+  if (
+    typeof u.input === "number" &&
+    typeof u.output === "number" &&
+    typeof u.totalTokens === "number"
+  ) {
+    return { input: u.input, output: u.output, totalTokens: u.totalTokens };
+  }
+  return null;
+}
+
+function addProviderUsage(
+  acc: ProviderUsage | null,
+  step: ProviderUsage,
+): ProviderUsage {
+  if (!acc) return { ...step };
+  return {
+    input: acc.input + step.input,
+    output: acc.output + step.output,
+    totalTokens: acc.totalTokens + step.totalTokens,
+  };
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -367,14 +396,9 @@ export async function runTurn(
       if (event.type === "done") {
         finalReason = event.reason;
         finalMessage = event.message as unknown as Message;
-        // Capture actual provider usage when available (replaces heuristic estimates)
-        const msg = event.message as any;
-        if (msg?.usage && typeof msg.usage.input === "number") {
-          providerUsage = {
-            input: msg.usage.input,
-            output: msg.usage.output,
-            totalTokens: msg.usage.totalTokens,
-          };
+        const stepUsage = parseProviderUsage(event.message);
+        if (stepUsage) {
+          providerUsage = addProviderUsage(providerUsage, stepUsage);
         }
       }
       if (event.type === "error") {

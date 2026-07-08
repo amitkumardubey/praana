@@ -745,6 +745,99 @@ describe("runTurn", () => {
     expect(session.getOutputTokens()).toBe(outArg);
   });
 
+  it("uses provider-reported output tokens when usage is present", async () => {
+    const responseText = "Hello from provider";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 100, output: 42, totalTokens: 142 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    expect(spyOut).toHaveBeenCalledWith(42);
+    expect(session.getOutputTokens()).toBe(42);
+  });
+
+  it("accumulates provider output tokens across multi-step tool loops", async () => {
+    const firstStep = (async function* () {
+      yield { type: "text_delta", delta: "step one" };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo hi" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "step one" }],
+          usage: { input: 50, output: 10, totalTokens: 60 },
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: " step two" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: " step two" }],
+          usage: { input: 80, output: 15, totalTokens: 95 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "multi-step");
+
+    expect(spyOut).toHaveBeenCalledWith(25);
+    expect(session.getOutputTokens()).toBe(25);
+  });
+
+  it("falls back to heuristic output tokens when provider usage is incomplete", async () => {
+    const responseText = "fallback estimate";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 100 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(outArg).not.toBe(100);
+  });
+
   it("processes tool calls and returns results", async () => {
     const toolCallGenerator = (async function* () {
       yield { type: "text_delta", delta: "Let me check" };
