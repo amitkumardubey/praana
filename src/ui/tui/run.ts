@@ -2,6 +2,18 @@
  * pi-tui TUI entry — ambient intelligence layout (design §5).
  */
 import {
+  installPiTuiLogRedirect,
+  rewritePiTuiCrashErrorMessage,
+} from "./redirect-pi-logs.js";
+
+// ⚠️ Import-time side effect. This module must patch `node:fs` before the
+// `@earendil-works/pi-tui` import is evaluated, because pi-tui resolves the
+// fs functions it will use at load time. Any test or script that imports this
+// module will therefore install the redirect. See the ADR in
+// redirect-pi-logs.ts for why this is unavoidable today.
+installPiTuiLogRedirect();
+
+import {
   TUI,
   ProcessTerminal,
   Container,
@@ -398,5 +410,12 @@ export async function runTui(
     process.exit(0);
   }
 
-  tui.start();
+  try {
+    tui.start();
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Debug log written to:")) {
+      err.message = rewritePiTuiCrashErrorMessage(err.message);
+    }
+    throw err;
+  }
 }
