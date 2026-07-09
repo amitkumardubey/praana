@@ -21,7 +21,6 @@ import {
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
 import { executeShellCommand } from "./tools/system.js";
-import { runInteractiveSetup } from "./interactive-setup.js";
 
 export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
 
@@ -626,13 +625,12 @@ export async function executeSlashCommand(
     }
 
     case "/setup": {
-      const setupResult = await runInteractiveSetup(session.cwd);
-      if (!setupResult.success) {
-        lines.push("Setup cancelled.");
-        return result("none", "toast", "error");
-      }
-      lines.push(`Provider configured: ${setupResult.provider ?? "done"}. Restart to apply.`);
-      return result("none", "toast", "success");
+      lines.push(
+        "Provider setup runs in a dedicated wizard outside the session.",
+        "Exit PRAANA and run:  praana setup",
+        "Then restart to apply changes.",
+      );
+      return result("none", "toast", "info");
     }
 
     case "/shell": {
