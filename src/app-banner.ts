@@ -64,7 +64,14 @@ export function formatSessionEndSummary(session: Session): string {
 
 /** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
 export function formatSessionEpilogue(sessionId: string): string[] {
-  return ["", `  ${CLI_NAME} resume ${sessionId}`, `  ${CLI_SHORT} resume ${sessionId}`, ""];
+  return [
+    "",
+    `  ${CLI_NAME} resume`,
+    `  ${CLI_SHORT} resume`,
+    `  ${CLI_NAME} resume ${sessionId}`,
+    `  ${CLI_SHORT} resume ${sessionId}`,
+    "",
+  ];
 }
 
 export function printSessionEndSummary(session: Session): void {
@@ -78,7 +85,7 @@ function usageLines(): string[] {
     `  ${CLI_NAME} setup               Configure provider interactively`,
     `  ${CLI_NAME} doctor              Check setup and provider configuration`,
     `  ${CLI_NAME} --providers [--all]  List supported providers (--all includes pi-ai extras)`,
-    `  ${CLI_NAME} resume <session>    Resume an existing session`,
+    `  ${CLI_NAME} resume [session]   Resume last session here, or a specific session`,
     `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
     `  ${CLI_NAME} --incognito         Start without Cognitive Memory persistence`,

@@ -29,6 +29,12 @@ describe("parseCliArgs", () => {
     expect(parsed.sessionId).toBe("01ABC");
   });
 
+  it("parses bare resume without session id", () => {
+    const parsed = parseCliArgs(["resume"]);
+    expect(parsed.resumeMode).toBe(true);
+    expect(parsed.sessionId).toBeNull();
+  });
+
   it("ignores unknown flags gracefully", () => {
     const parsed = parseCliArgs(["--unknown-flag", "value"]);
     expect(parsed.showHelp).toBe(false);

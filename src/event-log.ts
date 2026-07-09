@@ -10,8 +10,9 @@ import {
   statSync,
   unlinkSync,
   appendFileSync,
+  readdirSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
 
@@ -325,4 +326,29 @@ export function readSessionMeta(logDir: string, sessionId: string): SessionMeta 
   } catch {
     return null;
   }
+}
+
+/**
+ * Find the most recent session for a given working directory.
+ * Picks the session with the latest started_at among cwd matches.
+ */
+export function findLatestSessionForCwd(logDir: string, cwd: string): string | null {
+  if (!existsSync(logDir)) return null;
+
+  const normalizedCwd = resolve(cwd);
+  const dirs = readdirSync(logDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+
+  let latestId: string | null = null;
+  let latestStartedAt = -1;
+
+  for (const d of dirs) {
+    const meta = readSessionMeta(logDir, d.name);
+    if (!meta || resolve(meta.cwd) !== normalizedCwd) continue;
+    if (meta.started_at > latestStartedAt) {
+      latestStartedAt = meta.started_at;
+      latestId = meta.session_id;
+    }
+  }
+
+  return latestId;
 }
