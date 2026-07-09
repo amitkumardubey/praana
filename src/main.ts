@@ -200,6 +200,9 @@ export async function main() {
 
   try {
     const info = await controller.start();
+    for (const line of info.startupNotices) {
+      console.error(line);
+    }
     await runTui(controller, info);
   } catch (err) {
     if (err instanceof SessionNotFoundError) {

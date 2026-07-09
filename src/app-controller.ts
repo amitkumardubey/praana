@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
 import { Session, type SessionEndStatus } from "./session.js";
+import { findLatestSessionForCwd } from "./event-log.js";
 import { runTurn } from "./turn.js";
 import { TurnController } from "./turn-control.js";
 import { buildStatusBarInput, type StatusBarInput } from "./status-bar.js";
@@ -22,6 +23,8 @@ export interface StartupInfo {
   /** Full transcript entries rebuilt from event log on resume (TUI). */
   transcriptBootstrap: TranscriptEntry[];
   isResume: boolean;
+  /** Shown at startup (e.g. bare resume fell back to a new session). */
+  startupNotices: string[];
 }
 
 export class AppController {
@@ -45,11 +48,30 @@ export class AppController {
   async start(): Promise<StartupInfo> {
     const { sessionId, resumeMode, debug } = this.parsed;
     const captureNotice = (_line: string) => {};
+    const startupNotices: string[] = [];
+    let didResume = false;
 
-    if (resumeMode && sessionId) {
-      this.session = await Session.resume(sessionId, this.cwd, this.config, {
-        captureNotice,
-      });
+    if (resumeMode) {
+      const resolvedId =
+        sessionId ?? findLatestSessionForCwd(this.config.session.log_dir, this.cwd);
+      if (resolvedId) {
+        this.session = await Session.resume(resolvedId, this.cwd, this.config, {
+          captureNotice,
+        });
+        didResume = true;
+      } else if (sessionId) {
+        this.session = await Session.resume(sessionId, this.cwd, this.config, {
+          captureNotice,
+        });
+        didResume = true;
+      } else {
+        startupNotices.push(`No session found for this directory: ${this.cwd}`);
+        startupNotices.push("Starting a new session.");
+        this.session = await Session.create(this.cwd, this.config, {
+          incognito: this.parsed.incognito,
+          captureNotice,
+        });
+      }
       this.session.debug = debug;
     } else {
       this.session = await Session.create(this.cwd, this.config, {
@@ -72,15 +94,16 @@ export class AppController {
           ? [`⚠ memory disabled: ${this.session.memoryInitError}`]
           : []),
       ],
-      recentConversationLines: resumeMode
+      recentConversationLines: didResume
         ? formatRecentConversationLines(this.session)
         : [],
-      transcriptBootstrap: resumeMode
+      transcriptBootstrap: didResume
         ? buildTranscriptFromEvents(this.session.eventLog.readAll(), {
             useUnicode: this.config.ui.tool_icons === "unicode",
           })
         : [],
-      isResume: !!resumeMode,
+      isResume: didResume,
+      startupNotices,
     };
   }
 

@@ -70,10 +70,12 @@ export function parseCliArgs(args: string[]): CliArgs {
       i++;
       continue;
     }
-    if (args[i] === "resume" && args[i + 1]) {
+    if (args[i] === "resume") {
       resumeMode = true;
-      sessionId = args[i + 1];
-      i++;
+      if (args[i + 1] && !args[i + 1].startsWith("-")) {
+        sessionId = args[i + 1];
+        i++;
+      }
       continue;
     }
     if (args[i] === "setup" || args[i] === "init") {

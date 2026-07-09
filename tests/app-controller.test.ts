@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { AppController } from "../src/app-controller.js";
 import type { CliArgs } from "../src/cli-args.js";
 import type { PraanaConfig } from "../src/types.js";
 import * as sessionActual from "../src/session.js";
+import { Session } from "../src/session.js";
 
 // Snapshot real module BEFORE mock.module updates live bindings
 const sessionReal = { ...sessionActual };
@@ -179,6 +183,97 @@ describe("AppController", () => {
     });
     (controller as any).turnController.begin();
     expect(controller.handleUserInterrupt()).toBe("abort_turn");
+  });
+
+  it("resumes the latest session for cwd when resume has no session id", async () => {
+    const logDir = join(tmpdir(), "praana-test-app-controller-resume");
+    const cwd = resolve("/tmp/praana-resume-test");
+    const sessionId = "01LATEST00000000000000006";
+    mkdirSync(join(logDir, sessionId), { recursive: true });
+    writeFileSync(
+      join(logDir, sessionId, "meta.json"),
+      JSON.stringify(
+        {
+          session_id: sessionId,
+          started_at: Date.now(),
+          cwd,
+          agent: "praana",
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const resume = Session.resume as Mock<typeof Session.resume>;
+    resume.mockResolvedValueOnce({
+      id: sessionId,
+      cwd,
+      debug: false,
+      config: baseConfig,
+      getModelOverride: () => null,
+      getActiveModelId: () => "test/model",
+      getActiveModelLabel: () => "openrouter/test/model",
+      getEffectiveProvider: () => "openrouter",
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: mock(async () => 128_000),
+      getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
+      getRepoRoot: () => cwd,
+      getGitBranch: () => null,
+      memoryEnabled: false,
+      isIncognito: () => false,
+      digest: null,
+      agentsContext: null,
+      skills: [],
+      skillRuntime: null,
+      getLastCompileMetrics: () => null,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 0,
+      getTurnCount: () => 0,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => 0,
+      getMemoryDbPath: () => null,
+      stateGraph: { list: () => [] },
+      eventLog: { readLast: () => [], readAll: () => [] },
+      end: mock(async () => ({ memory: "skipped" as const })),
+      getTranscriptEvents: () => [],
+      memoryInitError: undefined,
+    } as any);
+
+    const controller = new AppController({
+      cwd,
+      config: { ...baseConfig, session: { log_dir: logDir } },
+      parsed: { ...baseParsed, resumeMode: true, sessionId: null },
+    });
+
+    const info = await controller.start();
+    expect(resume).toHaveBeenCalledWith(sessionId, cwd, expect.any(Object), expect.any(Object));
+    expect(info.isResume).toBe(true);
+    expect(info.session.id).toBe(sessionId);
+
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it("starts a new session when bare resume finds no session for cwd", async () => {
+    const logDir = join(tmpdir(), "praana-test-app-controller-no-session");
+    mkdirSync(logDir, { recursive: true });
+    const cwd = resolve("/tmp/praana-no-session");
+
+    const controller = new AppController({
+      cwd,
+      config: { ...baseConfig, session: { log_dir: logDir } },
+      parsed: { ...baseParsed, resumeMode: true, sessionId: null },
+    });
+
+    const info = await controller.start();
+    expect(info.isResume).toBe(false);
+    expect(info.startupNotices).toEqual([
+      `No session found for this directory: ${cwd}`,
+      "Starting a new session.",
+    ]);
+    expect(info.session.id).toBeTruthy();
+
+    rmSync(logDir, { recursive: true, force: true });
   });
 });
 // Restore real session module after this file to prevent cross-test pollution
