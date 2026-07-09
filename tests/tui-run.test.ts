@@ -4,7 +4,11 @@
  * Mocks TUI + ProcessTerminal so the real renderer never starts.
  * Uses Promise.withResolvers() for deferred resolution — no real timers.
  */
-import { describe, it, expect, beforeEach, afterEach, spyOn, mock, type Mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock, type Mock } from "bun:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdtempSync, rmSync } from "node:fs";
+import { uninstallPiTuiLogRedirect } from "../src/ui/tui/redirect-pi-logs.js";
 
 // ── Mock pi-tui before importing runTui ─────────────────────────────────────
 
@@ -150,6 +154,12 @@ describe("runTui", () => {
   let stdoutSpy: ReturnType<typeof spyOn>;
   let exitSpy: ReturnType<typeof spyOn>;
 
+  afterAll(() => {
+    // run.ts installs the fs redirect at import time; make sure we leave the
+    // process fs object clean after this suite.
+    uninstallPiTuiLogRedirect();
+  });
+
   beforeEach(() => {
     shutdownMock.mockReset();
     eventLogAppend.mockReset();
@@ -277,5 +287,22 @@ describe("runTui", () => {
     await latestEditor?.onSubmit?.("!git status");
 
     expect(fakeController.executeSlashCommand).toHaveBeenCalledWith("/shell git status");
+  });
+
+  it("rewrites pi-tui crash log path in thrown error messages", async () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "praana-run-error-test-"));
+    process.env.PRAANA_HOME = tmpHome;
+
+    const originalMessage = "Fatal TUI error. Debug log written to: /home/user/.pi/agent/pi-crash.log";
+    tuiStart.mockImplementationOnce(() => {
+      throw new Error(originalMessage);
+    });
+
+    await expect(runTui(fakeController as never, fakeInfo)).rejects.toThrow(
+      /Debug log written to: .*\.praana\/logs\/pi-crash\.log/,
+    );
+
+    delete process.env.PRAANA_HOME;
+    rmSync(tmpHome, { recursive: true, force: true });
   });
 });

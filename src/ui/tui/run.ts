@@ -1,11 +1,16 @@
 /**
  * pi-tui TUI entry — ambient intelligence layout (design §5).
  */
-import { installPiTuiLogRedirect } from "./redirect-pi-logs.js";
-import { appHomePath } from "../../app-identity.js";
+import {
+  installPiTuiLogRedirect,
+  rewritePiTuiCrashErrorMessage,
+} from "./redirect-pi-logs.js";
 
-// Install before pi-tui imports fs so its hardcoded ~/.pi/agent crash/debug
-// logs are redirected to ~/.praana/logs.
+// ⚠️ Import-time side effect. This module must patch `node:fs` before the
+// `@earendil-works/pi-tui` import is evaluated, because pi-tui resolves the
+// fs functions it will use at load time. Any test or script that imports this
+// module will therefore install the redirect. See the ADR in
+// redirect-pi-logs.ts for why this is unavoidable today.
 installPiTuiLogRedirect();
 
 import {
@@ -409,11 +414,7 @@ export async function runTui(
     tui.start();
   } catch (err) {
     if (err instanceof Error && err.message.includes("Debug log written to:")) {
-      const praanaCrashLog = appHomePath("logs", "pi-crash.log");
-      err.message = err.message.replace(
-        /Debug log written to: .+\.pi\/agent\/pi-crash\.log/,
-        `Debug log written to: ${praanaCrashLog}`,
-      );
+      err.message = rewritePiTuiCrashErrorMessage(err.message);
     }
     throw err;
   }

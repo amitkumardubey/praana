@@ -11,15 +11,13 @@ import type { TUI, Component, Focusable } from "@earendil-works/pi-tui";
 import { Editor, type EditorTheme, type EditorOptions } from "@earendil-works/pi-tui";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import chalk from "chalk";
+import stripAnsi from "strip-ansi";
 
 const PROMPT = "❯ ";
 const PROMPT_WIDTH = visibleWidth(PROMPT); // 2
 
-/** Strip ANSI SGR and OSC 8 hyperlink sequences. */
-const ANSI_RE = /\x1b\[(?:[0-9;]*m|7m|0m)|\x1b\]8;[^\x07]*\x07/g;
-
 function isBorderLine(line: string): boolean {
-  const stripped = line.replace(ANSI_RE, "");
+  const stripped = stripAnsi(line);
   return stripped.length === 0 || /^─+$/.test(stripped);
 }
 
@@ -52,6 +50,7 @@ export class InvertedEditor implements Component, Focusable {
     const result: string[] = [...topPad];
     let seenTopBorder = false;
     let seenBottomBorder = false;
+    let bottomBorderWasNonEmpty = false;
     let firstContentDone = false;
 
     for (let i = 0; i < lines.length; i++) {
@@ -68,6 +67,7 @@ export class InvertedEditor implements Component, Focusable {
       if (seenTopBorder && !seenBottomBorder && isBorderLine(line)) {
         result.push(line);
         seenBottomBorder = true;
+        bottomBorderWasNonEmpty = stripAnsi(line).length > 0;
         continue;
       }
 
@@ -87,8 +87,12 @@ export class InvertedEditor implements Component, Focusable {
       firstContentDone = true;
     }
 
-    // Bottom border
-    result.push("─".repeat(width));
+    // Only synthesize a visible bottom border if the inner editor did not
+    // already render one. This avoids double borders when the theme provides
+    // its own horizontal rule.
+    if (!seenBottomBorder || !bottomBorderWasNonEmpty) {
+      result.push("─".repeat(width));
+    }
     result.push(...bottomPad);
     return result;
   }

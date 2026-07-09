@@ -10,6 +10,7 @@ import {
   uninstallPiTuiLogRedirect,
   getPiTuiLogRedirectTarget,
   isPiTuiLogRedirectInstalled,
+  rewritePiTuiCrashErrorMessage,
 } from "../src/ui/tui/redirect-pi-logs.js";
 
 // pi-tui patches the CommonJS `node:fs` exports object. Use require() in the
@@ -43,6 +44,40 @@ describe("redirect-pi-logs", () => {
       expect(getPiTuiLogRedirectTarget("/home/user/.pi/agent/other.log")).toBeUndefined();
       expect(getPiTuiLogRedirectTarget("/home/user/.pi/pi-crash.log")).toBeUndefined();
       expect(getPiTuiLogRedirectTarget("/tmp/pi-crash.log")).toBeUndefined();
+    });
+
+    it("normalizes redundant slashes", () => {
+      const target = getPiTuiLogRedirectTarget("/home/user/.pi/agent//pi-crash.log");
+      expect(target).toEndWith("/.praana/logs/pi-crash.log");
+    });
+
+    it("normalizes relative path segments", () => {
+      const target = getPiTuiLogRedirectTarget("/home/user/.pi/agent/../agent/pi-crash.log");
+      expect(target).toEndWith("/.praana/logs/pi-crash.log");
+    });
+
+    it("matches Windows-style backslash paths", () => {
+      const target = getPiTuiLogRedirectTarget("C:\\Users\\user\\.pi\\agent\\pi-crash.log");
+      expect(target).toEndWith("/.praana/logs/pi-crash.log");
+    });
+
+    it("rejects paths whose final directory is not .pi/agent", () => {
+      expect(getPiTuiLogRedirectTarget("/home/user/.pi/other/pi-crash.log")).toBeUndefined();
+      expect(getPiTuiLogRedirectTarget("/home/user/.praana/logs/pi-crash.log")).toBeUndefined();
+    });
+  });
+
+  describe("rewritePiTuiCrashErrorMessage", () => {
+    it("rewrites the crash log path in pi-tui error messages", () => {
+      const original = "Fatal: TUI crashed. Debug log written to: /home/user/.pi/agent/pi-crash.log";
+      const rewritten = rewritePiTuiCrashErrorMessage(original);
+      expect(rewritten).toEndWith("/.praana/logs/pi-crash.log");
+      expect(rewritten).not.toInclude("/.pi/agent/");
+    });
+
+    it("leaves unrelated messages unchanged", () => {
+      const msg = "Something else went wrong";
+      expect(rewritePiTuiCrashErrorMessage(msg)).toBe(msg);
     });
   });
 
@@ -80,6 +115,27 @@ describe("redirect-pi-logs", () => {
       expect(fs.existsSync(piPath)).toBe(false);
     });
 
+    it("redirects fs.promises.writeFile for the crash log", async () => {
+      installPiTuiLogRedirect();
+      const piPath = join(tmpHome, ".pi", "agent", "pi-crash.log");
+      await fs.promises.writeFile(piPath, "promise crash data");
+      const praanaPath = join(tmpHome, ".praana", "logs", "pi-crash.log");
+      expect(fs.existsSync(praanaPath)).toBe(true);
+      expect(fs.readFileSync(praanaPath, "utf8")).toBe("promise crash data");
+      expect(fs.existsSync(piPath)).toBe(false);
+    });
+
+    it("redirects fs.promises.appendFile for the debug log", async () => {
+      installPiTuiLogRedirect();
+      const piPath = join(tmpHome, ".pi", "agent", "pi-debug.log");
+      await fs.promises.appendFile(piPath, "promise line 1\n");
+      await fs.promises.appendFile(piPath, "promise line 2\n");
+      const praanaPath = join(tmpHome, ".praana", "logs", "pi-debug.log");
+      expect(fs.existsSync(praanaPath)).toBe(true);
+      expect(fs.readFileSync(praanaPath, "utf8")).toBe("promise line 1\npromise line 2\n");
+      expect(fs.existsSync(piPath)).toBe(false);
+    });
+
     it("leaves other writes untouched", () => {
       installPiTuiLogRedirect();
       const otherPath = join(tmpHome, "other.log");
@@ -96,6 +152,18 @@ describe("redirect-pi-logs", () => {
       expect(isPiTuiLogRedirectInstalled()).toBe(false);
       uninstallPiTuiLogRedirect();
       expect(isPiTuiLogRedirectInstalled()).toBe(false);
+    });
+
+    it("restores fs.promises methods on uninstall", async () => {
+      installPiTuiLogRedirect();
+      uninstallPiTuiLogRedirect();
+      const piAgentDir = join(tmpHome, ".pi", "agent");
+      fs.mkdirSync(piAgentDir, { recursive: true });
+      const piPath = join(piAgentDir, "pi-crash.log");
+      fs.writeFileSync(piPath, "should stay here");
+      expect(fs.existsSync(piPath)).toBe(true);
+      await fs.promises.appendFile(join(piAgentDir, "pi-debug.log"), "should stay");
+      expect(fs.existsSync(join(piAgentDir, "pi-debug.log"))).toBe(true);
     });
   });
 });
