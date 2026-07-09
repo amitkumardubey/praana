@@ -1,6 +1,13 @@
 /**
  * pi-tui TUI entry — ambient intelligence layout (design §5).
  */
+import { installPiTuiLogRedirect } from "./redirect-pi-logs.js";
+import { appHomePath } from "../../app-identity.js";
+
+// Install before pi-tui imports fs so its hardcoded ~/.pi/agent crash/debug
+// logs are redirected to ~/.praana/logs.
+installPiTuiLogRedirect();
+
 import {
   TUI,
   ProcessTerminal,
@@ -398,5 +405,16 @@ export async function runTui(
     process.exit(0);
   }
 
-  tui.start();
+  try {
+    tui.start();
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Debug log written to:")) {
+      const praanaCrashLog = appHomePath("logs", "pi-crash.log");
+      err.message = err.message.replace(
+        /Debug log written to: .+\.pi\/agent\/pi-crash\.log/,
+        `Debug log written to: ${praanaCrashLog}`,
+      );
+    }
+    throw err;
+  }
 }
