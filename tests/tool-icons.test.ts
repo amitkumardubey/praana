@@ -208,6 +208,25 @@ describe("formatTuiGlanceLine", () => {
     expect(line).toContain("in 12k");
     expect(line).toContain("out 3.4k");
   });
+
+  it("omits session token breakdown when showCost is false even with non-zero totals", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
+      { showCost: false },
+    );
+    expect(line).not.toContain("in 12k");
+    expect(line).not.toContain("out 3.4k");
+    expect(line).toContain("ctx");
+  });
+
+  it("formats ctx percent without a window denominator when contextWindowTokens is zero", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, contextUsedTokens: 12_000, contextWindowTokens: 0 },
+      { showCost: false },
+    );
+    expect(line).toContain("ctx 0%");
+    expect(line).not.toContain("/");
+  });
 });
 
 describe("formatTuiIdentityLine", () => {

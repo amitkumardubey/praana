@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import chalk from "chalk";
 import { StateGraph } from "../src/state-graph.js";
 import {
   formatTokenCount,
@@ -7,6 +8,7 @@ import {
   formatModelStatusLabel,
   getCurrentTaskTitle,
   formatStatusBarLines,
+  formatStatusLine,
   buildStatusBarInput,
   formatSessionTokenBreakdown,
 } from "../src/status-bar.js";
@@ -161,5 +163,85 @@ describe("status-bar", () => {
       contextWindowTokens: 200_000,
     });
     expect(input.contextUsedTokens).toBe(1000);
+  });
+
+  it("formatStatusLine includes repo, model, ctx threshold, and separators", () => {
+    const line = formatStatusLine({
+      model: "openrouter/claude-opus-4.8",
+      repoPath: "/home/user/proj",
+      cwd: "/home/user/proj",
+      branch: "main",
+      debug: false,
+      thinking: false,
+      memoryEnabled: true,
+      incognito: false,
+      contextUsedTokens: 95_000,
+      contextWindowTokens: 100_000,
+      memoryStats: { active: 3, soft: 1, hard: 0 },
+      skills: ["a", "b"],
+      loadedSkills: null,
+      currentTask: "ship tokens",
+      agentsContextLoaded: false,
+      sessionInputTokens: 12_000,
+      sessionOutputTokens: 3_400,
+    });
+
+    expect(line).toContain("proj · main");
+    expect(line).toContain("openrouter · claude-opus-4.8");
+    expect(line).toContain("ctx 95k/100k 95%");
+    expect(line).toContain("skills 2");
+    expect(line).toContain("state 3A·1S");
+    expect(line).toContain("task ship tokens");
+    expect(line.split("·").length).toBeGreaterThan(4);
+  });
+
+  it("formatStatusLine colours ctx yellow above 70% and red above 90%", () => {
+    const prevLevel = chalk.level;
+    chalk.level = 1;
+    try {
+      const yellow = formatStatusLine({
+        model: "gpt-4o",
+        repoPath: "/tmp/praana",
+        cwd: "/tmp/praana",
+        branch: null,
+        debug: false,
+        thinking: false,
+        memoryEnabled: true,
+        incognito: false,
+        contextUsedTokens: 80_000,
+        contextWindowTokens: 100_000,
+        memoryStats: { active: 0, soft: 0, hard: 0 },
+        skills: [],
+        loadedSkills: null,
+        currentTask: null,
+        agentsContextLoaded: false,
+        sessionInputTokens: 0,
+        sessionOutputTokens: 0,
+      });
+      const red = formatStatusLine({
+        model: "gpt-4o",
+        repoPath: "/tmp/praana",
+        cwd: "/tmp/praana",
+        branch: null,
+        debug: false,
+        thinking: false,
+        memoryEnabled: true,
+        incognito: false,
+        contextUsedTokens: 95_000,
+        contextWindowTokens: 100_000,
+        memoryStats: { active: 0, soft: 0, hard: 0 },
+        skills: [],
+        loadedSkills: null,
+        currentTask: null,
+        agentsContextLoaded: false,
+        sessionInputTokens: 0,
+        sessionOutputTokens: 0,
+      });
+
+      expect(yellow).toContain("\x1b[33m");
+      expect(red).toContain("\x1b[31m");
+    } finally {
+      chalk.level = prevLevel;
+    }
   });
 });

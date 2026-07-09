@@ -49,14 +49,20 @@ function parseProviderUsage(message: unknown): ProviderUsage | null {
   if (typeof usage !== "object" || usage === null) return null;
   const u = usage as Record<string, unknown>;
   if (
-    typeof u.input === "number" &&
-    typeof u.output === "number" &&
-    typeof u.totalTokens === "number"
+    Number.isFinite(u.input) &&
+    Number.isFinite(u.output) &&
+    Number.isFinite(u.totalTokens) &&
+    (u.input as number) >= 0 &&
+    (u.output as number) >= 0 &&
+    (u.totalTokens as number) >= 0
   ) {
+    const input = u.input as number;
+    const output = u.output as number;
+    const totalTokens = u.totalTokens as number;
     // Some providers / SDKs initialise a placeholder usage struct with all zeros
     // when usage metadata is unavailable in streaming mode.
-    if (u.input === 0 && u.output === 0 && u.totalTokens === 0) return null;
-    return { input: u.input, output: u.output, totalTokens: u.totalTokens };
+    if (input === 0 && output === 0 && totalTokens === 0) return null;
+    return { input, output, totalTokens };
   }
   return null;
 }

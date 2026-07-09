@@ -4,6 +4,11 @@
  * Why: lets us verify PRAANA's heuristic token fallback when provider usage
  * metadata is unavailable in streaming responses.
  *
+ * Environment:
+ * - `MOCK_OPENAI_NO_USAGE_HOST` (default: `127.0.0.1`)
+ * - `MOCK_OPENAI_NO_USAGE_PORT` (default: `9999`)
+ * - `MOCK_OPENAI_NO_USAGE_MODEL` (default: `mock/no-usage`)
+ *
  * Endpoints:
  * - GET  /v1/models
  * - POST /v1/chat/completions (SSE streaming)
@@ -52,11 +57,11 @@ function extractUserText(payload: any): string {
 }
 
 function chooseReply(userText: string): string {
-  // Keep deterministic-ish so local runs are stable.
   const m = userText.match(/exactly:\s*([^\n\r]+)/i);
   if (m?.[1]) return m[1].trim();
+  // Explicit "say ok" phrasing for manual smoke tests.
   if (/^say\s+ok\b/i.test(userText.trim())) return "ok";
-  return "ok";
+  return "mock-response";
 }
 
 const port = Number(process.env.MOCK_OPENAI_NO_USAGE_PORT ?? "9999");
@@ -64,104 +69,119 @@ const host = process.env.MOCK_OPENAI_NO_USAGE_HOST ?? "127.0.0.1";
 const modelId = process.env.MOCK_OPENAI_NO_USAGE_MODEL ?? "mock/no-usage";
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
-  const path = url.pathname;
+  try {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
+    const path = url.pathname;
 
-  // CORS / preflight (helps if someone curls from a browser-like env).
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  if (req.method === "OPTIONS") return res.end();
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    if (req.method === "OPTIONS") return res.end();
 
-  if (req.method === "GET" && path === "/v1/models") {
-    return sendJson(res, 200, {
-      object: "list",
-      data: [
-        {
-          id: modelId,
-          object: "model",
-          created: Math.floor(Date.now() / 1000),
-          owned_by: "mock",
-        },
-      ],
-    });
-  }
-
-  if (req.method === "POST" && path === "/v1/chat/completions") {
-    const raw = await readBody(req);
-    let payload: any = {};
-    try {
-      payload = raw ? JSON.parse(raw) : {};
-    } catch {
-      return sendJson(res, 400, { error: { message: "Invalid JSON body" } });
-    }
-
-    const wantsStream = payload?.stream === true;
-    const reply = chooseReply(extractUserText(payload));
-    const id = `chatcmpl-${randomUUID()}`;
-    const created = Math.floor(Date.now() / 1000);
-    const model = typeof payload?.model === "string" ? payload.model : modelId;
-
-    if (!wantsStream) {
-      // Still omit usage.
+    if (req.method === "GET" && path === "/v1/models") {
       return sendJson(res, 200, {
-        id,
-        object: "chat.completion",
-        created,
-        model,
-        choices: [
+        object: "list",
+        data: [
           {
-            index: 0,
-            message: { role: "assistant", content: reply },
-            finish_reason: "stop",
+            id: modelId,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "mock",
           },
         ],
       });
     }
 
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
+    if (req.method === "POST" && path === "/v1/chat/completions") {
+      const raw = await readBody(req);
+      let payload: any = {};
+      try {
+        payload = raw ? JSON.parse(raw) : {};
+      } catch {
+        return sendJson(res, 400, { error: { message: "Invalid JSON body" } });
+      }
 
-    // First chunk
-    sendSse(res, {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
-    });
+      const wantsStream = payload?.stream === true;
+      const reply = chooseReply(extractUserText(payload));
+      const id = `chatcmpl-${randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+      const model = typeof payload?.model === "string" ? payload.model : modelId;
 
-    // Token-ish chunking for realism
-    const parts = reply.length <= 4 ? [reply] : reply.split(/(\s+)/).filter(Boolean);
-    for (const part of parts) {
+      if (!wantsStream) {
+        return sendJson(res, 200, {
+          id,
+          object: "chat.completion",
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: reply },
+              finish_reason: "stop",
+            },
+          ],
+        });
+      }
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+
       sendSse(res, {
         id,
         object: "chat.completion.chunk",
         created,
         model,
-        choices: [{ index: 0, delta: { content: part }, finish_reason: null }],
+        choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
       });
+
+      const parts = reply.length <= 4 ? [reply] : reply.split(/(\s+)/).filter(Boolean);
+      for (const part of parts) {
+        sendSse(res, {
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [{ index: 0, delta: { content: part }, finish_reason: null }],
+        });
+      }
+
+      sendSse(res, {
+        id,
+        object: "chat.completion.chunk",
+        created,
+        model,
+        choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      });
+      res.write("data: [DONE]\n\n");
+      return res.end();
     }
 
-    // Final chunk with finish_reason but NO usage
-    sendSse(res, {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    });
-    res.write("data: [DONE]\n\n");
-    return res.end();
+    return sendJson(res, 404, { error: { message: `No route: ${req.method ?? "?"} ${path}` } });
+  } catch (err) {
+    if (!res.headersSent) {
+      sendJson(res, 500, {
+        error: { message: err instanceof Error ? err.message : "Internal server error" },
+      });
+    } else {
+      res.end();
+    }
   }
-
-  return sendJson(res, 404, { error: { message: `No route: ${req.method ?? "?"} ${path}` } });
 });
+
+server.on("error", (err) => {
+  console.error("[mock-openai-no-usage] server error:", err);
+  process.exit(1);
+});
+
+function shutdown(): void {
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 server.listen(port, host, () => {
-  // eslint-disable-next-line no-console
   console.log(`[mock-openai-no-usage] listening on http://${host}:${port}/v1 (model=${modelId})`);
 });
-

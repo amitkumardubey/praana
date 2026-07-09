@@ -1,12 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
-import { PiTuiSink } from "../src/ui/tui/sink.js";
+import { PiTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import type { ToastRegion } from "../src/ui/tui/toast-region.js";
 
-function makeSink(
-  extra: { onSlashCommandResult?: (lines: string[]) => void } = {},
-) {
+function makeSink(extra: Partial<SinkOpts> = {}) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
   const persistEntry = mock(() => {});
@@ -104,6 +102,18 @@ describe("PiTuiSink", () => {
     });
     expect(onLiveContextUsage).toHaveBeenLastCalledWith(8000);
     expect(onProviderUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to ctxUsedTokens before provider usage arrives", () => {
+    const onLiveContextUsage = mock((_: number) => {});
+    const { sink } = makeSink({
+      onLiveContextUsage,
+      ctxUsedTokens: () => 1000,
+    });
+
+    sink.nextGroup();
+    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
+    expect(onLiveContextUsage).toHaveBeenCalledWith(1010);
   });
 
   it("routes slash command output to the overlay callback", () => {

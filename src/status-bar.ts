@@ -209,10 +209,18 @@ export function renderStatusBar(input: StatusBarInput): void {
   }
 }
 
-/** One-line status bar — mono colour, text labels, ` · ` separators. */
+/** One-line status bar — mono colour, text labels, ` · ` separators.
+ * Mirrors the TUI footer (StatusBarView): the only colour is the ctx
+ * threshold warning; everything else is dimmed. */
 export function formatStatusLine(input: StatusBarInput): string {
   const { provider, modelShort } = formatModelStatusLabel(input.model);
   const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
+  const pct = input.contextWindowTokens > 0
+    ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100))
+    : 0;
+  const ctxStr = input.contextWindowTokens > 0
+    ? `${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
+    : `${pct}%`;
   const skillsCount = input.skills.length;
   let stateStr = "";
   if (input.memoryStats && (input.memoryStats.active > 0 || input.memoryStats.soft > 0 || input.memoryStats.hard > 0)) {
@@ -226,9 +234,16 @@ export function formatStatusLine(input: StatusBarInput): string {
   const repoStr = formatRepoLabel(input.repoPath, input.cwd);
   const repoLabel = input.branch ? `${repoStr} · ${input.branch}` : repoStr;
 
+  const ctxSeg = pct > 90
+    ? chalk.red(`ctx ${ctxStr}`)
+    : pct > 70
+      ? chalk.yellow(`ctx ${ctxStr}`)
+      : chalk.dim(`ctx ${ctxStr}`);
+
   const parts = [
     chalk.dim(repoLabel),
     chalk.dim(modelLabel),
+    ctxSeg,
   ];
   if (input.thinking) parts.push(chalk.dim("think"));
   if (input.incognito) {
