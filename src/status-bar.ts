@@ -30,6 +30,8 @@ export interface StatusBarInput {
   loadedSkills: string[] | null;
   currentTask: string | null;
   agentsContextLoaded: boolean;
+  sessionInputTokens: number;
+  sessionOutputTokens: number;
 }
 
 /**
@@ -54,6 +56,18 @@ export function formatModelStatusLabel(model: string): {
     };
   }
   return { provider: null, modelShort: model };
+}
+
+/** Compact `in 12k · out 3k` label for session or turn token totals. */
+export function formatSessionTokenBreakdown(
+  inputTokens: number,
+  outputTokens: number,
+): string | null {
+  if (inputTokens <= 0 && outputTokens <= 0) return null;
+  const parts: string[] = [];
+  if (inputTokens > 0) parts.push(`in ${formatTokenCount(inputTokens)}`);
+  if (outputTokens > 0) parts.push(`out ${formatTokenCount(outputTokens)}`);
+  return parts.join(" · ");
 }
 
 /** Format token counts for compact display (e.g. 18400 → "18.4k"). */
@@ -135,12 +149,13 @@ export function buildStatusBarInput(
     loadedSkills: loadedSkillNames,
     currentTask: getCurrentTaskTitle(session.stateGraph),
     agentsContextLoaded: !!session.agentsContext,
+    sessionInputTokens: session.getInputTokens(),
+    sessionOutputTokens: session.getOutputTokens(),
   };
 }
 
 /** Render status bar lines (no trailing newline on last line — caller adds newline). */
 export function formatStatusBarLines(input: StatusBarInput): string[] {
-  const ctx = `${formatTokenCount(input.contextUsedTokens)} / ${formatTokenCount(input.contextWindowTokens)}`;
   const repo = formatRepoLabel(input.repoPath, input.cwd);
   const repoLabel = input.branch ? `${repo} · ${input.branch}` : repo;
   const memFlag = input.incognito
@@ -154,7 +169,6 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
   const statusModelLabel = statusProvider ? `${statusProvider} · ${statusModelShort}` : statusModelShort;
   const line1 = [
     chalk.cyan(statusModelLabel),
-    chalk.dim(ctx),
     chalk.yellow(formatMode(input.debug, input.thinking)),
     chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,
@@ -167,8 +181,6 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
     `${input.memoryStats.hard} hard`,
   ].join(chalk.dim(" · "));
 
-  const line3 = [chalk.bold("Context:"), ctx].join(" ");
-
   const skillsLabel =
     input.skills.length === 0
       ? chalk.dim("(none — add skills/*.md to project root)")
@@ -177,14 +189,14 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
         : input.loadedSkills.length > 0
           ? `${input.skills.length} skills (loaded: ${input.loadedSkills.join(", ")})`
           : `${input.skills.length} skills (none loaded)`;
-  const line4 = [chalk.bold("Skills:"), skillsLabel].join(" ");
+  const line3 = [chalk.bold("Skills:"), skillsLabel].join(" ");
 
   const taskLabel = input.currentTask
     ? chalk.white(input.currentTask)
     : chalk.dim("(none — create_task)");
-  const line5 = [chalk.bold("Current task:"), taskLabel].join(" ");
+  const line4 = [chalk.bold("Current task:"), taskLabel].join(" ");
 
-  return [line1, line2, line3, line4, line5];
+  return [line1, line2, line3, line4];
 }
 
 /** Write the status bar to stderr (no-op when not a TTY). */
@@ -222,7 +234,6 @@ export function formatStatusLine(input: StatusBarInput): string {
   const repoStr = formatRepoLabel(input.repoPath, input.cwd);
   const repoLabel = input.branch ? `${repoStr} · ${input.branch}` : repoStr;
 
-  // ctx keeps its threshold colour as a fill-up warning; everything else mono.
   const ctxSeg = pct > 90
     ? chalk.red(`ctx ${ctxStr}`)
     : pct > 70

@@ -1,17 +1,19 @@
 /**
  * Bottom glance bar formatter — design §5 ambient chrome.
  *
- * Example: ctx 43% · state 3A·1S · skills 1 · ~12k tok · think · mem on
+ * Example: ctx 18.4k/128k 14% · wm 3A·1S · skills 1 · in 12k · out 3k · mem on
  */
 import chalk from "chalk";
 import type { StatusBarInput } from "../../../status-bar.js";
-import { formatModelStatusLabel } from "../../../status-bar.js";
+import {
+  formatModelStatusLabel,
+  formatSessionTokenBreakdown,
+  formatTokenCount,
+} from "../../../status-bar.js";
 import { TUI_STYLE } from "../theme.js";
 
 export interface GlanceFormatOpts {
   showCost: boolean;
-  sessionInputTokens?: number;
-  sessionOutputTokens?: number;
 }
 
 export function formatTuiGlanceLine(
@@ -26,14 +28,19 @@ export function formatTuiGlanceLine(
         )
       : 0;
 
+  const ctxLabel =
+    input.contextWindowTokens > 0
+      ? `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
+      : `ctx ${pct}%`;
+
   const ctxSeg =
     pct >= 90
-      ? TUI_STYLE.error(`ctx ${pct}%`)
+      ? TUI_STYLE.error(ctxLabel)
       : pct >= 70
-        ? TUI_STYLE.warning(`ctx ${pct}%`)
+        ? TUI_STYLE.warning(ctxLabel)
         : pct >= 50
-          ? chalk.dim(`ctx ${pct}%`)
-          : TUI_STYLE.success(`ctx ${pct}%`);
+          ? chalk.dim(ctxLabel)
+          : TUI_STYLE.success(ctxLabel);
 
   const parts: string[] = [ctxSeg];
 
@@ -57,12 +64,11 @@ export function formatTuiGlanceLine(
   }
 
   if (opts.showCost) {
-    const inTok = opts.sessionInputTokens ?? 0;
-    const outTok = opts.sessionOutputTokens ?? 0;
-    const total = inTok + outTok;
-    if (total > 0) {
-      parts.push(chalk.dim(`~${formatCompactTokens(total)} tok`));
-    }
+    const breakdown = formatSessionTokenBreakdown(
+      input.sessionInputTokens,
+      input.sessionOutputTokens,
+    );
+    if (breakdown) parts.push(chalk.dim(breakdown));
   }
 
   if (input.thinking) parts.push(chalk.dim("think"));
@@ -101,13 +107,4 @@ function shortenHome(path: string): string {
   if (path === home) return "~";
   if (path.startsWith(home + "/")) return "~" + path.slice(home.length);
   return path;
-}
-
-function formatCompactTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) {
-    const k = n / 1000;
-    return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;
-  }
-  return `${(n / 1_000_000).toFixed(1)}M`;
 }

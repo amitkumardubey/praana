@@ -35,7 +35,8 @@
     "test": "bun test tests/",
     "test:watch": "bun test --watch tests/",
     "test:coverage": "bun test --coverage tests/",
-    "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts"
+    "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts",
+    "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.3",

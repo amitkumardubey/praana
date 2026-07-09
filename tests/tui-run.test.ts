@@ -104,6 +104,8 @@ const fakeStatusBar = {
   loadedSkills: null,
   currentTask: null,
   agentsContextLoaded: false,
+  sessionInputTokens: 0,
+  sessionOutputTokens: 0,
 };
 
 const fakeController = {

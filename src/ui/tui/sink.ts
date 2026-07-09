@@ -2,7 +2,7 @@
  * TurnUiSink → TranscriptContainer routing (design §4 ambient signals).
  */
 import type { TUI } from "@earendil-works/pi-tui";
-import type { TurnUiSink, MemoryBannerStats } from "../../ui-events.js";
+import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
 import type { LogEntry } from "../../logger.js";
 import type { TranscriptContainer } from "./transcript/container.js";
 import type { TranscriptEntry } from "./transcript/model.js";
@@ -17,9 +17,10 @@ export interface SinkOpts {
   onSpinnerMessage: (msg: string) => void;
   ctxWindowTokens: number;
   ctxUsedTokens: () => number;
-  /** Called after each tool result with the cumulative estimated extra tokens
-   *  added this turn. Use to update the glance bar ctx% live. */
-  onLiveContextGrowth?: (extraTokens: number) => void;
+  /** Called after each LLM step with provider-reported context fill, and after
+   *  tool results with the best current context-used estimate for the glance bar. */
+  onLiveContextUsage?: (contextUsedTokens: number) => void;
+  onProviderUsage?: (update: ProviderUsageUpdate) => void;
   /** Getter for the current model label — used in the turn footer. */
   getModel?: () => string;
   projection: TranscriptProjection;
@@ -45,8 +46,10 @@ export class PiTuiSink implements TurnUiSink {
   private editCount = 0;
   private writeCount = 0;
   private ctxBeforePct = 0;
-  /** Cumulative estimated tokens added by tool results this turn. */
-  private extraContextTokens = 0;
+  /** Heuristic growth from tool results not yet reflected in provider usage. */
+  private pendingContextTokens = 0;
+  /** Latest provider-reported request input size for this turn. */
+  private latestProviderContextTokens: number | null = null;
   private assistantStreamId: string | null = null;
   private thinkingStreamId: string | null = null;
   private nextLocalId = 1;
@@ -75,7 +78,8 @@ export class PiTuiSink implements TurnUiSink {
     this.recallQuery = null;
     this.editCount = 0;
     this.writeCount = 0;
-    this.extraContextTokens = 0;
+    this.pendingContextTokens = 0;
+    this.latestProviderContextTokens = null;
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
     this.ctxBeforePct = this.ctxPct(this.opts.ctxUsedTokens());
@@ -155,11 +159,19 @@ export class PiTuiSink implements TurnUiSink {
       this.recallPreview = this.extractRecallPreview(resultText);
     }
 
-    // Estimate context growth from this tool result and notify the glance bar.
-    if (this.opts.onLiveContextGrowth && resultText) {
-      this.extraContextTokens += estimateTokens(resultText);
-      this.opts.onLiveContextGrowth(this.extraContextTokens);
+    // Tool results land in the next LLM request; until provider usage arrives,
+    // extend the live context estimate heuristically from result size.
+    if (this.opts.onLiveContextUsage && resultText) {
+      this.pendingContextTokens += estimateTokens(resultText);
+      this.opts.onLiveContextUsage(this.currentContextUsedTokens());
     }
+  }
+
+  onProviderUsage(update: ProviderUsageUpdate): void {
+    this.latestProviderContextTokens = update.latestContextTokens;
+    this.pendingContextTokens = 0;
+    this.opts.onProviderUsage?.(update);
+    this.opts.onLiveContextUsage?.(this.currentContextUsedTokens());
   }
 
   onDebug(): void {}
@@ -321,6 +333,12 @@ export class PiTuiSink implements TurnUiSink {
     const window = this.opts.ctxWindowTokens;
     if (window <= 0) return 0;
     return Math.min(100, Math.round((usedTokens / window) * 100));
+  }
+
+  private currentContextUsedTokens(): number {
+    const base =
+      this.latestProviderContextTokens ?? this.opts.ctxUsedTokens();
+    return base + this.pendingContextTokens;
   }
 
   private extractRecallPreview(resultText: string): string | null {

@@ -125,6 +125,8 @@ describe("formatTurnFooterDigest", () => {
       },
     });
     expect(line).toContain("2 edits");
+    expect(line).toContain("in 1k");
+    expect(line).toContain("out 200");
     expect(line).toContain("38%→43%");
     expect(line).toContain("9.4s");
   });
@@ -185,14 +187,45 @@ describe("formatTuiGlanceLine", () => {
     loadedSkills: ["a"],
     currentTask: null,
     agentsContextLoaded: false,
+    sessionInputTokens: 0,
+    sessionOutputTokens: 0,
   };
 
-  it("shows ctx percent and state tiers", () => {
+  it("shows ctx usage as tokens, window, and percent", () => {
     const line = formatTuiGlanceLine(base, { showCost: false });
     expect(line).toContain("ctx");
+    expect(line).toContain("43k/100k");
     expect(line).toContain("43%");
     expect(line).toContain("3A");
     expect(line).toContain("mem on");
+  });
+
+  it("shows separate input and output session tokens when showCost is on", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
+      { showCost: true },
+    );
+    expect(line).toContain("in 12k");
+    expect(line).toContain("out 3.4k");
+  });
+
+  it("omits session token breakdown when showCost is false even with non-zero totals", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
+      { showCost: false },
+    );
+    expect(line).not.toContain("in 12k");
+    expect(line).not.toContain("out 3.4k");
+    expect(line).toContain("ctx");
+  });
+
+  it("formats ctx percent without a window denominator when contextWindowTokens is zero", () => {
+    const line = formatTuiGlanceLine(
+      { ...base, contextUsedTokens: 12_000, contextWindowTokens: 0 },
+      { showCost: false },
+    );
+    expect(line).toContain("ctx 0%");
+    expect(line).not.toContain("/");
   });
 });
 
@@ -214,6 +247,8 @@ describe("formatTuiIdentityLine", () => {
       loadedSkills: null,
       currentTask: null,
       agentsContextLoaded: false,
+      sessionInputTokens: 0,
+      sessionOutputTokens: 0,
     });
     expect(line).toContain("praana");
     expect(line).toContain("openrouter");

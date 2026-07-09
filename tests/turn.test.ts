@@ -559,6 +559,7 @@ describe("computeMemoryStats", () => {
 describe("runTurn", () => {
   beforeEach(() => {
     mock.clearAllMocks();
+    (piStream as ReturnType<typeof mock>).mockReset();
 
     // Default mock: a simple text response (no tool calls)
     const mockAsyncGenerator = (async function* () {
@@ -743,6 +744,231 @@ describe("runTurn", () => {
     const outArg = spyOut.mock.calls[0][0] as number;
     expect(outArg).toBeGreaterThan(0);
     expect(session.getOutputTokens()).toBe(outArg);
+  });
+
+  it("uses provider-reported output tokens when usage is present", async () => {
+    const responseText = "Hello from provider";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 100, output: 42, totalTokens: 142 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyIn = spyOn(session, "recordInputTokens");
+    const spyOut = spyOn(session, "recordOutputTokens");
+    const onProviderUsage = mock();
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onProviderUsage },
+    });
+
+    expect(spyIn).toHaveBeenCalledWith(100);
+    expect(spyOut).toHaveBeenCalledWith(42);
+    expect(session.getInputTokens()).toBe(100);
+    expect(session.getOutputTokens()).toBe(42);
+    expect(onProviderUsage).toHaveBeenCalledWith({
+      step: { input: 100, output: 42, totalTokens: 142 },
+      cumulative: { input: 100, output: 42, totalTokens: 142 },
+      latestContextTokens: 100,
+    });
+  });
+
+  it("accumulates provider output tokens across multi-step tool loops", async () => {
+    const firstStep = (async function* () {
+      yield { type: "text_delta", delta: "step one" };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo hi" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "step one" }],
+          usage: { input: 50, output: 10, totalTokens: 60 },
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: " step two" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: " step two" }],
+          usage: { input: 80, output: 15, totalTokens: 95 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const session = makeMockSession();
+    const spyIn = spyOn(session, "recordInputTokens");
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "multi-step");
+
+    expect(spyIn).toHaveBeenCalledTimes(2);
+    expect(spyIn).toHaveBeenNthCalledWith(1, 50);
+    expect(spyIn).toHaveBeenNthCalledWith(2, 80);
+    expect(spyOut).toHaveBeenCalledTimes(2);
+    expect(spyOut).toHaveBeenNthCalledWith(1, 10);
+    expect(spyOut).toHaveBeenNthCalledWith(2, 15);
+    expect(session.getInputTokens()).toBe(130);
+    expect(session.getOutputTokens()).toBe(25);
+  });
+
+  it("falls back to heuristic output tokens when provider usage is incomplete", async () => {
+    const responseText = "fallback estimate";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 100 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    (compileClassicWithMetrics as ReturnType<typeof mock>).mockReturnValue({
+      prompt: "mock prompt",
+      metrics: {
+        totalTokens: 150,
+        systemFrameTokens: 50,
+        agentsContextTokens: 0,
+        skillsCatalogTokens: 0,
+        checkpointTokens: 0,
+        crossSessionTokens: 0,
+        activeStateTokens: 0,
+        peripheralStubsTokens: 0,
+        recentTurnsTokens: 30,
+        currentInputTokens: 20,
+        activeObjectCount: 0,
+        peripheralObjectCount: 0,
+        recentTurnsTruncated: false,
+        memoryTruncated: false,
+        agentsContextTruncated: false,
+        skillsTruncated: false,
+      },
+    });
+
+    const session = makeMockSession();
+    const spyIn = spyOn(session, "recordInputTokens");
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    expect(spyIn).toHaveBeenCalledWith(150);
+    expect(spyIn).not.toHaveBeenCalledWith(100);
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(outArg).not.toBe(100);
+  });
+
+  it("falls back to heuristic output tokens when provider usage is a zero placeholder", async () => {
+    const responseText = "placeholder usage";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 0, output: 0, totalTokens: 0 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(outArg).not.toBe(0);
+  });
+
+  it("ignores non-finite provider usage values and falls back to heuristics", async () => {
+    const responseText = "finite fallback";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: Number.NaN, output: 0, totalTokens: 0 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(Number.isFinite(outArg)).toBe(true);
+  });
+
+  it("preserves partial provider usage when a multi-step turn is interrupted", async () => {
+    const abortController = new AbortController();
+    const firstStep = (async function* () {
+      yield { type: "text_delta", delta: "step one" };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo hi" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "step one" }],
+          usage: { input: 50, output: 10, totalTokens: 60 },
+        },
+      };
+    })();
+    let streamCalls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      streamCalls++;
+      if (streamCalls === 1) return firstStep as any;
+      return (async function* () {})();
+    });
+
+    const session = makeMockSession();
+    const turnPromise = runTurn(session, "multi-step", undefined, {
+      signal: abortController.signal,
+      sink: {
+        onProviderUsage: () => abortController.abort(),
+      },
+    });
+
+    await expect(turnPromise).rejects.toThrow();
+    expect(session.getInputTokens()).toBe(50);
+    expect(session.getOutputTokens()).toBe(10);
   });
 
   it("processes tool calls and returns results", async () => {

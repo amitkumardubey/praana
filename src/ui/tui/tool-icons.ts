@@ -3,7 +3,7 @@
  */
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
-import { formatModelStatusLabel } from "../../status-bar.js";
+import { formatModelStatusLabel, formatSessionTokenBreakdown } from "../../status-bar.js";
 import stripAnsi from "strip-ansi";
 
 const UNICODE_ICONS: Record<string, string> = {
@@ -221,7 +221,7 @@ export function summarizeResultForDisplay(text: string): string {
     const tokenMatch = text.match(/([\d,]+)\s*tokens?\b/i);
     const id = artifactMatch[1]!;
     return tokenMatch
-      ? `artifact ${id.slice(0, 12)}… · ${tokenMatch[1]!.replace(/,/g, "")} tok`
+      ? `artifact ${id.slice(0, 12)}… · ~${tokenMatch[1]!.replace(/,/g, "")} tok`
       : `artifact ${id.slice(0, 16)}…`;
   }
 
@@ -337,6 +337,14 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
     } else {
       parts.push(`ctx ${input.ctxAfterPct}%`);
     }
+  }
+
+  if (input.stats) {
+    const turnTokens = formatSessionTokenBreakdown(
+      input.stats.promptTokens,
+      input.stats.outputTokens,
+    );
+    if (turnTokens) parts.push(turnTokens);
   }
 
   if (input.stats && input.stats.recallCalls > 0) {

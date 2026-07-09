@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import chalk from "chalk";
 import { StateGraph } from "../src/state-graph.js";
 import {
   formatTokenCount,
@@ -7,7 +8,9 @@ import {
   formatModelStatusLabel,
   getCurrentTaskTitle,
   formatStatusBarLines,
+  formatStatusLine,
   buildStatusBarInput,
+  formatSessionTokenBreakdown,
 } from "../src/status-bar.js";
 import type { Session } from "../src/session.js";
 
@@ -16,6 +19,13 @@ describe("status-bar", () => {
     expect(formatTokenCount(500)).toBe("500");
     expect(formatTokenCount(18400)).toBe("18.4k");
     expect(formatTokenCount(128000)).toBe("128k");
+  });
+
+  it("formats session token breakdown with separate in and out", () => {
+    expect(formatSessionTokenBreakdown(12_000, 3_400)).toBe("in 12k · out 3.4k");
+    expect(formatSessionTokenBreakdown(0, 200)).toBe("out 200");
+    expect(formatSessionTokenBreakdown(500, 0)).toBe("in 500");
+    expect(formatSessionTokenBreakdown(0, 0)).toBeNull();
   });
 
   it("formats repo label for monorepo subdirs", () => {
@@ -70,17 +80,19 @@ describe("status-bar", () => {
       loadedSkills: null,
       currentTask: "implement auth middleware",
       agentsContextLoaded: true,
+      sessionInputTokens: 12_000,
+      sessionOutputTokens: 3_400,
     });
-    expect(lines.length).toBe(5);
+    expect(lines.length).toBe(4);
     expect(lines[1]).toContain("8 active");
     expect(lines[1]).toContain("23 soft");
     expect(lines[1]).toContain("91 hard");
-    expect(lines[2]).toContain("18.4k");
-    expect(lines[2]).toContain("128k");
-    expect(lines[3]).toContain("2 skills");
-    expect(lines[4]).toContain("implement auth middleware");
-    expect(lines[0]).toContain("praana");
+    expect(lines[2]).toContain("2 skills");
+    expect(lines[3]).toContain("implement auth middleware");
+    expect(lines[0]).toContain("gpt-4o");
     expect(lines[0]).toContain("feat/foo");
+    expect(lines[0]).not.toContain("18.4k");
+    expect(lines[0]).not.toContain("in 12k");
   });
 
   it("buildStatusBarInput reads session metrics and memory", () => {
@@ -108,6 +120,8 @@ describe("status-bar", () => {
         agentsContextTruncated: false,
         skillsTruncated: false,
       }),
+      getInputTokens: () => 500,
+      getOutputTokens: () => 120,
       isIncognito: () => false,
       skills: [],
       stateGraph: new StateGraph(),
@@ -119,6 +133,8 @@ describe("status-bar", () => {
       thinking: false,
     });
     expect(input.contextUsedTokens).toBe(9000);
+    expect(input.sessionInputTokens).toBe(500);
+    expect(input.sessionOutputTokens).toBe(120);
     expect(input.memoryEnabled).toBe(false);
     expect(input.memoryStats).toEqual({ active: 1, soft: 2, hard: 3 });
   });
@@ -133,6 +149,8 @@ describe("status-bar", () => {
       getGitBranch: () => null,
       getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
       getLastCompileMetrics: () => null,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
       isIncognito: () => false,
       skills: [],
       stateGraph: new StateGraph(),
@@ -145,5 +163,85 @@ describe("status-bar", () => {
       contextWindowTokens: 200_000,
     });
     expect(input.contextUsedTokens).toBe(1000);
+  });
+
+  it("formatStatusLine includes repo, model, ctx threshold, and separators", () => {
+    const line = formatStatusLine({
+      model: "openrouter/claude-opus-4.8",
+      repoPath: "/home/user/proj",
+      cwd: "/home/user/proj",
+      branch: "main",
+      debug: false,
+      thinking: false,
+      memoryEnabled: true,
+      incognito: false,
+      contextUsedTokens: 95_000,
+      contextWindowTokens: 100_000,
+      memoryStats: { active: 3, soft: 1, hard: 0 },
+      skills: ["a", "b"],
+      loadedSkills: null,
+      currentTask: "ship tokens",
+      agentsContextLoaded: false,
+      sessionInputTokens: 12_000,
+      sessionOutputTokens: 3_400,
+    });
+
+    expect(line).toContain("proj · main");
+    expect(line).toContain("openrouter · claude-opus-4.8");
+    expect(line).toContain("ctx 95k/100k 95%");
+    expect(line).toContain("skills 2");
+    expect(line).toContain("state 3A·1S");
+    expect(line).toContain("task ship tokens");
+    expect(line.split("·").length).toBeGreaterThan(4);
+  });
+
+  it("formatStatusLine colours ctx yellow above 70% and red above 90%", () => {
+    const prevLevel = chalk.level;
+    chalk.level = 1;
+    try {
+      const yellow = formatStatusLine({
+        model: "gpt-4o",
+        repoPath: "/tmp/praana",
+        cwd: "/tmp/praana",
+        branch: null,
+        debug: false,
+        thinking: false,
+        memoryEnabled: true,
+        incognito: false,
+        contextUsedTokens: 80_000,
+        contextWindowTokens: 100_000,
+        memoryStats: { active: 0, soft: 0, hard: 0 },
+        skills: [],
+        loadedSkills: null,
+        currentTask: null,
+        agentsContextLoaded: false,
+        sessionInputTokens: 0,
+        sessionOutputTokens: 0,
+      });
+      const red = formatStatusLine({
+        model: "gpt-4o",
+        repoPath: "/tmp/praana",
+        cwd: "/tmp/praana",
+        branch: null,
+        debug: false,
+        thinking: false,
+        memoryEnabled: true,
+        incognito: false,
+        contextUsedTokens: 95_000,
+        contextWindowTokens: 100_000,
+        memoryStats: { active: 0, soft: 0, hard: 0 },
+        skills: [],
+        loadedSkills: null,
+        currentTask: null,
+        agentsContextLoaded: false,
+        sessionInputTokens: 0,
+        sessionOutputTokens: 0,
+      });
+
+      expect(yellow).toContain("\x1b[33m");
+      expect(red).toContain("\x1b[31m");
+    } finally {
+      chalk.level = prevLevel;
+    }
   });
 });

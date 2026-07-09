@@ -34,6 +34,51 @@ import {
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
 
+type ProviderUsage = { input: number; output: number; totalTokens: number };
+
+export type ProviderUsageUpdate = {
+  step: ProviderUsage;
+  cumulative: ProviderUsage;
+  /** Latest API request input size — best proxy for context-window fill. */
+  latestContextTokens: number;
+};
+
+function parseProviderUsage(message: unknown): ProviderUsage | null {
+  if (typeof message !== "object" || message === null) return null;
+  const usage = (message as { usage?: unknown }).usage;
+  if (typeof usage !== "object" || usage === null) return null;
+  const u = usage as Record<string, unknown>;
+  if (
+    Number.isFinite(u.input) &&
+    Number.isFinite(u.output) &&
+    Number.isFinite(u.totalTokens) &&
+    (u.input as number) >= 0 &&
+    (u.output as number) >= 0 &&
+    (u.totalTokens as number) >= 0
+  ) {
+    const input = u.input as number;
+    const output = u.output as number;
+    const totalTokens = u.totalTokens as number;
+    // Some providers / SDKs initialise a placeholder usage struct with all zeros
+    // when usage metadata is unavailable in streaming mode.
+    if (input === 0 && output === 0 && totalTokens === 0) return null;
+    return { input, output, totalTokens };
+  }
+  return null;
+}
+
+function addProviderUsage(
+  acc: ProviderUsage | null,
+  step: ProviderUsage,
+): ProviderUsage {
+  if (!acc) return { ...step };
+  return {
+    input: acc.input + step.input,
+    output: acc.output + step.output,
+    totalTokens: acc.totalTokens + step.totalTokens,
+  };
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -260,9 +305,6 @@ export async function runTurn(
 
   session.setLastCompileMetrics(promptMetrics);
 
-  // Track input tokens
-  session.recordInputTokens(promptMetrics.totalTokens);
-
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
     const promptDir = session.promptDir;
@@ -290,6 +332,8 @@ export async function runTurn(
   let stepIndex = 0;
   let lastStreamReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop";
   let lastLlmErrorMessage: string | undefined;
+  let providerUsage: ProviderUsage | null = null;
+  let recordedProviderUsage = false;
   const history: Message[] = [
     {
       role: "user",
@@ -366,6 +410,18 @@ export async function runTurn(
       if (event.type === "done") {
         finalReason = event.reason;
         finalMessage = event.message as unknown as Message;
+        const stepUsage = parseProviderUsage(event.message);
+        if (stepUsage) {
+          recordedProviderUsage = true;
+          providerUsage = addProviderUsage(providerUsage, stepUsage);
+          session.recordInputTokens(stepUsage.input);
+          session.recordOutputTokens(stepUsage.output);
+          s.onProviderUsage?.({
+            step: stepUsage,
+            cumulative: providerUsage,
+            latestContextTokens: stepUsage.input,
+          });
+        }
       }
       if (event.type === "error") {
         finalReason = event.reason;
@@ -556,6 +612,8 @@ export async function runTurn(
       stateBeforeTurn,
       classicMode,
       s,
+      providerUsage,
+      recordedProviderUsage,
     );
   }
 
@@ -608,9 +666,12 @@ export async function runTurn(
     payload: { text: fullResponse },
   });
 
-  // Track output tokens (estimate from response)
-  const outputTokens = estimateTokens(fullResponse);
-  session.recordOutputTokens(outputTokens);
+  const turnInputTokens = providerUsage?.input ?? promptMetrics.totalTokens;
+  const turnOutputTokens = providerUsage?.output ?? estimateTokens(fullResponse);
+  if (!recordedProviderUsage) {
+    session.recordInputTokens(turnInputTokens);
+    session.recordOutputTokens(turnOutputTokens);
+  }
 
   // 6b. Backfill deferred distillations and persist ledger + turn digest
   if (session.contextEngine && stateBeforeTurn) {
@@ -618,7 +679,7 @@ export async function runTurn(
     const turnRecord = turnRecorder.toRecord(
       fullResponse,
       session.getTurnCount(),
-      promptMetrics.totalTokens + outputTokens,
+      turnInputTokens + turnOutputTokens,
     );
     session.contextEngine.appendTurn(turnRecord);
     session.contextEngine.processTurnExtraction({
@@ -641,7 +702,7 @@ export async function runTurn(
   session.persistStateGraphCheckpoint();
 
   // 8. Memory banner — count recall calls & hits from this turn's events
-  const stats = computeMemoryStats(session, autoHydrated.length, promptMetrics.totalTokens, outputTokens);
+  const stats = computeMemoryStats(session, autoHydrated.length, turnInputTokens, turnOutputTokens);
   s.onMemoryBanner?.(stats);
 
   return fullResponse;
@@ -656,12 +717,16 @@ function finalizeInterruptedTurn(
   userInput: string,
   stateBeforeTurn: ReturnType<ContextEngine["captureStateSnapshot"]> | undefined,
   classicMode: boolean,
-  sink?: TurnUiSink
+  sink?: TurnUiSink,
+  providerUsage: ProviderUsage | null = null,
+  recordedProviderUsage = false,
 ): never {
   const trimmed = partialResponse.trim();
   const messageText = trimmed
     ? `${trimmed}\n\n[interrupted]`
     : "[interrupted]";
+  const turnInputTokens = providerUsage?.input ?? promptTokens;
+  const turnOutputTokens = providerUsage?.output ?? estimateTokens(trimmed);
 
   session.eventLog.append({
     kind: "system_note",
@@ -675,12 +740,17 @@ function finalizeInterruptedTurn(
     payload: { text: messageText },
   });
 
+  if (!recordedProviderUsage) {
+    session.recordInputTokens(turnInputTokens);
+    session.recordOutputTokens(turnOutputTokens);
+  }
+
   if (session.contextEngine && stateBeforeTurn) {
     void session.contextEngine.flushDeferredDistillation();
     const turnRecord = turnRecorder.toRecord(
       messageText,
       session.getTurnCount(),
-      promptTokens + estimateTokens(trimmed),
+      turnInputTokens + turnOutputTokens,
     );
     session.contextEngine.appendTurn(turnRecord);
     session.contextEngine.processTurnExtraction({
@@ -701,7 +771,7 @@ function finalizeInterruptedTurn(
   }
   session.persistStateGraphCheckpoint();
 
-  const stats = computeMemoryStats(session, autoHydrated, promptTokens, estimateTokens(trimmed));
+  const stats = computeMemoryStats(session, autoHydrated, turnInputTokens, turnOutputTokens);
   if (sink) sink.onMemoryBanner?.(stats);
   else printMemoryBanner(stats);
 

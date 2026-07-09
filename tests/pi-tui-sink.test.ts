@@ -1,12 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
-import { PiTuiSink } from "../src/ui/tui/sink.js";
+import { PiTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import type { ToastRegion } from "../src/ui/tui/toast-region.js";
 
-function makeSink(
-  extra: { onSlashCommandResult?: (lines: string[]) => void } = {},
-) {
+function makeSink(extra: Partial<SinkOpts> = {}) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
   const persistEntry = mock(() => {});
@@ -75,6 +73,47 @@ describe("PiTuiSink", () => {
       "assistant",
       "turn_footer",
     ]);
+  });
+
+  it("uses provider context for live usage and resets pending tool growth", () => {
+    const onLiveContextUsage = mock((_: number) => {});
+    const onProviderUsage = mock((_: unknown) => {});
+    const { sink } = makeSink({
+      onLiveContextUsage,
+      onProviderUsage,
+      ctxUsedTokens: () => 1000,
+    });
+
+    sink.nextGroup();
+    sink.onProviderUsage({
+      step: { input: 5000, output: 50, totalTokens: 5050 },
+      cumulative: { input: 5000, output: 50, totalTokens: 5050 },
+      latestContextTokens: 5000,
+    });
+    expect(onLiveContextUsage).toHaveBeenCalledWith(5000);
+
+    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
+    expect(onLiveContextUsage).toHaveBeenLastCalledWith(5010);
+
+    sink.onProviderUsage({
+      step: { input: 8000, output: 120, totalTokens: 8120 },
+      cumulative: { input: 13000, output: 170, totalTokens: 13170 },
+      latestContextTokens: 8000,
+    });
+    expect(onLiveContextUsage).toHaveBeenLastCalledWith(8000);
+    expect(onProviderUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to ctxUsedTokens before provider usage arrives", () => {
+    const onLiveContextUsage = mock((_: number) => {});
+    const { sink } = makeSink({
+      onLiveContextUsage,
+      ctxUsedTokens: () => 1000,
+    });
+
+    sink.nextGroup();
+    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
+    expect(onLiveContextUsage).toHaveBeenCalledWith(1010);
   });
 
   it("routes slash command output to the overlay callback", () => {
