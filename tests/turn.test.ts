@@ -297,6 +297,11 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getCompileScoreRecord() { return undefined; },
     getLastPressureMode() { return "normal"; },
     getLastPressureRatio() { return 0; },
+    getLastWeightedTokens() { return this._lastCompileMetrics?.totalTokens ?? 0; },
+    getLastRawPressureRatio() { return 0; },
+    _displayContextSnapshot: null,
+    getDisplayContextSnapshot() { return this._displayContextSnapshot; },
+    setDisplayContextSnapshot(s: any) { this._displayContextSnapshot = s; },
     setLastKnownTaskType() {},
     setLastUserInput() {},
     getLastUserInput() { return ""; },
@@ -780,6 +785,41 @@ describe("runTurn", () => {
       cumulative: { input: 100, output: 42, totalTokens: 142 },
       latestContextTokens: 100,
     });
+  });
+
+  it("emits context baseline, history deltas, and commit snapshots", async () => {
+    const responseText = "Hello from provider";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "reason about greeting" },
+            { type: "text", text: responseText },
+          ],
+          usage: { input: 100, output: 42, totalTokens: 142 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const onTurnContextBaseline = mock();
+    const onContextHistoryDelta = mock();
+    const onTurnContextCommit = mock();
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onTurnContextBaseline, onContextHistoryDelta, onTurnContextCommit },
+    });
+
+    expect(onTurnContextBaseline).toHaveBeenCalledTimes(1);
+    expect(onContextHistoryDelta).toHaveBeenCalled();
+    expect(onTurnContextCommit).toHaveBeenCalledTimes(1);
+    expect(session.getDisplayContextSnapshot()).not.toBeNull();
+    expect(session.getDisplayContextSnapshot()!.usedTokens).toBeGreaterThan(0);
   });
 
   it("accumulates provider output tokens across multi-step tool loops", async () => {

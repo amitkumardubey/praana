@@ -7,8 +7,10 @@ import {
   stopSpinner,
 } from "./ui.js";
 import type { LogEntry } from "./logger.js";
+import type { ContextDisplaySnapshot, ContextHistoryDelta } from "./context-display.js";
 import type { MemoryBannerStats, ProviderUsageUpdate } from "./turn.js";
 export type { MemoryBannerStats, ProviderUsageUpdate } from "./turn.js";
+export type { ContextDisplaySnapshot, ContextHistoryDelta } from "./context-display.js";
 
 /** UI sink for turn execution — replaces direct stdout/stderr writes when provided. */
 export interface TurnUiSink {
@@ -22,6 +24,16 @@ export interface TurnUiSink {
   onToolResult?(toolCallId: string, toolName: string, resultText: string, isError?: boolean): void;
   /** Fired after each LLM step when the provider reports token usage. */
   onProviderUsage?(update: ProviderUsageUpdate): void;
+  /** Baseline context snapshot after compile (system prompt + user input). */
+  onTurnContextBaseline?(snapshot: ContextDisplaySnapshot): void;
+  /** In-turn history growth (assistant message or distilled tool result). */
+  onContextHistoryDelta?(delta: ContextHistoryDelta): void;
+  /** Final context snapshot committed at turn end. */
+  onTurnContextCommit?(snapshot: ContextDisplaySnapshot): void;
+  /** Live preview for glance bar (engine mode monotonic updates). */
+  onContextPreview?(snapshot: ContextDisplaySnapshot): void;
+  /** Current in-turn or last-committed context preview (TUI sink). */
+  getContextPreview?(): ContextDisplaySnapshot | null;
   onDebug?(message: string): void;
   onDebugBlock?(
     stepIndex: number,

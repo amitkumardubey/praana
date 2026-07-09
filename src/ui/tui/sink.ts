@@ -9,17 +9,20 @@ import type { TranscriptEntry } from "./transcript/model.js";
 import type { TranscriptProjection } from "./transcript/projection.js";
 import type { ToastRegion } from "./toast-region.js";
 import { formatTurnFooterDigest } from "./tool-icons.js";
-import { estimateTokens } from "../../token-estimate.js";
+import {
+  type ContextDisplaySnapshot,
+  type ContextHistoryDelta,
+  mergeContextPreview,
+} from "../../context-display.js";
 
 export interface SinkOpts {
   ambient: "inline" | "quiet";
   showThinking: () => boolean;
   onSpinnerMessage: (msg: string) => void;
   ctxWindowTokens: number;
-  ctxUsedTokens: () => number;
-  /** Called after each LLM step with provider-reported context fill, and after
-   *  tool results with the best current context-used estimate for the glance bar. */
-  onLiveContextUsage?: (contextUsedTokens: number) => void;
+  engineMode: boolean;
+  /** Called when the live context preview changes (glance bar). */
+  onContextPreview?: (snapshot: ContextDisplaySnapshot) => void;
   onProviderUsage?: (update: ProviderUsageUpdate) => void;
   /** Getter for the current model label — used in the turn footer. */
   getModel?: () => string;
@@ -46,10 +49,11 @@ export class PiTuiSink implements TurnUiSink {
   private editCount = 0;
   private writeCount = 0;
   private ctxBeforePct = 0;
-  /** Heuristic growth from tool results not yet reflected in provider usage. */
-  private pendingContextTokens = 0;
-  /** Latest provider-reported request input size for this turn. */
-  private latestProviderContextTokens: number | null = null;
+  private ctxBeforeEngineMode = false;
+  private turnBaseline: ContextDisplaySnapshot | null = null;
+  private historyTokens = 0;
+  private previewSnapshot: ContextDisplaySnapshot | null = null;
+  private turnDistillerSavings = 0;
   private assistantStreamId: string | null = null;
   private thinkingStreamId: string | null = null;
   private nextLocalId = 1;
@@ -70,6 +74,10 @@ export class PiTuiSink implements TurnUiSink {
     return this.group;
   }
 
+  getContextPreview(): ContextDisplaySnapshot | null {
+    return this.previewSnapshot;
+  }
+
   nextGroup(): void {
     this.group++;
     this.bufferedStats = null;
@@ -78,12 +86,65 @@ export class PiTuiSink implements TurnUiSink {
     this.recallQuery = null;
     this.editCount = 0;
     this.writeCount = 0;
-    this.pendingContextTokens = 0;
-    this.latestProviderContextTokens = null;
+    this.turnBaseline = null;
+    this.historyTokens = 0;
+    this.turnDistillerSavings = 0;
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
-    this.ctxBeforePct = this.ctxPct(this.opts.ctxUsedTokens());
+    // Provisional until onTurnContextBaseline (real turns re-anchor to compile).
+    const committed = this.previewSnapshot;
+    this.ctxBeforePct = committed?.pct ?? 0;
+    this.ctxBeforeEngineMode = committed?.mode === "engine";
     this.opts.projection.apply({ type: "turn_started", group: this.group });
+  }
+
+  onTurnContextBaseline(snapshot: ContextDisplaySnapshot): void {
+    this.turnBaseline = snapshot;
+    this.historyTokens = snapshot.historyTokens ?? 0;
+    this.ctxBeforePct = snapshot.pct;
+    this.ctxBeforeEngineMode = snapshot.mode === "engine";
+    if (this.opts.engineMode) {
+      this.previewSnapshot = snapshot;
+      this.emitPreview();
+    }
+  }
+
+  onContextHistoryDelta(delta: ContextHistoryDelta): void {
+    if (!this.turnBaseline) return;
+    if (!this.opts.engineMode) return;
+
+    this.historyTokens += delta.tokensAdded;
+    if (delta.distillerSavings) {
+      this.turnDistillerSavings += delta.distillerSavings;
+    }
+    const next = mergeContextPreview(
+      this.turnBaseline,
+      this.historyTokens,
+      this.turnDistillerSavings,
+      true,
+    );
+    if (!this.previewSnapshot || next.usedTokens >= this.previewSnapshot.usedTokens) {
+      this.previewSnapshot = next;
+      this.emitPreview();
+    }
+  }
+
+  onTurnContextCommit(snapshot: ContextDisplaySnapshot): void {
+    const next =
+      this.previewSnapshot && this.previewSnapshot.usedTokens > snapshot.usedTokens
+        ? {
+            ...this.previewSnapshot,
+            distillerSavingsTurn:
+              snapshot.distillerSavingsTurn ?? this.previewSnapshot.distillerSavingsTurn,
+          }
+        : snapshot;
+    this.previewSnapshot = next;
+    this.turnDistillerSavings = next.distillerSavingsTurn ?? this.turnDistillerSavings;
+    this.emitPreview();
+  }
+
+  onProviderUsage(update: ProviderUsageUpdate): void {
+    this.opts.onProviderUsage?.(update);
   }
 
   appendUser(text: string): void {
@@ -158,20 +219,6 @@ export class PiTuiSink implements TurnUiSink {
     if (toolName === "recall") {
       this.recallPreview = this.extractRecallPreview(resultText);
     }
-
-    // Tool results land in the next LLM request; until provider usage arrives,
-    // extend the live context estimate heuristically from result size.
-    if (this.opts.onLiveContextUsage && resultText) {
-      this.pendingContextTokens += estimateTokens(resultText);
-      this.opts.onLiveContextUsage(this.currentContextUsedTokens());
-    }
-  }
-
-  onProviderUsage(update: ProviderUsageUpdate): void {
-    this.latestProviderContextTokens = update.latestContextTokens;
-    this.pendingContextTokens = 0;
-    this.opts.onProviderUsage?.(update);
-    this.opts.onLiveContextUsage?.(this.currentContextUsedTokens());
   }
 
   onDebug(): void {}
@@ -282,7 +329,7 @@ export class PiTuiSink implements TurnUiSink {
 
   appendTurnFooter(durationMs: number): void {
     const stats = this.bufferedStats ?? undefined;
-    const ctxAfterPct = this.ctxPct(this.opts.ctxUsedTokens());
+    const ctxAfterPct = this.previewSnapshot?.pct ?? 0;
     const model = this.opts.getModel?.();
     const text = formatTurnFooterDigest({
       durationMs,
@@ -292,6 +339,8 @@ export class PiTuiSink implements TurnUiSink {
       writeCount: this.writeCount,
       ctxBeforePct: this.ctxBeforePct,
       ctxAfterPct,
+      engineMode: this.ctxBeforeEngineMode || this.opts.engineMode,
+      distillerSavingsTurn: this.turnDistillerSavings,
       model,
     });
     this.finalizeStreams();
@@ -301,6 +350,12 @@ export class PiTuiSink implements TurnUiSink {
       group: this.group,
       text,
     });
+  }
+
+  private emitPreview(): void {
+    if (this.previewSnapshot) {
+      this.opts.onContextPreview?.(this.previewSnapshot);
+    }
   }
 
   private nextId(prefix: string): string {
@@ -327,18 +382,6 @@ export class PiTuiSink implements TurnUiSink {
     if (thinking) this.opts.persistEntry?.(thinking);
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
-  }
-
-  private ctxPct(usedTokens: number): number {
-    const window = this.opts.ctxWindowTokens;
-    if (window <= 0) return 0;
-    return Math.min(100, Math.round((usedTokens / window) * 100));
-  }
-
-  private currentContextUsedTokens(): number {
-    const base =
-      this.latestProviderContextTokens ?? this.opts.ctxUsedTokens();
-    return base + this.pendingContextTokens;
   }
 
   private extractRecallPreview(resultText: string): string | null {

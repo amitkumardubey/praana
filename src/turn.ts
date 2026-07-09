@@ -27,6 +27,13 @@ import { TurnAbortedError } from "./turn-control.js";
 import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
 import {
+  buildContextDisplaySnapshot,
+  computeDistillerSavings,
+  estimateAssistantMessageTokens,
+  maxContextSnapshot,
+} from "./context-display.js";
+import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
+import {
   createSessionLogger,
   extractLlmErrorMessage,
   formatUserFacingLlmError,
@@ -305,6 +312,16 @@ export async function runTurn(
 
   session.setLastCompileMetrics(promptMetrics);
 
+  let turnHistoryTokens = estimateDisplayTokens(userInput);
+  let turnDistillerSavings = 0;
+  const contextBaseline = buildContextDisplaySnapshot({
+    session,
+    contextWindowTokens,
+    engineMode: useEngineCompiler,
+    historyTokens: turnHistoryTokens,
+  });
+  s.onTurnContextBaseline?.(contextBaseline);
+
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
     const promptDir = session.promptDir;
@@ -461,6 +478,14 @@ export async function runTurn(
     if (interrupted) break;
 
     if (finalMessage) {
+      const assistantTokens = estimateAssistantMessageTokens(finalMessage);
+      if (assistantTokens > 0) {
+        turnHistoryTokens += assistantTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: assistantTokens,
+          source: "assistant",
+        });
+      }
       history.push(finalMessage);
     }
 
@@ -550,6 +575,26 @@ export async function runTurn(
         });
         promptResultText = ingested.promptText;
         artifactId = ingested.artifactId;
+        const toolTokens = estimateDisplayTokens(promptResultText);
+        const savings = computeDistillerSavings(
+          toolResultRawText(result),
+          promptResultText,
+          ingested.inlined,
+        );
+        turnHistoryTokens += toolTokens;
+        turnDistillerSavings += savings;
+        s.onContextHistoryDelta?.({
+          tokensAdded: toolTokens,
+          source: "tool",
+          distillerSavings: savings > 0 ? savings : undefined,
+        });
+      } else {
+        const toolTokens = estimateDisplayTokens(promptResultText);
+        turnHistoryTokens += toolTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: toolTokens,
+          source: "tool",
+        });
       }
 
       turnRecorder.recordToolCall({
@@ -602,6 +647,12 @@ export async function runTurn(
   }
 
   if (interrupted) {
+    commitTurnContextDisplay(session, s, {
+      contextWindowTokens,
+      engineMode: useEngineCompiler,
+      historyTokens: turnHistoryTokens,
+      distillerSavingsTurn: turnDistillerSavings,
+    });
     return finalizeInterruptedTurn(
       session,
       fullResponse,
@@ -702,6 +753,12 @@ export async function runTurn(
   session.persistStateGraphCheckpoint();
 
   // 8. Memory banner — count recall calls & hits from this turn's events
+  commitTurnContextDisplay(session, s, {
+    contextWindowTokens,
+    engineMode: useEngineCompiler,
+    historyTokens: turnHistoryTokens,
+    distillerSavingsTurn: turnDistillerSavings,
+  });
   const stats = computeMemoryStats(session, autoHydrated.length, turnInputTokens, turnOutputTokens);
   s.onMemoryBanner?.(stats);
 
@@ -851,11 +908,33 @@ export interface MemoryBannerStats {
   outputTokens: number;
 }
 
+function commitTurnContextDisplay(
+  session: Session,
+  sink: TurnUiSink,
+  input: {
+    contextWindowTokens: number;
+    engineMode: boolean;
+    historyTokens: number;
+    distillerSavingsTurn: number;
+  },
+): void {
+  const built = buildContextDisplaySnapshot({
+    session,
+    contextWindowTokens: input.contextWindowTokens,
+    engineMode: input.engineMode,
+    historyTokens: input.historyTokens,
+    distillerSavingsTurn: input.distillerSavingsTurn,
+  });
+  const snapshot = maxContextSnapshot(built, sink.getContextPreview?.());
+  session.setDisplayContextSnapshot(snapshot);
+  sink.onTurnContextCommit?.(snapshot);
+}
+
 export function computeMemoryStats(
   session: Session,
   autoHydrated: number,
   promptTokens?: number,
-  outputTokens?: number
+  outputTokens?: number,
 ): MemoryBannerStats {
   const memStats = session.getMemoryStats();
   const recentEvents = session.eventLog.readLast(50);

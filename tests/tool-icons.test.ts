@@ -105,6 +105,21 @@ describe("formatShellOutputForDisplay", () => {
 });
 
 describe("formatTurnFooterDigest", () => {
+  it("includes engine ctx suffix and distilled savings", () => {
+    const line = formatTurnFooterDigest({
+      durationMs: 9400,
+      ambient: "inline",
+      editCount: 0,
+      writeCount: 0,
+      ctxBeforePct: 14,
+      ctxAfterPct: 18,
+      engineMode: true,
+      distillerSavingsTurn: 12_000,
+    });
+    expect(line).toContain("14%w→18%w");
+    expect(line).toContain("−12k distilled");
+  });
+
   it("includes edits and ctx delta", () => {
     const line = formatTurnFooterDigest({
       durationMs: 9400,
@@ -207,6 +222,23 @@ describe("formatTuiGlanceLine", () => {
     );
     expect(line).toContain("in 12k");
     expect(line).toContain("out 3.4k");
+  });
+
+  it("shows weighted ctx suffix and pressure mode in engine mode", () => {
+    const line = formatTuiGlanceLine(
+      {
+        ...base,
+        contextDisplayMode: "engine",
+        contextWeightedPct: 14,
+        contextRawPct: 41,
+        contextPressureMode: "compact",
+        contextUsedTokens: 14_000,
+      },
+      { showCost: false },
+    );
+    expect(line).toContain("14%w");
+    expect(line).toContain("(41% raw)");
+    expect(line).toContain("compact");
   });
 
   it("omits session token breakdown when showCost is false even with non-zero totals", () => {

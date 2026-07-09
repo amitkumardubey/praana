@@ -43,7 +43,24 @@ import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { renderBootBanner } from "./banner.js";
-import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
+
+function statusBarFromSnapshot(
+  base: StatusBarInput,
+  snapshot: ContextDisplaySnapshot,
+): StatusBarInput {
+  return {
+    ...base,
+    contextUsedTokens: snapshot.usedTokens,
+    contextWindowTokens: snapshot.windowTokens,
+    contextDisplayMode: snapshot.mode,
+    contextWeightedPct: snapshot.weightedPct,
+    contextRawPct: snapshot.rawPct,
+    contextPressureMode: snapshot.pressureMode,
+  };
+}
+
+import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
+import type { ContextDisplaySnapshot } from "../../context-display.js";
 
 const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/exit", description: "End session" },
@@ -102,10 +119,13 @@ export async function runTui(
   const glanceBar = new GlanceBar(tui);
   glanceBar.setBackgroundZones(config.ui.background_zones);
 
+  let piSink: PiTuiSink | null = null;
   const refreshChrome = () => {
-    identityBar.setInput(controller.getStatusBarInput());
+    const base = controller.getStatusBarInput();
+    const preview = piSink?.getContextPreview() ?? null;
+    identityBar.setInput(base);
     glanceBar.update({
-      status: controller.getStatusBarInput(),
+      status: preview ? statusBarFromSnapshot(base, preview) : base,
       showCost: config.ui.show_cost,
     });
   };
@@ -219,29 +239,19 @@ export async function runTui(
     showThinking: () => controller.showThinking,
     onSpinnerMessage: (msg) => { spinner.setMessage(msg); },
     ctxWindowTokens: ctxWindow,
-    ctxUsedTokens: () =>
-      controller.getStatusBarInput().contextUsedTokens,
+    engineMode: session.isContextEngineEnabled(),
     projection,
     persistEntry: persistTranscriptEntry,
     getModel: () => controller.currentModelOrDefault(),
     onSlashCommandResult: showSlashOverlay,
-    onLiveContextUsage: (contextUsedTokens) => {
-      const base = controller.getStatusBarInput();
+    onContextPreview: (snapshot) => {
       glanceBar.update({
-        status: {
-          ...base,
-          contextUsedTokens,
-        },
-        showCost: config.ui.show_cost,
-      });
-    },
-    onProviderUsage: () => {
-      glanceBar.update({
-        status: controller.getStatusBarInput(),
+        status: statusBarFromSnapshot(controller.getStatusBarInput(), snapshot),
         showCost: config.ui.show_cost,
       });
     },
   });
+  piSink = sink;
 
   let turnStartedAt = 0;
 
