@@ -53,6 +53,9 @@ function parseProviderUsage(message: unknown): ProviderUsage | null {
     typeof u.output === "number" &&
     typeof u.totalTokens === "number"
   ) {
+    // Some providers / SDKs initialise a placeholder usage struct with all zeros
+    // when usage metadata is unavailable in streaming mode.
+    if (u.input === 0 && u.output === 0 && u.totalTokens === 0) return null;
     return { input: u.input, output: u.output, totalTokens: u.totalTokens };
   }
   return null;

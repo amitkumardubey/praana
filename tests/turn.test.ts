@@ -848,6 +848,32 @@ describe("runTurn", () => {
     expect(outArg).not.toBe(100);
   });
 
+  it("falls back to heuristic output tokens when provider usage is a zero placeholder", async () => {
+    const responseText = "placeholder usage";
+    const generator = (async function* () {
+      yield { type: "text_delta", delta: responseText };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: responseText }],
+          usage: { input: 0, output: 0, totalTokens: 0 },
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+
+    const session = makeMockSession();
+    const spyOut = spyOn(session, "recordOutputTokens");
+
+    await runTurn(session, "hello");
+
+    const outArg = spyOut.mock.calls[0][0] as number;
+    expect(outArg).toBeGreaterThan(0);
+    expect(outArg).not.toBe(0);
+  });
+
   it("processes tool calls and returns results", async () => {
     const toolCallGenerator = (async function* () {
       yield { type: "text_delta", delta: "Let me check" };
