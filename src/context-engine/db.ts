@@ -251,10 +251,17 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
 export function findArtifactByHash(
   db: Database,
   sha256: string,
+  sessionId?: string,
 ): ContextArtifact | null {
-  const row = db
-    .query("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
-    .get(sha256) as ArtifactRow | undefined;
+  const row = sessionId
+    ? (db
+        .query(
+          "SELECT * FROM context_artifacts WHERE sha256 = ? AND session_id = ? LIMIT 1",
+        )
+        .get(sha256, sessionId) as ArtifactRow | undefined)
+    : (db
+        .query("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
+        .get(sha256) as ArtifactRow | undefined);
   return row ? rowToArtifact(row) : null;
 }
 

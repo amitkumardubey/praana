@@ -30,8 +30,14 @@ import type {
   RetrieveArtifactOptions,
 } from "./types.js";
 
-function artifactIdFromHash(sha256: string): string {
-  return `art_${sha256.slice(0, 12)}`;
+function artifactIdFromHash(sessionId: string, contentHash: string): string {
+  // Bind the id to the session so identical content read in different sessions
+  // mints distinct rows — the context_artifacts table is a shared global DB
+  // keyed only by session_id, so a content-only id would collide on the
+  // primary key and the dedup path could hand back an artifact owned by
+  // another session (breaking retrieve_artifact).
+  const bound = sha256(`${sessionId}:${contentHash}`);
+  return `art_${bound.slice(0, 12)}`;
 }
 
 function sha256(text: string): string {
@@ -195,7 +201,7 @@ export class ArtifactStore {
       }
     }
 
-    const deduped = findArtifactByHash(this.db, hash);
+    const deduped = findArtifactByHash(this.db, hash, this.sessionId);
     if (deduped) {
       touchArtifactAccess(this.db, deduped.id, input.createdTurn);
       if (fileKey) this.fileReadIndex.set(fileKey, deduped.id);
@@ -226,7 +232,7 @@ export class ArtifactStore {
     if ("backfill" in distilled) {
       const deferred = distilled as DistillDeferredResult;
       summary = deferred.pendingSummary;
-      const artifactId = artifactIdFromHash(hash);
+      const artifactId = artifactIdFromHash(this.sessionId, hash);
       this.pendingBackfills.push({
         artifactId,
         backfill: deferred.backfill,
@@ -250,7 +256,7 @@ export class ArtifactStore {
     }
 
     const artifact: ContextArtifact = {
-      id: artifactIdFromHash(hash),
+      id: artifactIdFromHash(this.sessionId, hash),
       sha256: hash,
       sessionId: this.sessionId,
       sourceTool: input.sourceTool,

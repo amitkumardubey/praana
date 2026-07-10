@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { classifyContentType } from "../src/context-engine/classify.js";
 import type { ContextEngineConfig } from "../src/types.js";
@@ -181,5 +184,38 @@ describe("context-engine artifact store", () => {
     expect(classifyContentType("diff --git a/foo b/foo\n@@ -1 +1 @@")).toBe("diff");
     expect(classifyContentType('{"ok":true}')).toBe("json");
     expect(classifyContentType("FAIL tests/a.test.ts\n✓ 2 passed")).toBe("test_output");
+  });
+
+  it("does not hand back another session's artifact for identical content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-"));
+    const dbPath = join(dir, "memory.db");
+    try {
+      const raw = largeText(2500);
+      const sessionA = ArtifactStore.open(dbPath, "sess-A", TEST_CONFIG);
+      const fromA = sessionA.ingestToolResult({
+        sourceTool: "read_file",
+        command: "/tmp/foo.txt",
+        rawText: raw,
+        createdTurn: 1,
+      });
+      sessionA.close();
+
+      const sessionB = ArtifactStore.open(dbPath, "sess-B", TEST_CONFIG);
+      const fromB = sessionB.ingestToolResult({
+        sourceTool: "read_file",
+        command: "/tmp/foo.txt",
+        rawText: raw,
+        createdTurn: 1,
+      });
+
+      // Same content, different session -> distinct artifact ids (no PK clash).
+      expect(fromB.artifactId).not.toBe(fromA.artifactId);
+      // The id minted in session B must be retrievable in session B.
+      const retrieved = sessionB.retrieve(fromB.artifactId!, 2);
+      expect(retrieved.ok).toBe(true);
+      sessionB.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
