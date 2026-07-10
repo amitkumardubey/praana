@@ -184,6 +184,27 @@ describe("engine compiler", () => {
     expect(result.scoreRecords.some((r) => r.type === "turn_digest")).toBe(true);
   });
 
+  it("excludes current user input from the system prompt (lives in messages)", async () => {
+    const result = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "unique-current-request-xyz",
+      toolSchemas: [],
+      cwd: "/proj",
+      sessionId: "sess-no-dup",
+      tokenBudget: 100_000,
+      currentTurn: 1,
+      turnRecords: [],
+      activityEntries: [],
+      engineConfig: ENGINE_CONFIG,
+    });
+
+    expect(result.prompt).not.toContain("## Current Input");
+    expect(result.prompt).not.toContain("unique-current-request-xyz");
+    expect(result.metrics.currentInputTokens).toBe(0);
+  });
+
   it("scores pinned units higher than stale low-relevance units", () => {
     const unit: ContextUnit = {
       id: "turn_3",
@@ -481,7 +502,8 @@ describe("engine compiler", () => {
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
-      userInput: "x".repeat(3000),
+      userInput: "continue",
+      agentsContext: "AGENTS ".repeat(4000),
       toolSchemas: ["shell(command)"],
       cwd: "/proj",
       sessionId: "sess-emergency",
@@ -493,7 +515,7 @@ describe("engine compiler", () => {
         {
           turn: 4,
           userMessage: "run",
-          assistantMessage: "ok",
+          assistantMessage: "ok ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],
@@ -505,7 +527,7 @@ describe("engine compiler", () => {
         {
           turn: 5,
           userMessage: "again",
-          assistantMessage: "done",
+          assistantMessage: "done ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],
@@ -614,7 +636,8 @@ describe("engine compiler", () => {
       stateGraph: emptyStateGraph(),
       memoryDigest: null,
       recentEvents: [],
-      userInput: "x".repeat(2000),
+      userInput: "continue",
+      agentsContext: "AGENTS ".repeat(4000),
       toolSchemas: ["shell(command)"],
       cwd: "/proj",
       sessionId: "sess-raw-safety",
@@ -626,7 +649,7 @@ describe("engine compiler", () => {
         {
           turn: 2,
           userMessage: "run",
-          assistantMessage: "ok ".repeat(200),
+          assistantMessage: "ok ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],
@@ -638,7 +661,7 @@ describe("engine compiler", () => {
         {
           turn: 3,
           userMessage: "again",
-          assistantMessage: "done ".repeat(200),
+          assistantMessage: "done ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],
@@ -976,14 +999,15 @@ describe("engine compiler — workflow context injection", () => {
       ...BASE_INPUT,
       tokenBudget: tinyWindow,
       contextWindowTokens: tinyWindow,
-      userInput: "x".repeat(2000),
+      userInput: "run the tests",
+      agentsContext: "AGENTS ".repeat(4000),
       checkpoint,
       currentTurn: 3,
       turnRecords: [
         {
           turn: 2,
           userMessage: "run",
-          assistantMessage: "ok ".repeat(200),
+          assistantMessage: "ok ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],
@@ -995,7 +1019,7 @@ describe("engine compiler — workflow context injection", () => {
         {
           turn: 3,
           userMessage: "again",
-          assistantMessage: "done ".repeat(200),
+          assistantMessage: "done ".repeat(400),
           toolCalls: [],
           artifactIds: [],
           filesRead: [],

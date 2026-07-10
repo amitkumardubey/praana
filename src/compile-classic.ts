@@ -3,6 +3,7 @@ import type { CompileMetrics } from "./compiler.js";
 import { buildCrossSessionMemory } from "./compiler.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
+import { buildSharedAgentPolicy } from "./compiler.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -42,13 +43,9 @@ export function buildClassicSystemFrame(
     lines.push("", "## Project Stack", "", projectContext.trim());
   }
 
+  lines.push("", ...buildSharedAgentPolicy());
+
   lines.push(
-    "",
-    "## Available Tools",
-    "",
-    ...toolSchemas.map((t) => `- ${t}`),
-    "",
-    "Use tools when needed to accomplish the user's request. Respond concisely.",
     "",
     "## Skills",
     "",
@@ -58,10 +55,6 @@ export function buildClassicSystemFrame(
     "",
     "Use recall() to search Cognitive Memory. Use search_session_log() to search this session's event log.",
     "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
-    "",
-    "## Tool Safety",
-    "",
-    "RULE: Never call write_file, edit_file, or use shell commands with file write side-effects (e.g. `echo > file`, `sed -i`, `tee`) unless the user's message in THIS turn explicitly requests changes. Describing what you would change does not count. If unsure, ask first.",
   );
 
   return lines.join("\n");
@@ -158,12 +151,7 @@ export function compileClassicWithMetrics(
   );
   sections.push(history);
 
-  let currentSection = "";
-  if (input.userInput) {
-    currentSection = `## Current Input\n\nUser: ${input.userInput}`;
-    sections.push(currentSection);
-  }
-
+  // Current user input is passed as the provider messages[] entry, not duplicated here.
   const fullPrompt = sections.join("\n\n");
 
   return {
@@ -178,7 +166,7 @@ export function compileClassicWithMetrics(
       activeStateTokens: 0,
       peripheralStubsTokens: 0,
       recentTurnsTokens: estTokens(history),
-      currentInputTokens: estTokens(currentSection),
+      currentInputTokens: 0,
       activeObjectCount: 0,
       peripheralObjectCount: 0,
       recentTurnsTruncated: false,

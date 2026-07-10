@@ -390,13 +390,11 @@ function computeWeightedTokens(
 function estimatePreliminaryWeighted(
   pinnedInfraTokens: number,
   verbatimTokens: number,
-  currentInputTokens: number,
   checkpointEffective: number,
 ): number {
   return (
     effectiveTokens(pinnedInfraTokens, "pinned_infra") +
     effectiveTokens(verbatimTokens, "verbatim_turn") +
-    effectiveTokens(currentInputTokens, "pinned_infra") +
     checkpointEffective
   );
 }
@@ -627,12 +625,8 @@ async function compileEnginePass(
     metrics.peripheralObjectCount = 0;
   }
 
-  let currentSection = "";
-  if (input.userInput) {
-    currentSection = `## Current Input\n\nUser: ${input.userInput}`;
-    sections.push(currentSection);
-  }
-  metrics.currentInputTokens = estTokens(currentSection);
+  // Current user input is passed as the provider messages[] entry, not duplicated here.
+  metrics.currentInputTokens = 0;
 
   const fullPrompt = sections.join("\n\n");
   metrics.totalTokens = estTokens(fullPrompt);
@@ -747,14 +741,9 @@ export async function compileEngineWithMetrics(
     precomputed.systemFrameTokens +
     Math.min(skillsRawTokens, maxSkillsSectionTokens);
 
-  const currentInputTokens = input.userInput
-    ? estTokens(`## Current Input\n\nUser: ${input.userInput}`)
-    : 0;
-
   const preliminaryWeighted = estimatePreliminaryWeighted(
     pinnedInfraEstimate,
     precomputed.verbatim.tokens,
-    currentInputTokens,
     normalCheckpointEstimate,
   );
   let checkpointPressureMode = resolvePressureMode(
