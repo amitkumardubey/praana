@@ -383,7 +383,11 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           };
         }
 
-        const matches = eventLog.search(query, { kinds, limit: limit ?? 20 });
+        const matches = eventLog.search(query, {
+          kinds,
+          limit: limit ?? 20,
+          afterResetBoundary: true,
+        });
         return {
           ok: true,
           query,

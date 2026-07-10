@@ -95,7 +95,7 @@ export async function maybeAutoCompactClassic(
   }
 
   const { compactChunkFraction } = resolveCompactionConfig(session.config.compiler);
-  const all = session.eventLog.readAllUncompressed();
+  const all = session.eventLog.readAllUncompressedAfterResetBoundary();
   const filtered = selectableHistoryEvents(all);
   if (filtered.length < 4) {
     return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };

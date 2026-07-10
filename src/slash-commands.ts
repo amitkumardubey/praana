@@ -22,7 +22,12 @@ import {
 import { getProviderEnvKey } from "./llm.js";
 import { executeShellCommand } from "./tools/system.js";
 
-export type SlashCommandAction = "none" | "exit" | "refresh_status" | "clear_transcript";
+export type SlashCommandAction =
+  | "none"
+  | "exit"
+  | "refresh_status"
+  | "clear_transcript"
+  | "new_session";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -94,6 +99,8 @@ export async function executeSlashCommand(
     setModel: (m?: string) => void;
     setThinking: (v: boolean) => void;
     getThinking: () => boolean;
+    /** When provided and true, /clear and /new refuse to run to avoid state corruption mid-turn. */
+    isTurnActive?: () => boolean;
   }
 ): Promise<SlashCommandResult> {
   const parts = input.split(/\s+/);
@@ -110,6 +117,14 @@ export async function executeSlashCommand(
     display,
     toastTone,
   });
+
+  // Defense-in-depth: the TUI disables input during a turn, but if a caller
+  // ever reaches /clear or /new mid-turn, refuse rather than wipe state that
+  // the running turn is still appending to.
+  if ((cmd === "/clear" || cmd === "/new") && handlers.isTurnActive?.()) {
+    lines.push("A turn is still running. Interrupt it first (Esc Esc), then retry.");
+    return result("none", "toast", "error");
+  }
 
   switch (cmd) {
     case "/exit":
@@ -544,21 +559,19 @@ export async function executeSlashCommand(
       return result("refresh_status", "toast");
     }
 
-    case "/clear":
-    case "/new": {
+    case "/clear": {
       session.clearState();
-      session.eventLog.append({
-        kind: "system_note",
-        actor: "kernel",
-        payload: {
-          type: "state_reset",
-          cleared: "all",
-          command: cmd,
-        },
-      });
+      session.logResetBoundary("/clear");
+      session.contextEngine?.resetContext();
+      session.recalculateContextBaseline();
       session.persistStateGraphCheckpoint();
-      lines.push("State cleared. Starting fresh.");
-      return result("clear_transcript", "toast");
+      lines.push("In-session context cleared. Session ID unchanged.");
+      return result("clear_transcript", "toast", "success");
+    }
+
+    case "/new": {
+      lines.push("Starting a new session…");
+      return result("new_session", "toast", "info");
     }
 
     case "/why": {

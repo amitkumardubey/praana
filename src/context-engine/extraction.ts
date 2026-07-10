@@ -4,6 +4,7 @@ import type { ContextEngineConfig } from "../types.js";
 import { ActivityLog, deriveActivityEntries } from "./activity-log.js";
 import {
   getExtractionState,
+  deleteActivityLogForSession,
   insertActivityEntries,
   insertTurnDigest,
   listActivityEntries,
@@ -111,6 +112,24 @@ export class TurnExtraction {
 
   getRecentActivity(): ActivityEntry[] {
     return this.activityLog.list();
+  }
+
+  /** Clear extraction state for /clear (in-memory and persisted rows). */
+  reset(): void {
+    this.errorTracker.reset();
+    this.activityLog.reset();
+    this.recentDecisions = [];
+    this.recentConstraints = [];
+    this.lastUserIntent = "";
+    this.lastDigest = null;
+    deleteActivityLogForSession(this.db, this.sessionId);
+    upsertExtractionState(this.db, this.sessionId, {
+      openErrors: [],
+      testFailed: false,
+      recentDecisions: [],
+      recentConstraints: [],
+      lastUserIntent: "",
+    });
   }
 
   getCheckpointDraft(): CheckpointDraft {

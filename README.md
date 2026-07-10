@@ -169,7 +169,8 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 |---|---|
 | `/help` | Full list |
 | `/exit` | End session — runs summariser when memory is on |
-| `/clear`, `/new` | Reset working memory |
+| `/clear` | Reset in-session context (same session ID; clears working memory and model-visible history) |
+| `/new` | Start a new session (new ID, reload config, background summariser) |
 | `/state` | Working-memory objects (engine mode) |
 | `/digest` | Cognitive Memory digest |
 | `/recall <query>` | Search Cognitive Memory |

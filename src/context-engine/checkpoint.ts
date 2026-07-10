@@ -684,7 +684,13 @@ export class CheckpointStore {
     this.checkpoint = checkpoint;
   }
 
-  static open(db: Database, sessionId: string): CheckpointStore {
+  /**
+   * Open the checkpoint store. When a persisted checkpoint exists it is loaded
+   * as-is. Otherwise the store replays from turn digests — filtered to
+   * `boundaryTurn` when provided so a corrupt-checkpoint resume after /clear
+   * does not rebuild pre-clear state.
+   */
+  static open(db: Database, sessionId: string, boundaryTurn: number = -1): CheckpointStore {
     const saved = getSessionCheckpoint(db, sessionId);
     if (saved) {
       const normalized: SessionCheckpoint = {
@@ -694,9 +700,13 @@ export class CheckpointStore {
       return new CheckpointStore(db, sessionId, normalized);
     }
 
-    const digests = listTurnDigests(db, sessionId).map(normalizeTurnDigest);
+    const digests = listTurnDigests(db, sessionId)
+      .map(normalizeTurnDigest)
+      .filter((d) => boundaryTurn < 0 || d.turnId > boundaryTurn);
     if (digests.length > 0) {
-      const activity = listAllActivityEntries(db, sessionId);
+      const activity = listAllActivityEntries(db, sessionId).filter(
+        (a) => boundaryTurn < 0 || a.turn > boundaryTurn,
+      );
       const state = replayCheckpointFromDigests(digests, activity);
       const rebuilt: SessionCheckpoint = { version: 1, state };
       upsertSessionCheckpoint(db, sessionId, rebuilt);
@@ -733,5 +743,11 @@ export class CheckpointStore {
 
   renderContextSummary(stats?: { artifactCount?: number }): string {
     return renderContextSummary(this.checkpoint, stats);
+  }
+
+  /** Reset checkpoint to empty and persist so resume after /clear stays clean. */
+  reset(): void {
+    this.checkpoint = createEmptyCheckpoint();
+    this.persist();
   }
 }

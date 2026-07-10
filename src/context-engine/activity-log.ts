@@ -112,4 +112,8 @@ export class ActivityLog {
   list(): ActivityEntry[] {
     return [...this.entries];
   }
+
+  reset(): void {
+    this.entries = [];
+  }
 }

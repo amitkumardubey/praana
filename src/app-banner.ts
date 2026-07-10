@@ -121,8 +121,8 @@ export function getHelpLines(): string[] {
     "  /why <unit-id>           Explain last compile score for a context unit",
     "  /thinking <on|off>       Toggle thinking stream visibility",
     "  /incognito <on|off>      Toggle Cognitive Memory persistence",
-    "  /clear                   Clear working-memory state",
-    "  /new                     Clear working-memory state",
+    "  /clear                   Reset in-session context (same session ID)",
+    "  /new                     Start a new session (reload config)",
     "",
     "  Status bar: model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
@@ -152,8 +152,8 @@ export function printHelp(): void {
     "  /why <unit-id>           Explain last compile score for a context unit",
     "  /thinking <on|off>       Toggle thinking stream visibility",
     "  /incognito <on|off>      Toggle Cognitive Memory persistence",
-    "  /clear                   Clear working-memory state",
-    "  /new                     Clear working-memory state",
+    "  /clear                   Reset in-session context (same session ID)",
+    "  /new                     Start a new session (reload config)",
     "",
     "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
     "  Esc Esc                  Interrupt a running turn (Ctrl+C also works)",
@@ -184,7 +184,10 @@ export function printHelp(): void {
 }
 
 export function formatRecentConversationLines(session: Session, maxMessages = 6): string[] {
-  const recentEvents = session.eventLog.readLast(30);
+  // Cap the scan: we only need the most recent post-boundary user/agent turns.
+  // 30 events per visible message is a generous upper bound for tool-heavy turns.
+  const scanCap = maxMessages * 30;
+  const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(scanCap);
   const turns = recentEvents.filter(
     (e) => e.kind === "user_message" || e.kind === "agent_message"
   );

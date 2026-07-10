@@ -19,6 +19,8 @@ import type { Event, EventActor, EventKind } from "./types.js";
 export interface EventSearchOptions {
   kinds?: EventKind[];
   limit?: number;
+  /** When true, only search events after the most recent reset_boundary. */
+  afterResetBoundary?: boolean;
 }
 
 export interface EventSearchMatch {
@@ -200,6 +202,23 @@ export class EventLog {
     return all.filter((e) => !this.compressedIds.has(e.event_id));
   }
 
+  /** All events after the most recent reset_boundary system note. */
+  readAllAfterResetBoundary(): Event[] {
+    return eventsAfterResetBoundary(this.internalRead());
+  }
+
+  /** Uncompressed events after the most recent reset_boundary system note. */
+  readAllUncompressedAfterResetBoundary(): Event[] {
+    const all = this.readAllAfterResetBoundary();
+    if (this.compressedIds.size === 0) return all;
+    return all.filter((e) => !this.compressedIds.has(e.event_id));
+  }
+
+  /** Last n events after the most recent reset_boundary system note. */
+  readLastUncompressedAfterResetBoundary(n: number): Event[] {
+    return this.readAllUncompressedAfterResetBoundary().slice(-n);
+  }
+
   replayContextActions(): Event[] {
     return this.internalRead().filter((e) => e.kind === "context_action");
   }
@@ -223,8 +242,12 @@ export class EventLog {
     const kindSet = options.kinds ? new Set(options.kinds) : null;
     const limit = options.limit ?? 20;
 
+    const source = options.afterResetBoundary
+      ? eventsAfterResetBoundary(this.internalRead())
+      : this.internalRead();
+
     const matches: EventSearchMatch[] = [];
-    for (const event of this.internalRead()) {
+    for (const event of source) {
       if (kindSet && !kindSet.has(event.kind)) continue;
       const text = eventSearchText(event).toLowerCase();
       const matched =
@@ -248,6 +271,19 @@ export class EventLog {
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /** Append a reset_boundary system note marking the boundary after which context is hidden. */
+  logResetBoundary(command: string, reason?: string): void {
+    this.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: RESET_BOUNDARY_TYPE,
+        command,
+        ...(reason ? { reason } : {}),
+      },
+    });
   }
 
   /** Mark event IDs as compressed — they will be excluded from readLastUncompressed. */
@@ -289,6 +325,43 @@ export function writeSessionMeta(logDir: string, meta: SessionMeta): void {
   const sessionDir = pathJoin(logDir, meta.session_id);
   mkdirSync(sessionDir, { recursive: true });
   writeFileSync(pathJoin(sessionDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+}
+
+export const RESET_BOUNDARY_TYPE = "reset_boundary";
+
+export function isResetBoundaryEvent(event: Event): boolean {
+  return (
+    event.kind === "system_note" && event.payload.type === RESET_BOUNDARY_TYPE
+  );
+}
+
+/** Index of the most recent reset_boundary system note in the event list, or -1. */
+export function findLastResetBoundaryIndex(events: Event[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (isResetBoundaryEvent(events[i])) return i;
+  }
+  return -1;
+}
+
+/** Return events after the most recent reset_boundary, or all events if none. */
+export function eventsAfterResetBoundary(events: Event[]): Event[] {
+  const idx = findLastResetBoundaryIndex(events);
+  return idx < 0 ? events : events.slice(idx + 1);
+}
+
+/**
+ * Return the turn number of the last turn before the most recent reset_boundary.
+ * Turns are counted by user_message events. Returns -1 if there is no boundary
+ * (meaning all turns are visible).
+ */
+export function findLastResetBoundaryTurn(events: Event[]): number {
+  const idx = findLastResetBoundaryIndex(events);
+  if (idx < 0) return -1;
+  let userMessagesBefore = 0;
+  for (let i = 0; i < idx; i++) {
+    if (events[i].kind === "user_message") userMessagesBefore++;
+  }
+  return Math.max(-1, userMessagesBefore - 1);
 }
 
 function eventSearchText(event: Event): string {

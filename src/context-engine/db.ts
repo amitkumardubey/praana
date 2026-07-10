@@ -609,6 +609,10 @@ export function getExtractionState(
   return JSON.parse(row.state_json) as PersistedExtractionState;
 }
 
+export function deleteActivityLogForSession(db: Database, sessionId: string): void {
+  db.query("DELETE FROM activity_log WHERE session_id = ?").run(sessionId);
+}
+
 export function upsertExtractionState(
   db: Database,
   sessionId: string,

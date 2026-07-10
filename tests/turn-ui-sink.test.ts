@@ -67,8 +67,10 @@ function mockSession(): Session {
       append: mock(),
       readLast: mock(() => []),
       readLastUncompressed: mock(() => []),
+      readLastUncompressedAfterResetBoundary: mock(() => []),
       readAll: mock(() => []),
       readAllUncompressed: mock(() => []),
+      readAllUncompressedAfterResetBoundary: mock(() => []),
       markEventsAsCompressed: mock(),
     },
     stateGraph: {
@@ -162,6 +164,8 @@ function mockSession(): Session {
     }),
     getActiveModelId: mock(() => "test/model"),
     getActiveModelLabel: mock(() => "openrouter/test/model"),
+    getLastResetBoundaryTurn: mock(() => -1),
+    getVisibleSessionCheckpoint: mock(() => undefined),
   } as unknown as Session;
 }
 

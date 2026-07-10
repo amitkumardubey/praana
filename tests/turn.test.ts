@@ -251,8 +251,10 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     }),
     readLast: mock((n: number) => events.slice(-n)),
     readLastUncompressed: mock((n: number) => events.slice(-n)),
+    readLastUncompressedAfterResetBoundary: mock((n: number) => events.slice(-n)),
     readAll: mock(() => events.slice()),
     readAllUncompressed: mock(() => events.slice()),
+    readAllUncompressedAfterResetBoundary: mock(() => events.slice()),
     search: mock(),
     clear: mock(() => { events.length = 0; }),
   };
@@ -281,6 +283,10 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     },
     persistStateGraphCheckpoint: mock(),
     getTurnCount() { return this._turnCount; },
+    getLastResetBoundaryTurn() { return -1; },
+    getVisibleSessionCheckpoint() {
+      return this.contextEngine?.getSessionCheckpoint?.() ?? undefined;
+    },
     getMemoryStats() {
       return {
         total: this.stateGraph.snapshot().length,
@@ -481,6 +487,7 @@ describe("computeMemoryStats", () => {
     const eventLog = {
       readLast: mock(() => [] as Event[]),
       readLastUncompressed: mock(() => [] as Event[]),
+      readLastUncompressedAfterResetBoundary: mock(() => [] as Event[]),
     };
 
     const session: any = {
@@ -522,6 +529,12 @@ describe("computeMemoryStats", () => {
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
+      readLastUncompressedAfterResetBoundary: mock(() => [
+        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
+        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "system_note", payload: { type: "other" } },
+        { kind: "tool_call", payload: { tool: "recall" } },
+      ] as Event[]),
     };
 
     const session: any = {
@@ -543,6 +556,7 @@ describe("computeMemoryStats", () => {
     const eventLog = {
       readLast: mock(() => [] as Event[]),
       readLastUncompressed: mock(() => [] as Event[]),
+      readLastUncompressedAfterResetBoundary: mock(() => [] as Event[]),
     };
 
     const session: any = {

@@ -52,6 +52,11 @@ export class ErrorTracker {
     };
   }
 
+  reset(): void {
+    this.openErrors.clear();
+    this.testFailed = false;
+  }
+
   processTurn(
     turn: number,
     record: TurnRecord,

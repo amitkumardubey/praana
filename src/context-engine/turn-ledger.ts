@@ -183,11 +183,13 @@ export class TurnLedger {
     return inserted;
   }
 
-  search(query: string, limit = 20): TurnSearchMatch[] {
+  search(query: string, limit = 20, minTurn = -1): TurnSearchMatch[] {
     const trimmed = query.trim();
     if (!trimmed) return [];
 
-    const records = this.list();
+    const records = this.list().filter(
+      (record) => minTurn < 0 || record.turn > minTurn,
+    );
     if (records.length === 0) return [];
 
     const queryTokens = tokenize(trimmed);

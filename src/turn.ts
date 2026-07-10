@@ -154,7 +154,9 @@ export async function runTurn(
     }
   }
 
-  // 2. Build tools
+  // 2. Build tools — boundaryTurn is captured once; /clear cannot run mid-turn
+  // (TUI disables input + executeSlashCommand guards), so the value is stable.
+  const boundaryTurn = session.getLastResetBoundaryTurn();
   const tools = createAllTools({
     eventLog: session.eventLog,
     stateGraph: session.stateGraph,
@@ -170,6 +172,7 @@ export async function runTurn(
     sandbox: session.config.shell,
     editConfirm: session.config.edit?.confirm,
     getCurrentTurn: () => session.getTurnCount(),
+    getLastResetBoundaryTurn: () => boundaryTurn,
     searchCode: session.config.search_code,
     getAbortSignal: () => options?.signal,
     shellLiveStream: s.shellLiveStream ?? true,
@@ -204,7 +207,7 @@ export async function runTurn(
   const reservedOutputTokens = session.config.compiler.reserved_output_tokens ?? 0;
 
 
-  const recentEvents = session.eventLog.readLastUncompressed(
+  const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(
     session.config.compiler.recent_turns
   );
   const toolDescs = describeTools({ contextEngineEnabled, classicMode });
@@ -216,7 +219,7 @@ export async function runTurn(
   const engineConfig = resolveContextEngineConfig(session.config);
   const checkpoint =
     contextEngineEnabled && session.contextEngine
-      ? session.contextEngine.getSessionCheckpoint() ?? undefined
+      ? session.getVisibleSessionCheckpoint() ?? undefined
       : undefined;
 
   const compileInput = {
@@ -251,8 +254,14 @@ export async function runTurn(
     const engineResult = await compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
-      turnRecords: session.contextEngine!.ledger.list(),
-      activityEntries: session.contextEngine!.getRecentActivity(),
+      turnRecords: session.contextEngine!.ledger
+        .list()
+        .filter(
+          (r) => boundaryTurn < 0 || r.turn > boundaryTurn,
+        ),
+      activityEntries: session.contextEngine!.getRecentActivity().filter(
+        (entry) => boundaryTurn < 0 || entry.turn > boundaryTurn,
+      ),
       engineConfig,
       contextWindowTokens,
       hydratedTexts: autoHydrated.map((r) => r.text),
@@ -994,7 +1003,9 @@ export function computeMemoryStats(
   outputTokens?: number,
 ): MemoryBannerStats {
   const memStats = session.getMemoryStats();
-  const recentEvents = session.eventLog.readLast(50);
+  // Boundary-aware: after /clear, only count recalls from the current epoch so
+  // the memory banner doesn't surface pre-clear recall telemetry.
+  const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(50);
   let recallCalls = 0;
   let recallHits = 0;
   for (const ev of recentEvents) {

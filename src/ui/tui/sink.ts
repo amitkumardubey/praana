@@ -78,6 +78,16 @@ export class PiTuiSink implements TurnUiSink {
     return this.previewSnapshot;
   }
 
+  /** Drop live context preview after /clear so the glance bar shows a fresh baseline. */
+  clearContextPreview(): void {
+    this.previewSnapshot = null;
+    this.turnBaseline = null;
+    this.historyTokens = 0;
+    this.turnDistillerSavings = 0;
+    this.ctxBeforePct = 0;
+    this.ctxBeforeEngineMode = false;
+  }
+
   nextGroup(): void {
     this.group++;
     this.bufferedStats = null;

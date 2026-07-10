@@ -88,6 +88,7 @@ describe("auto-compact", () => {
       memoryStore: { compressTurns },
       eventLog: {
         readAllUncompressed: mock(() => events),
+        readAllUncompressedAfterResetBoundary: mock(() => events),
         markEventsAsCompressed,
         append,
       },

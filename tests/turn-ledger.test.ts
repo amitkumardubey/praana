@@ -138,4 +138,35 @@ describe("turn ledger", () => {
     expect(matches[0].turn).toBe(0);
     expect(matches[0].filesRead).toContain("src/auth.ts");
   });
+
+  it("excludes turns at or before minTurn from search", () => {
+    ledger.append({
+      turn: 0,
+      userMessage: "old jwt auth work",
+      assistantMessage: "done",
+      toolCalls: [],
+      artifactIds: [],
+      filesRead: [],
+      filesWritten: [],
+      errors: [],
+      tokenCount: 100,
+      timestamp: Date.now(),
+    });
+    ledger.append({
+      turn: 2,
+      userMessage: "fresh jwt auth work",
+      assistantMessage: "done again",
+      toolCalls: [],
+      artifactIds: [],
+      filesRead: [],
+      filesWritten: [],
+      errors: [],
+      tokenCount: 100,
+      timestamp: Date.now(),
+    });
+
+    const matches = ledger.search("jwt auth", 5, 1);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].turn).toBe(2);
+  });
 });

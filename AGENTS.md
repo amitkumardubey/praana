@@ -117,7 +117,8 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
 | `/incognito <on\|off>` | Toggle Cognitive Memory persistence |
-| `/clear`, `/new` | Clear working-memory state (engine checkpoint + StateGraph) |
+| `/clear` | Reset in-session context (same session ID; clears working memory + model-visible history) |
+| `/new` | Start a new session (new ID, reload config, background summarizer) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
 | `/help` | All commands |
 
