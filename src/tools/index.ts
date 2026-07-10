@@ -27,6 +27,7 @@ export interface ToolRegistryContext {
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
   getCurrentTurn?: () => number;
+  getLastResetBoundaryTurn?: () => number;
   searchCode?: { rg_path?: string };
   shellLiveStream?: boolean;
   skills: SkillRecord[];
@@ -58,6 +59,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
             query,
             limit,
             currentTurn ?? ctx.getCurrentTurn?.() ?? 0,
+            ctx.getLastResetBoundaryTurn?.() ?? -1,
           )
       : undefined,
   });
@@ -70,6 +72,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
+    getLastResetBoundaryTurn: ctx.getLastResetBoundaryTurn,
   });
   const systemTools = createSystemTools({
     cwd: ctx.cwd,

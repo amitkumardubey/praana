@@ -169,4 +169,13 @@ describe("PiTuiSink", () => {
     expect(callback).toHaveBeenCalledTimes(1);
     expect(callback.mock.calls[0][0]).toEqual(["line 1", "line 2"]);
   });
+
+  it("clearContextPreview drops the live preview snapshot", () => {
+    const { sink } = makeSink();
+    sink.onTurnContextBaseline(baseline({ pct: 42 }));
+    expect(sink.getContextPreview()?.pct).toBe(42);
+
+    sink.clearContextPreview();
+    expect(sink.getContextPreview()).toBeNull();
+  });
 });

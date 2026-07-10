@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { EventLog, migrateLegacyEventLog } from '../src/event-log.js';
+import {
+  EventLog,
+  migrateLegacyEventLog,
+  RESET_BOUNDARY_TYPE,
+  eventsAfterResetBoundary,
+  findLastResetBoundaryTurn,
+} from '../src/event-log.js';
 import { writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, appendFileSync } from 'node:fs';
 import type { Event } from '../src/types.js';
 import { join } from 'node:path';
@@ -329,6 +335,69 @@ describe('EventLog', () => {
     eventLog = new EventLog('test-session-1-new', testLogDir);
   });
 
+  it('should hide events before the most recent reset_boundary', () => {
+    eventLog.append({
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'Before clear' },
+    });
+    eventLog.append({
+      kind: 'agent_message',
+      actor: 'agent',
+      payload: { text: 'Old reply' },
+    });
+    eventLog.logResetBoundary('/clear');
+
+    eventLog.append({
+      kind: 'user_message',
+      actor: 'user',
+      payload: { text: 'After clear' },
+    });
+
+    const visible = eventLog.readAllAfterResetBoundary();
+    expect(visible.length).toBe(1);
+    expect((visible[0].payload as { text: string }).text).toBe('After clear');
+
+    const lastUncompressed = eventLog.readLastUncompressedAfterResetBoundary(10);
+    expect(lastUncompressed.length).toBe(1);
+    expect((lastUncompressed[0].payload as { text: string }).text).toBe('After clear');
+  });
+
+  it('should record reset_boundary as a kernel system note', () => {
+    eventLog.logResetBoundary('/clear', 'user requested');
+
+    const events = eventLog.readAll();
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe('system_note');
+    expect(events[0].actor).toBe('kernel');
+    expect(events[0].payload).toEqual({
+      type: RESET_BOUNDARY_TYPE,
+      command: '/clear',
+      reason: 'user requested',
+    });
+  });
+
+  it('should search only after reset_boundary when afterResetBoundary is set', () => {
+    eventLog.append({
+      kind: 'agent_message',
+      actor: 'agent',
+      payload: { text: 'old jwt implementation notes' },
+    });
+    eventLog.logResetBoundary('/clear');
+    eventLog.append({
+      kind: 'agent_message',
+      actor: 'agent',
+      payload: { text: 'fresh jwt implementation notes' },
+    });
+
+    const allMatches = eventLog.search('jwt');
+    expect(allMatches).toHaveLength(2);
+
+    const visibleMatches = eventLog.search('jwt', { afterResetBoundary: true });
+    expect(visibleMatches).toHaveLength(1);
+    expect((visibleMatches[0].event.payload as { text: string }).text).toContain('fresh');
+  });
+
   it('should re-read from disk when file is externally modified', () => {
     eventLog.append({
       kind: 'user_message',
@@ -351,6 +420,45 @@ describe('EventLog', () => {
     const all = eventLog.readAll();
     expect(all.length).toBe(2);
     expect((all[1].payload as any).text).toBe('Injected');
+  });
+});
+
+describe('reset boundary helpers', () => {
+  function makeEvent(kind: Event['kind'], payload: Record<string, unknown>, index: number): Event {
+    return {
+      event_id: `evt-${index}`,
+      session_id: 'sess-1',
+      timestamp: index,
+      kind,
+      actor: kind === 'user_message' ? 'user' : 'kernel',
+      payload,
+    };
+  }
+
+  it('eventsAfterResetBoundary keeps only events after the latest boundary', () => {
+    const events = [
+      makeEvent('user_message', { text: 'one' }, 0),
+      makeEvent('agent_message', { text: 'two' }, 1),
+      makeEvent('system_note', { type: RESET_BOUNDARY_TYPE, command: '/clear' }, 2),
+      makeEvent('user_message', { text: 'three' }, 3),
+    ];
+
+    expect(eventsAfterResetBoundary(events).map((e) => (e.payload as { text?: string }).text)).toEqual([
+      'three',
+    ]);
+  });
+
+  it('findLastResetBoundaryTurn counts user turns before the boundary', () => {
+    const events = [
+      makeEvent('user_message', { text: 'one' }, 0),
+      makeEvent('agent_message', { text: 'reply' }, 1),
+      makeEvent('user_message', { text: 'two' }, 2),
+      makeEvent('system_note', { type: RESET_BOUNDARY_TYPE, command: '/clear' }, 3),
+      makeEvent('user_message', { text: 'three' }, 4),
+    ];
+
+    expect(findLastResetBoundaryTurn(events)).toBe(1);
+    expect(findLastResetBoundaryTurn(events.slice(0, 3))).toBe(-1);
   });
 });
 

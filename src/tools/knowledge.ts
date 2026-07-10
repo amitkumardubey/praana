@@ -13,6 +13,7 @@ export interface KnowledgeToolContext {
   contextEngine: ContextEngine | null;
   skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
+  getLastResetBoundaryTurn?: () => number;
 }
 
 export function createKnowledgeTools(ctx: KnowledgeToolContext) {
@@ -39,6 +40,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               query,
               limit ?? 20,
               getCurrentTurn(),
+              ctx.getLastResetBoundaryTurn?.() ?? -1,
             );
             ctx.skillScorecard?.inc("turnEventSearches");
             eventLog.append({

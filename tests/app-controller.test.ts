@@ -146,6 +146,113 @@ describe("AppController", () => {
     expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
   });
 
+  it("startNewSession() ends the current session quickly, reloads config, and creates a fresh one", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+
+    const end = mock(async () => ({ memory: "background" as const }));
+    const transcript = [{ kind: "user_message" as const }];
+    controller.session = {
+      ...controller.session,
+      id: "sess-old",
+      end,
+      getTranscriptEvents: () => transcript,
+    } as typeof controller.session;
+
+    // Point configPath at a temp config file so startNewSession reloads from disk.
+    const tmpConfigPath = join(tmpdir(), `praana-test-reload-${Date.now()}.json`);
+    writeFileSync(tmpConfigPath, JSON.stringify({ llm: { model: "reloaded/model" } }), "utf-8");
+    controller.parsed.configPath = tmpConfigPath;
+
+    const create = Session.create as Mock<typeof Session.create>;
+    create.mockResolvedValueOnce({
+      id: "sess-new",
+      cwd: "/tmp",
+      debug: false,
+      config: { ...baseConfig, llm: { provider: "openrouter", model: "reloaded/model" } },
+      getModelOverride: () => null,
+      getActiveModelId: () => "reloaded/model",
+      getActiveModelLabel: () => "openrouter/reloaded/model",
+      getEffectiveProvider: () => "openrouter",
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: mock(async () => 128_000),
+      getMemoryStats: () => ({
+        total: 0,
+        active: 0,
+        soft: 0,
+        hard: 0,
+        byKind: {},
+      }),
+      getRepoRoot: () => "/tmp",
+      getGitBranch: () => null,
+      memoryEnabled: false,
+      isIncognito: () => false,
+      digest: null,
+      agentsContext: null,
+      skills: [],
+      skillRuntime: null,
+      getLastCompileMetrics: () => null,
+      getLastWeightedTokens: () => 0,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 0,
+      getTurnCount: () => 0,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => 0,
+      getMemoryDbPath: () => null,
+      stateGraph: { list: () => [] },
+      eventLog: { readLast: () => [] },
+      end: mock(async () => ({ memory: "skipped" as const })),
+      getTranscriptEvents: () => [],
+    } as any);
+
+    const info = await controller.startNewSession();
+
+    expect(end).toHaveBeenCalledWith("clean", transcript, { memoryTimeoutMs: 50 });
+    // Config was reloaded from the temp file.
+    expect(controller.config.llm.model).toBe("reloaded/model");
+    expect(controller.session.id).toBe("sess-new");
+    expect(info.isResume).toBe(false);
+    expect(info.bannerLines.some((line) => line.includes("sess-new"))).toBe(true);
+
+    rmSync(tmpConfigPath, { force: true });
+  });
+
+  it("startNewSession() rolls back to a fresh session if Session.create throws", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+
+    controller.session = {
+      ...controller.session,
+      id: "sess-old",
+      end: mock(async () => ({ memory: "background" as const })),
+      getTranscriptEvents: () => [],
+    } as typeof controller.session;
+
+    const create = Session.create as Mock<typeof Session.create>;
+    // First call (inside startNewSession) throws; second call (rollback) succeeds.
+    create
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(controller.session as any);
+
+    await expect(controller.startNewSession()).rejects.toThrow("boom");
+    // Rollback restored a session object so the controller is still usable.
+    expect(controller.session).toBeDefined();
+    expect(controller.sessionEnded).toBe(false);
+  });
+
   it("shutdown() returns 'noop' on the second call", async () => {
     const controller = new AppController({
       cwd: "/tmp",
@@ -244,7 +351,12 @@ describe("AppController", () => {
       getPersistentMemoryEntryCount: () => 0,
       getMemoryDbPath: () => null,
       stateGraph: { list: () => [] },
-      eventLog: { readLast: () => [], readAll: () => [] },
+      eventLog: {
+        readLast: () => [],
+        readAll: () => [],
+        readAllAfterResetBoundary: () => [],
+        readLastUncompressedAfterResetBoundary: () => [],
+      },
       end: mock(async () => ({ memory: "skipped" as const })),
       getTranscriptEvents: () => [],
       memoryInitError: undefined,

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
+import { loadConfig } from "./config.js";
 import { Session, type SessionEndStatus } from "./session.js";
 import { findLatestSessionForCwd } from "./event-log.js";
 import { runTurn } from "./turn.js";
@@ -13,6 +14,7 @@ import {
   formatSessionBannerLines,
 } from "./app-banner.js";
 import { buildTranscriptFromEvents, type TranscriptEntry } from "./ui/tui/transcript/model.js";
+import { eventsAfterResetBoundary } from "./event-log.js";
 
 export interface StartupInfo {
   session: Session;
@@ -30,7 +32,8 @@ export interface StartupInfo {
 export class AppController {
   session!: Session;
   readonly cwd: string;
-  readonly config: PraanaConfig;
+  /** Active config. Not readonly: `startNewSession()` reloads it from disk on /new. Re-read after /new rather than caching. */
+  config: PraanaConfig;
   readonly parsed: CliArgs;
   showThinking = false;
   currentModel?: string;
@@ -98,9 +101,12 @@ export class AppController {
         ? formatRecentConversationLines(this.session)
         : [],
       transcriptBootstrap: didResume
-        ? buildTranscriptFromEvents(this.session.eventLog.readAll(), {
-            useUnicode: this.config.ui.tool_icons === "unicode",
-          })
+        ? buildTranscriptFromEvents(
+            eventsAfterResetBoundary(this.session.eventLog.readAll()),
+            {
+              useUnicode: this.config.ui.tool_icons === "unicode",
+            },
+          )
         : [],
       isResume: didResume,
       startupNotices,
@@ -154,6 +160,7 @@ export class AppController {
         this.showThinking = v;
       },
       getThinking: () => this.showThinking,
+      isTurnActive: () => this.isTurnActive(),
     });
   }
 
@@ -209,6 +216,87 @@ export class AppController {
       this.turnController.end();
     }
   }
+
+  /**
+   * End the current session and start a fresh one with reloaded config.
+   * The old session's memory summarizer is given a very short timeout so it
+   * continues in the background; the rest of session shutdown is awaited.
+   *
+   * Atomicity: the old session is ended first. If config reload or the new
+   * session creation then throws, the controller is rolled back to a usable
+   * state — `this.session` is set to a fresh session created from the *old*
+   * config so the user can continue typing instead of being stuck. The thrown
+   * error is re-raised after rollback so the TUI can surface it.
+   *
+   * Memory DB safety: the old session's MemoryStore handle is not explicitly
+   * closed (the background summarizer may still be writing). The new session
+   * opens a second connection to the same `~/.praana/memory.db`. SQLite WAL
+   * mode + busy_timeout makes this concurrent access safe for the brief
+   * overlap window; the old handle is released by GC once the summarizer drains.
+   */
+  async startNewSession(): Promise<StartupInfo> {
+    if (!this.sessionEnded) {
+      const events = this.session.getTranscriptEvents();
+      await this.session.end("clean", events, { memoryTimeoutMs: 50 });
+      this.sessionEnded = true;
+    }
+
+    let newConfig: PraanaConfig;
+    try {
+      newConfig = loadConfig(this.parsed.configPath);
+    } catch (err) {
+      this.rollbackToFreshSession(this.config);
+      throw err;
+    }
+
+    try {
+      this.config = newConfig;
+      this.session = await Session.create(this.cwd, newConfig, {
+        incognito: this.parsed.incognito,
+        captureNotice: () => {},
+      });
+      this.session.debug = this.parsed.debug;
+      this.sessionEnded = false;
+      this.currentModel = this.session.getModelOverride() ?? undefined;
+    } catch (err) {
+      // Roll back to a working session using the last known-good config so the
+      // user isn't stuck with an ended session and no editor.
+      this.rollbackToFreshSession(this.config);
+      throw err;
+    }
+
+    const model = this.session.getActiveModelLabel();
+    return {
+      session: this.session,
+      cwd: this.cwd,
+      model,
+      bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
+      recentConversationLines: [],
+      transcriptBootstrap: [],
+      isResume: false,
+      startupNotices: [],
+    };
+  }
+
+  /**
+   * Recover from a failed /new by creating a fresh session from `config`.
+   * Marks sessionEnded=false so shutdown() can end it cleanly later. Any error
+   * here is swallowed — the original failure is more useful to the caller.
+   */
+  private async rollbackToFreshSession(config: PraanaConfig): Promise<void> {
+    try {
+      this.session = await Session.create(this.cwd, config, {
+        incognito: this.parsed.incognito,
+        captureNotice: () => {},
+      });
+      this.session.debug = this.parsed.debug;
+      this.sessionEnded = false;
+      this.currentModel = this.session.getModelOverride() ?? undefined;
+    } catch {
+      // Best-effort; caller will surface the original error.
+    }
+  }
+
 
   async shutdown(): Promise<ShutdownStatus> {
     if (this.sessionEnded) return { memory: "noop" };

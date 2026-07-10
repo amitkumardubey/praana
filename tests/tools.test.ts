@@ -369,7 +369,11 @@ describe('Memory Tools (createMemoryTools)', () => {
       const result = await tools.search_session_log.execute({ query: 'hello' });
       expect(result.ok).toBe(true);
       expect((result as any).matchCount).toBe(1);
-      expect(eventLog.search).toHaveBeenCalledWith('hello', { kinds: undefined, limit: 20 });
+      expect(eventLog.search).toHaveBeenCalledWith('hello', {
+        kinds: undefined,
+        limit: 20,
+        afterResetBoundary: true,
+      });
     });
 
     it('should pass kinds and limit options', async () => {
@@ -382,6 +386,7 @@ describe('Memory Tools (createMemoryTools)', () => {
       expect(eventLog.search).toHaveBeenCalledWith('test', {
         kinds: ['tool_call', 'tool_result'],
         limit: 10,
+        afterResetBoundary: true,
       });
     });
   });

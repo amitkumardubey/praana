@@ -73,8 +73,8 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/debug", description: "Toggle debug mode" },
   { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
   { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
-  { name: "/clear", description: "Clear working-memory state" },
-  { name: "/new", description: "Clear working-memory state" },
+  { name: "/clear", description: "Reset in-session context" },
+  { name: "/new", description: "Start a new session" },
   { name: "/help", description: "Show all commands" },
 ];
 
@@ -86,8 +86,8 @@ export async function runTui(
   controller: AppController,
   info: StartupInfo,
 ): Promise<void> {
-  const config = controller.config;
-  const session = controller.session;
+  let config = controller.config;
+  let session = controller.session;
   const width = process.stdout.columns ?? 80;
   const useUnicode = config.ui.tool_icons === "unicode";
 
@@ -313,6 +313,32 @@ export async function runTui(
       if (result.action === "clear_transcript") {
         projection.apply({ type: "transcript_cleared" });
         transcript.renderEntries([]);
+        piSink?.clearContextPreview();
+        refreshChrome();
+      }
+      if (result.action === "new_session") {
+        const newInfo = await controller.startNewSession();
+        config = controller.config;
+        session = controller.session;
+
+        projection.apply({ type: "transcript_cleared" });
+        transcript.renderEntries([]);
+        piSink?.clearContextPreview();
+
+        // Re-apply startup-time configuration that may have changed.
+        identityBar.setBackgroundZones(config.ui.background_zones);
+        glanceBar.setBackgroundZones(config.ui.background_zones);
+        transcriptOpts.markdownRendering = config.ui.markdown_rendering;
+        transcriptOpts.syntaxTheme = config.ui.syntax_theme;
+        transcriptOpts.backgroundZones = config.ui.background_zones;
+        transcriptOpts.useUnicode = config.ui.tool_icons === "unicode";
+        projection.setUseUnicode(transcriptOpts.useUnicode);
+
+        // Render the new-session banner into the transcript.
+        sink.onSystemLines(newInfo.bannerLines);
+        sink.nextGroup();
+
+        refreshChrome();
       }
       if (result.action === "refresh_status") {
         refreshChrome();

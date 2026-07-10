@@ -66,6 +66,22 @@ describe("compile-classic", () => {
     expect(frame).toContain("Use the provided tools");
   });
 
+  it("hides conversation history before the latest reset boundary", () => {
+    const events = [
+      makeEvent("user_message", { text: "old question" }, 0),
+      makeEvent("agent_message", { text: "old answer" }, 1),
+      makeEvent("system_note", { type: "reset_boundary", command: "/clear" }, 2),
+      makeEvent("user_message", { text: "fresh start" }, 3),
+      makeEvent("agent_message", { text: "new answer" }, 4),
+    ];
+
+    const history = buildFullConversationHistory(events);
+    expect(history).toContain("fresh start");
+    expect(history).toContain("new answer");
+    expect(history).not.toContain("old question");
+    expect(history).not.toContain("old answer");
+  });
+
   it("includes full verbatim tool results in conversation history", () => {
     const longResult = "x".repeat(2_000);
     const events = [

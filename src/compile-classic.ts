@@ -4,6 +4,7 @@ import { buildCrossSessionMemory } from "./compiler.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
 import { buildSharedAgentPolicy } from "./compiler.js";
+import { eventsAfterResetBoundary } from "./event-log.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -77,12 +78,13 @@ export function excludeCurrentUserInputFromEvents(
 }
 
 export function buildFullConversationHistory(events: Event[]): string {
-  if (events.length === 0) {
+  const visibleEvents = eventsAfterResetBoundary(events);
+  if (visibleEvents.length === 0) {
     return "# Conversation History\n\n(no prior turns)";
   }
 
   const lines: string[] = ["# Conversation History"];
-  const filtered = events.filter(
+  const filtered = visibleEvents.filter(
     (event) =>
       event.kind !== "context_action" &&
       event.kind !== "system_note" &&

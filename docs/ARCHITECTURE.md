@@ -477,7 +477,8 @@ PRAANA's current CLI requires an interactive TTY and launches the pi-tui termina
 Slash commands are handled by `src/slash-commands.ts`:
 
 - `/exit` — ends session, triggers summarizer, saves and quits
-- `/clear`, `/new` — clears working-memory state (StateGraph + engine checkpoint)
+- `/clear` — resets in-session context while keeping the same session ID. Clears working memory (StateGraph + engine extraction/checkpoint cache), hides prior turns from the compiled prompt via a `reset_boundary` event in the log, recalculates context pressure for the glance bar, and clears the TUI transcript. The full event log is retained for audit/resume.
+- `/new` — ends the current session (summariser runs with a short timeout, then continues in the background), reloads config from disk, and starts a fresh session with a new ID and banner. Clears the TUI transcript.
 - `/state` — lists all state objects and tiers, or prints an empty-state guidance message
 - `/stats` — prints session metadata plus working-memory and Cognitive Memory stats
 - `/digest` — prints the current Cognitive Memory markdown digest

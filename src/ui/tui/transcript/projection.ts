@@ -14,13 +14,18 @@ import type {
 import type { TuiTranscriptEvent } from "./events.js";
 
 export class TranscriptProjection {
-  private readonly useUnicode: boolean;
+  private useUnicode: boolean;
   private readonly entriesById = new Map<string, TranscriptEntry>();
   private readonly toolArgsById = new Map<string, Record<string, unknown>>();
   private order: string[] = [];
 
   constructor(opts: { useUnicode: boolean }) {
     this.useUnicode = opts.useUnicode;
+  }
+
+  /** Update the icon style after a config reload (e.g. /new). */
+  setUseUnicode(useUnicode: boolean): void {
+    this.useUnicode = useUnicode;
   }
 
   apply(event: TuiTranscriptEvent): TranscriptEntry | null {

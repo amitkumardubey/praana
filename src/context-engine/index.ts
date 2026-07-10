@@ -184,13 +184,20 @@ export class ContextEngine {
     sessionId: string,
     config: Partial<ContextEngineConfig> & Pick<ContextEngineConfig, "enabled">,
     scorecardOptions?: import("./telemetry.js").ScorecardTrackerOptions,
+    /**
+     * Last turn before the most recent reset_boundary (-1 if none). Used only by
+     * the digest-replay fallback when no persisted checkpoint exists: pre-clear
+     * digests/activity are excluded so a corrupt-checkpoint resume after /clear
+     * does not rebuild stale state.
+     */
+    boundaryTurn: number = -1,
   ): ContextEngine {
     const resolved = normalizeContextEngineConfig(config);
     const store = ArtifactStore.open(dbPath, sessionId, resolved);
     const ledger = new TurnLedger(store.getDb(), sessionId);
     const extraction = new TurnExtraction(store.getDb(), sessionId, resolved);
     const checkpoint = resolved.checkpoint_enabled
-      ? CheckpointStore.open(store.getDb(), sessionId)
+      ? CheckpointStore.open(store.getDb(), sessionId, boundaryTurn)
       : null;
     const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled, scorecardOptions);
     const telemetry = new TelemetryRecorder(
@@ -247,6 +254,16 @@ export class ContextEngine {
 
   appendTurn(record: TurnRecord): void {
     this.ledger.append(record);
+  }
+
+  /**
+   * Reset in-session engine context for /clear.
+   * Clears extraction + checkpoint state (persisted and in-memory). Turn ledger
+   * rows and artifacts remain for audit; visibility is gated by reset_boundary.
+   */
+  resetContext(): void {
+    this.extraction.reset();
+    this.checkpoint?.reset();
   }
 
   processTurnExtraction(input: {
@@ -347,8 +364,13 @@ export class ContextEngine {
     return renderSessionTelemetrySummary(this.finalizeTelemetry(totalTurns));
   }
 
-  searchTurnEvents(query: string, limit = 20, currentTurn?: number): TurnSearchMatch[] {
-    const matches = this.ledger.search(query, limit);
+  searchTurnEvents(
+    query: string,
+    limit = 20,
+    currentTurn?: number,
+    minTurn = -1,
+  ): TurnSearchMatch[] {
+    const matches = this.ledger.search(query, limit, minTurn);
     if (currentTurn !== undefined) {
       for (const match of matches) {
         for (const artifactId of match.artifactIds) {

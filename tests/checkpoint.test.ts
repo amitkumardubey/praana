@@ -493,6 +493,38 @@ describe("checkpoint store integration", () => {
     expect(restored).toContain("JWT with 1h expiry");
   });
 
+  it("resetContext persists an empty checkpoint for resume after /clear", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-checkpoint-reset-"));
+    const dbPath = join(dir, "memory.db");
+    engine.close();
+    engine = ContextEngine.open(dbPath, "sess-checkpoint", TEST_CONFIG);
+
+    const sg = new StateGraph();
+    const before = engine.captureStateSnapshot(sg);
+    sg.create("decision", { summary: "old plan", rationale: "before clear" });
+
+    const recorder = new TurnRecorder("work before clear");
+    const record = recorder.toRecord("done", 0, 100);
+    engine.processTurnExtraction({
+      userMessage: "work before clear",
+      record,
+      stateBefore: before,
+      stateGraph: sg,
+    });
+
+    expect(engine.renderCheckpointSection()).toContain("old plan");
+
+    engine.resetContext();
+    expect(engine.renderCheckpointSection() ?? "").not.toContain("old plan");
+
+    engine.close();
+
+    const resumed = ContextEngine.open(dbPath, "sess-checkpoint", TEST_CONFIG);
+    expect(resumed.renderCheckpointSection() ?? "").not.toContain("old plan");
+    resumed.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("includes checkpoint section content via renderContextSummary", () => {
     const sg = new StateGraph();
     const before = engine.captureStateSnapshot(sg);

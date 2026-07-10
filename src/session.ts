@@ -11,7 +11,13 @@ import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { SkillStatsStore } from "./skills/skill-stats-store.js";
 import { hashString } from "./hash.js";
-import { EventLog, writeSessionMeta, readSessionMeta } from "./event-log.js";
+import {
+  EventLog,
+  writeSessionMeta,
+  readSessionMeta,
+  findLastResetBoundaryTurn,
+  eventsAfterResetBoundary,
+} from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
 import {
@@ -54,6 +60,25 @@ import { formatActiveModelLabel } from "./model-resolver.js";
 import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 import { estimateTokens } from "./token-estimate.js";
+import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
+import type { SessionCheckpoint } from "./context-engine/types.js";
+
+/**
+ * Return the checkpoint visible to the compiler after applying a reset_boundary.
+ * A checkpoint last reconciled at or before the boundary predates a /clear and
+ * is replaced with an empty checkpoint. Checkpoints reconciled after the
+ * boundary (post-clear state) are returned unchanged. A negative boundaryTurn
+ * means no /clear has occurred and the checkpoint is always visible as-is.
+ */
+export function visibleCheckpointAfterBoundary(
+  checkpoint: SessionCheckpoint,
+  boundaryTurn: number,
+): SessionCheckpoint {
+  if (boundaryTurn >= 0 && checkpoint.state.lastReconciledTurn <= boundaryTurn) {
+    return createEmptyCheckpoint();
+  }
+  return checkpoint;
+}
 
 /** Outcome of the session-end memory summarization step. */
 export type SessionEndStatus = {
@@ -367,6 +392,49 @@ export class Session {
 
   clearState(): void {
     this.stateGraph.clear();
+  }
+
+  /** Append a reset boundary event to the event log. */
+  logResetBoundary(command: string, reason?: string): void {
+    this.eventLog.logResetBoundary(command, reason);
+  }
+
+  /**
+   * Recalculate the context pressure baseline from events visible after the last
+   * reset boundary. Used after /clear so the status bar and turn footer show the
+   * actual remaining context, not the pre-reset high-water mark.
+   */
+  recalculateContextBaseline(): void {
+    this.lastCompileMetrics = null;
+    this.lastCompileScoreRecords = [];
+    this.lastPressureMode = "normal";
+    this.lastPressureRatio = 0;
+    this.lastWeightedTokens = 0;
+    this.lastRawPressureRatio = 0;
+    this.displayContextSnapshot = null;
+    this.compactionArmed = false;
+  }
+
+  /** Return the last turn number before the most recent reset boundary, or -1 if none. */
+  getLastResetBoundaryTurn(): number {
+    return findLastResetBoundaryTurn(this.eventLog.readAll());
+  }
+
+  /**
+   * Session checkpoint for prompt compile, respecting reset_boundary.
+   * Returns undefined when the engine is off. Returns an empty checkpoint when
+   * the persisted checkpoint predates the most recent reset_boundary (i.e. it
+   * was last reconciled before a /clear). Post-clear checkpoints reconciled
+   * after the boundary are returned as-is.
+   */
+  getVisibleSessionCheckpoint(): SessionCheckpoint | undefined {
+    if (!this.contextEngine) return undefined;
+    const checkpoint = this.contextEngine.getSessionCheckpoint();
+    if (!checkpoint) return undefined;
+    return visibleCheckpointAfterBoundary(
+      checkpoint,
+      this.getLastResetBoundaryTurn(),
+    );
   }
 
   /** Persist working-memory state for fast resume (issue #74). */
@@ -1191,6 +1259,7 @@ function initContextEngine(session: Session): void {
       session.id,
       engineConfig,
       scorecardOptions,
+      findLastResetBoundaryTurn(session.eventLog.readAll()),
     );
     session.scorecard = session.contextEngine.scorecard;
     session.scorecard.restoreFromDb();
