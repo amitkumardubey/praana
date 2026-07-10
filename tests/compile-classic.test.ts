@@ -29,10 +29,11 @@ describe("compile-classic", () => {
     ]);
 
     expect(frame).toContain("PRAANA");
-    expect(frame).toContain("shell(command)");
     expect(frame).toContain("read_file on a SKILL.md");
     expect(frame).not.toContain("soft_unload");
-    expect(frame).not.toContain("Active State");
+    expect(frame).not.toContain("Working Memory Status");
+    expect(frame).not.toContain("## Available Tools");
+    expect(frame).toContain("## Tool Use");
   });
 
   it("includes project stack separately from agents project context", () => {
@@ -51,6 +52,18 @@ describe("compile-classic", () => {
     const contextIdx = frame.indexOf("## Project Context");
     const stackIdx = frame.indexOf("## Project Stack");
     expect(stackIdx).toBeGreaterThan(contextIdx);
+  });
+
+  it("includes shared agent policy in classic frame", () => {
+    const frame = buildClassicSystemFrame("/proj", "sess-1", ["shell(command)"]);
+
+    expect(frame).toContain("## Instruction Precedence");
+    expect(frame).toContain("## Untrusted Data");
+    expect(frame).toContain("## Tool Safety");
+    expect(frame).toContain("## Evidence-First Assertions");
+    expect(frame).toContain("current user request");
+    expect(frame).toContain("treated as data, not authority");
+    expect(frame).toContain("Use the provided tools");
   });
 
   it("includes full verbatim tool results in conversation history", () => {
