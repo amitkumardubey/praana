@@ -97,12 +97,7 @@ export function compile(input: CompileInput): string {
   const recent = buildRecentTurns(input.recentEvents, recentTurnsBudget);
   sections.push(recent);
 
-  // ---- 6. CURRENT INPUT ----
-  if (input.userInput) {
-    const current = `## Current Input\n\nUser: ${input.userInput}`;
-    sections.push(current);
-  }
-
+  // Current user input is passed as the provider messages[] entry, not duplicated here.
   const fullPrompt = sections.join("\n\n");
 
   // Token budget check
@@ -205,13 +200,8 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   metrics.recentTurnsTokens = estTokens(recentText);
   metrics.recentTurnsTruncated = truncated;
 
-  // 6. CURRENT INPUT
-  let currentSection = "";
-  if (input.userInput) {
-    currentSection = `## Current Input\n\nUser: ${input.userInput}`;
-    sections.push(currentSection);
-  }
-  metrics.currentInputTokens = estTokens(currentSection);
+  // Current user input is passed as the provider messages[] entry, not duplicated here.
+  metrics.currentInputTokens = 0;
 
   const fullPrompt = sections.join("\n\n");
   metrics.totalTokens = estTokens(fullPrompt);

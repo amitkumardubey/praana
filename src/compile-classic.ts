@@ -158,12 +158,7 @@ export function compileClassicWithMetrics(
   );
   sections.push(history);
 
-  let currentSection = "";
-  if (input.userInput) {
-    currentSection = `## Current Input\n\nUser: ${input.userInput}`;
-    sections.push(currentSection);
-  }
-
+  // Current user input is passed as the provider messages[] entry, not duplicated here.
   const fullPrompt = sections.join("\n\n");
 
   return {
@@ -178,7 +173,7 @@ export function compileClassicWithMetrics(
       activeStateTokens: 0,
       peripheralStubsTokens: 0,
       recentTurnsTokens: estTokens(history),
-      currentInputTokens: estTokens(currentSection),
+      currentInputTokens: 0,
       activeObjectCount: 0,
       peripheralObjectCount: 0,
       recentTurnsTruncated: false,

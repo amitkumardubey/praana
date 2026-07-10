@@ -88,16 +88,17 @@ describe("compile-classic", () => {
     const skillsIdx = prompt.indexOf("## Available Skills");
     const memoryIdx = prompt.indexOf("# Cross-Session Memory");
     const historyIdx = prompt.indexOf("# Conversation History");
-    const inputIdx = prompt.indexOf("## Current Input");
 
     expect(frameIdx).toBeGreaterThanOrEqual(0);
     expect(skillsIdx).toBeGreaterThan(frameIdx);
     expect(memoryIdx).toBeGreaterThan(skillsIdx);
     expect(historyIdx).toBeGreaterThan(memoryIdx);
-    expect(inputIdx).toBeGreaterThan(historyIdx);
+    expect(prompt).not.toContain("## Current Input");
+    expect(prompt).not.toContain("next question");
     expect(prompt).toContain("hi there");
     expect(metrics.recentTurnsTruncated).toBe(false);
     expect(metrics.activeStateTokens).toBe(0);
+    expect(metrics.currentInputTokens).toBe(0);
   });
 
   it("excludes non-conversation events from conversation history", () => {
@@ -121,14 +122,14 @@ describe("compile-classic", () => {
     expect(history).not.toContain("ui-only footer");
   });
 
-  it("excludes duplicate current user input from history", () => {
+  it("excludes current user input from the system prompt (lives in messages)", () => {
     const events = [
       makeEvent("user_message", { text: "hello" }, 0),
       makeEvent("agent_message", { text: "hi there" }, 1),
       makeEvent("user_message", { text: "next question" }, 2),
     ];
 
-    const { prompt } = compileClassicWithMetrics({
+    const { prompt, metrics } = compileClassicWithMetrics({
       cwd: "/proj",
       sessionId: "sess-1",
       toolSchemas: ["shell(command) — Run a shell command"],
@@ -136,9 +137,9 @@ describe("compile-classic", () => {
       userInput: "next question",
     });
 
-    const matches = prompt.match(/next question/g) ?? [];
-    expect(matches.length).toBe(1);
-    expect(prompt).toContain("## Current Input");
+    expect(prompt).not.toContain("next question");
+    expect(prompt).not.toContain("## Current Input");
+    expect(metrics.currentInputTokens).toBe(0);
   });
 
   it("excludeCurrentUserInputFromEvents is a no-op when last message differs", () => {

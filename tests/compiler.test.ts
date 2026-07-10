@@ -269,6 +269,27 @@ describe('Compiler', () => {
     expect(prompt).toContain('If unsure, ask first.');
   });
 
+  it('excludes current user input from the system prompt (lives in messages)', () => {
+    const { prompt, metrics } = compileWithMetrics({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+      userInput: 'unique-legacy-request-abc',
+    });
+
+    expect(prompt).not.toContain('## Current Input');
+    expect(prompt).not.toContain('unique-legacy-request-abc');
+    expect(metrics.currentInputTokens).toBe(0);
+  });
+
   it('should enforce per-section memory token ceiling in compileWithMetrics', () => {
     const hugeDigest = ['## Facts', ...Array.from({ length: 200 }, (_, i) => `- Memory item ${i} ${'x'.repeat(80)}`)].join('\n');
     const { prompt, metrics } = compileWithMetrics({
