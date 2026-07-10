@@ -120,6 +120,11 @@ describe("status-bar", () => {
         agentsContextTruncated: false,
         skillsTruncated: false,
       }),
+      getLastWeightedTokens: () => 9000,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0.09,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
       getInputTokens: () => 500,
       getOutputTokens: () => 120,
       isIncognito: () => false,
@@ -139,7 +144,62 @@ describe("status-bar", () => {
     expect(input.memoryStats).toEqual({ active: 1, soft: 2, hard: 3 });
   });
 
-  it("falls back to agents context token estimate before first compile", () => {
+  it("prefers committed display snapshot over compile metrics", () => {
+    const session = {
+      cwd: "/tmp/praana",
+      debug: false,
+      memoryEnabled: true,
+      agentsContext: null,
+      getRepoRoot: () => "/tmp/praana",
+      getGitBranch: () => null,
+      getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
+      getLastCompileMetrics: () => ({
+        totalTokens: 9000,
+        systemFrameTokens: 0,
+        agentsContextTokens: 0,
+        crossSessionTokens: 0,
+        activeStateTokens: 0,
+        peripheralStubsTokens: 0,
+        recentTurnsTokens: 0,
+        currentInputTokens: 0,
+        activeObjectCount: 0,
+        peripheralObjectCount: 0,
+        recentTurnsTruncated: false,
+        memoryTruncated: false,
+        agentsContextTruncated: false,
+        skillsTruncated: false,
+      }),
+      getLastWeightedTokens: () => 3000,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0.09,
+      getDisplayContextSnapshot: () => ({
+        usedTokens: 22_000,
+        windowTokens: 128_000,
+        pct: 17,
+        mode: "engine" as const,
+        weightedPct: 17,
+        rawPct: 40,
+        pressureMode: "normal" as const,
+      }),
+      isContextEngineEnabled: () => true,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      isIncognito: () => false,
+      skills: [],
+      stateGraph: new StateGraph(),
+    } as unknown as Session;
+
+    const input = buildStatusBarInput(session, {
+      model: "openrouter/big-pickle",
+      debug: false,
+      thinking: false,
+      contextWindowTokens: 128_000,
+    });
+    expect(input.contextUsedTokens).toBe(22_000);
+    expect(input.contextDisplayMode).toBe("engine");
+  });
+
+  it("uses zero context before first compile when no committed snapshot exists", () => {
     const session = {
       cwd: "/tmp/praana",
       debug: false,
@@ -149,6 +209,11 @@ describe("status-bar", () => {
       getGitBranch: () => null,
       getMemoryStats: () => ({ active: 0, soft: 0, hard: 0, total: 0, byKind: {} }),
       getLastCompileMetrics: () => null,
+      getLastWeightedTokens: () => 0,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
       isIncognito: () => false,
@@ -162,7 +227,7 @@ describe("status-bar", () => {
       thinking: false,
       contextWindowTokens: 200_000,
     });
-    expect(input.contextUsedTokens).toBe(1000);
+    expect(input.contextUsedTokens).toBe(0);
   });
 
   it("formatStatusLine includes repo, model, ctx threshold, and separators", () => {

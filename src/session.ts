@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
+import type { ContextDisplaySnapshot } from "./context-display.js";
 import type { PraanaConfig, SkillRecord, Event } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
@@ -105,6 +106,7 @@ export class Session {
   private lastPressureRatio = 0;
   private lastWeightedTokens = 0;
   private lastRawPressureRatio = 0;
+  private displayContextSnapshot: ContextDisplaySnapshot | null = null;
   private sessionInputTokens = 0;
   private sessionOutputTokens = 0;
   private lastUserInput = "";
@@ -707,6 +709,14 @@ export class Session {
 
   getLastRawPressureRatio(): number {
     return this.lastRawPressureRatio;
+  }
+
+  getDisplayContextSnapshot(): ContextDisplaySnapshot | null {
+    return this.displayContextSnapshot;
+  }
+
+  setDisplayContextSnapshot(snapshot: ContextDisplaySnapshot): void {
+    this.displayContextSnapshot = snapshot;
   }
 
   setLastUserInput(input: string): void {

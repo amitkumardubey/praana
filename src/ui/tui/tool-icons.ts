@@ -3,7 +3,12 @@
  */
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
-import { formatModelStatusLabel, formatSessionTokenBreakdown } from "../../status-bar.js";
+import { DISTILLER_FOOTER_MIN_SAVINGS } from "../../context-display.js";
+import {
+  formatModelStatusLabel,
+  formatSessionTokenBreakdown,
+  formatTokenCount,
+} from "../../status-bar.js";
 import stripAnsi from "strip-ansi";
 
 const UNICODE_ICONS: Record<string, string> = {
@@ -318,6 +323,8 @@ export interface TurnFooterInput {
   writeCount: number;
   ctxBeforePct: number;
   ctxAfterPct: number;
+  engineMode?: boolean;
+  distillerSavingsTurn?: number;
   /** Active model label for this turn (e.g. "opencode/big-pickle"). */
   model?: string;
 }
@@ -332,11 +339,19 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
   }
 
   if (input.ctxAfterPct > 0 || input.ctxBeforePct > 0) {
+    const suffix = input.engineMode ? "w" : "";
     if (input.ctxBeforePct > 0 && input.ctxBeforePct !== input.ctxAfterPct) {
-      parts.push(`ctx ${input.ctxBeforePct}%→${input.ctxAfterPct}%`);
+      parts.push(`ctx ${input.ctxBeforePct}%${suffix}→${input.ctxAfterPct}%${suffix}`);
     } else {
-      parts.push(`ctx ${input.ctxAfterPct}%`);
+      parts.push(`ctx ${input.ctxAfterPct}%${suffix}`);
     }
+  }
+
+  if (
+    input.distillerSavingsTurn &&
+    input.distillerSavingsTurn >= DISTILLER_FOOTER_MIN_SAVINGS
+  ) {
+    parts.push(`−${formatTokenCount(input.distillerSavingsTurn)} distilled`);
   }
 
   if (input.stats) {

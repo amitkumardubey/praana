@@ -10,6 +10,7 @@ import {
   formatSessionTokenBreakdown,
   formatTokenCount,
 } from "../../../status-bar.js";
+import { shouldShowRawParenthetical } from "../../../context-display.js";
 import { TUI_STYLE } from "../theme.js";
 
 export interface GlanceFormatOpts {
@@ -20,18 +21,43 @@ export function formatTuiGlanceLine(
   input: StatusBarInput,
   opts: GlanceFormatOpts,
 ): string {
-  const pct =
-    input.contextWindowTokens > 0
+  const engineMode = input.contextDisplayMode === "engine";
+  const pct = engineMode
+    ? (input.contextWeightedPct ??
+        (input.contextUsedTokens > 0 && input.contextWindowTokens > 0
+          ? Math.min(
+              100,
+              Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
+            )
+          : 0))
+    : input.contextWindowTokens > 0
       ? Math.min(
           100,
           Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
         )
       : 0;
 
-  const ctxLabel =
-    input.contextWindowTokens > 0
-      ? `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pct}%`
-      : `ctx ${pct}%`;
+  let ctxLabel: string;
+  if (input.contextWindowTokens > 0) {
+    const pctSuffix = engineMode ? `${pct}%w` : `${pct}%`;
+    ctxLabel = `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pctSuffix}`;
+    if (
+      engineMode &&
+      input.contextRawPct !== undefined &&
+      shouldShowRawParenthetical(pct, input.contextRawPct)
+    ) {
+      ctxLabel += ` (${input.contextRawPct}% raw)`;
+    }
+    if (
+      engineMode &&
+      input.contextPressureMode &&
+      input.contextPressureMode !== "normal"
+    ) {
+      ctxLabel += ` · ${input.contextPressureMode}`;
+    }
+  } else {
+    ctxLabel = engineMode ? `ctx ${pct}%w` : `ctx ${pct}%`;
+  }
 
   const ctxSeg =
     pct >= 90

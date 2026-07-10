@@ -6,10 +6,15 @@
 import { basename } from "node:path";
 import chalk from "chalk";
 import type { CompileMetrics } from "./compiler.js";
+import type { ContextDisplayMode } from "./context-display.js";
+import {
+  buildCommittedContextSnapshot,
+  buildContextDisplaySnapshot,
+} from "./context-display.js";
+import type { PressureMode } from "./context-engine/types.js";
 import type { Session } from "./session.js";
 import type { StateGraph } from "./state-graph.js";
 import type { TaskPayload } from "./types.js";
-import { estimateTokens } from "./token-estimate.js";
 
 /** Default model context window when provider metadata is unavailable. */
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -25,6 +30,10 @@ export interface StatusBarInput {
   incognito: boolean;
   contextUsedTokens: number;
   contextWindowTokens: number;
+  contextDisplayMode?: ContextDisplayMode;
+  contextWeightedPct?: number;
+  contextRawPct?: number;
+  contextPressureMode?: PressureMode;
   memoryStats: { active: number; soft: number; hard: number };
   skills: string[];
   loadedSkills: string[] | null;
@@ -125,13 +134,23 @@ export function buildStatusBarInput(
     thinking: boolean;
     contextWindowTokens?: number;
     compileMetrics?: CompileMetrics | null;
+    engineMode?: boolean;
+    contextSnapshot?: ReturnType<typeof buildContextDisplaySnapshot> | null;
   }
 ): StatusBarInput {
   const mem = session.getMemoryStats();
-  const metrics = opts.compileMetrics ?? session.getLastCompileMetrics();
-  const agentsContextTokens = session.agentsContext
-    ? estimateTokens(session.agentsContext)
-    : 0;
+  const contextWindowTokens = opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW;
+  const engineMode =
+    opts.engineMode ?? session.isContextEngineEnabled?.() ?? false;
+  const snapshot =
+    opts.contextSnapshot ??
+    buildCommittedContextSnapshot(session, contextWindowTokens, engineMode) ??
+    buildContextDisplaySnapshot({
+      session,
+      contextWindowTokens,
+      engineMode,
+      historyTokens: 0,
+    });
   const loadedSkillNames = session.skillRuntime?.getLoadedSkillNames() ?? null;
   return {
     model: opts.model,
@@ -142,8 +161,12 @@ export function buildStatusBarInput(
     thinking: opts.thinking,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
-    contextUsedTokens: metrics?.totalTokens ?? agentsContextTokens,
-    contextWindowTokens: opts.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW,
+    contextUsedTokens: snapshot.usedTokens,
+    contextWindowTokens: snapshot.windowTokens,
+    contextDisplayMode: snapshot.mode,
+    contextWeightedPct: snapshot.weightedPct,
+    contextRawPct: snapshot.rawPct,
+    contextPressureMode: snapshot.pressureMode,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
     skills: (session.skills ?? []).map((s) => s.name),
     loadedSkills: loadedSkillNames,

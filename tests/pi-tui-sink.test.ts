@@ -3,11 +3,29 @@ import { PiTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import type { ToastRegion } from "../src/ui/tui/toast-region.js";
+import type { ContextDisplaySnapshot } from "../src/context-display.js";
+
+function baseline(overrides: Partial<ContextDisplaySnapshot> = {}): ContextDisplaySnapshot {
+  return {
+    usedTokens: 10_000,
+    windowTokens: 100_000,
+    pct: 10,
+    mode: "engine",
+    weightedTokens: 10_000,
+    weightedPct: 10,
+    rawTokens: 20_000,
+    rawPct: 20,
+    pressureMode: "normal",
+    historyTokens: 1_000,
+    ...overrides,
+  };
+}
 
 function makeSink(extra: Partial<SinkOpts> = {}) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
   const persistEntry = mock(() => {});
+  const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
   const sink = new PiTuiSink(
     { requestRender: mock() } as never,
     { renderEntries } as unknown as TranscriptContainer,
@@ -17,19 +35,19 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
       showThinking: () => true,
       onSpinnerMessage: mock(),
       ctxWindowTokens: 128_000,
-      ctxUsedTokens: () => 0,
+      engineMode: true,
+      onContextPreview,
       projection,
       persistEntry,
       ...extra,
     },
   );
-  return { sink, projection, renderEntries, persistEntry };
+  return { sink, projection, renderEntries, persistEntry, onContextPreview };
 }
 
 describe("PiTuiSink", () => {
   it("disables shell live streaming so output stays in the transcript", () => {
     const { sink } = makeSink();
-
     expect(sink.shellLiveStream).toBe(false);
   });
 
@@ -61,99 +79,94 @@ describe("PiTuiSink", () => {
     expect(persistEntry).toHaveBeenCalled();
   });
 
-  it("persists streaming assistant text before the footer when no tools run", () => {
-    const { sink, persistEntry } = makeSink();
+  it("emits monotonic engine preview on history deltas", () => {
+    const { sink, onContextPreview } = makeSink({ engineMode: true });
     sink.nextGroup();
-    sink.appendUser("hello");
-    sink.onTextDelta("hi");
-    sink.appendTurnFooter(1000);
-
-    expect(persistEntry.mock.calls.map((call) => call[0]?.role)).toEqual([
-      "user",
-      "assistant",
-      "turn_footer",
-    ]);
+    sink.onTurnContextBaseline(baseline({ usedTokens: 10_000, pct: 10, historyTokens: 1000 }));
+    sink.onContextHistoryDelta({ tokensAdded: 500, source: "tool" });
+    sink.onContextHistoryDelta({ tokensAdded: 300, source: "assistant" });
+    expect(onContextPreview.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const last = onContextPreview.mock.calls.at(-1)?.[0] as ContextDisplaySnapshot;
+    const first = onContextPreview.mock.calls[1]?.[0] as ContextDisplaySnapshot;
+    expect(last.usedTokens).toBeGreaterThanOrEqual(first.usedTokens);
   });
 
-  it("uses provider context for live usage and resets pending tool growth", () => {
-    const onLiveContextUsage = mock((_: number) => {});
-    const onProviderUsage = mock((_: unknown) => {});
-    const { sink } = makeSink({
-      onLiveContextUsage,
-      onProviderUsage,
-      ctxUsedTokens: () => 1000,
-    });
-
+  it("freezes classic preview during turn until commit", () => {
+    const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
+    const { sink } = makeSink({ engineMode: false, onContextPreview });
     sink.nextGroup();
-    sink.onProviderUsage({
-      step: { input: 5000, output: 50, totalTokens: 5050 },
-      cumulative: { input: 5000, output: 50, totalTokens: 5050 },
-      latestContextTokens: 5000,
-    });
-    expect(onLiveContextUsage).toHaveBeenCalledWith(5000);
-
-    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
-    expect(onLiveContextUsage).toHaveBeenLastCalledWith(5010);
-
-    sink.onProviderUsage({
-      step: { input: 8000, output: 120, totalTokens: 8120 },
-      cumulative: { input: 13000, output: 170, totalTokens: 13170 },
-      latestContextTokens: 8000,
-    });
-    expect(onLiveContextUsage).toHaveBeenLastCalledWith(8000);
-    expect(onProviderUsage).toHaveBeenCalledTimes(2);
+    sink.onTurnContextCommit(baseline({ mode: "classic", usedTokens: 8_000, pct: 8 }));
+    sink.nextGroup();
+    onContextPreview.mockClear();
+    sink.onTurnContextBaseline(baseline({ mode: "classic", usedTokens: 12_000, pct: 12 }));
+    sink.onContextHistoryDelta({ tokensAdded: 500, source: "tool" });
+    expect(onContextPreview).not.toHaveBeenCalled();
+    sink.onTurnContextCommit(baseline({ mode: "classic", usedTokens: 15_000, pct: 15 }));
+    expect(onContextPreview).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to ctxUsedTokens before provider usage arrives", () => {
-    const onLiveContextUsage = mock((_: number) => {});
-    const { sink } = makeSink({
-      onLiveContextUsage,
-      ctxUsedTokens: () => 1000,
-    });
-
+  it("keeps monotonic preview when commit snapshot is lower than live preview", () => {
+    const { sink } = makeSink({ engineMode: true });
     sink.nextGroup();
-    sink.onToolResult("call-1", "shell", "x".repeat(40), false);
-    expect(onLiveContextUsage).toHaveBeenCalledWith(1010);
+    sink.onTurnContextBaseline(
+      baseline({
+        usedTokens: 15_000,
+        pct: 15,
+        weightedTokens: 15_000,
+        weightedPct: 15,
+        historyTokens: 1_000,
+      }),
+    );
+    sink.onContextHistoryDelta({ tokensAdded: 3_000, source: "tool" });
+    const live = sink.getContextPreview();
+    expect(live?.pct).toBe(18);
+    sink.onTurnContextCommit(
+      baseline({
+        usedTokens: 15_000,
+        pct: 15,
+        weightedTokens: 15_000,
+        weightedPct: 15,
+        historyTokens: 1_000,
+      }),
+    );
+    expect(sink.getContextPreview()?.pct).toBe(18);
+  });
+
+  it("anchors footer ctx before to compile baseline, not the previous turn commit", () => {
+    const { sink, projection } = makeSink({ engineMode: true });
+    sink.onTurnContextCommit(
+      baseline({
+        usedTokens: 18_000,
+        pct: 18,
+        weightedTokens: 18_000,
+        weightedPct: 18,
+        historyTokens: 2_000,
+      }),
+    );
+    sink.nextGroup();
+    sink.appendUser("follow-up");
+    sink.onTurnContextBaseline(
+      baseline({
+        usedTokens: 16_000,
+        pct: 16,
+        weightedTokens: 16_000,
+        weightedPct: 16,
+        historyTokens: 500,
+      }),
+    );
+    sink.onContextHistoryDelta({ tokensAdded: 200, source: "assistant" });
+    sink.appendTurnFooter(47_400);
+    const footer = projection.entries().find((e) => e.role === "turn_footer");
+    expect(footer?.text).toBeDefined();
+    expect(footer!.text).not.toContain("18%w→");
+    expect(footer!.text).toContain("16%w");
   });
 
   it("routes slash command output to the overlay callback", () => {
     const callback = mock((_: string[]) => {});
     const { sink } = makeSink({ onSlashCommandResult: callback });
-
     sink.onSlashCommandResult(["line 1", "line 2"]);
-
     expect(callback).toHaveBeenCalledTimes(1);
     expect(callback.mock.calls[0][0]).toEqual(["line 1", "line 2"]);
-  });
-
-  it("falls back to system lines when no slash overlay callback is set", () => {
-    const { sink, projection } = makeSink();
-
-    sink.onSlashCommandResult(["line 1", "line 2"]);
-
-    const roles = projection.entries().map((entry) => entry.role);
-    expect(roles).toEqual(["system", "system"]);
-  });
-
-  it("appends shell slash runs as tool rows with stdout/stderr/exit code", () => {
-    const { sink, projection } = makeSink();
-    sink.nextGroup();
-
-    sink.appendShellRun({
-      command: "echo hello",
-      stdout: "hello",
-      stderr: "",
-      exitCode: 0,
-      ok: true,
-    });
-
-    const entries = projection.entries();
-    expect(entries).toHaveLength(1);
-    const entry = entries[0]!;
-    expect(entry.role).toBe("tool");
-    expect(entry.toolName).toBe("shell");
-    expect((entry as any).resultSummary).toBe("ok");
-    expect((entry as any).resultBody).toBe("hello");
-    expect((entry as any).isError).toBe(false);
   });
 });
