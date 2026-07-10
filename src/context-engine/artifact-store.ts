@@ -7,10 +7,12 @@ import type { DistillerRegistry, DistillDeferredResult, DistillResult } from "./
 import {
   evictStaleArtifacts,
   findArtifactByHash,
+  findFileReadArtifactByCommand,
   getArtifactById,
   insertArtifact,
   insertDistillerStat,
   listHighValueArtifacts,
+  listSessionArtifacts,
   openContextEngineDb,
   touchArtifactAccess,
   updateArtifactSummary,
@@ -28,8 +30,14 @@ import type {
   RetrieveArtifactOptions,
 } from "./types.js";
 
-function artifactIdFromHash(sha256: string): string {
-  return `art_${sha256.slice(0, 12)}`;
+function artifactIdFromHash(sessionId: string, contentHash: string): string {
+  // Bind the id to the session so identical content read in different sessions
+  // mints distinct rows — the context_artifacts table is a shared global DB
+  // keyed only by session_id, so a content-only id would collide on the
+  // primary key and the dedup path could hand back an artifact owned by
+  // another session (breaking retrieve_artifact).
+  const bound = sha256(`${sessionId}:${contentHash}`);
+  return `art_${bound.slice(0, 12)}`;
 }
 
 function sha256(text: string): string {
@@ -91,6 +99,17 @@ export class ArtifactStore {
     this.sessionId = sessionId;
     this.config = config;
     this.distillers = distillers;
+    this.rebuildFileReadIndex();
+  }
+
+  /** Rebuild abs-path → artifact id map from persisted session artifacts (resume). */
+  private rebuildFileReadIndex(): void {
+    this.fileReadIndex.clear();
+    for (const art of listSessionArtifacts(this.db, this.sessionId)) {
+      if (art.sourceTool !== "read_file" || !art.command) continue;
+      // Later turns overwrite earlier ones for the same path.
+      this.fileReadIndex.set(art.command, art.id);
+    }
   }
 
   static open(
@@ -182,7 +201,7 @@ export class ArtifactStore {
       }
     }
 
-    const deduped = findArtifactByHash(this.db, hash);
+    const deduped = findArtifactByHash(this.db, hash, this.sessionId);
     if (deduped) {
       touchArtifactAccess(this.db, deduped.id, input.createdTurn);
       if (fileKey) this.fileReadIndex.set(fileKey, deduped.id);
@@ -213,7 +232,7 @@ export class ArtifactStore {
     if ("backfill" in distilled) {
       const deferred = distilled as DistillDeferredResult;
       summary = deferred.pendingSummary;
-      const artifactId = artifactIdFromHash(hash);
+      const artifactId = artifactIdFromHash(this.sessionId, hash);
       this.pendingBackfills.push({
         artifactId,
         backfill: deferred.backfill,
@@ -237,7 +256,7 @@ export class ArtifactStore {
     }
 
     const artifact: ContextArtifact = {
-      id: artifactIdFromHash(hash),
+      id: artifactIdFromHash(this.sessionId, hash),
       sha256: hash,
       sessionId: this.sessionId,
       sourceTool: input.sourceTool,
@@ -309,6 +328,27 @@ export class ArtifactStore {
     const artifact = getArtifactById(this.db, id);
     if (!artifact || artifact.sessionId !== this.sessionId) return null;
     return artifact;
+  }
+
+  /** Look up a prior read_file artifact by absolute path (session-scoped). */
+  findFileReadArtifact(absPath: string): ContextArtifact | null {
+    const id = this.fileReadIndex.get(absPath);
+    if (id) {
+      const cached = this.getArtifact(id);
+      if (cached) return cached;
+    }
+    // Index miss or stale id — fall back to DB (e.g. resume before rebuild, or eviction).
+    const fromDb = findFileReadArtifactByCommand(this.db, this.sessionId, absPath);
+    if (fromDb) {
+      this.fileReadIndex.set(absPath, fromDb.id);
+      return fromDb;
+    }
+    return null;
+  }
+
+  /** Drop path from the file-read index after a write/edit invalidates it. */
+  clearFileRead(absPath: string): void {
+    this.fileReadIndex.delete(absPath);
   }
 
   getSessionId(): string {

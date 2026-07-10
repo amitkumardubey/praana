@@ -251,10 +251,17 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
 export function findArtifactByHash(
   db: Database,
   sha256: string,
+  sessionId?: string,
 ): ContextArtifact | null {
-  const row = db
-    .query("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
-    .get(sha256) as ArtifactRow | undefined;
+  const row = sessionId
+    ? (db
+        .query(
+          "SELECT * FROM context_artifacts WHERE sha256 = ? AND session_id = ? LIMIT 1",
+        )
+        .get(sha256, sessionId) as ArtifactRow | undefined)
+    : (db
+        .query("SELECT * FROM context_artifacts WHERE sha256 = ? LIMIT 1")
+        .get(sha256) as ArtifactRow | undefined);
   return row ? rowToArtifact(row) : null;
 }
 
@@ -700,6 +707,25 @@ export function listSessionArtifacts(
     )
     .all(sessionId) as ArtifactRow[];
   return rows.map(rowToArtifact);
+}
+
+/** Latest read_file artifact for an absolute path within a session (resume / index miss). */
+export function findFileReadArtifactByCommand(
+  db: Database,
+  sessionId: string,
+  absPath: string,
+): ContextArtifact | null {
+  const row = db
+    .query(
+      `SELECT * FROM context_artifacts
+       WHERE session_id = ?
+         AND source_tool = 'read_file'
+         AND command = ?
+       ORDER BY created_turn DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(sessionId, absPath) as ArtifactRow | undefined;
+  return row ? rowToArtifact(row) : null;
 }
 
 export function countSessionArtifacts(

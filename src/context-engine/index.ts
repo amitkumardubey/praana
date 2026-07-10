@@ -229,6 +229,18 @@ export class ContextEngine {
     return result;
   }
 
+  touchAccess(id: string, currentTurn: number): void {
+    this.store.touchAccess(id, currentTurn);
+  }
+
+  findFileReadArtifact(absPath: string): ContextArtifact | null {
+    return this.store.findFileReadArtifact(absPath);
+  }
+
+  clearFileRead(absPath: string): void {
+    this.store.clearFileRead(absPath);
+  }
+
   async flushDeferredDistillation(): Promise<number> {
     return this.store.flushDeferredDistillation();
   }

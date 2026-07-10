@@ -342,6 +342,7 @@ export class PiTuiSink implements TurnUiSink {
       engineMode: this.ctxBeforeEngineMode || this.opts.engineMode,
       distillerSavingsTurn: this.turnDistillerSavings,
       model,
+      repeatFileReads: stats?.repeatFileReads,
     });
     this.finalizeStreams();
     this.applyTranscriptEvent({

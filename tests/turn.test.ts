@@ -1078,6 +1078,162 @@ describe("runTurn", () => {
     expect(onToolCallsStart).toHaveBeenCalledTimes(1);
   });
 
+  it("does not re-ingest skipped_disk read_file results without artifact_id", async () => {
+    const hint = "Already read this session — use retrieve_artifact or search_turn_events";
+    const firstStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } } },
+          ],
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const ingestToolResult = mock(() => ({
+      promptText: "SHOULD_NOT_INGEST",
+      artifactId: "art-bad",
+      inlined: false,
+    }));
+    const touchAccess = mock();
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
+        ingestToolResult,
+        touchAccess,
+        extractAndPersistTurn: mock(() => null),
+        reconcileCheckpoint: mock(),
+        runEviction: mock(() => 0),
+        flushDeferredDistillation: mock(async () => 0),
+      },
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
+      read_file: {
+        description: "Read a file",
+        parameters: z.object({ path: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          content: hint,
+          warning: hint,
+          skipped_disk: true,
+        }),
+      },
+    } as any);
+
+    await runTurn(session, "read again");
+
+    expect(ingestToolResult).not.toHaveBeenCalled();
+    expect(touchAccess).not.toHaveBeenCalled();
+  });
+
+  it("touches artifact access on skipped_disk when artifact_id is present", async () => {
+    const firstStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } } },
+          ],
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "ok" }],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const touchAccess = mock();
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
+        ingestToolResult: mock(),
+        touchAccess,
+        extractAndPersistTurn: mock(() => null),
+        reconcileCheckpoint: mock(),
+        runEviction: mock(() => 0),
+        flushDeferredDistillation: mock(async () => 0),
+      },
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
+      read_file: {
+        description: "Read a file",
+        parameters: z.object({ path: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          content: "[artifact: art-1]",
+          warning: "Already read",
+          skipped_disk: true,
+          artifact_id: "art-1",
+        }),
+      },
+    } as any);
+
+    await runTurn(session, "read again");
+
+    expect(touchAccess).toHaveBeenCalledWith("art-1", 0);
+  });
+
   it("reinforces recalled memories when a later tool succeeds in the same turn", async () => {
     const firstStep = (async function* () {
       yield {
