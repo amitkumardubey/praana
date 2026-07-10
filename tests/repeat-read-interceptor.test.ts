@@ -52,7 +52,8 @@ describe("repeat-read interceptor", () => {
       getCurrentTurn: () => 3,
       blockRepeatReads: opts.blockRepeatReads ?? false,
       hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
-      onScorecardFileRead: (absPath) => scorecard.trackReadPath(absPath),
+      getReadPathMtime: (absPath) => scorecard.getReadPathMtime(absPath),
+      onScorecardFileRead: (absPath, mtimeMs) => scorecard.trackReadPath(absPath, mtimeMs),
       clearReadPath: (absPath) => {
         scorecard.clearReadPath(absPath);
         store.clearFileRead(absPath);
@@ -96,9 +97,6 @@ describe("repeat-read interceptor", () => {
     expect(ingested.inlined).toBe(false);
     expect(ingested.artifactId).toBeDefined();
 
-    // Change disk so a real re-read would return different content
-    writeFileSync(abs, "CHANGED_ON_DISK");
-
     const second = await tools.read_file.execute({ path: rel });
     expect(second.ok).toBe(true);
     expect((second as { skipped_disk?: boolean }).skipped_disk).toBe(true);
@@ -106,10 +104,8 @@ describe("repeat-read interceptor", () => {
     expect((second as { warning?: string }).warning).toContain(ingested.artifactId!);
     expect((second as { warning?: string }).warning).toContain("turn 3");
     expect((second as { content?: string }).content).toContain(`[artifact: ${ingested.artifactId}`);
-    expect((second as { content?: string }).content).not.toContain("CHANGED_ON_DISK");
+    expect((second as { content?: string }).content).not.toContain(big);
     expect(scorecard.getCounters().repeatFileReads).toBe(1);
-    // Disk still has the changed content — interceptor must not have read it
-    expect(readFileSync(abs, "utf-8")).toBe("CHANGED_ON_DISK");
   });
 
   it("block mode: second read returns ok:false", async () => {
@@ -218,6 +214,37 @@ describe("repeat-read interceptor", () => {
     expect((second as { skipped_disk?: boolean }).skipped_disk).toBe(true);
     expect((second as { artifact_id?: string }).artifact_id).toBe(ingested.artifactId);
     expect((second as { content?: string }).content).toContain(`[artifact: ${ingested.artifactId}`);
+  });
+
+  it("re-reads from disk when mtime changed since last successful read", async () => {
+    const abs = join(testDir, "mtime.txt");
+    writeFileSync(abs, "v1");
+    const tools = makeTools();
+
+    const first = await tools.read_file.execute({ path: "mtime.txt" });
+    expect(first.ok).toBe(true);
+    expect((first as { content?: string }).content).toBe("v1");
+    store.ingestToolResult({
+      sourceTool: "read_file",
+      command: abs,
+      rawText: "v1",
+      createdTurn: 1,
+    });
+
+    // External edit (not via write_file) — bump mtime
+    await Bun.sleep(20);
+    writeFileSync(abs, "v2-external");
+
+    const second = await tools.read_file.execute({ path: "mtime.txt" });
+    expect(second.ok).toBe(true);
+    expect((second as { skipped_disk?: boolean }).skipped_disk).not.toBe(true);
+    expect((second as { content?: string }).content).toBe("v2-external");
+    expect(scorecard.getCounters().repeatFileReads).toBe(0);
+  });
+
+  it("read_file description mentions retrieve_artifact", () => {
+    const tools = makeTools();
+    expect(tools.read_file.description).toMatch(/retrieve_artifact/i);
   });
 });
 

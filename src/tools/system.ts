@@ -8,6 +8,7 @@ import {
   mkdirSync,
   realpathSync,
   rmSync,
+  statSync,
 } from "node:fs";
 import { dirname, resolve, isAbsolute, extname, normalize } from "node:path";
 import { homedir } from "node:os";
@@ -49,12 +50,14 @@ export interface SystemToolContext {
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
   skillScorecard?: ScorecardInc;
-  onScorecardFileRead?: (absPath: string) => void;
+  onScorecardFileRead?: (absPath: string, mtimeMs?: number) => void;
   onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
   /** When true, second+ read_file of same abs path hard-fails. */
   blockRepeatReads?: boolean;
   hasReadPath?: (absPath: string) => boolean;
+  /** mtime from last successful read; used to detect external edits. */
+  getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
   findFileReadArtifact?: (absPath: string) => {
     id: string;
@@ -257,6 +260,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     getCurrentTurn,
     blockRepeatReads = false,
     hasReadPath,
+    getReadPathMtime,
     clearReadPath,
     findFileReadArtifact,
   } = ctx;
@@ -305,7 +309,9 @@ export function createSystemTools(ctx: SystemToolContext) {
 
     read_file: defineTool({
       description:
-        "Read contents of a file. Supports optional offset and limit for partial reads.",
+        "Read contents of a file. Supports optional offset and limit for partial reads. " +
+        "If this path was already read this session and is unchanged, prefer retrieve_artifact " +
+        "or search_turn_events instead of calling read_file again.",
       parameters: z.object({
         path: z.string().describe("File path (relative to working dir or absolute)"),
         offset: z
@@ -320,7 +326,17 @@ export function createSystemTools(ctx: SystemToolContext) {
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
         try {
-          const wasRepeat = hasReadPath?.(absPath) ?? false;
+          let wasRepeat = hasReadPath?.(absPath) ?? false;
+
+          // External edits (outside write_file/edit_file) bump mtime — allow a fresh read.
+          if (wasRepeat && existsSync(absPath)) {
+            const diskMtime = statSync(absPath).mtimeMs;
+            const priorMtime = getReadPathMtime?.(absPath);
+            if (priorMtime !== undefined && diskMtime !== priorMtime) {
+              clearReadPath?.(absPath);
+              wasRepeat = false;
+            }
+          }
 
           if (wasRepeat) {
             // Count the repeat attempt for scorecard; do not re-read disk.
@@ -357,6 +373,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `File not found: ${path}` };
           }
 
+          const mtimeMs = statSync(absPath).mtimeMs;
           const content = readFileSync(absPath, "utf-8");
           let lines = content.split("\n");
 
@@ -368,7 +385,7 @@ export function createSystemTools(ctx: SystemToolContext) {
           }
 
           // Only register successful first reads — failed/missing paths stay retryable.
-          onScorecardFileRead?.(absPath);
+          onScorecardFileRead?.(absPath, mtimeMs);
           return { ok: true, content: lines.join("\n") };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to read file" };
@@ -376,6 +393,8 @@ export function createSystemTools(ctx: SystemToolContext) {
       },
     }),
 
+    // deliberate: read_and_summarize is not covered by the repeat-read interceptor —
+    // it returns a derived summary, not raw file bytes, and is out of scope for #219.
     read_and_summarize: defineTool({
       description:
         "Read a file and return a structured summary: key exports, imports/dependencies, and basic metrics. Use instead of read_file when you need an overview of a file.",

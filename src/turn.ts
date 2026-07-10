@@ -163,7 +163,7 @@ export async function runTurn(
     incognito: session.isIncognito(),
     contextEngine: session.contextEngine,
     scorecard: session.scorecard,
-    onScorecardFileRead: (absPath) => session.trackScorecardFileRead(absPath),
+    onScorecardFileRead: (absPath, mtimeMs) => session.trackScorecardFileRead(absPath, mtimeMs),
     onScorecardSkillLoad: (skillId, bodyTokens) => session.scorecard.trackSkillLoad(skillId, bodyTokens),
     classicMode,
     cwd: session.cwd,
@@ -177,6 +177,7 @@ export async function runTurn(
     skillRuntime: session.skillRuntime,
     blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
     hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
+    getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
       session.scorecard.clearReadPath(absPath);
       session.contextEngine?.clearFileRead(absPath);
@@ -602,6 +603,9 @@ export async function runTurn(
       if (session.contextEngine && skippedDisk) {
         // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
         artifactId = resultArtifactId;
+        if (artifactId) {
+          session.contextEngine.touchAccess(artifactId, session.getTurnCount());
+        }
         promptResultText =
           typeof (result as { content?: unknown }).content === "string"
             ? (result as { content: string }).content

@@ -229,6 +229,10 @@ export class ContextEngine {
     return result;
   }
 
+  touchAccess(id: string, currentTurn: number): void {
+    this.store.touchAccess(id, currentTurn);
+  }
+
   findFileReadArtifact(absPath: string): ContextArtifact | null {
     return this.store.findFileReadArtifact(absPath);
   }

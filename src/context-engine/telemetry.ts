@@ -208,6 +208,8 @@ export class ScorecardTracker {
   private usefulnessAvgEnd = 0;
   private recallUsedCount = 0;
   private readPathDigests = new Set<string>();
+  /** Session-local mtimes for freshness checks (not persisted; resume skips mtime compare). */
+  private readPathMtimes = new Map<string, number>();
   private skillsEverLoaded = new Set<string>();
   private startSnapshotCaptured = false;
 
@@ -229,13 +231,16 @@ export class ScorecardTracker {
   }
 
   /** Track read_file paths for repeat-read scorecard signal (stores digests only). */
-  trackReadPath(absPath: string): void {
+  trackReadPath(absPath: string, mtimeMs?: number): void {
     if (!this.db) return;
     const digest = createHash("sha256").update(absPath).digest("hex");
     if (this.readPathDigests.has(digest)) {
       this.inc("repeatFileReads");
     }
     this.readPathDigests.add(digest);
+    if (mtimeMs !== undefined) {
+      this.readPathMtimes.set(digest, mtimeMs);
+    }
   }
 
   /** Whether this absolute path was already tracked as read this session. */
@@ -245,11 +250,19 @@ export class ScorecardTracker {
     return this.readPathDigests.has(digest);
   }
 
+  /** mtime recorded on last successful read; undefined after resume or if never stored. */
+  getReadPathMtime(absPath: string): number | undefined {
+    if (!this.db) return undefined;
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    return this.readPathMtimes.get(digest);
+  }
+
   /** Forget a path after write/edit so a subsequent read_file is treated as fresh. */
   clearReadPath(absPath: string): void {
     if (!this.db) return;
     const digest = createHash("sha256").update(absPath).digest("hex");
     this.readPathDigests.delete(digest);
+    this.readPathMtimes.delete(digest);
   }
 
   /** Classic-mode skill load tracking (engine mode uses SkillRuntime + applySkillSnapshot). */

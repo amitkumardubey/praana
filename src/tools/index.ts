@@ -19,7 +19,7 @@ export interface ToolRegistryContext {
   incognito: boolean;
   contextEngine: ContextEngine | null;
   scorecard?: ScorecardInc;
-  onScorecardFileRead?: (absPath: string) => void;
+  onScorecardFileRead?: (absPath: string, mtimeMs?: number) => void;
   onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   classicMode?: boolean;
   cwd: string;
@@ -33,6 +33,7 @@ export interface ToolRegistryContext {
   skillRuntime: SkillRuntime | null;
   blockRepeatReads?: boolean;
   hasReadPath?: (absPath: string) => boolean;
+  getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
   findFileReadArtifact?: (absPath: string) => {
     id: string;
@@ -84,6 +85,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
     blockRepeatReads: ctx.blockRepeatReads,
     hasReadPath: ctx.hasReadPath,
+    getReadPathMtime: ctx.getReadPathMtime,
     clearReadPath: ctx.clearReadPath,
     findFileReadArtifact: ctx.findFileReadArtifact,
   });
