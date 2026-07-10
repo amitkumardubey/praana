@@ -47,6 +47,8 @@ export interface CompileMetrics {
   skillsTruncated: boolean;
   /** Tokens used by the workflow context section (issue #92). */
   workflowContextTokens?: number;
+  /** Tokens used by the scorecard-driven agent hints section (issue #224). */
+  agentHintsTokens?: number;
   /** Domain-agnostic classified task type (raw label from the active classifier). */
   taskType?: string;
 }
@@ -249,7 +251,38 @@ export function buildSharedAgentPolicy(): string[] {
     "## Tool Use",
     "",
     "Use the provided tools when they are needed to complete the current request. Inspect relevant source before making code claims or changes, and respond concisely.",
+    "",
+    "## Correction Capture",
+    "",
+    "On any user correction of scope, facts, or issue number: call add_note and retract_task (if applicable) in the same turn before any other tool calls. Capturing the correction immediately prevents the stale assumption from persisting into the next turn.",
   ];
+}
+
+export function buildArtifactFirstReadsPolicy(): string[] {
+  return [
+    "## Artifact-First Reads",
+    "",
+    "Before calling read_file on a path already read this session, check the Active State notes and Recent Turns for an existing artifact card. Prefer retrieve_artifact or search_turn_events to recover the prior content. Only call read_file again if the file may have changed on disk or the prior read is incomplete.",
+  ];
+}
+
+export interface AgentHintCounters {
+  repeatFileReads: number;
+}
+
+const AGENT_HINT_REPEAT_READS_THRESHOLD = 5;
+
+export function buildAgentHints(counters: AgentHintCounters): string {
+  const parts: string[] = [];
+  if (counters.repeatFileReads > AGENT_HINT_REPEAT_READS_THRESHOLD) {
+    parts.push(
+      `- repeat_file_reads: ${counters.repeatFileReads} — before re-reading a path, use retrieve_artifact or search_turn_events.`,
+    );
+  }
+  if (parts.length === 0) {
+    return "";
+  }
+  return `## Agent Hints\n\n${parts.join("\n")}`;
 }
 
 export function buildSystemFrame(
@@ -257,7 +290,8 @@ export function buildSystemFrame(
   sessionId: string,
   toolSchemas: string[],
   stateSummary?: string,
-  agentsContext?: string | null
+  agentsContext?: string | null,
+  engineMode = false,
 ): string {
   const lines = [
     "# System",
@@ -277,6 +311,10 @@ export function buildSystemFrame(
   }
 
   lines.push("", ...buildSharedAgentPolicy());
+
+  if (engineMode) {
+    lines.push("", ...buildArtifactFirstReadsPolicy());
+  }
 
   lines.push(
     "",
