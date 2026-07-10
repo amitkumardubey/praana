@@ -327,7 +327,11 @@ export interface TurnFooterInput {
   distillerSavingsTurn?: number;
   /** Active model label for this turn (e.g. "opencode/big-pickle"). */
   model?: string;
+  /** Session repeat_file_reads; shown when > threshold. */
+  repeatFileReads?: number;
 }
+
+const REPEAT_READS_FOOTER_THRESHOLD = 5;
 
 /** Dim one-line turn digest (design §5). */
 export function formatTurnFooterDigest(input: TurnFooterInput): string {
@@ -352,6 +356,11 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
     input.distillerSavingsTurn >= DISTILLER_FOOTER_MIN_SAVINGS
   ) {
     parts.push(`−${formatTokenCount(input.distillerSavingsTurn)} distilled`);
+  }
+
+  const repeatReads = input.repeatFileReads ?? input.stats?.repeatFileReads ?? 0;
+  if (repeatReads > REPEAT_READS_FOOTER_THRESHOLD) {
+    parts.push(`repeat_reads:${repeatReads}`);
   }
 
   if (input.stats) {

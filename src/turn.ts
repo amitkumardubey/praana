@@ -1,6 +1,6 @@
 import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
@@ -14,6 +14,7 @@ import {
   estimateTokens,
 } from "./context-engine/index.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
+import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
@@ -174,6 +175,27 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
+    blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
+    hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
+    clearReadPath: (absPath) => {
+      session.scorecard.clearReadPath(absPath);
+      session.contextEngine?.clearFileRead(absPath);
+    },
+    findFileReadArtifact: (absPath) => {
+      const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
+      if (!art) return null;
+      return {
+        id: art.id,
+        createdTurn: art.createdTurn,
+        card: buildArtifactCard(
+          art.id,
+          art.sourceTool,
+          art.command,
+          art.rawTokens,
+          art.summary,
+        ),
+      };
+    },
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -566,10 +588,38 @@ export async function runTurn(
 
       let promptResultText = toolResultRawText(result);
       let artifactId: string | undefined;
-      if (session.contextEngine) {
+      const skippedDisk =
+        result &&
+        typeof result === "object" &&
+        (result as { skipped_disk?: unknown }).skipped_disk === true;
+      const resultArtifactId =
+        result &&
+        typeof result === "object" &&
+        typeof (result as { artifact_id?: unknown }).artifact_id === "string"
+          ? ((result as { artifact_id: string }).artifact_id)
+          : undefined;
+
+      if (session.contextEngine && skippedDisk && resultArtifactId) {
+        artifactId = resultArtifactId;
+        promptResultText =
+          typeof (result as { content?: unknown }).content === "string"
+            ? (result as { content: string }).content
+            : promptResultText;
+        const toolTokens = estimateDisplayTokens(promptResultText);
+        turnHistoryTokens += toolTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: toolTokens,
+          source: "tool",
+        });
+      } else if (session.contextEngine) {
+        const command = resolveToolCommand(
+          tc.toolName,
+          tc.args as Record<string, unknown>,
+          session.cwd,
+        );
         const ingested = session.contextEngine.ingestToolResult({
           sourceTool: tc.toolName,
-          command: toolCommandFromArgs(tc.toolName, tc.args as Record<string, unknown>),
+          command,
           rawText: promptResultText,
           createdTurn: session.getTurnCount(),
         });
@@ -906,6 +956,8 @@ export interface MemoryBannerStats {
   autoHydrated: number;
   promptTokens: number;
   outputTokens: number;
+  /** Session-scoped scorecard repeat_file_reads (for footer nudge). */
+  repeatFileReads?: number;
 }
 
 function commitTurnContextDisplay(
@@ -955,6 +1007,7 @@ export function computeMemoryStats(
     autoHydrated,
     promptTokens: promptTokens ?? 0,
     outputTokens: outputTokens ?? 0,
+    repeatFileReads: session.scorecard?.getCounters?.().repeatFileReads ?? 0,
   };
 }
 
@@ -972,4 +1025,18 @@ function toolCommandFromArgs(
   if (typeof args.query === "string") return args.query;
   if (toolName === "shell" && typeof args.command === "string") return args.command;
   return undefined;
+}
+
+/** Prefer absolute paths for read_file so artifact file-read index matches interceptor. */
+function resolveToolCommand(
+  toolName: string,
+  args: Record<string, unknown>,
+  cwd: string,
+): string | undefined {
+  const raw = toolCommandFromArgs(toolName, args);
+  if (!raw) return undefined;
+  if (toolName === "read_file") {
+    return isAbsolute(raw) ? raw : resolve(cwd, raw);
+  }
+  return raw;
 }

@@ -52,6 +52,15 @@ export interface SystemToolContext {
   onScorecardFileRead?: (absPath: string) => void;
   onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
+  /** When true, second+ read_file of same abs path hard-fails. */
+  blockRepeatReads?: boolean;
+  hasReadPath?: (absPath: string) => boolean;
+  clearReadPath?: (absPath: string) => void;
+  findFileReadArtifact?: (absPath: string) => {
+    id: string;
+    createdTurn: number;
+    card: string;
+  } | null;
 }
 
 export interface ShellRunOptions {
@@ -234,11 +243,31 @@ export async function executeShellCommand(
 }
 
 export function createSystemTools(ctx: SystemToolContext) {
-  const { cwd, getAbortSignal, sandbox, editConfirm, shellLiveStream, skills, skillRuntime, skillScorecard, onScorecardFileRead, onScorecardSkillLoad, getCurrentTurn } = ctx;
+  const {
+    cwd,
+    getAbortSignal,
+    sandbox,
+    editConfirm,
+    shellLiveStream,
+    skills,
+    skillRuntime,
+    skillScorecard,
+    onScorecardFileRead,
+    onScorecardSkillLoad,
+    getCurrentTurn,
+    blockRepeatReads = false,
+    hasReadPath,
+    clearReadPath,
+    findFileReadArtifact,
+  } = ctx;
 
   const resolvePath = (p: string): string => {
     if (isAbsolute(p)) return p;
     return resolve(cwd, p);
+  };
+
+  const invalidateReadPath = (absPath: string): void => {
+    clearReadPath?.(absPath);
   };
 
   return {
@@ -291,8 +320,38 @@ export function createSystemTools(ctx: SystemToolContext) {
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
         try {
+          const wasRepeat = hasReadPath?.(absPath) ?? false;
           onScorecardFileRead?.(absPath);
-          
+
+          if (wasRepeat) {
+            const prior = findFileReadArtifact?.(absPath) ?? null;
+            const hint = prior
+              ? `Already read turn ${prior.createdTurn} — use retrieve_artifact("${prior.id}") or search_turn_events`
+              : `Already read this session — use retrieve_artifact or search_turn_events instead of re-reading ${path}`;
+
+            if (blockRepeatReads) {
+              return { ok: false, error: hint };
+            }
+
+            if (prior) {
+              return {
+                ok: true,
+                content: prior.card,
+                warning: hint,
+                artifact_id: prior.id,
+                original_turn: prior.createdTurn,
+                skipped_disk: true,
+              };
+            }
+
+            return {
+              ok: true,
+              content: hint,
+              warning: hint,
+              skipped_disk: true,
+            };
+          }
+
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
           }
@@ -445,6 +504,7 @@ export function createSystemTools(ctx: SystemToolContext) {
         try {
           mkdirSync(dirname(absPath), { recursive: true });
           writeFileSync(absPath, content);
+          invalidateReadPath(absPath);
           const warning = validateStructuredContent(absPath, content);
           return warning ? { ok: true, warning } : { ok: true };
         } catch (err: any) {
@@ -512,6 +572,7 @@ export function createSystemTools(ctx: SystemToolContext) {
           }
 
           writeFileSync(absPath, newContent);
+          invalidateReadPath(absPath);
           return { ok: true };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to edit file" };
@@ -548,6 +609,9 @@ export function createSystemTools(ctx: SystemToolContext) {
             mkdirSync(dirname(absPath), { recursive: true });
             writeFileSync(absPath, content);
             written.push(relPath);
+          }
+          for (const { absPath } of resolved) {
+            invalidateReadPath(absPath);
           }
           return { ok: true, files: written };
         } catch (err: any) {
@@ -621,6 +685,10 @@ export function createSystemTools(ctx: SystemToolContext) {
 
           for (const [absPath, content] of workingContents) {
             writeFileSync(absPath, content);
+          }
+
+          for (const absPath of workingContents.keys()) {
+            invalidateReadPath(absPath);
           }
 
           return { ok: true, files: edited };

@@ -86,6 +86,9 @@ const DEFAULT_CONFIG: PraanaConfig = {
   edit: {
     confirm: false,
   },
+  tools: {
+    block_repeat_reads: false,
+  },
   skills: {
     enabled: true,
     max_token_budget_ratio: 0.2,
@@ -479,6 +482,14 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
       configWarn("shell.allowed_paths must be string array, defaulting to []");
       (out.shell as { allowed_paths: readonly string[] }).allowed_paths = [];
     }
+  }
+
+  // Tools config validation
+  if (!out.tools) {
+    out.tools = { block_repeat_reads: false };
+  } else if (typeof out.tools.block_repeat_reads !== "boolean") {
+    configWarn("tools.block_repeat_reads must be boolean, defaulting to false");
+    out.tools = { ...out.tools, block_repeat_reads: false };
   }
 
   // search_code config validation

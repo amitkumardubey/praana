@@ -238,6 +238,20 @@ export class ScorecardTracker {
     this.readPathDigests.add(digest);
   }
 
+  /** Whether this absolute path was already tracked as read this session. */
+  hasReadPath(absPath: string): boolean {
+    if (!this.db) return false;
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    return this.readPathDigests.has(digest);
+  }
+
+  /** Forget a path after write/edit so a subsequent read_file is treated as fresh. */
+  clearReadPath(absPath: string): void {
+    if (!this.db) return;
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    this.readPathDigests.delete(digest);
+  }
+
   /** Classic-mode skill load tracking (engine mode uses SkillRuntime + applySkillSnapshot). */
   trackSkillLoad(skillId: string, bodyTokens: number): void {
     if (!this.db) return;

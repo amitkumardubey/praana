@@ -229,6 +229,14 @@ export class ContextEngine {
     return result;
   }
 
+  findFileReadArtifact(absPath: string): ContextArtifact | null {
+    return this.store.findFileReadArtifact(absPath);
+  }
+
+  clearFileRead(absPath: string): void {
+    this.store.clearFileRead(absPath);
+  }
+
   async flushDeferredDistillation(): Promise<number> {
     return this.store.flushDeferredDistillation();
   }

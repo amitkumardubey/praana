@@ -311,6 +311,18 @@ export class ArtifactStore {
     return artifact;
   }
 
+  /** Look up a prior read_file artifact by absolute path (session-scoped). */
+  findFileReadArtifact(absPath: string): ContextArtifact | null {
+    const id = this.fileReadIndex.get(absPath);
+    if (!id) return null;
+    return this.getArtifact(id);
+  }
+
+  /** Drop path from the file-read index after a write/edit invalidates it. */
+  clearFileRead(absPath: string): void {
+    this.fileReadIndex.delete(absPath);
+  }
+
   getSessionId(): string {
     return this.sessionId;
   }

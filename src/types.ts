@@ -211,6 +211,11 @@ export interface EditConfig {
   confirm: boolean;
 }
 
+export interface ToolsConfig {
+  /** When true, second+ read_file of the same abs path hard-fails. Default: warn + return artifact card. */
+  block_repeat_reads: boolean;
+}
+
 export interface SearchCodeConfig {
   /** Absolute path to the ripgrep binary. Omit to use system "rg" via PATH. */
   rg_path?: string;
@@ -295,6 +300,8 @@ export interface PraanaConfig {
   consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
+  /** Optional; defaults to { block_repeat_reads: false } when omitted. */
+  tools?: ToolsConfig;
   search_code?: SearchCodeConfig;
   skills: SkillsConfig;
   ui: UiConfig;

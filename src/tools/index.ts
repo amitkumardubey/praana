@@ -31,6 +31,14 @@ export interface ToolRegistryContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
+  blockRepeatReads?: boolean;
+  hasReadPath?: (absPath: string) => boolean;
+  clearReadPath?: (absPath: string) => void;
+  findFileReadArtifact?: (absPath: string) => {
+    id: string;
+    createdTurn: number;
+    card: string;
+  } | null;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -74,6 +82,10 @@ export function createAllTools(ctx: ToolRegistryContext) {
     onScorecardFileRead: ctx.onScorecardFileRead,
     onScorecardSkillLoad: ctx.onScorecardSkillLoad,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
+    blockRepeatReads: ctx.blockRepeatReads,
+    hasReadPath: ctx.hasReadPath,
+    clearReadPath: ctx.clearReadPath,
+    findFileReadArtifact: ctx.findFileReadArtifact,
   });
   const searchCodeTools = createSearchCodeTool({
     cwd: ctx.cwd,

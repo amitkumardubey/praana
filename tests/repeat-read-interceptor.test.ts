@@ -1,0 +1,201 @@
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSystemTools } from "../src/tools/system.js";
+import { ScorecardTracker } from "../src/context-engine/telemetry.js";
+import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { openContextEngineDb } from "../src/context-engine/db.js";
+import { buildArtifactCard } from "../src/context-engine/summarize.js";
+import type { ContextEngineConfig } from "../src/types.js";
+
+const ENGINE_CONFIG: ContextEngineConfig = {
+  enabled: true,
+  measurement_mode: false,
+  artifact_inline_threshold: 50,
+  artifact_ttl_turns: 50,
+  distiller: { default_intensity: "full" },
+  llm_digest: false,
+  activity_log_max_entries: 15,
+  checkpoint_enabled: true,
+  scoring: { w_pin: 1.0, w_recency: 0.5, w_relevance: 0.3, w_semantic: 0.3, w_hydrate_boost: 0.2 },
+  pressure: { compact_at: 0.7, emergency_at: 0.85 },
+};
+
+describe("repeat-read interceptor", () => {
+  let testDir: string;
+  let dbPath: string;
+  let store: ArtifactStore;
+  let scorecard: ScorecardTracker;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), "praana-repeat-read-"));
+    dbPath = join(testDir, "context.db");
+    store = ArtifactStore.open(dbPath, "sess-repeat", ENGINE_CONFIG);
+    scorecard = new ScorecardTracker(store.getDb(), "sess-repeat", true);
+  });
+
+  afterEach(() => {
+    try {
+      store.close();
+    } catch {
+      // ignore
+    }
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  function makeTools(opts: { blockRepeatReads?: boolean } = {}) {
+    return createSystemTools({
+      cwd: testDir,
+      skills: [],
+      skillRuntime: null,
+      getCurrentTurn: () => 3,
+      blockRepeatReads: opts.blockRepeatReads ?? false,
+      hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
+      onScorecardFileRead: (absPath) => scorecard.trackReadPath(absPath),
+      clearReadPath: (absPath) => {
+        scorecard.clearReadPath(absPath);
+        store.clearFileRead(absPath);
+      },
+      findFileReadArtifact: (absPath) => {
+        const art = store.findFileReadArtifact(absPath);
+        if (!art) return null;
+        return {
+          id: art.id,
+          createdTurn: art.createdTurn,
+          card: buildArtifactCard(
+            art.id,
+            art.sourceTool,
+            art.command,
+            art.rawTokens,
+            art.summary,
+          ),
+        };
+      },
+    });
+  }
+
+  it("warn mode: second read returns artifact card without re-reading disk", async () => {
+    const big = "x".repeat(2000);
+    const rel = "big.txt";
+    const abs = join(testDir, rel);
+    writeFileSync(abs, big);
+
+    const tools = makeTools();
+    const first = await tools.read_file.execute({ path: rel });
+    expect(first.ok).toBe(true);
+    expect((first as { content?: string }).content).toBe(big);
+
+    // Simulate turn ingest indexing the artifact under abs path
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: abs,
+      rawText: big,
+      createdTurn: 3,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.artifactId).toBeDefined();
+
+    // Change disk so a real re-read would return different content
+    writeFileSync(abs, "CHANGED_ON_DISK");
+
+    const second = await tools.read_file.execute({ path: rel });
+    expect(second.ok).toBe(true);
+    expect((second as { skipped_disk?: boolean }).skipped_disk).toBe(true);
+    expect((second as { warning?: string }).warning).toContain("Already read");
+    expect((second as { warning?: string }).warning).toContain(ingested.artifactId!);
+    expect((second as { warning?: string }).warning).toContain("turn 3");
+    expect((second as { content?: string }).content).toContain(`[artifact: ${ingested.artifactId}`);
+    expect((second as { content?: string }).content).not.toContain("CHANGED_ON_DISK");
+    expect(scorecard.getCounters().repeatFileReads).toBe(1);
+    // Disk still has the changed content — interceptor must not have read it
+    expect(readFileSync(abs, "utf-8")).toBe("CHANGED_ON_DISK");
+  });
+
+  it("block mode: second read returns ok:false", async () => {
+    writeFileSync(join(testDir, "a.txt"), "hello");
+    const tools = makeTools({ blockRepeatReads: true });
+
+    const first = await tools.read_file.execute({ path: "a.txt" });
+    expect(first.ok).toBe(true);
+
+    const second = await tools.read_file.execute({ path: "a.txt" });
+    expect(second.ok).toBe(false);
+    expect((second as { error?: string }).error).toMatch(/already read|repeat/i);
+    expect(scorecard.getCounters().repeatFileReads).toBe(1);
+  });
+
+  it("write_file invalidates path so a subsequent read is fresh", async () => {
+    const abs = join(testDir, "mut.txt");
+    writeFileSync(abs, "v1");
+    const tools = makeTools();
+
+    await tools.read_file.execute({ path: "mut.txt" });
+    store.ingestToolResult({
+      sourceTool: "read_file",
+      command: abs,
+      rawText: "v1",
+      createdTurn: 1,
+    });
+
+    const blocked = await tools.read_file.execute({ path: "mut.txt" });
+    expect((blocked as { skipped_disk?: boolean }).skipped_disk).toBe(true);
+
+    const write = await tools.write_file.execute({ path: "mut.txt", content: "v2" });
+    expect(write.ok).toBe(true);
+
+    const afterWrite = await tools.read_file.execute({ path: "mut.txt" });
+    expect(afterWrite.ok).toBe(true);
+    expect((afterWrite as { skipped_disk?: boolean }).skipped_disk).not.toBe(true);
+    expect((afterWrite as { content?: string }).content).toBe("v2");
+  });
+
+  it("does not crash when artifact lookup is absent (classic)", async () => {
+    writeFileSync(join(testDir, "c.txt"), "classic");
+    const tools = createSystemTools({
+      cwd: testDir,
+      skills: [],
+      skillRuntime: null,
+      getCurrentTurn: () => 0,
+      blockRepeatReads: false,
+      onScorecardFileRead: (absPath) => scorecard.trackReadPath(absPath),
+      hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
+    });
+
+    const first = await tools.read_file.execute({ path: "c.txt" });
+    expect(first.ok).toBe(true);
+    const second = await tools.read_file.execute({ path: "c.txt" });
+    expect(second.ok).toBe(true);
+    expect((second as { warning?: string }).warning).toMatch(/Already read/i);
+    expect(scorecard.getCounters().repeatFileReads).toBe(1);
+  });
+});
+
+describe("ScorecardTracker read-path helpers", () => {
+  it("hasReadPath and clearReadPath work without breaking resume digests", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-scorecard-rp-"));
+    const dbPath = join(dir, "c.db");
+    const db = openContextEngineDb(dbPath);
+    const tracker = new ScorecardTracker(db, "s1", true);
+
+    expect(tracker.hasReadPath("/tmp/a")).toBe(false);
+    tracker.trackReadPath("/tmp/a");
+    expect(tracker.hasReadPath("/tmp/a")).toBe(true);
+    tracker.trackReadPath("/tmp/a");
+    expect(tracker.getCounters().repeatFileReads).toBe(1);
+
+    tracker.clearReadPath("/tmp/a");
+    expect(tracker.hasReadPath("/tmp/a")).toBe(false);
+    tracker.trackReadPath("/tmp/a");
+    // Cleared path counts as first read again — no additional repeat
+    expect(tracker.getCounters().repeatFileReads).toBe(1);
+
+    tracker.persistProgress();
+    const resumed = new ScorecardTracker(db, "s1", true);
+    resumed.restoreFromDb();
+    expect(resumed.hasReadPath("/tmp/a")).toBe(true);
+
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
