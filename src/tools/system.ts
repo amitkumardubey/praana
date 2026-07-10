@@ -321,9 +321,10 @@ export function createSystemTools(ctx: SystemToolContext) {
         const absPath = resolvePath(path);
         try {
           const wasRepeat = hasReadPath?.(absPath) ?? false;
-          onScorecardFileRead?.(absPath);
 
           if (wasRepeat) {
+            // Count the repeat attempt for scorecard; do not re-read disk.
+            onScorecardFileRead?.(absPath);
             const prior = findFileReadArtifact?.(absPath) ?? null;
             const hint = prior
               ? `Already read turn ${prior.createdTurn} — use retrieve_artifact("${prior.id}") or search_turn_events`
@@ -366,6 +367,8 @@ export function createSystemTools(ctx: SystemToolContext) {
             lines = lines.slice(0, limit);
           }
 
+          // Only register successful first reads — failed/missing paths stay retryable.
+          onScorecardFileRead?.(absPath);
           return { ok: true, content: lines.join("\n") };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to read file" };

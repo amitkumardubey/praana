@@ -702,6 +702,25 @@ export function listSessionArtifacts(
   return rows.map(rowToArtifact);
 }
 
+/** Latest read_file artifact for an absolute path within a session (resume / index miss). */
+export function findFileReadArtifactByCommand(
+  db: Database,
+  sessionId: string,
+  absPath: string,
+): ContextArtifact | null {
+  const row = db
+    .query(
+      `SELECT * FROM context_artifacts
+       WHERE session_id = ?
+         AND source_tool = 'read_file'
+         AND command = ?
+       ORDER BY created_turn DESC, id DESC
+       LIMIT 1`,
+    )
+    .get(sessionId, absPath) as ArtifactRow | undefined;
+  return row ? rowToArtifact(row) : null;
+}
+
 export function countSessionArtifacts(
   db: Database,
   sessionId: string,

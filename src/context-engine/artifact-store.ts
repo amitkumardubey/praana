@@ -7,10 +7,12 @@ import type { DistillerRegistry, DistillDeferredResult, DistillResult } from "./
 import {
   evictStaleArtifacts,
   findArtifactByHash,
+  findFileReadArtifactByCommand,
   getArtifactById,
   insertArtifact,
   insertDistillerStat,
   listHighValueArtifacts,
+  listSessionArtifacts,
   openContextEngineDb,
   touchArtifactAccess,
   updateArtifactSummary,
@@ -91,6 +93,17 @@ export class ArtifactStore {
     this.sessionId = sessionId;
     this.config = config;
     this.distillers = distillers;
+    this.rebuildFileReadIndex();
+  }
+
+  /** Rebuild abs-path → artifact id map from persisted session artifacts (resume). */
+  private rebuildFileReadIndex(): void {
+    this.fileReadIndex.clear();
+    for (const art of listSessionArtifacts(this.db, this.sessionId)) {
+      if (art.sourceTool !== "read_file" || !art.command) continue;
+      // Later turns overwrite earlier ones for the same path.
+      this.fileReadIndex.set(art.command, art.id);
+    }
   }
 
   static open(
@@ -314,8 +327,17 @@ export class ArtifactStore {
   /** Look up a prior read_file artifact by absolute path (session-scoped). */
   findFileReadArtifact(absPath: string): ContextArtifact | null {
     const id = this.fileReadIndex.get(absPath);
-    if (!id) return null;
-    return this.getArtifact(id);
+    if (id) {
+      const cached = this.getArtifact(id);
+      if (cached) return cached;
+    }
+    // Index miss or stale id — fall back to DB (e.g. resume before rebuild, or eviction).
+    const fromDb = findFileReadArtifactByCommand(this.db, this.sessionId, absPath);
+    if (fromDb) {
+      this.fileReadIndex.set(absPath, fromDb.id);
+      return fromDb;
+    }
+    return null;
   }
 
   /** Drop path from the file-read index after a write/edit invalidates it. */

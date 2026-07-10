@@ -169,6 +169,56 @@ describe("repeat-read interceptor", () => {
     expect((second as { warning?: string }).warning).toMatch(/Already read/i);
     expect(scorecard.getCounters().repeatFileReads).toBe(1);
   });
+
+  it("failed read does not register path — later successful read is fresh", async () => {
+    const tools = makeTools({ blockRepeatReads: true });
+    const missing = "missing-then-created.txt";
+    const abs = join(testDir, missing);
+
+    const failed = await tools.read_file.execute({ path: missing });
+    expect(failed.ok).toBe(false);
+    expect(scorecard.hasReadPath(abs)).toBe(false);
+    expect(scorecard.getCounters().repeatFileReads).toBe(0);
+
+    writeFileSync(abs, "now exists");
+    const ok = await tools.read_file.execute({ path: missing });
+    expect(ok.ok).toBe(true);
+    expect((ok as { content?: string }).content).toBe("now exists");
+    expect((ok as { skipped_disk?: boolean }).skipped_disk).not.toBe(true);
+    expect(scorecard.hasReadPath(abs)).toBe(true);
+  });
+
+  it("findFileReadArtifact recovers after store reopen (resume)", async () => {
+    const big = "y".repeat(2000);
+    const abs = join(testDir, "resume.txt");
+    writeFileSync(abs, big);
+
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: abs,
+      rawText: big,
+      createdTurn: 2,
+    });
+    expect(ingested.artifactId).toBeDefined();
+    expect(store.findFileReadArtifact(abs)?.id).toBe(ingested.artifactId);
+
+    store.close();
+    store = ArtifactStore.open(dbPath, "sess-repeat", ENGINE_CONFIG);
+    scorecard = new ScorecardTracker(store.getDb(), "sess-repeat", true);
+
+    const recovered = store.findFileReadArtifact(abs);
+    expect(recovered).not.toBeNull();
+    expect(recovered!.id).toBe(ingested.artifactId);
+
+    // Interceptor should return the artifact card, not a generic hint
+    scorecard.trackReadPath(abs);
+    const tools = makeTools();
+    const second = await tools.read_file.execute({ path: "resume.txt" });
+    expect(second.ok).toBe(true);
+    expect((second as { skipped_disk?: boolean }).skipped_disk).toBe(true);
+    expect((second as { artifact_id?: string }).artifact_id).toBe(ingested.artifactId);
+    expect((second as { content?: string }).content).toContain(`[artifact: ${ingested.artifactId}`);
+  });
 });
 
 describe("ScorecardTracker read-path helpers", () => {

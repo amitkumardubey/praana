@@ -599,7 +599,8 @@ export async function runTurn(
           ? ((result as { artifact_id: string }).artifact_id)
           : undefined;
 
-      if (session.contextEngine && skippedDisk && resultArtifactId) {
+      if (session.contextEngine && skippedDisk) {
+        // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
         artifactId = resultArtifactId;
         promptResultText =
           typeof (result as { content?: unknown }).content === "string"
