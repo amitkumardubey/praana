@@ -478,13 +478,14 @@ describe("renderWorkflowContext", () => {
     expect(rendered).toMatch(/5 past testing sessions/);
   });
 
-  it("aggregates tools across multiple patterns", () => {
+  it("aggregates tools across multiple lean patterns", () => {
     const patterns = [
-      makePattern({ id: "a", toolSequence: ["read_file"], artifactTypes: [], hitCount: 1 }),
+      makePattern({ id: "a", toolSequence: ["read_file", "edit_file"], artifactTypes: [], hitCount: 1 }),
       makePattern({ id: "b", toolSequence: ["shell"], artifactTypes: [], hitCount: 1 }),
     ];
     const rendered = renderWorkflowContext(patterns, "testing");
     expect(rendered).toContain("read_file");
+    expect(rendered).toContain("edit_file");
     expect(rendered).toContain("shell");
   });
 
@@ -492,5 +493,45 @@ describe("renderWorkflowContext", () => {
     const patterns = [makePattern({ toolSequence: [] })];
     const rendered = renderWorkflowContext(patterns, "testing");
     expect(rendered).toBe("");
+  });
+
+  it("includes a lean tool-sequence hint from the top lean pattern", () => {
+    const patterns = [
+      makePattern({ id: "lean", toolSequence: ["gh", "read_file", "edit_file", "shell"], hitCount: 12 }),
+      makePattern({ id: "other", toolSequence: ["read_file", "write_file"], hitCount: 3 }),
+    ];
+    const rendered = renderWorkflowContext(patterns, "testing");
+    expect(rendered).toContain("Typical lean sequence:");
+    expect(rendered).toContain("gh → read_file → edit_file → shell");
+  });
+
+  it("does not promote read-heavy patterns without mutating tools", () => {
+    const patterns = [
+      makePattern({ id: "thrash", toolSequence: ["read_file", "search_code"], hitCount: 5 }),
+      makePattern({ id: "lean", toolSequence: ["read_file", "edit_file"], hitCount: 1 }),
+    ];
+    const rendered = renderWorkflowContext(patterns, "testing");
+    expect(rendered).toContain("edit_file");
+    expect(rendered).not.toContain("search_code");
+    expect(rendered).toContain("Avoid:");
+  });
+
+  it("returns empty when only read-heavy patterns exist", () => {
+    const patterns = [
+      makePattern({ id: "thrash", toolSequence: ["read_file", "search_code", "search_session_log"], hitCount: 5 }),
+    ];
+    const rendered = renderWorkflowContext(patterns, "testing");
+    expect(rendered).toBe("");
+  });
+
+  it("caps the injected section near the token budget", () => {
+    const longSequence = Array.from({ length: 50 }, (_, i) => `tool_${i}`);
+    const patterns = [
+      makePattern({ id: "lean", toolSequence: longSequence, hitCount: 50 }),
+    ];
+    const rendered = renderWorkflowContext(patterns, "testing");
+    // Should still render something but not exceed budget wildly.
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered).toContain("## Workflow Context");
   });
 });

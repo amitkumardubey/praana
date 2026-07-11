@@ -379,6 +379,8 @@ Both are stored in `workflow_patterns(task_type, tool_sequence_json, artifact_ty
 
 At compile time, `renderWorkflowContext()` queries patterns matching the current `taskType`, selects the top-N by `hit_count`, and renders a compact **Workflow Context** section injected into the prompt just before the session checkpoint. This gives the engine a prior over which tools and artifact types are likely to appear — without adding it to the scored pool. Patterns for a different task type are never included, so a coding session's workflow history does not bleed into a debugging session.
 
+The rendered section also surfaces a **typical lean tool sequence** from the highest-hit pattern that includes at least one mutating tool (e.g. `edit_file`, `write_file`, `shell`). Read-heavy patterns that contain `read_file` but no mutating tools are treated as exploratory thrashing and are not promoted; when such patterns are present, an **avoid** note reminds the agent to use `retrieve_artifact` after the first read and to batch edits. The whole section is capped at roughly 200 tokens; if the initial render exceeds the budget, the avoid note and then the sequence hint are dropped before the core tool/artifact summary.
+
 ## Telemetry Scorecard
 
 **Source:** `src/context-engine/db.ts` (`scorecard` table), `src/context-engine/telemetry.ts`, `ScorecardTracker` in session/turn
