@@ -119,6 +119,43 @@ function buildResumeNote(userInput: string, staleTasks: StateObject[]): string |
   return `This session was resumed with stale active task${plural}: '${titles}'. The current message does not appear to reference this task. Confirm scope with the user before continuing, branching, or creating files. If the user is switching scope, call retract_task for the stale task before proceeding.`;
 }
 
+function countNoOpTools(toolName: string, result: unknown): number {
+  if (!result || typeof result !== "object") return 0;
+  const r = result as Record<string, unknown>;
+  if (r.ok !== true) return 0;
+  if (toolName === "edit_file" || toolName === "write_file") {
+    return r.noOp === true ? 1 : 0;
+  }
+  if (toolName === "batch_edit" || toolName === "batch_write") {
+    const count = r.noOpCount;
+    return typeof count === "number" && Number.isFinite(count) ? Math.max(0, count) : 0;
+  }
+  return 0;
+}
+
+function buildScorecardNudge(
+  start: { repeatFileReads: number; noOpTools: number } | null | undefined,
+  end: { repeatFileReads: number; noOpTools: number } | null | undefined,
+  turnRecallCalls: number,
+  turnRecallHits: number,
+): string | undefined {
+  if (!start || !end) return undefined;
+  const repeatReadsDelta = end.repeatFileReads - start.repeatFileReads;
+  const noOpToolsDelta = end.noOpTools - start.noOpTools;
+  const recallHitRate = turnRecallCalls > 0 ? turnRecallHits / turnRecallCalls : 1;
+
+  if (repeatReadsDelta > 0) {
+    return `Tip: you re-read files this turn; use search_session_log to recall prior reads.`;
+  }
+  if (noOpToolsDelta > 0) {
+    return `Tip: a tool call made no changes; verify arguments before retrying.`;
+  }
+  if (turnRecallCalls > 0 && recallHitRate < 0.5) {
+    return `Tip: memory recall had low hit rate; add a note or decide before recalling again.`;
+  }
+  return undefined;
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
