@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compile, compileWithMetrics } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -353,5 +353,19 @@ describe('Compiler', () => {
     expect(metrics.memoryTruncated).toBe(true);
     expect(prompt).toContain('memory section truncated');
     expect(metrics.crossSessionTokens).toBeLessThanOrEqual(Math.floor(10_000 * 0.05) + 5);
+  });
+
+  it('injects resume scope note when provided', () => {
+    const note = 'Confirm scope before continuing.';
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false, note);
+
+    expect(frame).toContain('## Resume Scope');
+    expect(frame).toContain(note);
+  });
+
+  it('omits resume scope note when not provided', () => {
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
+
+    expect(frame).not.toContain('## Resume Scope');
   });
 });

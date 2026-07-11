@@ -38,6 +38,13 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
     const tiers = formatStateTiers(session);
     const restored = tiers ? ` · ${tiers} restored` : "";
     lines.push(`resumed · ${turns} turn${turns === 1 ? "" : "s"}${restored}`);
+    const staleTasks = session.getStaleTasks?.() ?? [];
+    if (staleTasks.length > 0) {
+      const titles = staleTasks
+        .map((t) => (t.payload as { title?: string }).title ?? "untitled")
+        .join("', '");
+      lines.push(`⚠ stale task${staleTasks.length === 1 ? "" : "s"}: '${titles}'`);
+    }
     return lines;
   }
 

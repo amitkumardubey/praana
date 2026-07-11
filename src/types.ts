@@ -177,6 +177,11 @@ export interface SessionConfig {
    * Used by `AppController.shutdown()`. Default: 2000.
    */
   shutdown_memory_timeout_ms?: number;
+  /**
+   * Turns of inactivity before an active task is considered stale on resume.
+   * Default: 5.
+   */
+  stale_task_turn_threshold?: number;
 }
 
 export interface ConsolidationConfig {

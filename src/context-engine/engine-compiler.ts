@@ -655,6 +655,8 @@ function buildCompilePassPrecomputed(
     input.toolSchemas,
     stateSummary,
     agentsContext,
+    true,
+    input.resumeNote,
   );
   const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn, verbatimTokenCap);
   return {

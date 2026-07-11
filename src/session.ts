@@ -6,7 +6,7 @@ import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { ContextDisplaySnapshot } from "./context-display.js";
-import type { PraanaConfig, SkillRecord, Event } from "./types.js";
+import type { PraanaConfig, SkillRecord, Event, StateObject } from "./types.js";
 import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { SkillStatsStore } from "./skills/skill-stats-store.js";
@@ -138,6 +138,8 @@ export class Session {
   private compactionArmed = false;
   private sessionLogger: PraanaLogger | null = null;
   private noticeCapture?: (line: string) => void;
+  /** True if this session was just resumed and no new user turn has been processed yet. */
+  private resumed = false;
 
   private constructor(id: string, cwd: string, config: PraanaConfig, startedAt: number) {
     this.id = id;
@@ -368,6 +370,7 @@ export class Session {
       }
     }
 
+    session.resumed = true;
     return session;
   }
 
@@ -383,6 +386,37 @@ export class Session {
   incrementTurn(): void {
     this.turnCount++;
     this.stateGraph.incrementTurn();
+  }
+
+  /**
+   * Mark the session as no longer in the post-resume window. Called after the
+   * first user turn is processed.
+   */
+  clearResumed(): void {
+    this.resumed = false;
+  }
+
+  /**
+   * Whether the session was resumed and the first post-resume user turn has
+   * not yet been processed.
+   */
+  isResumed(): boolean {
+    return this.resumed;
+  }
+
+  /**
+   * Return active tasks that have been idle for longer than the configured
+   * stale threshold. Used to surface a resume banner and scope confirmation.
+   */
+  getStaleTasks(): StateObject[] {
+    const threshold = this.config.session.stale_task_turn_threshold ?? 5;
+    if (threshold <= 0) return [];
+    const currentTurn = this.turnCount;
+    return this.stateGraph.getActive().filter((obj) => {
+      if (obj.kind !== "task") return false;
+      const touchedTurn = this.stateGraph.getTouchedTurn(obj.id);
+      return currentTurn - touchedTurn > threshold;
+    });
   }
 
   /** Record the task type from the most recent compilation (issue #92). */
