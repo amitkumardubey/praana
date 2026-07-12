@@ -76,6 +76,6 @@ describe("Memory Learning Impact", () => {
 
     await expect(
       store.sessionEnd("clean", [{ type: "user_message", timestamp: Date.now(), content: "hello" }]),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ learningsStored: 0 });
   });
 });

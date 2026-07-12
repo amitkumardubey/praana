@@ -310,7 +310,16 @@ export class AppController {
 
 
   async shutdown(): Promise<ShutdownStatus> {
-    if (this.sessionEnded) return { memory: "noop" };
+    if (this.sessionEnded) {
+      return {
+        memory: "noop",
+        turns: 0,
+        stateObjects: 0,
+        rememberCalls: 0,
+        recallUsed: 0,
+        learningsStored: 0,
+      };
+    }
     this.sessionEnded = true;
     const events = this.session.getTranscriptEvents();
     const memoryTimeoutMs =
@@ -319,6 +328,6 @@ export class AppController {
   }
 }
 
-export type ShutdownStatus = {
+export type ShutdownStatus = Omit<SessionEndStatus, "memory"> & {
   memory: SessionEndStatus["memory"] | "noop";
 };

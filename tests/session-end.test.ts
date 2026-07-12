@@ -19,12 +19,16 @@ describe("Session end timeout behavior", () => {
     rmSync(testLogDir, { recursive: true, force: true });
   });
 
+  function expectMemory(status: { memory: string }, expected: string) {
+    expect(status.memory).toBe(expected);
+  }
+
   it("returns quickly when memory sessionEnd exceeds timeout", async () => {
     const s = await Session.create(process.cwd(), testConfig);
 
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
-    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
-      sessionEnd: () => new Promise<void>(() => {}),
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
+      sessionEnd: () => new Promise(() => {}),
     };
 
     const started = Date.now();
@@ -32,17 +36,19 @@ describe("Session end timeout behavior", () => {
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeLessThan(400);
-    expect(status).toEqual({ memory: "background" });
+    expectMemory(status, "background");
+    expect(status.learningsStored).toBe(0);
+    expect(status.turns).toBeGreaterThanOrEqual(0);
   });
 
   it("waits for memory sessionEnd when timeout is not provided", async () => {
     const s = await Session.create(process.cwd(), testConfig);
 
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
-    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
       sessionEnd: () =>
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, 60);
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ learningsStored: 2 }), 60);
         }),
     };
 
@@ -51,36 +57,65 @@ describe("Session end timeout behavior", () => {
     const elapsed = Date.now() - started;
 
     expect(elapsed).toBeGreaterThanOrEqual(50);
-    expect(status).toEqual({ memory: "completed" });
+    expectMemory(status, "completed");
+    expect(status.learningsStored).toBe(2);
   });
 
   it("returns 'completed' when summarizer finishes within timeout", async () => {
     const s = await Session.create(process.cwd(), testConfig);
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
-    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
-      sessionEnd: () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
+      sessionEnd: () => new Promise((resolve) => setTimeout(() => resolve({ learningsStored: 1 }), 5)),
     };
 
     const status = await s.end("clean", [], { memoryTimeoutMs: 200 });
-    expect(status).toEqual({ memory: "completed" });
+    expectMemory(status, "completed");
+    expect(status.learningsStored).toBe(1);
   });
 
   it("returns 'skipped' when memory is disabled", async () => {
     const s = await Session.create(process.cwd(), testConfig);
     // memoryEnabled is false by default in testConfig
     const status = await s.end("clean");
-    expect(status).toEqual({ memory: "skipped" });
+    expectMemory(status, "skipped");
+    expect(status.recallUsed).toBe(0);
+    expect(status.learningsStored).toBe(0);
   });
 
   it("returns 'failed' when summarizer throws", async () => {
     const s = await Session.create(process.cwd(), testConfig);
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
-    (s as unknown as { memoryStore: { sessionEnd: () => Promise<void> } }).memoryStore = {
+    (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
       sessionEnd: () => Promise.reject(new Error("summarizer down")),
     };
 
     const status = await s.end("clean", [], { memoryTimeoutMs: 0 });
-    expect(status).toEqual({ memory: "failed" });
+    expectMemory(status, "failed");
+    expect(status.learningsStored).toBe(0);
+  });
+
+  it("snapshots recallUsed before sessionEnd flush so epilogue stays accurate", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
+    let countCalls = 0;
+    (s as unknown as {
+      memoryStore: {
+        sessionEnd: () => Promise<{ learningsStored: number }>;
+        countPendingReinforcementsUsed: () => number;
+      };
+    }).memoryStore = {
+      countPendingReinforcementsUsed: () => {
+        countCalls++;
+        return countCalls === 1 ? 3 : 0;
+      },
+      sessionEnd: async () => ({ learningsStored: 0 }),
+    };
+
+    const status = await s.end("clean", [], { memoryTimeoutMs: 200 });
+    expectMemory(status, "completed");
+    expect(status.recallUsed).toBe(3);
+    // Post-flush read would be 0 — epilogue must use the snapshot, not a late read.
+    expect(s.getRecallUsedCount()).toBe(0);
   });
 
   it("tracks session start metadata and uptime", async () => {

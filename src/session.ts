@@ -80,9 +80,17 @@ export function visibleCheckpointAfterBoundary(
   return checkpoint;
 }
 
-/** Outcome of the session-end memory summarization step. */
+/** Outcome of the session-end memory summarization step (issue #181 epilogue). */
 export type SessionEndStatus = {
   memory: "completed" | "background" | "skipped" | "failed";
+  turns: number;
+  stateObjects: number;
+  /** Mid-session `remember` tool successes. */
+  rememberCalls: number;
+  /** Surfaced memories marked used — snapshotted before pending_reinforcements flush. */
+  recallUsed: number;
+  /** Summarizer learnings stored in-process; 0 when background/skipped/unknown. */
+  learningsStored: number;
 };
 
 /** Thrown when a requested session does not exist on disk. */
@@ -952,11 +960,22 @@ export class Session {
     events?: SessionEvent[],
     opts?: { memoryTimeoutMs?: number }
   ): Promise<SessionEndStatus> {
-    if (this.ended) return { memory: "skipped" };
+    const summary = this.getSessionSummary();
+    const emptyStatus = (memory: SessionEndStatus["memory"]): SessionEndStatus => ({
+      memory,
+      turns: summary.turns,
+      stateObjects: summary.stateObjects,
+      rememberCalls: summary.memoriesStored,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
+
+    if (this.ended) return emptyStatus("skipped");
     this.ended = true;
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
     const recallUsedCount = this.getRecallUsedCount();
+    let learningsStored = 0;
 
     if (this.memoryEnabled && this.memoryStore) {
       const store = this.memoryStore;
@@ -972,7 +991,10 @@ export class Session {
           },
         });
         this.getLogger().child("memory").info(`Session end begun (reason: ${reason})`);
-        const finish = store.sessionEnd(reason, events);
+        const finish = store.sessionEnd(reason, events).then((result) => {
+          learningsStored = result.learningsStored;
+          return result;
+        });
 
         if (memoryTimeoutMs > 0) {
           const completed = await waitForCompletion(finish, memoryTimeoutMs);
@@ -990,6 +1012,8 @@ export class Session {
             memoryStatus = "completed";
           } else {
             // Ensure late failures are not unhandled after we stop waiting.
+            // Learnings are unknown when we background — leave learningsStored at 0 for epilogue.
+            learningsStored = 0;
             void finish.catch((err: unknown) => {
               this.getLogger().child("memory").warn("Background session-end task failed", {
                 cause: err as Error,
@@ -1039,6 +1063,7 @@ export class Session {
         });
         this.getLogger().child("memory").warn(`Session end failed (reason: ${reason})`, { cause: err as Error });
         memoryStatus = "failed";
+        learningsStored = 0;
       }
 
       // Spawn background consolidation processor if enabled
@@ -1095,8 +1120,8 @@ export class Session {
         const engineConfig = resolveContextEngineConfig(this.config);
         if (this.debug || engineConfig.measurement_mode) {
           this.syncScorecardFromRuntime();
-          const summary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
-          this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(summary));
+          const telemetrySummary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
+          this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(telemetrySummary));
 
           // Skills summary (issue #96 report card) — engine mode only
           if (this.skillRuntime) {
@@ -1196,7 +1221,15 @@ export class Session {
 
     this.persistStateGraphCheckpoint();
     this.eventLog.close();
-    return { memory: memoryStatus };
+    return {
+      memory: memoryStatus,
+      turns: summary.turns,
+      stateObjects: summary.stateObjects,
+      rememberCalls: summary.memoriesStored,
+      recallUsed: recallUsedCount,
+      // Only report learnings when summarizer finished in-process.
+      learningsStored: memoryStatus === "completed" ? learningsStored : 0,
+    };
   }
 
   /**
