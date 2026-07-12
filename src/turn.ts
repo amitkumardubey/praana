@@ -5,6 +5,7 @@ import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
+import type { StateObject } from "./types.js";
 import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
 import { buildAgentHints } from "./compiler.js";
@@ -86,6 +87,36 @@ function addProviderUsage(
     output: acc.output + step.output,
     totalTokens: acc.totalTokens + step.totalTokens,
   };
+}
+
+function extractKeywords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter((w) => w.length >= 3);
+}
+
+function hasKeywordOverlap(a: string, b: string): boolean {
+  const setA = new Set(extractKeywords(a));
+  if (setA.size === 0) return false;
+  for (const kw of extractKeywords(b)) {
+    if (setA.has(kw)) return true;
+  }
+  return false;
+}
+
+function buildResumeNote(userInput: string, staleTasks: StateObject[]): string | undefined {
+  if (staleTasks.length === 0) return undefined;
+  const divergent = staleTasks.filter((t) => {
+    const title = (t.payload as { title?: string }).title ?? "";
+    return title.trim().length > 0 && !hasKeywordOverlap(title, userInput);
+  });
+  if (divergent.length === 0) return undefined;
+  const titles = divergent
+    .map((t) => (t.payload as { title?: string }).title ?? "untitled")
+    .join("', '");
+  const plural = divergent.length === 1 ? "" : "s";
+  return `This session was resumed with stale active task${plural}: '${titles}'. The current message does not appear to reference this task. Confirm scope with the user before continuing, branching, or creating files. If the user is switching scope, call retract_task for the stale task before proceeding.`;
 }
 
 export async function runTurn(
@@ -223,6 +254,9 @@ export async function runTurn(
       ? session.getVisibleSessionCheckpoint() ?? undefined
       : undefined;
 
+  const staleTasks = session.isResumed?.() ? session.getStaleTasks?.() : [];
+  const resumeNote = buildResumeNote(userInput, staleTasks ?? []);
+
   const compileInput = {
     stateGraph: session.stateGraph,
     memoryDigest: session.digest,
@@ -240,6 +274,7 @@ export async function runTurn(
     agentsBudgetRatio,
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
+    resumeNote,
   };
 
   let compiledPrompt: string;
@@ -313,6 +348,7 @@ export async function runTurn(
       memoryDigest: session.digest,
       events: session.eventLog.readAllUncompressed(),
       userInput,
+      resumeNote,
     });
     compiledPrompt = classicResult.prompt;
     promptMetrics = classicResult.metrics;
@@ -338,6 +374,7 @@ export async function runTurn(
         memoryDigest: session.digest,
         events: session.eventLog.readAllUncompressed(),
         userInput,
+        resumeNote,
       });
       compiledPrompt = classicResult.prompt;
       promptMetrics = classicResult.metrics;
@@ -811,6 +848,7 @@ export async function runTurn(
 
   // 7. Increment turn and run tier management (engine mode only)
   session.incrementTurn();
+  session.clearResumed?.();
   session.scorecard.inc("totalTurns");
   session.scorecard.persistProgress();
   if (!classicMode) {
@@ -887,6 +925,7 @@ function finalizeInterruptedTurn(
   }
 
   session.incrementTurn();
+  session.clearResumed?.();
   session.scorecard.inc("totalTurns");
   session.scorecard.persistProgress();
   if (!classicMode) {

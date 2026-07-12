@@ -21,6 +21,11 @@ export interface CompileInput {
   agentsBudgetRatio?: number;
   skillsSectionBudgetRatio?: number;
   reservedOutputTokens?: number;
+  /**
+   * Optional resume-scope note injected into the system frame on the first
+   * post-resume turn when the user's message may diverge from a stale task.
+   */
+  resumeNote?: string;
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
@@ -133,7 +138,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   metrics.agentsContextTruncated = agentsTruncated;
 
   // 1. SYSTEM FRAME
-  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, agentsContext);
+  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, agentsContext, false, input.resumeNote);
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
   metrics.agentsContextTokens = agentsContext ? estTokens(agentsContext) : 0;
@@ -299,6 +304,7 @@ export function buildSystemFrame(
   stateSummary?: string,
   agentsContext?: string | null,
   engineMode = false,
+  resumeNote?: string,
 ): string {
   const lines = [
     "# System",
@@ -315,6 +321,10 @@ export function buildSystemFrame(
 
   if (stateSummary) {
     lines.push("", "## Working Memory Status", "", stateSummary);
+  }
+
+  if (resumeNote) {
+    lines.push("", "## Resume Scope", "", resumeNote);
   }
 
   lines.push("", ...buildSharedAgentPolicy());

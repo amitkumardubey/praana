@@ -397,6 +397,96 @@ describe("AppController", () => {
 
     rmSync(logDir, { recursive: true, force: true });
   });
+
+  it("adds a startup notice when resuming with stale active tasks", async () => {
+    const logDir = join(tmpdir(), "praana-test-app-controller-stale");
+    const cwd = resolve("/tmp/praana-stale-task");
+    const sessionId = "01STALE00000000000000006";
+    mkdirSync(join(logDir, sessionId), { recursive: true });
+    writeFileSync(
+      join(logDir, sessionId, "meta.json"),
+      JSON.stringify(
+        {
+          session_id: sessionId,
+          started_at: Date.now(),
+          cwd,
+          agent: "praana",
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+
+    const staleTask = {
+      id: "task-1",
+      kind: "task" as const,
+      tier: "active" as const,
+      payload: { title: "Fix status bar crash", status: "todo" },
+      created: Date.now(),
+      updated: Date.now(),
+      lastTouched: Date.now(),
+    };
+
+    const resume = Session.resume as Mock<typeof Session.resume>;
+    resume.mockResolvedValueOnce({
+      id: sessionId,
+      cwd,
+      debug: false,
+      config: baseConfig,
+      getModelOverride: () => null,
+      getActiveModelId: () => "test/model",
+      getActiveModelLabel: () => "openrouter/test/model",
+      getEffectiveProvider: () => "openrouter",
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: mock(async () => 128_000),
+      getMemoryStats: () => ({ total: 0, active: 1, soft: 0, hard: 0, byKind: {} }),
+      getRepoRoot: () => cwd,
+      getGitBranch: () => null,
+      memoryEnabled: false,
+      isIncognito: () => false,
+      digest: null,
+      agentsContext: null,
+      skills: [],
+      skillRuntime: null,
+      getLastCompileMetrics: () => null,
+      getLastWeightedTokens: () => 0,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 0,
+      getTurnCount: () => 0,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => 0,
+      getMemoryDbPath: () => null,
+      getStaleTasks: () => [staleTask],
+      stateGraph: { list: () => [] },
+      eventLog: {
+        readLast: () => [],
+        readAll: () => [],
+        readAllAfterResetBoundary: () => [],
+        readLastUncompressedAfterResetBoundary: () => [],
+      },
+      end: mock(async () => ({ memory: "skipped" as const })),
+      getTranscriptEvents: () => [],
+      memoryInitError: undefined,
+    } as any);
+
+    const controller = new AppController({
+      cwd,
+      config: { ...baseConfig, session: { log_dir: logDir } },
+      parsed: { ...baseParsed, resumeMode: true, sessionId },
+    });
+
+    const info = await controller.start();
+    expect(info.isResume).toBe(true);
+    expect(info.startupNotices.some((n) => n.includes("stale active task"))).toBe(true);
+    expect(info.startupNotices.some((n) => n.includes("Fix status bar crash"))).toBe(true);
+
+    rmSync(logDir, { recursive: true, force: true });
+  });
 });
 // Restore real session module after this file to prevent cross-test pollution
 afterAll(() => {

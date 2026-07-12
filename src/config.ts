@@ -73,6 +73,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   session: {
     log_dir: `~/${APP_HOME_DIR}/sessions`,
+    stale_task_turn_threshold: 5,
   },
   consolidation: {
     enabled: true,

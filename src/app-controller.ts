@@ -75,6 +75,17 @@ export class AppController {
           captureNotice,
         });
       }
+      if (didResume) {
+        const staleTasks = this.session.getStaleTasks?.() ?? [];
+        if (staleTasks.length > 0) {
+          const titles = staleTasks
+            .map((t) => (t.payload as { title?: string }).title ?? "untitled")
+            .join("', '");
+          startupNotices.push(
+            `⚠ Resumed with stale active task${staleTasks.length === 1 ? "" : "s"}: '${titles}'. Confirm scope before continuing or starting a new task.`,
+          );
+        }
+      }
       this.session.debug = debug;
     } else {
       this.session = await Session.create(this.cwd, this.config, {

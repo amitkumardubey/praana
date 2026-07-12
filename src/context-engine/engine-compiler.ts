@@ -673,6 +673,7 @@ function buildCompilePassPrecomputed(
     stateSummary,
     agentsContext,
     true,
+    input.resumeNote,
   );
   const agentHints = input.agentHints?.trim() ?? "";
   const agentHintsTokens = agentHints ? estTokens(agentHints) : 0;

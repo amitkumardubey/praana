@@ -16,6 +16,7 @@ export interface ClassicCompileInput {
   memoryDigest?: string | null;
   events: Event[];
   userInput?: string;
+  resumeNote?: string;
 }
 
 
@@ -26,6 +27,7 @@ export function buildClassicSystemFrame(
   toolSchemas: string[],
   agentsContext?: string | null,
   projectContext?: string | null,
+  resumeNote?: string,
 ): string {
   const lines = [
     "# System",
@@ -42,6 +44,10 @@ export function buildClassicSystemFrame(
 
   if (projectContext?.trim()) {
     lines.push("", "## Project Stack", "", projectContext.trim());
+  }
+
+  if (resumeNote) {
+    lines.push("", "## Resume Scope", "", resumeNote);
   }
 
   lines.push("", ...buildSharedAgentPolicy());
@@ -133,6 +139,7 @@ export function compileClassicWithMetrics(
     input.toolSchemas,
     input.agentsContext,
     input.projectContext,
+    input.resumeNote,
   );
   sections.push(frame);
 

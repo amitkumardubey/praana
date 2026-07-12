@@ -144,4 +144,94 @@ describe("Session resume", () => {
     await resumed.end("clean");
     rmSync(sessionDir, { recursive: true, force: true });
   });
+
+  it("isResumed is true immediately after resume and false after a turn", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+
+    const task = s.stateGraph.create("task", { title: "Old task", status: "todo" });
+    s.eventLog.append({
+      kind: "context_action",
+      actor: "kernel",
+      payload: {
+        action: "create",
+        id: task.id,
+        kind: task.kind,
+        tier: task.tier,
+        statePayload: task.payload,
+        created: task.created,
+        updated: task.updated,
+        lastTouched: task.lastTouched,
+      },
+    });
+    s.persistStateGraphCheckpoint();
+    await s.end("clean");
+
+    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumed.isResumed()).toBe(true);
+
+    // Simulate the post-resume turn advancing.
+    resumed.incrementTurn();
+    resumed.clearResumed();
+    expect(resumed.isResumed()).toBe(false);
+
+    await resumed.end("clean");
+    rmSync(join(testLogDir, sid), { recursive: true, force: true });
+  });
+
+  it("getStaleTasks returns active tasks untouched for more than the threshold", async () => {
+    const threshold = 3;
+    const cfg: PraanaConfig = { ...testConfig, session: { ...testConfig.session, stale_task_turn_threshold: threshold } };
+    const s = await Session.create(process.cwd(), cfg);
+    const sid = s.id;
+
+    const freshTask = s.stateGraph.create("task", { title: "Fresh task", status: "todo" });
+    s.eventLog.append({
+      kind: "context_action",
+      actor: "kernel",
+      payload: {
+        action: "create",
+        id: freshTask.id,
+        kind: freshTask.kind,
+        tier: freshTask.tier,
+        statePayload: freshTask.payload,
+        created: freshTask.created,
+        updated: freshTask.updated,
+        lastTouched: freshTask.lastTouched,
+      },
+    });
+
+    const staleTask = s.stateGraph.create("task", { title: "Stale task", status: "todo" });
+    s.eventLog.append({
+      kind: "context_action",
+      actor: "kernel",
+      payload: {
+        action: "create",
+        id: staleTask.id,
+        kind: staleTask.kind,
+        tier: staleTask.tier,
+        statePayload: staleTask.payload,
+        created: staleTask.created,
+        updated: staleTask.updated,
+        lastTouched: staleTask.lastTouched,
+      },
+    });
+
+    // Advance turns so the second task becomes stale relative to the checkpoint.
+    for (let i = 0; i < threshold + 1; i++) {
+      s.incrementTurn();
+    }
+    // Touch the first task on the final turn so it is not considered stale.
+    s.stateGraph.update(freshTask.id, { title: "Fresh task" });
+    s.persistStateGraphCheckpoint();
+    await s.end("clean");
+
+    const resumed = await Session.resume(sid, process.cwd(), cfg);
+    const stale = resumed.getStaleTasks();
+    expect(stale.length).toBe(1);
+    expect((stale[0].payload as any).title).toBe("Stale task");
+
+    await resumed.end("clean");
+    rmSync(join(testLogDir, sid), { recursive: true, force: true });
+  });
 });

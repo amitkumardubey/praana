@@ -1,4 +1,3 @@
-import { describe, it, expect } from 'vitest';
 import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
@@ -353,6 +352,20 @@ describe('Compiler', () => {
     expect(metrics.memoryTruncated).toBe(true);
     expect(prompt).toContain('memory section truncated');
     expect(metrics.crossSessionTokens).toBeLessThanOrEqual(Math.floor(10_000 * 0.05) + 5);
+  });
+
+  it('injects resume scope note when provided', () => {
+    const note = 'Confirm scope before continuing.';
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false, note);
+
+    expect(frame).toContain('## Resume Scope');
+    expect(frame).toContain(note);
+  });
+
+  it('omits resume scope note when not provided', () => {
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
+
+    expect(frame).not.toContain('## Resume Scope');
   });
 
   it('includes correction capture rule in the shared agent policy', () => {

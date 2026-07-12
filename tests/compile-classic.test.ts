@@ -226,4 +226,28 @@ describe("compile-classic", () => {
     expect(metrics.skillsCatalogTokens).toBe(0);
     expect(metrics.crossSessionTokens).toBe(0);
   });
+
+  it("injects resume scope note into classic frame when provided", () => {
+    const { prompt } = compileClassicWithMetrics({
+      cwd: "/proj",
+      sessionId: "sess-1",
+      toolSchemas: ["shell(command)"],
+      events: [],
+      resumeNote: "This session was resumed with stale active task: 'Fix status bar'. Confirm scope before continuing.",
+    });
+
+    expect(prompt).toContain("## Resume Scope");
+    expect(prompt).toContain("Fix status bar");
+  });
+
+  it("omits resume scope note from classic frame when not provided", () => {
+    const { prompt } = compileClassicWithMetrics({
+      cwd: "/proj",
+      sessionId: "sess-1",
+      toolSchemas: ["shell(command)"],
+      events: [],
+    });
+
+    expect(prompt).not.toContain("## Resume Scope");
+  });
 });
