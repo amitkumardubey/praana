@@ -81,6 +81,12 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: "UMANS_AI_CODING_PLAN_API_KEY",
     baseUrl: "https://api.code.umans.ai/v1",
   },
+  nvidia: {
+    api: "openai-completions",
+    provider: "nvidia",
+    envKey: "NVIDIA_API_KEY",
+    baseUrl: "https://integrate.api.nvidia.com/v1",
+  },
   ollama: {
     api: "openai-completions",
     provider: "openai",
