@@ -7,6 +7,7 @@ import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
 import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
+import { buildAgentHints } from "./compiler.js";
 import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
   compileEngineWithMetrics,
@@ -268,6 +269,9 @@ export async function runTurn(
       embedder: session.memoryStore?.embedder ?? null,
       embeddingCache: session.embeddingCache,
       workflowPatterns,
+      agentHints: buildAgentHints({
+        repeatFileReads: session.scorecard.getCounters().repeatFileReads,
+      }),
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {

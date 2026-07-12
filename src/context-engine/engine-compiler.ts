@@ -77,6 +77,11 @@ export interface EngineCompileInput extends CompileInput {
    * compact "Workflow Context" section when matching patterns exist.
    */
   workflowPatterns?: WorkflowPattern[];
+  /**
+   * Optional scorecard-driven agent hints section (issue #224).
+   * Injected after the skills catalog when non-empty.
+   */
+  agentHints?: string;
 }
 
 export interface EngineCompileResult {
@@ -374,6 +379,7 @@ function computeWeightedTokens(
   let weighted = 0;
   weighted += effectiveTokens(metrics.systemFrameTokens, "pinned_infra");
   weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
+  weighted += effectiveTokens(metrics.agentHintsTokens ?? 0, "pinned_infra");
   weighted += effectiveTokens(metrics.workflowContextTokens ?? 0, "pinned_infra");
   weighted += checkpointEffective;
   weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
@@ -413,6 +419,8 @@ interface BuildPassBase {
   agentsContextTokens: number;
   agentsContextTruncated: boolean;
   verbatim: { text: string; tokens: number; truncated: boolean };
+  agentHints?: string;
+  agentHintsTokens: number;
 }
 
 interface CompilePassPrecomputed {
@@ -421,6 +429,8 @@ interface CompilePassPrecomputed {
   agentsContextTokens: number;
   agentsContextTruncated: boolean;
   verbatim: { text: string; tokens: number; truncated: boolean };
+  agentHints?: string;
+  agentHintsTokens: number;
   bandScoredRecentTokens: number;
   bandScoredOlderTokens: number;
   checkpointBudgets: CheckpointSectionBudgets;
@@ -466,6 +476,13 @@ async function compileEnginePass(
     metrics.skillsTruncated = false;
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
+
+  // Agent hints (issue #224): scorecard-driven behavioral nudges injected into the LLM prompt.
+  metrics.agentHintsTokens = 0;
+  if (precomputed.agentHints) {
+    sections.push(precomputed.agentHints);
+    metrics.agentHintsTokens = precomputed.agentHintsTokens;
+  }
 
   // Workflow context (issue #92): inject matching patterns before the checkpoint.
   metrics.workflowContextTokens = 0;
@@ -655,7 +672,10 @@ function buildCompilePassPrecomputed(
     input.toolSchemas,
     stateSummary,
     agentsContext,
+    true,
   );
+  const agentHints = input.agentHints?.trim() ?? "";
+  const agentHintsTokens = agentHints ? estTokens(agentHints) : 0;
   const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn, verbatimTokenCap);
   return {
     systemFrame,
@@ -663,6 +683,8 @@ function buildCompilePassPrecomputed(
     agentsContextTokens: agentsContext ? estTokens(agentsContext) : 0,
     agentsContextTruncated,
     verbatim,
+    agentHints,
+    agentHintsTokens,
   };
 }
 
@@ -739,6 +761,7 @@ export async function compileEngineWithMetrics(
     : 0;
   const pinnedInfraEstimate =
     precomputed.systemFrameTokens +
+    precomputed.agentHintsTokens +
     Math.min(skillsRawTokens, maxSkillsSectionTokens);
 
   const preliminaryWeighted = estimatePreliminaryWeighted(
