@@ -4,6 +4,7 @@
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
 import { DISTILLER_FOOTER_MIN_SAVINGS } from "../../context-display.js";
+import { REPEAT_FILE_READS_THRESHOLD } from "../../compiler.js";
 import {
   formatModelStatusLabel,
   formatSessionTokenBreakdown,
@@ -331,8 +332,6 @@ export interface TurnFooterInput {
   repeatFileReads?: number;
 }
 
-const REPEAT_READS_FOOTER_THRESHOLD = 5;
-
 /** Dim one-line turn digest (design §5). */
 export function formatTurnFooterDigest(input: TurnFooterInput): string {
   const parts: string[] = [];
@@ -359,7 +358,7 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
   }
 
   const repeatReads = input.repeatFileReads ?? input.stats?.repeatFileReads ?? 0;
-  if (repeatReads > REPEAT_READS_FOOTER_THRESHOLD) {
+  if (repeatReads > REPEAT_FILE_READS_THRESHOLD) {
     parts.push(`repeat_reads:${repeatReads}`);
   }
 

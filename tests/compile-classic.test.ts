@@ -66,6 +66,22 @@ describe("compile-classic", () => {
     expect(frame).toContain("Use the provided tools");
   });
 
+  it("includes correction capture rule in classic frame", () => {
+    const frame = buildClassicSystemFrame("/proj", "sess-1", ["shell(command)"]);
+
+    expect(frame).toContain("## Correction Capture");
+    expect(frame).toContain("retract_task");
+    expect(frame).toContain("add_note");
+  });
+
+  it("does not include artifact-first reads in classic frame", () => {
+    const frame = buildClassicSystemFrame("/proj", "sess-1", ["shell(command)"]);
+
+    expect(frame).not.toContain("## Artifact-First Reads");
+    expect(frame).not.toContain("retrieve_artifact");
+    expect(frame).not.toContain("search_turn_events");
+  });
+
   it("hides conversation history before the latest reset boundary", () => {
     const events = [
       makeEvent("user_message", { text: "old question" }, 0),

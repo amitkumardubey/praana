@@ -1049,6 +1049,39 @@ describe("engine compiler — workflow context injection", () => {
     expect(workflowSection).toContain("read_file");
     expect(workflowSection).not.toContain("write_file");
   });
+
+  it("injects agent hints when repeat_file_reads crosses threshold", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      agentHints: "## Agent Hints\n\n- repeat_file_reads: 6 — before re-reading a path, use retrieve_artifact or search_turn_events.",
+    });
+    expect(result.prompt).toContain("## Agent Hints");
+    expect(result.prompt).toContain("repeat_file_reads: 6");
+    expect(result.metrics.agentHintsTokens).toBeGreaterThan(0);
+  });
+
+  it("does not inject agent hints when the section is empty", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      agentHints: "",
+    });
+    expect(result.prompt).not.toContain("## Agent Hints");
+    expect(result.metrics.agentHintsTokens).toBe(0);
+  });
+
+  it("includes agent hints tokens in pressure-weighted count", async () => {
+    const withHints = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      agentHints: "## Agent Hints\n\n- repeat_file_reads: 6 — before re-reading a path, use retrieve_artifact or search_turn_events.",
+    });
+    const withoutHints = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      agentHints: "",
+    });
+    expect(withHints.weightedTokens).toBeGreaterThan(withoutHints.weightedTokens);
+    expect(withHints.metrics.agentHintsTokens ?? 0).toBeGreaterThan(0);
+    expect(withoutHints.metrics.agentHintsTokens ?? 0).toBe(0);
+  });
 });
 
 describe("buildVerbatimSection progressive trimming", () => {

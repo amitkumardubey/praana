@@ -1,5 +1,4 @@
-import { describe, it, expect } from 'vitest';
-import { compile, compileWithMetrics, buildSystemFrame } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -367,5 +366,67 @@ describe('Compiler', () => {
     const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
 
     expect(frame).not.toContain('## Resume Scope');
+  });
+
+  it('includes correction capture rule in the shared agent policy', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).toContain('## Correction Capture');
+    expect(prompt).toContain('retract_task');
+    expect(prompt).toContain('add_note');
+  });
+
+  it('does not include artifact-first reads in legacy compiler mode', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).not.toContain('## Artifact-First Reads');
+    expect(prompt).not.toContain('retrieve_artifact');
+  });
+
+  it('includes artifact-first reads in engine-mode system frame', () => {
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, true);
+
+    expect(frame).toContain('## Artifact-First Reads');
+    expect(frame).toContain('retrieve_artifact');
+    expect(frame).toContain('search_turn_events');
+  });
+
+  it('excludes artifact-first reads in non-engine system frame', () => {
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
+
+    expect(frame).not.toContain('## Artifact-First Reads');
+  });
+
+  it('builds agent hints only when repeat_file_reads crosses threshold', () => {
+    expect(buildAgentHints({ repeatFileReads: 0 })).toBe('');
+    expect(buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD })).toBe('');
+    const hint = buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD + 1 });
+    expect(hint).toContain('## Agent Hints');
+    expect(hint).toContain(`repeat_file_reads: ${REPEAT_FILE_READS_THRESHOLD + 1}`);
+    expect(hint).toContain('retrieve_artifact');
   });
 });
