@@ -38,6 +38,20 @@ describe("config loading", () => {
     expect(logLines.some((l) => l.includes("CONFIG_INVALID"))).toBe(true);
   });
 
+  it("parses fallback_provider and fallback_model under [llm]", () => {
+    const configPath = join(root, "fallback.toml");
+    writeFileSync(
+      configPath,
+      '[llm]\nprovider = "umans"\nmodel = "umans-coder"\nfallback_provider = "openrouter"\nfallback_model = "moonshotai/kimi-k2.7-code"\n',
+      "utf-8",
+    );
+
+    const config = loadConfig(configPath);
+    expect(config.llm.fallback_provider).toBe("openrouter");
+    expect(config.llm.fallback_model).toBe("moonshotai/kimi-k2.7-code");
+    expect(getConfigWarnings()).toHaveLength(0);
+  });
+
   it("warnings reflect the most recent loadConfig() call", () => {
     const goodConfig = join(root, "good.toml");
     const badConfig = join(root, "bad.toml");

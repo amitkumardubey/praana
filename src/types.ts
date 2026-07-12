@@ -115,6 +115,9 @@ export interface LlmConfig {
   base_url?: string;
   /** Override model context window (input tokens) for pressure and compaction. */
   context_window?: number;
+  /** Optional provider/model to use when the primary fails (timeout, 429, empty). */
+  fallback_provider?: string;
+  fallback_model?: string;
 }
 
 export type EmbedderStrategy =
