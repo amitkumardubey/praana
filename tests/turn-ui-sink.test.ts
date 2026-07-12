@@ -104,6 +104,9 @@ function mockSession(): Session {
     contextEngine: null,
     scorecard: createNullScorecard(),
     isIncognito: mock(() => false),
+    isPlanMode: mock(() => false),
+    enterPlanMode: mock(),
+    exitPlanMode: mock(),
     isContextEngineEnabled: mock(() => false),
     getTurnCount: mock(() => 0),
     skillRuntime: {

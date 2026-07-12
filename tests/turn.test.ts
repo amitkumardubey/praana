@@ -122,6 +122,16 @@ mock.module("../src/tools/index.js", () => ({
       parameters: z.object({ query: z.string() }),
       execute: mock().mockResolvedValue({ ok: true, results: [] }),
     },
+    edit_file: {
+      description: "Edit a file",
+      parameters: z.object({ path: z.string(), oldText: z.string(), newText: z.string() }),
+      execute: mock().mockResolvedValue({ ok: true }),
+    },
+    read_file: {
+      description: "Read a file",
+      parameters: z.object({ path: z.string() }),
+      execute: mock().mockResolvedValue({ ok: true, content: "file content" }),
+    },
   })),
   describeTools: mock(() => [
     "create_task(title) — Create a new task",
@@ -313,6 +323,10 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getLastUserInput() { return ""; },
     isIncognito() { return this.incognito ?? false; },
     isContextEngineEnabled() { return this.config.context_engine?.enabled ?? false; },
+    planMode: false,
+    enterPlanMode() { this.planMode = true; },
+    exitPlanMode() { this.planMode = false; },
+    isPlanMode() { return this.planMode; },
     skills: [],
     _inputTokens: 0,
     _outputTokens: 0,
@@ -1464,8 +1478,216 @@ describe("runTurn", () => {
 
     const updated = sg.get(obj.id);
     // The note was soft, but "deployment" might match via autoHydrate
-    // autoHydrate searches payload text for keywords from user input
+    // auto-hydrate searches payload text for keywords from user input
     // It uses simple substring matching
     expect(updated).toBeDefined();
+  });
+
+  it("blocks mutating tools in plan mode", async () => {
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "edit_file", arguments: { path: "a.txt", oldText: "x", newText: "y" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "edit_file", arguments: { path: "a.txt", oldText: "x", newText: "y" } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "blocked" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "blocked" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : finalGenerator as any;
+    });
+
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "start implementing");
+
+    const events = session.eventLog.readLast(50);
+    const toolResults = events.filter((e: Event) => e.kind === "tool_result");
+    const editResult = toolResults.find((e: any) => e.payload.tool === "edit_file");
+    expect(editResult).toBeDefined();
+    expect(editResult?.payload.result.ok).toBe(false);
+    expect(editResult?.payload.result.error).toContain("Plan mode is active");
+  });
+
+  it("allows read-only tools in plan mode", async () => {
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : finalGenerator as any;
+    });
+
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "explore the code");
+
+    const events = session.eventLog.readLast(50);
+    const toolResults = events.filter((e: Event) => e.kind === "tool_result");
+    const readResult = toolResults.find((e: any) => e.payload.tool === "read_file");
+    expect(readResult).toBeDefined();
+    expect(readResult?.payload.result.ok).toBe(true);
+  });
+
+  it("auto-enters plan mode for pick-issue phrasing", async () => {
+    const generator = (async function* () {
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    const session = makeMockSession();
+    await runTurn(session, "pick a github issue to work on");
+    expect(session.isPlanMode()).toBe(true);
+  });
+
+  it("exits plan mode on approval words", async () => {
+    const generator = (async function* () {
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "go execute the plan");
+    expect(session.isPlanMode()).toBe(false);
+  });
+
+  it("does not exit plan mode on deferral phrases", async () => {
+    const generator = (async function* () {
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "continue reading the file first");
+    expect(session.isPlanMode()).toBe(true);
+  });
+
+  it("blocks branch-creating shell commands in plan mode", async () => {
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "git checkout -b feature" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "shell", arguments: { command: "git checkout -b feature" } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "blocked" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "blocked" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : finalGenerator as any;
+    });
+
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "start implementing");
+
+    const events = session.eventLog.readLast(50);
+    const toolResults = events.filter((e: Event) => e.kind === "tool_result");
+    const shellResult = toolResults.find((e: any) => e.payload.tool === "shell");
+    expect(shellResult).toBeDefined();
+    expect(shellResult?.payload.result.ok).toBe(false);
+    expect(shellResult?.payload.result.error).toContain("Plan mode is active");
+  });
+
+  it("allows non-branch git commands in plan mode", async () => {
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "git branch -a" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "shell", arguments: { command: "git branch -a" } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : finalGenerator as any;
+    });
+
+    const session = makeMockSession({ planMode: true });
+    await runTurn(session, "explore the code");
+
+    const events = session.eventLog.readLast(50);
+    const toolResults = events.filter((e: Event) => e.kind === "tool_result");
+    const shellResult = toolResults.find((e: any) => e.payload.tool === "shell");
+    expect(shellResult).toBeDefined();
+    expect(shellResult?.payload.result.ok).toBe(true);
   });
 });

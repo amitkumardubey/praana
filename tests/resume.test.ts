@@ -234,4 +234,28 @@ describe("Session resume", () => {
     await resumed.end("clean");
     rmSync(join(testLogDir, sid), { recursive: true, force: true });
   });
+
+  it("resumes plan mode state from system_note events", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+    const sessionDir = join(testLogDir, sid);
+
+    s.enterPlanMode();
+    await s.end("clean");
+
+    const resumedOn = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumedOn.isPlanMode()).toBe(true);
+    await resumedOn.end("clean");
+
+    const resumedOff = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumedOff.isPlanMode()).toBe(true);
+    resumedOff.exitPlanMode();
+    await resumedOff.end("clean");
+
+    const resumedFinal = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumedFinal.isPlanMode()).toBe(false);
+    await resumedFinal.end("clean");
+
+    rmSync(sessionDir, { recursive: true, force: true });
+  });
 });

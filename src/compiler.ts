@@ -3,6 +3,7 @@ import { estimateTokens as estTokens } from "./token-estimate.js";
 import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
 import { APP_VERSION } from "./app-banner.js";
+import { PLAN_MODE_BLOCKED_TOOLS } from "./plan-mode.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -347,6 +348,14 @@ export function buildSystemFrame(
     "- User says \"I prefer\" / \"let's do\" / \"how about\" / \"we always\" → call add_constraint",
     "- User says \"never\" / \"don't\" / \"make sure\" → call add_constraint",
     "Don't over-capture trivial remarks. Capture anything that would prevent a future mistake.",
+    "",
+    "## Plan-Before-Execute Rule",
+    "",
+    "When the user asks you to pick a GitHub issue, plan a change, or start work on a new task, your first response must be a plan only.",
+    "Use create_task to hold the plan (title, files to touch, branch name, test strategy).",
+    `Do not call ${[...PLAN_MODE_BLOCKED_TOOLS].sort().join(", ")}, or branch-creating shell commands (e.g. 'git checkout -b', 'git switch -c') until the user approves the plan with words like 'go', 'execute', 'proceed', or 'continue'`,
+    "Read-only tools (read_file, search_code, recall, gh issue view) are allowed while planning.",
+    "Only call complete_task for the plan after you have begun executing the approved steps.",
     "",
     "## Memory Management",
     "",

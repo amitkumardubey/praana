@@ -221,6 +221,7 @@ describe("formatTuiGlanceLine", () => {
     thinking: false,
     memoryEnabled: true,
     incognito: false,
+    planMode: false,
     contextUsedTokens: 43_000,
     contextWindowTokens: 100_000,
     memoryStats: { active: 3, soft: 1, hard: 0 },
@@ -284,6 +285,11 @@ describe("formatTuiGlanceLine", () => {
     );
     expect(line).toContain("ctx 0%");
     expect(line).not.toContain("/");
+  });
+
+  it("shows plan mode in glance line", () => {
+    const line = formatTuiGlanceLine({ ...base, planMode: true }, { showCost: false });
+    expect(line).toContain("plan");
   });
 });
 

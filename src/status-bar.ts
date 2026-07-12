@@ -28,6 +28,7 @@ export interface StatusBarInput {
   thinking: boolean;
   memoryEnabled: boolean;
   incognito: boolean;
+  planMode: boolean;
   contextUsedTokens: number;
   contextWindowTokens: number;
   contextDisplayMode?: ContextDisplayMode;
@@ -161,6 +162,7 @@ export function buildStatusBarInput(
     thinking: opts.thinking,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
+    planMode: session.isPlanMode(),
     contextUsedTokens: snapshot.usedTokens,
     contextWindowTokens: snapshot.windowTokens,
     contextDisplayMode: snapshot.mode,
@@ -193,9 +195,12 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
   const line1 = [
     chalk.cyan(statusModelLabel),
     chalk.yellow(formatMode(input.debug, input.thinking)),
+    input.planMode ? chalk.yellow("plan") : null,
     chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,
-  ].join(chalk.dim(" · "));
+  ]
+    .filter(Boolean)
+    .join(chalk.dim(" · "));
 
   const line2 = [
     chalk.bold("Memory:"),
@@ -277,6 +282,7 @@ export function formatStatusLine(input: StatusBarInput): string {
   if (skillsCount > 0) parts.push(chalk.dim(`skills ${skillsCount}`));
   if (stateStr) parts.push(chalk.dim(`state ${stateStr}`));
   if (input.debug) parts.push(chalk.dim("debug"));
+  if (input.planMode) parts.push(chalk.yellow("plan"));
   if (input.currentTask) parts.push(chalk.dim(`task ${input.currentTask}`));
   return parts.join(chalk.dim(" · "));
 }

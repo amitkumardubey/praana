@@ -65,6 +65,102 @@ describe("executeSlashCommand", () => {
     expect(result.lines[0]).toContain("Ending session");
   });
 
+  it("/plan on turns plan mode on and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      planMode: false,
+      enterPlanMode() { this.planMode = true; },
+      exitPlanMode() { this.planMode = false; },
+      isPlanMode() { return this.planMode; },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/plan on", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.isPlanMode()).toBe(true);
+    expect(result.lines[0]).toContain("Plan mode on");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("/plan off turns plan mode off and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      planMode: true,
+      enterPlanMode() { this.planMode = true; },
+      exitPlanMode() { this.planMode = false; },
+      isPlanMode() { return this.planMode; },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/plan off", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.isPlanMode()).toBe(false);
+    expect(result.lines[0]).toContain("Plan mode off");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("/plan execute turns plan mode off and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      planMode: true,
+      enterPlanMode() { this.planMode = true; },
+      exitPlanMode() { this.planMode = false; },
+      isPlanMode() { return this.planMode; },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/plan execute", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.isPlanMode()).toBe(false);
+    expect(result.lines[0]).toContain("Plan mode off");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("/plan go turns plan mode off and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      planMode: true,
+      enterPlanMode() { this.planMode = true; },
+      exitPlanMode() { this.planMode = false; },
+      isPlanMode() { return this.planMode; },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/plan go", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.isPlanMode()).toBe(false);
+    expect(result.lines[0]).toContain("Plan mode off");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("bare /plan shows current state and usage and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      planMode: true,
+      enterPlanMode() { this.planMode = true; },
+      exitPlanMode() { this.planMode = false; },
+      isPlanMode() { return this.planMode; },
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/plan", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.isPlanMode()).toBe(true);
+    expect(result.lines[0]).toContain("Plan mode: ON");
+    expect(result.lines[1]).toContain("Usage: /plan <on|off|execute>");
+    expect(result.action).toBe("refresh_status");
+  });
+
   it("shows effective provider/model when /model has no args", async () => {
     const session = {
       getActiveModelLabel: mock(() => "openrouter/deepseek/deepseek-v4-flash:free"),

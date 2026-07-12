@@ -72,6 +72,7 @@ describe("status-bar", () => {
       thinking: true,
       memoryEnabled: true,
       incognito: false,
+      planMode: false,
       contextUsedTokens: 18400,
       contextWindowTokens: 128000,
       branch: "feat/foo",
@@ -128,6 +129,7 @@ describe("status-bar", () => {
       getInputTokens: () => 500,
       getOutputTokens: () => 120,
       isIncognito: () => false,
+      isPlanMode: () => false,
       skills: [],
       stateGraph: new StateGraph(),
     } as unknown as Session;
@@ -185,6 +187,7 @@ describe("status-bar", () => {
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
       isIncognito: () => false,
+      isPlanMode: () => false,
       skills: [],
       stateGraph: new StateGraph(),
     } as unknown as Session;
@@ -217,6 +220,7 @@ describe("status-bar", () => {
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
       isIncognito: () => false,
+      isPlanMode: () => false,
       skills: [],
       stateGraph: new StateGraph(),
     } as unknown as Session;
@@ -240,6 +244,7 @@ describe("status-bar", () => {
       thinking: false,
       memoryEnabled: true,
       incognito: false,
+      planMode: false,
       contextUsedTokens: 95_000,
       contextWindowTokens: 100_000,
       memoryStats: { active: 3, soft: 1, hard: 0 },
@@ -308,5 +313,53 @@ describe("status-bar", () => {
     } finally {
       chalk.level = prevLevel;
     }
+  });
+
+  it("renders plan mode in status bar lines", () => {
+    const lines = formatStatusBarLines({
+      model: "openai/gpt-4o",
+      repoPath: "/tmp/praana",
+      cwd: "/tmp/praana",
+      debug: false,
+      thinking: false,
+      memoryEnabled: true,
+      incognito: false,
+      planMode: true,
+      contextUsedTokens: 0,
+      contextWindowTokens: 128000,
+      branch: "main",
+      memoryStats: { active: 0, soft: 0, hard: 0 },
+      skills: [],
+      loadedSkills: null,
+      currentTask: null,
+      agentsContextLoaded: false,
+      sessionInputTokens: 0,
+      sessionOutputTokens: 0,
+    });
+    expect(lines[0]).toContain("plan");
+  });
+
+  it("renders plan mode in one-line status", () => {
+    const line = formatStatusLine({
+      model: "gpt-4o",
+      repoPath: "/tmp/praana",
+      cwd: "/tmp/praana",
+      branch: null,
+      debug: false,
+      thinking: false,
+      memoryEnabled: true,
+      incognito: false,
+      planMode: true,
+      contextUsedTokens: 0,
+      contextWindowTokens: 128000,
+      memoryStats: { active: 0, soft: 0, hard: 0 },
+      skills: [],
+      loadedSkills: null,
+      currentTask: null,
+      agentsContextLoaded: false,
+      sessionInputTokens: 0,
+      sessionOutputTokens: 0,
+    });
+    expect(line).toContain("plan");
   });
 });

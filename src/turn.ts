@@ -43,6 +43,11 @@ import {
   type LogEntry,
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
+import {
+  detectPlanApproval,
+  detectPlanModeIntent,
+  isPlanModeMutatingTool,
+} from "./plan-mode.js";
 
 type ProviderUsage = { input: number; output: number; totalTokens: number };
 
@@ -118,7 +123,6 @@ function buildResumeNote(userInput: string, staleTasks: StateObject[]): string |
   const plural = divergent.length === 1 ? "" : "s";
   return `This session was resumed with stale active task${plural}: '${titles}'. The current message does not appear to reference this task. Confirm scope with the user before continuing, branching, or creating files. If the user is switching scope, call retract_task for the stale task before proceeding.`;
 }
-
 function countNoOpTools(toolName: string, result: unknown): number {
   if (!result || typeof result !== "object") return 0;
   const r = result as Record<string, unknown>;
@@ -155,7 +159,6 @@ function buildScorecardNudge(
   }
   return undefined;
 }
-
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -187,6 +190,14 @@ export async function runTurn(
     payload: { text: userInput },
   });
   session.setLastUserInput(userInput);
+
+  // Plan-mode gating: entering is automatic for plan-then-execute phrasing;
+  // exiting requires an explicit approval word or /plan execute.
+  if (session.isPlanMode() && detectPlanApproval(userInput)) {
+    session.exitPlanMode();
+  } else if (detectPlanModeIntent(userInput)) {
+    session.enterPlanMode();
+  }
 
   // 1b. Auto-hydrate peripheral objects matching user query keywords (engine mode only)
   const contextEngineEnabled =
@@ -642,6 +653,16 @@ export async function runTurn(
       if (!toolDef || typeof toolDef.execute !== "function") {
         isError = true;
         result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
+      } else if (
+        session.isPlanMode() &&
+        isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
+      ) {
+        isError = true;
+        result = {
+          ok: false,
+          error:
+            "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
+        };
       } else {
         try {
           result = await toolDef.execute(tc.args);

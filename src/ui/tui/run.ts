@@ -73,6 +73,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/debug", description: "Toggle debug mode" },
   { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
   { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
+  { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
   { name: "/clear", description: "Reset in-session context" },
   { name: "/new", description: "Start a new session" },
   { name: "/help", description: "Show all commands" },

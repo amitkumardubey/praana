@@ -268,6 +268,27 @@ describe('Compiler', () => {
     expect(prompt).toContain('If unsure, ask first.');
   });
 
+  it('should include plan-before-execute rule in system frame', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+    });
+
+    expect(prompt).toContain('## Plan-Before-Execute Rule');
+    expect(prompt).toContain('first response must be a plan only');
+    expect(prompt).toContain('Do not call batch_edit, batch_write, edit_file, write_file');
+    expect(prompt).toContain("'go', 'execute', 'proceed', or 'continue'");
+  });
+
   it('includes shared agent policy with precedence and untrusted data rules', () => {
     const prompt = compile({
       stateGraph: {
