@@ -101,6 +101,7 @@ const fakeStatusBar = {
   thinking: false,
   memoryEnabled: false,
   incognito: false,
+  planMode: false,
   contextUsedTokens: 0,
   contextWindowTokens: 128_000,
   memoryStats: { active: 0, soft: 0, hard: 0 },

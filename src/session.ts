@@ -295,7 +295,8 @@ export class Session {
 
     loadProjectContextField(session, cwd);
 
-    // Restore model + provider overrides from the latest system_note events.
+    // Restore model + provider overrides and plan mode from the latest system_note events.
+    let planModeRestored = false;
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
       if (ev.kind !== "system_note") continue;
@@ -311,7 +312,11 @@ export class Session {
           session.modelOverride = rawModel.trim();
         }
       }
-      if (session.modelOverride !== null && session.providerOverride !== null) break;
+      if (ev.payload.type === "plan_mode" && !planModeRestored) {
+        session.planMode = ev.payload.value === true;
+        planModeRestored = true;
+      }
+      if (session.modelOverride !== null && session.providerOverride !== null && planModeRestored) break;
     }
 
     if (session.memoryEnabled) {
@@ -428,17 +433,27 @@ export class Session {
 
   /** Enter plan mode: mutating tools are blocked until the user approves the plan. */
   enterPlanMode(): void {
-    this.planMode = true;
+    this.setPlanMode(true);
   }
 
   /** Exit plan mode: mutating tools are allowed again. */
   exitPlanMode(): void {
-    this.planMode = false;
+    this.setPlanMode(false);
   }
 
   /** Whether the session is currently in plan mode. */
   isPlanMode(): boolean {
     return this.planMode;
+  }
+
+  private setPlanMode(value: boolean): void {
+    if (this.planMode === value) return;
+    this.planMode = value;
+    this.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: { type: "plan_mode", value },
+    });
   }
 
   clearState(): void {

@@ -108,6 +108,7 @@ export function formatTuiGlanceLine(
   }
 
   if (input.debug) parts.push(chalk.dim("debug"));
+  if (input.planMode) parts.push(TUI_STYLE.warning("plan"));
 
   return parts.join(chalk.dim(" · "));
 }

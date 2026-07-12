@@ -159,16 +159,11 @@ export async function executeSlashCommand(
         session.enterPlanMode();
         lines.push("Plan mode on — mutating tools are blocked until you approve the plan.");
       } else {
-        // Toggle.
-        if (session.isPlanMode()) {
-          session.exitPlanMode();
-          lines.push("Plan mode off — mutating tools are allowed.");
-        } else {
-          session.enterPlanMode();
-          lines.push("Plan mode on — mutating tools are blocked until you approve the plan.");
-        }
+        lines.push(`Plan mode: ${session.isPlanMode() ? "ON" : "OFF"}`);
+        lines.push("Usage: /plan <on|off|execute>");
+        return result("refresh_status", "toast", "info");
       }
-      return result("none", "toast");
+      return result("refresh_status", "toast");
     }
 
     case "/stats": {

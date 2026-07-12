@@ -43,6 +43,11 @@ import {
   type LogEntry,
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
+import {
+  detectPlanApproval,
+  detectPlanModeIntent,
+  isPlanModeMutatingTool,
+} from "./plan-mode.js";
 
 type ProviderUsage = { input: number; output: number; totalTokens: number };
 
@@ -118,7 +123,6 @@ function buildResumeNote(userInput: string, staleTasks: StateObject[]): string |
   const plural = divergent.length === 1 ? "" : "s";
   return `This session was resumed with stale active task${plural}: '${titles}'. The current message does not appear to reference this task. Confirm scope with the user before continuing, branching, or creating files. If the user is switching scope, call retract_task for the stale task before proceeding.`;
 }
-
 function countNoOpTools(toolName: string, result: unknown): number {
   if (!result || typeof result !== "object") return 0;
   const r = result as Record<string, unknown>;
@@ -155,41 +159,6 @@ function buildScorecardNudge(
   }
   return undefined;
 }
-
-const PLAN_MODE_BLOCKED_TOOLS = new Set([
-  "edit_file",
-  "write_file",
-  "batch_edit",
-  "batch_write",
-]);
-
-function isBranchCreatingShellCommand(command: string): boolean {
-  const c = command.trim().toLowerCase();
-  return /\bgit\s+(checkout\s+-[bc]|switch\s+-c|branch\s+)/.test(c);
-}
-
-function isPlanModeMutatingTool(toolName: string, args: Record<string, unknown>): boolean {
-  if (PLAN_MODE_BLOCKED_TOOLS.has(toolName)) return true;
-  if (toolName === "shell" && typeof args.command === "string") {
-    return isBranchCreatingShellCommand(args.command);
-  }
-  return false;
-}
-
-const PLAN_APPROVAL_WORDS = new Set(["go", "execute", "proceed", "continue"]);
-
-function detectPlanApproval(userInput: string): boolean {
-  const words = userInput.toLowerCase().split(/[^a-z0-9]+/);
-  return words.some((w) => PLAN_APPROVAL_WORDS.has(w));
-}
-
-function detectPlanModeIntent(userInput: string): boolean {
-  const lower = userInput.toLowerCase();
-  const pickIssue = /\bpick\b/.test(lower) && /\b(issue|ticket)\b/.test(lower);
-  const planExecute = /\bplan\b/.test(lower) && /\b(branch|implement|execute|work on)\b/.test(lower);
-  return pickIssue || planExecute;
-}
-
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -224,10 +193,10 @@ export async function runTurn(
 
   // Plan-mode gating: entering is automatic for plan-then-execute phrasing;
   // exiting requires an explicit approval word or /plan execute.
-  if (session.isPlanMode?.() && detectPlanApproval(userInput)) {
-    session.exitPlanMode?.();
+  if (session.isPlanMode() && detectPlanApproval(userInput)) {
+    session.exitPlanMode();
   } else if (detectPlanModeIntent(userInput)) {
-    session.enterPlanMode?.();
+    session.enterPlanMode();
   }
 
   // 1b. Auto-hydrate peripheral objects matching user query keywords (engine mode only)
@@ -685,7 +654,7 @@ export async function runTurn(
         isError = true;
         result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
       } else if (
-        session.isPlanMode?.() &&
+        session.isPlanMode() &&
         isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
       ) {
         isError = true;
