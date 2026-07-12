@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import {
   ScorecardTracker,
   createNullScorecard,
+  formatScorecardLines,
 } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { getMemorySignalAverages } from "../src/memory/db.js";
@@ -342,6 +343,83 @@ describe("ScorecardTracker", () => {
     expect(counters.skillReloadCount).toBe(2);
     expect(counters.skillUnderloadEvents).toBe(1);
     expect(counters.skillTokensConsumed).toBe(900);
+  });
+
+  it("updates memory end-averages on persistProgress before flush", async () => {
+    const memDbPath = join(mkdtempSync(join(tmpdir(), "praana-mem-mid-")), "memory.db");
+    const memDb = new Database(memDbPath);
+    memDb.exec(`
+      CREATE TABLE IF NOT EXISTS entries (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'fact',
+        content TEXT NOT NULL,
+        validity REAL NOT NULL DEFAULT 0.5,
+        usefulness REAL NOT NULL DEFAULT 0.5,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        retracted INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        session_id TEXT NOT NULL
+      );
+      INSERT INTO entries (id, kind, content, validity, usefulness, pinned, retracted, created_at, last_seen_at, session_id)
+      VALUES ('e1', 'fact', 'entry 1', 0.85, 0.42, 0, 0, 1000, 1000, 's1');
+    `);
+
+    const db = createDb();
+    const tracker = new ScorecardTracker(db, "test-session", true, {
+      memoryAverages: memoryAveragesProvider(),
+    });
+
+    await tracker.recordMemoryStart(memDbPath);
+    expect(tracker.getMemorySnapshot().validityAvgStart).toBeCloseTo(0.85, 1);
+    expect(tracker.getMemorySnapshot().validityAvgEnd).toBe(0);
+
+    tracker.persistProgress();
+    expect(tracker.getMemorySnapshot().validityAvgEnd).toBeCloseTo(0.85, 1);
+    expect(tracker.getMemorySnapshot().usefulnessAvgEnd).toBeCloseTo(0.42, 1);
+
+    const row = db
+      .prepare("SELECT validity_avg_end, usefulness_avg_end FROM scorecard WHERE session_id = ?")
+      .get("test-session") as { validity_avg_end: number; usefulness_avg_end: number } | undefined;
+    expect(row?.validity_avg_end).toBeCloseTo(0.85, 1);
+    expect(row?.usefulness_avg_end).toBeCloseTo(0.42, 1);
+
+    memDb.close();
+    rmSync(memDbPath, { force: true });
+  });
+
+  it("does not show a fake arrow delta when memory averages are unchanged", () => {
+    const lines = formatScorecardLines({
+      counters: { totalTurns: 3 } as any,
+      memory: {
+        validityAvgStart: 0.85,
+        validityAvgEnd: 0.85,
+        usefulnessAvgStart: 0.42,
+        usefulnessAvgEnd: 0.42,
+      },
+      engineOn: true,
+    });
+    const validityLine = lines.find((l) => l.includes("validity:"));
+    expect(validityLine).toBeDefined();
+    expect(validityLine).not.toContain("→");
+    expect(validityLine).toContain("0.85");
+    expect(validityLine).toContain("(current)");
+  });
+
+  it("shows arrow delta when memory averages change", () => {
+    const lines = formatScorecardLines({
+      counters: { totalTurns: 3 } as any,
+      memory: {
+        validityAvgStart: 0.85,
+        validityAvgEnd: 0.60,
+        usefulnessAvgStart: 0.42,
+        usefulnessAvgEnd: 0.50,
+      },
+      engineOn: true,
+    });
+    const validityLine = lines.find((l) => l.includes("validity:"));
+    expect(validityLine).toContain("→");
+    expect(validityLine).toContain("0.60");
   });
 
   it("recall_used_count must be snapshotted before pending_reinforcements flush", async () => {
