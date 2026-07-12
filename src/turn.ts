@@ -58,6 +58,120 @@ export type ProviderUsageUpdate = {
   latestContextTokens: number;
 };
 
+export interface LlmStreamInput {
+  model: any;
+  modelName: string;
+  providerName: string;
+  compiledPrompt: string;
+  history: Message[];
+  piTools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+  signal?: AbortSignal;
+  reasoningEffort?: string;
+  onTextDelta?: (delta: string) => void;
+  onThinkingDelta?: (delta: string) => void;
+  onProviderUsage?: (update: ProviderUsageUpdate) => void;
+}
+
+export interface LlmStreamResult {
+  fullResponse: string;
+  pendingToolCalls: Array<{
+    toolName: string;
+    args: Record<string, unknown>;
+    toolCallId: string;
+  }>;
+  finalMessage: Message | null;
+  finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" | "timeout" | "rate_limit";
+  errorMessage?: string;
+  providerUsage: ProviderUsage | null;
+  recordedProviderUsage: boolean;
+  assistantTokens: number;
+  interrupted: boolean;
+}
+
+export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
+  const modelOptions: Record<string, unknown> = {
+    ...((input.model as any).__piOptions ?? {}),
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+  };
+
+  const stream = piStream(
+    input.model,
+    {
+      systemPrompt: input.compiledPrompt,
+      messages: input.history,
+      tools: input.piTools,
+    },
+    modelOptions,
+  );
+
+  let fullResponse = "";
+  let assistantTokens = 0;
+  let recordedProviderUsage = false;
+  let providerUsage: ProviderUsage | null = null;
+  let interrupted = false;
+  const pendingToolCalls: LlmStreamResult["pendingToolCalls"] = [];
+  let finalReason: LlmStreamResult["finalReason"] = "stop";
+  let finalMessage: Message | null = null;
+  let errorMessage: string | undefined;
+
+  for await (const event of stream) {
+    if (input.signal?.aborted) {
+      interrupted = true;
+      break;
+    }
+    if (event.type === "text_delta" && typeof event.delta === "string") {
+      input.onTextDelta?.(event.delta);
+      fullResponse += event.delta;
+    }
+    if (event.type === "thinking_delta" && typeof event.delta === "string") {
+      input.onThinkingDelta?.(event.delta);
+    }
+    if (event.type === "toolcall_end") {
+      pendingToolCalls.push({
+        toolName: event.toolCall.name,
+        args: (event.toolCall.arguments ?? {}) as Record<string, unknown>,
+        toolCallId: event.toolCall.id,
+      });
+    }
+    if (event.type === "done") {
+      finalReason = event.reason;
+      finalMessage = event.message as unknown as Message;
+      const stepUsage = parseProviderUsage(event.message);
+      if (stepUsage) {
+        recordedProviderUsage = true;
+        providerUsage = addProviderUsage(providerUsage, stepUsage);
+        input.onProviderUsage?.({
+          step: stepUsage,
+          cumulative: providerUsage,
+          latestContextTokens: stepUsage.input,
+        });
+      }
+    }
+    if (event.type === "error") {
+      finalReason = event.reason as LlmStreamResult["finalReason"];
+      finalMessage = event.error as unknown as Message;
+      errorMessage = extractLlmErrorMessage(finalMessage) ?? errorMessage;
+    }
+  }
+
+  if (finalMessage) {
+    assistantTokens = estimateAssistantMessageTokens(finalMessage);
+  }
+
+  return {
+    fullResponse,
+    pendingToolCalls,
+    finalMessage,
+    finalReason,
+    errorMessage,
+    providerUsage,
+    recordedProviderUsage,
+    assistantTokens,
+    interrupted,
+  };
+}
+
 function parseProviderUsage(message: unknown): ProviderUsage | null {
   if (typeof message !== "object" || message === null) return null;
   const usage = (message as { usage?: unknown }).usage;
@@ -468,7 +582,7 @@ export async function runTurn(
   // 5. Stream response
   let fullResponse = "";
   let stepIndex = 0;
-  let lastStreamReason: "stop" | "length" | "toolUse" | "error" | "aborted" = "stop";
+  let lastStreamReason: LlmStreamResult["finalReason"] = "stop";
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
@@ -484,122 +598,184 @@ export async function runTurn(
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
 
+  // Active model/provider may switch to fallback config if the primary fails.
+  let activeModelName = modelName;
+  let activeProviderName = providerName;
+  let activeModel = model;
+  let fallbackUsed = false;
+
+  const piTools = Object.entries(tools).map(([name, def]) => ({
+    name,
+    description: String((def as any).description ?? ""),
+    parameters: normalizeToolParameters((def as any).parameters),
+  }));
+
+  function isRecoverableStreamError(result: LlmStreamResult): boolean {
+    if (result.interrupted) return false;
+    const reason = result.finalReason;
+    const msg = (result.errorMessage ?? "").toLowerCase();
+    return (
+      reason === "timeout" ||
+      reason === "rate_limit" ||
+      /\b(timeout|rate.?limit|429)\b/i.test(msg)
+    );
+  }
+
+  function isEmptyStreamResponse(result: LlmStreamResult): boolean {
+    return (
+      !result.interrupted &&
+      result.finalReason === "stop" &&
+      !result.fullResponse.trim() &&
+      result.pendingToolCalls.length === 0
+    );
+  }
+
+  function shouldFallback(result: LlmStreamResult): boolean {
+    return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
+  }
+
+  async function attemptStream(): Promise<LlmStreamResult> {
+    return runLlmStream({
+      model: activeModel,
+      modelName: activeModelName,
+      providerName: activeProviderName,
+      compiledPrompt,
+      history,
+      piTools,
+      signal: options?.signal,
+      reasoningEffort: getReasoningEffort(
+        activeModel as Record<string, unknown>,
+        activeModelName,
+        activeProviderName,
+      ),
+      onTextDelta: (delta) => {
+        s.onTextDelta?.(delta);
+      },
+      onThinkingDelta: (delta) => {
+        s.onThinkingDelta?.(delta);
+      },
+      onProviderUsage: (update) => {
+        session.recordInputTokens(update.step.input);
+        session.recordOutputTokens(update.step.output);
+        s.onProviderUsage?.(update);
+      },
+    });
+  }
+
+  async function applyFallback(reason: string): Promise<boolean> {
+    const fallbackProvider = session.config.llm.fallback_provider;
+    const fallbackModel = session.config.llm.fallback_model;
+    if (!fallbackProvider || !fallbackModel) return false;
+
+    llmLogger.warn("Switching to fallback LLM", {
+      code: "LLM_FALLBACK",
+      details: {
+        fromProvider: activeProviderName,
+        fromModel: activeModelName,
+        toProvider: fallbackProvider,
+        toModel: fallbackModel,
+        reason,
+      },
+    });
+
+    session.setProviderOverride(fallbackProvider);
+    session.setModelOverride(fallbackModel);
+    activeProviderName = fallbackProvider;
+    activeModelName = fallbackModel;
+
+    const fallbackLlm = session.getEffectiveLlmConfig();
+    activeModel = createProvider(fallbackLlm, contextWindowTokens)(
+      resolveModel(fallbackModel),
+    );
+
+    session.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "provider_override",
+        provider: fallbackProvider,
+        reason: "llm_fallback",
+      },
+    });
+    session.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "model_override",
+        model: fallbackModel,
+        reason: "llm_fallback",
+      },
+    });
+
+    s.onSystemLines?.([
+      `Switched to ${fallbackProvider}/${fallbackModel} after ${reason}`,
+    ]);
+
+    fallbackUsed = true;
+    return true;
+  }
+
   for (let step = 0; step < maxSteps; step++) {
     if (options?.signal?.aborted) {
       interrupted = true;
       break;
     }
 
-    const piTools = Object.entries(tools).map(([name, def]) => ({
-      name,
-      description: String((def as any).description ?? ""),
-      parameters: normalizeToolParameters((def as any).parameters),
-    }));
+    let streamResult = await attemptStream();
 
-    const streamReasoning = getReasoningEffort(
-      model as Record<string, unknown>,
-      modelName,
-      providerName,
-    );
-    const modelOptions = {
-      ...((model as any).__piOptions ?? {}),
-      ...(options?.signal ? { signal: options.signal } : {}),
-      // pi-ai `stream()` expects `reasoningEffort`; `reasoning` is only for `streamSimple()`.
-      ...(streamReasoning ? { reasoningEffort: streamReasoning } : {}),
-    };
-    const stream = piStream(
-      model as any,
-      {
-        systemPrompt: compiledPrompt,
-        messages: history,
-        tools: piTools,
-      },
-      modelOptions
-    );
+    // On the first step, retry once and then fall back on recoverable failures.
+    if (step === 0 && shouldFallback(streamResult)) {
+      streamResult = await attemptStream();
+      if (shouldFallback(streamResult)) {
+        const fallbackReason = streamResult.errorMessage ?? "empty response";
+        const applied = await applyFallback(fallbackReason);
+        if (applied) {
+          streamResult = await attemptStream();
+        }
+      }
+    }
 
-    const pendingToolCalls: Array<{
-      toolName: string;
-      args: Record<string, unknown>;
-      toolCallId: string;
-    }> = [];
-    let finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" =
-      "stop";
-    let finalMessage: Message | null = null;
-
-    for await (const event of stream) {
-      if (options?.signal?.aborted) {
-        interrupted = true;
-        break;
-      }
-      if (event.type === "text_delta" && typeof event.delta === "string") {
-        s.onTextDelta?.(event.delta);
-        fullResponse += event.delta;
-      }
-      if (event.type === "thinking_delta" && typeof event.delta === "string") {
-        s.onThinkingDelta?.(event.delta);
-      }
-      if (event.type === "toolcall_end") {
-        pendingToolCalls.push({
-          toolName: event.toolCall.name,
-          args: (event.toolCall.arguments ?? {}) as Record<string, unknown>,
-          toolCallId: event.toolCall.id,
+    // Log errors from the final stream attempt.
+    if (streamResult.finalReason === "error" || streamResult.finalReason === "aborted") {
+      const llmMessage = streamResult.errorMessage;
+      lastStreamReason = streamResult.finalReason;
+      lastLlmErrorMessage = llmMessage;
+      if (streamResult.finalReason === "aborted") {
+        llmLogger.warn("LLM stream aborted", {
+          code: "LLM_ABORTED",
+          details: { model: activeModelName, provider: activeProviderName, message: llmMessage },
         });
-      }
-      if (event.type === "done") {
-        finalReason = event.reason;
-        finalMessage = event.message as unknown as Message;
-        const stepUsage = parseProviderUsage(event.message);
-        if (stepUsage) {
-          recordedProviderUsage = true;
-          providerUsage = addProviderUsage(providerUsage, stepUsage);
-          session.recordInputTokens(stepUsage.input);
-          session.recordOutputTokens(stepUsage.output);
-          s.onProviderUsage?.({
-            step: stepUsage,
-            cumulative: providerUsage,
-            latestContextTokens: stepUsage.input,
-          });
-        }
-      }
-      if (event.type === "error") {
-        finalReason = event.reason;
-        finalMessage = event.error as unknown as Message;
-        const llmMessage = extractLlmErrorMessage(finalMessage);
-        lastStreamReason = finalReason;
-        lastLlmErrorMessage = llmMessage;
-        if (finalReason === "aborted") {
-          llmLogger.warn("LLM stream aborted", {
-            code: "LLM_ABORTED",
-            details: { model: modelName, provider: providerName, message: llmMessage },
-          });
-          interrupted = true;
-          break;
-        }
+      } else {
         llmLogger.error("LLM stream error", {
           code: "LLM_STREAM_ERROR",
-          details: { model: modelName, provider: providerName, reason: finalReason, message: llmMessage },
+          details: { model: activeModelName, provider: activeProviderName, reason: streamResult.finalReason, message: llmMessage },
         });
         const errorEntry: LogEntry = {
           level: "error",
           domain: "llm",
           message: llmMessage ?? "LLM stream error",
           code: "LLM_STREAM_ERROR",
-          details: { model: modelName, provider: providerName, reason: finalReason },
+          details: { model: activeModelName, provider: activeProviderName, reason: streamResult.finalReason },
         };
         s.onError?.(errorEntry);
       }
     }
 
-    lastStreamReason = finalReason;
-    if (finalReason === "error" || finalReason === "aborted") {
-      lastLlmErrorMessage =
-        extractLlmErrorMessage(finalMessage) ?? lastLlmErrorMessage;
+    lastStreamReason = streamResult.finalReason;
+    if (streamResult.finalReason === "error" || streamResult.finalReason === "aborted") {
+      lastLlmErrorMessage = streamResult.errorMessage ?? lastLlmErrorMessage;
     }
 
-    if (interrupted) break;
+    fullResponse += streamResult.fullResponse;
+    providerUsage = streamResult.providerUsage;
+    recordedProviderUsage = streamResult.recordedProviderUsage;
+    if (streamResult.interrupted) {
+      interrupted = true;
+      break;
+    }
 
-    if (finalMessage) {
-      const assistantTokens = estimateAssistantMessageTokens(finalMessage);
+    if (streamResult.finalMessage) {
+      const assistantTokens = streamResult.assistantTokens;
       if (assistantTokens > 0) {
         turnHistoryTokens += assistantTokens;
         s.onContextHistoryDelta?.({
@@ -607,10 +783,11 @@ export async function runTurn(
           source: "assistant",
         });
       }
-      history.push(finalMessage);
+      history.push(streamResult.finalMessage);
     }
 
-    if (!pendingToolCalls.length || finalReason !== "toolUse") {
+    const pendingToolCalls = streamResult.pendingToolCalls;
+    if (!pendingToolCalls.length || streamResult.finalReason !== "toolUse") {
       break;
     }
 
@@ -846,21 +1023,21 @@ export async function runTurn(
     if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
       llmLogger.warn("LLM returned no text content", {
         code: "LLM_EMPTY_RESPONSE",
-        details: { model: modelName, provider: providerName, reason: lastStreamReason },
+        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
       });
     }
     const fallback = formatUserFacingLlmError({
       reason: lastStreamReason,
       llmMessage: lastLlmErrorMessage,
-      model: modelName,
-      provider: providerName,
+      model: activeModelName,
+      provider: activeProviderName,
     });
     const errorEntry: LogEntry = {
       level: lastStreamReason === "error" ? "error" : "warn",
       domain: "llm",
       message: lastLlmErrorMessage ?? "No text content in LLM response",
       code,
-      details: { model: modelName, provider: providerName, reason: lastStreamReason },
+      details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
     };
     s.onError?.(errorEntry);
     s.onFallback?.(fallback);
