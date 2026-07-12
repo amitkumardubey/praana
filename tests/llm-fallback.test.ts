@@ -82,7 +82,7 @@ mock.module("../src/ui.js", () => ({
 }));
 
 import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
-import { runTurn, runLlmStream } from "../src/turn.js";
+import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import type { Event } from "../src/types.js";
@@ -229,8 +229,14 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getActiveModelLabel() {
       return `${this.getEffectiveProvider()}/${this.getActiveModelId()}`;
     },
+    getProviderOverride() {
+      return this._providerOverride;
+    },
     setProviderOverride(provider: string | null) {
       this._providerOverride = provider;
+    },
+    getModelOverride() {
+      return this._modelOverride;
     },
     setModelOverride(model: string | null) {
       this._modelOverride = model;
@@ -391,20 +397,26 @@ describe("LLM fallback", () => {
     expect(session.getEffectiveProvider()).toBe("umans");
   });
 
-  it("records provider_override and model_override events on fallback", async () => {
+  it("records provider_override and model_override events on successful fallback", async () => {
     const session = makeMockSession();
     session.config.llm.fallback_provider = "openrouter";
     session.config.llm.fallback_model = "fallback-model";
 
+    let callCount = 0;
     (piStream as any).mockImplementation(() => {
+      callCount++;
+      if (callCount <= 2) {
+        return (async function* () {
+          yield { type: "error", reason: "rate_limit", error: { role: "assistant", errorMessage: "429" } };
+        })();
+      }
       return (async function* () {
-        yield { type: "error", reason: "rate_limit", error: { role: "assistant", errorMessage: "429" } };
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "fallback ok" }] } };
       })();
     });
 
-    await runTurn(session, "hello").catch(() => {
-      // expected to fail; we only care about events
-    });
+    await runTurn(session, "hello");
 
     const overrides = session.eventLog.readAll().filter(
       (e: any) =>
@@ -414,6 +426,29 @@ describe("LLM fallback", () => {
     expect(overrides.length).toBe(2);
     expect(overrides[0].payload.reason).toBe("llm_fallback");
     expect(overrides[1].payload.reason).toBe("llm_fallback");
+  });
+
+  it("does not commit override events when fallback also fails", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+
+    (piStream as any).mockImplementation(() => {
+      return (async function* () {
+        yield { type: "error", reason: "rate_limit", error: { role: "assistant", errorMessage: "429 exhausted" } };
+      })();
+    });
+
+    await runTurn(session, "hello");
+
+    const overrides = session.eventLog.readAll().filter(
+      (e: any) =>
+        e.kind === "system_note" &&
+        (e.payload.type === "provider_override" || e.payload.type === "model_override"),
+    );
+    expect(overrides.length).toBe(0);
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
   });
 
   it("surfaces an error message when fallback is also exhausted", async () => {
@@ -429,7 +464,8 @@ describe("LLM fallback", () => {
 
     const response = await runTurn(session, "hello");
     expect(response).toContain("I encountered an error");
-    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
   });
 
   it("retries once on same model before falling back", async () => {
@@ -455,5 +491,48 @@ describe("LLM fallback", () => {
     expect(response).toContain("retry ok");
     expect(session.getEffectiveProvider()).toBe("umans");
     expect(callCount).toBe(2);
+  });
+
+  it("does not overwrite an explicit user /model override", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    session.setProviderOverride("anthropic");
+    session.setModelOverride("claude-sonnet-4");
+
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount++;
+      if (callCount <= 2) {
+        return (async function* () {
+          yield { type: "error", reason: "rate_limit", error: { role: "assistant", errorMessage: "429" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "fallback ok" }] } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", "claude-sonnet-4");
+    expect(response).not.toContain("fallback ok");
+    expect(response).toContain("no response from model");
+    expect(session.getEffectiveProvider()).toBe("anthropic");
+    expect(session.getActiveModelId()).toBe("claude-sonnet-4");
+    expect(callCount).toBe(2);
+
+    const overrides = session.eventLog.readAll().filter(
+      (e: any) =>
+        e.kind === "system_note" &&
+        (e.payload.type === "provider_override" || e.payload.type === "model_override"),
+    );
+    expect(overrides.length).toBe(0);
+  });
+
+  it("matches 'Rate Limited' and 'Too Many Requests' error messages", () => {
+    const rateLimited: any = { interrupted: false, finalReason: "error", errorMessage: "Rate Limited", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(rateLimited)).toBe(true);
+    const tooMany: any = { interrupted: false, finalReason: "error", errorMessage: "Too Many Requests", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(tooMany)).toBe(true);
   });
 });

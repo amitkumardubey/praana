@@ -5,7 +5,7 @@ import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
 import type { Session } from "./session.js";
-import type { StateObject } from "./types.js";
+import type { StateObject, PraanaConfig } from "./types.js";
 import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
 import { buildAgentHints } from "./compiler.js";
@@ -95,7 +95,7 @@ export function isRecoverableStreamError(result: LlmStreamResult): boolean {
   return (
     reason === "timeout" ||
     reason === "rate_limit" ||
-    /\b(timeout|rate.?limit|429)\b/i.test(msg)
+    /\b(timeout|rate[ _-]?(?:limit|limited)|429|too\s+many\s+requests)\b/i.test(msg)
   );
 }
 
@@ -422,7 +422,7 @@ export async function runTurn(
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
-  const contextWindowTokens = await session.ensureModelContextWindow(modelName);
+  let contextWindowTokens = await session.ensureModelContextWindow(modelName);
   const reservedOutputTokens = session.config.compiler.reserved_output_tokens ?? 0;
 
 
@@ -664,16 +664,38 @@ export async function runTurn(
     });
   }
 
-  async function applyFallback(reason: string): Promise<boolean> {
+  function canFallback(): boolean {
     const fallbackProvider = session.config.llm.fallback_provider;
     const fallbackModel = session.config.llm.fallback_model;
     if (!fallbackProvider || !fallbackModel) return false;
+    // An explicit /model choice takes precedence and is never overwritten
+    // by automatic fallback. If the user already set a model/provider override,
+    // skip the automatic fallback path entirely.
+    if (session.getModelOverride() || session.getProviderOverride()) return false;
+    return true;
+  }
 
-    llmLogger.warn("Switching to fallback LLM", {
+  async function prepareFallback(fallbackProvider: string, fallbackModel: string): Promise<void> {
+    activeProviderName = fallbackProvider;
+    activeModelName = fallbackModel;
+    contextWindowTokens = await session.ensureModelContextWindow(fallbackModel);
+
+    const fallbackLlm: PraanaConfig["llm"] = {
+      ...session.config.llm,
+      provider: fallbackProvider,
+      model: fallbackModel,
+    };
+    activeModel = createProvider(fallbackLlm, contextWindowTokens)(
+      resolveModel(fallbackModel),
+    );
+  }
+
+  function commitFallback(fallbackProvider: string, fallbackModel: string, reason: string): void {
+    llmLogger.warn("Switched to fallback LLM", {
       code: "LLM_FALLBACK",
       details: {
-        fromProvider: activeProviderName,
-        fromModel: activeModelName,
+        fromProvider: providerName,
+        fromModel: modelName,
         toProvider: fallbackProvider,
         toModel: fallbackModel,
         reason,
@@ -682,13 +704,6 @@ export async function runTurn(
 
     session.setProviderOverride(fallbackProvider);
     session.setModelOverride(fallbackModel);
-    activeProviderName = fallbackProvider;
-    activeModelName = fallbackModel;
-
-    const fallbackLlm = session.getEffectiveLlmConfig();
-    activeModel = createProvider(fallbackLlm, contextWindowTokens)(
-      resolveModel(fallbackModel),
-    );
 
     session.eventLog.append({
       kind: "system_note",
@@ -712,8 +727,6 @@ export async function runTurn(
     s.onSystemLines?.([
       `Switched to ${fallbackProvider}/${fallbackModel} after ${reason}`,
     ]);
-
-    return true;
   }
 
   for (let step = 0; step < maxSteps; step++) {
@@ -727,11 +740,21 @@ export async function runTurn(
     // On the first step, retry once and then fall back on recoverable failures.
     if (step === 0 && shouldFallback(streamResult)) {
       streamResult = await attemptStream();
-      if (shouldFallback(streamResult)) {
+      if (shouldFallback(streamResult) && canFallback()) {
+        const fallbackProvider = session.config.llm.fallback_provider!;
+        const fallbackModel = session.config.llm.fallback_model!;
         const fallbackReason = streamResult.errorMessage ?? "empty response";
-        const applied = await applyFallback(fallbackReason);
-        if (applied) {
-          streamResult = await attemptStream();
+
+        await prepareFallback(fallbackProvider, fallbackModel);
+        const fallbackResult = await attemptStream();
+
+        if (!shouldFallback(fallbackResult)) {
+          commitFallback(fallbackProvider, fallbackModel, fallbackReason);
+          streamResult = fallbackResult;
+        } else {
+          // Fallback also failed; keep the failed result for error reporting
+          // but do not commit any session override or event-log entries.
+          streamResult = fallbackResult;
         }
       }
     }

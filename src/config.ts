@@ -403,6 +403,14 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     delete out.llm.context_window;
   }
 
+  const hasFallbackProvider = !!out.llm.fallback_provider;
+  const hasFallbackModel = !!out.llm.fallback_model;
+  if (hasFallbackProvider !== hasFallbackModel) {
+    configWarn(
+      "llm.fallback_provider and llm.fallback_model must both be set for automatic fallback; ignoring fallback config",
+    );
+  }
+
   if (!out.context_engine) {
     out.context_engine = { ...DEFAULT_CONFIG.context_engine };
   }

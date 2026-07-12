@@ -478,7 +478,7 @@ log_dir = "~/.praana/sessions"
 
 ### Automatic fallback
 
-If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, `429` rate-limit, or empty response. If the retry also fails, it switches to the fallback provider/model, appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn. The fallback override is treated like an explicit `/model` switch, so it persists for the rest of the session and survives resume.
+If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, `429` rate-limit, or empty response. If the retry also fails, it attempts the configured fallback provider/model. A successful fallback stream appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn; the override then persists for the rest of the session and survives resume. If the fallback stream also fails, no override is committed and the turn surfaces the error. An explicit `/model` choice from the user takes precedence and disables automatic fallback for that turn.
 
 ## UI and Slash Commands
 

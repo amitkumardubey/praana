@@ -52,6 +52,21 @@ describe("config loading", () => {
     expect(getConfigWarnings()).toHaveLength(0);
   });
 
+  it("warns when only one fallback key is set", () => {
+    const configPath = join(root, "partial-fallback.toml");
+    writeFileSync(
+      configPath,
+      '[llm]\nprovider = "umans"\nmodel = "umans-coder"\nfallback_provider = "openrouter"\n',
+      "utf-8",
+    );
+
+    loadConfig(configPath);
+    const warnings = getConfigWarnings();
+    expect(warnings.some((w) =>
+      w.includes("fallback_provider") && w.includes("fallback_model"),
+    )).toBe(true);
+  });
+
   it("warnings reflect the most recent loadConfig() call", () => {
     const goodConfig = join(root, "good.toml");
     const badConfig = join(root, "bad.toml");
