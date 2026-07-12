@@ -125,10 +125,17 @@ describe("AppController", () => {
     });
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
-    end.mockResolvedValueOnce({ memory: "background" });
+    end.mockResolvedValueOnce({
+      memory: "background",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
 
     const status = await controller.shutdown();
-    expect(status).toEqual({ memory: "background" });
+    expect(status.memory).toBe("background");
     expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
   });
 
@@ -140,10 +147,18 @@ describe("AppController", () => {
     });
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
-    end.mockResolvedValueOnce({ memory: "completed" });
+    end.mockResolvedValueOnce({
+      memory: "completed",
+      turns: 1,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 2,
+    });
 
     const status = await controller.shutdown();
-    expect(status).toEqual({ memory: "completed" });
+    expect(status.memory).toBe("completed");
+    expect(status.learningsStored).toBe(2);
     expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
   });
 
@@ -263,10 +278,26 @@ describe("AppController", () => {
     });
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
-    end.mockResolvedValue({ memory: "completed" });
+    end.mockResolvedValue({
+      memory: "completed",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
 
-    expect(await controller.shutdown()).toEqual({ memory: "completed" });
-    expect(await controller.shutdown()).toEqual({ memory: "noop" });
+    const first = await controller.shutdown();
+    expect(first.memory).toBe("completed");
+    const second = await controller.shutdown();
+    expect(second).toEqual({
+      memory: "noop",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
     expect(end).toHaveBeenCalledTimes(1);
   });
 

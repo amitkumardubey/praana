@@ -30,7 +30,7 @@ import chalk from "chalk";
 import type { AppController, StartupInfo } from "../../app-controller.js";
 import {
   APP_VERSION,
-  formatSessionEndSummary,
+  formatSessionEndEpilogue,
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
@@ -407,43 +407,21 @@ export async function runTui(
   async function doShutdown(): Promise<void> {
     editor.inner.disableSubmit = true;
     tui.stop();
-    process.stderr.write("\nSaving session…\n");
-    const { memory } = await controller.shutdown();
+    // Clear any leftover TTY/editor glyph after unmount (issue #181 stray char).
+    process.stderr.write("\r\x1b[2K\nSaving session…\n");
+    const status = await controller.shutdown();
 
-    const summary = session.getSessionSummary();
-    const shortId = session.id.slice(0, 4);
-
-    console.log("");
-    console.log(TUI_STYLE.memory(" ◆ consolidation — what this session taught praana"));
-    console.log("");
-
-    const outcomeParts: string[] = [];
-    if (summary.memoriesStored > 0) {
-      outcomeParts.push(`learned ${summary.memoriesStored}`);
+    for (const line of formatSessionEndEpilogue({
+      sessionId: session.id,
+      memory: status.memory,
+      turns: status.turns,
+      stateObjects: status.stateObjects,
+      rememberCalls: status.rememberCalls,
+      recallUsed: status.recallUsed,
+      learningsStored: status.learningsStored,
+    })) {
+      console.log(line);
     }
-    const recallUsed = session.getRecallUsedCount();
-    if (recallUsed > 0) {
-      outcomeParts.push(`reinforced ${recallUsed}`);
-    }
-    if (outcomeParts.length > 0) {
-      console.log(` ${outcomeParts.join(" · ")}`);
-      console.log("");
-    }
-
-    console.log(
-      ` session saved · ${summary.turns} turns · resume with  praana resume ${shortId}`,
-    );
-
-    if (memory === "completed") {
-      console.log(chalk.dim(" memory saved"));
-    } else if (memory === "background") {
-      console.log(chalk.dim(" saving in background…"));
-    } else if (memory === "skipped" || memory === "noop") {
-      console.log(chalk.dim(" memory off"));
-    }
-
-    console.log("");
-    console.log(chalk.dim(formatSessionEndSummary(session)));
     process.exit(0);
   }
 

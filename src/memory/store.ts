@@ -244,7 +244,10 @@ export class MemoryStore {
     return this.buildDigest(ctx, ctx.recall_min_score, { stampSurfaced: true });
   }
 
-  async sessionEnd(reason: string, events?: SessionEvent[]): Promise<void> {
+  async sessionEnd(
+    reason: string,
+    events?: SessionEvent[],
+  ): Promise<{ learningsStored: number }> {
     const now = Date.now();
 
     // Determine session-success bit for utility updates.
@@ -256,7 +259,8 @@ export class MemoryStore {
 
     // Track whether learnings were already stored by the combined call below,
     // so we don't make a redundant second LLM call at session end.
-    let learningsStored = false;
+    let learningsExtracted = false;
+    let learningsStored = 0;
 
     if (surfacedWithContent.length > 0) {
       let usedIds: Set<string>;
@@ -270,10 +274,11 @@ export class MemoryStore {
           for (const l of result.learnings) {
             await this.storeLearning(l);
           }
-          learningsStored = true;
+          learningsStored = result.learnings.length;
+          learningsExtracted = true;
         } catch {
           // Summarizer failed — fall back to co-occurrence for usedIds;
-          // learningsStored stays false so the fallback call below runs.
+          // learningsExtracted stays false so the fallback call below runs.
           usedIds = usedIdsByCooccurrence(events, surfacedWithContent);
         }
       } else {
@@ -323,20 +328,23 @@ export class MemoryStore {
 
     // Extract learnings if not already stored by the combined call above.
     // Runs when: (a) no entries were surfaced, or (b) the combined call errored.
-    if (!learningsStored && events && events.length > 0 && this.summarizer) {
+    if (!learningsExtracted && events && events.length > 0 && this.summarizer) {
       try {
         const result = await extractLearnings(this.summarizer, events);
         for (const l of result.learnings) {
           await this.storeLearning(l);
         }
+        learningsStored = result.learnings.length;
       } catch (err) {
         if (isAbortLikeError(err)) {
           this.logger.child("memory").warn("Session-end summarizer aborted; skipping learnings for this session");
-          return;
+          return { learningsStored: 0 };
         }
         throw err;
       }
     }
+
+    return { learningsStored };
   }
 
   /**

@@ -57,9 +57,77 @@ export function printSessionBanner(session: Session, cwd: string, model: string)
   console.log("└" + "─".repeat(W - 2) + "┘");
 }
 
+/** Prefix length for resume hints — long enough to disambiguate current ULIDs. */
+export const RESUME_ID_PREFIX_LEN = 12;
+
+export type SessionEndEpilogueInput = {
+  sessionId: string;
+  memory: "completed" | "background" | "skipped" | "failed" | "noop";
+  turns: number;
+  stateObjects: number;
+  rememberCalls: number;
+  recallUsed: number;
+  /** Summarizer learnings stored in-process; omit/0 when background or unknown. */
+  learningsStored: number;
+};
+
+/**
+ * Single post-/exit epilogue (issue #181). Honest labels, no duplicate footer,
+ * outcome counts only when > 0.
+ */
+export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string[] {
+  const shortId = input.sessionId.slice(0, RESUME_ID_PREFIX_LEN);
+  const turnLabel = input.turns === 1 ? "1 turn" : `${input.turns} turns`;
+  const stateLabel =
+    input.stateObjects === 1 ? "1 state object" : `${input.stateObjects} state objects`;
+
+  const lines: string[] = [
+    "",
+    ` session saved · ${turnLabel} · ${stateLabel}`,
+    ` resume: ${CLI_NAME} resume ${shortId}`,
+  ];
+
+  const memoryParts: string[] = [];
+  if (input.memory === "completed") {
+    memoryParts.push("memory saved");
+  } else if (input.memory === "background") {
+    memoryParts.push("saving in background…");
+  } else if (input.memory === "failed") {
+    memoryParts.push("memory failed");
+  } else {
+    memoryParts.push("memory off");
+  }
+
+  if (input.rememberCalls > 0) {
+    memoryParts.push(`remembered ${input.rememberCalls}`);
+  }
+  if (input.recallUsed > 0) {
+    memoryParts.push(`reinforced ${input.recallUsed}`);
+  }
+  // Only claim learnings when the summarizer finished in-process.
+  if (input.memory === "completed" && input.learningsStored > 0) {
+    memoryParts.push(`learned ${input.learningsStored}`);
+  }
+
+  lines.push(` ${memoryParts.join(" · ")}`);
+  lines.push("");
+  return lines;
+}
+
+/** @deprecated Prefer formatSessionEndEpilogue — kept for any external callers. */
 export function formatSessionEndSummary(session: Session): string {
   const summary = session.getSessionSummary();
-  return `Session ended: ${summary.turns} turns, ${summary.stateObjects} state objects, ${summary.memoriesStored} memories stored`;
+  return formatSessionEndEpilogue({
+    sessionId: session.id,
+    memory: session.memoryEnabled ? "completed" : "skipped",
+    turns: summary.turns,
+    stateObjects: summary.stateObjects,
+    rememberCalls: summary.memoriesStored,
+    recallUsed: 0,
+    learningsStored: 0,
+  })
+    .filter((l) => l.trim().length > 0)
+    .join(" · ");
 }
 
 /** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
@@ -75,7 +143,17 @@ export function formatSessionEpilogue(sessionId: string): string[] {
 }
 
 export function printSessionEndSummary(session: Session): void {
-  console.log(formatSessionEndSummary(session));
+  for (const line of formatSessionEndEpilogue({
+    sessionId: session.id,
+    memory: session.memoryEnabled ? "completed" : "skipped",
+    turns: session.getSessionSummary().turns,
+    stateObjects: session.getSessionSummary().stateObjects,
+    rememberCalls: session.getSessionSummary().memoriesStored,
+    recallUsed: 0,
+    learningsStored: 0,
+  })) {
+    console.log(line);
+  }
 }
 
 function usageLines(): string[] {

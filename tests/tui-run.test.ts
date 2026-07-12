@@ -66,8 +66,17 @@ mock.module("@earendil-works/pi-tui", () => ({
 
 // ── Minimal fake controller ───────────────────────────────────────────────────
 
-const shutdownMock: Mock<() => Promise<{ memory: string }>> = mock(
-  async () => ({ memory: "completed" })
+const defaultShutdownStatus = {
+  memory: "completed" as const,
+  turns: 3,
+  stateObjects: 0,
+  rememberCalls: 0,
+  recallUsed: 0,
+  learningsStored: 0,
+};
+
+const shutdownMock: Mock<() => Promise<typeof defaultShutdownStatus>> = mock(
+  async () => ({ ...defaultShutdownStatus })
 );
 const eventLogAppend = mock();
 
@@ -185,7 +194,7 @@ describe("runTui", () => {
     // immediate /exit command by having the Editor.onSubmit be called by
     // the run.ts code on startup via a fake hook.
     // We do this by monkeypatching FakeEditor to call onSubmit after mount.
-    shutdownMock.mockResolvedValueOnce({ memory: "completed" });
+    shutdownMock.mockResolvedValueOnce({ ...defaultShutdownStatus });
 
     // We intercept tui.start() to immediately trigger doShutdown-equivalent:
     // inject an /exit into the editor's onSubmit after tui.start fires.
@@ -211,7 +220,7 @@ describe("runTui", () => {
   });
 
   it("writes 'Saving session…' to stderr before shutdown", async () => {
-    shutdownMock.mockResolvedValueOnce({ memory: "completed" });
+    shutdownMock.mockResolvedValueOnce({ ...defaultShutdownStatus });
 
     const { promise: started, resolve: resolveStarted } = Promise.withResolvers<void>();
     tuiStart.mockImplementationOnce(() => { resolveStarted(); });
@@ -225,7 +234,7 @@ describe("runTui", () => {
 
     // Call shutdown directly to verify it writes the message
     tuiStop.mockImplementationOnce(() => {});
-    shutdownMock.mockResolvedValueOnce({ memory: "completed" });
+    shutdownMock.mockResolvedValueOnce({ ...defaultShutdownStatus });
 
     process.stderr.write("\nSaving session…\n");
     const stderrCalls = stderrSpy.mock.calls.map((c) => String(c[0]));
@@ -237,7 +246,7 @@ describe("runTui", () => {
     tuiStop.mockImplementationOnce(() => { callOrder.push("stop"); });
     shutdownMock.mockImplementationOnce(async () => {
       callOrder.push("shutdown");
-      return { memory: "completed" };
+      return { ...defaultShutdownStatus };
     });
 
     const { promise, resolve } = Promise.withResolvers<void>();
