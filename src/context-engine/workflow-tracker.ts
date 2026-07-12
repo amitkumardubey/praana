@@ -175,6 +175,9 @@ const TOP_PATTERNS_TO_RENDER = 3;
 /** Maximum tokens for the entire injected Workflow Context section. */
 const WORKFLOW_CONTEXT_TOKEN_BUDGET = 200;
 
+/** Maximum tools shown in the aggregated tool list and the lean sequence hint. */
+const MAX_TOOLS_SHOWN = 8;
+
 /** Tools that indicate the pattern produced a concrete change, not just reading. */
 const MUTATING_TOOLS = new Set([
   "edit_file",
@@ -183,9 +186,6 @@ const MUTATING_TOOLS = new Set([
   "batch_write",
   "shell",
 ]);
-
-/** Read/search tools that, when dominant, suggest exploratory thrashing. */
-const READ_TOOLS = new Set(["read_file", "search_code", "search_session_log"]);
 
 function isReadHeavyPattern(pattern: WorkflowPattern): boolean {
   if (!pattern.toolSequence.includes("read_file")) return false;
@@ -197,17 +197,11 @@ function isLeanPattern(pattern: WorkflowPattern): boolean {
   return !isReadHeavyPattern(pattern);
 }
 
-function pickTopLeanPattern(patterns: WorkflowPattern[]): WorkflowPattern | undefined {
-  return patterns
-    .filter(isLeanPattern)
-    .sort((a, b) => b.hitCount - a.hitCount || b.lastSeen - a.lastSeen)[0];
-}
-
 function hasReadHeavyPatterns(patterns: WorkflowPattern[]): boolean {
   return patterns.some(isReadHeavyPattern);
 }
 
-function renderLeanSequence(pattern: WorkflowPattern, maxTools = 8): string {
+function renderLeanSequence(pattern: WorkflowPattern, maxTools = MAX_TOOLS_SHOWN): string {
   const tools = pattern.toolSequence.slice(0, maxTools);
   if (tools.length === 0) return "";
   return `- Typical lean sequence: ${tools.join(" → ")}`;
@@ -244,7 +238,7 @@ export function renderWorkflowContext(
 
   const topTools = Object.entries(toolWeight)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
+    .slice(0, MAX_TOOLS_SHOWN)
     .map(([t]) => t);
 
   const topTypes = Object.entries(typeWeight)
@@ -265,7 +259,7 @@ export function renderWorkflowContext(
     lines.push(`- Artifact types typically relevant: ${topTypes.join(", ")}`);
   }
 
-  const leanSequence = renderLeanSequence(pickTopLeanPattern(top) ?? top[0]!);
+  const leanSequence = renderLeanSequence(top[0]);
   if (leanSequence) {
     lines.push(leanSequence);
   }
@@ -274,16 +268,21 @@ export function renderWorkflowContext(
     lines.push(renderAvoidNote());
   }
 
-  // Soft token cap: drop avoid note first, then trim sequence if still over budget.
+  // Soft token cap: drop avoid note first, then the sequence hint if still over budget.
   let section = lines.join("\n");
-  if (estimateTokens(section) > WORKFLOW_CONTEXT_TOKEN_BUDGET && hasReadHeavyPatterns(patterns)) {
-    const withoutAvoid = lines.filter((line) => !line.startsWith("- Avoid:"));
-    section = withoutAvoid.join("\n");
+  if (estimateTokens(section) > WORKFLOW_CONTEXT_TOKEN_BUDGET) {
+    const avoidIndex = lines.findIndex((line) => line.startsWith("- Avoid:"));
+    if (avoidIndex >= 0) {
+      lines.splice(avoidIndex, 1);
+      section = lines.join("\n");
+    }
   }
   if (estimateTokens(section) > WORKFLOW_CONTEXT_TOKEN_BUDGET) {
-    const sequenceLineIndex = lines.findIndex((line) => line.startsWith("- Typical lean sequence:"));
-    if (sequenceLineIndex >= 0) {
-      lines.splice(sequenceLineIndex, 1);
+    const seqIndex = lines.findIndex((line) =>
+      line.startsWith("- Typical lean sequence:")
+    );
+    if (seqIndex >= 0) {
+      lines.splice(seqIndex, 1);
       section = lines.join("\n");
     }
   }

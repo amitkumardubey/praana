@@ -25,6 +25,7 @@ import {
 } from "../src/context-engine/db.js";
 import type { ContextArtifact, TurnRecord, WorkflowPattern } from "../src/context-engine/types.js";
 import type { Database } from "bun:sqlite";
+import { estimateTokens } from "../src/token-estimate.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -525,13 +526,30 @@ describe("renderWorkflowContext", () => {
   });
 
   it("caps the injected section near the token budget", () => {
-    const longSequence = Array.from({ length: 50 }, (_, i) => `tool_${i}`);
+    const longTool = (i: number) => `tool_${"x".repeat(40)}_${i}`;
+    const longType = (i: number) => `type_${"y".repeat(40)}_${i}`;
     const patterns = [
-      makePattern({ id: "lean", toolSequence: longSequence, hitCount: 50 }),
+      makePattern({
+        id: "lean",
+        toolSequence: Array.from({ length: 8 }, (_, i) => longTool(i)),
+        artifactTypes: Array.from({ length: 5 }, (_, i) => longType(i)),
+        hitCount: 50,
+      }),
+      makePattern({
+        id: "thrash",
+        toolSequence: ["read_file", "search_code"],
+        hitCount: 1,
+      }),
     ];
+
     const rendered = renderWorkflowContext(patterns, "testing");
-    // Should still render something but not exceed budget wildly.
+
     expect(rendered.length).toBeGreaterThan(0);
     expect(rendered).toContain("## Workflow Context");
+    expect(rendered).toContain(longTool(0));
+    expect(estimateTokens(rendered)).toBeLessThanOrEqual(200);
+    // Both optional lines should have been dropped to fit the budget.
+    expect(rendered).not.toContain("- Avoid:");
+    expect(rendered).not.toContain("- Typical lean sequence:");
   });
 });
