@@ -527,12 +527,21 @@ export function formatScorecardLines(input: FormatScorecardLinesInput): string[]
   );
 
   if (memory && (memory.validityAvgStart > 0 || memory.usefulnessAvgStart > 0)) {
-    const validityDelta = memory.validityAvgEnd - memory.validityAvgStart;
-    const usefulnessDelta = memory.usefulnessAvgEnd - memory.usefulnessAvgStart;
-    lines.push(
-      `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} → ${memory.validityAvgEnd.toFixed(2)} (${validityDelta >= 0 ? "+" : ""}${validityDelta.toFixed(2)})`,
-      `  Memory     usefulness: ${memory.usefulnessAvgStart.toFixed(2)} → ${memory.usefulnessAvgEnd.toFixed(2)} (${usefulnessDelta >= 0 ? "+" : ""}${usefulnessDelta.toFixed(2)})`,
-    );
+    const unchanged =
+      memory.validityAvgStart === memory.validityAvgEnd &&
+      memory.usefulnessAvgStart === memory.usefulnessAvgEnd;
+    if (unchanged) {
+      lines.push(
+        `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} (current)    usefulness: ${memory.usefulnessAvgStart.toFixed(2)} (current)`,
+      );
+    } else {
+      const validityDelta = memory.validityAvgEnd - memory.validityAvgStart;
+      const usefulnessDelta = memory.usefulnessAvgEnd - memory.usefulnessAvgStart;
+      lines.push(
+        `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} → ${memory.validityAvgEnd.toFixed(2)} (${validityDelta >= 0 ? "+" : ""}${validityDelta.toFixed(2)})`,
+        `  Memory     usefulness: ${memory.usefulnessAvgStart.toFixed(2)} → ${memory.usefulnessAvgEnd.toFixed(2)} (${usefulnessDelta >= 0 ? "+" : ""}${usefulnessDelta.toFixed(2)})`,
+      );
+    }
   }
 
   if (counters.skillLoadEvents > 0 || counters.skillsLoaded > 0) {

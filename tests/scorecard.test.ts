@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite";
 import {
   ScorecardTracker,
   createNullScorecard,
+  formatScorecardLines,
 } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { getMemorySignalAverages } from "../src/memory/db.js";
@@ -385,6 +386,40 @@ describe("ScorecardTracker", () => {
 
     memDb.close();
     rmSync(memDbPath, { force: true });
+  });
+
+  it("does not show a fake arrow delta when memory averages are unchanged", () => {
+    const lines = formatScorecardLines({
+      counters: { totalTurns: 3 } as any,
+      memory: {
+        validityAvgStart: 0.85,
+        validityAvgEnd: 0.85,
+        usefulnessAvgStart: 0.42,
+        usefulnessAvgEnd: 0.42,
+      },
+      engineOn: true,
+    });
+    const validityLine = lines.find((l) => l.includes("validity:"));
+    expect(validityLine).toBeDefined();
+    expect(validityLine).not.toContain("→");
+    expect(validityLine).toContain("0.85");
+    expect(validityLine).toContain("(current)");
+  });
+
+  it("shows arrow delta when memory averages change", () => {
+    const lines = formatScorecardLines({
+      counters: { totalTurns: 3 } as any,
+      memory: {
+        validityAvgStart: 0.85,
+        validityAvgEnd: 0.60,
+        usefulnessAvgStart: 0.42,
+        usefulnessAvgEnd: 0.50,
+      },
+      engineOn: true,
+    });
+    const validityLine = lines.find((l) => l.includes("validity:"));
+    expect(validityLine).toContain("→");
+    expect(validityLine).toContain("0.60");
   });
 
   it("recall_used_count must be snapshotted before pending_reinforcements flush", async () => {
