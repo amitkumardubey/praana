@@ -105,7 +105,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 
 | Command | Function |
 |---|---|
-| `/exit` | End session cleanly (triggers summariser, prints summary) |
+| `/exit` | End session cleanly (triggers summariser, prints honest epilogue + 12-char resume id) |
 | `/state` | List state objects and tiers, or show empty-state guidance |
 | `/stats` | Session metadata + working-memory + Cognitive Memory stats |
 | `/scorecard` | Per-session telemetry scorecard (numeric signals only; issue #99) |
@@ -114,10 +114,13 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/recall <query>` | Search Cognitive Memory manually |
 | `/model [provider] <id>` | Switch model and optionally provider mid-session |
 | `/sessions` | List past sessions for resuming |
+| `/setup` | Run interactive provider/config setup wizard in-session (replaces /init) |
+| `/shell <cmd>` | Run a shell command inline in the transcript (also `! <cmd>` prefix) |
+| `/plan <on\|off\|execute>` | Toggle plan mode: block mutating tools until you approve |
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
 | `/incognito <on\|off>` | Toggle Cognitive Memory persistence |
-| `/clear` | Reset in-session context (same session ID; clears working memory + model-visible history) |
+| `/clear` | Reset in-session context (same session ID; clears working memory + model-visible history via a `reset_boundary` event) |
 | `/new` | Start a new session (new ID, reload config, background summarizer) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
 | `/help` | All commands |
@@ -166,6 +169,9 @@ src/
   hash.ts        — Shared SHA-256 hashing utility (session scopes, skill scope keys)
   llm.ts         — Provider registry, model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading, deep-merge
+  plan-mode.ts   — Plan-mode gate (enter/exit/is + intent/approval detection); shared by turn.ts and compiler.ts
+  interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
+  setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
   ui/
     tui/           — pi-tui terminal shell: transcript, chrome bars, autocomplete, thinking blocks
@@ -221,6 +227,45 @@ Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceilin
 
 At session end, the context engine records which tools were called and which artifact types were produced for the session's classified task type. These patterns survive to `workflow_patterns(task_type, tool_sequence, artifact_types, hit_count, last_seen_at)` in the context-engine DB (30-day expiry pruned on shutdown). At compile time, `renderWorkflowContext()` selects matching patterns by task type and injects a compact **Workflow Context** section just before the session checkpoint — giving the engine a prior over what context items will be needed before the session starts. Patterns are filtered by the current task type classification, so a coding session does not pollute a debugging session's prompt.
 
+### Plan mode (issue #221)
+
+A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the runtime gate in `turn.ts` and the system-frame rule injected by `compiler.ts`.
+
+- `/plan <on|off|execute>` toggles the gate. `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
+- While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
+- PRAANA auto-detects plan/approval intent from the user's message and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate, and "plan the execution" does **not** arm it.
+- Plan mode persists via a `system_note` event replayed by `Session.resume`.
+
+### Repeat-read interceptor (issue #219)
+
+`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable:
+
+```toml
+[tools]
+block_repeat_reads = false   # false = warn (default); true = hard-block the repeat read
+```
+
+The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
+
+### Resume hardening (issues #185, #220)
+
+- `praana resume` with no session id resolves the most recent session for the **current cwd**; if none exists it prints a short notice and starts a fresh session instead of exiting.
+- On resume, a **stale-task banner** lists tasks/decisions left open in the previous session, and a **scope confirmation** step re-confirms the Cognitive Memory scopes (project vs global) before the session continues.
+
+### Scorecard nudges and agent hints (issues #223, #224)
+
+Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
+- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low — prompting adjustment.
+- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses its threshold or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The repeat-read threshold is a single exported constant (`REPEAT_FILE_READS_THRESHOLD` in `compiler.ts`) shared by the engine hint and the TUI footer nudge.
+
+### End-of-session epilogue (issue #181)
+
+`/exit` (and natural shutdown) prints a single honest epilogue instead of a misleading consolidation header, returns snapshotted memory stats from shutdown, and prints a **12-char resume id** that uniquely identifies the session for `praana resume <id>`.
+
+### Agent policy (shared, issue #228)
+
+Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+
 ### Turn flow (per turn)
 
 Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true` **and** `session.contextEngine` is initialized; otherwise classic.
@@ -232,6 +277,7 @@ User input
   → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
   → fetch all workflow patterns; classify task type
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
+  → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response with tool calls
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
@@ -246,6 +292,7 @@ User input
 ```
 User input
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
+  → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response (shared + system + memory tools only)
   → log all events
   → increment turn count (no tier management, no skill tracking)

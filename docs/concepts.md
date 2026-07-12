@@ -188,6 +188,10 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 
 `search_code` (#105) is the newest addition. It wraps `rg --json` and returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. Ripgrep is resolved from `$PATH` by default; the `[search_code] rg_path` config overrides the binary. Large outputs flow through the ripgrep distiller automatically.
 
+## Plan Mode
+
+Plan mode (#221) is a safety gate between the agent's reasoning and any state-mutating tool. When armed (via `/plan on`, or auto-detected intent), **mutating tools are blocked** — `write_file`, `edit_file`, and shell commands that create branches or write files — until you approve (`/plan execute`). Read-only tools (`read_file`, `search_code`, `recall`, state reads) stay available so the agent can keep investigating. The gate is enforced in `turn.ts` using `Session.planMode` state from `src/plan-mode.ts`, and a matching rule is injected into the system frame by `compiler.ts`, so the model is told to plan before acting. Plan mode persists across resume via a `system_note` event.
+
 ---
 
 ## How the Two Systems Relate

@@ -398,6 +398,40 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 
 **Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly (see #17).
 
+## Plan Mode, Repeat-Read Interceptor, and Session UX
+
+### Plan mode (issue #221)
+
+A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the runtime gate in `turn.ts` and the system-frame rule injected by `compiler.ts`.
+
+- `/plan <on|off|execute>` toggles the gate: `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
+- While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch listing/renaming/deleting and read-only shell stay allowed.
+- PRAANA auto-detects plan/approval intent and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate; "plan the execution" does **not** arm it.
+- Plan mode persists via a `system_note` event replayed by `Session.resume`.
+
+### Repeat-read interceptor (issue #219)
+
+`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `false` = warn; `true` = hard-block). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
+
+### Resume hardening (issues #185, #220)
+
+- `praana resume` with no session id resolves the most recent session for the **current cwd**; if none exists it prints a short notice and starts a fresh session instead of exiting.
+- On resume, a **stale-task banner** lists tasks/decisions left open in the previous session, and a **scope confirmation** step re-confirms the Cognitive Memory scopes (project vs global) before the session continues.
+
+### Scorecard nudges and agent hints (issues #223, #224)
+
+Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
+- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low.
+- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
+
+### End-of-session epilogue (issue #181)
+
+`/exit` (and natural shutdown) prints a single honest epilogue instead of a misleading consolidation header, returns snapshotted memory stats from shutdown, and prints a **12-char resume id** that uniquely identifies the session for `praana resume <id>`.
+
+### Shared agent policy (issue #228)
+
+Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+
 ## Configuration
 
 Config files are deep-merged from lower to higher precedence (later overrides earlier):
@@ -450,6 +484,9 @@ w_hydrate_boost = 0.2    # boost for context units overlapping auto-hydrated obj
 compact_at = 0.70
 emergency_at = 0.85
 
+[tools]
+block_repeat_reads = false   # warn (default) or hard-block repeat read_file of unchanged files
+
 [session]
 log_dir = "~/.praana/sessions"
 ```
@@ -500,6 +537,9 @@ Slash commands are handled by `src/slash-commands.ts`:
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
+- `/setup` — runs the interactive provider/config setup wizard in-session (replaces /init)
+- `/shell <cmd>` — runs a shell command inline in the transcript (also `! <cmd>` prefix)
+- `/plan <on|off|execute>` — toggles plan mode (blocks mutating tools until approved)
 - `/help` — prints slash commands documentation
 
-CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume <session_id>`, `praana init`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
+CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume [<session_id>]` (no id resumes the most recent session for the current cwd), `praana setup` (also `praana init`), `praana doctor`, `praana --providers`, `praana --version`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
