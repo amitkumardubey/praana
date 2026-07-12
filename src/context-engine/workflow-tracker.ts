@@ -18,6 +18,7 @@ import {
   listWorkflowPatternsByTaskType,
   upsertWorkflowPattern,
 } from "./db.js";
+import { estimateTokens } from "./summarize.js";
 import type { ContextArtifact, TurnRecord, WorkflowPattern } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -171,16 +172,59 @@ export function queryPatternsForTaskType(
  */
 const TOP_PATTERNS_TO_RENDER = 3;
 
+/** Maximum tokens for the entire injected Workflow Context section. */
+const WORKFLOW_CONTEXT_TOKEN_BUDGET = 200;
+
+/** Maximum tools shown in the aggregated tool list and the lean sequence hint. */
+const MAX_TOOLS_SHOWN = 8;
+
+/** Tools that indicate the pattern produced a concrete change, not just reading. */
+const MUTATING_TOOLS = new Set([
+  "edit_file",
+  "write_file",
+  "batch_edit",
+  "batch_write",
+  "shell",
+]);
+
+function isReadHeavyPattern(pattern: WorkflowPattern): boolean {
+  if (!pattern.toolSequence.includes("read_file")) return false;
+  const mutatingCount = pattern.toolSequence.filter((t) => MUTATING_TOOLS.has(t)).length;
+  return mutatingCount === 0;
+}
+
+function isLeanPattern(pattern: WorkflowPattern): boolean {
+  return !isReadHeavyPattern(pattern);
+}
+
+function hasReadHeavyPatterns(patterns: WorkflowPattern[]): boolean {
+  return patterns.some(isReadHeavyPattern);
+}
+
+function renderLeanSequence(pattern: WorkflowPattern, maxTools = MAX_TOOLS_SHOWN): string {
+  const tools = pattern.toolSequence.slice(0, maxTools);
+  if (tools.length === 0) return "";
+  return `- Typical lean sequence: ${tools.join(" → ")}`;
+}
+
+function renderAvoidNote(): string {
+  return "- Avoid: read-heavy exploratory loops; use retrieve_artifact after first read and prefer batch_edit for multi-file changes.";
+}
+
 export function renderWorkflowContext(
   patterns: WorkflowPattern[],
   taskType: string,
 ): string {
   if (patterns.length === 0) return "";
 
-  const top = patterns.slice(0, TOP_PATTERNS_TO_RENDER);
+  // Drop read-heavy/thrashy patterns from promotion, but keep them for the avoid note.
+  const leanPatterns = patterns.filter(isLeanPattern);
+  if (leanPatterns.length === 0) return "";
+
+  const top = leanPatterns.slice(0, TOP_PATTERNS_TO_RENDER);
   const totalHits = top.reduce((s, p) => s + p.hitCount, 0);
 
-  // Aggregate tools and artifact types across top patterns (frequency-weighted).
+  // Aggregate tools and artifact types across lean top patterns (frequency-weighted).
   const toolWeight: Record<string, number> = {};
   const typeWeight: Record<string, number> = {};
   for (const p of top) {
@@ -194,7 +238,7 @@ export function renderWorkflowContext(
 
   const topTools = Object.entries(toolWeight)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
+    .slice(0, MAX_TOOLS_SHOWN)
     .map(([t]) => t);
 
   const topTypes = Object.entries(typeWeight)
@@ -215,5 +259,33 @@ export function renderWorkflowContext(
     lines.push(`- Artifact types typically relevant: ${topTypes.join(", ")}`);
   }
 
-  return lines.join("\n");
+  const leanSequence = renderLeanSequence(top[0]);
+  if (leanSequence) {
+    lines.push(leanSequence);
+  }
+
+  if (hasReadHeavyPatterns(patterns)) {
+    lines.push(renderAvoidNote());
+  }
+
+  // Soft token cap: drop avoid note first, then the sequence hint if still over budget.
+  let section = lines.join("\n");
+  if (estimateTokens(section) > WORKFLOW_CONTEXT_TOKEN_BUDGET) {
+    const avoidIndex = lines.findIndex((line) => line.startsWith("- Avoid:"));
+    if (avoidIndex >= 0) {
+      lines.splice(avoidIndex, 1);
+      section = lines.join("\n");
+    }
+  }
+  if (estimateTokens(section) > WORKFLOW_CONTEXT_TOKEN_BUDGET) {
+    const seqIndex = lines.findIndex((line) =>
+      line.startsWith("- Typical lean sequence:")
+    );
+    if (seqIndex >= 0) {
+      lines.splice(seqIndex, 1);
+      section = lines.join("\n");
+    }
+  }
+
+  return section;
 }
