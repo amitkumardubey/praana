@@ -88,6 +88,30 @@ export interface LlmStreamResult {
   interrupted: boolean;
 }
 
+export function isRecoverableStreamError(result: LlmStreamResult): boolean {
+  if (result.interrupted) return false;
+  const reason = result.finalReason;
+  const msg = (result.errorMessage ?? "").toLowerCase();
+  return (
+    reason === "timeout" ||
+    reason === "rate_limit" ||
+    /\b(timeout|rate.?limit|429)\b/i.test(msg)
+  );
+}
+
+export function isEmptyStreamResponse(result: LlmStreamResult): boolean {
+  return (
+    !result.interrupted &&
+    result.finalReason === "stop" &&
+    !result.fullResponse.trim() &&
+    result.pendingToolCalls.length === 0
+  );
+}
+
+export function shouldFallback(result: LlmStreamResult): boolean {
+  return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
+}
+
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
   const modelOptions: Record<string, unknown> = {
     ...((input.model as any).__piOptions ?? {}),
@@ -151,7 +175,8 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     if (event.type === "error") {
       finalReason = event.reason as LlmStreamResult["finalReason"];
       finalMessage = event.error as unknown as Message;
-      errorMessage = extractLlmErrorMessage(finalMessage) ?? errorMessage;
+      const extracted = extractLlmErrorMessage(finalMessage);
+      if (extracted) errorMessage = extracted;
     }
   }
 
@@ -599,40 +624,17 @@ export async function runTurn(
   let hadNonLoadSkillTool = false;
 
   // Active model/provider may switch to fallback config if the primary fails.
+  // Fallback is applied only to the initial stream attempt (step 0). Subsequent
+  // tool-loop steps use the active (possibly fallback) model.
   let activeModelName = modelName;
   let activeProviderName = providerName;
   let activeModel = model;
-  let fallbackUsed = false;
 
   const piTools = Object.entries(tools).map(([name, def]) => ({
     name,
     description: String((def as any).description ?? ""),
     parameters: normalizeToolParameters((def as any).parameters),
   }));
-
-  function isRecoverableStreamError(result: LlmStreamResult): boolean {
-    if (result.interrupted) return false;
-    const reason = result.finalReason;
-    const msg = (result.errorMessage ?? "").toLowerCase();
-    return (
-      reason === "timeout" ||
-      reason === "rate_limit" ||
-      /\b(timeout|rate.?limit|429)\b/i.test(msg)
-    );
-  }
-
-  function isEmptyStreamResponse(result: LlmStreamResult): boolean {
-    return (
-      !result.interrupted &&
-      result.finalReason === "stop" &&
-      !result.fullResponse.trim() &&
-      result.pendingToolCalls.length === 0
-    );
-  }
-
-  function shouldFallback(result: LlmStreamResult): boolean {
-    return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
-  }
 
   async function attemptStream(): Promise<LlmStreamResult> {
     return runLlmStream({
@@ -711,7 +713,6 @@ export async function runTurn(
       `Switched to ${fallbackProvider}/${fallbackModel} after ${reason}`,
     ]);
 
-    fallbackUsed = true;
     return true;
   }
 
@@ -733,6 +734,17 @@ export async function runTurn(
           streamResult = await attemptStream();
         }
       }
+    }
+
+    // If we switched to a fallback model and it also failed on a recoverable
+    // condition, surface it as an error rather than the empty-response fallback.
+    if (
+      (activeModelName !== modelName || activeProviderName !== providerName) &&
+      shouldFallback(streamResult)
+    ) {
+      lastStreamReason = "error";
+      lastLlmErrorMessage = streamResult.errorMessage ?? "LLM request failed";
+      break;
     }
 
     // Log errors from the final stream attempt.

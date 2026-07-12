@@ -83,6 +83,9 @@ mock.module("../src/ui.js", () => ({
 
 import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
 import { runTurn, runLlmStream } from "../src/turn.js";
+import { StateGraph } from "../src/state-graph.js";
+import { createNullScorecard } from "../src/context-engine/telemetry.js";
+import type { Event } from "../src/types.js";
 
 afterAll(() => {
   mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
@@ -92,9 +95,6 @@ afterAll(() => {
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
 });
-import { StateGraph } from "../src/state-graph.js";
-import { createNullScorecard } from "../src/context-engine/telemetry.js";
-import type { Event } from "../src/types.js";
 
 const makeConfig = () => ({
   llm: {
@@ -414,6 +414,22 @@ describe("LLM fallback", () => {
     expect(overrides.length).toBe(2);
     expect(overrides[0].payload.reason).toBe("llm_fallback");
     expect(overrides[1].payload.reason).toBe("llm_fallback");
+  });
+
+  it("surfaces an error message when fallback is also exhausted", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+
+    (piStream as any).mockImplementation(() => {
+      return (async function* () {
+        yield { type: "error", reason: "rate_limit", error: { role: "assistant", errorMessage: "429 exhausted" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("I encountered an error");
+    expect(session.getEffectiveProvider()).toBe("openrouter");
   });
 
   it("retries once on same model before falling back", async () => {
