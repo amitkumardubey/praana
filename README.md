@@ -65,13 +65,13 @@ bun src/main.ts
 
 ### Configuration
 
-No config file is needed to start. To customise:
+No config file is needed to start. To customise, run the setup wizard:
 
 ```bash
-praana init   # Creates praana.config.toml with detected provider
+praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-See [`praana.config.example.toml`](./praana.config.example.toml) for all settings.
+Other CLI entry points: `praana resume` (continues your most recent session for the current project when given no id), `praana doctor` (checks config + provider keys), and `praana --providers` (prints the full provider/model table). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings.
 
 #### Supported providers
 
@@ -141,6 +141,8 @@ Provider resolution order: explicit config → environment-detected key → inte
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
 
+**Session safety:** plan mode gates mutating tools behind your approval; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+
 Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [concepts.md](./docs/concepts.md)
 
 ---
@@ -179,6 +181,9 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | `/events` | Last 20 session log events |
 | `/model [provider] <id>` | Switch model or provider mid-session |
 | `/sessions` | List sessions to resume |
+| `/setup` | Interactive provider/config setup wizard (replaces /init) |
+| `/shell <cmd>` | Run a shell command inline (also `! <cmd>`) |
+| `/plan <on\|off\|execute>` | Plan mode: block mutating tools until you approve |
 | `/thinking <on\|off>` | Show or hide reasoning text |
 | `/incognito <on\|off>` | Disable Cognitive Memory writes |
 | `/debug` | Verbose tooling + saved prompts |

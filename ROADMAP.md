@@ -16,12 +16,15 @@ A terminal coding agent that aims to get more useful the more you use it — by 
 
 These exist and work — we're not claiming they're solved problems, just that they're there:
 
-- **Easy onboarding** — auto-detects provider API keys from the environment; `praana init` for config; interactive setup wizard when no key is found
-- **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching
-- **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local)
+- **Easy onboarding** — auto-detects provider API keys from the environment; `praana setup` (also `praana init`) interactive wizard for config; `praana doctor` health check; `praana --providers` prints the full provider/model table
+- **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching, slash-command/file autocomplete
+- **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local), umans
 - **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox
 - **Two context modes** — default *engine* mode (tiered working memory, tool-output distillation, session checkpoint, skills) and a *classic* fallback/disable mode (full transcript, like most agents)
 - **Cognitive Memory** (optional) — extracts learnings at the end of a session, scores and consolidates them, and surfaces a ranked digest at the start of the next; project and global scopes
+- **Plan mode** — `/plan` gates mutating tools behind your approval so the agent plans before it changes files
+- **Shell access** — `/shell` (or `!`) runs commands inline in the transcript
+- **Session safety** — a repeat-read interceptor warns/blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project; a stale-task banner and scope confirmation appear on resume
 
 ---
 
