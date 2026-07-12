@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -410,10 +410,10 @@ describe('Compiler', () => {
 
   it('builds agent hints only when repeat_file_reads crosses threshold', () => {
     expect(buildAgentHints({ repeatFileReads: 0 })).toBe('');
-    expect(buildAgentHints({ repeatFileReads: 5 })).toBe('');
-    const hint = buildAgentHints({ repeatFileReads: 6 });
+    expect(buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD })).toBe('');
+    const hint = buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD + 1 });
     expect(hint).toContain('## Agent Hints');
-    expect(hint).toContain('repeat_file_reads: 6');
+    expect(hint).toContain(`repeat_file_reads: ${REPEAT_FILE_READS_THRESHOLD + 1}`);
     expect(hint).toContain('retrieve_artifact');
   });
 });

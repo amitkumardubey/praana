@@ -270,7 +270,14 @@ export interface AgentHintCounters {
   repeatFileReads: number;
 }
 
-const AGENT_HINT_REPEAT_READS_THRESHOLD = 5;
+/**
+ * Shared threshold for the repeat_file_reads scorecard signal.
+ * Drives both the engine-mode agent hint (buildAgentHints) and the TUI footer nudge,
+ * so the prompt and the footer fire in lockstep. Issue #224.
+ */
+export const REPEAT_FILE_READS_THRESHOLD = 5;
+
+const AGENT_HINT_REPEAT_READS_THRESHOLD = REPEAT_FILE_READS_THRESHOLD;
 
 export function buildAgentHints(counters: AgentHintCounters): string {
   const parts: string[] = [];
