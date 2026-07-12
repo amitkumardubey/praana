@@ -212,6 +212,8 @@ export class ScorecardTracker {
   private readPathMtimes = new Map<string, number>();
   private skillsEverLoaded = new Set<string>();
   private startSnapshotCaptured = false;
+  /** Memory DB path used to refresh mid-session end-averages. */
+  private memoryDbPath?: string;
 
   constructor(
     private readonly db: Database | null,
@@ -378,7 +380,16 @@ export class ScorecardTracker {
 
   /** Persist current counters without final memory end-state (called each turn). */
   persistProgress(): void {
+    this.refreshMemoryEndAverages();
     this.writeScorecardRow({ final: false });
+  }
+
+  /** Refresh end-averages from the live memory DB so mid-session /scorecard is accurate. */
+  private refreshMemoryEndAverages(): void {
+    if (!this.db) return;
+    const avgs = this.getMemoryAverages(this.memoryDbPath);
+    this.validityAvgEnd = avgs.validityAvg;
+    this.usefulnessAvgEnd = avgs.usefulnessAvg;
   }
 
   /**
@@ -387,6 +398,7 @@ export class ScorecardTracker {
    */
   async recordMemoryStart(memoryDbPath?: string): Promise<void> {
     if (!this.db || this.startSnapshotCaptured) return;
+    this.memoryDbPath = memoryDbPath;
     const avgs = this.getMemoryAverages(memoryDbPath);
     this.validityAvgStart = avgs.validityAvg;
     this.usefulnessAvgStart = avgs.usefulnessAvg;
