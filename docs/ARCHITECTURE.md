@@ -410,6 +410,10 @@ Config files are deep-merged from lower to higher precedence (later overrides ea
 [llm]
 provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | opencode | anthropic | google | mistral | amazon-bedrock
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
+# Optional fallback used when the primary returns timeout, 429, or empty response.
+# PRAANA retries once on the primary, then switches to the fallback for the rest of the session.
+# fallback_provider = "openrouter"
+# fallback_model = "moonshotai/kimi-k2.7-code"
 
 [memory]
 enabled = true
@@ -471,6 +475,10 @@ log_dir = "~/.praana/sessions"
 **Live catalog providers** (OpenAI-compatible `/models`): OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama. Anthropic, Google, Mistral, and Bedrock rely on pi-ai only.
 
 **Persistence:** successful switches write `model_override` and optionally `provider_override` system notes to the event log. `session.ts` restores the latest overrides on resume. Routing prefixes like `openrouter/` or `opencode/` are stripped before API calls.
+
+### Automatic fallback
+
+If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, `429` rate-limit, or empty response. If the retry also fails, it switches to the fallback provider/model, appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn. The fallback override is treated like an explicit `/model` switch, so it persists for the rest of the session and survives resume.
 
 ## UI and Slash Commands
 
