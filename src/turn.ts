@@ -156,6 +156,40 @@ function buildScorecardNudge(
   return undefined;
 }
 
+const PLAN_MODE_BLOCKED_TOOLS = new Set([
+  "edit_file",
+  "write_file",
+  "batch_edit",
+  "batch_write",
+]);
+
+function isBranchCreatingShellCommand(command: string): boolean {
+  const c = command.trim().toLowerCase();
+  return /\bgit\s+(checkout\s+-[bc]|switch\s+-c|branch\s+)/.test(c);
+}
+
+function isPlanModeMutatingTool(toolName: string, args: Record<string, unknown>): boolean {
+  if (PLAN_MODE_BLOCKED_TOOLS.has(toolName)) return true;
+  if (toolName === "shell" && typeof args.command === "string") {
+    return isBranchCreatingShellCommand(args.command);
+  }
+  return false;
+}
+
+const PLAN_APPROVAL_WORDS = new Set(["go", "execute", "proceed", "continue"]);
+
+function detectPlanApproval(userInput: string): boolean {
+  const words = userInput.toLowerCase().split(/[^a-z0-9]+/);
+  return words.some((w) => PLAN_APPROVAL_WORDS.has(w));
+}
+
+function detectPlanModeIntent(userInput: string): boolean {
+  const lower = userInput.toLowerCase();
+  const pickIssue = /\bpick\b/.test(lower) && /\b(issue|ticket)\b/.test(lower);
+  const planExecute = /\bplan\b/.test(lower) && /\b(branch|implement|execute|work on)\b/.test(lower);
+  return pickIssue || planExecute;
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -187,6 +221,14 @@ export async function runTurn(
     payload: { text: userInput },
   });
   session.setLastUserInput(userInput);
+
+  // Plan-mode gating: entering is automatic for plan-then-execute phrasing;
+  // exiting requires an explicit approval word or /plan execute.
+  if (session.isPlanMode?.() && detectPlanApproval(userInput)) {
+    session.exitPlanMode?.();
+  } else if (detectPlanModeIntent(userInput)) {
+    session.enterPlanMode?.();
+  }
 
   // 1b. Auto-hydrate peripheral objects matching user query keywords (engine mode only)
   const contextEngineEnabled =
@@ -642,6 +684,16 @@ export async function runTurn(
       if (!toolDef || typeof toolDef.execute !== "function") {
         isError = true;
         result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
+      } else if (
+        session.isPlanMode?.() &&
+        isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
+      ) {
+        isError = true;
+        result = {
+          ok: false,
+          error:
+            "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
+        };
       } else {
         try {
           result = await toolDef.execute(tc.args);

@@ -150,6 +150,27 @@ export async function executeSlashCommand(
       break;
     }
 
+    case "/plan": {
+      const sub = parts[1]?.toLowerCase();
+      if (sub === "execute" || sub === "off" || sub === "go") {
+        session.exitPlanMode();
+        lines.push("Plan mode off — mutating tools are allowed.");
+      } else if (sub === "on") {
+        session.enterPlanMode();
+        lines.push("Plan mode on — mutating tools are blocked until you approve the plan.");
+      } else {
+        // Toggle.
+        if (session.isPlanMode()) {
+          session.exitPlanMode();
+          lines.push("Plan mode off — mutating tools are allowed.");
+        } else {
+          session.enterPlanMode();
+          lines.push("Plan mode on — mutating tools are blocked until you approve the plan.");
+        }
+      }
+      return result("none", "toast");
+    }
+
     case "/stats": {
       const stats = session.getMemoryStats();
       const startedAt = new Date(session.getStartedAt()).toISOString();

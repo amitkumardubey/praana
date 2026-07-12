@@ -116,6 +116,8 @@ export class Session {
   embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
+  /** When true, mutating tools are blocked until the user approves the plan. */
+  planMode = false;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */
   private lastKnownTaskType: string | null = null;
   private ended = false;
@@ -422,6 +424,21 @@ export class Session {
   /** Record the task type from the most recent compilation (issue #92). */
   setLastKnownTaskType(taskType: string): void {
     this.lastKnownTaskType = taskType;
+  }
+
+  /** Enter plan mode: mutating tools are blocked until the user approves the plan. */
+  enterPlanMode(): void {
+    this.planMode = true;
+  }
+
+  /** Exit plan mode: mutating tools are allowed again. */
+  exitPlanMode(): void {
+    this.planMode = false;
+  }
+
+  /** Whether the session is currently in plan mode. */
+  isPlanMode(): boolean {
+    return this.planMode;
   }
 
   clearState(): void {
