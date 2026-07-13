@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { findLatestSessionForCwd } from "../src/event-log.js";
+import { findLatestSessionForCwd, resolveSessionId } from "../src/event-log.js";
 import type { SessionMeta } from "../src/types.js";
 
 const testLogDir = join(tmpdir(), "praana-test-session-resolver");
@@ -56,5 +56,46 @@ describe("findLatestSessionForCwd", () => {
     writeMeta("01OTHER000000000000000004", { cwd: resolve("/other") });
     writeMeta("01MATCH000000000000000005", { cwd: target });
     expect(findLatestSessionForCwd(testLogDir, target)).toBe("01MATCH000000000000000005");
+  });
+});
+
+describe("resolveSessionId", () => {
+  beforeEach(() => {
+    mkdirSync(testLogDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(testLogDir, { recursive: true, force: true });
+  });
+
+  it("resolves a full id to itself", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    expect(resolveSessionId(testLogDir, "01FULL0000000000000000001")).toBe(
+      "01FULL0000000000000000001",
+    );
+  });
+
+  it("resolves a 12-char prefix to the unique matching session", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    writeMeta("02FULL0000000000000000002", { cwd: "/home/user/praana" });
+    expect(resolveSessionId(testLogDir, "01FULL000000")).toBe("01FULL0000000000000000001");
+  });
+
+  it("throws a session-not-found error when no session matches", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    expect(() => resolveSessionId(testLogDir, "ZZNOMATCH0000")).toThrow(/not found/i);
+  });
+
+  it("throws an ambiguous-prefix error when multiple sessions match", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    writeMeta("01FULL0000000000000000002", { cwd: "/home/user/praana" });
+    writeMeta("01FULL0000000000000000003", { cwd: "/home/user/praana" });
+    expect(() => resolveSessionId(testLogDir, "01FULL000000")).toThrow(/Ambiguous session prefix/);
+  });
+
+  it("ignores directories without a valid meta.json", () => {
+    mkdirSync(join(testLogDir, "01FULL0000000000000000009"), { recursive: true });
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    expect(resolveSessionId(testLogDir, "01FULL000000")).toBe("01FULL0000000000000000001");
   });
 });

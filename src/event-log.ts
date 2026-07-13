@@ -15,6 +15,7 @@ import {
 import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
+import { SessionNotFoundError } from "./session.js";
 
 export interface EventSearchOptions {
   kinds?: EventKind[];
@@ -424,4 +425,40 @@ export function findLatestSessionForCwd(logDir: string, cwd: string): string | n
   }
 
   return latestId;
+}
+
+/**
+ * Resolve a (possibly partial) session id to a unique full session id.
+ *
+ * Enables resuming via the 12-character ULID prefix advertised by the session
+ * epilogue and the `/sessions` command. A full id resolves to itself.
+ *
+ * @throws {SessionNotFoundError} if no session directory matches the prefix.
+ * @throws {Error} if the prefix is ambiguous (matches more than one session).
+ */
+export function resolveSessionId(logDir: string, partial: string): string {
+  if (!existsSync(logDir)) {
+    throw new SessionNotFoundError(partial);
+  }
+
+  const dirs = readdirSync(logDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+
+  const candidates = dirs
+    .map((d) => d.name)
+    .filter((id) => id.startsWith(partial))
+    .filter((id) => readSessionMeta(logDir, id) !== null);
+
+  if (candidates.length === 0) {
+    throw new SessionNotFoundError(partial);
+  }
+  if (candidates.length > 1) {
+    const shown = candidates.slice(0, 5).join(", ");
+    const more = candidates.length > 5 ? `, +${candidates.length - 5} more` : "";
+    throw new Error(
+      `Ambiguous session prefix '${partial}': ${candidates.length} sessions match ` +
+        `(${shown}${more}). Use a longer prefix or the full session id.`,
+    );
+  }
+
+  return candidates[0];
 }

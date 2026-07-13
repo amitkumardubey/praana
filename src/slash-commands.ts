@@ -430,7 +430,7 @@ export async function executeSlashCommand(
         }
         const marker = d.name === session.id ? " ← current" : "";
         lines.push(
-          `  ${time}  ${d.name.slice(0, 12)}...  ${String(events).padStart(4)} events  ${cwdLabel}${marker}`
+          `  ${time}  ${d.name}  ${String(events).padStart(4)} events  ${cwdLabel}${marker}`
         );
       }
       lines.push("", "Resume with: praana resume  (last session here)");
