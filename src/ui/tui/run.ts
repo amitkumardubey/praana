@@ -378,7 +378,11 @@ export async function runTui(
     }
 
     if (matchesKey(data, "ctrl+c")) {
-      const action = controller.handleUserInterrupt();
+      // Three-way interrupt: working → abort turn; idle + text → clear input;
+      // idle + empty → exit the app.
+      const action = controller.handleUserInterrupt(
+        editor.inner.getText().length === 0,
+      );
       if (action === "abort_turn") {
         spinner.stop();
         spinnerSlot.removeChild(spinner);
@@ -392,6 +396,12 @@ export async function runTui(
         tui.requestRender();
         return { consume: true };
       }
+      if (action === "exit") {
+        void doShutdown();
+        return { consume: true };
+      }
+      // "noop" — rapid repeat inside the debounce window; swallow it.
+      return { consume: true };
     }
     return undefined;
   });
