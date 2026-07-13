@@ -5,7 +5,7 @@ import { loadConfig } from "./config.js";
 import { Session, type SessionEndStatus } from "./session.js";
 import { findLatestSessionForCwd } from "./event-log.js";
 import { runTurn } from "./turn.js";
-import { TurnController } from "./turn-control.js";
+import { TurnController, TurnAbortedError } from "./turn-control.js";
 import { buildStatusBarInput, type StatusBarInput } from "./status-bar.js";
 import { executeSlashCommand, type SlashCommandResult } from "./slash-commands.js";
 import { createDefaultTurnSink, type TurnUiSink } from "./ui-events.js";
@@ -147,7 +147,19 @@ export class AppController {
     this.turnController.abort();
   }
 
-  handleUserInterrupt(): "abort_turn" | "clear_input" | "noop" {
+  /**
+   * Resolve a user interrupt (Ctrl+C / Esc Esc) into one of three actions:
+   *  - "abort_turn"  — a turn is running: interrupt the agent, return to prompt
+   *  - "exit"        — idle and the input box is empty: quit the app
+   *  - "clear_input" — idle and the input box has text: clear it
+   *  - "noop"        — a repeat interrupt inside the debounce window (ignored)
+   *
+   * `inputIsEmpty` reflects whether the TUI input box currently has text. It is
+   * only consulted when no turn is active.
+   */
+  handleUserInterrupt(
+    inputIsEmpty: boolean,
+  ): "abort_turn" | "clear_input" | "exit" | "noop" {
     if (this.interruptHandling) return "noop";
     this.interruptHandling = true;
     setImmediate(() => {
@@ -159,7 +171,7 @@ export class AppController {
       return "abort_turn";
     }
 
-    return "clear_input";
+    return inputIsEmpty ? "exit" : "clear_input";
   }
 
   async executeSlashCommand(input: string): Promise<SlashCommandResult> {
@@ -223,6 +235,14 @@ export class AppController {
         sink: wrappedSink,
       });
       stopSpinnerOnce();
+    } catch (err) {
+      // A turn abort (Ctrl+C / Esc Esc) throws TurnAbortedError *after*
+      // finalizeInterruptedTurn has already appended the partial response,
+      // incremented the turn count, and persisted state. Swallow it so the
+      // caller (the TUI) returns to the prompt instead of dying on an
+      // unhandled rejection.
+      if (err instanceof TurnAbortedError) return;
+      throw err;
     } finally {
       this.turnController.end();
     }
@@ -310,7 +330,7 @@ export class AppController {
 
 
   async shutdown(): Promise<ShutdownStatus> {
-    if (this.sessionEnded) {
+    if (this.sessionEnded || !this.session) {
       return {
         memory: "noop",
         turns: 0,
