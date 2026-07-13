@@ -28,6 +28,8 @@ import {
   saveStateGraphCheckpoint,
 } from "./state-graph-checkpoint.js";
 import { loadConfig } from "./config.js";
+import { SessionNotFoundError } from "./session-errors.js";
+export { SessionNotFoundError } from "./session-errors.js";
 import {
   MemoryStore,
   isSessionGood,
@@ -92,16 +94,6 @@ export type SessionEndStatus = {
   /** Summarizer learnings stored in-process; 0 when background/skipped/unknown. */
   learningsStored: number;
 };
-
-/** Thrown when a requested session does not exist on disk. */
-export class SessionNotFoundError extends Error {
-  readonly sessionId: string;
-  constructor(sessionId: string) {
-    super(`Session ${sessionId} not found.`);
-    this.name = "SessionNotFoundError";
-    this.sessionId = sessionId;
-  }
-}
 
 export class Session {
   id: string;

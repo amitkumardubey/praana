@@ -1,6 +1,10 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { EVENT_LOG_FILENAME, migrateLegacyEventLog } from "./event-log.js";
+import { join, resolve } from "node:path";
+import {
+  EVENT_LOG_FILENAME,
+  migrateLegacyEventLog,
+  sessionActivityAt,
+} from "./event-log.js";
 import type { Session } from "./session.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
@@ -398,15 +402,16 @@ export async function executeSlashCommand(
         lines.push("No sessions directory found.");
         break;
       }
-      const dirs = readdirSync(logDir, { withFileTypes: true })
-        .filter((d) => d.isDirectory())
-        .sort((a, b) => b.name.localeCompare(a.name))
-        .slice(0, 15);
-      if (dirs.length === 0) {
-        lines.push("No sessions found.");
-        break;
-      }
-      lines.push("", "Recent sessions:");
+      const normalizedCwd = resolve(session.cwd);
+      const dirs = readdirSync(logDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+      type SessionRow = {
+        id: string;
+        startedAt: number;
+        activityAt: number;
+        cwdLabel: string;
+        events: number;
+      };
+      const rows: SessionRow[] = [];
       for (const d of dirs) {
         const sessionDir = join(logDir, d.name);
         migrateLegacyEventLog(sessionDir);
@@ -414,23 +419,46 @@ export async function executeSlashCommand(
         const metaPath = join(logDir, d.name, "meta.json");
         let events = 0;
         let cwdLabel = "?";
-        let time = "?";
+        let startedAt = 0;
+        let metaCwd: string | null = null;
         try {
           const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+          metaCwd = typeof meta.cwd === "string" ? meta.cwd : null;
           cwdLabel = meta.cwd?.split("/").pop() ?? meta.cwd ?? "?";
-          time = new Date(meta.started_at).toISOString().slice(0, 16).replace("T", " ");
+          startedAt = typeof meta.started_at === "number" ? meta.started_at : 0;
         } catch {
           /* ignore */
         }
+        if (!metaCwd || resolve(metaCwd) !== normalizedCwd) continue;
         try {
           const content = readFileSync(eventsPath, "utf-8");
           events = content.split("\n").filter(Boolean).length;
         } catch {
           /* ignore */
         }
-        const marker = d.name === session.id ? " ← current" : "";
+        rows.push({
+          id: d.name,
+          startedAt,
+          activityAt: sessionActivityAt(logDir, d.name, startedAt),
+          cwdLabel,
+          events,
+        });
+      }
+      rows.sort((a, b) => b.activityAt - a.activityAt || b.id.localeCompare(a.id));
+      const recent = rows.slice(0, 15);
+      if (recent.length === 0) {
+        lines.push("No sessions found for this directory.");
+        break;
+      }
+      lines.push("", "Recent sessions (this directory):");
+      for (const row of recent) {
+        const time =
+          row.startedAt > 0
+            ? new Date(row.startedAt).toISOString().slice(0, 16).replace("T", " ")
+            : "?";
+        const marker = row.id === session.id ? " ← current" : "";
         lines.push(
-          `  ${time}  ${d.name}  ${String(events).padStart(4)} events  ${cwdLabel}${marker}`
+          `  ${time}  ${row.id}  ${String(row.events).padStart(4)} events  ${row.cwdLabel}${marker}`
         );
       }
       lines.push("", "Resume with: praana resume  (last session here)");

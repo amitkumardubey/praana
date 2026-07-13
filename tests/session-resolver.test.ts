@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { findLatestSessionForCwd, resolveSessionId } from "../src/event-log.js";
+import { EVENT_LOG_FILENAME, findLatestSessionForCwd, resolveSessionId } from "../src/event-log.js";
+import { AmbiguousSessionPrefixError } from "../src/session-errors.js";
 import type { SessionMeta } from "../src/types.js";
 
 const testLogDir = join(tmpdir(), "praana-test-session-resolver");
@@ -17,6 +18,13 @@ function writeMeta(sessionId: string, meta: Partial<SessionMeta> & Pick<SessionM
     agent: meta.agent ?? "praana",
   };
   writeFileSync(join(dir, "meta.json"), JSON.stringify(full, null, 2) + "\n");
+}
+
+function writeEvents(sessionId: string, mtimeMs: number): void {
+  const path = join(testLogDir, sessionId, EVENT_LOG_FILENAME);
+  writeFileSync(path, "{}\n");
+  const seconds = mtimeMs / 1000;
+  utimesSync(path, seconds, seconds);
 }
 
 describe("findLatestSessionForCwd", () => {
@@ -43,6 +51,17 @@ describe("findLatestSessionForCwd", () => {
     writeMeta("01OLDER000000000000000001", { cwd, started_at: 1 });
     writeMeta("01NEWER000000000000000002", { cwd, started_at: 2 });
     expect(findLatestSessionForCwd(testLogDir, cwd)).toBe("01NEWER000000000000000002");
+  });
+
+  it("prefers last activity over a newer but idle session", () => {
+    const cwd = resolve("/home/user/praana");
+    // Older start, but events touched more recently → should win.
+    writeMeta("01ACTIVE00000000000000001", { cwd, started_at: 1_000 });
+    writeEvents("01ACTIVE00000000000000001", 5_000);
+    // Newer start, but stale/no recent activity.
+    writeMeta("01IDLE0000000000000000002", { cwd, started_at: 2_000 });
+    writeEvents("01IDLE0000000000000000002", 2_000);
+    expect(findLatestSessionForCwd(testLogDir, cwd)).toBe("01ACTIVE00000000000000001");
   });
 
   it("matches cwd after path normalization", () => {
@@ -91,6 +110,23 @@ describe("resolveSessionId", () => {
     writeMeta("01FULL0000000000000000002", { cwd: "/home/user/praana" });
     writeMeta("01FULL0000000000000000003", { cwd: "/home/user/praana" });
     expect(() => resolveSessionId(testLogDir, "01FULL000000")).toThrow(/Ambiguous session prefix/);
+  });
+
+  it("throws AmbiguousSessionPrefixError with the matching ids", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    writeMeta("01FULL0000000000000000002", { cwd: "/home/user/praana" });
+    try {
+      resolveSessionId(testLogDir, "01FULL000000");
+      expect.unreachable("expected AmbiguousSessionPrefixError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AmbiguousSessionPrefixError);
+      expect((err as AmbiguousSessionPrefixError).matches).toHaveLength(2);
+    }
+  });
+
+  it("resolves a lowercase prefix case-insensitively", () => {
+    writeMeta("01FULL0000000000000000001", { cwd: "/home/user/praana" });
+    expect(resolveSessionId(testLogDir, "01full000000")).toBe("01FULL0000000000000000001");
   });
 
   it("ignores directories without a valid meta.json", () => {

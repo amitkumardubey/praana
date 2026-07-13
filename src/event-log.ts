@@ -15,7 +15,10 @@ import {
 import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
-import { SessionNotFoundError } from "./session.js";
+import {
+  AmbiguousSessionPrefixError,
+  SessionNotFoundError,
+} from "./session-errors.js";
 
 export interface EventSearchOptions {
   kinds?: EventKind[];
@@ -403,8 +406,25 @@ export function readSessionMeta(logDir: string, sessionId: string): SessionMeta 
 }
 
 /**
+ * Recency signal for a session: last events.jsonl mtime, else started_at.
+ * Bare `praana resume` should pick the session you were last active in, not
+ * merely the most recently created empty one.
+ */
+export function sessionActivityAt(
+  logDir: string,
+  sessionId: string,
+  startedAt: number,
+): number {
+  try {
+    return Math.max(startedAt, statSync(getEventLogPath(join(logDir, sessionId))).mtimeMs);
+  } catch {
+    return startedAt;
+  }
+}
+
+/**
  * Find the most recent session for a given working directory.
- * Picks the session with the latest started_at among cwd matches.
+ * Prefers last activity (events.jsonl mtime) over creation time.
  */
 export function findLatestSessionForCwd(logDir: string, cwd: string): string | null {
   if (!existsSync(logDir)) return null;
@@ -413,14 +433,15 @@ export function findLatestSessionForCwd(logDir: string, cwd: string): string | n
   const dirs = readdirSync(logDir, { withFileTypes: true }).filter((d) => d.isDirectory());
 
   let latestId: string | null = null;
-  let latestStartedAt = -1;
+  let latestActivity = -1;
 
   for (const d of dirs) {
     const meta = readSessionMeta(logDir, d.name);
     if (!meta || resolve(meta.cwd) !== normalizedCwd) continue;
-    if (meta.started_at > latestStartedAt) {
-      latestStartedAt = meta.started_at;
-      latestId = meta.session_id;
+    const activity = sessionActivityAt(logDir, d.name, meta.started_at);
+    if (activity > latestActivity) {
+      latestActivity = activity;
+      latestId = d.name;
     }
   }
 
@@ -432,32 +453,29 @@ export function findLatestSessionForCwd(logDir: string, cwd: string): string | n
  *
  * Enables resuming via the 12-character ULID prefix advertised by the session
  * epilogue and the `/sessions` command. A full id resolves to itself.
+ * Matching is case-insensitive (ULIDs are Crockford base32).
  *
  * @throws {SessionNotFoundError} if no session directory matches the prefix.
- * @throws {Error} if the prefix is ambiguous (matches more than one session).
+ * @throws {AmbiguousSessionPrefixError} if the prefix matches more than one session.
  */
 export function resolveSessionId(logDir: string, partial: string): string {
   if (!existsSync(logDir)) {
     throw new SessionNotFoundError(partial);
   }
 
+  const needle = partial.toUpperCase();
   const dirs = readdirSync(logDir, { withFileTypes: true }).filter((d) => d.isDirectory());
 
   const candidates = dirs
     .map((d) => d.name)
-    .filter((id) => id.startsWith(partial))
+    .filter((id) => id.toUpperCase().startsWith(needle))
     .filter((id) => readSessionMeta(logDir, id) !== null);
 
   if (candidates.length === 0) {
     throw new SessionNotFoundError(partial);
   }
   if (candidates.length > 1) {
-    const shown = candidates.slice(0, 5).join(", ");
-    const more = candidates.length > 5 ? `, +${candidates.length - 5} more` : "";
-    throw new Error(
-      `Ambiguous session prefix '${partial}': ${candidates.length} sessions match ` +
-        `(${shown}${more}). Use a longer prefix or the full session id.`,
-    );
+    throw new AmbiguousSessionPrefixError(partial, candidates);
   }
 
   return candidates[0];

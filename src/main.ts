@@ -7,6 +7,7 @@ import { parseCliArgs } from "./cli-args.js";
 import { printHelp, APP_VERSION, formatSessionEndEpilogue } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
 import { SessionNotFoundError } from "./session.js";
+import { AmbiguousSessionPrefixError } from "./session-errors.js";
 import { runTui } from "./ui/tui/run.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
@@ -274,6 +275,11 @@ export async function main() {
   } catch (err) {
     if (err instanceof SessionNotFoundError) {
       console.error(`Session not found: ${err.sessionId}`);
+      console.error("");
+      console.error("List available sessions with:  praana");
+      console.error("Then resume with:  praana resume <session-id>");
+    } else if (err instanceof AmbiguousSessionPrefixError) {
+      console.error(err.message);
       console.error("");
       console.error("List available sessions with:  praana");
       console.error("Then resume with:  praana resume <session-id>");
