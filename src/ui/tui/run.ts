@@ -43,6 +43,7 @@ import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { renderBootBanner } from "./banner.js";
+import { SLASH_COMMAND_METADATA } from "../../slash-commands.js";
 
 function statusBarFromSnapshot(
   base: StatusBarInput,
@@ -62,22 +63,13 @@ function statusBarFromSnapshot(
 import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 
-const SLASH_COMMANDS: SlashCommand[] = [
-  { name: "/exit", description: "End session" },
-  { name: "/state", description: "List working-memory state objects" },
-  { name: "/stats", description: "Session metadata + memory stats" },
-  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>" },
-  { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>" },
-  { name: "/sessions", description: "List past sessions" },
-  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>" },
-  { name: "/debug", description: "Toggle debug mode" },
-  { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
-  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
-  { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
-  { name: "/clear", description: "Reset in-session context" },
-  { name: "/new", description: "Start a new session" },
-  { name: "/help", description: "Show all commands" },
-];
+// Derived from the single source of truth in slash-commands.ts so the
+// autocomplete dropdown can never drift from the real command set.
+const SLASH_COMMANDS: SlashCommand[] = SLASH_COMMAND_METADATA.map((c) => ({
+  name: c.name,
+  description: c.description,
+  ...(c.argumentHint ? { argumentHint: c.argumentHint } : {}),
+}));
 
 function versionNumber(): string {
   return APP_VERSION.replace(/^v/, "");
@@ -168,7 +160,7 @@ export async function runTui(
       noMatch: TUI_STYLE.muted,
     },
   };
-  const editor = new InvertedEditor(tui, editorTheme, { autocompleteMaxVisible: 8, paddingY: 0 });
+  const editor = new InvertedEditor(tui, editorTheme, { autocompleteMaxVisible: 12, paddingY: 0 });
 
   const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
   const autocomplete: AutocompleteProvider = {

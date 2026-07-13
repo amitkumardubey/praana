@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
-import { executeSlashCommand } from "../src/slash-commands.js";
+import {
+  executeSlashCommand,
+  SLASH_COMMAND_METADATA,
+} from "../src/slash-commands.js";
 import type { Session } from "../src/session.js";
 import * as modelResolverActual from "../src/model-resolver.js";
 import * as systemToolsActual from "../src/tools/system.js";
@@ -731,4 +735,36 @@ describe("executeSlashCommand", () => {
 afterAll(() => {
   mock.module("../src/model-resolver.js", () => mrReal);
   mock.module("../src/tools/system.js", () => stReal);
+});
+
+describe("SLASH_COMMAND_METADATA", () => {
+  it("includes every command dispatched by the switch (no drift)", () => {
+    const source = readFileSync(new URL("../src/slash-commands.ts", import.meta.url), "utf8");
+    const dispatched = new Set<string>();
+    for (const m of source.matchAll(/case\s+"(\/[^"]+)"/g)) {
+      dispatched.add(m[1]);
+    }
+    const metadataNames = new Set(SLASH_COMMAND_METADATA.map((c) => c.name));
+    const metadataAliases = new Set(
+      SLASH_COMMAND_METADATA.flatMap((c) => c.aliases ?? []),
+    );
+
+    for (const cmd of dispatched) {
+      expect(
+        metadataNames.has(cmd) || metadataAliases.has(cmd),
+        `dispatched command "${cmd}" is missing from SLASH_COMMAND_METADATA`,
+      ).toBe(true);
+    }
+    expect(dispatched.size).toBeGreaterThan(0);
+  });
+
+  it("surfaces commands previously missing from the TUI dropdown", () => {
+    const names = SLASH_COMMAND_METADATA.map((c) => c.name);
+    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/setup"]) {
+      expect(names).toContain(cmd);
+    }
+    // /quit is an alias of /exit — also expose it for discoverability.
+    const exit = SLASH_COMMAND_METADATA.find((c) => c.name === "/exit");
+    expect(exit?.aliases).toContain("/quit");
+  });
 });

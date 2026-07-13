@@ -34,6 +34,43 @@ export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
 
 export type SlashCommandToastTone = "info" | "success" | "error";
 
+/**
+ * Single source of truth for slash-command metadata surfaced in the TUI
+ * autocomplete dropdown (see src/ui/tui/run.ts). The `switch (cmd)` dispatch
+ * below remains the behavioral authority, but every dispatchable command MUST
+ * also appear here so the dropdown never drifts from the real command set.
+ * Keep the two in sync — tests/slash-commands.test.ts guards against drift.
+ */
+export interface SlashCommandMeta {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  aliases?: string[];
+}
+
+export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
+  { name: "/exit", description: "End session", aliases: ["/quit"] },
+  { name: "/state", description: "List working-memory state objects" },
+  { name: "/stats", description: "Session metadata + memory stats" },
+  { name: "/scorecard", description: "Per-session telemetry scorecard" },
+  { name: "/digest", description: "Show Cognitive Memory digest" },
+  { name: "/events", description: "Show recent event-log entries" },
+  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>" },
+  { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>" },
+  { name: "/sessions", description: "List past sessions" },
+  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>" },
+  { name: "/debug", description: "Toggle debug mode" },
+  { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
+  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
+  { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
+  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>" },
+  { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe" },
+  { name: "/setup", description: "Run provider/config setup wizard" },
+  { name: "/clear", description: "Reset in-session context" },
+  { name: "/new", description: "Start a new session" },
+  { name: "/help", description: "Show all commands" },
+];
+
 export interface SlashCommandResult {
   action: SlashCommandAction;
   lines: string[];
