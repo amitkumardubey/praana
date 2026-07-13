@@ -4,7 +4,7 @@ import { getMissingKeyMessage, getProviderEnvKey } from "./llm.js";
 import { loadConfig, getConfigWarnings } from "./config.js";
 import { getAppLogger, initAppLogFile } from "./logger.js";
 import { parseCliArgs } from "./cli-args.js";
-import { printHelp, APP_VERSION } from "./app-banner.js";
+import { printHelp, APP_VERSION, formatSessionEndEpilogue } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
 import { SessionNotFoundError } from "./session.js";
 import { runTui } from "./ui/tui/run.js";
@@ -197,6 +197,73 @@ export async function main() {
   }
 
   const controller = new AppController({ cwd, config, parsed });
+
+  let shuttingDown = false;
+
+  /**
+   * Clean shutdown: save the session and exit. Safe to call when no turn is
+   * active. Guarded by `shuttingDown` so a second signal can't re-enter.
+   */
+  const cleanShutdownAndExit = async (signal: NodeJS.Signals) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    // SIGINT/SIGTERM before the session exists (Session.create/resume still
+    // awaiting during slow startup): nothing to save, just exit.
+    if (!controller.session) {
+      console.error(`\nReceived ${signal} before session started; exiting.`);
+      process.exit(signal === "SIGTERM" ? 143 : 130);
+      return;
+    }
+
+    console.error(`\nReceived ${signal}, saving session…`);
+    try {
+      const status = await controller.shutdown();
+      if (
+        status.turns > 0 ||
+        status.stateObjects > 0 ||
+        status.rememberCalls > 0
+      ) {
+        for (const line of formatSessionEndEpilogue({
+          sessionId: controller.session.id,
+          memory: status.memory,
+          turns: status.turns,
+          stateObjects: status.stateObjects,
+          rememberCalls: status.rememberCalls,
+          recallUsed: status.recallUsed,
+          learningsStored: status.learningsStored,
+        })) {
+          console.log(line);
+        }
+      }
+    } catch (err) {
+      console.error("Shutdown failed:", (err as Error).message);
+    }
+    process.exit(signal === "SIGTERM" ? 143 : 130);
+  };
+
+  /**
+   * Process-level signal handler. The TUI normally captures Ctrl+C itself
+   * (raw stdin), so this only fires when the TUI isn't capturing — e.g. during
+   * startup, after the TUI exits, or via `kill -INT/-TERM`.
+   *
+   * - SIGINT during a turn → abort the turn and return to the prompt (branch 1).
+   * - SIGTERM during a turn → abort, then terminate (process managers expect exit).
+   * - otherwise → clean shutdown + exit.
+   */
+  const handleShutdownSignal = (signal: NodeJS.Signals) => {
+    if (signal === "SIGINT" && controller.isTurnActive()) {
+      controller.abortTurn();
+      return;
+    }
+    if (signal === "SIGTERM" && controller.isTurnActive()) {
+      controller.abortTurn();
+    }
+    void cleanShutdownAndExit(signal);
+  };
+
+  process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
+  process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
   try {
     const info = await controller.start();

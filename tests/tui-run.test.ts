@@ -17,7 +17,13 @@ const tuiStop = mock();
 const tuiRequestRender = mock();
 const tuiSetFocus = mock();
 const tuiAddChild = mock();
-const tuiAddInputListener = mock(() => () => {});
+let capturedInputListener:
+  | ((data: string) => { consume: boolean } | undefined)
+  | null = null;
+const tuiAddInputListener = mock((cb: (data: string) => unknown) => {
+  capturedInputListener = cb as never;
+  return () => {};
+});
 let latestEditor: FakeEditor | null = null;
 
 class FakeTUI {
@@ -41,6 +47,8 @@ class FakeEditor {
   setAutocompleteProvider = mock();
   invalidate = mock();
   render = mock(() => []);
+  getText = mock(() => "");
+  setText = mock();
   constructor() {
     latestEditor = this;
   }
@@ -61,7 +69,8 @@ mock.module("@earendil-works/pi-tui", () => ({
   Editor: FakeEditor,
   Loader: FakeLoader,
   CombinedAutocompleteProvider: class { constructor() {} },
-  matchesKey: () => false,
+  matchesKey: (data: string, key: string) =>
+    key === "ctrl+c" ? data === "\x03" : false,
 }));
 
 // ── Minimal fake controller ───────────────────────────────────────────────────
@@ -176,6 +185,7 @@ describe("runTui", () => {
     fakeController.runUserTurn.mockReset();
     fakeController.runUserTurn.mockImplementation(async () => {});
     latestEditor = null;
+    capturedInputListener = null;
     tuiStart.mockReset();
     tuiStop.mockReset();
     stderrSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -314,5 +324,46 @@ describe("runTui", () => {
 
     delete process.env.PRAANA_HOME;
     rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("ctrl+c with empty input exits the app (shutdown + exit)", async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    tuiStart.mockImplementationOnce(() => resolve());
+    shutdownMock.mockResolvedValueOnce({ ...defaultShutdownStatus });
+    fakeController.handleUserInterrupt.mockImplementation((empty: boolean) =>
+      empty ? ("exit" as const) : ("clear_input" as const),
+    );
+    exitSpy.mockImplementation(() => undefined as never); // no-op, don't throw
+
+    const runPromise = runTui(fakeController as never, fakeInfo);
+    await promise;
+
+    expect(typeof capturedInputListener).toBe("function");
+    (latestEditor as unknown as { getText: () => string }).getText = () => "";
+    capturedInputListener?.("\x03");
+
+    await runPromise;
+    expect(shutdownMock).toHaveBeenCalledTimes(1);
+    expect(tuiStop).toHaveBeenCalled();
+  });
+
+  it("ctrl+c with non-empty input clears the input instead of exiting", async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    tuiStart.mockImplementationOnce(() => resolve());
+    fakeController.handleUserInterrupt.mockImplementation((empty: boolean) =>
+      empty ? ("exit" as const) : ("clear_input" as const),
+    );
+
+    const runPromise = runTui(fakeController as never, fakeInfo);
+    await promise;
+
+    (latestEditor as unknown as { getText: () => string }).getText = () => "hello";
+    capturedInputListener?.("\x03");
+
+    await runPromise;
+    expect(shutdownMock).not.toHaveBeenCalled();
+    expect(
+      (latestEditor as unknown as { setText: ReturnType<typeof mock> }).setText,
+    ).toHaveBeenCalledWith("");
   });
 });

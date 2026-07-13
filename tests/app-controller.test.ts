@@ -7,9 +7,20 @@ import type { CliArgs } from "../src/cli-args.js";
 import type { PraanaConfig } from "../src/types.js";
 import * as sessionActual from "../src/session.js";
 import { Session } from "../src/session.js";
+import * as turnActual from "../src/turn.js";
+import { runTurn } from "../src/turn.js";
+import { TurnAbortedError } from "../src/turn-control.js";
 
 // Snapshot real module BEFORE mock.module updates live bindings
 const sessionReal = { ...sessionActual };
+const turnReal = { ...turnActual };
+
+mock.module("../src/turn.js", () => ({
+  ...turnReal,
+  runTurn: mock(async () => {
+    throw new TurnAbortedError("partial output");
+  }),
+}));
 
 mock.module("../src/session.js", () => ({
   Session: {
@@ -301,13 +312,22 @@ describe("AppController", () => {
     expect(end).toHaveBeenCalledTimes(1);
   });
 
-  it("handleUserInterrupt clears input when no turn is active", () => {
+  it("handleUserInterrupt clears input when no turn is active and input has text", () => {
     const controller = new AppController({
       cwd: "/tmp",
       config: baseConfig,
       parsed: baseParsed,
     });
-    expect(controller.handleUserInterrupt()).toBe("clear_input");
+    expect(controller.handleUserInterrupt(false)).toBe("clear_input");
+  });
+
+  it("handleUserInterrupt exits when no turn is active and input is empty", () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    expect(controller.handleUserInterrupt(true)).toBe("exit");
   });
 
   it("handleUserInterrupt debounces repeated calls", () => {
@@ -316,8 +336,8 @@ describe("AppController", () => {
       config: baseConfig,
       parsed: baseParsed,
     });
-    expect(controller.handleUserInterrupt()).toBe("clear_input");
-    expect(controller.handleUserInterrupt()).toBe("noop");
+    expect(controller.handleUserInterrupt(false)).toBe("clear_input");
+    expect(controller.handleUserInterrupt(false)).toBe("noop");
   });
 
   it("handleUserInterrupt aborts an active turn", () => {
@@ -327,7 +347,74 @@ describe("AppController", () => {
       parsed: baseParsed,
     });
     (controller as any).turnController.begin();
-    expect(controller.handleUserInterrupt()).toBe("abort_turn");
+    expect(controller.handleUserInterrupt(true)).toBe("abort_turn");
+  });
+
+  it("shutdown is a no-op when no session exists yet (startup window)", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    const status = await controller.shutdown();
+    expect(status).toEqual({
+      memory: "noop",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
+  });
+
+  describe("runUserTurn interrupt handling", () => {
+    const noopSink = {
+      onTextDelta: () => {},
+      onThinkingDelta: () => {},
+      onToolCall: () => {},
+      onToolResult: () => {},
+      onProviderUsage: () => {},
+      onMemoryBanner: () => {},
+      onSpinnerStart: () => {},
+      onSpinnerStop: () => {},
+      onNewline: () => {},
+      onFallback: () => {},
+      onSystemLines: () => {},
+      onError: () => {},
+      flushText: () => {},
+      consumeTurnStats: () => null,
+    } as never;
+
+    it("swallows TurnAbortedError and returns to the caller (no crash)", async () => {
+      const controller = new AppController({
+        cwd: "/tmp",
+        config: baseConfig,
+        parsed: baseParsed,
+      });
+
+      // runTurn is mocked to throw TurnAbortedError (simulating an interrupted
+      // turn whose partial response was already persisted).
+      await expect(
+        controller.runUserTurn("hello", noopSink),
+      ).resolves.toBeUndefined();
+
+      // Turn lifecycle must still be closed so a later turn can begin.
+      expect(controller.isTurnActive()).toBe(false);
+    });
+
+    it("still propagates non-abort errors", async () => {
+      (runTurn as unknown as Mock).mockImplementation(async () => {
+        throw new Error("boom");
+      });
+      const controller = new AppController({
+        cwd: "/tmp",
+        config: baseConfig,
+        parsed: baseParsed,
+      });
+      await expect(controller.runUserTurn("hello", noopSink)).rejects.toThrow(
+        "boom",
+      );
+    });
   });
 
   it("resumes the latest session for cwd when resume has no session id", async () => {
@@ -522,7 +609,8 @@ describe("AppController", () => {
     rmSync(logDir, { recursive: true, force: true });
   });
 });
-// Restore real session module after this file to prevent cross-test pollution
+// Restore real modules after this file to prevent cross-test pollution
 afterAll(() => {
   mock.module("../src/session.js", () => sessionReal);
+  mock.module("../src/turn.js", () => turnReal);
 });
