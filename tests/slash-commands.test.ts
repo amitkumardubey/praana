@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
-import { readFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterAll, afterEach, mock, type Mock } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import {
   executeSlashCommand,
@@ -8,6 +10,8 @@ import {
 import type { Session } from "../src/session.js";
 import * as modelResolverActual from "../src/model-resolver.js";
 import * as systemToolsActual from "../src/tools/system.js";
+import { EVENT_LOG_FILENAME } from "../src/event-log.js";
+import type { SessionMeta } from "../src/types.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings
 const mrReal = { ...modelResolverActual };
@@ -727,6 +731,70 @@ describe("executeSlashCommand", () => {
         exitCode: 1,
         ok: false,
       });
+    });
+  });
+
+  describe("/sessions", () => {
+    const sessionsLogDir = join(tmpdir(), "praana-test-sessions-list");
+
+    function writeSession(
+      id: string,
+      startedAt: number,
+      cwd = "/home/user/praana",
+      activityAt = startedAt,
+    ): void {
+      const dir = join(sessionsLogDir, id);
+      mkdirSync(dir, { recursive: true });
+      const meta: SessionMeta = {
+        session_id: id,
+        started_at: startedAt,
+        cwd,
+        agent: "praana",
+      };
+      writeFileSync(join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+      const eventsPath = join(dir, EVENT_LOG_FILENAME);
+      writeFileSync(eventsPath, "");
+      const seconds = activityAt / 1000;
+      utimesSync(eventsPath, seconds, seconds);
+    }
+
+    beforeEach(() => {
+      rmSync(sessionsLogDir, { recursive: true, force: true });
+      mkdirSync(sessionsLogDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      rmSync(sessionsLogDir, { recursive: true, force: true });
+    });
+
+    it("lists sessions for the current cwd, newest-first by activity", async () => {
+      const cwd = "/home/user/praana";
+      // Lexicographically older id, but more recent activity — must appear first.
+      writeSession("01OLDERNAME000000000000001", 100, cwd, 100);
+      writeSession("01NEWERNAME000000000000002", 50, cwd, 50);
+      writeSession("01MIDDLENAME00000000000003", 75, cwd, 75);
+      // Different project — must not appear.
+      writeSession("01OTHERPROJ00000000000001", 999, "/home/user/other", 999);
+
+      const session = {
+        id: "01OLDERNAME000000000000001",
+        cwd,
+        stateGraph: { list: () => [] },
+        config: { session: { log_dir: sessionsLogDir } },
+      } as unknown as Session;
+
+      const result = await executeSlashCommand("/sessions", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+
+      const idLines = result.lines.filter((l) => /01[A-Z0-9]+/.test(l));
+      expect(idLines).toHaveLength(3);
+      expect(idLines[0]).toContain("01OLDERNAME000000000000001");
+      expect(idLines[1]).toContain("01MIDDLENAME00000000000003");
+      expect(idLines[2]).toContain("01NEWERNAME000000000000002");
+      expect(result.lines.join("\n")).not.toContain("01OTHERPROJ00000000000001");
     });
   });
 });

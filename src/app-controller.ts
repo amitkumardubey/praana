@@ -3,7 +3,7 @@ import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
 import { loadConfig } from "./config.js";
 import { Session, type SessionEndStatus } from "./session.js";
-import { findLatestSessionForCwd } from "./event-log.js";
+import { findLatestSessionForCwd, resolveSessionId } from "./event-log.js";
 import { runTurn } from "./turn.js";
 import { TurnController, TurnAbortedError } from "./turn-control.js";
 import { buildStatusBarInput, type StatusBarInput } from "./status-bar.js";
@@ -55,15 +55,11 @@ export class AppController {
     let didResume = false;
 
     if (resumeMode) {
-      const resolvedId =
-        sessionId ?? findLatestSessionForCwd(this.config.session.log_dir, this.cwd);
+      const resolvedId = sessionId
+        ? resolveSessionId(this.config.session.log_dir, sessionId)
+        : findLatestSessionForCwd(this.config.session.log_dir, this.cwd);
       if (resolvedId) {
         this.session = await Session.resume(resolvedId, this.cwd, this.config, {
-          captureNotice,
-        });
-        didResume = true;
-      } else if (sessionId) {
-        this.session = await Session.resume(sessionId, this.cwd, this.config, {
           captureNotice,
         });
         didResume = true;
