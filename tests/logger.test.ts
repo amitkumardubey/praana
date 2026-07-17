@@ -1,7 +1,18 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   PraanaLogger,
   createSessionLogger,
@@ -12,6 +23,7 @@ import {
   getSessionSystemLogPath,
   LOG_RETENTION_DAYS,
   LOG_RETENTION_COUNT,
+  refreshCurrentLogSymlink,
   setAppLogger,
 } from "../src/logger.js";
 
@@ -53,6 +65,7 @@ describe("logger", () => {
       });
 
       const systemLogPath = getSessionSystemLogPath(sessionLogDir, sessionId);
+      expect(lstatSync(systemLogPath).isSymbolicLink()).toBe(true);
       const systemLog = readFileSync(systemLogPath, "utf-8");
       expect(systemLog).toContain("LLM stream error");
       expect(systemLog).toContain("LLM_STREAM_ERROR");
@@ -63,6 +76,86 @@ describe("logger", () => {
       else delete process.env.NODE_ENV;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("refreshCurrentLogSymlink creates a current.log symlink", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
+    try {
+      const target = join(dir, "praana.2026-07-17.1.log");
+      writeFileSync(target, "log body");
+      refreshCurrentLogSymlink(dir, target);
+      expect(lstatSync(join(dir, "current.log")).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(join(dir, "current.log"))).toBe("praana.2026-07-17.1.log");
+      expect(readFileSync(join(dir, "current.log"), "utf-8")).toBe("log body");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshCurrentLogSymlink is idempotent for the same target", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
+    try {
+      const target = join(dir, "praana.2026-07-17.1.log");
+      writeFileSync(target, "log body");
+      refreshCurrentLogSymlink(dir, target);
+      refreshCurrentLogSymlink(dir, target);
+      expect(lstatSync(join(dir, "current.log")).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(join(dir, "current.log"))).toBe("praana.2026-07-17.1.log");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshCurrentLogSymlink updates a stale symlink", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
+    try {
+      const oldTarget = join(dir, "old.log");
+      const newTarget = join(dir, "new.log");
+      writeFileSync(oldTarget, "old");
+      writeFileSync(newTarget, "new");
+      refreshCurrentLogSymlink(dir, oldTarget);
+      expect(readlinkSync(join(dir, "current.log"))).toBe("old.log");
+      refreshCurrentLogSymlink(dir, newTarget);
+      expect(readlinkSync(join(dir, "current.log"))).toBe("new.log");
+      expect(readFileSync(join(dir, "current.log"), "utf-8")).toBe("new");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("initAppLogFile survives two concurrent processes sharing PRAANA_HOME", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-concurrent-init-"));
+    const home = join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const fixture = fileURLToPath(new URL("./fixtures/concurrent-log-init.ts", import.meta.url));
+
+    const env: Record<string, string | undefined> = { ...process.env, PRAANA_HOME: home };
+    delete env.VITEST;
+
+    const children = [1, 2].map(() => {
+      return new Promise<{ code: number | null; stderr: string }>((resolve) => {
+        const child = spawn("bun", [fixture], {
+          env,
+          cwd: process.cwd(),
+        });
+        let stderr = "";
+        child.stderr.on("data", (d) => (stderr += String(d)));
+        child.on("close", (code) => resolve({ code, stderr }));
+      });
+    });
+
+    const results = await Promise.all(children);
+    for (const result of results) {
+      expect(result.code).toBe(0);
+      expect(result.stderr).not.toContain("EEXIST");
+    }
+
+    const currentLog = join(home, ".praana", "logs", "current.log");
+    expect(lstatSync(currentLog).isSymbolicLink()).toBe(true);
+    const target = readlinkSync(currentLog);
+    expect(existsSync(join(home, ".praana", "logs", target))).toBe(true);
+
+    rmSync(root, { recursive: true, force: true });
   });
 
   it("extracts pi-ai error messages", () => {
