@@ -1,6 +1,13 @@
-import { existsSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readlinkSync,
+  renameSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   APP_HOME_DIR,
   APP_NAME,
@@ -114,6 +121,52 @@ function isTestEnv(): boolean {
 
 const rollingStreams = new Map<string, DestinationStream>();
 
+/** Atomically create or refresh a `current.log` symlink in `dir` pointing at
+ * `basename(targetFile)`. Concurrent writers target the same daily rolling file,
+ * so the symlink is idempotent; we use a temp-file + rename to avoid pino-roll's
+ * TOCTOU race on the shared link path (see issue #249). */
+export function refreshCurrentLogSymlink(dir: string, targetFile: string): void {
+  const linkPath = join(dir, LOG_SYMLINK_FILENAME);
+  const target = basename(targetFile);
+
+  try {
+    symlinkSync(target, linkPath);
+    return;
+  } catch (e: any) {
+    if (e.code !== "EEXIST") throw e;
+  }
+
+  try {
+    if (readlinkSync(linkPath) === target) return;
+  } catch {
+    // not a symlink or missing — fall through to recreate
+  }
+
+  const tmp = `${linkPath}.${process.pid}.tmp`;
+  try {
+    unlinkSync(tmp);
+  } catch {
+    // tmp may not exist
+  }
+
+  symlinkSync(target, tmp);
+  try {
+    renameSync(tmp, linkPath);
+  } catch (renameErr) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // cleanup best-effort
+    }
+    try {
+      if (readlinkSync(linkPath) === target) return;
+    } catch {
+      // ignore
+    }
+    throw renameErr;
+  }
+}
+
 async function createRollingFileDestination(basePath: string): Promise<DestinationStream> {
   const cached = rollingStreams.get(basePath);
   if (cached) return cached;
@@ -126,8 +179,19 @@ async function createRollingFileDestination(basePath: string): Promise<Destinati
     dateFormat: "yyyy-MM-dd",
     mkdir: true,
     sync: true,
-    symlink: true,
+    symlink: false,
     limit: { count: LOG_RETENTION_COUNT, removeOtherLogFiles: true },
+  });
+  const currentFile = (stream as unknown as { file: string }).file;
+  const logDir = dirname(currentFile);
+  refreshCurrentLogSymlink(logDir, currentFile);
+  stream.on("cleanup-complete", () => {
+    try {
+      refreshCurrentLogSymlink(logDir, (stream as unknown as { file: string }).file);
+    } catch (err) {
+      // Defensive: a stale current.log symlink is not fatal.
+      appLogger.warn("failed to refresh current.log symlink", { cause: err as Error });
+    }
   });
   rollingStreams.set(basePath, stream);
   return stream;

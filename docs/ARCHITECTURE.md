@@ -19,6 +19,7 @@ src/
   state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
   state-graph-checkpoint.ts — O(1) resume: persist/restore StateGraph snapshot (tiers, touchedTurn) after each turn
   event-log.ts   — Append-only JSONL event persistence with fsyncSync durability; in-memory parse cache (re-reads disk only on mtime/size change)
+  logger.ts      — Daily-rotated app + session logs via pino-roll; atomic current.log symlink for safe concurrent-session startup
   token-estimate.ts — Unicode-aware token heuristic (Latin/CJK/emoji/ZWJ); canonical shared estimator for all budget calculations
   context-pressure.ts — Density-weighted effective-token accounting; raw-token safety net; resolves compaction config
   cosine-similarity.ts — Cosine similarity for Float32Array embedding vectors; shared by context scoring and memory dedup
@@ -82,6 +83,15 @@ src/
     skill-stats-store.ts — Cross-session skill effectiveness: loadUsefulness (dual-scope), flush (boost/decay), co-occurrence recording
     types.ts          — SkillRecord (with scope), LoadedSkill (with used flag), SkillEffect, telemetry types
 ```
+
+## Logging
+
+PRAANA writes two rolling logs via `pino-roll`:
+
+- **App log**: `~/.praana/logs/praana.YYYY-MM-DD.N.log`, with a `current.log` symlink for `tail -f` convenience.
+- **Session system log**: `~/.praana/sessions/<id>/system.YYYY-MM-DD.N.log`, also exposed via `current.log`.
+
+Because `current.log` lives in a shared directory, two simultaneous sessions could collide on its creation. The logger creates the symlink itself with `symlink: false` in `pino-roll` and an atomic temp-file + `renameSync` replacement, so concurrent `initAppLogFile()` calls never hit the `EEXIST` TOCTOU race from pino-roll's default symlink handling. The symlink is refreshed on every log roll so it stays pointed at the active file.
 
 ## Runtime Architecture (Turn Flow)
 
