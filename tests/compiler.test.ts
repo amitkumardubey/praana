@@ -1,4 +1,4 @@
-import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, buildFilesReadIndexSection, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -449,5 +449,70 @@ describe('Compiler', () => {
     expect(hint).toContain('## Agent Hints');
     expect(hint).toContain(`repeat_file_reads: ${REPEAT_FILE_READS_THRESHOLD + 1}`);
     expect(hint).toContain('retrieve_artifact');
+  });
+
+  describe('buildFilesReadIndexSection', () => {
+    it('returns empty string when no files have been read', () => {
+      const section = buildFilesReadIndexSection([], '/proj');
+      expect(section).toBe('');
+    });
+
+    it('renders files read with relative paths, turn numbers, and artifact ids', () => {
+      const section = buildFilesReadIndexSection(
+        [
+          { absPath: '/proj/src/auth.ts', artifactId: 'art_abc123', createdTurn: 3 },
+          { absPath: '/proj/docs/readme.md', artifactId: 'art_def456', createdTurn: 7 },
+          { absPath: '/outside/config.json', artifactId: 'art_ghi789', createdTurn: 5 },
+        ],
+        '/proj',
+      );
+
+      expect(section).toContain('## Files Read This Session');
+      expect(section).toContain('Use retrieve_artifact(id) before re-reading a path:');
+      expect(section).toContain('- src/auth.ts (turn 3, `art_abc123`)');
+      expect(section).toContain('- docs/readme.md (turn 7, `art_def456`)');
+      expect(section).toContain('- /outside/config.json (turn 5, `art_ghi789`)');
+    });
+
+    it('sorts reads by created turn descending', () => {
+      const section = buildFilesReadIndexSection(
+        [
+          { absPath: '/proj/a.ts', artifactId: 'art_a', createdTurn: 1 },
+          { absPath: '/proj/b.ts', artifactId: 'art_b', createdTurn: 5 },
+          { absPath: '/proj/c.ts', artifactId: 'art_c', createdTurn: 3 },
+        ],
+        '/proj',
+      );
+
+      const bIndex = section.indexOf('b.ts');
+      const cIndex = section.indexOf('c.ts');
+      const aIndex = section.indexOf('a.ts');
+      expect(bIndex).toBeLessThan(cIndex);
+      expect(cIndex).toBeLessThan(aIndex);
+    });
+
+    it('caps entries and reports the overflow', () => {
+      const reads = Array.from({ length: 30 }, (_, i) => ({
+        absPath: `/proj/file${i.toString().padStart(2, '0')}.ts`,
+        artifactId: `art_${i.toString().padStart(3, '0')}`,
+        createdTurn: i + 1,
+      }));
+
+      const section = buildFilesReadIndexSection(reads, '/proj');
+      const lines = section.split('\n').filter((l) => l.startsWith('- '));
+      expect(lines.length).toBe(25);
+      expect(section).toContain('… and 5 more reads this session.');
+    });
+
+    it('uses singular form for a single overflow entry', () => {
+      const reads = Array.from({ length: 26 }, (_, i) => ({
+        absPath: `/proj/file${i.toString().padStart(2, '0')}.ts`,
+        artifactId: `art_${i.toString().padStart(3, '0')}`,
+        createdTurn: i + 1,
+      }));
+
+      const section = buildFilesReadIndexSection(reads, '/proj');
+      expect(section).toContain('… and 1 more read this session.');
+    });
   });
 });

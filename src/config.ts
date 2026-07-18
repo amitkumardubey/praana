@@ -88,7 +88,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     confirm: false,
   },
   tools: {
-    block_repeat_reads: false,
+    block_repeat_reads: true,
   },
   skills: {
     enabled: true,
@@ -495,10 +495,10 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
 
   // Tools config validation
   if (!out.tools) {
-    out.tools = { block_repeat_reads: false };
+    out.tools = { block_repeat_reads: true };
   } else if (typeof out.tools.block_repeat_reads !== "boolean") {
-    configWarn("tools.block_repeat_reads must be boolean, defaulting to false");
-    out.tools = { ...out.tools, block_repeat_reads: false };
+    configWarn("tools.block_repeat_reads must be boolean, defaulting to true");
+    out.tools = { ...out.tools, block_repeat_reads: true };
   }
 
   // search_code config validation

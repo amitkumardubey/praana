@@ -220,7 +220,7 @@ export interface EditConfig {
 }
 
 export interface ToolsConfig {
-  /** When true, second+ read_file of the same abs path hard-fails. Default: warn + return artifact card. */
+  /** When true, second+ read_file of the same abs path hard-fails. Default: true (hard-block). */
   block_repeat_reads: boolean;
 }
 
@@ -308,7 +308,7 @@ export interface PraanaConfig {
   consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
-  /** Optional; defaults to { block_repeat_reads: false } when omitted. */
+  /** Optional; defaults to { block_repeat_reads: true } when omitted. */
   tools?: ToolsConfig;
   search_code?: SearchCodeConfig;
   skills: SkillsConfig;

@@ -1082,6 +1082,39 @@ describe("engine compiler — workflow context injection", () => {
     expect(withHints.metrics.agentHintsTokens ?? 0).toBeGreaterThan(0);
     expect(withoutHints.metrics.agentHintsTokens ?? 0).toBe(0);
   });
+
+  it("injects files read index section when non-empty", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      filesReadIndex: "## Files Read This Session\n\n- src/auth.ts (turn 3, `art_abc123`)",
+    });
+    expect(result.prompt).toContain("## Files Read This Session");
+    expect(result.prompt).toContain("- src/auth.ts (turn 3, `art_abc123`)");
+    expect(result.metrics.filesReadIndexTokens).toBeGreaterThan(0);
+  });
+
+  it("does not inject files read index when the section is empty", async () => {
+    const result = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      filesReadIndex: "",
+    });
+    expect(result.prompt).not.toContain("## Files Read This Session");
+    expect(result.metrics.filesReadIndexTokens).toBe(0);
+  });
+
+  it("includes files read index tokens in pressure-weighted count", async () => {
+    const withIndex = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      filesReadIndex: "## Files Read This Session\n\n- src/auth.ts (turn 3, `art_abc123`)",
+    });
+    const withoutIndex = await compileEngineWithMetrics({
+      ...BASE_INPUT,
+      filesReadIndex: "",
+    });
+    expect(withIndex.weightedTokens).toBeGreaterThan(withoutIndex.weightedTokens);
+    expect(withIndex.metrics.filesReadIndexTokens ?? 0).toBeGreaterThan(0);
+    expect(withoutIndex.metrics.filesReadIndexTokens ?? 0).toBe(0);
+  });
 });
 
 describe("buildVerbatimSection progressive trimming", () => {

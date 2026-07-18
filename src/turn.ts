@@ -8,7 +8,7 @@ import type { Session } from "./session.js";
 import type { StateObject, PraanaConfig } from "./types.js";
 import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
-import { buildAgentHints } from "./compiler.js";
+import { buildAgentHints, buildFilesReadIndexSection } from "./compiler.js";
 import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
   compileEngineWithMetrics,
@@ -397,7 +397,7 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
-    blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
+    blockRepeatReads: session.config.tools?.block_repeat_reads ?? true,
     hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
@@ -474,6 +474,10 @@ export async function runTurn(
     // Pre-fetch all stored workflow patterns for injection into the compiled prompt
     // (issue #92). The compiler filters them to the classified task type internally.
     const workflowPatterns = session.contextEngine!.listAllWorkflowPatterns();
+    const fileReads = session.contextEngine!.store.listFileReads();
+    const filesReadIndex = fileReads.length > 0
+      ? buildFilesReadIndexSection(fileReads, session.cwd)
+      : "";
     const engineResult = await compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
@@ -494,6 +498,7 @@ export async function runTurn(
       agentHints: buildAgentHints({
         repeatFileReads: session.scorecard.getCounters().repeatFileReads,
       }),
+      filesReadIndex,
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {

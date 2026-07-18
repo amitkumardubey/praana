@@ -637,10 +637,15 @@ describe("runTurn", () => {
         recordCompileTelemetry: mock(),
         captureStateSnapshot: mock(),
         listAllWorkflowPatterns: mock(() => []),
+        store: { listFileReads: mock(() => []) },
       },
     });
 
     await runTurn(session, "hello");
+
+    expect(compileEngineWithMetrics).toHaveBeenCalledWith(
+      expect.objectContaining({ filesReadIndex: "" }),
+    );
 
     expect(compileEngineWithMetrics).toHaveBeenCalled();
     expect(compileClassicWithMetrics).not.toHaveBeenCalled();
@@ -1165,6 +1170,7 @@ describe("runTurn", () => {
         reconcileCheckpoint: mock(),
         runEviction: mock(() => 0),
         flushDeferredDistillation: mock(async () => 0),
+        store: { listFileReads: mock(() => []) },
       },
     });
 
@@ -1240,6 +1246,7 @@ describe("runTurn", () => {
         reconcileCheckpoint: mock(),
         runEviction: mock(() => 0),
         flushDeferredDistillation: mock(async () => 0),
+        store: { listFileReads: mock(() => []) },
       },
     });
 
@@ -1453,6 +1460,7 @@ describe("runTurn", () => {
         recordCompileTelemetry: mock(),
         captureStateSnapshot: mock(),
         listAllWorkflowPatterns: mock(() => []),
+        store: { listFileReads: mock(() => []) },
       },
       skillRuntime: {
         cleanupStaleSkills,

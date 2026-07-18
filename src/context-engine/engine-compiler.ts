@@ -82,6 +82,11 @@ export interface EngineCompileInput extends CompileInput {
    * Injected after the skills catalog when non-empty.
    */
   agentHints?: string;
+  /**
+   * Optional "Files read this session" index section (issue #251).
+   * Injected after the checkpoint when non-empty.
+   */
+  filesReadIndex?: string;
 }
 
 export interface EngineCompileResult {
@@ -381,6 +386,7 @@ function computeWeightedTokens(
   weighted += effectiveTokens(metrics.skillsCatalogTokens, "pinned_infra");
   weighted += effectiveTokens(metrics.agentHintsTokens ?? 0, "pinned_infra");
   weighted += effectiveTokens(metrics.workflowContextTokens ?? 0, "pinned_infra");
+  weighted += effectiveTokens(metrics.filesReadIndexTokens ?? 0, "pinned_infra");
   weighted += checkpointEffective;
   weighted += effectiveTokens(metrics.recentTurnsTokens, "verbatim_turn");
   for (const unit of includedScored) {
@@ -421,6 +427,8 @@ interface BuildPassBase {
   verbatim: { text: string; tokens: number; truncated: boolean };
   agentHints?: string;
   agentHintsTokens: number;
+  filesReadIndex?: string;
+  filesReadIndexTokens: number;
 }
 
 interface CompilePassPrecomputed {
@@ -431,6 +439,8 @@ interface CompilePassPrecomputed {
   verbatim: { text: string; tokens: number; truncated: boolean };
   agentHints?: string;
   agentHintsTokens: number;
+  filesReadIndex?: string;
+  filesReadIndexTokens: number;
   bandScoredRecentTokens: number;
   bandScoredOlderTokens: number;
   checkpointBudgets: CheckpointSectionBudgets;
@@ -504,6 +514,14 @@ async function compileEnginePass(
     sections.push(checkpointRendered.text);
   }
   metrics.checkpointTokens = checkpointRendered.tokens;
+
+  // Files read this session (issue #251): reference index after checkpoint, before verbatim turns.
+  metrics.filesReadIndexTokens = 0;
+  if (precomputed.filesReadIndex) {
+    sections.push(precomputed.filesReadIndex);
+    metrics.filesReadIndexTokens = precomputed.filesReadIndexTokens;
+  }
+
   sections.push(precomputed.verbatim.text);
   metrics.recentTurnsTokens = precomputed.verbatim.tokens;
   metrics.recentTurnsTruncated = precomputed.verbatim.truncated;
@@ -677,6 +695,8 @@ function buildCompilePassPrecomputed(
   );
   const agentHints = input.agentHints?.trim() ?? "";
   const agentHintsTokens = agentHints ? estTokens(agentHints) : 0;
+  const filesReadIndex = input.filesReadIndex?.trim() ?? "";
+  const filesReadIndexTokens = filesReadIndex ? estTokens(filesReadIndex) : 0;
   const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn, verbatimTokenCap);
   return {
     systemFrame,
@@ -686,6 +706,8 @@ function buildCompilePassPrecomputed(
     verbatim,
     agentHints,
     agentHintsTokens,
+    filesReadIndex,
+    filesReadIndexTokens,
   };
 }
 
@@ -763,6 +785,7 @@ export async function compileEngineWithMetrics(
   const pinnedInfraEstimate =
     precomputed.systemFrameTokens +
     precomputed.agentHintsTokens +
+    precomputed.filesReadIndexTokens +
     Math.min(skillsRawTokens, maxSkillsSectionTokens);
 
   const preliminaryWeighted = estimatePreliminaryWeighted(

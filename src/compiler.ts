@@ -55,6 +55,8 @@ export interface CompileMetrics {
   workflowContextTokens?: number;
   /** Tokens used by the scorecard-driven agent hints section (issue #224). */
   agentHintsTokens?: number;
+  /** Tokens used by the "Files read this session" index section (issue #251). */
+  filesReadIndexTokens?: number;
   /** Domain-agnostic classified task type (raw label from the active classifier). */
   taskType?: string;
 }
@@ -296,6 +298,47 @@ export function buildAgentHints(counters: AgentHintCounters): string {
     return "";
   }
   return `## Agent Hints\n\n${parts.join("\n")}`;
+}
+
+export interface FileReadIndexEntry {
+  absPath: string;
+  artifactId: string;
+  createdTurn: number;
+}
+
+/**
+ * Build a compact "Files Read This Session" section for the compiled prompt.
+ * The index helps the agent discover already-read files and use retrieve_artifact(id)
+ * instead of re-calling read_file. Issue #251.
+ */
+export function buildFilesReadIndexSection(
+  reads: FileReadIndexEntry[],
+  cwd: string,
+  maxEntries = 25,
+): string {
+  if (reads.length === 0) {
+    return "";
+  }
+  const sorted = [...reads].sort((a, b) => b.createdTurn - a.createdTurn);
+  const shown = sorted.slice(0, maxEntries);
+  const lines = [
+    "## Files Read This Session",
+    "",
+    "Use retrieve_artifact(id) before re-reading a path:",
+    "",
+  ];
+  for (const r of shown) {
+    const rel = r.absPath.startsWith(cwd + "/") ? r.absPath.slice(cwd.length + 1) : r.absPath;
+    lines.push(`- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`)`);
+  }
+  const hidden = sorted.length - shown.length;
+  if (hidden > 0) {
+    lines.push(
+      "",
+      `… and ${hidden} more read${hidden === 1 ? "" : "s"} this session.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 export function buildSystemFrame(

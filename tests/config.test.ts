@@ -67,6 +67,18 @@ describe("config loading", () => {
     )).toBe(true);
   });
 
+  it("defaults block_repeat_reads to true", () => {
+    const config = loadConfig(join(root, "missing.toml"));
+    expect(config.tools.block_repeat_reads).toBe(true);
+  });
+
+  it("allows block_repeat_reads to be explicitly set to false", () => {
+    const configPath = join(root, "soft.toml");
+    writeFileSync(configPath, "[tools]\nblock_repeat_reads = false\n", "utf-8");
+    const config = loadConfig(configPath);
+    expect(config.tools.block_repeat_reads).toBe(false);
+  });
+
   it("warnings reflect the most recent loadConfig() call", () => {
     const goodConfig = join(root, "good.toml");
     const badConfig = join(root, "bad.toml");

@@ -330,6 +330,19 @@ export class ArtifactStore {
     return artifact;
   }
 
+  /** Enumerate read_file artifacts for this session, most recent first. */
+  listFileReads(): { absPath: string; artifactId: string; createdTurn: number }[] {
+    const reads = listSessionArtifacts(this.db, this.sessionId)
+      .filter((art) => art.sourceTool === "read_file" && art.command)
+      .map((art) => ({
+        absPath: art.command!,
+        artifactId: art.id,
+        createdTurn: art.createdTurn,
+      }));
+    reads.sort((a, b) => b.createdTurn - a.createdTurn);
+    return reads;
+  }
+
   /** Look up a prior read_file artifact by absolute path (session-scoped). */
   findFileReadArtifact(absPath: string): ContextArtifact | null {
     const id = this.fileReadIndex.get(absPath);
