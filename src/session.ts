@@ -983,7 +983,7 @@ export class Session {
           },
         });
         this.getLogger().child("memory").info(`Session end begun (reason: ${reason})`);
-        const finish = store.sessionEnd(reason, events).then((result) => {
+        const finish = store.sessionEnd(reason, events, this.agentsContext ?? undefined).then((result) => {
           learningsStored = result.learningsStored;
           return result;
         });

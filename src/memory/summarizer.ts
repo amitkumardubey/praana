@@ -9,14 +9,17 @@ import { isMemoryKind } from "./types.js";
 import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
-Your job: distill a session transcript into 0-5 learnings the agent will need in future sessions on this project.
+Your job: distill a session transcript into 0-5 learnings the agent will need in future sessions.
+
+## Project context
+A block titled "## Project Context" may appear below the transcript. It contains information already documented for this project (AGENTS.md, README, etc.). DO NOT extract anything already present there; prioritize session-specific discoveries, decisions, gotchas, preferences, and rationale that are not already documented.
 
 ## Output format
 Output ONLY a JSON object. No prose, no markdown, no code fences.
 
 {
   "learnings": [
-    { "kind": "...", "content": "...", "certainty": "..." }
+    { "kind": "...", "content": "...", "certainty": "...", "scope": "..." }
   ],
   "used_ids": []
 }
@@ -47,20 +50,42 @@ Output ONLY a JSON object. No prose, no markdown, no code fences.
   good: "never use Redis for rate limiting — keep in-process only"
   bad: "be careful with dependencies"
 
+## Scopes
+
+- project — tied to this specific codebase or project setup (e.g., project conventions, file layout, package choices, architecture decisions made here).
+- global — applies across all projects (e.g., user preferences, cross-project workflow habits, general tooling choices, communication style).
+
 ## Rules
 
 1. ONLY extract learnings grounded in this transcript. Do not hallucinate project facts not present here.
 2. Each learning must be one clear sentence, max 120 chars.
 3. Be conservative — return 0-3 if the session is routine. Return 5 only for rich sessions with decisions, bugs, and constraints.
 4. certainty: high = stated explicitly or demonstrated clearly. medium = implied but not explicit. low = inferred with some uncertainty.
-5. If nothing project-specific was learned, return { "learnings": [], "used_ids": [] }.
+5. scope: "project" or "global". Choose the narrowest scope that still covers where this learning is useful.
+6. If project context is provided, DO NOT extract information already present in it. Focus on things learned during this session that are not documented there.
+7. If nothing project-specific or globally useful was learned, return { "learnings": [], "used_ids": [] }.
 
 ## used_ids
 If the prompt includes a list of surfaced memory entries with IDs, list only those the agent clearly acted on (used in a tool call, referenced in a decision, or followed as advice). If none, return [].`;
 
 
-function transcriptToPrompt(events: SessionEvent[]): string {
-  const lines: string[] = ["Session transcript:"];
+const MAX_PROJECT_CONTEXT_CHARS = 2_000;
+
+function trimProjectContext(context: string): string {
+  const trimmed = context.trim();
+  if (trimmed.length === 0) return "";
+  if (trimmed.length <= MAX_PROJECT_CONTEXT_CHARS) return trimmed;
+  return trimmed.slice(0, MAX_PROJECT_CONTEXT_CHARS - 3) + "...";
+}
+
+function transcriptToPrompt(events: SessionEvent[], projectContext?: string): string {
+  const lines: string[] = [];
+  if (projectContext) {
+    lines.push("## Project Context");
+    lines.push(trimProjectContext(projectContext));
+    lines.push("");
+  }
+  lines.push("## Session transcript");
   for (const e of events) {
     if (e.type === "user_message") lines.push(`User: ${e.content}`);
     else if (e.type === "agent_message") lines.push(`Agent: ${e.content}`);
@@ -68,6 +93,10 @@ function transcriptToPrompt(events: SessionEvent[]): string {
     else if (e.type === "tool_result") lines.push(`[result] ${JSON.stringify(e.result).slice(0, 200)}`);
   }
   return lines.join("\n");
+}
+
+export interface ExtractLearningsOptions {
+  projectContext?: string;
 }
 
 export interface ExtractLearningsResult {
@@ -79,11 +108,12 @@ export async function extractLearnings(
   llm: SummarizerLLM,
   events: SessionEvent[],
   surfaced?: Array<{ id: string; content: string }>,
+  opts: ExtractLearningsOptions = {},
 ): Promise<ExtractLearningsResult> {
   if (events.length === 0) return { learnings: [], usedIds: new Set() };
   if (!(await llm.available())) return { learnings: [], usedIds: new Set() };
 
-  let prompt = transcriptToPrompt(events);
+  let prompt = transcriptToPrompt(events, opts.projectContext);
   if (surfaced && surfaced.length > 0) {
     prompt += "\n\n## Surfaced Memory Entries\n";
     for (const e of surfaced) {
@@ -107,6 +137,7 @@ export async function extractLearnings(
         kind: string;
         content: string;
         certainty: string;
+        scope?: string;
         scope_hints?: string[];
       }>;
       used_ids?: string[];
@@ -126,6 +157,7 @@ export async function extractLearnings(
         certainty: (p.certainty === "high" || p.certainty === "medium" || p.certainty === "low")
           ? p.certainty
           : "medium",
+        scope: p.scope === "project" || p.scope === "global" ? p.scope : undefined,
         scope_hints: p.scope_hints,
       }));
 
