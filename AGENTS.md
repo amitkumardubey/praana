@@ -242,10 +242,10 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 
 ```toml
 [tools]
-block_repeat_reads = false   # false = warn (default); true = hard-block the repeat read
+block_repeat_reads = true    # true = hard-block repeat read_file of unchanged files (default); false = warn and return artifact card
 ```
 
-The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
+The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
 
 ### Resume hardening (issues #185, #220)
 

@@ -186,6 +186,43 @@ describe("context-engine artifact store", () => {
     expect(classifyContentType("FAIL tests/a.test.ts\n✓ 2 passed")).toBe("test_output");
   });
 
+  it("lists read_file artifacts via listFileReads", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    store.ingestToolResult({
+      sourceTool: "shell",
+      command: "npm test",
+      rawText: largeText(3000),
+      createdTurn: 1,
+    });
+    const read = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/auth.ts",
+      rawText: largeText(3001),
+      createdTurn: 3,
+    });
+
+    const reads = store.listFileReads();
+    expect(reads.length).toBe(1);
+    expect(reads[0].absPath).toBe("/proj/src/auth.ts");
+    expect(reads[0].artifactId).toBe(read.artifactId);
+    expect(reads[0].createdTurn).toBe(3);
+  });
+
+  it("listFileReads excludes non-read_file artifacts and is sorted by createdTurn descending", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/a.ts", rawText: largeText(3001), createdTurn: 1 });
+    store.ingestToolResult({ sourceTool: "shell", command: "echo hi", rawText: "hello", createdTurn: 2 });
+    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/b.ts", rawText: largeText(3002), createdTurn: 5 });
+    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/c.ts", rawText: largeText(3003), createdTurn: 3 });
+
+    const reads = store.listFileReads();
+    expect(reads.length).toBe(3);
+    expect(reads.map((r) => r.absPath)).toEqual(["/proj/b.ts", "/proj/c.ts", "/proj/a.ts"]);
+    expect(reads[0].createdTurn).toBe(5);
+    expect(reads[1].createdTurn).toBe(3);
+    expect(reads[2].createdTurn).toBe(1);
+  });
+
   it("does not hand back another session's artifact for identical content", () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-art-"));
     const dbPath = join(dir, "memory.db");
