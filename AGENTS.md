@@ -344,6 +344,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
+- **Concurrent DB access:** Both `openMemoryDb()` and `openContextEngineDb()` configure WAL mode plus a `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Don't open these databases with raw `new Database()` and then skip the pragmas — missing `busy_timeout` makes parallel sessions fail immediately with `SQLITE_BUSY` instead of retrying.
 
 ---
 

@@ -258,8 +258,9 @@ export class AppController {
    * Memory DB safety: the old session's MemoryStore handle is not explicitly
    * closed (the background summarizer may still be writing). The new session
    * opens a second connection to the same `~/.praana/memory.db`. SQLite WAL
-   * mode + busy_timeout makes this concurrent access safe for the brief
-   * overlap window; the old handle is released by GC once the summarizer drains.
+   * mode plus the configured `busy_timeout` makes this concurrent access safe
+   * for the brief overlap window; the old handle is released by GC once the
+   * summarizer drains.
    */
   async startNewSession(): Promise<StartupInfo> {
     if (!this.sessionEnded) {

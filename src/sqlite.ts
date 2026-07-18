@@ -16,6 +16,9 @@ let initialized = false;
 
 export type PraanaDatabase = Database;
 
+/** Default milliseconds to wait when a SQLite connection hits a BUSY writer. */
+export const BUSY_TIMEOUT_MS = 5000;
+
 export function initBunSqlite(): void {
   if (initialized) return;
   initialized = true;
@@ -37,6 +40,18 @@ export function initBunSqlite(): void {
       `Then ensure one of these exists: ${MACOS_SQLITE_DYLIB_CANDIDATES.join(", ")}`,
     ].join(" "),
   );
+}
+
+/**
+ * Apply the concurrency pragma set we rely on for multi-session safety:
+ * WAL mode (readers/writers don't block each other) and a non-zero busy
+ * timeout so concurrent writers retry instead of immediately returning
+ * SQLITE_BUSY.
+ */
+export function applyConcurrencyPragmas(db: PraanaDatabase): void {
+  db.run("PRAGMA journal_mode = WAL");
+  db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  db.run("PRAGMA foreign_keys = ON");
 }
 
 export function openDatabase(

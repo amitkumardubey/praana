@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { openDatabase } from "../sqlite.js";
+import { applyConcurrencyPragmas, openDatabase } from "../sqlite.js";
 import type { WorkflowPattern } from "./types.js";
 import type {
   ActivityEntry,
@@ -210,7 +210,7 @@ export interface DistillerStatRow {
 
 export function openContextEngineDb(dbPath: string): Database {
   const db = openDatabase(dbPath);
-  db.run("PRAGMA journal_mode = WAL");
+  applyConcurrencyPragmas(db);
   db.exec(ARTIFACT_SCHEMA);
   ensureScorecardResumeColumns(db);
   return db;

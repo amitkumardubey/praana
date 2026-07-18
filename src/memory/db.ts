@@ -3,7 +3,7 @@
 // ============================================================
 
 import type { Database } from "bun:sqlite";
-import { openDatabase } from "../sqlite.js";
+import { applyConcurrencyPragmas, openDatabase } from "../sqlite.js";
 import * as sqliteVec from "sqlite-vec";
 import type { MemoryEntry, MemoryKind } from "./types.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
@@ -89,8 +89,7 @@ export function openMemoryDb(
 ): OpenMemoryDbResult {
   const db = openDatabase(path);
   sqliteVec.load(db);
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA foreign_keys = ON");
+  applyConcurrencyPragmas(db);
   db.exec(BASE_SCHEMA);
   ensureLayerColumns(db);
   ensureSignalColumns(db);
