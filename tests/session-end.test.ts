@@ -132,4 +132,29 @@ describe("Session end timeout behavior", () => {
     };
     expect(s.getPersistentMemoryEntryCount()).toBe(42);
   });
+
+  it("passes agentsContext to memoryStore.sessionEnd", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
+
+    let capturedAgentsContext: string | null | undefined = "not-called";
+    (s as unknown as {
+      memoryStore: {
+        sessionEnd: (
+          reason: string,
+          events?: unknown,
+          agentsContext?: string | null,
+        ) => Promise<{ learningsStored: number }>;
+      };
+    }).memoryStore = {
+      sessionEnd: (_reason, _events, agentsContext) => {
+        capturedAgentsContext = agentsContext;
+        return Promise.resolve({ learningsStored: 0 });
+      },
+    };
+
+    const status = await s.end("clean", [], { memoryTimeoutMs: 200 });
+    expectMemory(status, "completed");
+    expect(capturedAgentsContext).toBe((s as unknown as { agentsContext: string | null }).agentsContext);
+  });
 });

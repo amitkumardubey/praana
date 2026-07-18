@@ -4,7 +4,7 @@ PRAANA is a TypeScript CLI coding agent built around two systems:
 
 - **Adaptive Context** — within-session working memory. State objects (tasks, decisions, constraints, notes) are tiered: `active` (full detail), `soft` (one-line stub), `hard` (ID only). Tiers are managed automatically based on idle turn count. The deterministic prompt compiler assembles a token-budgeted context window on every turn.
 
-- **Cognitive Memory** — cross-session persistent knowledge. SQLite-backed. At session end, an LLM summariser extracts learnings from the transcript (facts, preferences, decisions, patterns, mistakes, constraints) and stores them with confidence scores. Memories decay over time. At session start, a ranked digest is injected into the prompt. Two scopes: **project-level** (scoped to the working directory) and **global** (applies across all projects).
+- **Cognitive Memory** — cross-session persistent knowledge. SQLite-backed. At session end, an LLM summariser extracts learnings from the transcript (facts, preferences, decisions, patterns, mistakes, constraints), skipping anything already in the loaded project context (AGENTS.md / README). Each learning is classified as **project-level** (scoped to the working directory) or **global** (applies across all projects) and stored with the appropriate scope set. Memories decay over time. At session start, a ranked digest is injected into the prompt.
 
 These are separate systems. The compiler consumes a memory digest as one of its five sections; it does not merge with memory otherwise.
 
@@ -305,6 +305,8 @@ Default scopes set at session start: `user:<sha256>`, `agent:praana`, `context:<
 
 - **Project-level** memories carry all three scopes — only visible from that project directory.
 - **Global** memories carry only `user` and `agent` scopes — visible in all project sessions.
+
+The session-end summarizer now classifies each extracted learning as `project` or `global`. `project` learnings are written with the full default scopes (including `context:`); `global` learnings are written without the `context:` scope so they remain visible across projects. Explicit `remember(scope=[...])` calls still override this when a scope is provided.
 
 Recall enforces AND-scoping: an entry is returned only if it carries *all* scopes in the query. In project sessions, the store queries **both** the full project scopes (`user` + `agent` + `context`) and global-only scopes (`user` + `agent`), then merges and de-duplicates by entry id. Global-only queries exclude entries that carry a `context:` scope, so project facts stay project-local while preferences and cross-project patterns surface everywhere.
 

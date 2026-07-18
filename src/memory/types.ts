@@ -130,4 +130,6 @@ export interface ExtractedLearning {
   content: string;
   certainty: Certainty;
   scope_hints?: string[];
+  /** Whether the learning is scoped to the current project or applies globally. */
+  scope?: "project" | "global";
 }

@@ -247,6 +247,7 @@ export class MemoryStore {
   async sessionEnd(
     reason: string,
     events?: SessionEvent[],
+    agentsContext?: string,
   ): Promise<{ learningsStored: number }> {
     const now = Date.now();
 
@@ -269,7 +270,9 @@ export class MemoryStore {
         try {
           // Single combined LLM call: returns both usedIds and learnings.
           // Storing learnings here avoids a second extractLearnings call below.
-          const result = await extractLearnings(this.summarizer, events, surfacedWithContent);
+          const result = await extractLearnings(this.summarizer, events, surfacedWithContent, {
+            projectContext: agentsContext,
+          });
           usedIds = result.usedIds;
           for (const l of result.learnings) {
             await this.storeLearning(l);
@@ -330,7 +333,9 @@ export class MemoryStore {
     // Runs when: (a) no entries were surfaced, or (b) the combined call errored.
     if (!learningsExtracted && events && events.length > 0 && this.summarizer) {
       try {
-        const result = await extractLearnings(this.summarizer, events);
+        const result = await extractLearnings(this.summarizer, events, undefined, {
+          projectContext: agentsContext,
+        });
         for (const l of result.learnings) {
           await this.storeLearning(l);
         }
@@ -596,8 +601,24 @@ export class MemoryStore {
     await this.remember(learning.content, {
       kind: learning.kind,
       certainty: learning.certainty,
-      scope: learning.scope_hints ?? this.defaultScopes,
+      scope: this.resolveLearningScope(learning),
     });
+  }
+
+  /**
+   * Translate a learning's explicit scope classification into the concrete
+   * scope strings used by the memory store. project → full default scopes
+   * (including the context: scope). global → user + agent scopes only.
+   * Falls back through scope_hints to the full default scopes for back-compat.
+   */
+  private resolveLearningScope(learning: ExtractedLearning): string[] {
+    if (learning.scope === "project") {
+      return this.defaultScopes;
+    }
+    if (learning.scope === "global") {
+      return this.defaultScopes.filter((s) => !s.startsWith("context:"));
+    }
+    return learning.scope_hints ?? this.defaultScopes;
   }
 
   async recall(query: string, opts: RecallOptions = {}): Promise<RecallResult> {

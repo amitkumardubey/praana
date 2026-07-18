@@ -330,7 +330,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.praana/memory.db`.
 - Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses Transformers.js (shipped as a dependency); model weights cache in `~/.praana/models/`.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
-- Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the full transcript to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) that maps to an initial confidence score.
+- Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the transcript plus the loaded project context (AGENTS.md / CLAUDE.md) to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) and a scope classification (`project` / `global`). The model is instructed to skip anything already documented in the project context, focusing on session-specific discoveries, decisions, gotchas, and preferences. `project`-scoped learnings are stored with the full default scopes (`user` + `agent` + `context`); `global`-scoped learnings are stored without the `context:` scope so they surface in every project session.
 
 ### Memory Kinds
 
