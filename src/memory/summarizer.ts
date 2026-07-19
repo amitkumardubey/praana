@@ -6,9 +6,12 @@
 // ============================================================
 
 import { isMemoryKind } from "./types.js";
-import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
+import type { ExtractedLearning, SessionEvent, SummarizerLLM } from "./types.js";
 import { parseLooseJson } from "./parse-loose-json.js";
+import { MAX_LEARNING_CONTENT_CHARS, normalizeLearningContent } from "./normalize-learning.js";
 import { getAppLogger } from "../logger.js";
+
+export { MAX_LEARNING_CONTENT_CHARS, normalizeLearningContent } from "./normalize-learning.js";
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
 Your job: distill a session transcript into 0-5 learnings the agent will need in future sessions.
@@ -26,11 +29,14 @@ Output ONLY a JSON object. No prose, no markdown, no code fences.
   "used_ids": []
 }
 
+Each "content" value is a scannable key point — one short sentence, not a paragraph or multi-clause dump.
+
 ## Learning kinds
 
 - fact — verifiable project-specific knowledge
   good: "session log is events.jsonl, not current.log"
   bad: "TypeScript is a typed language"
+  bad (paragraph): "After discussing logging we realized the session log lives in events.jsonl under ~/.praana/sessions and should not be confused with current.log which is only a symlink for the active process."
 
 - preference — user or team preference expressed in this session
   good: "user wants in-process rate limiting, no Redis"
@@ -60,7 +66,7 @@ Output ONLY a JSON object. No prose, no markdown, no code fences.
 ## Rules
 
 1. ONLY extract learnings grounded in this transcript. Do not hallucinate project facts not present here.
-2. Each learning must be one clear sentence, max 120 chars.
+2. Each learning content must be one scannable key point (one clear sentence), max ${MAX_LEARNING_CONTENT_CHARS} chars. No paragraphs, no bullet lists, no multi-sentence dumps.
 3. Be conservative — return 0-3 if the session is routine. Return 5 only for rich sessions with decisions, bugs, and constraints.
 4. certainty: high = stated explicitly or demonstrated clearly. medium = implied but not explicit. low = inferred with some uncertainty.
 5. scope: "project" or "global". Choose the narrowest scope that still covers where this learning is useful.
@@ -165,17 +171,21 @@ export async function extractLearnings(
       : Array.isArray(parsed.learnings)
         ? parsed.learnings
         : [];
-    const learnings = rawLearnings
-      .filter((p): p is typeof p & { kind: MemoryKind } => isMemoryKind(p.kind))
-      .map((p) => ({
+    const learnings: ExtractedLearning[] = [];
+    for (const p of rawLearnings) {
+      if (!isMemoryKind(p.kind)) continue;
+      const content = normalizeLearningContent(typeof p.content === "string" ? p.content : "");
+      if (!content) continue;
+      learnings.push({
         kind: p.kind,
-        content: p.content.slice(0, 200),
+        content,
         certainty: (p.certainty === "high" || p.certainty === "medium" || p.certainty === "low")
           ? p.certainty
           : "medium",
         scope: p.scope === "project" || p.scope === "global" ? p.scope : undefined,
         scope_hints: p.scope_hints,
-      }));
+      });
+    }
 
     // Back-compat: also handle the old array-only format (used_ids defaults to empty)
     const usedIdsArr = Array.isArray(parsed.used_ids) ? parsed.used_ids : [];
@@ -231,14 +241,14 @@ export function usedIdsByCooccurrence(
 }
 
 const TURN_COMPRESSION_PROMPT = `You are a memory compressor for a coding agent.
-Given a batch of old conversation turns, extract 1-5 concise episodic facts.
+Given a batch of old conversation turns, extract 1-5 concise episodic key points.
 Output ONLY a JSON array. No prose outside the array.
 
 Each entry: { "kind": "fact" | "pattern" | "decision", "content": "...", "certainty": "high" | "medium" | "low" }
 
 Rules:
 - Focus on verifiable facts, patterns, and decisions — not activity logs.
-- Content should be one sentence, max 120 characters.
+- Each content value is a scannable key point: one clear sentence, max ${MAX_LEARNING_CONTENT_CHARS} characters. No paragraphs.
 - Be conservative. Skip vague or low-signal items.
 - These memories will replace the raw turns in the agent's context.`;
 
@@ -280,15 +290,20 @@ export async function summarizeTurns(
     }>;
     if (!Array.isArray(parsed)) return [];
 
-    return parsed
-      .filter((p): p is typeof p & { kind: MemoryKind } => isMemoryKind(p.kind))
-      .map((p) => ({
+    const facts: ExtractedLearning[] = [];
+    for (const p of parsed) {
+      if (!isMemoryKind(p.kind)) continue;
+      const content = normalizeLearningContent(typeof p.content === "string" ? p.content : "");
+      if (!content) continue;
+      facts.push({
         kind: p.kind,
-        content: p.content.slice(0, 200),
+        content,
         certainty: (p.certainty === "high" || p.certainty === "medium" || p.certainty === "low")
           ? p.certainty
           : "medium",
-      }));
+      });
+    }
+    return facts;
   } catch {
     return [];
   }
