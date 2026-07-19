@@ -7,6 +7,8 @@
 
 import { isMemoryKind } from "./types.js";
 import type { ExtractedLearning, MemoryKind, SessionEvent, SummarizerLLM } from "./types.js";
+import { parseLooseJson } from "./parse-loose-json.js";
+import { getAppLogger } from "../logger.js";
 
 const SYSTEM_PROMPT = `You are a memory extractor for a coding agent.
 Your job: distill a session transcript into 0-5 learnings the agent will need in future sessions.
@@ -132,7 +134,21 @@ export async function extractLearnings(
   });
 
   try {
-    const parsed = JSON.parse(raw) as {
+    const parseResult = parseLooseJson(raw);
+    if (!parseResult.ok || !parseResult.value) {
+      getAppLogger().child("memory").warn(
+        "Learning extraction skipped — could not parse LLM response",
+        {
+          details: {
+            error: parseResult.error,
+            repaired: parseResult.repaired ?? false,
+            rawLength: raw.length,
+          },
+        },
+      );
+      return { learnings: [], usedIds: new Set() };
+    }
+    const parsed = parseResult.value as {
       learnings?: Array<{
         kind: string;
         content: string;
@@ -244,7 +260,20 @@ export async function summarizeTurns(
   });
 
   try {
-    const parsed = JSON.parse(raw) as Array<{
+    const parseResult = parseLooseJson(raw);
+    if (!parseResult.ok || !parseResult.value) {
+      getAppLogger().child("memory").warn(
+        "Turn summarization skipped — could not parse LLM response",
+        {
+          details: {
+            error: parseResult.error,
+            rawLength: raw.length,
+          },
+        },
+      );
+      return [];
+    }
+    const parsed = parseResult.value as Array<{
       kind: string;
       content: string;
       certainty: string;
