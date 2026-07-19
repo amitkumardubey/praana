@@ -10,6 +10,7 @@ import type { MemoryEntry, MemoryKind, SessionEvent, SummarizerLLM } from "./typ
 import type { MemoryStore } from "./store.js";
 import { effectiveValidity } from "./confidence.js";
 import { getAppLogger } from "../logger.js";
+import { parseLooseJson } from "./parse-loose-json.js";
 
 export interface ConsolidationConfig {
   enabled: boolean;
@@ -145,12 +146,29 @@ export async function runConsolidation(opts: {
       timeoutMs: 60_000,
     });
 
-    const parsed = JSON.parse(raw) as {
+    const parseResult = parseLooseJson<{
       confirmations?: string[];
       contradictions?: string[];
       new_entries?: Array<{ kind: string; content: string; certainty: string }>;
       promotions?: string[];
-    };
+    }>(raw);
+
+    if (!parseResult.ok || !parseResult.value) {
+      getAppLogger().child("memory").warn(
+        "Consolidation skipped — could not parse LLM response",
+        {
+          details: {
+            error: parseResult.error,
+            repaired: parseResult.repaired ?? false,
+            rawLength: raw.length,
+          },
+        },
+      );
+      result.duration_ms = Date.now() - startTime;
+      return result;
+    }
+
+    const parsed = parseResult.value;
 
     // Process confirmations
     if (Array.isArray(parsed.confirmations)) {

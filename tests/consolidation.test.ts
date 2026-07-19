@@ -329,6 +329,116 @@ describe("consolidation processor", () => {
 
     expect(candidates).toHaveLength(50);
   });
+
+  it("tolerates code-fenced JSON in LLM response", async () => {
+    const { runConsolidation } = await import("../src/memory/consolidation.js");
+
+    const store = {
+      getConsolidationCandidates: mock().mockReturnValue([]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock().mockResolvedValue({ id: "new" }),
+    } as any;
+
+    const fencedResponse = "```json\n" + JSON.stringify({
+      confirmations: [],
+      contradictions: [],
+      new_entries: [{ kind: "fact", content: "Fenced response parsed", certainty: "high" }],
+      promotions: [],
+    }) + "\n```";
+
+    const llm = createMockLLM(fencedResponse);
+
+    const result = await runConsolidation({
+      store,
+      llm,
+      sessionId: "test",
+      events: [{ type: "user_message", timestamp: Date.now(), content: "hello" }],
+      config: { enabled: true, promotion_threshold: 3, run_delay_seconds: 0 },
+    });
+
+    expect(result.newEntries).toBe(1);
+    expect(store.remember).toHaveBeenCalledWith("Fenced response parsed", {
+      kind: "fact",
+      certainty: "high",
+    });
+  });
+
+  it("recovers from truncated LLM response via repair", async () => {
+    const { runConsolidation } = await import("../src/memory/consolidation.js");
+
+    const entry1 = {
+      id: "entry-1",
+      kind: "fact",
+      content: "Some fact",
+      validity: 0.7,
+      usefulness: 0.5,
+      pinned: false,
+      layer: 1,
+      confirmation_count: 2,
+      created_at: Date.now(),
+      last_seen_at: Date.now(),
+      session_id: "test",
+      scopes: ["context:test"],
+      retracted: false,
+    };
+
+    const store = {
+      getConsolidationCandidates: mock().mockReturnValue([entry1]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock().mockResolvedValue({ id: "new" }),
+    } as any;
+
+    // Truncated JSON — string is unterminated, closing braces missing
+    const truncatedResponse =
+      '{"confirmations": ["entry-1"], "contradictions": [], "new_entries": [{"kind": "fact", "content": "Truncated but recov';
+
+    const llm = createMockLLM(truncatedResponse);
+
+    const result = await runConsolidation({
+      store,
+      llm,
+      sessionId: "test",
+      events: [{ type: "user_message", timestamp: Date.now(), content: "hello" }],
+      config: { enabled: true, promotion_threshold: 3, run_delay_seconds: 0 },
+    });
+
+    // Should have recovered confirmations and the new entry despite truncation
+    expect(result.confirmations).toBe(1);
+    expect(result.newEntries).toBe(1);
+    expect(store.reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["entry-1"], 0.1);
+  });
+
+  it("returns empty result on unparseable LLM response without throwing", async () => {
+    const { runConsolidation } = await import("../src/memory/consolidation.js");
+
+    const store = {
+      getConsolidationCandidates: mock().mockReturnValue([]),
+      reinforceFromSuccessfulToolOutcome: mock(),
+      weakenEntry: mock(),
+      promoteToLayer2: mock(),
+      remember: mock(),
+    } as any;
+
+    const llm = createMockLLM("I'm sorry, I can't generate JSON for that request.");
+
+    const result = await runConsolidation({
+      store,
+      llm,
+      sessionId: "test",
+      events: [{ type: "user_message", timestamp: Date.now(), content: "hello" }],
+      config: { enabled: true, promotion_threshold: 3, run_delay_seconds: 0 },
+    });
+
+    expect(result.promotions).toBe(0);
+    expect(result.confirmations).toBe(0);
+    expect(result.contradictions).toBe(0);
+    expect(result.newEntries).toBe(0);
+    expect(store.remember).not.toHaveBeenCalled();
+  });
 });
 
 describe("ConsolidationConfig", () => {
