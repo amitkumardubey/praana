@@ -17,6 +17,8 @@ import {
   finalizeProviderSetup,
   isValidCustomProviderId,
   isValidBaseUrl,
+  formatEnvKeyOfferMessage,
+  adoptEnvKeyForProvider,
 } from "./logic.js";
 import { hasApiKey } from "../llm.js";
 import type { SetupResult, CustomProviderConfig } from "./types.js";
@@ -35,7 +37,7 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
   });
 
   const sigintHandler = () => {
-    console.error("\n\nSetup cancelled. Run praana init to create a config manually.");
+    console.error("\n\nSetup cancelled. Run `praana setup` again, or edit `~/.praana/config.toml` manually.");
     rl.close();
     process.exit(130);
   };
@@ -47,13 +49,14 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
     console.log("  PRAANA — Provider Setup");
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("");
-    console.log("No provider API key found. Let's set one up.");
+    console.log("No provider configured. Let's set one up.");
     console.log("");
 
-    for (const line of formatDetectedProviderLines()) {
+    const detectedLines = formatDetectedProviderLines();
+    for (const line of detectedLines) {
       console.log(line);
     }
-    if (formatDetectedProviderLines().length > 0) console.log("");
+    if (detectedLines.length > 0) console.log("");
 
     // ── Provider selection ──
     const items = buildProviderSelectItems();
@@ -150,12 +153,28 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
           }
         }
       } else {
-        const keyInput = await askQuestion(rl, "Paste your API key: ");
-        if (keyInput.trim()) {
-          saveProviderKey(providerId, keyInput.trim());
-          keySaved = true;
+        const envOffer = formatEnvKeyOfferMessage(providerId);
+        if (envOffer) {
+          const useEnv = await askQuestion(rl, `${envOffer} (y/n): `);
+          if (useEnv.toLowerCase() === "y" || useEnv.toLowerCase() === "yes") {
+            keySaved = adoptEnvKeyForProvider(providerId);
+          } else {
+            const keyInput = await askQuestion(rl, "Paste your API key: ");
+            if (keyInput.trim()) {
+              saveProviderKey(providerId, keyInput.trim());
+              keySaved = true;
+            } else {
+              console.log(chalk.yellow("  No key entered. You can set it later."));
+            }
+          }
         } else {
-          console.log(chalk.yellow("  No key entered. You can set it later."));
+          const keyInput = await askQuestion(rl, "Paste your API key: ");
+          if (keyInput.trim()) {
+            saveProviderKey(providerId, keyInput.trim());
+            keySaved = true;
+          } else {
+            console.log(chalk.yellow("  No key entered. You can set it later."));
+          }
         }
       }
     }

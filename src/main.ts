@@ -10,6 +10,8 @@ import { SessionNotFoundError } from "./session.js";
 import { AmbiguousSessionPrefixError } from "./session-errors.js";
 import { runTui } from "./ui/tui/run.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
+import { tryAutoSelectProvider } from "./setup/logic.js";
+import { writeProviderConfig } from "./setup/config-writer.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
@@ -114,13 +116,32 @@ export async function main() {
   // ── Provider validation ────────────────────────────────────
   const keyError = getMissingKeyMessage(config.llm.provider);
   if (keyError) {
+    // Power-user fast path: if exactly one known provider has an env key
+    // (or a stored key) and no config file exists yet, auto-adopt the env
+    // key into the credential store and write a minimal config. Skips the
+    // multi-step wizard entirely. Returns null for ambiguous cases (0 or
+    // >1 key-requiring providers, user-declared providers, keyless
+    // providers). Works in both interactive and non-interactive modes.
+    const auto = tryAutoSelectProvider();
+    if (auto) {
+      const writeResult = writeProviderConfig(auto.provider, {
+        model: auto.model,
+      });
+      if (writeResult.written) {
+        console.log(
+          auto.adoptedFromEnv
+            ? `Adopted ${auto.envKey} from environment — provider: ${auto.provider}, model: ${auto.model}`
+            : `Using stored key — provider: ${auto.provider}, model: ${auto.model}`,
+        );
+        Object.assign(config, loadConfig(parsed.configPath));
+      }
+    }
     if (isInteractive) {
       const setupResult = await runInteractiveSetup(cwd);
       if (!setupResult.success) {
         getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
         console.error("");
-        console.error("You can also run:  praana init");
-        console.error("This creates a config template you can edit manually.");
+        console.error("Run `praana setup` again, or edit `~/.praana/config.toml` manually.");
         process.exit(1);
       }
       const newConfig = loadConfig(parsed.configPath);

@@ -19,6 +19,10 @@ import {
   finalizeProviderSetup,
   isValidCustomProviderId,
   isValidBaseUrl,
+  getEnvApiKeyForProvider,
+  formatEnvKeyOfferMessage,
+  adoptEnvKeyForProvider,
+  tryAutoSelectProvider,
 } from "../src/setup/logic.js";
 import {
   buildProviderSelectItems,
@@ -27,14 +31,16 @@ import {
 import {
   getApiKey,
   hasApiKey,
+  setApiKey,
   resetCredentialStoreForTests,
 } from "../src/credentials.js";
-import { resetUserProvidersForTests } from "../src/provider-registry.js";
+import { resetUserProvidersForTests, setUserProviders } from "../src/provider-registry.js";
 import {
   fetchModelsFromEndpoint,
   resetProviderCatalogCacheForTests,
 } from "../src/provider-catalog.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
+import { DEFAULT_MODELS } from "../src/llm.js";
 
 describe("setup wizard", () => {
   let praanaHome: string;
@@ -161,6 +167,147 @@ describe("setup wizard", () => {
     it("trims whitespace from key", () => {
       saveProviderKey("test-provider", "  sk-test-key  ");
       expect(getApiKey("test-provider")).toBe("sk-test-key");
+    });
+  });
+
+  // ── logic: env-key offer (detect ≠ choose) ──
+
+  describe("env key offer helpers", () => {
+    const prevOpenCode = process.env.OPENCODE_API_KEY;
+
+    afterEach(() => {
+      if (prevOpenCode === undefined) delete process.env.OPENCODE_API_KEY;
+      else process.env.OPENCODE_API_KEY = prevOpenCode;
+    });
+
+    it("reads a non-empty env key for a catalog provider", () => {
+      process.env.OPENCODE_API_KEY = "  sk-opencode-from-env  ";
+      expect(getEnvApiKeyForProvider("opencode")).toBe("sk-opencode-from-env");
+    });
+
+    it("returns null when the env key is unset", () => {
+      delete process.env.OPENCODE_API_KEY;
+      expect(getEnvApiKeyForProvider("opencode")).toBeNull();
+    });
+
+    it("formats an offer message naming the env var", () => {
+      process.env.OPENCODE_API_KEY = "sk-opencode-from-env";
+      expect(formatEnvKeyOfferMessage("opencode")).toBe(
+        "Found OPENCODE_API_KEY in your environment — use it?",
+      );
+    });
+
+    it("returns null offer message when env key is absent", () => {
+      delete process.env.OPENCODE_API_KEY;
+      expect(formatEnvKeyOfferMessage("opencode")).toBeNull();
+    });
+
+    it("adoptEnvKeyForProvider persists the env value into the credential store", () => {
+      process.env.OPENCODE_API_KEY = "sk-opencode-from-env";
+      expect(hasApiKey("opencode")).toBe(false);
+      expect(adoptEnvKeyForProvider("opencode")).toBe(true);
+      expect(getApiKey("opencode")).toBe("sk-opencode-from-env");
+      expect(hasApiKey("opencode")).toBe(true);
+    });
+
+    it("adoptEnvKeyForProvider returns false when env key is missing", () => {
+      delete process.env.OPENCODE_API_KEY;
+      expect(adoptEnvKeyForProvider("opencode")).toBe(false);
+      expect(hasApiKey("opencode")).toBe(false);
+    });
+  });
+
+  // ── logic: tryAutoSelectProvider ──
+
+  describe("tryAutoSelectProvider", () => {
+    // Known provider env keys that might leak from the dev environment.
+    const PROVIDER_ENV_KEYS = [
+      "OPENROUTER_API_KEY",
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "GROQ_API_KEY",
+      "XAI_API_KEY",
+      "FIREWORKS_API_KEY",
+      "OPENCODE_API_KEY",
+      "TOGETHER_API_KEY",
+      "UMANS_AI_CODING_PLAN_API_KEY",
+      "NVIDIA_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "MISTRAL_API_KEY",
+    ];
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const k of PROVIDER_ENV_KEYS) {
+        savedEnv[k] = process.env[k];
+        delete process.env[k];
+      }
+    });
+
+    afterEach(() => {
+      for (const k of PROVIDER_ENV_KEYS) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    });
+
+    it("returns null when no key-requiring providers are available", () => {
+      expect(tryAutoSelectProvider()).toBeNull();
+    });
+
+    it("returns null when multiple key-requiring providers are available", () => {
+      process.env.OPENROUTER_API_KEY = "sk-or-test";
+      process.env.OPENAI_API_KEY = "sk-test";
+      expect(tryAutoSelectProvider()).toBeNull();
+    });
+
+    it("returns null when the only available provider is user-declared", () => {
+      setUserProviders({
+        "my-custom": {
+          api: "openai-completions",
+          base_url: "http://localhost:8080/v1",
+          env_key: "MY_CUSTOM_KEY",
+        },
+      });
+      process.env.MY_CUSTOM_KEY = "test-key";
+      expect(tryAutoSelectProvider()).toBeNull();
+    });
+
+    it("adopts the env key when exactly one known provider has an env key", () => {
+      process.env.DEEPSEEK_API_KEY = "sk-deepseek-from-env";
+      expect(hasApiKey("deepseek")).toBe(false);
+      const result = tryAutoSelectProvider();
+      expect(result).not.toBeNull();
+      expect(result!.provider).toBe("deepseek");
+      expect(result!.adoptedFromEnv).toBe(true);
+      expect(result!.envKey).toBe("DEEPSEEK_API_KEY");
+      // Key was copied into the credential store.
+      expect(hasApiKey("deepseek")).toBe(true);
+      expect(getApiKey("deepseek")).toBe("sk-deepseek-from-env");
+    });
+
+    it("returns adoptedFromEnv=false when the key is already in the credential store", () => {
+      setApiKey("deepseek", "sk-deepseek-stored");
+      process.env.DEEPSEEK_API_KEY = "sk-deepseek-from-env";
+      const result = tryAutoSelectProvider();
+      expect(result).not.toBeNull();
+      expect(result!.provider).toBe("deepseek");
+      expect(result!.adoptedFromEnv).toBe(false);
+      // Store value unchanged (not overwritten by env).
+      expect(getApiKey("deepseek")).toBe("sk-deepseek-stored");
+    });
+
+    it("picks DEFAULT_MODELS[provider] as the model", () => {
+      process.env.DEEPSEEK_API_KEY = "sk-deepseek-from-env";
+      const result = tryAutoSelectProvider();
+      expect(result).not.toBeNull();
+      expect(result!.model).toBe(DEFAULT_MODELS["deepseek"]);
+    });
+
+    it("returns null when the env key is whitespace-only", () => {
+      process.env.DEEPSEEK_API_KEY = "   ";
+      expect(tryAutoSelectProvider()).toBeNull();
     });
   });
 

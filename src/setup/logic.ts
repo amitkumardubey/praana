@@ -6,6 +6,8 @@ import {
   DEFAULT_MODELS,
   pickFirstCatalogModel,
   listKnownProviders,
+  listEnvDetectedProviders,
+  hasApiKey,
 } from "../llm.js";
 import {
   listProviderCatalogModels,
@@ -40,6 +42,38 @@ export function saveProviderKey(provider: string, key: string): boolean {
   if (!key.trim()) return false;
   setApiKey(provider, key.trim());
   return true;
+}
+
+/**
+ * Read a provider's API key from the environment (not the credential store).
+ * Returns the trimmed value, or null if unset/empty or the provider has no env key.
+ */
+export function getEnvApiKeyForProvider(provider: string): string | null {
+  const envKey = getProviderEnvKey(provider);
+  if (!envKey) return null;
+  const value = process.env[envKey];
+  if (!value || !value.trim()) return null;
+  return value.trim();
+}
+
+/**
+ * Offer copy for the wizard when an env key is present but not yet in the store.
+ * Returns null when there is nothing to offer.
+ */
+export function formatEnvKeyOfferMessage(provider: string): string | null {
+  const envKey = getProviderEnvKey(provider);
+  if (!envKey || !getEnvApiKeyForProvider(provider)) return null;
+  return `Found ${envKey} in your environment — use it?`;
+}
+
+/**
+ * Copy a provider's env key into the credential store.
+ * Returns true when a key was adopted and saved.
+ */
+export function adoptEnvKeyForProvider(provider: string): boolean {
+  const value = getEnvApiKeyForProvider(provider);
+  if (!value) return false;
+  return saveProviderKey(provider, value);
 }
 
 /**
@@ -81,6 +115,65 @@ export function pickDefaultModel(
 ): string {
   if (liveModels && liveModels.length > 0) return liveModels[0].id;
   return DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
+}
+
+// ── Auto-select (power-user fast path) ──
+
+/**
+ * Result of auto-selecting a single available provider on first run.
+ * - `adoptedFromEnv=true` means the env key was copied into the credential store.
+ * - `adoptedFromEnv=false` means the key was already in the store (nothing copied).
+ */
+export interface AutoSelectResult {
+  provider: string;
+  model: string;
+  envKey: string;
+  adoptedFromEnv: boolean;
+}
+
+/**
+ * Auto-select a single available provider for true first-run (no config file).
+ *
+ * Returns null in any ambiguous case — the wizard handles those:
+ *   - 0 key-requiring providers available
+ *   - >1 key-requiring providers available (user must choose)
+ *   - the only available provider is user-declared (needs base_url in config)
+ *   - the only available provider is keyless (e.g. ollama — wizard handles it)
+ *
+ * Keyless providers (envKey === null) are excluded from the candidate set
+ * because they don't represent the "power user with one env key" use case.
+ *
+ * When exactly one key-requiring provider is available:
+ *   - If its key is in env but not in the credential store → adopt it (copy env → store).
+ *   - If its key is already in the store → nothing to copy.
+ *   - Picks DEFAULT_MODELS[provider] as the model (NO live catalog fetch — zero latency).
+ *
+ * Works in BOTH interactive and non-interactive modes (checks env/store, not TTY).
+ */
+export function tryAutoSelectProvider(): AutoSelectResult | null {
+  // Only consider providers that require a key (have an env_key).
+  // Keyless providers (ollama) and user-declared providers are excluded —
+  // the wizard handles those.
+  const available = listEnvDetectedProviders().filter(
+    (p) => !isUserDeclaredProvider(p) && getProviderEnvKey(p) !== null,
+  );
+  if (available.length !== 1) return null;
+  const provider = available[0];
+  const envKey = getProviderEnvKey(provider);
+  if (!envKey) return null; // defensive — filtered above, but TS can't infer
+  const envValue = getEnvApiKeyForProvider(provider);
+  const hasStoredKey = hasApiKey(provider);
+  // If there's no stored key and no usable env key, we can't actually
+  // use this provider — fall through to the wizard. This handles
+  // whitespace-only env values (isProviderAvailable returns true for
+  // truthy strings, but getEnvApiKeyForProvider returns null after trimming).
+  if (!hasStoredKey && !envValue) return null;
+  let adoptedFromEnv = false;
+  if (envValue && !hasStoredKey) {
+    adoptedFromEnv = saveProviderKey(provider, envValue);
+  }
+  const model = pickDefaultModel(provider);
+  return { provider, model, envKey, adoptedFromEnv };
 }
 
 // ── Custom provider validation ──

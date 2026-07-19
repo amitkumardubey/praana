@@ -202,6 +202,21 @@ describe("config loading", () => {
     expect(config.tools.block_repeat_reads).toBe(true);
   });
 
+  it("does not auto-select a provider from environment when [llm] provider is unset", () => {
+    const prev = process.env.OPENCODE_API_KEY;
+    process.env.OPENCODE_API_KEY = "sk-opencode-test";
+    try {
+      const configPath = join(root, "no-provider.toml");
+      writeFileSync(configPath, "# no [llm] provider\n", "utf-8");
+      const config = loadConfig(configPath);
+      expect(config.llm.provider).toBe("");
+      expect(config.llm.model).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.OPENCODE_API_KEY;
+      else process.env.OPENCODE_API_KEY = prev;
+    }
+  });
+
   it("allows block_repeat_reads to be explicitly set to false", () => {
     const configPath = join(root, "soft.toml");
     writeFileSync(configPath, "[tools]\nblock_repeat_reads = false\n", "utf-8");

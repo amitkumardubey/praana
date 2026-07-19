@@ -1,8 +1,6 @@
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as readline from "node:readline";
-import { detectProviderFromEnvironment, listAvailableProviders } from "./llm.js";
-import { DEFAULT_MODELS } from "./llm.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
 import { APP_HOME_DIR, appHomePath } from "./app-identity.js";
@@ -22,33 +20,26 @@ export interface InitResult {
 
 
 /**
- * Generate a config file content based on detected providers.
+ * Generate a commented config template.
+ * Provider choice belongs to guided setup — do not pre-fill from env keys.
  */
-function generateConfigContent(detected: { provider: string; model: string } | null): string {
+function generateConfigContent(): string {
   const lines: string[] = [
     "# PRAANA Configuration",
     "# https://github.com/amitkumardubey/praana",
     "",
     "[llm]",
+    "# Uncomment and set your provider and model",
+    "# provider = \"openrouter\"",
+    "# model = \"deepseek/deepseek-v4-flash:free\"",
+    "",
+    "# Or run: praana setup  (guided provider + key collection)",
+    "",
+    "# Supported providers:",
   ];
 
-  if (detected) {
-    lines.push(
-      `# Auto-detected provider from environment`,
-      `provider = "${detected.provider}"`,
-      `model = "${detected.model}"`,
-    );
-  } else {
-    lines.push(
-      "# Uncomment and set your provider and model",
-      "# provider = \"openrouter\"",
-      "# model = \"deepseek/deepseek-v4-flash:free\"",
-      "",
-      "# Supported providers (set the corresponding env var):",
-    );
-    for (const { name, envKey } of formatProviderListForDisplay()) {
-      lines.push(`#   ${name.padEnd(20)} → ${envKey ?? "(local)"}`);
-    }
+  for (const { name, envKey } of formatProviderListForDisplay()) {
+    lines.push(`#   ${name.padEnd(20)} → ${envKey ?? "(local)"}`);
   }
 
   lines.push(
@@ -81,10 +72,7 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
   const appHomeDir = opts.homeDir ? join(opts.homeDir, APP_HOME_DIR) : appHomePath();
   const configPath = join(appHomeDir, "config.toml");
 
-  // Detect available providers before generating content
-  const detected = detectProviderFromEnvironment();
-  const available = listAvailableProviders();
-  const content = generateConfigContent(detected);
+  const content = generateConfigContent();
 
   // Check if config already exists
   if (existsSync(configPath)) {
@@ -152,14 +140,9 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
       agentsCreated = true;
     }
 
-    let message: string;
-    if (detected) {
-      message = `Created config with detected provider "${detected.provider}" at ${configPath}`;
-    } else if (available.length > 0) {
-      message = `Created config template at ${configPath}\nAvailable providers in environment: ${available.join(", ")}\nEdit the config to uncomment your provider.`;
-    } else {
-      message = `Created config template at ${configPath}\nNo provider API keys detected. Set a key (e.g., export OPENROUTER_API_KEY=sk-or-...) and edit the config.`;
-    }
+    let message =
+      `Created config template at ${configPath}\n` +
+      `Run \`praana setup\` for guided provider + key collection, or edit the file manually.`;
     if (agentsCreated) {
       message += `\nAlso created ${agentsPath} for global personal instructions.`;
     }

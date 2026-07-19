@@ -41,6 +41,8 @@ import {
   finalizeProviderSetup,
   isValidCustomProviderId,
   isValidBaseUrl,
+  formatEnvKeyOfferMessage,
+  adoptEnvKeyForProvider,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
@@ -226,7 +228,7 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
       root.clear();
       const detected = formatDetectedProviderLines();
       const intro = [
-        "No provider API key found. Let's set one up.",
+        "No provider configured. Let's set one up.",
         "",
         ...detected,
         ...(detected.length > 0 ? [""] : []),
@@ -259,9 +261,11 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
     };
 
     // ── Step: API key entry (catalog providers) ──
+    // Order: credential store → offer env key → paste (MaskedInput).
     const showKeyEntryStep = () => {
       const provider = state.provider;
       const keyExists = hasApiKey(provider);
+      const envOffer = !keyExists ? formatEnvKeyOfferMessage(provider) : null;
 
       root.clear();
 
@@ -280,6 +284,29 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
           } else {
             state.keySaved = false;
             showModelFetchStep();
+          }
+        };
+        list.onCancel = () => showProviderStep();
+
+        root.addChild(header);
+        root.addChild(new Spacer(1));
+        root.addChild(body);
+        root.addChild(new Spacer(1));
+        root.addChild(list);
+        root.addChild(footer);
+        tui.setFocus(list);
+        tui.requestRender(true);
+      } else if (envOffer) {
+        header.setText(`Selected: ${provider}`);
+        body.setText(envOffer);
+
+        const list = new SelectList(YES_NO_ITEMS, 4, SELECT_THEME);
+        list.onSelect = (item) => {
+          if (item.value === "yes") {
+            state.keySaved = adoptEnvKeyForProvider(provider);
+            showModelFetchStep();
+          } else {
+            showKeyInputField(provider);
           }
         };
         list.onCancel = () => showProviderStep();

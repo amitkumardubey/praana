@@ -76,8 +76,18 @@ export function pickFirstCatalogModel(provider: string): string | undefined {
 }
 
 /**
- * Auto-detect the first available provider from environment variables.
- * Returns `{ provider, model }` or `null` if nothing is found.
+ * List providers that currently have a usable key (credential store or env).
+ * Used by the setup wizard to annotate / offer keys — never to auto-select
+ * a default `[llm] provider` at config load time.
+ */
+export function listEnvDetectedProviders(): string[] {
+  return listAvailableProviders();
+}
+
+/**
+ * @deprecated Prefer {@link listEnvDetectedProviders}. Kept for tests and
+ * callers that want the first available provider + default model pair.
+ * Do not use this to populate config — env keys are not a provider chooser.
  */
 export function detectProviderFromEnvironment(): { provider: string; model: string } | null {
   const logger = getAppLogger().child("llm");
@@ -86,7 +96,7 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
   for (const provider of DETECTION_PRECEDENCE) {
     if (isProviderAvailable(provider)) {
       const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
-      logger.info(`Auto-detected provider "${provider}" from environment`, {
+      logger.debug(`Detected available provider "${provider}"`, {
         details: { provider, model },
       });
       return { provider, model };
@@ -99,7 +109,7 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
     if (checked.has(provider)) continue;
     if (isProviderAvailable(provider)) {
       const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
-      logger.info(`Auto-detected provider "${provider}" from environment`, {
+      logger.debug(`Detected available provider "${provider}"`, {
         details: { provider, model },
       });
       return { provider, model };
@@ -209,6 +219,10 @@ export function isProviderAvailable(provider: string): boolean {
 
 /** Human-readable message explaining which env var is missing. */
 export function getMissingKeyMessage(provider: string): string | null {
+  if (!provider || !provider.trim()) {
+    return "No provider configured";
+  }
+
   if (isProviderAvailable(provider)) return null;
 
   const envKey = getProviderEnvKey(provider);
