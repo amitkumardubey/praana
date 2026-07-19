@@ -627,6 +627,9 @@ export async function runTurn(
   let interrupted = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
+  // Tracks memory entries already reinforced this turn so a recalled entry is
+  // boosted at most once even if it appears in multiple parallel batches.
+  const reinforcedEntryIdsThisTurn = new Set<string>();
 
   // Active model/provider may switch to fallback config if the primary fails.
   // Fallback is applied only to the initial stream attempt (step 0). Subsequent
@@ -845,170 +848,211 @@ export async function runTurn(
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
     s.onToolCallsStart?.();
 
+    // Phase 1: notify UI and log all incoming tool calls so parallel batches are visible
+    // as pending rows in the TUI before any execution begins.
     for (const tc of pendingToolCalls) {
-      if (options?.signal?.aborted) {
-        interrupted = true;
-        break;
-      }
-
       session.eventLog.append({
         kind: "tool_call",
         actor: "tool",
         payload: { toolCallId: tc.toolCallId, tool: tc.toolName, args: tc.args },
       });
-
-      // Always notify the UI about the incoming tool call (show pending row in TUI,
-      // print compact line in terminal mode). Then start the spinner while it executes.
       s.onToolCall?.(tc.toolCallId, tc.toolName, tc.args);
-      s.onSpinnerStart?.(tc.toolName);
       if (tc.toolName !== "load_skill") hadNonLoadSkillTool = true;
+    }
 
-      const toolDef = (tools as Record<string, any>)[tc.toolName];
-      let result: unknown;
-      let isError = false;
+    // Phase 2: execute tool calls concurrently.
+    if (options?.signal?.aborted) {
+      interrupted = true;
+    } else {
+      const uniqueToolNames = [
+        ...new Set(pendingToolCalls.map((tc) => tc.toolName)),
+      ];
+      const spinnerLabel =
+        uniqueToolNames.length === 1
+          ? uniqueToolNames[0]!
+          : uniqueToolNames.length <= 3
+            ? uniqueToolNames.join(", ")
+            : `${uniqueToolNames.slice(0, 3).join(", ")}, … (${uniqueToolNames.length} tools)`;
+      s.onSpinnerStart?.(spinnerLabel);
 
-      if (!toolDef || typeof toolDef.execute !== "function") {
-        isError = true;
-        result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
-      } else if (
-        session.isPlanMode() &&
-        isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
-      ) {
-        isError = true;
-        result = {
-          ok: false,
-          error:
-            "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
-        };
-      } else {
-        try {
-          result = await toolDef.execute(tc.args);
-        } catch (err: any) {
-          isError = true;
-          result = { ok: false, error: err?.message ?? "Tool execution failed" };
-        }
-      }
+      const executedResults = await Promise.all(
+        pendingToolCalls.map(async (tc) => {
+          // Cooperative abort: if the session abort signal has already fired,
+          // don't start new tool work in this batch.
+          if (options?.signal?.aborted) {
+            return {
+              tc,
+              result: { ok: false, error: "Interrupted" },
+              isError: true,
+            };
+          }
+
+          const toolDef = (tools as Record<string, any>)[tc.toolName];
+          let result: unknown;
+          let isError = false;
+
+          if (!toolDef || typeof toolDef.execute !== "function") {
+            isError = true;
+            result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
+          } else if (
+            session.isPlanMode() &&
+            isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
+          ) {
+            isError = true;
+            result = {
+              ok: false,
+              error:
+                "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
+            };
+          } else {
+            try {
+              result = await toolDef.execute(tc.args);
+            } catch (err: any) {
+              isError = true;
+              result = { ok: false, error: err?.message ?? "Tool execution failed" };
+            }
+          }
+
+          return { tc, result, isError };
+        }),
+      );
 
       s.onSpinnerStop?.();
 
-      if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
-        const entries = (result as { entries?: Array<{ id?: string }> }).entries;
-        if (Array.isArray(entries)) {
-          for (const entry of entries) {
-            if (typeof entry?.id === "string" && entry.id) {
-              recalledEntryIdsThisTurn.add(entry.id);
+      // Collect recalled entries from all recall calls in the batch.
+      for (const { tc, result, isError } of executedResults) {
+        if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
+          const entries = (result as { entries?: Array<{ id?: string }> }).entries;
+          if (Array.isArray(entries)) {
+            for (const entry of entries) {
+              if (typeof entry?.id === "string" && entry.id) {
+                recalledEntryIdsThisTurn.add(entry.id);
+              }
             }
           }
         }
-      } else if (
-        tc.toolName !== "recall" &&
-        successfulToolResult(result, isError) &&
-        recalledEntryIdsThisTurn.size > 0
-      ) {
-        session.memoryStore?.reinforceFromSuccessfulToolOutcome(
-          Array.from(recalledEntryIdsThisTurn),
-        );
       }
 
-      toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });
+      // Process results in original order to keep history/event log deterministic.
+      for (const { tc, result, isError } of executedResults) {
+        toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });
 
-      let promptResultText = toolResultRawText(result);
-      let artifactId: string | undefined;
-      const skippedDisk =
-        result &&
-        typeof result === "object" &&
-        (result as { skipped_disk?: unknown }).skipped_disk === true;
-      const resultArtifactId =
-        result &&
-        typeof result === "object" &&
-        typeof (result as { artifact_id?: unknown }).artifact_id === "string"
-          ? ((result as { artifact_id: string }).artifact_id)
-          : undefined;
+        let promptResultText = toolResultRawText(result);
+        let artifactId: string | undefined;
+        const skippedDisk =
+          result &&
+          typeof result === "object" &&
+          (result as { skipped_disk?: unknown }).skipped_disk === true;
+        const resultArtifactId =
+          result &&
+          typeof result === "object" &&
+          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
+            ? ((result as { artifact_id: string }).artifact_id)
+            : undefined;
 
-      if (session.contextEngine && skippedDisk) {
-        // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
-        artifactId = resultArtifactId;
-        if (artifactId) {
-          session.contextEngine.touchAccess(artifactId, session.getTurnCount());
+        if (session.contextEngine && skippedDisk) {
+          // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
+          artifactId = resultArtifactId;
+          if (artifactId) {
+            session.contextEngine.touchAccess(artifactId, session.getTurnCount());
+          }
+          promptResultText =
+            typeof (result as { content?: unknown }).content === "string"
+              ? (result as { content: string }).content
+              : promptResultText;
+          const toolTokens = estimateDisplayTokens(promptResultText);
+          turnHistoryTokens += toolTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: toolTokens,
+            source: "tool",
+          });
+        } else if (session.contextEngine) {
+          const command = resolveToolCommand(
+            tc.toolName,
+            tc.args as Record<string, unknown>,
+            session.cwd,
+          );
+          const ingested = session.contextEngine.ingestToolResult({
+            sourceTool: tc.toolName,
+            command,
+            rawText: promptResultText,
+            createdTurn: session.getTurnCount(),
+          });
+          promptResultText = ingested.promptText;
+          artifactId = ingested.artifactId;
+          const toolTokens = estimateDisplayTokens(promptResultText);
+          const savings = computeDistillerSavings(
+            toolResultRawText(result),
+            promptResultText,
+            ingested.inlined,
+          );
+          turnHistoryTokens += toolTokens;
+          turnDistillerSavings += savings;
+          s.onContextHistoryDelta?.({
+            tokensAdded: toolTokens,
+            source: "tool",
+            distillerSavings: savings > 0 ? savings : undefined,
+          });
+        } else {
+          const toolTokens = estimateDisplayTokens(promptResultText);
+          turnHistoryTokens += toolTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: toolTokens,
+            source: "tool",
+          });
         }
-        promptResultText =
-          typeof (result as { content?: unknown }).content === "string"
-            ? (result as { content: string }).content
-            : promptResultText;
-        const toolTokens = estimateDisplayTokens(promptResultText);
-        turnHistoryTokens += toolTokens;
-        s.onContextHistoryDelta?.({
-          tokensAdded: toolTokens,
-          source: "tool",
+
+        turnRecorder.recordToolCall({
+          tool: tc.toolName,
+          args: tc.args as Record<string, unknown>,
+          result,
+          isError,
+          artifactId,
         });
-      } else if (session.contextEngine) {
-        const command = resolveToolCommand(
-          tc.toolName,
-          tc.args as Record<string, unknown>,
-          session.cwd,
-        );
-        const ingested = session.contextEngine.ingestToolResult({
-          sourceTool: tc.toolName,
-          command,
-          rawText: promptResultText,
-          createdTurn: session.getTurnCount(),
+
+        history.push({
+          role: "toolResult",
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          content: [{ type: "text", text: promptResultText }],
+          isError,
+          timestamp: Date.now(),
         });
-        promptResultText = ingested.promptText;
-        artifactId = ingested.artifactId;
-        const toolTokens = estimateDisplayTokens(promptResultText);
-        const savings = computeDistillerSavings(
-          toolResultRawText(result),
-          promptResultText,
-          ingested.inlined,
-        );
-        turnHistoryTokens += toolTokens;
-        turnDistillerSavings += savings;
-        s.onContextHistoryDelta?.({
-          tokensAdded: toolTokens,
-          source: "tool",
-          distillerSavings: savings > 0 ? savings : undefined,
+
+        session.eventLog.append({
+          kind: "tool_result",
+          actor: "tool",
+          payload: { toolCallId: tc.toolCallId, tool: tc.toolName, result },
         });
-      } else {
-        const toolTokens = estimateDisplayTokens(promptResultText);
-        turnHistoryTokens += toolTokens;
-        s.onContextHistoryDelta?.({
-          tokensAdded: toolTokens,
-          source: "tool",
-        });
+
+        // Notify UI sink of tool result for distinct rendering (e.g. TUI).
+        // Shell uses raw result so TUI shows stdout/stderr even when context engine artifacts.
+        const uiResultText =
+          tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
+        s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
       }
 
-      turnRecorder.recordToolCall({
-        tool: tc.toolName,
-        args: tc.args as Record<string, unknown>,
-        result,
-        isError,
-        artifactId,
-      });
-
-      history.push({
-        role: "toolResult",
-        toolCallId: tc.toolCallId,
-        toolName: tc.toolName,
-        content: [{ type: "text", text: promptResultText }],
-        isError,
-        timestamp: Date.now(),
-      });
-
-      session.eventLog.append({
-        kind: "tool_result",
-        actor: "tool",
-        payload: { toolCallId: tc.toolCallId, tool: tc.toolName, result },
-      });
-
-      // Notify UI sink of tool result for distinct rendering (e.g. TUI).
-      // Shell uses raw result so TUI shows stdout/stderr even when context engine artifacts.
-      const uiResultText =
-        tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
-      s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
+      // Reinforce any recalled entries once per turn when at least one non-recall
+      // tool succeeds. Skip entries already reinforced earlier in this turn so a
+      // recalled entry is boosted at most once even if it appears in multiple batches.
+      const newEntryIds = Array.from(recalledEntryIdsThisTurn).filter(
+        (id) => !reinforcedEntryIdsThisTurn.has(id),
+      );
+      if (
+        newEntryIds.length > 0 &&
+        executedResults.some(
+          ({ tc, result, isError }) =>
+            tc.toolName !== "recall" && successfulToolResult(result, isError),
+        )
+      ) {
+        session.memoryStore?.reinforceFromSuccessfulToolOutcome(newEntryIds);
+        for (const id of newEntryIds) {
+          reinforcedEntryIdsThisTurn.add(id);
+        }
+      }
 
       if (options?.signal?.aborted) {
         interrupted = true;
-        break;
       }
     }
 

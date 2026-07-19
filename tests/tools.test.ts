@@ -901,6 +901,45 @@ describe('System Tools (createSystemTools)', () => {
     });
   });
 
+  describe('read-write guard (concurrent tool execution)', () => {
+    it('read_file fails when a write to the same path is in progress', async () => {
+      writeFileSync(join(testDir, 'race.txt'), 'old content');
+      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+      const { PassThrough } = await import('node:stream');
+      const mockStdin = new PassThrough();
+      const originalStdin = process.stdin;
+      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
+
+      // Suppress diff output to stderr
+      setUiWriters({ stderr: () => {} });
+
+      try {
+        // Start edit_file — it acquires the write lock, then blocks on the
+        // readline confirmation prompt, leaving the lock held.
+        const editPromise = confirmTools.edit_file.execute({
+          path: 'race.txt',
+          oldText: 'old content',
+          newText: 'new content',
+        });
+
+        // Let the event loop run so edit_file reaches the await point.
+        await new Promise((r) => setTimeout(r, 50));
+
+        // read_file should fail — a write to this path is in progress.
+        const readResult = await confirmTools.read_file.execute({ path: 'race.txt' });
+        expect(readResult.ok).toBe(false);
+        expect((readResult as any).error).toContain('in progress');
+
+        // Unblock the edit by providing stdin input.
+        mockStdin.write('n\n');
+        await editPromise;
+      } finally {
+        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
+        setUiWriters();
+      }
+    });
+  });
+
   describe('batch_write', () => {
     it('should write multiple files', async () => {
       const result = await tools.batch_write.execute({
@@ -991,6 +1030,17 @@ describe('System Tools (createSystemTools)', () => {
       });
       expect(result.ok).toBe(true);
       expect(readFileSync(absPath, 'utf-8')).toBe('absolute');
+    });
+
+    it('should not fail when the same path appears twice in one batch (last content wins)', async () => {
+      const result = await tools.batch_write.execute({
+        files: [
+          { path: 'dup.txt', content: 'first' },
+          { path: 'dup.txt', content: 'second' },
+        ],
+      });
+      expect(result.ok).toBe(true);
+      expect(readFileSync(join(testDir, 'dup.txt'), 'utf-8')).toBe('second');
     });
   });
 

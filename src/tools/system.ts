@@ -274,6 +274,29 @@ export function createSystemTools(ctx: SystemToolContext) {
     clearReadPath?.(absPath);
   };
 
+  // Guard against concurrent mutating-tool calls targeting the same path.
+  // The model is responsible for avoiding conflicting parallel writes; this
+  // is a lightweight runtime safety net that catches same-batch collisions.
+  const pendingWritePaths = new Set<string>();
+
+  function acquireWritePath(
+    absPath: string,
+    relPath: string,
+  ): { ok: true } | { ok: false; error: string } {
+    if (pendingWritePaths.has(absPath)) {
+      return {
+        ok: false,
+        error: `Concurrent write already in progress for ${relPath}. Avoid parallel mutating tool calls targeting the same path.`,
+      };
+    }
+    pendingWritePaths.add(absPath);
+    return { ok: true };
+  }
+
+  function releaseWritePath(absPath: string): void {
+    pendingWritePaths.delete(absPath);
+  }
+
   return {
     shell: defineTool({
       description:
@@ -325,6 +348,15 @@ export function createSystemTools(ctx: SystemToolContext) {
       }),
       execute: async ({ path, offset, limit }) => {
         const absPath = resolvePath(path);
+        // Guard: if a write to this path is in progress (e.g. an edit_file
+        // blocked on confirmation in a concurrent batch), fail fast instead
+        // of reading stale or partial content.
+        if (pendingWritePaths.has(absPath)) {
+          return {
+            ok: false,
+            error: `A write to ${path} is currently in progress. Avoid concurrent read_file and write_file/edit_file/batch_write/batch_edit calls targeting the same path.`,
+          };
+        }
         try {
           let wasRepeat = hasReadPath?.(absPath) ?? false;
 
@@ -516,13 +548,16 @@ export function createSystemTools(ctx: SystemToolContext) {
 
     write_file: defineTool({
       description:
-        "Create or overwrite a file. Creates parent directories if needed.",
+        "Create or overwrite a file. Creates parent directories if needed. " +
+        "Do not issue this tool concurrently with other write_file/edit_file/batch_write/batch_edit calls targeting the same path.",
       parameters: z.object({
         path: z.string().describe("File path (relative to working dir or absolute)"),
         content: z.string().describe("Content to write"),
       }),
       execute: async ({ path, content }) => {
         const absPath = resolvePath(path);
+        const guard = acquireWritePath(absPath, path);
+        if (!guard.ok) return guard;
         try {
           mkdirSync(dirname(absPath), { recursive: true });
           writeFileSync(absPath, content);
@@ -531,13 +566,16 @@ export function createSystemTools(ctx: SystemToolContext) {
           return warning ? { ok: true, warning } : { ok: true };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to write file" };
+        } finally {
+          releaseWritePath(absPath);
         }
       },
     }),
 
     edit_file: defineTool({
       description:
-        "Replace a specific text block in a file. Finds the exact oldText and replaces with newText. Fails if oldText is not unique in the file.",
+        "Replace a specific text block in a file. Finds the exact oldText and replaces with newText. Fails if oldText is not unique in the file. " +
+        "Do not issue this tool concurrently with other write_file/edit_file/batch_write/batch_edit calls targeting the same path.",
       parameters: z.object({
         path: z.string().describe("File path (relative to working dir or absolute)"),
         oldText: z.string().describe("Exact text to find and replace"),
@@ -545,6 +583,8 @@ export function createSystemTools(ctx: SystemToolContext) {
       }),
       execute: async ({ path, oldText, newText }) => {
         const absPath = resolvePath(path);
+        const guard = acquireWritePath(absPath, path);
+        if (!guard.ok) return guard;
         try {
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
@@ -598,13 +638,16 @@ export function createSystemTools(ctx: SystemToolContext) {
           return { ok: true };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to edit file" };
+        } finally {
+          releaseWritePath(absPath);
         }
       },
     }),
 
     batch_write: defineTool({
       description:
-        "Write multiple files atomically. All files are written or none. Creates parent directories as needed. Use for creating multi-file components in one call.",
+        "Write multiple files atomically. All files are written or none. Creates parent directories as needed. Use for creating multi-file components in one call. " +
+        "Do not issue this tool concurrently with other write_file/edit_file/batch_write/batch_edit calls targeting the same path.",
       parameters: z.object({
         files: z.array(z.object({
           path: z.string().describe("File path"),
@@ -617,6 +660,19 @@ export function createSystemTools(ctx: SystemToolContext) {
         for (const f of files) {
           const absPath = resolvePath(f.path);
           resolved.push({ absPath, content: f.content, relPath: f.path });
+        }
+
+        // Acquire locks for all files before writing. Duplicate paths within
+        // one batch are allowed (last content wins); the lock is acquired once.
+        const acquired = new Set<string>();
+        for (const { absPath, relPath } of resolved) {
+          if (acquired.has(absPath)) continue;
+          const guard = acquireWritePath(absPath, relPath);
+          if (!guard.ok) {
+            for (const a of acquired) releaseWritePath(a);
+            return guard;
+          }
+          acquired.add(absPath);
         }
 
         // Write all files, tracking what was written for rollback
@@ -646,13 +702,16 @@ export function createSystemTools(ctx: SystemToolContext) {
             }
           }
           return { ok: false, error: err?.message ?? "Batch write failed", written };
+        } finally {
+          for (const a of acquired) releaseWritePath(a);
         }
       },
     }),
 
     batch_edit: defineTool({
       description:
-        "Edit multiple files atomically. All edits are applied or none. Edits to the same file are applied sequentially (each edit sees the result of the previous one). Edits across different files are independent. Use for multi-file refactors in one call.",
+        "Edit multiple files atomically. All edits are applied or none. Edits to the same file are applied sequentially (each edit sees the result of the previous one). Edits across different files are independent. Use for multi-file refactors in one call. " +
+        "Do not issue this tool concurrently with other write_file/edit_file/batch_write/batch_edit calls targeting the same path.",
       parameters: z.object({
         edits: z.array(z.object({
           path: z.string().describe("File path"),
@@ -673,6 +732,18 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `File not found: ${e.path}` };
           }
           resolvedEdits.push({ absPath, oldText: e.oldText, newText: e.newText, relPath: e.path });
+        }
+
+        // Acquire locks for all files before editing. Duplicates within one batch are allowed.
+        const acquired = new Set<string>();
+        for (const { absPath, relPath } of resolvedEdits) {
+          if (acquired.has(absPath)) continue;
+          const guard = acquireWritePath(absPath, relPath);
+          if (!guard.ok) {
+            for (const a of acquired) releaseWritePath(a);
+            return guard;
+          }
+          acquired.add(absPath);
         }
 
         // Snapshot original contents for rollback
@@ -719,6 +790,8 @@ export function createSystemTools(ctx: SystemToolContext) {
             try { writeFileSync(absPath, original); } catch { /* best-effort */ }
           }
           return { ok: false, error: err?.message ?? "Batch edit failed", edited };
+        } finally {
+          for (const a of acquired) releaseWritePath(a);
         }
       },
     }),

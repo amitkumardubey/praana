@@ -207,6 +207,68 @@ describe("runTurn with UI sink", () => {
     expect(stdoutTextCalls).toHaveLength(0);
   });
 
+  it("passes multiple parallel tool call ids through sink callbacks", async () => {
+    async function* mockStream() {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo a" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo b" } },
+      };
+      yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+    }
+    (piStream as ReturnType<typeof mock>).mockReturnValue(mockStream() as any);
+
+    const onToolCall = mock();
+    const onToolResult = mock();
+    const session = mockSession();
+
+    await runTurn(session, "run two shells", undefined, {
+      sink: { onToolCall, onToolResult, shellLiveStream: false },
+    });
+
+    expect(onToolCall).toHaveBeenCalledTimes(2);
+    expect(onToolCall).toHaveBeenCalledWith("call-1", "shell", { command: "echo a" });
+    expect(onToolCall).toHaveBeenCalledWith("call-2", "shell", { command: "echo b" });
+    expect(onToolResult).toHaveBeenCalledTimes(2);
+  });
+
+  it("notifies all tool calls before any result when multiple are pending", async () => {
+    async function* mockStream() {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo a" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo b" } },
+      };
+      yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+    }
+    (piStream as ReturnType<typeof mock>).mockReturnValue(mockStream() as any);
+
+    const onToolCall = mock();
+    const onToolResult = mock();
+    const session = mockSession();
+
+    await runTurn(session, "run two shells", undefined, {
+      sink: { onToolCall, onToolResult, shellLiveStream: false },
+    });
+
+    const calls = [
+      ...onToolCall.mock.calls.map((c) => ({ type: "call" as const, id: c[0] })),
+      ...onToolResult.mock.calls.map((c) => ({ type: "result" as const, id: c[0] })),
+    ];
+    expect(calls).toEqual([
+      { type: "call", id: "call-1" },
+      { type: "call", id: "call-2" },
+      { type: "result", id: "call-1" },
+      { type: "result", id: "call-2" },
+    ]);
+  });
+
   it("passes tool call ids through sink callbacks", async () => {
     async function* mockStream() {
       yield {
