@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   getApiKey,
   setApiKey,
@@ -10,6 +12,7 @@ import {
   listStoredProviders,
   resolveApiKey,
   getCredentialsFilePath,
+  ensureCredentialsFileMode,
   resetCredentialStoreForTests,
 } from "../src/credentials.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
@@ -97,6 +100,25 @@ describe("credential store", () => {
     expect(getApiKey("first")).toBe("key-1");
     expect(getApiKey("second")).toBe("key-2");
   });
+
+  it("treats array JSON as empty store", () => {
+    const credPath = getCredentialsFilePath();
+    mkdirSync(dirname(credPath), { recursive: true });
+    writeFileSync(credPath, "[]", "utf-8");
+    resetCredentialStoreForTests();
+    expect(getApiKey("anything")).toBeUndefined();
+    setApiKey("recovered", "sk-ok");
+    expect(getApiKey("recovered")).toBe("sk-ok");
+  });
+
+  it("ensureCredentialsFileMode heals overly permissive files", () => {
+    setApiKey("perm-heal", "sk-heal");
+    const credPath = getCredentialsFilePath();
+    chmodSync(credPath, 0o644);
+    expect(statSync(credPath).mode & 0o077).not.toBe(0);
+    ensureCredentialsFileMode();
+    expect(statSync(credPath).mode & 0o077).toBe(0);
+  });
 });
 
 describe("resolveApiKey precedence", () => {
@@ -141,9 +163,9 @@ describe("resolveApiKey precedence", () => {
     expect(resolveApiKey("keyless-provider")).toBe("no-key");
   });
 
-  it("returns 'no-key' when envKey provided but env var unset and no stored key", () => {
+  it("returns empty string when envKey provided but env var unset and no stored key", () => {
     savedEnv.UNSET_KEY = process.env.UNSET_KEY;
     delete process.env.UNSET_KEY;
-    expect(resolveApiKey("provider-z", "UNSET_KEY")).toBe("no-key");
+    expect(resolveApiKey("provider-z", "UNSET_KEY")).toBe("");
   });
 });

@@ -19,6 +19,7 @@ import {
   isValidBaseUrl,
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
+  providerRequiresApiKey,
 } from "./logic.js";
 import { hasApiKey } from "../llm.js";
 import type { SetupResult, CustomProviderConfig } from "./types.js";
@@ -142,15 +143,27 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       console.log("");
       console.log(`Selected: ${providerId}`);
 
+      const requiresKey = providerRequiresApiKey(providerId);
+      const promptForKey = async (): Promise<boolean> => {
+        while (true) {
+          const keyInput = await askQuestion(rl, "Paste your API key: ");
+          if (keyInput.trim()) {
+            saveProviderKey(providerId, keyInput.trim());
+            return true;
+          }
+          if (!requiresKey) {
+            console.log(chalk.yellow("  No key entered. Continuing without a stored key."));
+            return false;
+          }
+          console.error("✗ API key is required for this provider");
+        }
+      };
+
       if (hasApiKey(providerId)) {
         console.log(chalk.green("✓ API key detected in credential store."));
         const replace = await askQuestion(rl, "Replace with a new key? (y/n): ");
         if (replace.toLowerCase() === "y" || replace.toLowerCase() === "yes") {
-          const keyInput = await askQuestion(rl, "Paste your API key: ");
-          if (keyInput.trim()) {
-            saveProviderKey(providerId, keyInput.trim());
-            keySaved = true;
-          }
+          keySaved = await promptForKey();
         }
       } else {
         const envOffer = formatEnvKeyOfferMessage(providerId);
@@ -159,22 +172,10 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
           if (useEnv.toLowerCase() === "y" || useEnv.toLowerCase() === "yes") {
             keySaved = adoptEnvKeyForProvider(providerId);
           } else {
-            const keyInput = await askQuestion(rl, "Paste your API key: ");
-            if (keyInput.trim()) {
-              saveProviderKey(providerId, keyInput.trim());
-              keySaved = true;
-            } else {
-              console.log(chalk.yellow("  No key entered. You can set it later."));
-            }
+            keySaved = await promptForKey();
           }
         } else {
-          const keyInput = await askQuestion(rl, "Paste your API key: ");
-          if (keyInput.trim()) {
-            saveProviderKey(providerId, keyInput.trim());
-            keySaved = true;
-          } else {
-            console.log(chalk.yellow("  No key entered. You can set it later."));
-          }
+          keySaved = await promptForKey();
         }
       }
     }

@@ -7,6 +7,16 @@ export function resolveDefaultModel(provider: string): string {
   return DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
 }
 
+/** Escape a value for a double-quoted TOML basic string. */
+export function escapeTomlString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
+}
+
 /**
  * Generate the config.toml content for a provider.
  *
@@ -20,18 +30,27 @@ export function generateSetupConfigContent(
 ): string {
   const resolvedModel = model ?? resolveDefaultModel(provider);
   const modelLine = resolvedModel
-    ? `model = "${resolvedModel}"\n`
+    ? `model = "${escapeTomlString(resolvedModel)}"\n`
     : `# model = "<model-id>"  # set this if PRAANA doesn't auto-detect\n`;
 
   let customSection = "";
   if (customProvider) {
-    customSection = `\n[providers.${customProvider.id}]\napi = "${customProvider.api}"\nbase_url = "${customProvider.baseUrl}"\n`;
+    customSection =
+      `\n[providers.${customProvider.id}]\n` +
+      `api = "${escapeTomlString(customProvider.api)}"\n` +
+      `base_url = "${escapeTomlString(customProvider.baseUrl)}"\n`;
     if (customProvider.envKey) {
-      customSection += `env_key = "${customProvider.envKey}"\n`;
+      customSection += `env_key = "${escapeTomlString(customProvider.envKey)}"\n`;
     }
   }
 
-  return `# PRAANA Configuration\n# https://github.com/amitkumardubey/praana\n\n[llm]\nprovider = "${provider}"\n${modelLine}${customSection}`;
+  return (
+    `# PRAANA Configuration\n` +
+    `# https://github.com/amitkumardubey/praana\n\n` +
+    `[llm]\n` +
+    `provider = "${escapeTomlString(provider)}"\n` +
+    `${modelLine}${customSection}`
+  );
 }
 
 export function getSetupConfigPath(): string {

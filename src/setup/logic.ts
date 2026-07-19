@@ -204,7 +204,8 @@ export function isValidCustomProviderId(
 
 /**
  * Validate a base URL.
- * Must start with http:// or https://.
+ * Must start with http:// or https://, and must not contain characters
+ * that would break TOML string interpolation or inject config lines.
  */
 export function isValidBaseUrl(
   url: string,
@@ -213,7 +214,29 @@ export function isValidBaseUrl(
   if (!/^https?:\/\//.test(url)) {
     return { valid: false, error: "Must start with http:// or https://" };
   }
+  if (/[\x00-\x1f\x7f"]/.test(url)) {
+    return {
+      valid: false,
+      error: "Must not contain quotes or control characters",
+    };
+  }
+  try {
+    // Reject obviously malformed URLs while still allowing localhost/LAN.
+    void new URL(url);
+  } catch {
+    return { valid: false, error: "Must be a valid URL" };
+  }
   return { valid: true };
+}
+
+/**
+ * True when a catalog provider needs an API key (has a named env key).
+ * Keyless / externally-configured providers (envKey === null) are excluded
+ * from the interactive picker, but this helper keeps the key-entry gate
+ * explicit for catalog flows.
+ */
+export function providerRequiresApiKey(provider: string): boolean {
+  return getProviderEnvKey(provider) !== null;
 }
 
 export function finalizeProviderSetup(

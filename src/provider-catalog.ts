@@ -341,7 +341,6 @@ async function fetchProviderCatalogFresh(
         Accept: "application/json",
         ...registryEntry.headers,
       };
-      // Key resolution: credential store > env_key > no key (keyless).
       // Key resolution: credential store > env_key > keyless.
       const apiKey = getApiKey(provider)
         ?? (registryEntry.envKey ? process.env[registryEntry.envKey] : null)

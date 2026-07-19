@@ -43,6 +43,7 @@ import {
   isValidBaseUrl,
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
+  providerRequiresApiKey,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
@@ -324,20 +325,29 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
       }
     };
 
-    const showKeyInputField = (provider: string) => {
+    const showKeyInputField = (provider: string, error?: string) => {
       root.clear();
       header.setText(`Selected: ${provider}`);
+      const requiresKey = providerRequiresApiKey(provider);
       body.setText([
         "Paste your API key.",
         TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
+        ...(error ? ["", chalk.red(`✗ ${error}`)] : []),
         "",
       ].join("\n"));
 
       const input = new MaskedInput();
       input.onSubmit = (value: string) => {
-        if (value.trim()) {
-          saveProviderKey(provider, value);
+        const trimmed = value.trim();
+        if (trimmed) {
+          saveProviderKey(provider, trimmed);
           state.keySaved = true;
+          showModelFetchStep();
+          return;
+        }
+        if (requiresKey) {
+          showKeyInputField(provider, "API key is required for this provider");
+          return;
         }
         showModelFetchStep();
       };

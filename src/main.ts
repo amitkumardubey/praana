@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getMissingKeyMessage, getProviderEnvKey } from "./llm.js";
+import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getConfigWarnings } from "./config.js";
 import { getAppLogger, initAppLogFile } from "./logger.js";
 import { parseCliArgs } from "./cli-args.js";
@@ -11,7 +11,8 @@ import { AmbiguousSessionPrefixError } from "./session-errors.js";
 import { runTui } from "./ui/tui/run.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
-import { writeProviderConfig } from "./setup/config-writer.js";
+import { writeProviderConfig, getSetupConfigPath } from "./setup/config-writer.js";
+import { ensureCredentialsFileMode } from "./credentials.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
@@ -67,6 +68,7 @@ export async function main() {
   }
 
   await initAppLogFile();
+  ensureCredentialsFileMode();
 
   // Handle setup command early (before config loading, needs a TTY)
   if (parsed.setupMode) {
@@ -133,58 +135,61 @@ export async function main() {
             ? `Adopted ${auto.envKey} from environment — provider: ${auto.provider}, model: ${auto.model}`
             : `Using stored key — provider: ${auto.provider}, model: ${auto.model}`,
         );
-        Object.assign(config, loadConfig(parsed.configPath));
+        // Reload the file the auto-select just wrote (not a stale --config path).
+        Object.assign(config, loadConfig(writeResult.path));
       }
     }
-    if (isInteractive) {
-      const setupResult = await runInteractiveSetup(cwd);
-      if (!setupResult.success) {
-        getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
-        console.error("");
-        console.error("Run `praana setup` again, or edit `~/.praana/config.toml` manually.");
-        process.exit(1);
-      }
-      const newConfig = loadConfig(parsed.configPath);
-      const newWarnings = getConfigWarnings();
-      if (newWarnings.length > 0) {
-        console.error("");
-        console.error("Configuration warnings:");
-        for (const w of newWarnings) console.error(`  ⚠ ${w}`);
-        console.error("");
-      }
-      const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
-      if (newKeyError) {
-        const envKey = getProviderEnvKey(newConfig.llm.provider);
-        console.error("");
-        if (envKey) {
-          console.error("Almost there! To finish setup:");
-          console.error(`  1. Set your key:  export ${envKey}=<your-key>`);
-          console.error("  2. Restart:       praana");
-        } else {
-          console.error("Almost there! To finish setup, configure the provider and restart PRAANA.");
+
+    // Re-check after auto-select — may now be fully configured.
+    const stillMissing = getMissingKeyMessage(config.llm.provider);
+    if (stillMissing) {
+      if (isInteractive) {
+        const setupResult = await runInteractiveSetup(cwd);
+        if (!setupResult.success) {
+          getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
+          console.error("");
+          console.error("Run `praana setup` again, or edit `~/.praana/config.toml` manually.");
+          process.exit(1);
         }
+        // Wizard writes ~/.praana/config.toml — reload that path.
+        const newConfig = loadConfig(getSetupConfigPath());
+        const newWarnings = getConfigWarnings();
+        if (newWarnings.length > 0) {
+          console.error("");
+          console.error("Configuration warnings:");
+          for (const w of newWarnings) console.error(`  ⚠ ${w}`);
+          console.error("");
+        }
+        const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
+        if (newKeyError) {
+          console.error("");
+          console.error("Almost there! To finish setup:");
+          console.error("  • Run:  praana setup");
+          console.error("  • Or paste an API key into ~/.praana/credentials.json");
+          console.error("    and set [llm] provider/model in ~/.praana/config.toml");
+          console.error("");
+          getAppLogger().error(newKeyError, { code: "SESSION_START_FAILED" });
+          process.exit(1);
+        }
+        Object.assign(config, newConfig);
+      } else {
+        const envKeyNames = Array.from(
+          new Set(
+            formatProviderListForDisplay()
+              .filter((p) => p.envKey !== null)
+              .map((p) => p.envKey as string),
+          ),
+        );
+        console.error("PRAANA needs a model provider to run — no API key found.");
         console.error("");
-        getAppLogger().error(newKeyError, { code: "SESSION_START_FAILED" });
+        console.error("Fastest options:");
+        console.error("  • Run:  praana setup  (guided key + provider setup)");
+        console.error("  • Or set a provider key, e.g.  export OPENROUTER_API_KEY=sk-or-...");
+        console.error(`    (also: ${envKeyNames.join(", ")})`);
+        console.error("");
+        getAppLogger().error(stillMissing, { code: "SESSION_START_FAILED" });
         process.exit(1);
       }
-      Object.assign(config, newConfig);
-    } else {
-      const envKeyNames = Array.from(
-        new Set(
-          formatProviderListForDisplay()
-            .filter((p) => p.envKey !== null)
-            .map((p) => p.envKey as string),
-        ),
-      );
-      console.error("PRAANA needs a model provider to run — no API key found.");
-      console.error("");
-      console.error("Fastest options:");
-      console.error("  • Set a provider key, e.g.  export OPENROUTER_API_KEY=sk-or-...");
-      console.error(`    (also: ${envKeyNames.join(", ")})`);
-      console.error("  • Or run:  praana init");
-      console.error("");
-      getAppLogger().error(keyError, { code: "SESSION_START_FAILED" });
-      process.exit(1);
     }
   }
 
@@ -195,7 +200,7 @@ export async function main() {
     });
     console.error("");
     console.error("No model is configured for provider:", config.llm.provider);
-    console.error('Set [llm] model = "..." in your config or run `praana init`.');
+    console.error('Set [llm] model = "..." in your config or run `praana setup`.');
     console.error("");
     process.exit(1);
   }

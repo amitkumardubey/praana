@@ -13,8 +13,16 @@
 //     "my-llama":   { "key": "tok-...", "savedAt": 1720000000000 }
 //   }
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  chmodSync,
+  renameSync,
+  statSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { appHomePath } from "./app-identity.js";
 import { getAppLogger } from "./logger.js";
 
@@ -40,6 +48,25 @@ interface CredentialsFile {
 
 let memoryCache: CredentialsFile | null = null;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeCredentials(parsed: unknown): CredentialsFile {
+  if (!isPlainObject(parsed)) return {};
+  const out: CredentialsFile = {};
+  for (const [providerId, entry] of Object.entries(parsed)) {
+    if (!isPlainObject(entry)) continue;
+    if (typeof entry.key !== "string" || !entry.key) continue;
+    const savedAt =
+      typeof entry.savedAt === "number" && Number.isFinite(entry.savedAt)
+        ? entry.savedAt
+        : Date.now();
+    out[providerId] = { key: entry.key, savedAt };
+  }
+  return out;
+}
+
 function loadCredentials(): CredentialsFile {
   if (memoryCache) return memoryCache;
 
@@ -51,8 +78,8 @@ function loadCredentials(): CredentialsFile {
 
   try {
     const raw = readFileSync(credPath, "utf-8");
-    const parsed = JSON.parse(raw) as CredentialsFile;
-    memoryCache = parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(raw) as unknown;
+    memoryCache = sanitizeCredentials(parsed);
   } catch (err) {
     getAppLogger().child("credentials").warn(
       "Failed to read credentials store, treating as empty",
@@ -66,16 +93,22 @@ function loadCredentials(): CredentialsFile {
 function persistCredentials(creds: CredentialsFile): void {
   const credPath = credentialsFilePath();
   const dir = dirname(credPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  writeFileSync(credPath, JSON.stringify(creds, null, 2), "utf-8");
-
-  // Ensure restrictive permissions (owner-only read/write).
+  // Atomic write: temp file with restrictive mode, then rename.
+  const tmpPath = join(dir, `.credentials.${process.pid}.${Date.now()}.tmp`);
+  const payload = JSON.stringify(creds, null, 2);
+  writeFileSync(tmpPath, payload, { encoding: "utf-8", mode: FILE_MODE });
+  try {
+    chmodSync(tmpPath, FILE_MODE);
+  } catch {
+    // chmod can fail on some platforms (e.g. Windows). Best-effort.
+  }
+  renameSync(tmpPath, credPath);
   try {
     chmodSync(credPath, FILE_MODE);
   } catch {
-    // chmod can fail on some platforms (e.g. Windows). The file is still
-    // written; the mode is best-effort on those systems.
+    // Best-effort heal after rename (some FS ignore mode on create).
   }
 
   memoryCache = creds;
@@ -132,10 +165,8 @@ export function hasApiKey(provider: string): boolean {
  * Resolve the API key for a provider with fallback chain:
  *   1. Credential store (~/.praana/credentials.json)
  *   2. Environment variable (envKey, if provided)
- *   3. undefined (no key available)
- *
- * For keyless providers (e.g. local Ollama), returns "no-key" sentinel
- * when no key is found and no envKey is provided.
+ *   3. Keyless providers (envKey null/undefined) → `"no-key"` sentinel
+ *   4. Key-requiring providers with nothing set → `""`
  */
 export function resolveApiKey(
   provider: string,
@@ -149,9 +180,11 @@ export function resolveApiKey(
   if (envKey) {
     const envValue = process.env[envKey];
     if (envValue) return envValue;
+    // Key expected but missing — empty string (do not send "no-key" as Bearer).
+    return "";
   }
 
-  // 3. No key — keyless providers use "no-key" sentinel
+  // 3. Keyless providers use "no-key" sentinel
   return "no-key";
 }
 

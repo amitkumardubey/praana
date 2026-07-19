@@ -10,6 +10,7 @@ import {
   generateSetupConfigContent,
   writeProviderConfig,
   getSetupConfigPath,
+  escapeTomlString,
 } from "../src/setup/config-writer.js";
 import {
   saveProviderKey,
@@ -19,6 +20,7 @@ import {
   finalizeProviderSetup,
   isValidCustomProviderId,
   isValidBaseUrl,
+  providerRequiresApiKey,
   getEnvApiKeyForProvider,
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
@@ -112,6 +114,24 @@ describe("setup wizard", () => {
     it("does not include 'restart' message", () => {
       const content = generateSetupConfigContent("openrouter");
       expect(content.toLowerCase()).not.toContain("restart");
+    });
+
+    it("escapes quotes in base_url and model for TOML safety", () => {
+      const content = generateSetupConfigContent('prov"x', 'model"y', {
+        id: "my-llama",
+        api: "openai-completions",
+        baseUrl: 'http://localhost:8080/v1"evil',
+      });
+      expect(content).toContain('provider = "prov\\"x"');
+      expect(content).toContain('model = "model\\"y"');
+      expect(content).toContain('base_url = "http://localhost:8080/v1\\"evil"');
+      expect(content).not.toContain('base_url = "http://localhost:8080/v1"evil"');
+    });
+  });
+
+  describe("escapeTomlString", () => {
+    it("escapes backslashes and quotes", () => {
+      expect(escapeTomlString('a\\b"c')).toBe('a\\\\b\\"c');
     });
   });
 
@@ -447,6 +467,21 @@ describe("setup wizard", () => {
 
     it("rejects empty", () => {
       expect(isValidBaseUrl("").valid).toBe(false);
+    });
+
+    it("rejects quotes and control characters", () => {
+      expect(isValidBaseUrl('http://x.com/"evil').valid).toBe(false);
+      expect(isValidBaseUrl("http://x.com/\nfoo").valid).toBe(false);
+    });
+  });
+
+  describe("providerRequiresApiKey", () => {
+    it("returns true for catalog providers with an env key", () => {
+      expect(providerRequiresApiKey("openrouter")).toBe(true);
+    });
+
+    it("returns false for keyless registry providers", () => {
+      expect(providerRequiresApiKey("ollama")).toBe(false);
     });
   });
 
