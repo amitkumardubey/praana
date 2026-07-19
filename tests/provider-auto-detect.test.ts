@@ -1,31 +1,57 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   detectProviderFromEnvironment,
   listAvailableProviders,
   isProviderAvailable,
 } from "../src/llm.js";
+import { resetCredentialStoreForTests } from "../src/credentials.js";
+
+const PROVIDER_ENV_KEYS = [
+  "OPENROUTER_API_KEY",
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GROQ_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  "MISTRAL_API_KEY",
+  "XAI_API_KEY",
+  "FIREWORKS_API_KEY",
+  "TOGETHER_API_KEY",
+  "OPENCODE_API_KEY",
+  "UMANS_AI_CODING_PLAN_API_KEY",
+  "NVIDIA_API_KEY",
+] as const;
 
 describe("Provider auto-detection", () => {
-  const originalEnv = { ...process.env };
+  let praanaHome: string;
+  let prevHome: string | undefined;
+  const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    // Clear all provider-related env vars
-    delete process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-    delete process.env.DEEPSEEK_API_KEY;
-    delete process.env.GROQ_API_KEY;
-    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-    delete process.env.MISTRAL_API_KEY;
-    delete process.env.XAI_API_KEY;
-    delete process.env.FIREWORKS_API_KEY;
-    delete process.env.TOGETHER_API_KEY;
-    delete process.env.OPENCODE_API_KEY;
+    praanaHome = mkdtempSync(join(tmpdir(), "praana-auto-detect-"));
+    prevHome = process.env.PRAANA_HOME;
+    process.env.PRAANA_HOME = praanaHome;
+    resetCredentialStoreForTests();
+
+    for (const key of PROVIDER_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
-    // Restore original env
-    process.env = { ...originalEnv };
+    resetCredentialStoreForTests();
+    rmSync(praanaHome, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = prevHome;
+
+    for (const key of PROVIDER_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
   });
 
   describe("detectProviderFromEnvironment", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { providerPageLines, buildProviderSelectItems } from "../src/setup/provider-options.js";
+import { providerPageLines, buildProviderSelectItems, CUSTOM_PROVIDER_VALUE } from "../src/setup/provider-options.js";
 import { generateSetupConfigContent, resolveDefaultModel } from "../src/setup/config-writer.js";
 import { finalizeProviderSetup } from "../src/setup/logic.js";
 import { SETUP_UNSUPPORTED_PROVIDERS } from "../src/provider-registry.js";
@@ -57,7 +57,9 @@ describe("buildProviderSelectItems", () => {
   });
 
   it("sorts alphabetically within availability groups", () => {
-    const items = buildProviderSelectItems();
+    const items = buildProviderSelectItems().filter(
+      (i) => i.value !== CUSTOM_PROVIDER_VALUE,
+    );
     const labels = items.map((i) => i.value);
     const sorted = [...labels].sort();
     const available = items.filter((i) => i.description?.startsWith("✓"));

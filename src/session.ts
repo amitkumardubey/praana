@@ -311,6 +311,15 @@ export class Session {
         if (typeof rawModel === "string" && rawModel.trim()) {
           session.modelOverride = rawModel.trim();
         }
+        // Older /model writes embedded provider on model_override without a
+        // separate provider_override event. Restore it only when still unset so
+        // an explicit provider_override (found later in reverse scan) wins.
+        if (session.providerOverride === null) {
+          const rawProvider = ev.payload.provider;
+          if (typeof rawProvider === "string" && rawProvider.trim()) {
+            session.providerOverride = rawProvider.trim();
+          }
+        }
       }
       if (ev.payload.type === "plan_mode" && !planModeRestored) {
         session.planMode = ev.payload.value === true;

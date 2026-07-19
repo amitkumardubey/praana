@@ -28,7 +28,8 @@ export type LogDomain =
   | "config"
   | "tool"
   | "skills"
-  | "context_engine";
+  | "context_engine"
+  | "credentials";
 
 export type ErrorCode =
   | "LLM_STREAM_ERROR"
@@ -41,6 +42,7 @@ export type ErrorCode =
   | "MEMORY_DEDUPE_FAILED"
   | "TOOL_EXECUTION_FAILED"
   | "CONFIG_INVALID"
+  | "CREDENTIALS_READ_FAILED"
   | "UNKNOWN";
 
 export interface LogEntry {

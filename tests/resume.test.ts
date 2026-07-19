@@ -258,4 +258,66 @@ describe("Session resume", () => {
 
     rmSync(sessionDir, { recursive: true, force: true });
   });
+
+  it("restores provider from model_override.provider when provider_override is missing", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+    const sessionDir = join(testLogDir, sid);
+
+    // Legacy / partial write shape: model_override carries provider, but no
+    // separate provider_override event was appended.
+    s.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "model_override",
+        provider: "umans",
+        model: "umans-glm-5.2",
+      },
+    });
+    await s.end("clean");
+
+    const driftedConfig: PraanaConfig = {
+      ...testConfig,
+      llm: { provider: "modal", model: "deepreinforce-ai/Ornith-1.0-9B" },
+    };
+    const resumed = await Session.resume(sid, process.cwd(), driftedConfig);
+    expect(resumed.getEffectiveProvider()).toBe("umans");
+    expect(resumed.getActiveModelId()).toBe("umans-glm-5.2");
+    await resumed.end("clean");
+
+    rmSync(sessionDir, { recursive: true, force: true });
+  });
+
+  it("prefers explicit provider_override over model_override.provider", async () => {
+    const s = await Session.create(process.cwd(), testConfig);
+    const sid = s.id;
+    const sessionDir = join(testLogDir, sid);
+
+    s.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "model_override",
+        provider: "umans",
+        model: "umans-glm-5.2",
+      },
+    });
+    s.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "provider_override",
+        provider: "openai",
+      },
+    });
+    await s.end("clean");
+
+    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    expect(resumed.getEffectiveProvider()).toBe("openai");
+    expect(resumed.getActiveModelId()).toBe("umans-glm-5.2");
+    await resumed.end("clean");
+
+    rmSync(sessionDir, { recursive: true, force: true });
+  });
 });

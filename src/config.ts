@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as toml from "toml";
-import type { PraanaConfig } from "./types.js";
+import type { PraanaConfig, UserProviderConfig } from "./types.js";
 import { getAppLogger, type ErrorCode } from "./logger.js";
 import {
   APP_HOME_DIR,
@@ -11,7 +11,7 @@ import {
   resolveDefaultMemoryDbPath,
   resolveDefaultSessionLogDir,
 } from "./app-identity.js";
-import { detectProviderFromEnvironment } from "./llm.js";
+import { setUserProviders } from "./provider-registry.js";
 
 function configWarn(
   message: string,
@@ -42,8 +42,8 @@ export function getLoadedConfigSources(): string[] {
 
 const DEFAULT_CONFIG: PraanaConfig = {
   llm: {
-    provider: "",   // auto-detected from environment at load time
-    model: "",      // derived from detected provider
+    provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
+    model: "",
   },
   memory: {
     enabled: true,
@@ -278,21 +278,10 @@ export function loadConfig(configPath?: string): PraanaConfig {
 
   const merged = deepMerge(DEFAULT_CONFIG, userConfig as any) as PraanaConfig;
 
-  // ── Provider auto-detection (precedence: config > env > none) ──
-  const userExplicitlySetProvider = !!merged.llm.provider;
-  const userExplicitlySetModel = !!merged.llm.model;
+  // Env keys are a credential fallback for an already-chosen provider, not a
+  // provider chooser. Leave [llm].provider empty when unset so main.ts runs
+  // the guided setup wizard.
   const userExplicitlySetSummarizer = !!(userConfig as any)?.memory?.summarizer;
-
-  if (!userExplicitlySetProvider) {
-    const detected = detectProviderFromEnvironment();
-    if (detected) {
-      merged.llm.provider = detected.provider;
-      if (!userExplicitlySetModel) {
-        merged.llm.model = detected.model;
-      }
-    }
-    // If nothing detected, leave provider empty — main.ts will handle the no-key flow.
-  }
 
   const modelOverride = envOverride("PRAANA_MODEL");
   if (modelOverride) merged.llm.model = modelOverride;
@@ -319,7 +308,11 @@ export function loadConfig(configPath?: string): PraanaConfig {
     merged.memory.db_path = resolveDefaultMemoryDbPath();
   }
 
-  return validateConfig(merged, { userExplicitlySetSummarizer });
+  const validated = validateConfig(merged, { userExplicitlySetSummarizer });
+  // Inject user-declared providers into the module-level registry so
+  // getProviderConfig / isProviderAvailable / provider-catalog see them.
+  setUserProviders(validated.providers);
+  return validated;
 }
 
 function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummarizer?: boolean }): PraanaConfig {
@@ -606,6 +599,30 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.ui.banner !== "boolean") {
       out.ui.banner = DEFAULT_CONFIG.ui.banner;
     }
+  }
+
+  // User-declared providers validation ([providers.<id>] sections)
+  if (out.providers) {
+    const validProviders: Record<string, UserProviderConfig> = {};
+    for (const [id, pc] of Object.entries(out.providers)) {
+      if (!pc || typeof pc !== "object") {
+        configWarn(`providers.${id} must be a table, ignoring`);
+        continue;
+      }
+      if (!pc.api || typeof pc.api !== "string") {
+        configWarn(
+          `providers.${id}.api is required (e.g. "openai-completions"), ignoring provider`,
+        );
+        continue;
+      }
+      if (!pc.base_url || typeof pc.base_url !== "string") {
+        configWarn(`providers.${id}.base_url is required, ignoring provider`);
+        continue;
+      }
+      validProviders[id] = pc;
+    }
+    out.providers =
+      Object.keys(validProviders).length > 0 ? validProviders : undefined;
   }
 
   return out;

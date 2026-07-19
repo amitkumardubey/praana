@@ -49,8 +49,8 @@ describe("praana init", () => {
     expect(result.action).toBe("overwritten");
   });
 
-  it("should create a config with provider info when env key is detected", async () => {
-    // Clear all provider keys first
+  it("should create a commented template even when an env key is present", async () => {
+    // Env keys must not silently pre-fill [llm] — guided setup owns that choice.
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
@@ -68,14 +68,14 @@ describe("praana init", () => {
 
     expect(result.success).toBe(true);
     const content = readFileSync(configPath(), "utf-8");
-    expect(content).toContain('provider = "anthropic"');
-    expect(content).toContain('model = "claude-sonnet-4-20250514"');
+    expect(content).not.toContain('provider = "anthropic"');
+    expect(content).toContain("# provider = \"openrouter\"");
+    expect(content).toContain("# Uncomment and set your provider and model");
 
     delete process.env.ANTHROPIC_API_KEY;
   });
 
-  it("should create config with ollama when no env keys are set (keyless provider)", async () => {
-    // Ensure no provider keys are set (ollama is always available as keyless)
+  it("should create a commented template when no env keys are set", async () => {
     const originalEnv = { ...process.env };
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
@@ -94,11 +94,9 @@ describe("praana init", () => {
 
     expect(result.success).toBe(true);
     const content = readFileSync(configPath(), "utf-8");
-    // ollama is always detected as a keyless provider
-    expect(content).toContain('provider = "ollama"');
-    expect(content).toContain('model = "llama3"');
+    expect(content).not.toContain('provider = "ollama"');
+    expect(content).toContain("# Uncomment and set your provider and model");
 
-    // Restore environment
     process.env = originalEnv;
   });
 

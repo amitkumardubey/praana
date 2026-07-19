@@ -1,13 +1,18 @@
 import { getModel, getModels, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
-import type { PraanaConfig } from "./types.js";
+import type { PraanaConfig, UserProviderConfig, UserProviderModel } from "./types.js";
 import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 import {
   PROVIDER_REGISTRY,
   REASONING_MODEL_HINTS,
   getProviderEnvKey,
+  getUserProviderRegistryEntry,
+  isUserDeclaredProvider,
+  getUserProviderConfig,
+  listUserDeclaredProviderIds,
   type ProviderConfig,
 } from "./provider-registry.js";
+import { resolveApiKey, hasApiKey } from "./credentials.js";
 
 export {
   resolveContextWindowSync,
@@ -16,7 +21,13 @@ export {
 } from "./model-context.js";
 
 export { getProviderEnvKey } from "./provider-registry.js";
+export {
+  getUserProviderConfig,
+  isUserDeclaredProvider,
+  setUserProviders,
+} from "./provider-registry.js";
 export type { ProviderConfig } from "./provider-registry.js";
+export { resolveApiKey, hasApiKey, getApiKey, setApiKey } from "./credentials.js";
 
 // ── Provider auto-detection ───────────────────────────────────
 
@@ -65,8 +76,18 @@ export function pickFirstCatalogModel(provider: string): string | undefined {
 }
 
 /**
- * Auto-detect the first available provider from environment variables.
- * Returns `{ provider, model }` or `null` if nothing is found.
+ * List providers that currently have a usable key (credential store or env).
+ * Used by the setup wizard to annotate / offer keys — never to auto-select
+ * a default `[llm] provider` at config load time.
+ */
+export function listEnvDetectedProviders(): string[] {
+  return listAvailableProviders();
+}
+
+/**
+ * @deprecated Prefer {@link listEnvDetectedProviders}. Kept for tests and
+ * callers that want the first available provider + default model pair.
+ * Do not use this to populate config — env keys are not a provider chooser.
  */
 export function detectProviderFromEnvironment(): { provider: string; model: string } | null {
   const logger = getAppLogger().child("llm");
@@ -75,7 +96,7 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
   for (const provider of DETECTION_PRECEDENCE) {
     if (isProviderAvailable(provider)) {
       const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
-      logger.info(`Auto-detected provider "${provider}" from environment`, {
+      logger.debug(`Detected available provider "${provider}"`, {
         details: { provider, model },
       });
       return { provider, model };
@@ -88,7 +109,7 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
     if (checked.has(provider)) continue;
     if (isProviderAvailable(provider)) {
       const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
-      logger.info(`Auto-detected provider "${provider}" from environment`, {
+      logger.debug(`Detected available provider "${provider}"`, {
         details: { provider, model },
       });
       return { provider, model };
@@ -114,8 +135,17 @@ export function listAvailableProviders(): string[] {
 
 // ── Exported helpers ───────────────────────────────────────────
 
-/** Lookup a provider config. Falls back to openrouter for unknown values. */
+/**
+ * Lookup a provider config. User-declared providers (from config.toml
+ * `[providers.<id>]`) take precedence over the hardcoded registry.
+ * Falls back to openrouter for unknown values.
+ */
 export function getProviderConfig(provider: string): ProviderConfig {
+  // 1. User-declared provider (from config.toml [providers.<id>]).
+  const userEntry = getUserProviderRegistryEntry(provider);
+  if (userEntry) return userEntry;
+
+  // 2. Hardcoded registry.
   const entry = PROVIDER_REGISTRY[provider];
   if (!entry) {
     getAppLogger().child("llm").warn(
@@ -126,31 +156,57 @@ export function getProviderConfig(provider: string): ProviderConfig {
   return entry;
 }
 
-/** Return all known provider IDs (union of PROVIDER_REGISTRY and pi-ai). */
+/** Return all known provider IDs (union of user-declared, registry, and pi-ai). */
 export function listKnownProviders(): string[] {
   const registryIds = Object.keys(PROVIDER_REGISTRY);
   const piAiIds = getProviders() as string[];
-  return Array.from(new Set([...registryIds, ...piAiIds])).sort();
+  const userIds = listUserDeclaredProviderIds();
+  return Array.from(new Set([...registryIds, ...piAiIds, ...userIds])).sort();
 }
 
-/** Check whether the provider's API key is available in the environment. */
+/**
+ * Check whether the provider's API key is available.
+ *
+ * Resolution order:
+ *   1. Credential store (~/.praana/credentials.json)
+ *   2. Environment variable (registry envKey or user-declared env_key)
+ *   3. Keyless providers (e.g. ollama) → always available
+ *
+ * User-declared providers with no env_key and no stored key are
+ * considered available if they have no env_key declared (keyless
+ * local servers like Ollama/vLLM without auth).
+ */
 export function isProviderAvailable(provider: string): boolean {
-  const registryEntry = PROVIDER_REGISTRY[provider];
-
-  // Special-case AWS Bedrock: needs actual AWS credentials, not just envKey === null.
+  // Special-case AWS Bedrock: needs actual AWS credentials.
   if (provider === "amazon-bedrock") {
     return !!(process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE || process.env.AWS_SESSION_TOKEN);
   }
 
-  // 1. Providers explicitly marked keyless in the registry (ollama).
+  // 1. Credential store — checked for all providers.
+  if (hasApiKey(provider)) return true;
+
+  // 2. User-declared providers.
+  if (isUserDeclaredProvider(provider)) {
+    const userConfig = getUserProviderConfig(provider);
+    if (!userConfig) return false;
+    // Keyless user-declared provider (no env_key) → available.
+    if (!userConfig.env_key) return true;
+    // Check env var fallback.
+    return !!process.env[userConfig.env_key];
+  }
+
+  // 3. Registry providers.
+  const registryEntry = PROVIDER_REGISTRY[provider];
+
+  // Providers explicitly marked keyless in the registry (ollama).
   if (registryEntry && registryEntry.envKey === null) return true;
 
-  // 2. Registry entry with an env key — check if that env var is set.
+  // Registry entry with an env key — check if that env var is set.
   if (registryEntry?.envKey) {
     return !!process.env[registryEntry.envKey];
   }
 
-  // 3. For providers known to pi-ai but NOT in our registry, use pi-ai's
+  // 4. For providers known to pi-ai but NOT in our registry, use pi-ai's
   //    key detection.
   const piProviders = getProviders() as string[];
   if (piProviders.includes(provider)) {
@@ -163,6 +219,10 @@ export function isProviderAvailable(provider: string): boolean {
 
 /** Human-readable message explaining which env var is missing. */
 export function getMissingKeyMessage(provider: string): string | null {
+  if (!provider || !provider.trim()) {
+    return "No provider configured";
+  }
+
   if (isProviderAvailable(provider)) return null;
 
   const envKey = getProviderEnvKey(provider);
@@ -217,7 +277,11 @@ function buildFromPiAiCatalog(
       resolveContextWindowSync(config.provider, modelId, config.context_window),
   };
 
-  const apiKey = getEnvApiKey(piProvider as never) ?? "";
+  // Key resolution: credential store > env var > empty.
+  // For pi-ai catalog providers, resolveApiKey checks the credential
+  // store first, then the provider's env key.
+  const pc = getProviderConfig(config.provider);
+  const apiKey = resolveApiKey(config.provider, pc.envKey);
 
   model.__piOptions = {
     apiKey,
@@ -239,21 +303,26 @@ function buildModel(
   const pc = getProviderConfig(config.provider);
 
   const baseUrl = config.base_url ?? pc.baseUrl;
-  const apiKey = pc.envKey ? (process.env[pc.envKey] ?? "") : "no-key";
+  // Key resolution: credential store > env_key > "no-key" sentinel.
+  const apiKey = resolveApiKey(config.provider, pc.envKey);
+
+  // Check for user-declared model metadata overrides.
+  const userModel = getUserDeclaredModel(config.provider, normalizedId);
 
   const model: RuntimeModel = {
     id: normalizedId,
     name: normalizedId,
     provider: pc.provider,
-    api: pc.api,
+    api: userModel?.api ?? pc.api,
     baseUrl,
     input: ["text"],
-    reasoning: inferReasoningModel(config.provider, normalizedId),
+    reasoning: userModel?.reasoning ?? inferReasoningModel(config.provider, normalizedId),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow:
+      userModel?.context_window ??
       contextWindow ??
       resolveContextWindowSync(config.provider, normalizedId, config.context_window),
-    maxTokens: 8192,
+    maxTokens: userModel?.max_tokens ?? 8192,
   };
 
   if (pc.headers) {
@@ -266,6 +335,20 @@ function buildModel(
   };
 
   return model;
+}
+
+/**
+ * Look up a user-declared model metadata override for a provider + model id.
+ * Returns undefined if the provider is not user-declared or the model id
+ * has no declared metadata.
+ */
+function getUserDeclaredModel(
+  provider: string,
+  modelId: string,
+): UserProviderModel | undefined {
+  const userConfig = getUserProviderConfig(provider);
+  if (!userConfig?.models) return undefined;
+  return userConfig.models.find((m) => m.id === modelId);
 }
 
 export function createProvider(config: PraanaConfig["llm"], contextWindow?: number) {
