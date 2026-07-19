@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterAll, mock, type Mock } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, type Mock } from "bun:test";
+import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { AppController } from "../src/app-controller.js";
@@ -10,6 +10,8 @@ import { Session } from "../src/session.js";
 import * as turnActual from "../src/turn.js";
 import { runTurn } from "../src/turn.js";
 import { TurnAbortedError } from "../src/turn-control.js";
+import { getUserSettingsPath, saveUserSettings } from "../src/user-settings.js";
+import { APP_HOME_DIR } from "../src/app-identity.js";
 
 // Snapshot real module BEFORE mock.module updates live bindings
 const sessionReal = { ...sessionActual };
@@ -30,6 +32,10 @@ mock.module("../src/session.js", () => ({
       debug: false,
       config: { llm: { provider: "openrouter", model: "test/model" } },
       getModelOverride: () => null,
+      getProviderOverride: () => null,
+      setModelOverride: mock(),
+      setProviderOverride: mock(),
+      setIncognito: mock(async () => {}),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -99,8 +105,27 @@ const baseParsed: CliArgs = {
 };
 
 describe("AppController", () => {
+  const originalPraanaHome = process.env.PRAANA_HOME;
+  let praanaHome: string;
+
   beforeEach(() => {
     mock.clearAllMocks();
+    praanaHome = join(tmpdir(), `praana-ac-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(join(praanaHome, APP_HOME_DIR), { recursive: true });
+    process.env.PRAANA_HOME = praanaHome;
+  });
+
+  afterEach(() => {
+    if (originalPraanaHome !== undefined) {
+      process.env.PRAANA_HOME = originalPraanaHome;
+    } else {
+      delete process.env.PRAANA_HOME;
+    }
+    try {
+      rmSync(praanaHome, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   });
 
   it("starts a session and exposes status bar input", async () => {
@@ -202,6 +227,10 @@ describe("AppController", () => {
       debug: false,
       config: { ...baseConfig, llm: { provider: "openrouter", model: "reloaded/model" } },
       getModelOverride: () => null,
+      getProviderOverride: () => null,
+      setModelOverride: mock(),
+      setProviderOverride: mock(),
+      setIncognito: mock(async () => {}),
       getActiveModelId: () => "reloaded/model",
       getActiveModelLabel: () => "openrouter/reloaded/model",
       getEffectiveProvider: () => "openrouter",
@@ -443,6 +472,10 @@ describe("AppController", () => {
       debug: false,
       config: baseConfig,
       getModelOverride: () => null,
+      getProviderOverride: () => null,
+      setModelOverride: mock(),
+      setProviderOverride: mock(),
+      setIncognito: mock(async () => {}),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -555,6 +588,10 @@ describe("AppController", () => {
       debug: false,
       config: baseConfig,
       getModelOverride: () => null,
+      getProviderOverride: () => null,
+      setModelOverride: mock(),
+      setProviderOverride: mock(),
+      setIncognito: mock(async () => {}),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -607,6 +644,168 @@ describe("AppController", () => {
     expect(info.startupNotices.some((n) => n.includes("Fix status bar crash"))).toBe(true);
 
     rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it("applies persisted settings on start (thinking, debug) and creates settings.json", async () => {
+    saveUserSettings({
+      model: "",
+      provider: "",
+      thinking: false,
+      incognito: false,
+      debug: true,
+      theme: "default",
+    });
+
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+
+    expect(controller.showThinking).toBe(false);
+    expect(controller.session.debug).toBe(true);
+    expect(existsSync(getUserSettingsPath())).toBe(true);
+  });
+
+  it("CLI --incognito wins over settings.incognito", async () => {
+    saveUserSettings({
+      model: "",
+      provider: "",
+      thinking: true,
+      incognito: true,
+      debug: false,
+      theme: "default",
+    });
+
+    const setIncognito = mock(async () => {});
+    const create = Session.create as Mock<typeof Session.create>;
+    create.mockResolvedValueOnce({
+      id: "sess-1",
+      cwd: "/tmp",
+      debug: false,
+      config: { llm: { provider: "openrouter", model: "test/model" } },
+      getModelOverride: () => null,
+      getProviderOverride: () => null,
+      setModelOverride: mock(),
+      setProviderOverride: mock(),
+      setIncognito,
+      getActiveModelId: () => "test/model",
+      getActiveModelLabel: () => "openrouter/test/model",
+      getEffectiveProvider: () => "openrouter",
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: mock(async () => 128_000),
+      getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
+      getRepoRoot: () => "/tmp",
+      getGitBranch: () => null,
+      memoryEnabled: false,
+      isIncognito: () => true,
+      isPlanMode: () => false,
+      digest: null,
+      agentsContext: null,
+      skills: [],
+      skillRuntime: null,
+      getLastCompileMetrics: () => null,
+      getLastWeightedTokens: () => 0,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 0,
+      getTurnCount: () => 0,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => 0,
+      getMemoryDbPath: () => null,
+      stateGraph: { list: () => [] },
+      eventLog: { readLast: () => [] },
+      end: mock(async () => ({ memory: "skipped" as const })),
+      getTranscriptEvents: () => [],
+    } as any);
+
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: { ...baseParsed, incognito: true },
+    });
+    await controller.start();
+
+    expect(setIncognito).not.toHaveBeenCalled();
+  });
+
+  it("applies settings model/provider on new session when no override exists", async () => {
+    saveUserSettings({
+      model: "claude-sonnet",
+      provider: "anthropic",
+      thinking: true,
+      incognito: false,
+      debug: false,
+      theme: "default",
+    });
+
+    let modelOverride: string | null = null;
+    let providerOverride: string | null = null;
+    const create = Session.create as Mock<typeof Session.create>;
+    create.mockResolvedValueOnce({
+      id: "sess-1",
+      cwd: "/tmp",
+      debug: false,
+      config: { llm: { provider: "openrouter", model: "test/model" } },
+      getModelOverride: () => modelOverride,
+      getProviderOverride: () => providerOverride,
+      setModelOverride: (m: string | null) => {
+        modelOverride = m;
+      },
+      setProviderOverride: (p: string | null) => {
+        providerOverride = p;
+      },
+      setIncognito: mock(async () => {}),
+      getActiveModelId: () => modelOverride ?? "test/model",
+      getActiveModelLabel: () =>
+        `${providerOverride ?? "openrouter"}/${modelOverride ?? "test/model"}`,
+      getEffectiveProvider: () => providerOverride ?? "openrouter",
+      getContextWindowTokens: () => 128_000,
+      refreshModelContextWindow: mock(async () => 128_000),
+      getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
+      getRepoRoot: () => "/tmp",
+      getGitBranch: () => null,
+      memoryEnabled: false,
+      isIncognito: () => false,
+      isPlanMode: () => false,
+      digest: null,
+      agentsContext: null,
+      skills: [],
+      skillRuntime: null,
+      getLastCompileMetrics: () => null,
+      getLastWeightedTokens: () => 0,
+      getLastPressureMode: () => "normal" as const,
+      getLastRawPressureRatio: () => 0,
+      getDisplayContextSnapshot: () => null,
+      isContextEngineEnabled: () => false,
+      getStartedAt: () => Date.now(),
+      getUptimeMs: () => 0,
+      getTurnCount: () => 0,
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
+      getPersistentMemoryEntryCount: () => 0,
+      getMemoryDbPath: () => null,
+      stateGraph: { list: () => [] },
+      eventLog: { readLast: () => [] },
+      end: mock(async () => ({ memory: "skipped" as const })),
+      getTranscriptEvents: () => [],
+    } as any);
+
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await controller.start();
+
+    expect(providerOverride).toBe("anthropic");
+    expect(modelOverride).toBe("claude-sonnet");
+    expect(controller.currentModel).toBe("claude-sonnet");
   });
 });
 // Restore real modules after this file to prevent cross-test pollution

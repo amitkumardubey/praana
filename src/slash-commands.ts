@@ -25,6 +25,17 @@ import {
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
 import { executeShellCommand } from "./tools/system.js";
+import {
+  USER_SETTINGS_KEYS,
+  getUserSettingsPath,
+  isUserSettingsKey,
+  loadUserSettings,
+  parseSettingsSetValue,
+  resetUserSettings,
+  updateUserSettings,
+  type UserSettings,
+  type UserSettingsKey,
+} from "./user-settings.js";
 
 export type SlashCommandAction =
   | "none"
@@ -67,6 +78,7 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/debug", description: "Toggle debug mode" },
   { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
   { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
+  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
   { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>" },
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe" },
@@ -92,6 +104,144 @@ export interface SlashCommandResult {
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
+
+type SlashHandlers = {
+  setModel: (m?: string) => void;
+  setThinking: (v: boolean) => void;
+  getThinking: () => boolean;
+  isTurnActive?: () => boolean;
+};
+
+function formatSettingValue(value: string | boolean): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return value === "" ? '(empty)' : value;
+}
+
+function sessionEffectiveSettings(
+  session: Session,
+  handlers: SlashHandlers,
+): Record<UserSettingsKey, string> {
+  return {
+    model: session.getModelOverride() ?? session.config.llm.model ?? "",
+    provider: session.getProviderOverride() ?? session.config.llm.provider ?? "",
+    thinking: handlers.getThinking() ? "true" : "false",
+    incognito: session.isIncognito() ? "true" : "false",
+    debug: session.debug ? "true" : "false",
+    theme: loadUserSettings().settings.theme,
+  };
+}
+
+async function applySettingToSession(
+  session: Session,
+  handlers: SlashHandlers,
+  key: UserSettingsKey,
+  value: string | boolean,
+): Promise<void> {
+  switch (key) {
+    case "model":
+      session.setModelOverride(String(value));
+      handlers.setModel(String(value));
+      break;
+    case "provider":
+      session.setProviderOverride(String(value));
+      break;
+    case "thinking":
+      handlers.setThinking(Boolean(value));
+      break;
+    case "incognito":
+      await session.setIncognito(Boolean(value));
+      break;
+    case "debug":
+      session.debug = Boolean(value);
+      break;
+    case "theme":
+      // Persisted only — theming UI lands in #43.
+      break;
+  }
+}
+
+async function handleSettingsCommand(
+  parts: string[],
+  session: Session,
+  handlers: SlashHandlers,
+  lines: string[],
+  result: (
+    action?: SlashCommandAction,
+    display?: SlashCommandDisplay,
+    toastTone?: SlashCommandToastTone,
+  ) => SlashCommandResult,
+): Promise<SlashCommandResult> {
+  const sub = (parts[1] ?? "").toLowerCase();
+
+  if (!sub) {
+    const loaded = loadUserSettings();
+    const persisted = loaded.settings;
+    const effective = sessionEffectiveSettings(session, handlers);
+    lines.push(`Persistent settings (${getUserSettingsPath()}):`);
+    if (loaded.warning) lines.push(`⚠ ${loaded.warning}`);
+    for (const key of USER_SETTINGS_KEYS) {
+      const p = formatSettingValue(persisted[key]);
+      const e = effective[key] === "" ? "(empty)" : effective[key];
+      const marker = p !== e && key !== "theme" ? "  [session differs]" : "";
+      lines.push(`  ${key}=${p}  (session: ${e})${marker}`);
+    }
+    lines.push("");
+    lines.push("Usage:");
+    lines.push("  /settings set <key> <value>  — persist and apply");
+    lines.push("  /settings reset              — restore defaults");
+    lines.push(
+      `Keys: ${USER_SETTINGS_KEYS.join(", ")}. Session /model /thinking /incognito /debug do not auto-persist.`,
+    );
+    return result("none", "transcript");
+  }
+
+  if (sub === "reset") {
+    const reset = resetUserSettings();
+    if (!reset.ok) {
+      lines.push(`Failed to reset settings: ${reset.error}`);
+      return result("none", "toast", "error");
+    }
+    for (const key of USER_SETTINGS_KEYS) {
+      await applySettingToSession(session, handlers, key, reset.settings[key]);
+    }
+    lines.push("Settings reset to defaults and applied to this session.");
+    for (const key of USER_SETTINGS_KEYS) {
+      lines.push(`  ${key}=${formatSettingValue(reset.settings[key])}`);
+    }
+    return result("refresh_status", "toast", "success");
+  }
+
+  if (sub === "set") {
+    const key = parts[2]?.toLowerCase() ?? "";
+    const rawValue = parts.slice(3).join(" ").trim();
+    if (!key || !rawValue) {
+      lines.push("Usage: /settings set <key> <value>");
+      lines.push(`Keys: ${USER_SETTINGS_KEYS.join(", ")}`);
+      return result("none", "toast", "error");
+    }
+    if (!isUserSettingsKey(key)) {
+      lines.push(`Unknown setting "${key}". Keys: ${USER_SETTINGS_KEYS.join(", ")}`);
+      return result("none", "toast", "error");
+    }
+    const parsed = parseSettingsSetValue(key, rawValue);
+    if (!parsed.ok) {
+      lines.push(parsed.error);
+      return result("none", "toast", "error");
+    }
+    const patch: Partial<UserSettings> = { [key]: parsed.value };
+    const updated = updateUserSettings(patch);
+    if (!updated.ok) {
+      lines.push(`Failed to save settings: ${updated.error}`);
+      return result("none", "toast", "error");
+    }
+    await applySettingToSession(session, handlers, key, parsed.value);
+    lines.push(`Saved ${key}=${formatSettingValue(parsed.value)} (persisted + applied).`);
+    return result("refresh_status", "toast", "success");
+  }
+
+  lines.push("Usage: /settings | /settings set <key> <value> | /settings reset");
+  return result("none", "toast", "error");
+}
 
 function appendModelSwitchLog(
   session: Session,
@@ -633,6 +783,10 @@ export async function executeSlashCommand(
         break;
       }
       return result("refresh_status", "toast");
+    }
+
+    case "/settings": {
+      return await handleSettingsCommand(parts, session, handlers, lines, result);
     }
 
     case "/clear": {

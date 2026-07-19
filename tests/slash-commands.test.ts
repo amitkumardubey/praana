@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, afterEach, mock, type Mock } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
@@ -798,6 +798,142 @@ describe("executeSlashCommand", () => {
       expect(result.lines.join("\n")).not.toContain("01OTHERPROJ00000000000001");
     });
   });
+
+  describe("/settings", () => {
+    const originalPraanaHome = process.env.PRAANA_HOME;
+    let praanaHome: string;
+
+    beforeEach(() => {
+      praanaHome = join(
+        tmpdir(),
+        `praana-slash-settings-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      );
+      mkdirSync(join(praanaHome, ".praana"), { recursive: true });
+      process.env.PRAANA_HOME = praanaHome;
+    });
+
+    afterEach(() => {
+      if (originalPraanaHome !== undefined) {
+        process.env.PRAANA_HOME = originalPraanaHome;
+      } else {
+        delete process.env.PRAANA_HOME;
+      }
+      rmSync(praanaHome, { recursive: true, force: true });
+    });
+
+    function settingsSession(overrides: Record<string, unknown> = {}) {
+      return {
+        debug: false,
+        config: { llm: { provider: "openrouter", model: "test/model" } },
+        getModelOverride: () => null,
+        getProviderOverride: () => null,
+        setModelOverride: mock(),
+        setProviderOverride: mock(),
+        setIncognito: mock(async () => {}),
+        isIncognito: () => false,
+        memoryEnabled: false,
+        ...overrides,
+      } as unknown as Session;
+    }
+
+    it("lists persisted and session values", async () => {
+      const result = await executeSlashCommand("/settings", settingsSession(), {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+      expect(result.lines.some((l) => l.includes("thinking="))).toBe(true);
+      expect(result.lines.some((l) => l.includes("/settings set"))).toBe(true);
+      expect(existsSync(join(praanaHome, ".praana", "settings.json"))).toBe(true);
+    });
+
+    it("set persists and applies thinking", async () => {
+      const setThinking = mock();
+      const result = await executeSlashCommand(
+        "/settings set thinking off",
+        settingsSession(),
+        {
+          setModel: mock(),
+          setThinking,
+          getThinking: () => true,
+        },
+      );
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("success");
+      expect(setThinking).toHaveBeenCalledWith(false);
+      const onDisk = JSON.parse(
+        readFileSync(join(praanaHome, ".praana", "settings.json"), "utf-8"),
+      );
+      expect(onDisk.thinking).toBe(false);
+    });
+
+    it("reset restores defaults", async () => {
+      writeFileSync(
+        join(praanaHome, ".praana", "settings.json"),
+        JSON.stringify({ thinking: false, debug: true }),
+        "utf-8",
+      );
+      const setThinking = mock();
+      const session = settingsSession({ debug: true });
+      const result = await executeSlashCommand("/settings reset", session, {
+        setModel: mock(),
+        setThinking,
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("refresh_status");
+      expect(setThinking).toHaveBeenCalledWith(true);
+      expect(session.debug).toBe(false);
+      const onDisk = JSON.parse(
+        readFileSync(join(praanaHome, ".praana", "settings.json"), "utf-8"),
+      );
+      expect(onDisk.thinking).toBe(true);
+      expect(onDisk.debug).toBe(false);
+    });
+
+    it("/model does not write settings.json", async () => {
+      const settingsPath = join(praanaHome, ".praana", "settings.json");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({
+          model: "",
+          provider: "",
+          thinking: true,
+          incognito: false,
+          debug: false,
+          theme: "default",
+        }) + "\n",
+        "utf-8",
+      );
+      const before = readFileSync(settingsPath, "utf-8");
+
+      (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
+        provider: "openrouter",
+        modelId: "gpt-4o",
+        switchedProvider: false,
+        source: "model-only",
+        known: true,
+      });
+
+      const { getLogger } = mockSessionLogger();
+      const session = {
+        getEffectiveProvider: () => "openrouter",
+        getActiveModelLabel: mock(() => "openrouter/old"),
+        setProviderOverride: mock(),
+        setModelOverride: mock(),
+        refreshModelContextWindow: mock(async () => 128_000),
+        eventLog: { append: mock() },
+        getLogger,
+      } as unknown as Session;
+
+      await executeSlashCommand("/model gpt-4o", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => true,
+      });
+
+      expect(readFileSync(settingsPath, "utf-8")).toBe(before);
+    });
+  });
 });
 
 // Restore real modules after this file to prevent cross-test pollution
@@ -829,7 +965,7 @@ describe("SLASH_COMMAND_METADATA", () => {
 
   it("surfaces commands previously missing from the TUI dropdown", () => {
     const names = SLASH_COMMAND_METADATA.map((c) => c.name);
-    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/setup"]) {
+    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/setup", "/settings"]) {
       expect(names).toContain(cmd);
     }
     // /quit is an alias of /exit — also expose it for discoverability.
