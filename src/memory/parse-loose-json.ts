@@ -20,12 +20,13 @@ export interface LooseParseResult<T = unknown> {
  * Parse an LLM JSON response tolerantly.
  *
  * Strategy (in order):
- * 1. Strip code fences.
+ * 1. Strip code fences (skipped if the input already starts with `{` or `[`).
  * 2. Direct JSON.parse.
- * 3. Extract outermost balanced { ... } or [ ... ] via brace scan
- *    (skips leading/trailing prose).
- * 4. Attempt repair for truncated JSON (unterminated strings,
- *    missing closing braces/brackets).
+ * 3. Extract balanced JSON candidates ({ ... } or [ ... ]) via brace scan
+ *    and try each — handles leading/trailing prose, and prose that itself
+ *    contains braces.
+ * 4. Attempt repair for truncated JSON (unterminated strings, missing
+ *    closing braces/brackets).
  * 5. Return { ok: false, error } if still failing.
  */
 export function parseLooseJson<T = unknown>(raw: string): LooseParseResult<T> {
@@ -45,36 +46,22 @@ export function parseLooseJson<T = unknown>(raw: string): LooseParseResult<T> {
     // continue to recovery
   }
 
-  // Step 2: extract outermost balanced JSON
-  const balanced = extractBalancedJson(text);
-  if (balanced !== null) {
+  // Step 2: try each balanced candidate (handles prose containing braces)
+  for (const candidate of extractBalancedJsonCandidates(text)) {
     try {
-      return { ok: true, value: JSON.parse(balanced) as T };
+      return { ok: true, value: JSON.parse(candidate) as T };
     } catch {
-      // continue to repair
+      // try next candidate
     }
   }
 
-  // Step 3: repair truncated JSON
-  const candidate = balanced ?? text;
-  const repaired = repairTruncatedJson(candidate);
+  // Step 3: repair truncated JSON (closing open strings/brackets)
+  const repaired = repairTruncatedJson(text);
   if (repaired !== null) {
     try {
       return { ok: true, value: JSON.parse(repaired) as T, repaired: true };
     } catch {
       // fall through
-    }
-  }
-
-  // Step 4: try repairing the full text if balanced extraction failed
-  if (balanced === null) {
-    const repaired2 = repairTruncatedJson(text);
-    if (repaired2 !== null) {
-      try {
-        return { ok: true, value: JSON.parse(repaired2) as T, repaired: true };
-      } catch {
-        // fall through
-      }
     }
   }
 
@@ -87,8 +74,17 @@ export function parseLooseJson<T = unknown>(raw: string): LooseParseResult<T> {
 /**
  * Strip ```json ... ``` or ``` ... ``` fences.
  * Also handles truncated fences (opening without closing).
+ *
+ * Skipped when the trimmed input already starts with `{` or `[` — a ``` inside
+ * a JSON string value would otherwise match the truncated-fence regex and
+ * corrupt otherwise-valid JSON.
  */
 function stripCodeFences(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    return text;
+  }
+
   // Complete fence
   const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)\n?```/);
   if (fenced && fenced[1]) return fenced[1];
@@ -110,45 +106,63 @@ function findJsonStart(text: string): number {
 }
 
 /**
- * Extract the outermost balanced JSON value ({ ... } or [ ... ]).
- * Returns null if no balanced structure is found.
- * Correctly skips braces/brackets inside string literals.
+ * Extract all balanced JSON candidates ({ ... } or [ ... ]) from the text,
+ * in order of appearance. Useful when leading prose contains braces —
+ * e.g. `Here { is prose } then {"real":"json"}` yields both `{ is prose }`
+ * and `{"real":"json"}`, so the caller can try each and pick the one that
+ * parses.
  */
-function extractBalancedJson(text: string): string | null {
-  const start = findJsonStart(text);
-  if (start === -1) return null;
+function extractBalancedJsonCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  let searchFrom = 0;
 
-  const stack: string[] = [];
-  let inString = false;
-  let escape = false;
+  while (searchFrom < text.length) {
+    const start = findJsonStart(text.slice(searchFrom));
+    if (start === -1) break;
 
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escape = true;
-      continue;
-    }
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
+    const absStart = searchFrom + start;
+    const stack: string[] = [];
+    let inString = false;
+    let escape = false;
+    let end = -1;
 
-    if (ch === "{" || ch === "[") {
-      stack.push(ch);
-    } else if (ch === "}" || ch === "]") {
-      stack.pop();
-      if (stack.length === 0) {
-        return text.slice(start, i + 1);
+    for (let i = absStart; i < text.length; i++) {
+      const ch = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+
+      if (ch === "{" || ch === "[") {
+        stack.push(ch);
+      } else if (ch === "}" || ch === "]") {
+        stack.pop();
+        if (stack.length === 0) {
+          end = i;
+          break;
+        }
       }
     }
+
+    if (end === -1) {
+      // No balanced structure from this start — further starts are likely
+      // inside a truncated outer structure. Fall through to repair.
+      break;
+    }
+    candidates.push(text.slice(absStart, end + 1));
+    searchFrom = end + 1;
   }
 
-  return null;
+  return candidates;
 }
 
 /**
