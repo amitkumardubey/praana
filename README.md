@@ -71,7 +71,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana resume` (continues your most recent session for the current project when given no id), `praana doctor` (checks config + provider keys), and `praana --providers` (prints the full provider/model table). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings.
+Other CLI entry points: `praana resume` (continues your most recent session for the current project when given no id), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), and `praana models` (lists models). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings.
 
 #### Supported providers
 

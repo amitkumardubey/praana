@@ -178,6 +178,7 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "opencode",
   "together",
   "ollama",
+  "umans",
 ];
 
 /** Providers that should not appear in the interactive setup picker. */

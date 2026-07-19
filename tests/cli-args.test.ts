@@ -60,8 +60,24 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["-H", "/tmp/praana"]).homeDir).toBe("/tmp/praana");
   });
 
-  it("parses providers flag", () => {
-    expect(parseCliArgs(["--providers"]).providersMode).toBe(true);
-    expect(parseCliArgs(["-p"]).providersMode).toBe(true);
+  it("parses providers subcommand", () => {
+    expect(parseCliArgs(["providers"]).providersMode).toBe(true);
+  });
+
+  it("does not treat --providers or -p as providers mode", () => {
+    expect(parseCliArgs(["--providers"]).providersMode).toBe(false);
+    expect(parseCliArgs(["-p"]).providersMode).toBe(false);
+  });
+
+  it("parses models subcommand without provider", () => {
+    const parsed = parseCliArgs(["models"]);
+    expect(parsed.modelsMode).toBe(true);
+    expect(parsed.modelsProvider).toBeNull();
+  });
+
+  it("parses models subcommand with provider filter", () => {
+    const parsed = parseCliArgs(["models", "openrouter"]);
+    expect(parsed.modelsMode).toBe(true);
+    expect(parsed.modelsProvider).toBe("openrouter");
   });
 });

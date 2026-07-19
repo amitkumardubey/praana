@@ -16,7 +16,7 @@ A terminal coding agent that aims to get more useful the more you use it — by 
 
 These exist and work — we're not claiming they're solved problems, just that they're there:
 
-- **Easy onboarding** — auto-detects provider API keys from the environment; `praana setup` (also `praana init`) interactive wizard for config; `praana doctor` health check; `praana --providers` prints the full provider/model table
+- **Easy onboarding** — auto-detects provider API keys from the environment; `praana setup` (also `praana init`) interactive wizard for config; `praana doctor` health check; `praana providers` / `praana models` list configured providers and models (`--all` includes unconfigured)
 - **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching, slash-command/file autocomplete
 - **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local), umans
 - **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox

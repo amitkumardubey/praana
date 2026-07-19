@@ -552,4 +552,4 @@ Slash commands are handled by `src/slash-commands.ts`:
 - `/plan <on|off|execute>` — toggles plan mode (blocks mutating tools until approved)
 - `/help` — prints slash commands documentation
 
-CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume [<session_id>]` (no id resumes the most recent session for the current cwd), `praana setup` (also `praana init`), `praana doctor`, `praana --providers`, `praana --version`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
+CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume [<session_id>]` (no id resumes the most recent session for the current cwd), `praana setup` (also `praana init`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.

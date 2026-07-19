@@ -4,6 +4,8 @@ export interface CliArgs {
   setupMode: boolean;
   memoryDedupeMode: boolean;
   providersMode: boolean;
+  modelsMode: boolean;
+  modelsProvider: string | null;
   allMode: boolean;
   force: boolean;
   debug: boolean;
@@ -21,6 +23,8 @@ export function parseCliArgs(args: string[]): CliArgs {
   let setupMode = false;
   let memoryDedupeMode = false;
   let providersMode = false;
+  let modelsMode = false;
+  let modelsProvider: string | null = null;
   let allMode = false;
   let force = false;
   let debug = false;
@@ -38,10 +42,6 @@ export function parseCliArgs(args: string[]): CliArgs {
     }
     if (args[i] === "--version" || args[i] === "-v") {
       versionMode = true;
-      continue;
-    }
-    if (args[i] === "--providers" || args[i] === "-p") {
-      providersMode = true;
       continue;
     }
     if (args[i] === "--all") {
@@ -86,6 +86,18 @@ export function parseCliArgs(args: string[]): CliArgs {
       doctorMode = true;
       continue;
     }
+    if (args[i] === "providers") {
+      providersMode = true;
+      continue;
+    }
+    if (args[i] === "models") {
+      modelsMode = true;
+      if (args[i + 1] && !args[i + 1].startsWith("-")) {
+        modelsProvider = args[i + 1];
+        i++;
+      }
+      continue;
+    }
     if (args[i] === "memory" && args[i + 1] === "dedupe") {
       memoryDedupeMode = true;
       i++;
@@ -99,6 +111,8 @@ export function parseCliArgs(args: string[]): CliArgs {
     setupMode,
     memoryDedupeMode,
     providersMode,
+    modelsMode,
+    modelsProvider,
     allMode,
     force,
     debug,

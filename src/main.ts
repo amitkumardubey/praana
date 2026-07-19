@@ -12,9 +12,17 @@ import { runTui } from "./ui/tui/run.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
-import { formatProviderListForDisplay, PROVIDER_REGISTRY } from "./provider-registry.js";
+import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
+import {
+  formatModelsCliOutput,
+  listModelsForCli,
+} from "./model-listing.js";
+import {
+  formatProvidersCliOutput,
+  listProvidersForCli,
+} from "./providers-cli.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -29,31 +37,31 @@ export async function main() {
   }
 
   if (parsed.providersMode) {
-    if (parsed.allMode) {
-      const all = formatProviderListForDisplay();
-      const registrySet = new Set(Object.keys(PROVIDER_REGISTRY));
-      const extra = all.filter((e) => !registrySet.has(e.name));
-      console.log("Supported providers:");
-      for (const { name } of all.filter((e) => registrySet.has(e.name))) {
-        console.log(`  ${name}`);
-      }
-      if (extra.length > 0) {
-        console.log("");
-        console.log("Additional providers via pi-ai (experimental, no PRAANA defaults):");
-        for (const { name } of extra) console.log(`  ${name}`);
-      }
-    } else {
-      const names = Object.keys(PROVIDER_REGISTRY).sort();
-      console.log("Supported providers:");
-      for (const name of names) console.log(`  ${name}`);
-      const piOnlyCount = formatProviderListForDisplay().filter(
-        (e) => !Object.prototype.hasOwnProperty.call(PROVIDER_REGISTRY, e.name),
-      ).length;
-      if (piOnlyCount > 0) {
-        console.log(`\n  (${piOnlyCount} more via pi-ai — run with --all to see them)`);
-      }
+    const entries = listProvidersForCli({
+      includeUnavailable: parsed.allMode,
+    });
+    console.log(formatProvidersCliOutput(entries));
+    process.exit(entries.length === 0 ? 1 : 0);
+  }
+
+  if (parsed.modelsMode) {
+    try {
+      const config = loadConfig(parsed.configPath);
+      const entries = await listModelsForCli(
+        parsed.modelsProvider ?? undefined,
+        { includeUnavailable: parsed.allMode },
+      );
+      console.log(
+        formatModelsCliOutput(entries, {
+          defaultProvider: config.llm.provider || undefined,
+          defaultModel: config.llm.model || undefined,
+        }),
+      );
+      process.exit(0);
+    } catch (err) {
+      console.error((err as Error).message);
+      process.exit(1);
     }
-    process.exit(0);
   }
 
   await initAppLogFile();

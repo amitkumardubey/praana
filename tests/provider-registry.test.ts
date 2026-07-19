@@ -5,6 +5,7 @@ import {
   REASONING_MODEL_HINTS,
   getProviderEnvKey,
   SETUP_UNSUPPORTED_PROVIDERS,
+  LIVE_CATALOG_PROVIDER_IDS,
 } from "../src/provider-registry.js";
 
 describe("provider registry", () => {
@@ -55,5 +56,9 @@ describe("provider registry", () => {
   it("SETUP_UNSUPPORTED_PROVIDERS hides ollama and amazon-bedrock from setup", () => {
     expect(SETUP_UNSUPPORTED_PROVIDERS.has("ollama")).toBe(true);
     expect(SETUP_UNSUPPORTED_PROVIDERS.has("amazon-bedrock")).toBe(true);
+  });
+
+  it("LIVE_CATALOG_PROVIDER_IDS includes umans for OpenAI-compatible /models", () => {
+    expect(LIVE_CATALOG_PROVIDER_IDS).toContain("umans");
   });
 });
