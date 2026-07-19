@@ -5,6 +5,7 @@ import type { PraanaConfig } from "./types.js";
 import { getAppLogger, type ErrorCode } from "./logger.js";
 import {
   APP_HOME_DIR,
+  appHomePath,
   envFlag,
   envOverride,
   resolveDefaultMemoryDbPath,
@@ -142,11 +143,58 @@ function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
 }
 
-function deepMerge<T>(base: T, override: Partial<T>): T {
+/** Per-path array merge strategy for config layers (global → local). */
+export type ArrayMergeStrategy = "replace" | "append" | "prepend";
+
+/**
+ * Dotted paths that append/prepend instead of replacing.
+ * Default for all other arrays is `replace` (override wins).
+ */
+const ARRAY_MERGE_STRATEGIES: Record<string, ArrayMergeStrategy> = {
+  "shell.allowed_paths": "append",
+};
+
+function dedupePreserveOrder(items: unknown[]): unknown[] {
+  const seen = new Set<unknown>();
+  const out: unknown[] = [];
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    out.push(item);
+  }
+  return out;
+}
+
+/** Exported for unit tests of replace/append/prepend semantics. */
+export function mergeArrays(
+  base: unknown[],
+  override: unknown[],
+  strategy: ArrayMergeStrategy,
+): unknown[] {
+  if (strategy === "replace") return [...override];
+  // Empty override under append/prepend = no additions (copy of base).
+  if (override.length === 0) return [...base];
+  if (strategy === "append") return dedupePreserveOrder([...base, ...override]);
+  return dedupePreserveOrder([...override, ...base]);
+}
+
+/**
+ * Deep-merge config layers. Plain objects recurse; arrays use per-path
+ * strategies (`replace` default, `append` for allowlists like shell.allowed_paths).
+ */
+export function deepMerge<T>(
+  base: T,
+  override: Partial<T>,
+  pathPrefix = "",
+): T {
   const out = { ...base } as any;
   for (const [k, v] of Object.entries(override as any)) {
     const bv = (base as any)[k];
-    if (
+    const path = pathPrefix ? `${pathPrefix}.${k}` : k;
+    if (Array.isArray(v) && Array.isArray(bv)) {
+      const strategy = ARRAY_MERGE_STRATEGIES[path] ?? "replace";
+      out[k] = mergeArrays(bv, v, strategy);
+    } else if (
       v &&
       typeof v === "object" &&
       !Array.isArray(v) &&
@@ -154,7 +202,7 @@ function deepMerge<T>(base: T, override: Partial<T>): T {
       typeof bv === "object" &&
       !Array.isArray(bv)
     ) {
-      out[k] = deepMerge(bv, v);
+      out[k] = deepMerge(bv, v, path);
     } else {
       out[k] = v;
     }
@@ -212,8 +260,8 @@ export function loadConfig(configPath?: string): PraanaConfig {
     // Load and merge configs from all sources in order
     // Order: global → local (later overrides earlier)
     const configs = [
-      { path: expandHome(`~/${APP_HOME_DIR}/praana.config.json`), loader: loadJsonConfig },
-      { path: expandHome(`~/${APP_HOME_DIR}/config.toml`), loader: loadTomlConfig },
+      { path: appHomePath("praana.config.json"), loader: loadJsonConfig },
+      { path: appHomePath("config.toml"), loader: loadTomlConfig },
       { path: "praana.config.json", loader: loadJsonConfig },
       { path: "praana.config.toml", loader: loadTomlConfig },
     ];
