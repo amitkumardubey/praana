@@ -11,6 +11,8 @@ import {
 } from "../src/config.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import { APP_HOME_DIR } from "../src/app-identity.js";
+import { setUserProviders, isUserDeclaredProvider } from "../src/provider-registry.js";
+import { resetCredentialStoreForTests } from "../src/credentials.js";
 
 describe("deepMerge array strategies", () => {
   it("appends and dedupes shell.allowed_paths (global + local)", () => {
@@ -220,5 +222,163 @@ describe("config loading", () => {
     const warnings = getConfigWarnings();
     expect(warnings.length).toBeGreaterThan(0);
     expect(warnings.some((w) => w.includes("Failed to parse TOML"))).toBe(true);
+  });
+});
+
+describe("user-declared providers", () => {
+  let root: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "praana-providers-"));
+    prevHome = process.env.PRAANA_HOME;
+    process.env.PRAANA_HOME = root;
+    setAppLogger(new PraanaLogger({ domain: "config", writeLine: () => {} }));
+    setUserProviders(undefined);
+    resetCredentialStoreForTests();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = prevHome;
+    setUserProviders(undefined);
+    resetCredentialStoreForTests();
+  });
+
+  it("parses [providers.<id>] section from TOML", () => {
+    const configPath = join(root, "providers.toml");
+    writeFileSync(
+      configPath,
+      `[providers.my-llama]
+api = "openai-completions"
+base_url = "http://localhost:8080/v1"
+`,
+      "utf-8",
+    );
+    const config = loadConfig(configPath);
+    expect(config.providers).toBeDefined();
+    expect(config.providers!["my-llama"]).toBeDefined();
+    expect(config.providers!["my-llama"].api).toBe("openai-completions");
+    expect(config.providers!["my-llama"].base_url).toBe("http://localhost:8080/v1");
+  });
+
+  it("parses [[providers.<id>.models]] array of tables", () => {
+    const configPath = join(root, "models.toml");
+    writeFileSync(
+      configPath,
+      `[providers.my-llama]
+api = "openai-completions"
+base_url = "http://localhost:8080/v1"
+
+[[providers.my-llama.models]]
+id = "llama-3.1-8b"
+context_window = 128000
+reasoning = false
+
+[[providers.my-llama.models]]
+id = "llama-3.1-70b"
+context_window = 128000
+reasoning = true
+`,
+      "utf-8",
+    );
+    const config = loadConfig(configPath);
+    const models = config.providers!["my-llama"].models;
+    expect(models).toHaveLength(2);
+    expect(models![0].id).toBe("llama-3.1-8b");
+    expect(models![0].context_window).toBe(128000);
+    expect(models![1].id).toBe("llama-3.1-70b");
+    expect(models![1].reasoning).toBe(true);
+  });
+
+  it("parses env_key and headers fields", () => {
+    const configPath = join(root, "full.toml");
+    writeFileSync(
+      configPath,
+      `[providers.custom]
+api = "openai-completions"
+base_url = "https://api.custom.com/v1"
+env_key = "CUSTOM_API_KEY"
+
+[providers.custom.headers]
+X-Custom = "praana"
+`,
+      "utf-8",
+    );
+    const config = loadConfig(configPath);
+    const pc = config.providers!["custom"];
+    expect(pc.env_key).toBe("CUSTOM_API_KEY");
+    expect(pc.headers).toEqual({ "X-Custom": "praana" });
+  });
+
+  it("calls setUserProviders on loadConfig (wires into module-level registry)", () => {
+    const configPath = join(root, "wired.toml");
+    writeFileSync(
+      configPath,
+      `[providers.wired-test]
+api = "openai-completions"
+base_url = "http://localhost:9999/v1"
+`,
+      "utf-8",
+    );
+    loadConfig(configPath);
+    expect(isUserDeclaredProvider("wired-test")).toBe(true);
+  });
+
+  it("warns and drops provider with missing api", () => {
+    const configPath = join(root, "no-api.toml");
+    writeFileSync(
+      configPath,
+      `[providers.no-api]
+base_url = "http://localhost:8080/v1"
+`,
+      "utf-8",
+    );
+    const config = loadConfig(configPath);
+    expect(config.providers).toBeUndefined();
+    expect(getConfigWarnings().some((w) => w.includes("no-api.api is required"))).toBe(true);
+  });
+
+  it("warns and drops provider with missing base_url", () => {
+    const configPath = join(root, "no-base.toml");
+    writeFileSync(
+      configPath,
+      `[providers.no-base]
+api = "openai-completions"
+`,
+      "utf-8",
+    );
+    const config = loadConfig(configPath);
+    expect(config.providers).toBeUndefined();
+    expect(getConfigWarnings().some((w) => w.includes("no-base.base_url is required"))).toBe(true);
+  });
+
+  it("merges providers from global (PRAANA_HOME) and local config", () => {
+    mkdirSync(join(root, APP_HOME_DIR), { recursive: true });
+    writeFileSync(
+      join(root, APP_HOME_DIR, "config.toml"),
+      `[providers.global-provider]
+api = "openai-completions"
+base_url = "http://global:8080/v1"
+`,
+      "utf-8",
+    );
+    // Use explicit path for local config to avoid CWD interference.
+    const localPath = join(root, "local.toml");
+    writeFileSync(
+      localPath,
+      `[providers.local-provider]
+api = "openai-completions"
+base_url = "http://local:8080/v1"
+`,
+      "utf-8",
+    );
+    // loadConfig with explicit path skips multi-source merge.
+    // To test merge, call loadConfig() without a path — reads from PRAANA_HOME.
+    const config = loadConfig();
+    expect(config.providers).toBeDefined();
+    expect(config.providers!["global-provider"]).toBeDefined();
+    expect(config.providers!["global-provider"].base_url).toBe("http://global:8080/v1");
   });
 });

@@ -5,7 +5,11 @@ import {
   PROVIDER_REGISTRY,
   LIVE_CATALOG_PROVIDER_IDS,
   VENDOR_PREFIX_ALIASES,
+  getUserProviderRegistryEntry,
+  isUserDeclaredProvider,
 } from "./provider-registry.js";
+import { OPENAI_COMPATIBLE_API_IDS } from "./provider-registry.js";
+import { getApiKey } from "./credentials.js";
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
@@ -84,7 +88,15 @@ function persistDiskCache(): void {
 }
 
 export function providerSupportsLiveCatalog(provider: string): boolean {
-  return LIVE_CATALOG_PROVIDERS.has(provider);
+  if (LIVE_CATALOG_PROVIDERS.has(provider)) return true;
+  // User-declared providers with OpenAI-compatible APIs support live catalog.
+  if (isUserDeclaredProvider(provider)) {
+    const userConfig = getUserProviderRegistryEntry(provider);
+    if (userConfig && OPENAI_COMPATIBLE_API_IDS.has(userConfig.api)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Strip `provider/` routing prefix from a model id before API or catalog lookup. */
@@ -270,15 +282,19 @@ async function fetchProviderCatalogFresh(
   };
   slot.promise = (async () => {
     try {
-      // Look up base URL, env key, and headers from the shared registry.
-      const registryEntry = PROVIDER_REGISTRY[provider];
+      // Look up base URL, env key, and headers from the user-declared
+      // provider config first, then fall back to the shared registry.
+      const registryEntry = getUserProviderRegistryEntry(provider) ?? PROVIDER_REGISTRY[provider];
       if (!registryEntry) throw new Error(`Provider "${provider}" has no registry entry`);
 
       const headers: Record<string, string> = {
         Accept: "application/json",
         ...registryEntry.headers,
       };
-      const apiKey = registryEntry.envKey ? process.env[registryEntry.envKey] : null;
+      // Key resolution: credential store > env_key > no key (keyless).
+      const apiKey = registryEntry.envKey
+        ? (getApiKey(provider) ?? process.env[registryEntry.envKey] ?? null)
+        : null;
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
       const url = `${registryEntry.baseUrl.replace(/\/$/, "")}/models`;

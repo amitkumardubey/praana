@@ -1,4 +1,5 @@
 import { getProviders, findEnvKeys } from "@earendil-works/pi-ai/compat";
+import type { UserProviderConfig } from "./types.js";
 
 /**
  * Single source of truth for provider configuration.
@@ -19,6 +20,76 @@ export interface ProviderConfig {
   baseUrl: string;
   /** Optional HTTP headers sent with every request */
   headers?: Record<string, string>;
+}
+
+// ── User-declared providers (module-level, set at config load) ──
+
+/**
+ * User-declared providers from config.toml `[providers.<id>]` sections.
+ * Set once at config load time via `setUserProviders()`. Checked BEFORE
+ * the hardcoded PROVIDER_REGISTRY so user declarations take precedence.
+ */
+let _userProviders: Record<string, UserProviderConfig> = {};
+
+/**
+ * Inject user-declared providers from parsed config. Called once at
+ * `loadConfig()` time. Passing undefined clears the set.
+ */
+export function setUserProviders(
+  providers: Record<string, UserProviderConfig> | undefined,
+): void {
+  _userProviders = providers ?? {};
+}
+
+/** Returns true if a provider id is user-declared (in config.toml). */
+export function isUserDeclaredProvider(provider: string): boolean {
+  return provider in _userProviders;
+}
+
+/**
+ * Get a user-declared provider config, or undefined if not declared.
+ */
+export function getUserProviderConfig(
+  provider: string,
+): UserProviderConfig | undefined {
+  return _userProviders[provider];
+}
+
+/**
+ * Get the env key for a user-declared provider (from config env_key field).
+ */
+export function getUserProviderEnvKey(provider: string): string | null {
+  const userConfig = _userProviders[provider];
+  return userConfig?.env_key ?? null;
+}
+
+/** List all user-declared provider ids. */
+export function listUserDeclaredProviderIds(): string[] {
+  return Object.keys(_userProviders);
+}
+
+/**
+ * Convert a user-declared provider config into the ProviderConfig shape
+ * used by llm.ts and provider-catalog.ts. Returns undefined if the
+ * provider is not user-declared.
+ */
+export function getUserProviderRegistryEntry(
+  provider: string,
+): ProviderConfig | undefined {
+  const userConfig = _userProviders[provider];
+  if (!userConfig) return undefined;
+  return {
+    api: userConfig.api,
+    provider,
+    envKey: userConfig.env_key ?? null,
+    baseUrl: userConfig.base_url,
+    headers: userConfig.headers,
+  };
+}
+
+/** Test helper — clear user-declared providers (for isolated tests). */
+export function resetUserProvidersForTests(): void {
+  _userProviders = {};
 }
 
 export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
@@ -181,11 +252,27 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "umans",
 ];
 
+/**
+ * pi-ai API ids that use the OpenAI-compatible wire protocol and thus
+ * expose a `/v1/models` listing endpoint. User-declared providers using
+ * one of these APIs get live catalog support automatically.
+ */
+export const OPENAI_COMPATIBLE_API_IDS = new Set([
+  "openai-completions",
+  "openai-responses",
+  "openai-codex-responses",
+  "azure-openai-responses",
+]);
+
 /** Providers that should not appear in the interactive setup picker. */
 export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama", "amazon-bedrock"]);
 
 /** Return the env var name required by a provider, or null. */
 export function getProviderEnvKey(provider: string): string | null {
+  // User-declared providers take precedence.
+  const userEnvKey = getUserProviderEnvKey(provider);
+  if (userEnvKey !== null) return userEnvKey;
+
   const registryEntry = PROVIDER_REGISTRY[provider];
   if (registryEntry) return registryEntry.envKey;
   if ((getProviders() as string[]).includes(provider)) {

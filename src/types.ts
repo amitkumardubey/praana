@@ -120,6 +120,54 @@ export interface LlmConfig {
   fallback_model?: string;
 }
 
+// ---- User-Declared Providers (declarative config) ----
+
+/**
+ * Optional model metadata override for a user-declared provider.
+ * The model LIST (what models exist on the server) is fetched live
+ * and cached by provider-catalog.ts; this is only for per-model
+ * metadata that the /v1/models endpoint doesn't provide.
+ */
+export interface UserProviderModel {
+  id: string;
+  context_window?: number;
+  reasoning?: boolean;
+  max_tokens?: number;
+  /** pi-ai API id override (e.g. "openai-completions"). Rarely needed. */
+  api?: string;
+}
+
+/**
+ * A user-declared provider in config.toml under `[providers.<id>]`.
+ *
+ * This lets users connect ANY OpenAI-compatible (or other API) provider
+ * without it being in PRAANA's hardcoded PROVIDER_REGISTRY. The provider
+ * id is the key (e.g. "my-llama"), and the config section defines how to
+ * reach it.
+ *
+ * Example:
+ *   [providers.my-llama]
+ *   api = "openai-completions"
+ *   base_url = "http://localhost:8080/v1"
+ *   env_key = "MY_LLAMA_KEY"   # optional
+ *
+ *   [[providers.my-llama.models]]
+ *   id = "llama-3.1-8b"
+ *   context_window = 128000
+ */
+export interface UserProviderConfig {
+  /** pi-ai API type identifier (e.g. "openai-completions", "anthropic-messages"). */
+  api: string;
+  /** Base URL for the provider's API (e.g. "http://localhost:8080/v1"). */
+  base_url: string;
+  /** Env var to check for API key as fallback to credential store. Omit for keyless. */
+  env_key?: string;
+  /** Optional HTTP headers sent with every request. */
+  headers?: Record<string, string>;
+  /** Optional per-model metadata overrides. */
+  models?: UserProviderModel[];
+}
+
 export type EmbedderStrategy =
   | "auto"
   | "ollama"
@@ -316,6 +364,14 @@ export interface PraanaConfig {
   context_engine: ContextEngineConfig;
   project_detection: ProjectDetectionConfig;
   turn: TurnConfig;
+  /**
+   * User-declared providers, keyed by provider id. Each entry defines an
+   * OpenAI-compatible (or other API) endpoint that is NOT in PRAANA's
+   * hardcoded PROVIDER_REGISTRY. Declared in config.toml under
+   * `[providers.<id>]`. Keys in the credential store take precedence
+   * over env_key for authentication.
+   */
+  providers?: Record<string, UserProviderConfig>;
 }
 // ---- Session Meta ----
 
