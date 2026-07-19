@@ -186,6 +186,7 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | `/plan <on\|off\|execute>` | Plan mode: block mutating tools until you approve |
 | `/thinking <on\|off>` | Show or hide reasoning text |
 | `/incognito <on\|off>` | Disable Cognitive Memory writes |
+| `/settings` | View/set persistent preferences (`~/.praana/settings.json`) |
 | `/debug` | Verbose tooling + saved prompts |
 | `/why <id>` | Why a context unit was included (engine + debug) |
 

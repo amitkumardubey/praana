@@ -15,6 +15,11 @@ import {
 } from "./app-banner.js";
 import { buildTranscriptFromEvents, type TranscriptEntry } from "./ui/tui/transcript/model.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
+import { envOverride } from "./app-identity.js";
+import {
+  loadUserSettings,
+  type UserSettings,
+} from "./user-settings.js";
 
 export interface StartupInfo {
   session: Session;
@@ -35,7 +40,7 @@ export class AppController {
   /** Active config. Not readonly: `startNewSession()` reloads it from disk on /new. Re-read after /new rather than caching. */
   config: PraanaConfig;
   readonly parsed: CliArgs;
-  showThinking = false;
+  showThinking = true;
   currentModel?: string;
   sessionEnded = false;
 
@@ -91,6 +96,11 @@ export class AppController {
       this.session.debug = debug;
     }
 
+    const settingsNotices = await this.applyPersistedSettings({
+      applyModel: !didResume,
+    });
+    startupNotices.push(...settingsNotices);
+
     this.currentModel = this.session.getModelOverride() ?? undefined;
     const model = this.session.getActiveModelLabel();
 
@@ -118,6 +128,55 @@ export class AppController {
       isResume: didResume,
       startupNotices,
     };
+  }
+
+  /**
+   * Apply `~/.praana/settings.json` defaults onto the current session.
+   * CLI flags (`--debug`, `--incognito`, `PRAANA_MODEL`) win over settings.
+   * Model/provider from settings apply only when `applyModel` is true and the
+   * session has no existing override (resume event-log wins).
+   */
+  async applyPersistedSettings(opts: {
+    applyModel: boolean;
+    settings?: UserSettings;
+  }): Promise<string[]> {
+    const notices: string[] = [];
+    const loaded = opts.settings
+      ? { settings: opts.settings, warning: undefined as string | undefined }
+      : loadUserSettings();
+    if (loaded.warning) {
+      notices.push(`⚠ ${loaded.warning}`);
+    }
+    const settings = loaded.settings;
+
+    this.showThinking = settings.thinking;
+
+    if (!this.parsed.debug && settings.debug) {
+      this.session.debug = true;
+    }
+
+    if (!this.parsed.incognito && settings.incognito && !this.session.isIncognito()) {
+      await this.session.setIncognito(true);
+    }
+
+    if (opts.applyModel) {
+      const envModel = envOverride("PRAANA_MODEL");
+      const hasOverride =
+        this.session.getModelOverride() !== null ||
+        this.session.getProviderOverride() !== null;
+      if (
+        !envModel &&
+        !hasOverride &&
+        settings.model.trim() &&
+        settings.provider.trim()
+      ) {
+        this.session.setProviderOverride(settings.provider.trim());
+        this.session.setModelOverride(settings.model.trim());
+        this.currentModel = settings.model.trim();
+      }
+    }
+
+    return notices;
   }
 
   currentModelOrDefault(): string {
@@ -285,25 +344,25 @@ export class AppController {
       });
       this.session.debug = this.parsed.debug;
       this.sessionEnded = false;
+      const settingsNotices = await this.applyPersistedSettings({ applyModel: true });
       this.currentModel = this.session.getModelOverride() ?? undefined;
+      const model = this.session.getActiveModelLabel();
+      return {
+        session: this.session,
+        cwd: this.cwd,
+        model,
+        bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
+        recentConversationLines: [],
+        transcriptBootstrap: [],
+        isResume: false,
+        startupNotices: settingsNotices,
+      };
     } catch (err) {
       // Roll back to a working session using the last known-good config so the
       // user isn't stuck with an ended session and no editor.
       this.rollbackToFreshSession(this.config);
       throw err;
     }
-
-    const model = this.session.getActiveModelLabel();
-    return {
-      session: this.session,
-      cwd: this.cwd,
-      model,
-      bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
-      recentConversationLines: [],
-      transcriptBootstrap: [],
-      isResume: false,
-      startupNotices: [],
-    };
   }
 
   /**
@@ -319,6 +378,7 @@ export class AppController {
       });
       this.session.debug = this.parsed.debug;
       this.sessionEnded = false;
+      await this.applyPersistedSettings({ applyModel: true });
       this.currentModel = this.session.getModelOverride() ?? undefined;
     } catch {
       // Best-effort; caller will surface the original error.
