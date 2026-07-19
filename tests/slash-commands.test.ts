@@ -169,7 +169,7 @@ describe("executeSlashCommand", () => {
     expect(result.action).toBe("refresh_status");
   });
 
-  it("shows effective provider/model when /model has no args", async () => {
+  it("opens model selector when /model has no args", async () => {
     const session = {
       getActiveModelLabel: mock(() => "openrouter/deepseek/deepseek-v4-flash:free"),
     } as unknown as Session;
@@ -180,7 +180,8 @@ describe("executeSlashCommand", () => {
       getThinking: () => true,
     });
 
-    expect(result.lines[0]).toBe("Current: openrouter/deepseek/deepseek-v4-flash:free");
+    expect(result.action).toBe("open_model_selector");
+    expect(result.lines).toEqual([]);
   });
 
   it("returns refresh_status when model changes on same provider", async () => {

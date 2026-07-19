@@ -100,4 +100,29 @@ describe("provider-catalog", () => {
       findProviderCatalogModelId("opencode", "mimo-v2.5-free"),
     ).resolves.toBeNull();
   });
+
+  it("lists all models from a live catalog fetch", async () => {
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: "a-model", context_length: 8000 },
+          { id: "b-model", context_window: 16_000 },
+        ],
+      }),
+    } as Response);
+
+    const { listProviderCatalogModels } = await import("../src/provider-catalog.js");
+    const models = await listProviderCatalogModels("opencode");
+    expect(models).toEqual([
+      { id: "a-model", contextWindow: 8000 },
+      { id: "b-model", contextWindow: 16_000 },
+    ]);
+  });
+
+  it("throws when live catalog fetch fails", async () => {
+    fetchSpy.mockRejectedValue(new Error("network down"));
+    const { listProviderCatalogModels } = await import("../src/provider-catalog.js");
+    await expect(listProviderCatalogModels("opencode")).rejects.toThrow("network down");
+  });
 });
