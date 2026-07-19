@@ -31,7 +31,8 @@ export type SlashCommandAction =
   | "exit"
   | "refresh_status"
   | "clear_transcript"
-  | "new_session";
+  | "new_session"
+  | "open_model_selector";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -469,13 +470,7 @@ export async function executeSlashCommand(
     case "/model": {
       const parsed = parseModelCommandArgs(parts);
       if (parsed.kind === "help") {
-        lines.push(`Current: ${session.getActiveModelLabel()}`);
-        lines.push("Usage: /model [provider] <model-id>");
-        lines.push("  /model gpt-4o                         — model on current provider");
-        lines.push("  /model openai gpt-4o                  — switch to OpenAI native");
-        lines.push("  /model openrouter openai/gpt-4o       — route via OpenRouter");
-        lines.push("  Note: use a space to switch provider. A slash is part of the model id.");
-        break;
+        return result("open_model_selector");
       }
 
       const resolved = await resolveModelSpecifier(

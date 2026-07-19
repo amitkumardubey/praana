@@ -42,6 +42,8 @@ import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
+import { ModelSelector } from "./model-selector.js";
+import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
 import { SLASH_COMMAND_METADATA } from "../../slash-commands.js";
 
@@ -62,6 +64,15 @@ function statusBarFromSnapshot(
 
 import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
+import type { SlashCommandToastTone } from "../../slash-commands.js";
+
+function toastToneToType(
+  tone: SlashCommandToastTone,
+): "error" | "success" | "info" {
+  if (tone === "error") return "error";
+  if (tone === "success") return "success";
+  return "info";
+}
 
 // Derived from the single source of truth in slash-commands.ts so the
 // autocomplete dropdown can never drift from the real command set.
@@ -188,18 +199,82 @@ export async function runTui(
   editor.inner.setAutocompleteProvider(autocomplete);
 
   const spinnerSlot = new Container();
+  const promptSlot = new Container();
+  promptSlot.addChild(editor);
   const body = new Container();
   body.addChild(transcript);
   tui.addChild(body);
   tui.addChild(toast);
   tui.addChild(spinnerSlot);
-  tui.addChild(editor);
+  tui.addChild(promptSlot);
   // Identity bar sits below the editor, above the glance bar — all three
   // are pinned at the bottom because they are the last children rendered
   // and the viewport always shows the tail of the content buffer.
   tui.addChild(identityBar);
   tui.addChild(glanceBar);
   tui.setFocus(editor);
+
+  const closeModelSelector = () => {
+    promptSlot.clear();
+    promptSlot.addChild(editor);
+    tui.setFocus(editor);
+    tui.requestRender();
+  };
+
+  const openModelSelector = () => {
+    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
+      slashOverlayHandle.hide();
+      slashOverlayHandle = null;
+    }
+
+    const selector = new ModelSelector({
+      tui,
+      currentProvider: session.getEffectiveProvider(),
+      currentModelId: session.getActiveModelId(),
+      maxVisible: Math.max(6, Math.min(12, (process.stdout.rows ?? 24) - 14)),
+      loadModels: () => listAllAvailableModels(),
+      onCancel: () => closeModelSelector(),
+      onSelect: (provider, modelId) => {
+        void (async () => {
+          closeModelSelector();
+          editor.inner.disableSubmit = true;
+          spinnerSlot.addChild(spinner);
+          spinner.setMessage("switching model…");
+          spinner.start();
+
+          let switchResult: import("../../slash-commands.js").SlashCommandResult;
+          try {
+            switchResult = await controller.executeSlashCommand(
+              `/model ${provider} ${modelId}`,
+            );
+          } finally {
+            spinner.stop();
+            spinnerSlot.removeChild(spinner);
+            editor.inner.disableSubmit = false;
+          }
+
+          if (switchResult.display === "toast" && switchResult.toastTone) {
+            toast.show(
+              switchResult.lines.join(" "),
+              toastToneToType(switchResult.toastTone),
+            );
+          } else if (switchResult.lines.length > 0) {
+            toast.show(switchResult.lines.join(" "), "info");
+          }
+          if (switchResult.action === "refresh_status") {
+            refreshChrome();
+          }
+          tui.requestRender();
+        })();
+      },
+    });
+
+    promptSlot.clear();
+    promptSlot.addChild(selector);
+    tui.setFocus(selector);
+    selector.start();
+    tui.requestRender(true);
+  };
 
   const modelId = controller.currentModelOrDefault();
   const ctxWindow =
@@ -289,11 +364,7 @@ export async function runTui(
       } else if (result.display === "toast" && result.toastTone) {
         toast.show(
           result.lines.join(" "),
-          result.toastTone === "error"
-            ? "error"
-            : result.toastTone === "success"
-              ? "success"
-              : "info",
+          toastToneToType(result.toastTone),
         );
       } else if (result.lines.length > 0) {
         sink.onSlashCommandResult?.(result.lines);
@@ -335,6 +406,10 @@ export async function runTui(
       }
       if (result.action === "refresh_status") {
         refreshChrome();
+      }
+      if (result.action === "open_model_selector") {
+        openModelSelector();
+        return;
       }
       tui.requestRender();
       return;

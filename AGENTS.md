@@ -112,7 +112,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
-| `/model [provider] <id>` | Switch model and optionally provider mid-session |
+| `/model [provider] <id>` | Switch model (bare `/model` opens searchable selector) |
 | `/sessions` | List past sessions for resuming |
 | `/setup` | Run interactive provider/config setup wizard in-session (replaces /init) |
 | `/shell <cmd>` | Run a shell command inline in the transcript (also `! <cmd>` prefix) |

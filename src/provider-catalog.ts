@@ -194,6 +194,30 @@ export async function isInProviderCatalog(
   return canonical !== null;
 }
 
+export interface ProviderCatalogModelEntry {
+  id: string;
+  contextWindow: number | null;
+}
+
+/**
+ * List all models from a provider's live catalog (cache-first, then fetch).
+ * Returns [] when the provider has no live catalog.
+ * Throws when a live-catalog fetch fails (so callers can surface the error).
+ */
+export async function listProviderCatalogModels(
+  provider: string,
+): Promise<ProviderCatalogModelEntry[]> {
+  if (!providerSupportsLiveCatalog(provider)) return [];
+
+  const models = await fetchProviderCatalog(provider);
+  return Object.entries(models)
+    .map(([id, contextWindow]) => ({
+      id,
+      contextWindow: isValidWindow(contextWindow) ? contextWindow : null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 async function fetchProviderCatalog(
   provider: string,
 ): Promise<Record<string, number | null>> {
