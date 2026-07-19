@@ -1248,6 +1248,45 @@ describe('System Tools (createSystemTools)', () => {
       expect(elapsed).toBeLessThan(500);
     });
 
+    it('should force-settle timeout when the process ignores SIGTERM', async () => {
+      // Child ignores SIGTERM and would keep the stdout pipe open if we only
+      // killed bash (the find / hang). Process-group SIGKILL + force-finish
+      // must unblock well before the interval would end.
+      const start = Date.now();
+      const result = await tools.shell.execute({
+        command:
+          "bun -e 'process.on(\"SIGTERM\",()=>{}); setInterval(()=>{}, 1000)'",
+        timeout: 200,
+      });
+      const elapsed = Date.now() - start;
+      expect(result.ok).toBe(false);
+      expect((result as any).exitCode).toBe(124);
+      expect((result as any).stderr).toContain('Timed out');
+      // timeout (200) + FORCE_SETTLE_MS (1000) + slack — must not hang
+      expect(elapsed).toBeLessThan(5000);
+    }, 10_000);
+
+    it('should force-settle abort when the process ignores SIGTERM', async () => {
+      const ac = new AbortController();
+      const toolsWithSignal = createSystemTools({
+        cwd: testDir,
+        getAbortSignal: () => ac.signal,
+      });
+      const start = Date.now();
+      const resultPromise = toolsWithSignal.shell.execute({
+        command:
+          "bun -e 'process.on(\"SIGTERM\",()=>{}); setInterval(()=>{}, 1000)'",
+        timeout: 30_000,
+      });
+      await new Promise((r) => setTimeout(r, 100));
+      ac.abort();
+      const result = await resultPromise;
+      const elapsed = Date.now() - start;
+      expect(result.ok).toBe(false);
+      expect((result as any).exitCode).toBe(130);
+      expect(elapsed).toBeLessThan(5000);
+    }, 10_000);
+
     it('should handle empty command output', async () => {
       const result = await tools.shell.execute({ command: 'true' });
       expect(result.ok).toBe(true);

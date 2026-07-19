@@ -162,11 +162,18 @@ export async function executeShellCommand(
   }
 
   const ms = timeout ?? 30000;
+  /** After SIGTERM, escalate to SIGKILL + force-resolve so a stuck child can't hang the tool. */
+  const FORCE_SETTLE_MS = 1000;
+
   return new Promise((resolve) => {
+    // detached: new process group so timeout/abort can signal the whole tree
+    // (bash + find/sleep/etc). Without this, killing bash alone leaves children
+    // holding stdout/stderr open and the Promise never settles (seen with find /).
     const child = spawn(command, [], {
       cwd,
       shell: "/bin/bash",
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";
@@ -185,17 +192,70 @@ export async function executeShellCommand(
       resolve(result);
     };
 
+    const killTree = (signal: NodeJS.Signals) => {
+      if (child.pid == null) return;
+      if (process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Process group may already be gone; fall through to direct kill.
+        }
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // already dead
+      }
+    };
+
+    const destroyStdio = () => {
+      try {
+        child.stdout?.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        child.stderr?.destroy();
+      } catch {
+        /* ignore */
+      }
+    };
+
+    /** SIGTERM the tree, then SIGKILL + force-finish if close never arrives. */
+    const terminate = (reason: "timeout" | "abort") => {
+      killTree("SIGTERM");
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = setTimeout(() => {
+        killTree("SIGKILL");
+        destroyStdio();
+        if (reason === "abort" || abortSignal?.aborted) {
+          finish({
+            ok: false,
+            stdout: stdout.slice(0, maxBuf),
+            stderr: stderr.slice(0, maxBuf) || "Interrupted",
+            exitCode: 130,
+          });
+        } else {
+          finish({
+            ok: false,
+            stdout: stdout.slice(0, maxBuf),
+            stderr: stderr.slice(0, maxBuf) || `Timed out after ${ms}ms`,
+            exitCode: 124,
+          });
+        }
+      }, FORCE_SETTLE_MS);
+    };
+
     const onAbort = () => {
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
+      terminate("abort");
     };
 
     abortSignal?.addEventListener("abort", onAbort, { once: true });
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => child.kill("SIGKILL"), 3000);
+      terminate("timeout");
     }, ms);
 
     child.stdout?.on("data", (chunk: Buffer) => {
