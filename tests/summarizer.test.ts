@@ -1,5 +1,10 @@
 import { describe, it, expect, mock } from "bun:test";
-import { extractLearnings } from "../src/memory/summarizer.js";
+import {
+  extractLearnings,
+  MAX_LEARNING_CONTENT_CHARS,
+  normalizeLearningContent,
+  summarizeTurns,
+} from "../src/memory/summarizer.js";
 import type { SessionEvent, SummarizerLLM } from "../src/memory/types.js";
 
 function createMockLLM(response: string): SummarizerLLM {
@@ -14,6 +19,42 @@ const userMessage = (content: string): SessionEvent => ({
   type: "user_message",
   timestamp: Date.now(),
   content,
+});
+
+describe("normalizeLearningContent", () => {
+  it("collapses whitespace and strips leading bullets", () => {
+    expect(normalizeLearningContent("  -  uses\nbun\tfor tests  ")).toBe("uses bun for tests");
+    expect(normalizeLearningContent("* prefer dark mode")).toBe("prefer dark mode");
+    expect(normalizeLearningContent("1. write tests first")).toBe("write tests first");
+    expect(normalizeLearningContent("2) keep in-process rate limits")).toBe(
+      "keep in-process rate limits",
+    );
+  });
+
+  it("keeps only the first sentence from a paragraph", () => {
+    const paragraph =
+      "Session log is events.jsonl, not current.log. " +
+      "After discussing logging we also covered symlink races and resume prefixes.";
+    expect(normalizeLearningContent(paragraph)).toBe(
+      "Session log is events.jsonl, not current.log.",
+    );
+  });
+
+  it("truncates long single sentences at a word boundary", () => {
+    const long =
+      "chose a very long architectural approach involving many nested systems and " +
+      "additional constraints that make this learning exceed the hard character limit easily";
+    const normalized = normalizeLearningContent(long);
+    expect(normalized).not.toBeNull();
+    expect(normalized!.length).toBeLessThanOrEqual(MAX_LEARNING_CONTENT_CHARS);
+    expect(normalized).not.toMatch(/\s$/);
+  });
+
+  it("returns null for empty or whitespace-only content", () => {
+    expect(normalizeLearningContent("")).toBeNull();
+    expect(normalizeLearningContent("   \n\t  ")).toBeNull();
+    expect(normalizeLearningContent("-   ")).toBeNull();
+  });
 });
 
 describe("extractLearnings", () => {
@@ -49,6 +90,53 @@ describe("extractLearnings", () => {
       certainty: "medium",
       scope: "project",
     });
+  });
+
+  it("normalizes verbose paragraphs into key points", async () => {
+    const llm = createMockLLM(JSON.stringify({
+      learnings: [
+        {
+          kind: "fact",
+          content:
+            "- Session log is events.jsonl, not current.log.\n\n" +
+            "We also talked about symlink races and how resume prefixes work in practice.",
+          certainty: "high",
+          scope: "project",
+        },
+      ],
+      used_ids: [],
+    }));
+
+    const result = await extractLearnings(llm, [userMessage("where is the session log?")]);
+
+    expect(result.learnings).toHaveLength(1);
+    expect(result.learnings[0].content).toBe("Session log is events.jsonl, not current.log.");
+    expect(result.learnings[0].content.length).toBeLessThanOrEqual(MAX_LEARNING_CONTENT_CHARS);
+  });
+
+  it("drops learnings whose content is empty after normalization", async () => {
+    const llm = createMockLLM(JSON.stringify({
+      learnings: [
+        { kind: "fact", content: "   ", certainty: "high" },
+        { kind: "preference", content: "-  ", certainty: "medium" },
+        { kind: "decision", content: "use bun", certainty: "high" },
+      ],
+      used_ids: [],
+    }));
+
+    const result = await extractLearnings(llm, [userMessage("hello")]);
+
+    expect(result.learnings).toHaveLength(1);
+    expect(result.learnings[0].content).toBe("use bun");
+  });
+
+  it("asks the LLM for scannable key points within the char limit", async () => {
+    const llm = createMockLLM('{"learnings": []}');
+    await extractLearnings(llm, [userMessage("hello")]);
+
+    const call = (llm.complete as ReturnType<typeof mock>).mock.calls[0] as [{ system: string }];
+    expect(call[0].system).toContain("scannable key point");
+    expect(call[0].system).toContain(`max ${MAX_LEARNING_CONTENT_CHARS} chars`);
   });
 
   it("ignores invalid scope values", async () => {
@@ -143,5 +231,24 @@ describe("extractLearnings", () => {
 
     expect(result.learnings).toEqual([]);
     expect(result.usedIds.size).toBe(0);
+  });
+});
+
+describe("summarizeTurns", () => {
+  it("normalizes compressed turn facts into key points", async () => {
+    const llm = createMockLLM(JSON.stringify([
+      {
+        kind: "fact",
+        content: "* Migrated session log path to events.jsonl. Also discussed unrelated resume quirks.",
+        certainty: "high",
+      },
+      { kind: "decision", content: "   ", certainty: "medium" },
+    ]));
+
+    const facts = await summarizeTurns(llm, [userMessage("compress me")]);
+
+    expect(facts).toHaveLength(1);
+    expect(facts[0].content).toBe("Migrated session log path to events.jsonl.");
+    expect(facts[0].content.length).toBeLessThanOrEqual(MAX_LEARNING_CONTENT_CHARS);
   });
 });
