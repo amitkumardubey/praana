@@ -39,7 +39,7 @@ function providerAvailability(provider: string): {
   };
 }
 
-function formatCtx(window: number | null): string {
+export function formatCtx(window: number | null): string {
   if (window == null) return "";
   if (window >= 1_000_000) return `${(window / 1_000_000).toFixed(1)}M ctx`;
   if (window >= 1000) return `${Math.round(window / 1000)}k ctx`;
@@ -148,6 +148,142 @@ export async function listAllAvailableModels(): Promise<ModelListEntry[]> {
   }
 
   return out;
+}
+
+/**
+ * Resolve a provider filter against known providers (case-insensitive).
+ * Throws when the filter does not match any known provider.
+ */
+export function resolveCliProviderFilter(filter: string): string {
+  const known = listKnownProviders();
+  const needle = filter.trim().toLowerCase();
+  const match = known.find((p) => p.toLowerCase() === needle);
+  if (!match) {
+    throw new Error(
+      `Unknown provider "${filter}". Known providers: ${known.join(", ")}`,
+    );
+  }
+  return match;
+}
+
+/**
+ * Flat list for the `praana models` CLI.
+ * Default: only providers with a usable API key / config.
+ * Pass `includeUnavailable: true` (`--all`) to include every known provider.
+ * An explicit provider filter always includes that provider even if unavailable.
+ * Throws when a filter is unknown, or when every selected provider fails.
+ */
+export async function listModelsForCli(
+  filterProvider?: string,
+  opts?: { includeUnavailable?: boolean },
+): Promise<ModelListEntry[]> {
+  const includeUnavailable = opts?.includeUnavailable === true;
+
+  let providers: string[];
+  if (filterProvider) {
+    providers = [resolveCliProviderFilter(filterProvider)];
+  } else if (includeUnavailable) {
+    providers = listKnownProviders();
+  } else {
+    providers = listKnownProviders().filter((p) => isProviderAvailable(p));
+  }
+
+  if (providers.length === 0) {
+    throw new Error(
+      "No configured providers found. Set an API key, or pass --all to list every known provider.",
+    );
+  }
+
+  const out: ModelListEntry[] = [];
+  const errors: string[] = [];
+
+  for (const provider of providers) {
+    try {
+      out.push(...(await listModelsForProvider(provider)));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${provider}: ${message}`);
+      const { disabledReason } = providerAvailability(provider);
+      out.push({
+        provider,
+        modelId: "",
+        label: "",
+        contextWindow: null,
+        available: false,
+        disabledReason: disabledReason ?? message,
+      });
+    }
+  }
+
+  const hasRealModels = out.some((e) => e.modelId !== "");
+  if (!hasRealModels && errors.length > 0) {
+    throw new Error(`Failed to load models:\n${errors.join("\n")}`);
+  }
+
+  return out;
+}
+
+export interface FormatModelsCliOptions {
+  defaultProvider?: string;
+  defaultModel?: string;
+}
+
+/**
+ * Format model entries as a readable grouped listing for stdout.
+ */
+export function formatModelsCliOutput(
+  entries: ModelListEntry[],
+  opts?: FormatModelsCliOptions,
+): string {
+  const byProvider = new Map<string, ModelListEntry[]>();
+  for (const entry of entries) {
+    const list = byProvider.get(entry.provider) ?? [];
+    list.push(entry);
+    byProvider.set(entry.provider, list);
+  }
+
+  const providers = [...byProvider.keys()].sort((a, b) => a.localeCompare(b));
+  if (providers.length === 0) {
+    return "No models found.";
+  }
+
+  const lines: string[] = [];
+  for (const provider of providers) {
+    const models = byProvider.get(provider)!;
+    const sample = models[0];
+    const available = models.some((m) => m.available);
+    const reason =
+      sample?.disabledReason ??
+      models.find((m) => m.disabledReason)?.disabledReason;
+    if (available) {
+      lines.push(provider);
+    } else {
+      lines.push(`${provider} (unavailable: ${reason ?? "not configured"})`);
+    }
+
+    const modelRows = models
+      .filter((m) => m.modelId !== "")
+      .sort((a, b) => a.modelId.localeCompare(b.modelId));
+
+    if (modelRows.length === 0) {
+      lines.push("  (no models in catalog)");
+    } else {
+      for (const m of modelRows) {
+        const isDefault =
+          opts?.defaultProvider === m.provider &&
+          opts?.defaultModel === m.modelId;
+        const mark = isDefault ? " *" : "";
+        lines.push(`  ${m.modelId}${mark}`);
+      }
+    }
+    lines.push("");
+  }
+
+  // Trim trailing blank line for cleaner stdout.
+  while (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines.join("\n");
 }
 
 function toAutocompleteItem(entry: ModelListEntry): ModelAutocompleteItem {
