@@ -259,6 +259,7 @@ export function buildSharedAgentPolicy(): string[] {
     "## Tool Use",
     "",
     "Use the provided tools when they are needed to complete the current request. Inspect relevant source before making code claims or changes, and respond concisely.",
+    "You may issue multiple independent tool calls in a single response — they will execute concurrently. Batch independent reads, searches, and recall calls to reduce latency. Do not issue parallel mutating tools (write_file, edit_file, batch_write, batch_edit) targeting the same path; they will fail. If one tool's arguments depend on another's result, issue them sequentially.",
     "",
     "## Correction Capture",
     "",

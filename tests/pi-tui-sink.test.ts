@@ -79,6 +79,21 @@ describe("PiTuiSink", () => {
     expect(persistEntry).toHaveBeenCalled();
   });
 
+  it("projects multiple parallel tool calls as distinct rows", () => {
+    const { sink, projection } = makeSink();
+    sink.nextGroup();
+    sink.appendUser("read both files");
+    sink.onToolCallsStart();
+    sink.onToolCall("call-1", "read_file", { path: "src/a.ts" });
+    sink.onToolCall("call-2", "read_file", { path: "src/b.ts" });
+    sink.onToolResult("call-1", "read_file", "file a content", false);
+    sink.onToolResult("call-2", "read_file", "file b content", false);
+
+    const toolEntries = projection.entries().filter((e) => e.role === "tool");
+    expect(toolEntries).toHaveLength(2);
+    expect(toolEntries.map((e) => e.id)).toEqual(["call-1", "call-2"]);
+  });
+
   it("emits monotonic engine preview on history deltas", () => {
     const { sink, onContextPreview } = makeSink({ engineMode: true });
     sink.nextGroup();

@@ -1078,6 +1078,83 @@ describe("runTurn", () => {
     expect(toolResults.length).toBeGreaterThan(0);
   });
 
+  it("executes multiple pending tool calls concurrently", async () => {
+    let secondToolStarted = false;
+    let releaseFirstTool: (() => void) | null = null;
+    const firstToolDone = new Promise<void>((resolve) => {
+      releaseFirstTool = resolve;
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock(async (args: { command: string }) => {
+          if (args.command === "echo a") {
+            await firstToolDone;
+            return { ok: true, stdout: "a", stderr: "", exitCode: 0 };
+          }
+          secondToolStarted = true;
+          releaseFirstTool?.();
+          return { ok: true, stdout: "b", stderr: "", exitCode: 0 };
+        }),
+      },
+    }));
+
+    const toolCallsGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: "echo a" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo b" } },
+      };
+      yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+    })();
+    const stopGenerator = (async function* () {
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+      };
+    })();
+
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(toolCallsGenerator as any)
+      .mockReturnValueOnce(stopGenerator as any);
+
+    const session = makeMockSession();
+    await runTurn(session, "do two things", undefined);
+
+    expect(secondToolStarted).toBe(true);
+  });
+
+  it("spinner label includes count when more than 3 tools are pending", async () => {
+    const toolCallsGenerator = (async function* () {
+      yield { type: "toolcall_end", toolCall: { id: "c1", name: "shell", arguments: { command: "echo a" } } };
+      yield { type: "toolcall_end", toolCall: { id: "c2", name: "read_file", arguments: { path: "x" } } };
+      yield { type: "toolcall_end", toolCall: { id: "c3", name: "edit_file", arguments: { path: "y", oldText: "a", newText: "b" } } };
+      yield { type: "toolcall_end", toolCall: { id: "c4", name: "create_task", arguments: { title: "t" } } };
+      yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+    })();
+    const stopGenerator = (async function* () {
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: [{ type: "text", text: "done" }] } };
+    })();
+
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(toolCallsGenerator as any)
+      .mockReturnValueOnce(stopGenerator as any);
+
+    const session = makeMockSession();
+    const onSpinnerStart = mock();
+    await runTurn(session, "do many things", undefined, { sink: { onSpinnerStart } });
+
+    expect(onSpinnerStart).toHaveBeenCalledTimes(1);
+    const label = onSpinnerStart.mock.calls[0]![0] as string;
+    expect(label).toContain("4");
+  });
+
   it("calls onToolCallsStart before tool execution", async () => {
     const toolCallGenerator = (async function* () {
       yield { type: "text_delta", delta: "Thinking..." };
@@ -1327,6 +1404,158 @@ describe("runTurn", () => {
 
     await runTurn(session, "verify streaming");
 
+    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+  });
+
+  it("reinforces recalled memories only once per batch even with multiple succeeding tools", async () => {
+    const firstStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "recall", arguments: { query: "streaming" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo a" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-3", name: "read_file", arguments: { path: "foo.ts" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [],
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any);
+
+    const reinforceFromSuccessfulToolOutcome = mock();
+    const session = makeMockSession({
+      memoryStore: { reinforceFromSuccessfulToolOutcome },
+      memoryEnabled: true,
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
+      recall: {
+        description: "Search memory",
+        parameters: z.object({ query: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          entries: [{ id: "m1", content: "streaming is implemented" }],
+        }),
+      },
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock().mockResolvedValue({ ok: true, stdout: "a" }),
+      },
+      read_file: {
+        description: "Read a file",
+        parameters: z.object({ path: z.string() }),
+        execute: mock().mockResolvedValue({ ok: true, content: "foo" }),
+      },
+    } as any);
+
+    await runTurn(session, "verify streaming");
+
+    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledTimes(1);
+    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+  });
+
+  it("does not double-boost a recalled entry when it is recalled again in a later batch of the same turn", async () => {
+    const firstStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "recall", arguments: { query: "streaming" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-2", name: "shell", arguments: { command: "echo a" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [],
+        },
+      };
+    })();
+    const secondStep = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-3", name: "recall", arguments: { query: "streaming" } },
+      };
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-4", name: "shell", arguments: { command: "echo b" } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [],
+        },
+      };
+    })();
+    const thirdStep = (async function* () {
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce(firstStep as any)
+      .mockReturnValueOnce(secondStep as any)
+      .mockReturnValueOnce(thirdStep as any);
+
+    const reinforceFromSuccessfulToolOutcome = mock();
+    const session = makeMockSession({
+      memoryStore: { reinforceFromSuccessfulToolOutcome },
+      memoryEnabled: true,
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
+      recall: {
+        description: "Search memory",
+        parameters: z.object({ query: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          entries: [{ id: "m1", content: "streaming is implemented" }],
+        }),
+      },
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock().mockResolvedValue({ ok: true, stdout: "ok" }),
+      },
+    } as any);
+
+    await runTurn(session, "verify streaming twice");
+
+    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledTimes(1);
     expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
   });
 
