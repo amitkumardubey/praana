@@ -230,6 +230,56 @@ export async function listProviderCatalogModels(
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/**
+ * Fetch the model list from an arbitrary OpenAI-compatible endpoint.
+ * Used by the setup wizard for custom providers that haven't been
+ * written to config yet (so no registry entry exists).
+ *
+ * Returns sorted model entries. Throws on network/HTTP errors.
+ */
+export async function fetchModelsFromEndpoint(
+  baseUrl: string,
+  apiKey?: string,
+): Promise<ProviderCatalogModelEntry[]> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          `Model list fetch timed out after ${PROVIDER_CATALOG_FETCH_TIMEOUT_MS}ms`,
+        ),
+      ),
+    PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
+  );
+
+  try {
+    const url = `${baseUrl.replace(/\/$/, "")}/models`;
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Models API returned ${response.status}`);
+    }
+    const body = (await response.json()) as {
+      data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
+    };
+
+    const models: ProviderCatalogModelEntry[] = [];
+    for (const item of body.data ?? []) {
+      if (!item.id) continue;
+      const contextWindow = item.context_length ?? item.context_window;
+      models.push({
+        id: item.id,
+        contextWindow: isValidWindow(contextWindow) ? contextWindow : null,
+      });
+    }
+    return models.sort((a, b) => a.id.localeCompare(b.id));
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function fetchProviderCatalog(
   provider: string,
 ): Promise<Record<string, number | null>> {
@@ -292,9 +342,10 @@ async function fetchProviderCatalogFresh(
         ...registryEntry.headers,
       };
       // Key resolution: credential store > env_key > no key (keyless).
-      const apiKey = registryEntry.envKey
-        ? (getApiKey(provider) ?? process.env[registryEntry.envKey] ?? null)
-        : null;
+      // Key resolution: credential store > env_key > keyless.
+      const apiKey = getApiKey(provider)
+        ?? (registryEntry.envKey ? process.env[registryEntry.envKey] : null)
+        ?? null;
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
       const url = `${registryEntry.baseUrl.replace(/\/$/, "")}/models`;

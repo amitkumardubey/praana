@@ -6,6 +6,9 @@ import {
 } from "../llm.js";
 import { getProviderEnvKey, SETUP_UNSUPPORTED_PROVIDERS } from "../provider-registry.js";
 
+/** Special value for the "Custom OpenAI-compatible endpoint" picker entry. */
+export const CUSTOM_PROVIDER_VALUE = "__custom__";
+
 /** Build pi-tui select items for the provider picker (detected providers first). */
 export function buildProviderSelectItems(): SelectItem[] {
   const all = listKnownProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
@@ -20,7 +23,7 @@ export function buildProviderSelectItems(): SelectItem[] {
     return a.localeCompare(b);
   });
 
-  return sorted.map((provider) => {
+  const items: SelectItem[] = sorted.map((provider) => {
     const envKey = getProviderEnvKey(provider);
     const available = availableSet.has(provider);
     let description: string;
@@ -33,6 +36,16 @@ export function buildProviderSelectItems(): SelectItem[] {
     }
     return { value: provider, label: provider, description };
   });
+
+  // Prepend the custom OpenAI-compatible provider option.
+  return [
+    {
+      value: CUSTOM_PROVIDER_VALUE,
+      label: "Custom OpenAI-compatible endpoint",
+      description: "vLLM, LM Studio, Ollama, local llama.cpp, etc.",
+    },
+    ...items,
+  ];
 }
 
 /** Lines describing providers already configured in the environment. */

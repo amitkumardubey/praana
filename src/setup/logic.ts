@@ -1,8 +1,19 @@
 import { getAppLogger } from "../logger.js";
-import { getProviderEnvKey } from "../provider-registry.js";
-import { isProviderAvailable } from "../llm.js";
+import { getProviderEnvKey, isUserDeclaredProvider } from "../provider-registry.js";
+import {
+  isProviderAvailable,
+  setApiKey,
+  DEFAULT_MODELS,
+  pickFirstCatalogModel,
+  listKnownProviders,
+} from "../llm.js";
+import {
+  listProviderCatalogModels,
+  fetchModelsFromEndpoint,
+  type ProviderCatalogModelEntry,
+} from "../provider-catalog.js";
 import { writeProviderConfig } from "./config-writer.js";
-import type { SetupResult } from "./types.js";
+import type { SetupResult, CustomProviderConfig } from "./types.js";
 
 export interface ProviderSetupInfo {
   provider: string;
@@ -17,34 +28,109 @@ export function describeProviderSetup(provider: string): ProviderSetupInfo {
     provider,
     envKey,
     keyDetected: isProviderAvailable(provider),
-    needsExternalConfig: envKey === null,
+    needsExternalConfig: envKey === null && !isProviderAvailable(provider),
   };
 }
 
-export function buildProviderInstructions(info: ProviderSetupInfo): string[] {
-  const lines: string[] = [];
-  if (info.needsExternalConfig) {
-    lines.push(`Provider ${info.provider} does not use a single API key.`);
-    lines.push("Configure it separately, then restart PRAANA.");
-    return lines;
-  }
+/**
+ * Save an API key to the credential store.
+ * Returns true if the key was saved.
+ */
+export function saveProviderKey(provider: string, key: string): boolean {
+  if (!key.trim()) return false;
+  setApiKey(provider, key.trim());
+  return true;
+}
 
-  const envKey = info.envKey!;
-  if (info.keyDetected) {
-    lines.push(`✓ ${info.provider} API key detected in environment.`);
-    lines.push("");
-    lines.push("PRAANA will use it on restart.");
-  } else {
-    lines.push(`Set your API key before starting PRAANA:`);
-    lines.push("");
-    lines.push(`  export ${envKey}=<your-api-key>`);
+/**
+ * Fetch the model list for a catalog provider (best-effort).
+ * Returns the model entries, or null if the fetch failed.
+ */
+export async function fetchProviderModels(
+  provider: string,
+): Promise<ProviderCatalogModelEntry[] | null> {
+  try {
+    return await listProviderCatalogModels(provider);
+  } catch {
+    return null;
   }
-  return lines;
+}
+
+/**
+ * Fetch the model list from a custom OpenAI-compatible endpoint (best-effort).
+ * Returns the model entries, or null if the fetch failed.
+ */
+export async function fetchCustomProviderModels(
+  baseUrl: string,
+  apiKey?: string,
+): Promise<ProviderCatalogModelEntry[] | null> {
+  try {
+    return await fetchModelsFromEndpoint(baseUrl, apiKey);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pick a default model for a provider.
+ * Tries: first live-catalog model → explicit default → first pi-ai catalog model → empty.
+ */
+export function pickDefaultModel(
+  provider: string,
+  liveModels?: ProviderCatalogModelEntry[] | null,
+): string {
+  if (liveModels && liveModels.length > 0) return liveModels[0].id;
+  return DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
+}
+
+// ── Custom provider validation ──
+
+/**
+ * Validate a custom provider id.
+ * Must be lowercase, no spaces, and not already a known provider.
+ */
+export function isValidCustomProviderId(
+  id: string,
+): { valid: boolean; error?: string } {
+  if (!id) return { valid: false, error: "Provider id is required" };
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) {
+    return {
+      valid: false,
+      error: "Must be lowercase letters, numbers, and hyphens only",
+    };
+  }
+  const known = new Set(listKnownProviders());
+  if (known.has(id)) {
+    return { valid: false, error: `"${id}" is already a known provider id` };
+  }
+  if (isUserDeclaredProvider(id)) {
+    return { valid: false, error: `"${id}" is already declared in your config` };
+  }
+  return { valid: true };
+}
+
+/**
+ * Validate a base URL.
+ * Must start with http:// or https://.
+ */
+export function isValidBaseUrl(
+  url: string,
+): { valid: boolean; error?: string } {
+  if (!url) return { valid: false, error: "Base URL is required" };
+  if (!/^https?:\/\//.test(url)) {
+    return { valid: false, error: "Must start with http:// or https://" };
+  }
+  return { valid: true };
 }
 
 export function finalizeProviderSetup(
   provider: string,
   configAction: "write" | "skip" | "overwrite",
+  opts?: {
+    model?: string;
+    customProvider?: CustomProviderConfig;
+    keySaved?: boolean;
+  },
 ): SetupResult {
   const info = describeProviderSetup(provider);
   const logger = getAppLogger().child("app");
@@ -53,24 +139,21 @@ export function finalizeProviderSetup(
     logger.info(`Interactive setup completed for provider: ${provider}`, {
       details: { provider, configWritten: false },
     });
-    if (info.needsExternalConfig) {
-      return {
-        success: true,
-        provider,
-        message: `Provider ${provider} requires separate configuration.`,
-      };
-    }
     return {
       success: true,
       provider,
+      model: opts?.model,
+      keySaved: opts?.keySaved ?? false,
       message: info.keyDetected
         ? `Provider ${provider} is already configured.`
-        : `Setup notes recorded for ${provider}. Set your API key and restart.`,
+        : `Setup notes recorded for ${provider}.`,
     };
   }
 
   const writeResult = writeProviderConfig(provider, {
     force: configAction === "overwrite",
+    model: opts?.model,
+    customProvider: opts?.customProvider,
   });
 
   if (!writeResult.written && configAction === "write") {
@@ -85,35 +168,18 @@ export function finalizeProviderSetup(
     details: { provider, configWritten: writeResult.written, path: writeResult.path },
   });
 
-  if (info.needsExternalConfig) {
-    return {
-      success: true,
-      provider,
-      message: writeResult.written
-        ? `${writeResult.message}. Configure ${provider} credentials, then restart.`
-        : writeResult.message,
-    };
-  }
-
-  const envKey = info.envKey!;
-  if (writeResult.written) {
-    const nextSteps = info.keyDetected
-      ? [`Config saved: ${writeResult.path}`, "Restart PRAANA to begin."]
-      : [
-          `Config saved: ${writeResult.path}`,
-          `Set your key: export ${envKey}=<your-api-key>`,
-          "Restart PRAANA.",
-        ];
-    return {
-      success: true,
-      provider,
-      message: nextSteps.join(" "),
-    };
-  }
+  const keySaved = opts?.keySaved ?? false;
+  const message = writeResult.written
+    ? keySaved
+      ? `Key saved to ~/.praana/credentials.json. Config created at ${writeResult.path}. PRAANA is ready.`
+      : writeResult.message
+    : writeResult.message;
 
   return {
     success: true,
     provider,
-    message: writeResult.message,
+    model: opts?.model,
+    keySaved,
+    message,
   };
 }
