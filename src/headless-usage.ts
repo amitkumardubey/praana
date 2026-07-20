@@ -43,9 +43,11 @@ const MODEL_PRICES_PER_MILLION: Record<string, PricePerMillion> = {
   "google/gemini-2.5-pro": { input: 1.25, output: 10 },
   "google/gemini-2.5-flash": { input: 0.15, output: 0.6 },
   "z-ai/glm-5.2": { input: 0.6, output: 2.2 },
-  // Umans pay-per-token (service-account). umans-coder currently routes to kimi.
+  // Umans pay-per-token (service-account wallet rates, USD / 1M).
+  // Docs: umans-coder currently routes to kimi-k2.7 rates.
   "umans-coder": { input: 0.95, output: 4.0, cache: 0.19 },
   "umans-kimi-k2.7": { input: 0.95, output: 4.0, cache: 0.19 },
+  "umans-kimi-k2.7-code": { input: 0.95, output: 4.0, cache: 0.19 },
   "umans-glm-5.2": { input: 1.4, output: 4.4, cache: 0.26 },
   "umans-flash": { input: 0.15, output: 1.0, cache: 0.05 },
 };
