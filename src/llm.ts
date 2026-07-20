@@ -62,7 +62,6 @@ export const DEFAULT_MODELS: Record<string, string> = {
   fireworks: "accounts/fireworks/models/llama-v3p1-70b-instruct",
   together: "meta-llama/Llama-3.1-70B-Instruct-Turbo",
   opencode: "gpt-4o",
-  openrouter: "deepseek/deepseek-v4-flash:free",
   ollama: "llama3",
   umans: "umans-coder",
   "amazon-bedrock": "anthropic.claude-sonnet-4-20250514-v1:0",

@@ -169,6 +169,24 @@ describe("/login and /logout", () => {
       expect(result.lines.join(" ")).toContain("next turn may fail");
     });
 
+    it("places active-provider warning before success message in lines", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      const session = createMockSession("openrouter");
+      const result = await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      const joined = result.lines.join(" ");
+      const warningIdx = joined.indexOf("active provider");
+      const loggedOutIdx = joined.indexOf("Logged out");
+      expect(warningIdx).toBeGreaterThanOrEqual(0);
+      expect(loggedOutIdx).toBeGreaterThanOrEqual(0);
+      // Warning must appear BEFORE the success message so it survives
+      // toast truncation (BUG #2 regression test)
+      expect(warningIdx).toBeLessThan(loggedOutIdx);
+    });
+
     it("returns error when provider has no credentials", async () => {
       const session = createMockSession();
       const result = await executeSlashCommand("/logout nonexistent", session, {

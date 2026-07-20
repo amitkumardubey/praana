@@ -937,8 +937,9 @@ export async function executeSlashCommand(
         lines.push("Run /new to fully deactivate the provider.");
       }
       if (provider === session.getEffectiveProvider()) {
-        lines.push(`⚠ ${provider} is your active provider — the next turn may fail.`);
-        lines.push("Use /login to re-add, or /model to switch.");
+        // Prepend warning so it's visible even after toast truncation (BUG #2 fix)
+        lines.unshift("Use /login to re-add, or /model to switch.");
+        lines.unshift(`⚠ ${provider} is your active provider — the next turn may fail.`);
       }
 
       return result("refresh_status", "toast", "success");

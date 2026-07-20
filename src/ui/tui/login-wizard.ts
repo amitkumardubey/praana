@@ -36,6 +36,7 @@ import {
   isValidBaseUrl,
   providerRequiresApiKey,
   pickDefaultModel,
+  fetchProviderModels,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import {
@@ -265,6 +266,7 @@ export class LoginWizard implements Component, Focusable {
       } else {
         // Use existing key — just switch
         this.finish(false, "");
+        return;
       }
       this.showStep();
       this.tui.requestRender();
@@ -505,8 +507,18 @@ export class LoginWizard implements Component, Focusable {
 
   // ── Completion ──
 
-  private finishKeyless(): void {
-    const defaultModel = pickDefaultModel(this.provider);
+  private showFetchingModels(): void {
+    this.root.clear();
+    this.activeInput = null;
+    this.activeList = null;
+    this.root.addChild(new Text(TUI_STYLE.info("Fetching models…"), 0, 0));
+    this.tui.requestRender();
+  }
+
+  private async finishKeyless(): Promise<void> {
+    this.showFetchingModels();
+    const liveModels = await fetchProviderModels(this.provider);
+    const defaultModel = pickDefaultModel(this.provider, liveModels);
     this.onCompleteCallback({
       provider: this.provider,
       message: `${this.provider} doesn't require an API key.`,
@@ -515,15 +527,17 @@ export class LoginWizard implements Component, Focusable {
     });
   }
 
-  private finish(keySaved: boolean, keyValue: string): void {
+  private async finish(keySaved: boolean, keyValue: string): Promise<void> {
     const isCustom = isUserDeclaredProvider(this.provider);
     if (keySaved && keyValue) {
       saveProviderKey(this.provider, keyValue);
     }
 
     if (!isCustom) {
-      // Catalog provider — update config and switch
-      const defaultModel = pickDefaultModel(this.provider);
+      // Catalog provider — fetch live models, then update config and switch
+      this.showFetchingModels();
+      const liveModels = await fetchProviderModels(this.provider);
+      const defaultModel = pickDefaultModel(this.provider, liveModels);
       updateLlmProvider(this.provider, defaultModel || undefined);
       this.onCompleteCallback({
         provider: this.provider,
