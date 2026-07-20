@@ -44,6 +44,7 @@ import { PiTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
 import { LoginWizard } from "./login-wizard.js";
+import { LogoutWizard } from "./logout-wizard.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
 import { SLASH_COMMAND_METADATA } from "../../slash-commands.js";
@@ -352,6 +353,39 @@ export async function runTui(
     tui.requestRender(true);
   };
 
+  const closeLogoutWizard = () => {
+    promptSlot.clear();
+    promptSlot.addChild(editor);
+    tui.setFocus(editor);
+    tui.requestRender();
+  };
+
+  const openLogoutWizard = () => {
+    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
+      slashOverlayHandle.hide();
+      slashOverlayHandle = null;
+    }
+
+    const wizard = new LogoutWizard({
+      tui,
+      currentProvider: session.getEffectiveProvider(),
+      onComplete: (result) => {
+        closeLogoutWizard();
+        const tone: "info" | "success" =
+          result.message.includes("Run /new") ? "info" : "success";
+        toast.show(result.message, tone);
+        refreshChrome();
+        tui.requestRender();
+      },
+      onCancel: () => closeLogoutWizard(),
+    });
+
+    promptSlot.clear();
+    promptSlot.addChild(wizard);
+    tui.setFocus(wizard);
+    tui.requestRender(true);
+  };
+
   const modelId = controller.currentModelOrDefault();
   const ctxWindow =
     session.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
@@ -489,6 +523,10 @@ export async function runTui(
       }
       if (result.action === "open_login_wizard") {
         openLoginWizard(result.loginProviderHint);
+        return;
+      }
+      if (result.action === "open_logout_wizard") {
+        openLogoutWizard();
         return;
       }
       tui.requestRender();

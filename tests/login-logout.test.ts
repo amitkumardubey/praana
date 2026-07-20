@@ -113,7 +113,7 @@ describe("/login and /logout", () => {
       expect(result.lines.join(" ")).toContain("No providers logged in");
     });
 
-    it("removes the single stored provider on bare /logout", async () => {
+    it("returns open_logout_wizard action with a single stored provider", async () => {
       setApiKey("openrouter", "sk-test-123");
       const session = createMockSession("openrouter");
       const result = await executeSlashCommand("/logout", session, {
@@ -121,16 +121,13 @@ describe("/login and /logout", () => {
         setThinking: mock(),
         getThinking: () => false,
       });
-      expect(result.action).toBe("refresh_status");
-      expect(result.toastTone).toBe("success");
-      expect(result.lines.join(" ")).toContain("Logged out: openrouter");
-      // Active provider warning
-      expect(result.lines.join(" ")).toContain("active provider");
-      // Key should be removed
-      expect(listStoredProviders()).toEqual([]);
+      expect(result.action).toBe("open_logout_wizard");
+      expect(result.display).toBe("toast");
+      // Key NOT removed — the wizard does the removal, not the dispatch
+      expect(listStoredProviders()).toEqual(["openrouter"]);
     });
 
-    it("lists multiple providers instead of auto-removing", async () => {
+    it("returns open_logout_wizard action with multiple stored providers", async () => {
       setApiKey("openrouter", "sk-test-1");
       setApiKey("openai", "sk-test-2");
       const session = createMockSession("openrouter");
@@ -139,12 +136,9 @@ describe("/login and /logout", () => {
         setThinking: mock(),
         getThinking: () => false,
       });
-      expect(result.action).toBe("none");
-      expect(result.toastTone).toBe("info");
-      expect(result.lines.join(" ")).toContain("openrouter");
-      expect(result.lines.join(" ")).toContain("openai");
-      expect(result.lines.join(" ")).toContain("(active)");
-      // Neither should be removed
+      expect(result.action).toBe("open_logout_wizard");
+      expect(result.display).toBe("toast");
+      // Neither removed — wizard handles it
       expect(listStoredProviders().sort()).toEqual(["openai", "openrouter"]);
     });
 

@@ -47,7 +47,8 @@ export type SlashCommandAction =
   | "clear_transcript"
   | "new_session"
   | "open_model_selector"
-  | "open_login_wizard";
+  | "open_login_wizard"
+  | "open_logout_wizard";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -899,33 +900,13 @@ export async function executeSlashCommand(
           lines.push("No providers logged in.");
           return result("none", "toast", "info");
         }
-        if (stored.length === 1) {
-          const p = stored[0]!;
-          removeApiKey(p);
-          let sectionRemoved = false;
-          if (isUserDeclaredProvider(p)) {
-            const sectionResult = removeProviderSection(p);
-            sectionRemoved = sectionResult.written;
-          }
-          const activeProvider = session.getEffectiveProvider();
-          lines.push(`Logged out: ${p}`);
-          if (p === activeProvider) {
-            lines.push(`⚠ ${p} is your active provider — the next turn may fail.`);
-            lines.push("Use /login to re-add, or /model to switch.");
-          }
-          if (sectionRemoved) {
-            lines.push(`Removed [providers.${p}] from config.toml.`);
-            lines.push("Run /new to fully deactivate the provider.");
-          }
-          return result("refresh_status", "toast", "success");
-        }
-        // Multiple providers — list them, don't auto-remove
-        lines.push("Multiple providers logged in. Specify which to log out:");
-        for (const p of stored) {
-          const active = p === session.getEffectiveProvider() ? " (active)" : "";
-          lines.push(`  /logout ${p}${active}`);
-        }
-        return result("none", "toast", "info");
+        // Has stored providers → open the interactive logout wizard
+        lines.push("Opening logout wizard…");
+        return {
+          action: "open_logout_wizard",
+          lines,
+          display: "toast",
+        };
       }
 
       // Specific provider requested
