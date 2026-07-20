@@ -25,6 +25,8 @@ def _install_harbor_stubs() -> None:
     models = ModuleType("harbor.models")
     agent_pkg = ModuleType("harbor.models.agent")
     context_mod = ModuleType("harbor.models.agent.context")
+    trial_pkg = ModuleType("harbor.models.trial")
+    trial_result = ModuleType("harbor.models.trial.result")
 
     class CliFlag:
         def __init__(self, kwarg, cli, type="str", default=None, env_fallback=None, **_):
@@ -34,6 +36,17 @@ def _install_harbor_stubs() -> None:
             self.default = default
             self.env_fallback = env_fallback
 
+    class ModelInfo:
+        def __init__(self, name=None, provider=None):
+            self.name = name
+            self.provider = provider
+
+    class AgentInfo:
+        def __init__(self, name=None, version=None, model_info=None):
+            self.name = name
+            self.version = version
+            self.model_info = model_info
+
     class BaseInstalledAgent:
         CLI_FLAGS: list = []
 
@@ -41,6 +54,14 @@ def _install_harbor_stubs() -> None:
             self.logs_dir = logs_dir
             self._version = version
             self.model_name = kwargs.pop("model_name", None)
+            self._parsed_model_provider = None
+            self._parsed_model_name = None
+            if self.model_name and "/" in self.model_name:
+                self._parsed_model_provider, self._parsed_model_name = (
+                    self.model_name.split("/", 1)
+                )
+            elif self.model_name:
+                self._parsed_model_name = self.model_name
             self._resolved_flags = {}
             for flag in type(self).CLI_FLAGS:
                 if flag.kwarg in kwargs:
@@ -65,6 +86,8 @@ def _install_harbor_stubs() -> None:
     base.with_prompt_template = with_prompt_template
     env_base.BaseEnvironment = object
     context_mod.AgentContext = object
+    trial_result.AgentInfo = AgentInfo
+    trial_result.ModelInfo = ModelInfo
 
     sys.modules["harbor"] = harbor
     sys.modules["harbor.agents"] = agents
@@ -75,6 +98,8 @@ def _install_harbor_stubs() -> None:
     sys.modules["harbor.models"] = models
     sys.modules["harbor.models.agent"] = agent_pkg
     sys.modules["harbor.models.agent.context"] = context_mod
+    sys.modules["harbor.models.trial"] = trial_pkg
+    sys.modules["harbor.models.trial.result"] = trial_result
 
     sys.path.insert(0, str(_REPO))
 
@@ -215,7 +240,9 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
     Writing metadata during run() makes is_empty() false and drops token import.
     """
     Praana, _, _ = praana_mod
-    usage = tmp_path / "praana-usage.json"
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    usage = agent_dir / "praana-usage.json"
     usage.write_text(
         json.dumps(
             {
@@ -234,7 +261,7 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
         encoding="utf-8",
     )
     agent = Praana(
-        tmp_path,
+        agent_dir,
         model_name="umans/umans-coder",
         reasoning_effort="max",
     )
@@ -266,10 +293,27 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
     assert ctx.metadata["praana_reasoning_effort"] == "xhigh"
     assert ctx.metadata["praana_reasoning_effort_wire"] == "high"
     assert ctx.metadata["praana_provider"] == "umans"
-    summary = (tmp_path / "praana-summary.txt").read_text(encoding="utf-8")
+    summary = (agent_dir / "praana-summary.txt").read_text(encoding="utf-8")
     assert "reasoning_effort:   xhigh" in summary
     assert "reasoning_wire:     high" in summary
     assert "n_input_tokens:     44252" in summary
+    analysis = (tmp_path / "analysis.md").read_text(encoding="utf-8")
+    assert "reasoning_effort:   xhigh" in analysis
+
+
+def test_agent_info_embeds_reasoning_effort_for_web_ui(praana_mod, tmp_path):
+    Praana, _, _ = praana_mod
+    agent = Praana(
+        tmp_path,
+        model_name="umans/umans-glm-5.2",
+        reasoning_effort="high",
+        version="feat/reasoning-effort-38",
+    )
+    info = agent.to_agent_info()
+    assert info.model_info is not None
+    assert info.model_info.name == "umans-glm-5.2 · effort=high"
+    assert info.model_info.provider == "umans"
+    assert "effort=high" in (info.version or "")
 
 
 def test_apply_usage_report_missing_file(praana_mod, tmp_path):

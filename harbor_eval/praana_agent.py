@@ -42,6 +42,7 @@ from harbor.agents.installed.base import (
 )
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from harbor.models.trial.result import AgentInfo, ModelInfo
 
 # Keys commonly needed by PRAANA providers. Harbor's litellm helper does not
 # know about umans; include it explicitly.
@@ -106,7 +107,29 @@ class Praana(BaseInstalledAgent):
 
     @override
     def version(self) -> str | None:
-        return self._version
+        base = self._version or self._git_ref or "unknown"
+        effort = self._reasoning_effort or "medium"
+        return f"{base}+effort={effort}"
+
+    @override
+    def to_agent_info(self) -> AgentInfo:
+        """Include reasoning effort in model name so Harbor web UI shows it."""
+        effort = self._reasoning_effort or "medium"
+        model_name = self._parsed_model_name
+        if model_name:
+            model_name = f"{model_name} · effort={effort}"
+        return AgentInfo(
+            name=self.name(),
+            version=self.version() or "unknown",
+            model_info=(
+                ModelInfo(
+                    name=model_name,
+                    provider=self._parsed_model_provider,
+                )
+                if model_name
+                else None
+            ),
+        )
 
     @override
     def get_version_command(self) -> str | None:
@@ -168,6 +191,8 @@ class Praana(BaseInstalledAgent):
         meta.setdefault("praana_reasoning_effort", effort)
         context.metadata = meta
         write_praana_summary(self.logs_dir, context)
+        # Harbor viewer reads trial/analysis.md as the agent-logs "summary".
+        write_trial_analysis_md(self.logs_dir.parent, context)
         print_praana_summary(context)
 
     def _provider_and_model(self) -> tuple[str, str]:
@@ -281,6 +306,19 @@ def format_praana_summary_lines(context: AgentContext) -> list[str]:
 def write_praana_summary(logs_dir: Path, context: AgentContext) -> Path:
     path = logs_dir / _SUMMARY_FILENAME
     path.write_text("\n".join(format_praana_summary_lines(context)) + "\n", encoding="utf-8")
+    return path
+
+
+def write_trial_analysis_md(trial_dir: Path, context: AgentContext) -> Path | None:
+    """Write trial/analysis.md — Harbor viewer surfaces this as agent-logs summary."""
+    try:
+        trial_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    path = trial_dir / "analysis.md"
+    lines = format_praana_summary_lines(context)
+    body = ["# PRAANA run summary", "", "```text", *lines, "```", ""]
+    path.write_text("\n".join(body), encoding="utf-8")
     return path
 
 

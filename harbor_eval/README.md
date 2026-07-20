@@ -81,9 +81,10 @@ uv run --with pytest python -m pytest harbor_eval/ -q
   Metadata includes `praana_reasoning_effort` (preferred) and
   `praana_reasoning_effort_wire` (actual value sent to the provider, if any).
   After each trial Harbor prints a **praana summary** block to stderr and writes
-  `agent/praana-summary.txt` (effort, wire, tokens, cost). Harbor’s own metrics
-  table does **not** show metadata — use the summary file or:
-  `jq '.agent_result.metadata' jobs/.../*/result.json`.
+  `agent/praana-summary.txt` plus trial-level `analysis.md` (shown in Harbor
+  viewer agent-logs summary). The model column in the web UI includes
+  `· effort=<level>` via `to_agent_info()`. Harbor’s metrics table still does
+  **not** render arbitrary `AgentContext.metadata` keys.
   The agent also prepends `provider=… model=… reasoning_effort=…` to
   `/logs/agent/praana.txt`.
   **Important:** do not write `AgentContext.metadata` during `run()` — Harbor only
