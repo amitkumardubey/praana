@@ -19,10 +19,15 @@ Optional agent kwargs (``--ak key=value``)::
     max_steps=80          # maps to praana --max-steps
     context_engine=true   # sets PRAANA_CONTEXT_ENGINE
     repo_url=...          # override clone URL
+
+After each run, PRAANA writes ``/logs/agent/praana-usage.json`` (tokens +
+optional ``cost_usd``). ``populate_context_post_run`` loads it into Harbor's
+``AgentContext`` so jobs report token/cost efficiency.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from pathlib import Path
@@ -54,7 +59,9 @@ _PRAANA_API_KEYS = (
 
 _DEFAULT_REPO = "https://github.com/amitkumardubey/praana.git"
 _INSTALL_DIR = "$HOME/praana"
-_BUN_BIN = '$HOME/.bun/bin'
+_BUN_BIN = "$HOME/.bun/bin"
+_USAGE_FILENAME = "praana-usage.json"
+_USAGE_PATH_IN_CONTAINER = f"/logs/agent/{_USAGE_FILENAME}"
 
 
 class Praana(BaseInstalledAgent):
@@ -130,7 +137,7 @@ class Praana(BaseInstalledAgent):
                 f"cd {_INSTALL_DIR} && git checkout {ref_q}); "
                 f"cd {_INSTALL_DIR}; "
                 "bun install; "
-                "mkdir -p \"$HOME/.local/bin\"; "
+                'mkdir -p "$HOME/.local/bin"; '
                 f'ln -sfn {_INSTALL_DIR}/bin/praana.js "$HOME/.local/bin/praana"; '
                 f'ln -sfn {_INSTALL_DIR}/bin/pran.js "$HOME/.local/bin/pran"; '
                 f'export PATH="{_BUN_BIN}:$HOME/.local/bin:$PATH"; '
@@ -141,9 +148,7 @@ class Praana(BaseInstalledAgent):
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
-        # Token accounting lives in PRAANA session logs; leave unset unless we
-        # later parse ~/.praana/sessions for Harbor metrics.
-        _ = context
+        apply_usage_report_to_context(self.logs_dir / _USAGE_FILENAME, context)
 
     def _provider_and_model(self) -> tuple[str, str]:
         if not self.model_name or "/" not in self.model_name:
@@ -155,12 +160,12 @@ class Praana(BaseInstalledAgent):
         return provider.strip(), model.strip()
 
     def _api_env(self) -> dict[str, str]:
-        env: dict[str, str] = {}
+        env: dict[str, str] = {
+            "PRAANA_USAGE_PATH": _USAGE_PATH_IN_CONTAINER,
+        }
         for key in _PRAANA_API_KEYS:
             if key in os.environ and os.environ[key]:
                 env[key] = os.environ[key]
-        # Also pick up keys Harbor forwarded via --ae into the agent process
-        # environment (already in os.environ when Harbor launches us).
         if self._context_engine is not None:
             env["PRAANA_CONTEXT_ENGINE"] = (
                 "true" if self._context_engine else "false"
@@ -177,7 +182,7 @@ class Praana(BaseInstalledAgent):
             f"[edit]\\nconfirm = false\\n"
         )
         return (
-            "mkdir -p \"$HOME/.praana\" && "
+            'mkdir -p "$HOME/.praana" && '
             f"printf '%b' {shlex.quote(config)} > \"$HOME/.praana/config.toml\""
         )
 
@@ -208,11 +213,62 @@ class Praana(BaseInstalledAgent):
             command=(
                 "set -euo pipefail; "
                 f'export PATH="{_BUN_BIN}:$HOME/.local/bin:$PATH"; '
+                "mkdir -p /logs/agent; "
                 f"praana run --incognito {extra}{escaped} "
                 f"2>&1 | stdbuf -oL tee /logs/agent/praana.txt"
             ),
             env=env,
         )
+
+
+def apply_usage_report_to_context(
+    usage_path: Path,
+    context: AgentContext,
+) -> bool:
+    """Load praana-usage.json into Harbor AgentContext. Returns True if applied."""
+    if not usage_path.exists():
+        return False
+    try:
+        data = json.loads(usage_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    def _int_field(key: str) -> int | None:
+        raw = data.get(key)
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float) and raw == int(raw):
+            return int(raw)
+        return None
+
+    n_in = _int_field("n_input_tokens")
+    n_out = _int_field("n_output_tokens")
+    n_cache = _int_field("n_cache_tokens")
+    if n_in is not None:
+        context.n_input_tokens = n_in
+    if n_out is not None:
+        context.n_output_tokens = n_out
+    if n_cache is not None:
+        context.n_cache_tokens = n_cache
+
+    cost = data.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        context.cost_usd = float(cost)
+
+    meta = dict(context.metadata or {})
+    if data.get("session_id"):
+        meta["praana_session_id"] = data["session_id"]
+    if data.get("model"):
+        meta["praana_model"] = data["model"]
+    if data.get("provider"):
+        meta["praana_provider"] = data["provider"]
+    if meta:
+        context.metadata = meta
+    return True
 
 
 def _coerce_bool(value: bool | str | None) -> bool | None:

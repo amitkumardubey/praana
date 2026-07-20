@@ -1,15 +1,21 @@
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect, mock, afterEach } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createHeadlessTurnSink,
   validateRunPrompt,
   withMaxSteps,
   runHeadless,
+  estimateCostUsd,
+  buildHeadlessUsageReport,
+  writeHeadlessUsageReport,
 } from "../src/headless-run.js";
 import type { PraanaConfig } from "../src/types.js";
 
 function baseConfig(): PraanaConfig {
   return {
-    llm: { provider: "openrouter", model: "test-model" },
+    llm: { provider: "openrouter", model: "anthropic/claude-sonnet-5" },
     memory: {
       enabled: false,
       summarizer: "openrouter",
@@ -100,8 +106,68 @@ describe("createHeadlessTurnSink", () => {
   });
 });
 
+describe("estimateCostUsd", () => {
+  it("estimates cost for known models", () => {
+    // 1M in + 1M out at $3 / $15 → $18
+    expect(estimateCostUsd("anthropic/claude-sonnet-5", 1_000_000, 1_000_000)).toBe(18);
+  });
+
+  it("returns null for unknown models", () => {
+    expect(estimateCostUsd("umans/umans-coder", 1000, 100)).toBeNull();
+  });
+});
+
+describe("usage report", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("buildHeadlessUsageReport reads session token counters", () => {
+    const cfg = baseConfig();
+    const report = buildHeadlessUsageReport({
+      id: "01USAGE",
+      config: cfg,
+      getInputTokens: () => 1200,
+      getOutputTokens: () => 340,
+    });
+    expect(report.n_input_tokens).toBe(1200);
+    expect(report.n_output_tokens).toBe(340);
+    expect(report.model).toBe("anthropic/claude-sonnet-5");
+    expect(report.cost_usd).not.toBeNull();
+  });
+
+  it("writeHeadlessUsageReport writes JSON to disk", () => {
+    dir = mkdtempSync(join(tmpdir(), "praana-usage-"));
+    const path = join(dir, "praana-usage.json");
+    const cfg = baseConfig();
+    writeHeadlessUsageReport(
+      {
+        id: "01WRITE",
+        config: cfg,
+        getInputTokens: () => 10,
+        getOutputTokens: () => 5,
+      },
+      path,
+    );
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    expect(parsed.schema_version).toBe(1);
+    expect(parsed.n_input_tokens).toBe(10);
+    expect(parsed.n_output_tokens).toBe(5);
+  });
+});
+
 describe("runHeadless", () => {
+  let dir: string;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
   it("creates a session, runs one turn, and shuts down", async () => {
+    dir = mkdtempSync(join(tmpdir(), "praana-headless-"));
+    const usagePath = join(dir, "usage.json");
     const end = mock(async () => ({
       memory: "skipped" as const,
       turns: 1,
@@ -113,8 +179,11 @@ describe("runHeadless", () => {
     const session = {
       id: "01HEADLESSSESSION",
       debug: false,
+      config: baseConfig(),
       end,
       getTranscriptEvents: () => [],
+      getInputTokens: () => 100,
+      getOutputTokens: () => 20,
     };
     const createSession = mock(async (_cwd: string, config: PraanaConfig) => {
       expect(config.turn.max_steps).toBe(12);
@@ -130,6 +199,7 @@ describe("runHeadless", () => {
       config: baseConfig(),
       prompt: "do the thing",
       maxSteps: 12,
+      usagePath,
       createSession,
       runTurnFn: runTurnFn as never,
     });
@@ -139,9 +209,13 @@ describe("runHeadless", () => {
     expect(end).toHaveBeenCalledTimes(1);
     expect(result.sessionId).toBe("01HEADLESSSESSION");
     expect(result.response).toBe("done");
+    expect(result.usage?.n_input_tokens).toBe(100);
+    expect(JSON.parse(readFileSync(usagePath, "utf8")).n_output_tokens).toBe(20);
   });
 
   it("ends session with error reason when turn fails", async () => {
+    dir = mkdtempSync(join(tmpdir(), "praana-headless-err-"));
+    const usagePath = join(dir, "usage.json");
     const end = mock(async () => ({
       memory: "skipped" as const,
       turns: 0,
@@ -153,14 +227,18 @@ describe("runHeadless", () => {
     const session = {
       id: "01FAIL",
       debug: false,
+      config: baseConfig(),
       end,
       getTranscriptEvents: () => [],
+      getInputTokens: () => 0,
+      getOutputTokens: () => 0,
     };
     await expect(
       runHeadless({
         cwd: "/tmp",
         config: baseConfig(),
         prompt: "boom",
+        usagePath,
         createSession: async () => session as never,
         runTurnFn: async () => {
           throw new Error("provider down");
@@ -172,5 +250,6 @@ describe("runHeadless", () => {
       [],
       expect.objectContaining({ memoryTimeoutMs: 50 }),
     );
+    expect(readFileSync(usagePath, "utf8")).toContain("n_input_tokens");
   });
 });

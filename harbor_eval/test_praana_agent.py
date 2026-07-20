@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -75,57 +76,115 @@ def _install_harbor_stubs() -> None:
     sys.modules["harbor.models.agent"] = agent_pkg
     sys.modules["harbor.models.agent.context"] = context_mod
 
-    # Ensure package imports resolve to the repo copy.
     sys.path.insert(0, str(_REPO))
 
 
 @pytest.fixture(scope="module")
 def praana_mod():
     _install_harbor_stubs()
-    from harbor_eval.praana_agent import Praana, _coerce_bool  # noqa: WPS433
+    from harbor_eval.praana_agent import (  # noqa: WPS433
+        Praana,
+        _coerce_bool,
+        apply_usage_report_to_context,
+    )
 
-    return Praana, _coerce_bool
+    return Praana, _coerce_bool, apply_usage_report_to_context
 
 
 def test_name(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     assert Praana.name() == "praana"
 
 
 def test_provider_and_model_split(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     agent = Praana(Path("/tmp"), model_name="openrouter/org/model")
     assert agent._provider_and_model() == ("openrouter", "org/model")
 
 
 def test_provider_and_model_umans(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     agent = Praana(Path("/tmp"), model_name="umans/umans-coder")
     assert agent._provider_and_model() == ("umans", "umans-coder")
 
 
 def test_provider_and_model_requires_slash(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     agent = Praana(Path("/tmp"), model_name="umans-coder")
     with pytest.raises(ValueError, match="provider/model"):
         agent._provider_and_model()
 
 
 def test_write_config_command(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     agent = Praana(Path("/tmp"), model_name="umans/umans-coder")
     cmd = agent._write_config_command("umans", "umans-coder")
     assert "umans" in cmd and "umans-coder" in cmd and "config.toml" in cmd
 
 
 def test_build_cli_flags_max_steps(praana_mod):
-    Praana, _ = praana_mod
+    Praana, _, _ = praana_mod
     agent = Praana(Path("/tmp"), model_name="umans/umans-coder", max_steps=40)
     assert "--max-steps 40" in agent.build_cli_flags()
 
 
+def test_api_env_sets_usage_path(praana_mod):
+    Praana, _, _ = praana_mod
+    agent = Praana(Path("/tmp"), model_name="umans/umans-coder")
+    env = agent._api_env()
+    assert env["PRAANA_USAGE_PATH"] == "/logs/agent/praana-usage.json"
+
+
 def test_coerce_bool(praana_mod):
-    _, coerce = praana_mod
+    _, coerce, _ = praana_mod
     assert coerce("true") is True
     assert coerce("0") is False
     assert coerce(None) is None
+
+
+def test_apply_usage_report_to_context(praana_mod, tmp_path):
+    _, _, apply = praana_mod
+    usage = tmp_path / "praana-usage.json"
+    usage.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "01ABC",
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-5",
+                "n_input_tokens": 12000,
+                "n_output_tokens": 800,
+                "n_cache_tokens": 100,
+                "cost_usd": 0.048,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class Ctx:
+        n_input_tokens = None
+        n_output_tokens = None
+        n_cache_tokens = None
+        cost_usd = None
+        metadata = None
+
+    ctx = Ctx()
+    assert apply(usage, ctx) is True
+    assert ctx.n_input_tokens == 12000
+    assert ctx.n_output_tokens == 800
+    assert ctx.n_cache_tokens == 100
+    assert ctx.cost_usd == 0.048
+    assert ctx.metadata["praana_session_id"] == "01ABC"
+
+
+def test_apply_usage_report_missing_file(praana_mod, tmp_path):
+    _, _, apply = praana_mod
+
+    class Ctx:
+        n_input_tokens = None
+        n_output_tokens = None
+        n_cache_tokens = None
+        cost_usd = None
+        metadata = None
+
+    assert apply(tmp_path / "missing.json", Ctx()) is False
