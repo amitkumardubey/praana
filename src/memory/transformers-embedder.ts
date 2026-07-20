@@ -2,9 +2,11 @@
 // PRAANA Memory — Transformers.js embedder (in-process, deterministic)
 // ============================================================
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { appHomePath } from "../app-identity.js";
 import { startSpinner, stopSpinner } from "../ui.js";
+import { confirmModelDownload } from "../ui/tui/download-consent.js";
 import type { Embedder } from "./types.js";
 import {
   resolveTransformersModel,
@@ -62,6 +64,15 @@ export async function isTransformersAvailable(): Promise<boolean> {
   return (await loadTransformersModule()) !== null;
 }
 
+/**
+ * Check whether the ONNX weights for `modelId` are already present in
+ * `cacheDir`. The cache layout is `<cacheDir>/<modelId>/onnx/` — if the
+ * `onnx` subdirectory exists, the model was downloaded.
+ */
+export function isModelCached(cacheDir: string, modelId: string): boolean {
+  return existsSync(join(cacheDir, modelId, "onnx"));
+}
+
 async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExtractionPipeline> {
   if (pipelinePromise && loadedPreset?.id === preset.id) {
     return pipelinePromise;
@@ -76,6 +87,12 @@ async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExt
     const cacheDir = appHomePath("models");
     mkdirSync(cacheDir, { recursive: true });
     mod.env.cacheDir = cacheDir;
+
+    if (!isModelCached(cacheDir, preset.id)) {
+      if (!(await confirmModelDownload(preset.id))) {
+        throw new Error("embedding model download cancelled by user");
+      }
+    }
 
     let spinnerStarted = false;
 

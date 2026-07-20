@@ -9,6 +9,7 @@ export { OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export {
   TransformersEmbedder,
   isTransformersAvailable,
+  isModelCached,
   resetTransformersEmbedderForTests,
 } from "./transformers-embedder.js";
 export { TRANSFORMERS_MODEL_PRESETS } from "./transformers-models.js";
