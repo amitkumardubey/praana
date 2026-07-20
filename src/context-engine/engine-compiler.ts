@@ -50,7 +50,7 @@ import { validateBudgetAllocation } from "../domain/types.js";
 import type { BudgetAllocation, DomainClassifier, TaskClassificationResult } from "../domain/types.js";
 import { renderWorkflowContext } from "./workflow-tracker.js";
 
-const BAND_VERBATIM_TOKENS = 3000;
+const BAND_VERBATIM_TOKENS = 30000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
 const BAND_SCORED_OLDER_TOKENS = 2000;
 

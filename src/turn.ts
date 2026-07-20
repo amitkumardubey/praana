@@ -1,6 +1,6 @@
 import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, resolve, isAbsolute } from "node:path";
+import { join } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { ZodTypeAny } from "zod";
@@ -8,7 +8,6 @@ import type { Session } from "./session.js";
 import type { StateObject, PraanaConfig } from "./types.js";
 import type { AutoHydrateResult } from "./state-graph.js";
 import type { CompileMetrics } from "./compiler.js";
-import { buildAgentHints, buildFilesReadIndexSection } from "./compiler.js";
 import { compileClassicWithMetrics } from "./compile-classic.js";
 import {
   compileEngineWithMetrics,
@@ -16,7 +15,6 @@ import {
   estimateTokens,
 } from "./context-engine/index.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
-import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
@@ -31,7 +29,6 @@ import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
 import {
   buildContextDisplaySnapshot,
-  computeDistillerSavings,
   estimateAssistantMessageTokens,
   maxContextSnapshot,
 } from "./context-display.js";
@@ -398,27 +395,10 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
-    blockRepeatReads: session.config.tools?.block_repeat_reads ?? true,
-    hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
-    getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
+    // Observe experiment: no repeat-read interceptor — re-reads hit disk.
     clearReadPath: (absPath) => {
       session.scorecard.clearReadPath(absPath);
       session.contextEngine?.clearFileRead(absPath);
-    },
-    findFileReadArtifact: (absPath) => {
-      const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
-      if (!art) return null;
-      return {
-        id: art.id,
-        createdTurn: art.createdTurn,
-        card: buildArtifactCard(
-          art.id,
-          art.sourceTool,
-          art.command,
-          art.rawTokens,
-          art.summary,
-        ),
-      };
     },
   });
 
@@ -476,10 +456,6 @@ export async function runTurn(
     // Pre-fetch all stored workflow patterns for injection into the compiled prompt
     // (issue #92). The compiler filters them to the classified task type internally.
     const workflowPatterns = session.contextEngine!.listAllWorkflowPatterns();
-    const fileReads = session.contextEngine!.store.listFileReads();
-    const filesReadIndex = fileReads.length > 0
-      ? buildFilesReadIndexSection(fileReads, session.cwd)
-      : "";
     const engineResult = await compileEngineWithMetrics({
       ...compileInput,
       currentTurn: session.getTurnCount(),
@@ -497,10 +473,7 @@ export async function runTurn(
       embedder: session.memoryStore?.embedder ?? null,
       embeddingCache: session.embeddingCache,
       workflowPatterns,
-      agentHints: buildAgentHints({
-        repeatFileReads: session.scorecard.getCounters().repeatFileReads,
-      }),
-      filesReadIndex,
+      // Observe experiment: no retrieve-first hints / files-read index.
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {
@@ -939,80 +912,23 @@ export async function runTurn(
       }
 
       // Process results in original order to keep history/event log deterministic.
+      // Observe experiment: hand raw tool results to the model (no artifact cards).
       for (const { tc, result, isError } of executedResults) {
         toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });
 
-        let promptResultText = toolResultRawText(result);
-        let artifactId: string | undefined;
-        const skippedDisk =
-          result &&
-          typeof result === "object" &&
-          (result as { skipped_disk?: unknown }).skipped_disk === true;
-        const resultArtifactId =
-          result &&
-          typeof result === "object" &&
-          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
-            ? ((result as { artifact_id: string }).artifact_id)
-            : undefined;
-
-        if (session.contextEngine && skippedDisk) {
-          // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
-          artifactId = resultArtifactId;
-          if (artifactId) {
-            session.contextEngine.touchAccess(artifactId, session.getTurnCount());
-          }
-          promptResultText =
-            typeof (result as { content?: unknown }).content === "string"
-              ? (result as { content: string }).content
-              : promptResultText;
-          const toolTokens = estimateDisplayTokens(promptResultText);
-          turnHistoryTokens += toolTokens;
-          s.onContextHistoryDelta?.({
-            tokensAdded: toolTokens,
-            source: "tool",
-          });
-        } else if (session.contextEngine) {
-          const command = resolveToolCommand(
-            tc.toolName,
-            tc.args as Record<string, unknown>,
-            session.cwd,
-          );
-          const ingested = session.contextEngine.ingestToolResult({
-            sourceTool: tc.toolName,
-            command,
-            rawText: promptResultText,
-            createdTurn: session.getTurnCount(),
-          });
-          promptResultText = ingested.promptText;
-          artifactId = ingested.artifactId;
-          const toolTokens = estimateDisplayTokens(promptResultText);
-          const savings = computeDistillerSavings(
-            toolResultRawText(result),
-            promptResultText,
-            ingested.inlined,
-          );
-          turnHistoryTokens += toolTokens;
-          turnDistillerSavings += savings;
-          s.onContextHistoryDelta?.({
-            tokensAdded: toolTokens,
-            source: "tool",
-            distillerSavings: savings > 0 ? savings : undefined,
-          });
-        } else {
-          const toolTokens = estimateDisplayTokens(promptResultText);
-          turnHistoryTokens += toolTokens;
-          s.onContextHistoryDelta?.({
-            tokensAdded: toolTokens,
-            source: "tool",
-          });
-        }
+        const promptResultText = toolResultRawText(result);
+        const toolTokens = estimateDisplayTokens(promptResultText);
+        turnHistoryTokens += toolTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: toolTokens,
+          source: "tool",
+        });
 
         turnRecorder.recordToolCall({
           tool: tc.toolName,
           args: tc.args as Record<string, unknown>,
           result,
           isError,
-          artifactId,
         });
 
         history.push({
@@ -1030,11 +946,7 @@ export async function runTurn(
           payload: { toolCallId: tc.toolCallId, tool: tc.toolName, result },
         });
 
-        // Notify UI sink of tool result for distinct rendering (e.g. TUI).
-        // Shell uses raw result so TUI shows stdout/stderr even when context engine artifacts.
-        const uiResultText =
-          tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
-        s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
+        s.onToolResult?.(tc.toolCallId, tc.toolName, promptResultText, isError);
       }
 
       // Reinforce any recalled entries once per turn when at least one non-recall
@@ -1399,27 +1311,10 @@ function toolResultRawText(result: unknown): string {
   return JSON.stringify(result);
 }
 
-function toolCommandFromArgs(
-  toolName: string,
-  args: Record<string, unknown>,
-): string | undefined {
-  if (typeof args.command === "string") return args.command;
-  if (typeof args.path === "string") return args.path;
-  if (typeof args.query === "string") return args.query;
-  if (toolName === "shell" && typeof args.command === "string") return args.command;
-  return undefined;
-}
-
-/** Prefer absolute paths for read_file so artifact file-read index matches interceptor. */
-function resolveToolCommand(
-  toolName: string,
-  args: Record<string, unknown>,
-  cwd: string,
-): string | undefined {
-  const raw = toolCommandFromArgs(toolName, args);
-  if (!raw) return undefined;
-  if (toolName === "read_file") {
-    return isAbsolute(raw) ? raw : resolve(cwd, raw);
+function successfulToolResult(result: unknown, isError: boolean): boolean {
+  if (isError) return false;
+  if (result && typeof result === "object" && "ok" in result && (result as { ok: unknown }).ok === false) {
+    return false;
   }
-  return raw;
+  return true;
 }

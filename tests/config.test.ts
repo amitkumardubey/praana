@@ -197,9 +197,9 @@ describe("config loading", () => {
     )).toBe(true);
   });
 
-  it("defaults block_repeat_reads to true", () => {
+  it("defaults block_repeat_reads to false", () => {
     const config = loadConfig(join(root, "missing.toml"));
-    expect(config.tools.block_repeat_reads).toBe(true);
+    expect(config.tools.block_repeat_reads).toBe(false);
   });
 
   it("does not auto-select a provider from environment when [llm] provider is unset", () => {
@@ -217,11 +217,11 @@ describe("config loading", () => {
     }
   });
 
-  it("allows block_repeat_reads to be explicitly set to false", () => {
-    const configPath = join(root, "soft.toml");
-    writeFileSync(configPath, "[tools]\nblock_repeat_reads = false\n", "utf-8");
+  it("allows block_repeat_reads to be explicitly set to true", () => {
+    const configPath = join(root, "hard.toml");
+    writeFileSync(configPath, "[tools]\nblock_repeat_reads = true\n", "utf-8");
     const config = loadConfig(configPath);
-    expect(config.tools.block_repeat_reads).toBe(false);
+    expect(config.tools.block_repeat_reads).toBe(true);
   });
 
   it("warnings reflect the most recent loadConfig() call", () => {

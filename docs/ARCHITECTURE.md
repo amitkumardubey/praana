@@ -235,9 +235,9 @@ const classicMode = !useEngineCompiler;
 `src/context-engine/engine-compiler.ts` constructs a multi-resolution prompt from budget bands:
 
 1. **Band 1 (always):** System frame, AGENTS.md, skills — existing allocation.
-2. **Band 2 (always):** Active user request + last 2 full turns verbatim — ~3000 tokens.
+2. **Band 2 (always):** Active user request + last ~3 turns verbatim — ~30000 tokens (observe experiment; was 3000).
 3. **Band 3 (always):** SessionCheckpoint (pinned) — ~2000 tokens. Reconciled deterministically from `TurnDigest` after each turn. Sections: active request, session narrative, plan history, constraints, decisions (with retained rationale), files, findings, errors, activity. See [Session Checkpoint](#session-checkpoint) below.
-4. **Band 4 (scored):** Fact cards, artifact cards, activity entries — ~3000 tokens.
+4. **Band 4 (scored):** Fact cards, activity entries — ~3000 tokens. (Artifact cards are not injected on the hot path during the observe experiment; tool results go to the model raw.)
 5. **Band 5 (scored):** Older turn digests — ~2000 tokens.
 6. **Band 6 (remaining):** Memory digest, low-priority state — remainder.
 
@@ -430,9 +430,9 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - **Headless gate:** `praana run` (Harbor / CI) sets `Session.headless = true`. Compile then passes `planBeforeExecute: false` so the engine system frame omits **Plan-Before-Execute**, and `turn.ts` skips plan-mode auto-enter. Interactive TTY sessions keep both behaviours.
 
-### Repeat-read interceptor (issue #219)
+### Repeat-read interceptor (observe experiment)
 
-`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `true` = hard-block; `false` = warn). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
+`read_file` always reads from disk. The former hard-block / warn-and-card interceptor is **off** (`block_repeat_reads` defaults to `false` and is ignored). Tool results are passed **raw** to the model (no artifact-card substitution on the hot path). Artifact store / `retrieve_artifact` remain available but are not required for re-reads.
 
 ### Resume hardening (issues #185, #220)
 
@@ -443,7 +443,7 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
 - **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low.
-- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
+- **Engine-mode repeat-read agent hints** (retrieve-first) are suppressed during the observe experiment. `REPEAT_FILE_READS_THRESHOLD` remains for the TUI footer nudge.
 
 ### End-of-session epilogue (issue #181)
 
@@ -524,7 +524,7 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [tools]
-block_repeat_reads = true    # hard-block (default) or warn on repeat read_file of unchanged files
+block_repeat_reads = false   # ignored during observe experiment (no interceptor; re-reads hit disk)
 
 [session]
 log_dir = "~/.praana/sessions"

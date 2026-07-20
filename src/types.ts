@@ -364,7 +364,7 @@ export interface PraanaConfig {
   consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
-  /** Optional; defaults to { block_repeat_reads: true } when omitted. */
+  /** Optional; defaults to { block_repeat_reads: false }. Flag is currently ignored (observe experiment: no interceptor). */
   tools?: ToolsConfig;
   search_code?: SearchCodeConfig;
   skills: SkillsConfig;

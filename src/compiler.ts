@@ -286,11 +286,8 @@ export function buildSharedAgentPolicy(): string[] {
 }
 
 export function buildArtifactFirstReadsPolicy(): string[] {
-  return [
-    "## Artifact-First Reads",
-    "",
-    "Before calling read_file on a path already read this session, check the Active State notes and Recent Turns for an existing artifact card. Prefer retrieve_artifact or search_turn_events to recover the prior content. Only call read_file again if the file may have changed on disk or the prior read is incomplete.",
-  ];
+  // Observe experiment: no artifact-first / retrieve-first pedagogy.
+  return [];
 }
 
 export interface AgentHintCounters {
@@ -299,24 +296,14 @@ export interface AgentHintCounters {
 
 /**
  * Shared threshold for the repeat_file_reads scorecard signal.
- * Drives both the engine-mode agent hint (buildAgentHints) and the TUI footer nudge,
- * so the prompt and the footer fire in lockstep. Issue #224.
+ * Drives the TUI footer nudge. Issue #224.
+ * Observe experiment: buildAgentHints no longer steers toward retrieve_artifact.
  */
 export const REPEAT_FILE_READS_THRESHOLD = 5;
 
-const AGENT_HINT_REPEAT_READS_THRESHOLD = REPEAT_FILE_READS_THRESHOLD;
-
-export function buildAgentHints(counters: AgentHintCounters): string {
-  const parts: string[] = [];
-  if (counters.repeatFileReads > AGENT_HINT_REPEAT_READS_THRESHOLD) {
-    parts.push(
-      `- repeat_file_reads: ${counters.repeatFileReads} — before re-reading a path, use retrieve_artifact or search_turn_events.`,
-    );
-  }
-  if (parts.length === 0) {
-    return "";
-  }
-  return `## Agent Hints\n\n${parts.join("\n")}`;
+export function buildAgentHints(_counters: AgentHintCounters): string {
+  // Observe experiment: suppress retrieve-first repeat-read hints.
+  return "";
 }
 
 export interface FileReadIndexEntry {
@@ -327,37 +314,14 @@ export interface FileReadIndexEntry {
 
 /**
  * Build a compact "Files Read This Session" section for the compiled prompt.
- * The index helps the agent discover already-read files and use retrieve_artifact(id)
- * instead of re-calling read_file. Issue #251.
+ * Observe experiment: returns empty — no retrieve-first index in the prompt.
  */
 export function buildFilesReadIndexSection(
-  reads: FileReadIndexEntry[],
-  cwd: string,
-  maxEntries = 25,
+  _reads: FileReadIndexEntry[],
+  _cwd: string,
+  _maxEntries = 25,
 ): string {
-  if (reads.length === 0) {
-    return "";
-  }
-  const sorted = [...reads].sort((a, b) => b.createdTurn - a.createdTurn);
-  const shown = sorted.slice(0, maxEntries);
-  const lines = [
-    "## Files Read This Session",
-    "",
-    "Use retrieve_artifact(id) before re-reading a path:",
-    "",
-  ];
-  for (const r of shown) {
-    const rel = r.absPath.startsWith(cwd + "/") ? r.absPath.slice(cwd.length + 1) : r.absPath;
-    lines.push(`- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`)`);
-  }
-  const hidden = sorted.length - shown.length;
-  if (hidden > 0) {
-    lines.push(
-      "",
-      `… and ${hidden} more read${hidden === 1 ? "" : "s"} this session.`,
-    );
-  }
-  return lines.join("\n");
+  return "";
 }
 
 export function buildSystemFrame(
@@ -393,8 +357,9 @@ export function buildSystemFrame(
 
   lines.push("", ...buildSharedAgentPolicy());
 
-  if (engineMode) {
-    lines.push("", ...buildArtifactFirstReadsPolicy());
+  const artifactFirst = buildArtifactFirstReadsPolicy();
+  if (engineMode && artifactFirst.length > 0) {
+    lines.push("", ...artifactFirst);
   }
 
   lines.push(

@@ -254,16 +254,11 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - **Headless gate:** `praana run` / Harbor sets `Session.headless = true`. That omits the engine **Plan-Before-Execute** system-frame rule and skips plan-mode auto-enter — there is no interactive user to say "proceed". Explicit `/plan on` is still available in TTY sessions only.
 
-### Repeat-read interceptor (issue #219)
+### Repeat-read interceptor (observe experiment)
 
-`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable:
+`read_file` always reads from disk. The former hard-block / warn-and-card interceptor is **off** for the observe experiment (`block_repeat_reads` defaults to `false` and is ignored). Tool results are passed **raw** to the model (no artifact cards on the hot path). Artifact store / `retrieve_artifact` remain available but are not required for re-reads.
 
-```toml
-[tools]
-block_repeat_reads = true    # true = hard-block repeat read_file of unchanged files (default); false = warn and return artifact card
-```
-
-The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
+Scorecard may still track read paths for telemetry. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count can still surface in the turn footer as a nudge (without retrieve-first agent hints).
 
 ### Resume hardening (issues #185, #220)
 
@@ -274,7 +269,7 @@ The read index is rebuilt on resume and invalidated on any write/edit, so post-e
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
 - **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low — prompting adjustment.
-- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses its threshold or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The repeat-read threshold is a single exported constant (`REPEAT_FILE_READS_THRESHOLD` in `compiler.ts`) shared by the engine hint and the TUI footer nudge.
+- **Engine-mode agent hints** for repeat-reads are suppressed during the observe experiment (raw tool results + free re-reads). The shared threshold constant (`REPEAT_FILE_READS_THRESHOLD` in `compiler.ts`) remains for the TUI footer nudge.
 
 ### End-of-session epilogue (issue #181)
 
