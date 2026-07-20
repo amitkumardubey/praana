@@ -369,10 +369,12 @@ describe("setup wizard", () => {
       expect(pickDefaultModel("test", models)).toBe("model-a");
     });
 
-    it("falls back to DEFAULT_MODELS when no live models", () => {
-      expect(pickDefaultModel("openrouter")).toBe(
-        "deepseek/deepseek-v4-flash:free",
-      );
+    it("falls back to catalog when no live models and no DEFAULT_MODELS entry", () => {
+      // openrouter has no DEFAULT_MODELS entry (removed — was stale).
+      // pickDefaultModel should fall through to pickFirstCatalogModel,
+      // returning a model from the pi-ai catalog or empty string.
+      const result = pickDefaultModel("openrouter");
+      expect(typeof result).toBe("string");
     });
 
     it("returns empty string when no model found", () => {

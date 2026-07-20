@@ -24,6 +24,9 @@ import {
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey } from "./llm.js";
+import { removeApiKey, listStoredProviders } from "./credentials.js";
+import { isUserDeclaredProvider } from "./provider-registry.js";
+import { removeProviderSection } from "./setup/config-writer.js";
 import { executeShellCommand } from "./tools/system.js";
 import {
   USER_SETTINGS_KEYS,
@@ -43,7 +46,9 @@ export type SlashCommandAction =
   | "refresh_status"
   | "clear_transcript"
   | "new_session"
-  | "open_model_selector";
+  | "open_model_selector"
+  | "open_login_wizard"
+  | "open_logout_wizard";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -82,6 +87,8 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
   { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>" },
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe" },
+  { name: "/login", description: "Add or update a provider", argumentHint: "[provider]" },
+  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]" },
   { name: "/setup", description: "Run provider/config setup wizard" },
   { name: "/clear", description: "Reset in-session context" },
   { name: "/new", description: "Start a new session" },
@@ -101,6 +108,8 @@ export interface SlashCommandResult {
     exitCode: number;
     ok: boolean;
   };
+  /** Provider hint passed to the login wizard overlay (from /login <provider>). */
+  loginProviderHint?: string;
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
@@ -865,6 +874,75 @@ export async function executeSlashCommand(
         lines.push(`Memory dedupe error: ${(err as Error).message}`);
       }
       break;
+    }
+
+    case "/login": {
+      const provider = parts[1]?.toLowerCase().trim();
+      lines.push(
+        provider
+          ? `Opening login wizard for ${provider}…`
+          : "Opening login wizard…",
+      );
+      return {
+        action: "open_login_wizard",
+        lines,
+        display: "toast",
+        loginProviderHint: provider || undefined,
+      };
+    }
+
+    case "/logout": {
+      const provider = parts[1]?.toLowerCase().trim();
+      const stored = listStoredProviders();
+
+      if (!provider) {
+        if (stored.length === 0) {
+          lines.push("No providers logged in.");
+          return result("none", "toast", "info");
+        }
+        // Has stored providers → open the interactive logout wizard
+        lines.push("Opening logout wizard…");
+        return {
+          action: "open_logout_wizard",
+          lines,
+          display: "toast",
+        };
+      }
+
+      // Specific provider requested
+      const hasStored = stored.includes(provider);
+      const isDeclared = isUserDeclaredProvider(provider);
+
+      if (!hasStored && !isDeclared) {
+        lines.push(`No credentials found for "${provider}".`);
+        return result("none", "toast", "error");
+      }
+
+      const removed = removeApiKey(provider);
+      let sectionRemoved = false;
+      if (isDeclared) {
+        const sectionResult = removeProviderSection(provider);
+        sectionRemoved = sectionResult.written;
+      }
+
+      if (removed || sectionRemoved) {
+        lines.push(`Logged out: ${provider}`);
+      } else {
+        lines.push(`No credentials found for "${provider}".`);
+        return result("none", "toast", "info");
+      }
+
+      if (sectionRemoved) {
+        lines.push(`Removed [providers.${provider}] from config.toml.`);
+        lines.push("Run /new to fully deactivate the provider.");
+      }
+      if (provider === session.getEffectiveProvider()) {
+        // Prepend warning so it's visible even after toast truncation (BUG #2 fix)
+        lines.unshift("Use /login to re-add, or /model to switch.");
+        lines.unshift(`⚠ ${provider} is your active provider — the next turn may fail.`);
+      }
+
+      return result("refresh_status", "toast", "success");
     }
 
     case "/setup": {
