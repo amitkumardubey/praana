@@ -155,12 +155,17 @@ class Praana(BaseInstalledAgent):
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
+        # Harbor only calls this when AgentContext.is_empty() — do NOT write
+        # context.metadata (or tokens) during run(), or token/cost import is skipped.
         apply_usage_report_to_context(self.logs_dir / _USAGE_FILENAME, context)
-        # Ensure requested effort is visible even if usage JSON is missing.
-        if self._reasoning_effort:
-            meta = dict(context.metadata or {})
-            meta.setdefault("praana_reasoning_effort", self._reasoning_effort)
-            context.metadata = meta
+        meta = dict(context.metadata or {})
+        if self.model_name and "/" in self.model_name:
+            provider, model = self.model_name.split("/", 1)
+            meta.setdefault("praana_provider", provider.strip())
+            meta.setdefault("praana_model", model.strip())
+        effort = self._reasoning_effort or "medium"
+        meta.setdefault("praana_reasoning_effort", effort)
+        context.metadata = meta
 
     def _provider_and_model(self) -> tuple[str, str]:
         if not self.model_name or "/" not in self.model_name:
@@ -216,16 +221,6 @@ class Praana(BaseInstalledAgent):
         provider, model = self._provider_and_model()
         env = self._api_env()
         env["PRAANA_MODEL"] = model
-
-        # Seed Harbor context so jobs show effort even before usage JSON exists.
-        meta = dict(context.metadata or {})
-        meta["praana_provider"] = provider
-        meta["praana_model"] = model
-        if self._reasoning_effort:
-            meta["praana_reasoning_effort"] = self._reasoning_effort
-        else:
-            meta["praana_reasoning_effort"] = "medium"
-        context.metadata = meta
 
         escaped = shlex.quote(instruction)
         cli_flags = self.build_cli_flags()

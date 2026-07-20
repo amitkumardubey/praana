@@ -113,7 +113,13 @@ describe("estimateCostUsd", () => {
   });
 
   it("returns null for unknown models", () => {
-    expect(estimateCostUsd("umans/umans-coder", 1000, 100)).toBeNull();
+    expect(estimateCostUsd("totally-unknown-model-xyz", 1000, 100)).toBeNull();
+  });
+
+  it("estimates cost for umans-coder (kimi rates)", () => {
+    // 1M in + 1M out at $0.95 / $4 → $4.95
+    expect(estimateCostUsd("umans-coder", 1_000_000, 1_000_000)).toBe(4.95);
+    expect(estimateCostUsd("umans/umans-coder", 1_000_000, 1_000_000)).toBe(4.95);
   });
 });
 

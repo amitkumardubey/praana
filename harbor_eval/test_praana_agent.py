@@ -209,6 +209,62 @@ def test_apply_usage_report_to_context(praana_mod, tmp_path):
     assert ctx.metadata["praana_reasoning_effort_wire"] == "medium"
 
 
+def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
+    """Harbor skips populate_context_post_run unless AgentContext.is_empty().
+
+    Writing metadata during run() makes is_empty() false and drops token import.
+    """
+    Praana, _, _ = praana_mod
+    usage = tmp_path / "praana-usage.json"
+    usage.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "session_id": "01TOK",
+                "provider": "umans",
+                "model": "umans-coder",
+                "n_input_tokens": 44252,
+                "n_output_tokens": 28582,
+                "n_cache_tokens": 0,
+                "cost_usd": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent = Praana(
+        tmp_path,
+        model_name="umans/umans-coder",
+        reasoning_effort="medium",
+    )
+
+    class Ctx:
+        n_input_tokens = None
+        n_output_tokens = None
+        n_cache_tokens = None
+        cost_usd = None
+        metadata = None
+
+        def is_empty(self):
+            return all(
+                getattr(self, k) is None
+                for k in (
+                    "n_input_tokens",
+                    "n_output_tokens",
+                    "n_cache_tokens",
+                    "cost_usd",
+                    "metadata",
+                )
+            )
+
+    ctx = Ctx()
+    assert ctx.is_empty()
+    agent.populate_context_post_run(ctx)
+    assert ctx.n_input_tokens == 44252
+    assert ctx.n_output_tokens == 28582
+    assert ctx.metadata["praana_reasoning_effort"] == "medium"
+    assert ctx.metadata["praana_provider"] == "umans"
+
+
 def test_apply_usage_report_missing_file(praana_mod, tmp_path):
     _, _, apply = praana_mod
 

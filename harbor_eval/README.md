@@ -82,6 +82,9 @@ uv run --with pytest python -m pytest harbor_eval/ -q
   `praana_reasoning_effort_wire` (actual value sent to the provider, if any).
   The agent also prepends `provider=… model=… reasoning_effort=…` to
   `/logs/agent/praana.txt`.
+  **Important:** do not write `AgentContext.metadata` during `run()` — Harbor only
+  calls `populate_context_post_run` when the context is still empty, so early
+  metadata seeding drops token/cost import.
   **Requires a PRAANA build that includes usage export** (merged to `main`, or
   `--ak git_ref=<that-branch>` until then).
 - Prefer pinning `git_ref` / Harbor `--version` to a known-good commit for reproducible leaderboard runs.
