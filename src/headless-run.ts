@@ -5,12 +5,19 @@
  * `turn.max_steps`), streams assistant text to stdout, tools/status to
  * stderr, then shuts down. Intended for Harbor / Terminal-Bench / CI —
  * no TTY required.
+ *
+ * After the turn, writes a usage report (tokens + optional $) to
+ * PRAANA_USAGE_PATH or ~/.praana/last-run-usage.json for Harbor AgentContext.
  */
 import type { PraanaConfig } from "./types.js";
 import { Session, type SessionEndStatus } from "./session.js";
 import { runTurn } from "./turn.js";
 import { printToolCall } from "./ui.js";
 import type { TurnUiSink } from "./ui-events.js";
+import {
+  writeHeadlessUsageReport,
+  type HeadlessUsageReport,
+} from "./headless-usage.js";
 
 export type HeadlessRunOptions = {
   cwd: string;
@@ -20,6 +27,8 @@ export type HeadlessRunOptions = {
   maxSteps?: number | null;
   debug?: boolean;
   incognito?: boolean;
+  /** Override usage JSON path (else PRAANA_USAGE_PATH / default). */
+  usagePath?: string | null;
   /** Injectable for tests. */
   createSession?: (
     cwd: string,
@@ -34,6 +43,7 @@ export type HeadlessRunResult = {
   sessionId: string;
   response: string;
   endStatus: SessionEndStatus;
+  usage: HeadlessUsageReport | null;
 };
 
 /** Quiet sink: agent text → stdout; tools/errors → stderr; no banners/spinners. */
@@ -100,6 +110,20 @@ export function validateRunPrompt(prompt: string | null | undefined): string {
   return trimmed;
 }
 
+function tryWriteUsage(
+  session: Session,
+  usagePath?: string | null,
+): HeadlessUsageReport | null {
+  try {
+    return writeHeadlessUsageReport(session, usagePath);
+  } catch (err) {
+    process.stderr.write(
+      `[headless] failed to write usage report: ${(err as Error).message}\n`,
+    );
+    return null;
+  }
+}
+
 export async function runHeadless(
   opts: HeadlessRunOptions,
 ): Promise<HeadlessRunResult> {
@@ -114,12 +138,14 @@ export async function runHeadless(
   session.debug = opts.debug ?? false;
 
   const sink = createHeadlessTurnSink();
+  let usage: HeadlessUsageReport | null = null;
 
   try {
     const response = await runTurnFn(session, prompt, undefined, { sink });
     if (response && !response.endsWith("\n")) {
       process.stdout.write("\n");
     }
+    usage = tryWriteUsage(session, opts.usagePath);
     const endStatus = await session.end("clean", session.getTranscriptEvents(), {
       memoryTimeoutMs: 50,
     });
@@ -127,8 +153,10 @@ export async function runHeadless(
       sessionId: session.id,
       response,
       endStatus,
+      usage,
     };
   } catch (err) {
+    usage = tryWriteUsage(session, opts.usagePath);
     try {
       await session.end("error", session.getTranscriptEvents(), {
         memoryTimeoutMs: 50,
@@ -139,3 +167,12 @@ export async function runHeadless(
     throw err;
   }
 }
+
+export {
+  buildHeadlessUsageReport,
+  estimateCostUsd,
+  lookupModelPrice,
+  resolveUsageReportPath,
+  writeHeadlessUsageReport,
+} from "./headless-usage.js";
+export type { HeadlessUsageReport } from "./headless-usage.js";

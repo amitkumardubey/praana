@@ -75,4 +75,8 @@ uv run --with pytest python -m pytest harbor_eval/ -q
 
 - Runs use `--incognito` so Cognitive Memory does not persist across TB trials.
 - Assistant text goes to stdout; the adapter tees the full stream to `/logs/agent/praana.txt`.
+- Token/cost: `praana run` writes `/logs/agent/praana-usage.json`; Harbor loads it into
+  `AgentContext` (`n_input_tokens`, `n_output_tokens`, `cost_usd` when priced).
+  **Requires a PRAANA build that includes usage export** (merged to `main`, or
+  `--ak git_ref=<that-branch>` until then).
 - Prefer pinning `git_ref` / Harbor `--version` to a known-good commit for reproducible leaderboard runs.
