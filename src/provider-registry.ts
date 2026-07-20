@@ -229,7 +229,13 @@ export const REASONING_MODEL_HINTS: Record<
   Array<{ pattern: RegExp }>
 > = {
   "*": [{ pattern: /kimi-k2/i }],
-  umans: [{ pattern: /umans-coder/i }, { pattern: /umans-kimi/i }],
+  umans: [
+    { pattern: /umans-coder/i },
+    { pattern: /umans-kimi/i },
+    { pattern: /umans-glm/i },
+    { pattern: /kimi-k2/i },
+    { pattern: /glm-/i },
+  ],
 };
 
 /**

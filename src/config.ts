@@ -12,6 +12,7 @@ import {
   resolveDefaultSessionLogDir,
 } from "./app-identity.js";
 import { setUserProviders } from "./provider-registry.js";
+import { parseReasoningEffort } from "./llm.js";
 
 function configWarn(
   message: string,
@@ -44,6 +45,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
   llm: {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
+    reasoning_effort: "medium",
   },
   memory: {
     enabled: true,
@@ -442,6 +444,20 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   ) {
     configWarn("Invalid llm.context_window, ignoring override");
     delete out.llm.context_window;
+  }
+
+  if (out.llm.reasoning_effort !== undefined) {
+    const parsed = parseReasoningEffort(String(out.llm.reasoning_effort));
+    if (!parsed) {
+      configWarn(
+        `Invalid llm.reasoning_effort "${out.llm.reasoning_effort}", using medium`,
+      );
+      out.llm.reasoning_effort = DEFAULT_CONFIG.llm.reasoning_effort;
+    } else {
+      out.llm.reasoning_effort = parsed;
+    }
+  } else {
+    out.llm.reasoning_effort = DEFAULT_CONFIG.llm.reasoning_effort;
   }
 
   const hasFallbackProvider = !!out.llm.fallback_provider;

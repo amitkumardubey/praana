@@ -23,7 +23,7 @@ import {
   resolvedTargetLabel,
   parseModelCommandArgs,
 } from "./model-resolver.js";
-import { getProviderEnvKey } from "./llm.js";
+import { getProviderEnvKey, parseReasoningEffort, REASONING_EFFORT_LEVELS } from "./llm.js";
 import { removeApiKey, listStoredProviders } from "./credentials.js";
 import { isUserDeclaredProvider } from "./provider-registry.js";
 import { removeProviderSection } from "./setup/config-writer.js";
@@ -81,7 +81,8 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/sessions", description: "List past sessions" },
   { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>" },
   { name: "/debug", description: "Toggle debug mode" },
-  { name: "/thinking", description: "Toggle reasoning stream", argumentHint: "on|off" },
+  { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off" },
+  { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh" },
   { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
   { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
@@ -768,6 +769,25 @@ export async function executeSlashCommand(
         lines.push("Usage: /thinking <on|off>");
       }
       return result("refresh_status", "toast");
+    }
+
+    case "/reasoning": {
+      const levels = REASONING_EFFORT_LEVELS.join("|");
+      const arg = (parts[1] ?? "").toLowerCase();
+      if (!arg) {
+        lines.push(`Reasoning effort: ${session.getEffectiveReasoningEffort()}`);
+        lines.push(`Usage: /reasoning <${levels}>`);
+        lines.push("Also accepts none (alias for off). Display-only: /thinking.");
+        return result("refresh_status", "toast");
+      }
+      const parsed = parseReasoningEffort(arg);
+      if (!parsed) {
+        lines.push(`Unknown effort "${arg}". Usage: /reasoning <${levels}>`);
+        return result("none", "toast", "error");
+      }
+      session.setReasoningEffortOverride(parsed);
+      lines.push(`Reasoning effort set to ${parsed}.`);
+      return result("refresh_status", "toast", "success");
     }
 
     case "/incognito": {

@@ -26,6 +26,8 @@ export interface StatusBarInput {
   branch: string | null;
   debug: boolean;
   thinking: boolean;
+  /** Effective reasoning effort (config or /reasoning override). */
+  reasoningEffort?: string | null;
   memoryEnabled: boolean;
   incognito: boolean;
   planMode: boolean;
@@ -160,6 +162,7 @@ export function buildStatusBarInput(
     branch: session.getGitBranch(),
     debug: opts.debug,
     thinking: opts.thinking,
+    reasoningEffort: session.getEffectiveReasoningEffort?.() ?? null,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
     planMode: session.isPlanMode(),
@@ -195,6 +198,9 @@ export function formatStatusBarLines(input: StatusBarInput): string[] {
   const line1 = [
     chalk.cyan(statusModelLabel),
     chalk.yellow(formatMode(input.debug, input.thinking)),
+    input.reasoningEffort
+      ? chalk.dim(`effort ${input.reasoningEffort}`)
+      : null,
     input.planMode ? chalk.yellow("plan") : null,
     chalk.blue(repoLabel),
     `memory ${memFlag}${agents}`,

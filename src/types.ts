@@ -118,6 +118,12 @@ export interface LlmConfig {
   /** Optional provider/model to use when the primary fails (timeout, 429, empty). */
   fallback_provider?: string;
   fallback_model?: string;
+  /**
+   * Default reasoning effort for reasoning-capable models.
+   * One of: off | minimal | low | medium | high | xhigh (or none → off).
+   * Session `/reasoning` overrides this; see issue #38.
+   */
+  reasoning_effort?: string;
 }
 
 // ---- User-Declared Providers (declarative config) ----

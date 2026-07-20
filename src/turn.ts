@@ -657,6 +657,7 @@ export async function runTurn(
         activeModel as Record<string, unknown>,
         activeModelName,
         activeProviderName,
+        session.getEffectiveReasoningEffort(),
       ),
       onTextDelta: (delta) => {
         s.onTextDelta?.(delta);
