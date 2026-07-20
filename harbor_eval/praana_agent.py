@@ -64,6 +64,7 @@ _INSTALL_DIR = "$HOME/praana"
 _BUN_BIN = "$HOME/.bun/bin"
 _USAGE_FILENAME = "praana-usage.json"
 _USAGE_PATH_IN_CONTAINER = f"/logs/agent/{_USAGE_FILENAME}"
+_SUMMARY_FILENAME = "praana-summary.txt"
 _REASONING_EFFORT_LEVELS = frozenset(
     {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -166,6 +167,8 @@ class Praana(BaseInstalledAgent):
         effort = self._reasoning_effort or "medium"
         meta.setdefault("praana_reasoning_effort", effort)
         context.metadata = meta
+        write_praana_summary(self.logs_dir, context)
+        print_praana_summary(context)
 
     def _provider_and_model(self) -> tuple[str, str]:
         if not self.model_name or "/" not in self.model_name:
@@ -249,6 +252,44 @@ class Praana(BaseInstalledAgent):
             ),
             env=env,
         )
+
+
+def format_praana_summary_lines(context: AgentContext) -> list[str]:
+    """Human-readable summary for Harbor CLI + agent/praana-summary.txt."""
+    meta = dict(context.metadata or {})
+    provider = meta.get("praana_provider") or "-"
+    model = meta.get("praana_model") or "-"
+    effort = meta.get("praana_reasoning_effort") or "-"
+    wire = meta.get("praana_reasoning_effort_wire")
+    wire_s = wire if wire not in (None, "") else "(omitted / n/a)"
+    n_in = context.n_input_tokens
+    n_out = context.n_output_tokens
+    cost = context.cost_usd
+    cost_s = f"${cost:.6f}" if isinstance(cost, (int, float)) else "n/a"
+    return [
+        "praana summary",
+        f"  provider:           {provider}",
+        f"  model:              {model}",
+        f"  reasoning_effort:   {effort}",
+        f"  reasoning_wire:     {wire_s}",
+        f"  n_input_tokens:     {n_in if n_in is not None else 'n/a'}",
+        f"  n_output_tokens:    {n_out if n_out is not None else 'n/a'}",
+        f"  cost_usd:           {cost_s}",
+    ]
+
+
+def write_praana_summary(logs_dir: Path, context: AgentContext) -> Path:
+    path = logs_dir / _SUMMARY_FILENAME
+    path.write_text("\n".join(format_praana_summary_lines(context)) + "\n", encoding="utf-8")
+    return path
+
+
+def print_praana_summary(context: AgentContext) -> None:
+    """Print on the Harbor host after logs sync (visible in `harbor run` output)."""
+    import sys
+
+    text = "\n".join(format_praana_summary_lines(context))
+    print(f"\n{text}\n", file=sys.stderr, flush=True)
 
 
 def apply_usage_report_to_context(

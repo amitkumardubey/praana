@@ -223,10 +223,12 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
                 "session_id": "01TOK",
                 "provider": "umans",
                 "model": "umans-coder",
+                "reasoning_effort": "xhigh",
+                "reasoning_effort_wire": "high",
                 "n_input_tokens": 44252,
                 "n_output_tokens": 28582,
                 "n_cache_tokens": 0,
-                "cost_usd": None,
+                "cost_usd": 0.156,
             }
         ),
         encoding="utf-8",
@@ -234,7 +236,7 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
     agent = Praana(
         tmp_path,
         model_name="umans/umans-coder",
-        reasoning_effort="medium",
+        reasoning_effort="max",
     )
 
     class Ctx:
@@ -261,8 +263,13 @@ def test_populate_context_loads_tokens_when_context_empty(praana_mod, tmp_path):
     agent.populate_context_post_run(ctx)
     assert ctx.n_input_tokens == 44252
     assert ctx.n_output_tokens == 28582
-    assert ctx.metadata["praana_reasoning_effort"] == "medium"
+    assert ctx.metadata["praana_reasoning_effort"] == "xhigh"
+    assert ctx.metadata["praana_reasoning_effort_wire"] == "high"
     assert ctx.metadata["praana_provider"] == "umans"
+    summary = (tmp_path / "praana-summary.txt").read_text(encoding="utf-8")
+    assert "reasoning_effort:   xhigh" in summary
+    assert "reasoning_wire:     high" in summary
+    assert "n_input_tokens:     44252" in summary
 
 
 def test_apply_usage_report_missing_file(praana_mod, tmp_path):
