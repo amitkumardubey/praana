@@ -43,6 +43,7 @@ import { ToastRegion } from "./toast-region.js";
 import { PiTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
+import { LoginWizard } from "./login-wizard.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
 import { SLASH_COMMAND_METADATA } from "../../slash-commands.js";
@@ -276,6 +277,81 @@ export async function runTui(
     tui.requestRender(true);
   };
 
+  const closeLoginWizard = () => {
+    promptSlot.clear();
+    promptSlot.addChild(editor);
+    tui.setFocus(editor);
+    tui.requestRender();
+  };
+
+  const openLoginWizard = (providerHint?: string) => {
+    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
+      slashOverlayHandle.hide();
+      slashOverlayHandle = null;
+    }
+
+    const wizard = new LoginWizard({
+      tui,
+      currentProvider: session.getEffectiveProvider(),
+      initialProvider: providerHint,
+      onComplete: (result) => {
+        closeLoginWizard();
+
+        if (result.shouldSwitch && result.defaultModel) {
+          editor.inner.disableSubmit = true;
+          spinnerSlot.addChild(spinner);
+          spinner.setMessage("switching model…");
+          spinner.start();
+
+          void (async () => {
+            let switchResult: import("../../slash-commands.js").SlashCommandResult;
+            try {
+              switchResult = await controller.executeSlashCommand(
+                `/model ${result.provider} ${result.defaultModel}`,
+              );
+            } finally {
+              spinner.stop();
+              spinnerSlot.removeChild(spinner);
+              editor.inner.disableSubmit = false;
+            }
+
+            if (switchResult.display === "toast" && switchResult.toastTone) {
+              toast.show(
+                switchResult.lines.join(" "),
+                toastToneToType(switchResult.toastTone),
+              );
+            } else if (switchResult.lines.length > 0) {
+              toast.show(switchResult.lines.join(" "), "info");
+            }
+            if (switchResult.action === "refresh_status") {
+              refreshChrome();
+            }
+            tui.requestRender();
+          })();
+        } else if (result.shouldSwitch) {
+          // No default model — just switch the provider
+          session.setProviderOverride(result.provider);
+          toast.show(result.message, "success");
+          refreshChrome();
+          tui.requestRender();
+        } else {
+          // Custom or user-declared — just show the message
+          const tone: "info" | "success" =
+            result.message.includes("Run /new") ? "info" : "success";
+          toast.show(result.message, tone);
+          refreshChrome();
+          tui.requestRender();
+        }
+      },
+      onCancel: () => closeLoginWizard(),
+    });
+
+    promptSlot.clear();
+    promptSlot.addChild(wizard);
+    tui.setFocus(wizard);
+    tui.requestRender(true);
+  };
+
   const modelId = controller.currentModelOrDefault();
   const ctxWindow =
     session.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
@@ -409,6 +485,10 @@ export async function runTui(
       }
       if (result.action === "open_model_selector") {
         openModelSelector();
+        return;
+      }
+      if (result.action === "open_login_wizard") {
+        openLoginWizard(result.loginProviderHint);
         return;
       }
       tui.requestRender();
