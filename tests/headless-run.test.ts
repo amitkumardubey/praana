@@ -122,15 +122,15 @@ describe("estimateCostUsd", () => {
     expect(estimateCostUsd("umans/umans-coder", 1_000_000, 1_000_000)).toBe(4.95);
   });
 
-  it("estimates cost for umans-glm-5.2 and umans-kimi-k2.7-code", () => {
-    // GLM: $1.40 / $4.40 → $5.80 per 1M+1M
+  it("estimates cost for umans glm / kimi / flash / qwen ids", () => {
     expect(estimateCostUsd("umans-glm-5.2", 1_000_000, 1_000_000)).toBe(5.8);
     expect(estimateCostUsd("umans/umans-glm-5.2", 1_000_000, 1_000_000)).toBe(5.8);
-    // Kimi code: $0.95 / $4.00 → $4.95
-    expect(estimateCostUsd("umans-kimi-k2.7-code", 1_000_000, 1_000_000)).toBe(4.95);
-    expect(estimateCostUsd("umans/umans-kimi-k2.7-code", 1_000_000, 1_000_000)).toBe(
-      4.95,
-    );
+    expect(estimateCostUsd("umans-glm-5.1", 1_000_000, 1_000_000)).toBe(5.8);
+    expect(estimateCostUsd("umans-kimi-k2.7", 1_000_000, 1_000_000)).toBe(4.95);
+    expect(estimateCostUsd("umans/umans-kimi-k2.7", 1_000_000, 1_000_000)).toBe(4.95);
+    // flash / qwen: $0.15 / $1.00 → $1.15
+    expect(estimateCostUsd("umans-flash", 1_000_000, 1_000_000)).toBe(1.15);
+    expect(estimateCostUsd("umans-qwen3.6-35b-a3b", 1_000_000, 1_000_000)).toBe(1.15);
   });
 });
 
