@@ -26,6 +26,7 @@ import {
   formatProvidersCliOutput,
   listProvidersForCli,
 } from "./providers-cli.js";
+import { runHeadless } from "./headless-run.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -219,6 +220,29 @@ export async function main() {
     }
   }
 
+  // ── Headless one-shot (`praana run`) ───────────────────────
+  // Runs before the TTY guard — Harbor / CI have no interactive terminal.
+  if (parsed.runMode) {
+    try {
+      await runHeadless({
+        cwd,
+        config,
+        prompt: parsed.runPrompt ?? "",
+        maxSteps: parsed.runMaxSteps,
+        debug: parsed.debug,
+        incognito: parsed.incognito,
+      });
+      process.exit(0);
+    } catch (err) {
+      getAppLogger().error("Headless run failed", {
+        code: "HEADLESS_RUN_FAILED",
+        cause: err as Error,
+      });
+      console.error((err as Error).message);
+      process.exit(1);
+    }
+  }
+
   // ── TTY guard ──────────────────────────────────────────────
   if (!isInteractive) {
     getAppLogger().error("Session start requires an interactive terminal", {
@@ -227,6 +251,7 @@ export async function main() {
     console.error("");
     console.error("PRAANA requires an interactive terminal to start a session.");
     console.error("Run `praana --help` for non-interactive commands.");
+    console.error("Or use `praana run \"<instruction>\"` for headless one-shot.");
     console.error("");
     process.exit(1);
   }

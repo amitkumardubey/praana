@@ -80,4 +80,37 @@ describe("parseCliArgs", () => {
     expect(parsed.modelsMode).toBe(true);
     expect(parsed.modelsProvider).toBe("openrouter");
   });
+
+  it("parses run subcommand with positional prompt", () => {
+    const parsed = parseCliArgs(["run", "fix the failing tests"]);
+    expect(parsed.runMode).toBe(true);
+    expect(parsed.runPrompt).toBe("fix the failing tests");
+    expect(parsed.runMaxSteps).toBeNull();
+  });
+
+  it("parses run --prompt and --max-steps", () => {
+    const parsed = parseCliArgs([
+      "run",
+      "--prompt",
+      "install deps and run tests",
+      "--max-steps",
+      "40",
+    ]);
+    expect(parsed.runMode).toBe(true);
+    expect(parsed.runPrompt).toBe("install deps and run tests");
+    expect(parsed.runMaxSteps).toBe(40);
+  });
+
+  it("parses run with flags before prompt", () => {
+    const parsed = parseCliArgs(["run", "--max-steps", "10", "do the thing"]);
+    expect(parsed.runMode).toBe(true);
+    expect(parsed.runPrompt).toBe("do the thing");
+    expect(parsed.runMaxSteps).toBe(10);
+  });
+
+  it("run without prompt still sets runMode", () => {
+    const parsed = parseCliArgs(["run"]);
+    expect(parsed.runMode).toBe(true);
+    expect(parsed.runPrompt).toBeNull();
+  });
 });

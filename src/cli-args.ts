@@ -6,6 +6,12 @@ export interface CliArgs {
   providersMode: boolean;
   modelsMode: boolean;
   modelsProvider: string | null;
+  /** Headless one-shot: `praana run "<instruction>"` (Harbor / CI). */
+  runMode: boolean;
+  /** Prompt text for runMode (positional or --prompt). */
+  runPrompt: string | null;
+  /** Optional override for turn.max_steps during headless run. */
+  runMaxSteps: number | null;
   allMode: boolean;
   force: boolean;
   debug: boolean;
@@ -25,6 +31,9 @@ export function parseCliArgs(args: string[]): CliArgs {
   let providersMode = false;
   let modelsMode = false;
   let modelsProvider: string | null = null;
+  let runMode = false;
+  let runPrompt: string | null = null;
+  let runMaxSteps: number | null = null;
   let allMode = false;
   let force = false;
   let debug = false;
@@ -103,6 +112,49 @@ export function parseCliArgs(args: string[]): CliArgs {
       i++;
       continue;
     }
+    if (args[i] === "run") {
+      runMode = true;
+      // Consume remaining args as run options / prompt.
+      for (let j = i + 1; j < args.length; j++) {
+        if ((args[j] === "--prompt" || args[j] === "-p") && args[j + 1]) {
+          runPrompt = args[j + 1];
+          j++;
+          continue;
+        }
+        if ((args[j] === "--max-steps" || args[j] === "-n") && args[j + 1]) {
+          const n = Number.parseInt(args[j + 1], 10);
+          if (Number.isFinite(n) && n > 0) runMaxSteps = n;
+          j++;
+          continue;
+        }
+        if (args[j] === "--help" || args[j] === "-h") {
+          showHelp = true;
+          continue;
+        }
+        if (args[j] === "--debug" || args[j] === "-d") {
+          debug = true;
+          continue;
+        }
+        if (args[j] === "--incognito" || args[j] === "-I") {
+          incognito = true;
+          continue;
+        }
+        if ((args[j] === "--config" || args[j] === "-c") && args[j + 1]) {
+          configPath = args[j + 1];
+          j++;
+          continue;
+        }
+        if (args[j].startsWith("-")) {
+          // Unknown run flag — ignore for forward-compat.
+          continue;
+        }
+        // First positional after `run` is the prompt (unless --prompt already set).
+        if (runPrompt === null) {
+          runPrompt = args[j];
+        }
+      }
+      break;
+    }
   }
 
   return {
@@ -113,6 +165,9 @@ export function parseCliArgs(args: string[]): CliArgs {
     providersMode,
     modelsMode,
     modelsProvider,
+    runMode,
+    runPrompt,
+    runMaxSteps,
     allMode,
     force,
     debug,
