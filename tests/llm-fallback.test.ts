@@ -247,6 +247,10 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getEffectiveReasoningEffort() {
       return this.config.llm.reasoning_effort ?? "medium";
     },
+    recordReasoningEffortUsed() {},
+    getLastReasoningEffortUsed() {
+      return null;
+    },
     isCompactionArmed: mock(() => false),
     setCompactionArmed: mock(),
     ...overrides,

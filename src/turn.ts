@@ -645,6 +645,13 @@ export async function runTurn(
   }));
 
   async function attemptStream(): Promise<LlmStreamResult> {
+    const reasoningEffort = getReasoningEffort(
+      activeModel as Record<string, unknown>,
+      activeModelName,
+      activeProviderName,
+      session.getEffectiveReasoningEffort(),
+    );
+    session.recordReasoningEffortUsed?.(reasoningEffort);
     return runLlmStream({
       model: activeModel,
       modelName: activeModelName,
@@ -653,12 +660,7 @@ export async function runTurn(
       history,
       piTools,
       signal: options?.signal,
-      reasoningEffort: getReasoningEffort(
-        activeModel as Record<string, unknown>,
-        activeModelName,
-        activeProviderName,
-        session.getEffectiveReasoningEffort(),
-      ),
+      reasoningEffort,
       onTextDelta: (delta) => {
         s.onTextDelta?.(delta);
       },

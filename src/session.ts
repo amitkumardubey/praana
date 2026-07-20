@@ -127,6 +127,8 @@ export class Session {
   private providerOverride: string | null = null;
   /** Session `/reasoning` override; null → use config.llm.reasoning_effort. */
   private reasoningEffortOverride: string | null = null;
+  /** Last wire `reasoningEffort` passed to pi-ai (null = omitted / not yet used). */
+  private lastReasoningEffortUsed: string | null = null;
   private modelContextWindow: number | null = null;
   private modelContextWindowFor: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
@@ -689,6 +691,15 @@ export class Session {
       this.config.llm.reasoning_effort ??
       "medium"
     );
+  }
+
+  /** Last `reasoningEffort` value passed to the LLM stream (null if omitted). */
+  recordReasoningEffortUsed(effort: string | undefined): void {
+    this.lastReasoningEffortUsed = effort ?? null;
+  }
+
+  getLastReasoningEffortUsed(): string | null {
+    return this.lastReasoningEffortUsed;
   }
 
   isIncognito(): boolean {

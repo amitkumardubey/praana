@@ -13,6 +13,13 @@ export type HeadlessUsageReport = {
   session_id: string;
   provider: string;
   model: string;
+  /** Preferred / effective effort (config or /reasoning). */
+  reasoning_effort: string;
+  /**
+   * Wire value last passed to pi-ai `stream()` as `reasoningEffort`.
+   * `null` when the active model does not use chain-of-thought, or no turn ran.
+   */
+  reasoning_effort_wire: string | null;
   n_input_tokens: number;
   n_output_tokens: number;
   n_cache_tokens: number;
@@ -80,7 +87,12 @@ export function resolveUsageReportPath(explicit?: string | null): string {
 export function buildHeadlessUsageReport(
   session: Pick<
     Session,
-    "id" | "config" | "getInputTokens" | "getOutputTokens"
+    | "id"
+    | "config"
+    | "getInputTokens"
+    | "getOutputTokens"
+    | "getEffectiveReasoningEffort"
+    | "getLastReasoningEffortUsed"
   >,
 ): HeadlessUsageReport {
   const provider = session.config.llm.provider ?? "";
@@ -93,6 +105,8 @@ export function buildHeadlessUsageReport(
     session_id: session.id,
     provider,
     model,
+    reasoning_effort: session.getEffectiveReasoningEffort(),
+    reasoning_effort_wire: session.getLastReasoningEffortUsed(),
     n_input_tokens,
     n_output_tokens,
     n_cache_tokens,
@@ -103,7 +117,12 @@ export function buildHeadlessUsageReport(
 export function writeHeadlessUsageReport(
   session: Pick<
     Session,
-    "id" | "config" | "getInputTokens" | "getOutputTokens"
+    | "id"
+    | "config"
+    | "getInputTokens"
+    | "getOutputTokens"
+    | "getEffectiveReasoningEffort"
+    | "getLastReasoningEffortUsed"
   >,
   path?: string | null,
 ): HeadlessUsageReport {

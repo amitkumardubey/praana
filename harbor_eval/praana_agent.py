@@ -18,11 +18,13 @@ Optional agent kwargs (``--ak key=value``)::
     git_ref=main          # git ref / tag to clone (default: main, or Harbor --version)
     max_steps=80          # maps to praana --max-steps
     context_engine=true   # sets PRAANA_CONTEXT_ENGINE
+    reasoning_effort=high # writes llm.reasoning_effort into praana config
     repo_url=...          # override clone URL
 
 After each run, PRAANA writes ``/logs/agent/praana-usage.json`` (tokens +
-optional ``cost_usd``). ``populate_context_post_run`` loads it into Harbor's
-``AgentContext`` so jobs report token/cost efficiency.
+optional ``cost_usd`` + ``reasoning_effort``). ``populate_context_post_run``
+loads it into Harbor's ``AgentContext`` so jobs report token/cost efficiency
+and which reasoning level ran.
 """
 
 from __future__ import annotations
@@ -62,6 +64,9 @@ _INSTALL_DIR = "$HOME/praana"
 _BUN_BIN = "$HOME/.bun/bin"
 _USAGE_FILENAME = "praana-usage.json"
 _USAGE_PATH_IN_CONTAINER = f"/logs/agent/{_USAGE_FILENAME}"
+_REASONING_EFFORT_LEVELS = frozenset(
+    {"off", "none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 
 class Praana(BaseInstalledAgent):
@@ -83,12 +88,14 @@ class Praana(BaseInstalledAgent):
         *args: Any,
         git_ref: str | None = None,
         context_engine: bool | str | None = None,
+        reasoning_effort: str | None = None,
         repo_url: str | None = None,
         **kwargs: Any,
     ):
         self._git_ref = git_ref
         self._repo_url = repo_url or _DEFAULT_REPO
         self._context_engine = _coerce_bool(context_engine)
+        self._reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
         super().__init__(logs_dir, *args, **kwargs)
 
     @staticmethod
@@ -149,6 +156,11 @@ class Praana(BaseInstalledAgent):
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
         apply_usage_report_to_context(self.logs_dir / _USAGE_FILENAME, context)
+        # Ensure requested effort is visible even if usage JSON is missing.
+        if self._reasoning_effort:
+            meta = dict(context.metadata or {})
+            meta.setdefault("praana_reasoning_effort", self._reasoning_effort)
+            context.metadata = meta
 
     def _provider_and_model(self) -> tuple[str, str]:
         if not self.model_name or "/" not in self.model_name:
@@ -176,10 +188,17 @@ class Praana(BaseInstalledAgent):
         # TOML-safe: providers/models are identifiers without newlines.
         provider_q = provider.replace('"', '\\"')
         model_q = model.replace('"', '\\"')
+        llm_lines = [
+            "[llm]",
+            f'provider = "{provider_q}"',
+            f'model = "{model_q}"',
+        ]
+        if self._reasoning_effort:
+            effort_q = self._reasoning_effort.replace('"', '\\"')
+            llm_lines.append(f'reasoning_effort = "{effort_q}"')
         config = (
-            f'[llm]\\nprovider = "{provider_q}"\\nmodel = "{model_q}"\\n\\n'
-            f"[memory]\\nenabled = false\\n\\n"
-            f"[edit]\\nconfirm = false\\n"
+            "\\n".join(llm_lines)
+            + "\\n\\n[memory]\\nenabled = false\\n\\n[edit]\\nconfirm = false\\n"
         )
         return (
             'mkdir -p "$HOME/.praana" && '
@@ -198,6 +217,16 @@ class Praana(BaseInstalledAgent):
         env = self._api_env()
         env["PRAANA_MODEL"] = model
 
+        # Seed Harbor context so jobs show effort even before usage JSON exists.
+        meta = dict(context.metadata or {})
+        meta["praana_provider"] = provider
+        meta["praana_model"] = model
+        if self._reasoning_effort:
+            meta["praana_reasoning_effort"] = self._reasoning_effort
+        else:
+            meta["praana_reasoning_effort"] = "medium"
+        context.metadata = meta
+
         escaped = shlex.quote(instruction)
         cli_flags = self.build_cli_flags()
         extra = (cli_flags + " ") if cli_flags else ""
@@ -208,14 +237,20 @@ class Praana(BaseInstalledAgent):
             env=env,
         )
 
+        effort_note = self._reasoning_effort or "medium"
+        banner = (
+            f"praana: provider={provider} model={model} "
+            f"reasoning_effort={effort_note}"
+        )
         await self.exec_as_agent(
             environment,
             command=(
                 "set -euo pipefail; "
                 f'export PATH="{_BUN_BIN}:$HOME/.local/bin:$PATH"; '
                 "mkdir -p /logs/agent; "
+                f"printf '%s\\n' {shlex.quote(banner)} >> /logs/agent/praana.txt; "
                 f"praana run --incognito {extra}{escaped} "
-                f"2>&1 | stdbuf -oL tee /logs/agent/praana.txt"
+                f"2>&1 | stdbuf -oL tee -a /logs/agent/praana.txt"
             ),
             env=env,
         )
@@ -266,9 +301,36 @@ def apply_usage_report_to_context(
         meta["praana_model"] = data["model"]
     if data.get("provider"):
         meta["praana_provider"] = data["provider"]
+    effort = data.get("reasoning_effort")
+    if isinstance(effort, str) and effort.strip():
+        meta["praana_reasoning_effort"] = effort.strip()
+    wire = data.get("reasoning_effort_wire")
+    if isinstance(wire, str) and wire.strip():
+        meta["praana_reasoning_effort_wire"] = wire.strip()
+    elif wire is None and "reasoning_effort_wire" in data:
+        meta["praana_reasoning_effort_wire"] = None
     if meta:
         context.metadata = meta
     return True
+
+
+def _normalize_reasoning_effort(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _REASONING_EFFORT_LEVELS:
+        raise ValueError(
+            f"Invalid reasoning_effort {value!r}; "
+            f"expected one of {sorted(_REASONING_EFFORT_LEVELS)}"
+        )
+    # Align with PRAANA parseReasoningEffort: none → off
+    if normalized == "none":
+        return "off"
+    if normalized == "max":
+        return "xhigh"
+    return normalized
 
 
 def _coerce_bool(value: bool | str | None) -> bool | None:

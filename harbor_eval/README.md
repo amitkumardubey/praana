@@ -46,6 +46,7 @@ PYTHONPATH=. harbor run \
 | `max_steps=80` | Passed to `praana run --max-steps` (default 80) |
 | `git_ref=main` | Git ref/tag to clone into the container |
 | `context_engine=true` | Sets `PRAANA_CONTEXT_ENGINE` for A/B |
+| `reasoning_effort=high` | Writes `llm.reasoning_effort` into praana config (`off\|minimal\|low\|medium\|high\|xhigh`) |
 | `repo_url=…` | Override clone URL (default: this GitHub repo) |
 
 Harbor `--version` (agent version) is also used as the git ref when `git_ref` is unset.
@@ -77,6 +78,10 @@ uv run --with pytest python -m pytest harbor_eval/ -q
 - Assistant text goes to stdout; the adapter tees the full stream to `/logs/agent/praana.txt`.
 - Token/cost: `praana run` writes `/logs/agent/praana-usage.json`; Harbor loads it into
   `AgentContext` (`n_input_tokens`, `n_output_tokens`, `cost_usd` when priced).
+  Metadata includes `praana_reasoning_effort` (preferred) and
+  `praana_reasoning_effort_wire` (actual value sent to the provider, if any).
+  The agent also prepends `provider=… model=… reasoning_effort=…` to
+  `/logs/agent/praana.txt`.
   **Requires a PRAANA build that includes usage export** (merged to `main`, or
   `--ak git_ref=<that-branch>` until then).
 - Prefer pinning `git_ref` / Harbor `--version` to a known-good commit for reproducible leaderboard runs.

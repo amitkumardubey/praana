@@ -131,10 +131,14 @@ describe("usage report", () => {
       config: cfg,
       getInputTokens: () => 1200,
       getOutputTokens: () => 340,
+      getEffectiveReasoningEffort: () => "high",
+      getLastReasoningEffortUsed: () => "high",
     });
     expect(report.n_input_tokens).toBe(1200);
     expect(report.n_output_tokens).toBe(340);
     expect(report.model).toBe("anthropic/claude-sonnet-5");
+    expect(report.reasoning_effort).toBe("high");
+    expect(report.reasoning_effort_wire).toBe("high");
     expect(report.cost_usd).not.toBeNull();
   });
 
@@ -148,6 +152,8 @@ describe("usage report", () => {
         config: cfg,
         getInputTokens: () => 10,
         getOutputTokens: () => 5,
+        getEffectiveReasoningEffort: () => "medium",
+        getLastReasoningEffortUsed: () => null,
       },
       path,
     );
@@ -155,6 +161,8 @@ describe("usage report", () => {
     expect(parsed.schema_version).toBe(1);
     expect(parsed.n_input_tokens).toBe(10);
     expect(parsed.n_output_tokens).toBe(5);
+    expect(parsed.reasoning_effort).toBe("medium");
+    expect(parsed.reasoning_effort_wire).toBeNull();
   });
 });
 
@@ -184,6 +192,8 @@ describe("runHeadless", () => {
       getTranscriptEvents: () => [],
       getInputTokens: () => 100,
       getOutputTokens: () => 20,
+      getEffectiveReasoningEffort: () => "medium",
+      getLastReasoningEffortUsed: () => "medium",
     };
     const createSession = mock(async (_cwd: string, config: PraanaConfig) => {
       expect(config.turn.max_steps).toBe(12);
@@ -232,6 +242,8 @@ describe("runHeadless", () => {
       getTranscriptEvents: () => [],
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
+      getEffectiveReasoningEffort: () => "medium",
+      getLastReasoningEffortUsed: () => null,
     };
     await expect(
       runHeadless({

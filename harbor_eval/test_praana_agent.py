@@ -120,6 +120,34 @@ def test_write_config_command(praana_mod):
     agent = Praana(Path("/tmp"), model_name="umans/umans-coder")
     cmd = agent._write_config_command("umans", "umans-coder")
     assert "umans" in cmd and "umans-coder" in cmd and "config.toml" in cmd
+    assert "reasoning_effort" not in cmd
+
+
+def test_write_config_includes_reasoning_effort(praana_mod):
+    Praana, _, _ = praana_mod
+    agent = Praana(
+        Path("/tmp"),
+        model_name="openrouter/z-ai/glm-5.2",
+        reasoning_effort="high",
+    )
+    cmd = agent._write_config_command("openrouter", "z-ai/glm-5.2")
+    assert 'reasoning_effort = "high"' in cmd
+
+
+def test_reasoning_effort_none_aliases_off(praana_mod):
+    Praana, _, _ = praana_mod
+    agent = Praana(
+        Path("/tmp"),
+        model_name="openrouter/z-ai/glm-5.2",
+        reasoning_effort="none",
+    )
+    assert agent._reasoning_effort == "off"
+
+
+def test_reasoning_effort_rejects_invalid(praana_mod):
+    Praana, _, _ = praana_mod
+    with pytest.raises(ValueError, match="Invalid reasoning_effort"):
+        Praana(Path("/tmp"), model_name="umans/umans-coder", reasoning_effort="turbo")
 
 
 def test_build_cli_flags_max_steps(praana_mod):
@@ -152,6 +180,8 @@ def test_apply_usage_report_to_context(praana_mod, tmp_path):
                 "session_id": "01ABC",
                 "provider": "openrouter",
                 "model": "anthropic/claude-sonnet-5",
+                "reasoning_effort": "medium",
+                "reasoning_effort_wire": "medium",
                 "n_input_tokens": 12000,
                 "n_output_tokens": 800,
                 "n_cache_tokens": 100,
@@ -175,6 +205,8 @@ def test_apply_usage_report_to_context(praana_mod, tmp_path):
     assert ctx.n_cache_tokens == 100
     assert ctx.cost_usd == 0.048
     assert ctx.metadata["praana_session_id"] == "01ABC"
+    assert ctx.metadata["praana_reasoning_effort"] == "medium"
+    assert ctx.metadata["praana_reasoning_effort_wire"] == "medium"
 
 
 def test_apply_usage_report_missing_file(praana_mod, tmp_path):

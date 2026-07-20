@@ -168,6 +168,8 @@ function mockSession(): Session {
     getActiveModelId: mock(() => "test/model"),
     getActiveModelLabel: mock(() => "openrouter/test/model"),
     getEffectiveReasoningEffort: mock(() => "medium"),
+    recordReasoningEffortUsed: mock(),
+    getLastReasoningEffortUsed: mock(() => null),
     getLastResetBoundaryTurn: mock(() => -1),
     getVisibleSessionCheckpoint: mock(() => undefined),
   } as unknown as Session;
