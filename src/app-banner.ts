@@ -165,6 +165,7 @@ function usageLines(): string[] {
     `  ${CLI_NAME} models [provider] [--all]  List configured models (--all includes unconfigured)`,
     `  ${CLI_NAME} providers [--all]   List configured providers (--all includes unconfigured)`,
     `  ${CLI_NAME} resume [session]   Resume last session here, or a specific session`,
+    `  ${CLI_NAME} run "<instruction>" [--max-steps N]  Headless one-shot (no TTY)`,
     `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
     `  ${CLI_NAME} --incognito         Start without Cognitive Memory persistence`,

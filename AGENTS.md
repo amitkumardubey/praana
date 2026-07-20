@@ -41,6 +41,10 @@ praana resume <session_id>
 # Resume a previous session
 bun start -- resume <session_id>
 
+# Headless one-shot (no TTY — Harbor / CI / scripts)
+praana run "fix the failing tests"
+praana run --prompt "install deps" --max-steps 40
+
 # Debug mode (saves compiled prompts, verbose tool blocks)
 PRAANA_DEBUG=true bun start
 
