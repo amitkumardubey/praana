@@ -14,3 +14,6 @@ PRODUCT_DOCUMENT.md
 ENGINEERING_PLAN.md
 
 TODO.md
+jobs/
+__pycache__/
+*.pyc
