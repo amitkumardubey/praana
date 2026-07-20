@@ -1,8 +1,13 @@
-import { describe, it, expect, beforeAll } from "bun:test";
+import { describe, it, expect, beforeAll, mock } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
 import {
   TransformersEmbedder,
   isTransformersAvailable,
+  isModelCached,
+  resetTransformersEmbedderForTests,
 } from "../src/memory/index.js";
 import type { MemoryConfig } from "../src/types.js";
 import type { Embedder } from "../src/memory/types.js";
@@ -10,6 +15,17 @@ import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 
 const HAS_TRANSFORMERS = await isTransformersAvailable();
 const TRANSFORMERS_TIMEOUT_MS = 120_000;
+
+// Mutable flag: when true, the mocked confirmModelDownload returns false
+// (decline), simulating a user who cancels the download prompt.
+let declineDownload = false;
+
+// Mock download-consent so tests never attempt to render a TUI overlay.
+// The real function guards on process.stderr.isTTY, but mocking ensures
+// no ProcessTerminal is ever constructed in the test process.
+mock.module("../src/ui/tui/download-consent.js", () => ({
+  confirmModelDownload: async (_modelId: string) => !declineDownload,
+}));
 
 function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
   return {
@@ -96,6 +112,56 @@ describe("createEmbedder factory", () => {
     const b = await embedder.embed("same text");
     expect(Array.from(a)).toEqual(Array.from(b));
   });
+});
+
+describe("isModelCached", () => {
+  it("returns true when the onnx directory exists", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "praana-cache-"));
+    const modelId = "Xenova/all-MiniLM-L6-v2";
+    mkdirSync(join(tmpDir, modelId, "onnx"), { recursive: true });
+    expect(isModelCached(tmpDir, modelId)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns false when the onnx directory does not exist", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "praana-cache-"));
+    expect(isModelCached(tmpDir, "Xenova/nonexistent-model")).toBe(false);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns false for an empty cache directory", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "praana-cache-"));
+    expect(isModelCached(tmpDir, "Xenova/all-MiniLM-L6-v2")).toBe(false);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe.skipIf(!HAS_TRANSFORMERS)("download consent", () => {
+  it(
+    "returns null when user declines the download",
+    async () => {
+      // Point PRAANA_HOME to a temp dir so the model is not cached there,
+      // forcing loadPipeline to call confirmModelDownload. The mock returns
+      // false (decline) → loadPipeline throws → create() catches → null.
+      resetTransformersEmbedderForTests();
+      const tmpHome = mkdtempSync(join(tmpdir(), "praana-home-"));
+      const prevHome = process.env.PRAANA_HOME;
+      process.env.PRAANA_HOME = tmpHome;
+      declineDownload = true;
+
+      try {
+        const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
+        expect(embedder).toBeNull();
+      } finally {
+        declineDownload = false;
+        if (prevHome === undefined) delete process.env.PRAANA_HOME;
+        else process.env.PRAANA_HOME = prevHome;
+        resetTransformersEmbedderForTests();
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
 });
 
 describe.skipIf(!HAS_TRANSFORMERS)("TransformersEmbedder", () => {
