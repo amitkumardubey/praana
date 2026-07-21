@@ -125,6 +125,10 @@ export class Session {
   private turnCount = 0;
   private modelOverride: string | null = null;
   private providerOverride: string | null = null;
+  /** Session `/reasoning` override; null → use config.llm.reasoning_effort. */
+  private reasoningEffortOverride: string | null = null;
+  /** Last wire `reasoningEffort` passed to pi-ai (null = omitted / not yet used). */
+  private lastReasoningEffortUsed: string | null = null;
   private modelContextWindow: number | null = null;
   private modelContextWindowFor: string | null = null;
   private lastCompileMetrics: CompileMetrics | null = null;
@@ -295,8 +299,10 @@ export class Session {
 
     loadProjectContextField(session, cwd);
 
-    // Restore model + provider overrides and plan mode from the latest system_note events.
+    // Restore model + provider overrides, reasoning effort, and plan mode
+    // from the latest system_note events.
     let planModeRestored = false;
+    let reasoningEffortRestored = false;
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
       if (ev.kind !== "system_note") continue;
@@ -321,11 +327,28 @@ export class Session {
           }
         }
       }
+      if (
+        ev.payload.type === "reasoning_effort_override" &&
+        !reasoningEffortRestored
+      ) {
+        const rawEffort = ev.payload.effort;
+        if (typeof rawEffort === "string" && rawEffort.trim()) {
+          session.reasoningEffortOverride = rawEffort.trim();
+        }
+        reasoningEffortRestored = true;
+      }
       if (ev.payload.type === "plan_mode" && !planModeRestored) {
         session.planMode = ev.payload.value === true;
         planModeRestored = true;
       }
-      if (session.modelOverride !== null && session.providerOverride !== null && planModeRestored) break;
+      if (
+        session.modelOverride !== null &&
+        session.providerOverride !== null &&
+        planModeRestored &&
+        reasoningEffortRestored
+      ) {
+        break;
+      }
     }
 
     if (session.memoryEnabled) {
@@ -644,6 +667,39 @@ export class Session {
 
   getModelOverride(): string | null {
     return this.modelOverride;
+  }
+
+  setReasoningEffortOverride(effort: string | null): void {
+    const next = effort && effort.trim() ? effort.trim() : null;
+    if (next === this.reasoningEffortOverride) return;
+    this.reasoningEffortOverride = next;
+    this.eventLog.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: { type: "reasoning_effort_override", effort: next },
+    });
+  }
+
+  getReasoningEffortOverride(): string | null {
+    return this.reasoningEffortOverride;
+  }
+
+  /** Session override, else config default (`medium`). */
+  getEffectiveReasoningEffort(): string {
+    return (
+      this.reasoningEffortOverride ??
+      this.config.llm.reasoning_effort ??
+      "medium"
+    );
+  }
+
+  /** Last `reasoningEffort` value passed to the LLM stream (null if omitted). */
+  recordReasoningEffortUsed(effort: string | undefined): void {
+    this.lastReasoningEffortUsed = effort ?? null;
+  }
+
+  getLastReasoningEffortUsed(): string | null {
+    return this.lastReasoningEffortUsed;
   }
 
   isIncognito(): boolean {

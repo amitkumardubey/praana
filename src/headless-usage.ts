@@ -13,6 +13,13 @@ export type HeadlessUsageReport = {
   session_id: string;
   provider: string;
   model: string;
+  /** Preferred / effective effort (config or /reasoning). */
+  reasoning_effort: string;
+  /**
+   * Wire value last passed to pi-ai `stream()` as `reasoningEffort`.
+   * `null` when the active model does not use chain-of-thought, or no turn ran.
+   */
+  reasoning_effort_wire: string | null;
   n_input_tokens: number;
   n_output_tokens: number;
   n_cache_tokens: number;
@@ -36,6 +43,14 @@ const MODEL_PRICES_PER_MILLION: Record<string, PricePerMillion> = {
   "google/gemini-2.5-pro": { input: 1.25, output: 10 },
   "google/gemini-2.5-flash": { input: 0.15, output: 0.6 },
   "z-ai/glm-5.2": { input: 0.6, output: 2.2 },
+  // Umans pay-per-token (service-account wallet). Model ids are bare
+  // (provider is `umans`; ignore any `umans-ai-coding-plan/` catalog prefix).
+  "umans-coder": { input: 0.95, output: 4.0, cache: 0.19 }, // routes to kimi today
+  "umans-kimi-k2.7": { input: 0.95, output: 4.0, cache: 0.19 },
+  "umans-glm-5.2": { input: 1.4, output: 4.4, cache: 0.26 },
+  "umans-glm-5.1": { input: 1.4, output: 4.4, cache: 0.29 },
+  "umans-flash": { input: 0.15, output: 1.0, cache: 0.05 },
+  "umans-qwen3.6-35b-a3b": { input: 0.15, output: 1.0, cache: 0.05 },
 };
 
 export function lookupModelPrice(model: string): PricePerMillion | null {
@@ -80,7 +95,12 @@ export function resolveUsageReportPath(explicit?: string | null): string {
 export function buildHeadlessUsageReport(
   session: Pick<
     Session,
-    "id" | "config" | "getInputTokens" | "getOutputTokens"
+    | "id"
+    | "config"
+    | "getInputTokens"
+    | "getOutputTokens"
+    | "getEffectiveReasoningEffort"
+    | "getLastReasoningEffortUsed"
   >,
 ): HeadlessUsageReport {
   const provider = session.config.llm.provider ?? "";
@@ -93,6 +113,8 @@ export function buildHeadlessUsageReport(
     session_id: session.id,
     provider,
     model,
+    reasoning_effort: session.getEffectiveReasoningEffort(),
+    reasoning_effort_wire: session.getLastReasoningEffortUsed(),
     n_input_tokens,
     n_output_tokens,
     n_cache_tokens,
@@ -103,7 +125,12 @@ export function buildHeadlessUsageReport(
 export function writeHeadlessUsageReport(
   session: Pick<
     Session,
-    "id" | "config" | "getInputTokens" | "getOutputTokens"
+    | "id"
+    | "config"
+    | "getInputTokens"
+    | "getOutputTokens"
+    | "getEffectiveReasoningEffort"
+    | "getLastReasoningEffortUsed"
   >,
   path?: string | null,
 ): HeadlessUsageReport {

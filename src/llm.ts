@@ -360,39 +360,95 @@ export function resolveModel(modelString: string) {
 
 // ── Reasoning / thinking-level helpers ────────────────────────
 
-const DEFAULT_REASONING_LEVEL = "medium";
+/** User-facing / pi-ai thinking levels (slash + config). */
+export const REASONING_EFFORT_LEVELS = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] as const;
+
+export type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
+
+const DEFAULT_REASONING_LEVEL: ReasoningEffortLevel = "medium";
+
+/**
+ * Parse a user/config effort string. Accepts `none` as an alias for `off`
+ * (OpenRouter's disable token). Returns null when unrecognized.
+ */
+export function parseReasoningEffort(
+  raw: string,
+): ReasoningEffortLevel | null {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "none") return "off";
+  if ((REASONING_EFFORT_LEVELS as readonly string[]).includes(normalized)) {
+    return normalized as ReasoningEffortLevel;
+  }
+  return null;
+}
+
+function clampEffortForModel(
+  model: Record<string, unknown>,
+  level: ReasoningEffortLevel,
+): ReasoningEffortLevel {
+  const thinkingLevelMap = model.thinkingLevelMap as
+    | Record<string, string | null>
+    | undefined;
+  // Must pass reasoning:true — clampThinkingLevel returns only ["off"] when
+  // reasoning is falsy, which previously sent OpenRouter-illegal "off".
+  try {
+    const clamped = clampThinkingLevel(
+      {
+        reasoning: true,
+        thinkingLevelMap,
+      } as Parameters<typeof clampThinkingLevel>[0],
+      level,
+    );
+    if ((REASONING_EFFORT_LEVELS as readonly string[]).includes(clamped)) {
+      return clamped as ReasoningEffortLevel;
+    }
+  } catch {
+    getAppLogger().child("llm").warn(
+      "clampThinkingLevel failed, using default reasoning",
+    );
+  }
+  return DEFAULT_REASONING_LEVEL;
+}
 
 /**
  * Determine the `reasoningEffort` value to pass to pi-ai `stream()`.
  *
- * Returns `undefined` when the model does not need chain-of-thought,
- * or a clamped reasoning level string (e.g. "medium") when it does.
+ * Returns `undefined` when the model does not need chain-of-thought, or when
+ * effort is explicitly off (pi-ai then maps OpenRouter disable → `none`).
+ * Never returns the string `"off"` — OpenRouter rejects it.
+ *
+ * @param preferred Optional session/config level (already parsed or raw).
  */
 export function getReasoningEffort(
   model: Record<string, unknown>,
   modelId: string,
   provider: string,
+  preferred?: string | null,
 ): string | undefined {
   const needsReasoning =
     !!model.reasoning || inferReasoningModel(provider, modelId);
   if (!needsReasoning) return undefined;
 
-  // Only call clampThinkingLevel if model has the pi-ai catalog shape
-  // with thinkingLevelMap. Manually built models may lack this.
-  const thinkingLevelMap = model.thinkingLevelMap as
-    | Record<string, string | null>
-    | undefined;
-  if (thinkingLevelMap) {
-    try {
-      return clampThinkingLevel(
-        { thinkingLevelMap } as Parameters<typeof clampThinkingLevel>[0],
-        DEFAULT_REASONING_LEVEL,
-      );
-    } catch {
-      getAppLogger().child("llm").warn(
-        "clampThinkingLevel failed, using default reasoning",
-      );
-    }
+  const preferredLevel =
+    preferred != null && preferred !== ""
+      ? parseReasoningEffort(preferred)
+      : null;
+  const requested = preferredLevel ?? DEFAULT_REASONING_LEVEL;
+  let level = clampEffortForModel(model, requested);
+
+  // Some OpenRouter models (e.g. kimi-k2) reject disabled reasoning.
+  if (level === "off" && inferReasoningModel(provider, modelId)) {
+    level = clampEffortForModel(model, "minimal");
+    if (level === "off") level = DEFAULT_REASONING_LEVEL;
   }
-  return DEFAULT_REASONING_LEVEL;
+
+  if (level === "off") return undefined;
+  return level;
 }

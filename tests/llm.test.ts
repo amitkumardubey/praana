@@ -7,7 +7,11 @@ import {
   listKnownProviders,
   inferReasoningModel,
   createProvider,
+  getReasoningEffort,
+  parseReasoningEffort,
+  REASONING_EFFORT_LEVELS,
 } from "../src/llm.js";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   setUserProviders,
   resetUserProvidersForTests,
@@ -235,5 +239,71 @@ describe("user-declared providers", () => {
     const model = build("test-model") as Record<string, unknown>;
     const piOpts = model.__piOptions as Record<string, unknown> | undefined;
     expect(piOpts?.apiKey).toBe("no-key");
+  });
+});
+
+describe("reasoning effort", () => {
+  it("parseReasoningEffort accepts pi-ai levels and none→off", () => {
+    expect(parseReasoningEffort("medium")).toBe("medium");
+    expect(parseReasoningEffort("NONE")).toBe("off");
+    expect(parseReasoningEffort("off")).toBe("off");
+    expect(parseReasoningEffort("xhigh")).toBe("xhigh");
+    expect(parseReasoningEffort("bogus")).toBeNull();
+    expect(REASONING_EFFORT_LEVELS).toContain("medium");
+  });
+
+  it("getReasoningEffort returns medium for OpenRouter GLM (not off)", () => {
+    const model = getModel("openrouter", "z-ai/glm-5.2" as never) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(model).toBeTruthy();
+    expect(model.thinkingLevelMap).toBeTruthy();
+    const effort = getReasoningEffort(model, "z-ai/glm-5.2", "openrouter");
+    expect(effort).toBe("medium");
+    expect(effort).not.toBe("off");
+  });
+
+  it("getReasoningEffort honours preferred level when supported", () => {
+    const model = getModel("openrouter", "z-ai/glm-5.2" as never) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(getReasoningEffort(model, "z-ai/glm-5.2", "openrouter", "high")).toBe(
+      "high",
+    );
+    expect(getReasoningEffort(model, "z-ai/glm-5.2", "openrouter", "low")).toBe(
+      "low",
+    );
+  });
+
+  it("getReasoningEffort never returns off (OpenRouter-illegal); omits instead", () => {
+    const model = {
+      reasoning: true,
+      thinkingLevelMap: { off: "none" },
+    };
+    const effort = getReasoningEffort(model, "some-model", "openrouter", "off");
+    expect(effort).toBeUndefined();
+  });
+
+  it("getReasoningEffort keeps effort on for mandatory kimi reasoning models", () => {
+    const model = {
+      reasoning: true,
+      thinkingLevelMap: { xhigh: "xhigh" },
+    };
+    const effort = getReasoningEffort(
+      model,
+      "moonshotai/kimi-k2.7-code",
+      "openrouter",
+      "off",
+    );
+    expect(effort).toBeTruthy();
+    expect(effort).not.toBe("off");
+  });
+
+  it("infers reasoning for umans glm and kimi model ids", () => {
+    expect(inferReasoningModel("umans", "umans-glm-5.2")).toBe(true);
+    expect(inferReasoningModel("umans", "umans-kimi-k2.7-code")).toBe(true);
+    expect(inferReasoningModel("umans", "kimi-k2.7-code")).toBe(true);
   });
 });

@@ -98,6 +98,9 @@ export function formatTuiGlanceLine(
   }
 
   if (input.thinking) parts.push(chalk.dim("think"));
+  if (input.reasoningEffort) {
+    parts.push(chalk.dim(`effort ${input.reasoningEffort}`));
+  }
 
   if (input.incognito) {
     parts.push(TUI_STYLE.memory("incognito"));

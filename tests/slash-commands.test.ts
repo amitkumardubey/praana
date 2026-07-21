@@ -73,6 +73,55 @@ describe("executeSlashCommand", () => {
     expect(result.lines[0]).toContain("Ending session");
   });
 
+  it("/reasoning medium sets override and returns refresh_status", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      getEffectiveReasoningEffort: () => "medium",
+      setReasoningEffortOverride: mock(),
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/reasoning medium", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.setReasoningEffortOverride).toHaveBeenCalledWith("medium");
+    expect(result.lines[0]).toContain("medium");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("/reasoning none aliases to off", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      getEffectiveReasoningEffort: () => "off",
+      setReasoningEffortOverride: mock(),
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/reasoning none", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(session.setReasoningEffortOverride).toHaveBeenCalledWith("off");
+    expect(result.action).toBe("refresh_status");
+  });
+
+  it("bare /reasoning shows current effort and usage", async () => {
+    const session = {
+      stateGraph: { list: () => [] },
+      getEffectiveReasoningEffort: () => "high",
+      setReasoningEffortOverride: mock(),
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/reasoning", session, {
+      setModel: mock(),
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+    expect(result.lines[0]).toContain("high");
+    expect(result.lines[1]).toContain("Usage: /reasoning");
+  });
+
   it("/plan on turns plan mode on and returns refresh_status", async () => {
     const session = {
       stateGraph: { list: () => [] },

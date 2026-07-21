@@ -113,7 +113,24 @@ describe("estimateCostUsd", () => {
   });
 
   it("returns null for unknown models", () => {
-    expect(estimateCostUsd("umans/umans-coder", 1000, 100)).toBeNull();
+    expect(estimateCostUsd("totally-unknown-model-xyz", 1000, 100)).toBeNull();
+  });
+
+  it("estimates cost for umans-coder (kimi rates)", () => {
+    // 1M in + 1M out at $0.95 / $4 → $4.95
+    expect(estimateCostUsd("umans-coder", 1_000_000, 1_000_000)).toBe(4.95);
+    expect(estimateCostUsd("umans/umans-coder", 1_000_000, 1_000_000)).toBe(4.95);
+  });
+
+  it("estimates cost for umans glm / kimi / flash / qwen ids", () => {
+    expect(estimateCostUsd("umans-glm-5.2", 1_000_000, 1_000_000)).toBe(5.8);
+    expect(estimateCostUsd("umans/umans-glm-5.2", 1_000_000, 1_000_000)).toBe(5.8);
+    expect(estimateCostUsd("umans-glm-5.1", 1_000_000, 1_000_000)).toBe(5.8);
+    expect(estimateCostUsd("umans-kimi-k2.7", 1_000_000, 1_000_000)).toBe(4.95);
+    expect(estimateCostUsd("umans/umans-kimi-k2.7", 1_000_000, 1_000_000)).toBe(4.95);
+    // flash / qwen: $0.15 / $1.00 → $1.15
+    expect(estimateCostUsd("umans-flash", 1_000_000, 1_000_000)).toBe(1.15);
+    expect(estimateCostUsd("umans-qwen3.6-35b-a3b", 1_000_000, 1_000_000)).toBe(1.15);
   });
 });
 
@@ -131,10 +148,14 @@ describe("usage report", () => {
       config: cfg,
       getInputTokens: () => 1200,
       getOutputTokens: () => 340,
+      getEffectiveReasoningEffort: () => "high",
+      getLastReasoningEffortUsed: () => "high",
     });
     expect(report.n_input_tokens).toBe(1200);
     expect(report.n_output_tokens).toBe(340);
     expect(report.model).toBe("anthropic/claude-sonnet-5");
+    expect(report.reasoning_effort).toBe("high");
+    expect(report.reasoning_effort_wire).toBe("high");
     expect(report.cost_usd).not.toBeNull();
   });
 
@@ -148,6 +169,8 @@ describe("usage report", () => {
         config: cfg,
         getInputTokens: () => 10,
         getOutputTokens: () => 5,
+        getEffectiveReasoningEffort: () => "medium",
+        getLastReasoningEffortUsed: () => null,
       },
       path,
     );
@@ -155,6 +178,8 @@ describe("usage report", () => {
     expect(parsed.schema_version).toBe(1);
     expect(parsed.n_input_tokens).toBe(10);
     expect(parsed.n_output_tokens).toBe(5);
+    expect(parsed.reasoning_effort).toBe("medium");
+    expect(parsed.reasoning_effort_wire).toBeNull();
   });
 });
 
@@ -184,6 +209,8 @@ describe("runHeadless", () => {
       getTranscriptEvents: () => [],
       getInputTokens: () => 100,
       getOutputTokens: () => 20,
+      getEffectiveReasoningEffort: () => "medium",
+      getLastReasoningEffortUsed: () => "medium",
     };
     const createSession = mock(async (_cwd: string, config: PraanaConfig) => {
       expect(config.turn.max_steps).toBe(12);
@@ -232,6 +259,8 @@ describe("runHeadless", () => {
       getTranscriptEvents: () => [],
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
+      getEffectiveReasoningEffort: () => "medium",
+      getLastReasoningEffortUsed: () => null,
     };
     await expect(
       runHeadless({
