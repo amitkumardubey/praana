@@ -1824,6 +1824,20 @@ describe("runTurn", () => {
     expect(session.isPlanMode()).toBe(true);
   });
 
+  it("does not auto-enter plan mode in headless sessions", async () => {
+    const generator = (async function* () {
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
+    const session = makeMockSession({ headless: true });
+    await runTurn(session, "pick a github issue to work on");
+    expect(session.isPlanMode()).toBe(false);
+  });
+
   it("exits plan mode on approval words", async () => {
     const generator = (async function* () {
       yield {

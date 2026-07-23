@@ -252,6 +252,7 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 - While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
 - PRAANA auto-detects plan/approval intent from the user's message and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate, and "plan the execution" does **not** arm it.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
+- **Headless gate:** `praana run` / Harbor sets `Session.headless = true`. That omits the engine **Plan-Before-Execute** system-frame rule and skips plan-mode auto-enter — there is no interactive user to say "proceed". Explicit `/plan on` is still available in TTY sessions only.
 
 ### Repeat-read interceptor (issue #219)
 

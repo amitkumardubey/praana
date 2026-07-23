@@ -332,9 +332,10 @@ export async function runTurn(
 
   // Plan-mode gating: entering is automatic for plan-then-execute phrasing;
   // exiting requires an explicit approval word or /plan execute.
+  // Headless one-shots have no interactive approver — skip auto-enter.
   if (session.isPlanMode() && detectPlanApproval(userInput)) {
     session.exitPlanMode();
-  } else if (detectPlanModeIntent(userInput)) {
+  } else if (!session.headless && detectPlanModeIntent(userInput)) {
     session.enterPlanMode();
   }
 
@@ -462,6 +463,7 @@ export async function runTurn(
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
     resumeNote,
+    planBeforeExecute: !session.headless,
   };
 
   let compiledPrompt: string;

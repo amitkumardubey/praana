@@ -27,6 +27,12 @@ export interface CompileInput {
    * post-resume turn when the user's message may diverge from a stale task.
    */
   resumeNote?: string;
+  /**
+   * When false, omit the Plan-Before-Execute system-frame rule.
+   * Headless `praana run` / Harbor sets this false — there is no interactive
+   * user to approve a plan. Defaults to true.
+   */
+  planBeforeExecute?: boolean;
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
@@ -76,7 +82,10 @@ export function compile(input: CompileInput): string {
     input.sessionId,
     input.toolSchemas,
     stateSummary,
-    input.agentsContext
+    input.agentsContext,
+    false,
+    input.resumeNote,
+    input.planBeforeExecute,
   );
   sections.push(frame);
 
@@ -141,7 +150,16 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   metrics.agentsContextTruncated = agentsTruncated;
 
   // 1. SYSTEM FRAME
-  const frame = buildSystemFrame(input.cwd, input.sessionId, input.toolSchemas, stateSummary, agentsContext, false, input.resumeNote);
+  const frame = buildSystemFrame(
+    input.cwd,
+    input.sessionId,
+    input.toolSchemas,
+    stateSummary,
+    agentsContext,
+    false,
+    input.resumeNote,
+    input.planBeforeExecute,
+  );
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
   metrics.agentsContextTokens = agentsContext ? estTokens(agentsContext) : 0;
@@ -350,6 +368,7 @@ export function buildSystemFrame(
   agentsContext?: string | null,
   engineMode = false,
   resumeNote?: string,
+  planBeforeExecute = true,
 ): string {
   const lines = [
     "# System",
@@ -392,14 +411,23 @@ export function buildSystemFrame(
     "- User says \"I prefer\" / \"let's do\" / \"how about\" / \"we always\" → call add_constraint",
     "- User says \"never\" / \"don't\" / \"make sure\" → call add_constraint",
     "Don't over-capture trivial remarks. Capture anything that would prevent a future mistake.",
-    "",
-    "## Plan-Before-Execute Rule",
-    "",
-    "When the user asks you to pick a GitHub issue, plan a change, or start work on a new task, your first response must be a plan only.",
-    "Use create_task to hold the plan (title, files to touch, branch name, test strategy).",
-    `Do not call ${[...PLAN_MODE_BLOCKED_TOOLS].sort().join(", ")}, or branch-creating shell commands (e.g. 'git checkout -b', 'git switch -c') until the user approves the plan with words like 'go', 'execute', 'proceed', or 'continue'`,
-    "Read-only tools (read_file, search_code, recall, gh issue view) are allowed while planning.",
-    "Only call complete_task for the plan after you have begun executing the approved steps.",
+  );
+
+  // Interactive only: headless `praana run` / Harbor has no user to approve a plan.
+  if (planBeforeExecute !== false) {
+    lines.push(
+      "",
+      "## Plan-Before-Execute Rule",
+      "",
+      "When the user asks you to pick a GitHub issue, plan a change, or start work on a new task, your first response must be a plan only.",
+      "Use create_task to hold the plan (title, files to touch, branch name, test strategy).",
+      `Do not call ${[...PLAN_MODE_BLOCKED_TOOLS].sort().join(", ")}, or branch-creating shell commands (e.g. 'git checkout -b', 'git switch -c') until the user approves the plan with words like 'go', 'execute', 'proceed', or 'continue'`,
+      "Read-only tools (read_file, search_code, recall, gh issue view) are allowed while planning.",
+      "Only call complete_task for the plan after you have begun executing the approved steps.",
+    );
+  }
+
+  lines.push(
     "",
     "## Memory Management",
     "",
