@@ -13,6 +13,7 @@ import {
 } from "./app-identity.js";
 import { setUserProviders } from "./provider-registry.js";
 import { parseReasoningEffort } from "./llm.js";
+import { setBedrockConfigRegion } from "./bedrock/region.js";
 
 function configWarn(
   message: string,
@@ -454,6 +455,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
       out.llm.region = out.llm.region.trim();
     }
   }
+  setBedrockConfigRegion(out.llm.region);
 
   if (out.llm.reasoning_effort !== undefined) {
     const parsed = parseReasoningEffort(String(out.llm.reasoning_effort));

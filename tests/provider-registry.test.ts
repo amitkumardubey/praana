@@ -53,12 +53,16 @@ describe("provider registry", () => {
     expect(getProviderEnvKey("nvidia")).toBe("NVIDIA_API_KEY");
   });
 
-  it("SETUP_UNSUPPORTED_PROVIDERS hides ollama and amazon-bedrock from setup", () => {
+  it("SETUP_UNSUPPORTED_PROVIDERS hides ollama from setup", () => {
     expect(SETUP_UNSUPPORTED_PROVIDERS.has("ollama")).toBe(true);
-    expect(SETUP_UNSUPPORTED_PROVIDERS.has("amazon-bedrock")).toBe(true);
+    expect(SETUP_UNSUPPORTED_PROVIDERS.has("amazon-bedrock")).toBe(false);
   });
 
   it("LIVE_CATALOG_PROVIDER_IDS includes umans for OpenAI-compatible /models", () => {
     expect(LIVE_CATALOG_PROVIDER_IDS).toContain("umans");
+  });
+
+  it("LIVE_CATALOG_PROVIDER_IDS includes amazon-bedrock", () => {
+    expect(LIVE_CATALOG_PROVIDER_IDS).toContain("amazon-bedrock");
   });
 });

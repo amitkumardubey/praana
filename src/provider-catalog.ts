@@ -332,6 +332,30 @@ async function fetchProviderCatalogFresh(
   };
   slot.promise = (async () => {
     try {
+      if (provider === "amazon-bedrock") {
+        const { resolveBedrockRegion } = await import("./bedrock/region.js");
+        const { resolveBedrockBearerToken } = await import("./bedrock/credentials.js");
+        const { fetchBedrockLiveCatalog } = await import("./bedrock/catalog.js");
+        const models = await fetchBedrockLiveCatalog({
+          region: resolveBedrockRegion(),
+          bearerToken: resolveBedrockBearerToken(),
+        });
+        if (controller.signal.aborted) {
+          throw new Error("Provider catalog fetch aborted");
+        }
+        if (Object.keys(models).length === 0) {
+          throw new Error("amazon-bedrock live catalog returned no chat-capable models");
+        }
+        const file = loadDiskCache();
+        file.catalogs[provider] = {
+          fetchedAt: Date.now(),
+          models,
+          suffixIndex: buildSuffixIndex(models),
+        };
+        persistDiskCache();
+        return models;
+      }
+
       // Look up base URL, env key, and headers from the user-declared
       // provider config first, then fall back to the shared registry.
       const registryEntry = getUserProviderRegistryEntry(provider) ?? PROVIDER_REGISTRY[provider];

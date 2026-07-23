@@ -256,6 +256,7 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "together",
   "ollama",
   "umans",
+  "amazon-bedrock",
 ];
 
 /**
@@ -271,7 +272,7 @@ export const OPENAI_COMPATIBLE_API_IDS = new Set([
 ]);
 
 /** Providers that should not appear in the interactive setup picker. */
-export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama", "amazon-bedrock"]);
+export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama"]);
 
 /** Return the env var name required by a provider, or null. */
 export function getProviderEnvKey(provider: string): string | null {
