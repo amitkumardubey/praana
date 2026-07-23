@@ -88,9 +88,10 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | Together | `TOGETHER_API_KEY` |
 | OpenCode | `OPENCODE_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
+| Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/setup` or `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
 
-Provider resolution order: explicit config → environment-detected key → interactive setup.
+Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
 ---
 
@@ -154,8 +155,8 @@ These are real gaps, not a roadmap dressed as marketing.
 | Area | What's weak |
 |---|---|
 | **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#162). |
-| **No published evals** | The telemetry scorecard is live. The A/B eval harness — comparing engine vs classic on a fixed task suite — doesn't exist yet. We don't know if engine mode beats classic for your workflows. |
-| **Semantic recall** | `@huggingface/transformers` weights download on first run (~80MB, cached in `~/.praana/models/`). Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
+| **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#17) is not shipped. We don't publish benchmark claims we can't back. |
+| **Semantic recall** | `@huggingface/transformers` weights download on first run (~80MB, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
 | **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
 | **Background Consolidation Processor** | Schema exists, not scalable yet. The learning loop is incomplete. |
 | **Intelligent Router** | Not started. Planned for after memory is proven. |
@@ -179,9 +180,12 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
-| `/model [provider] <id>` | Switch model or provider mid-session |
+| `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
+| `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
 | `/setup` | Interactive provider/config setup wizard (replaces /init) |
+| `/login [provider]` | Add or update a provider credential |
+| `/logout [provider]` | Remove a provider's credentials |
 | `/shell <cmd>` | Run a shell command inline (also `! <cmd>`) |
 | `/plan <on\|off\|execute>` | Plan mode: block mutating tools until you approve |
 | `/thinking <on\|off>` | Show or hide reasoning text |
@@ -193,14 +197,14 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 ### `/model` syntax
 
 ```text
-/model                          # show current provider/model
+/model                          # searchable selector (or show current if non-TTY)
 /model gpt-4o                   # model on current provider
 /model openai gpt-4o            # switch to OpenAI native
 /model opencode mimo-v2.5-free  # switch to OpenCode
 /model openrouter openai/gpt-4o # route via OpenRouter
 ```
 
-Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live `/models` list (cached 6 hours at `~/.praana/provider-catalog-cache.json`).
+Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live catalog (HTTP `/models` or Bedrock control-plane APIs; cached 6 hours at `~/.praana/provider-catalog-cache.json`).
 
 ---
 
@@ -225,7 +229,7 @@ cd website && bun run build                 # output → website/dist/
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#162), building the A/B eval harness (#17), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
+See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#162), finishing the A/B eval suite on top of Harbor/`praana run` (#17), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
 
 **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions)
 

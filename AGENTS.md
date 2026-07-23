@@ -80,7 +80,7 @@ ollama_model = "nomic-embed-text"
 ```
 
 Strategies:
-- `auto` — uses Transformers.js (`@huggingface/transformers`, shipped as a dependency). Model weights download on first run to `~/.praana/models/`.
+- `auto` — uses Transformers.js (`@huggingface/transformers`, shipped as a dependency). Model weights download on first run to `~/.praana/models/` after a one-time consent prompt.
 - `transformers` — in-process ONNX via `@huggingface/transformers` (Xenova/all-MiniLM-L6-v2, 384-dim). Models cache in `~/.praana/models/`.
 - `transformers-nomic` — 768-dim variant (Xenova/nomic-embed-text-v1) for higher-quality recall.
 - `ollama` — opt-in; requires running Ollama daemon. Run `ollama pull nomic-embed-text` first.
@@ -118,14 +118,17 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
 | `/model [provider] <id>` | Switch model (bare `/model` opens searchable selector) |
+| `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); also `llm.reasoning_effort` in config |
 | `/sessions` | List past sessions for resuming |
 | `/setup` | Run interactive provider/config setup wizard in-session (replaces /init) |
+| `/login [provider]` | Add or update a provider credential in `~/.praana/credentials.json` |
+| `/logout [provider]` | Remove a provider's credentials |
 | `/shell <cmd>` | Run a shell command inline in the transcript (also `! <cmd>` prefix) |
 | `/plan <on\|off\|execute>` | Toggle plan mode: block mutating tools until you approve |
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
 | `/incognito <on\|off>` | Toggle Cognitive Memory persistence |
-| `/settings` | View persistent settings; `/settings set <key> <value>` / `/settings reset` |
+| `/settings` | View persistent settings (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`); `/settings set <key> <value>` / `/settings reset` |
 | `/clear` | Reset in-session context (same session ID; clears working memory + model-visible history via a `reset_boundary` event) |
 | `/new` | Start a new session (new ID, reload config, background summarizer) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
@@ -161,8 +164,10 @@ Full details: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Key terms: [docs/c
 
 ```
 src/
-  main.ts        — CLI entry: TTY guard, slash commands, pi-tui launch
-  turn.ts        — Per-turn orchestration: prompt → LLM → tools → tier management
+  main.ts        — CLI entry: TTY guard, slash commands, pi-tui launch, headless `run` dispatch
+  headless-run.ts — Non-TTY one-shot runner (`praana run`) for Harbor / CI
+  headless-usage.ts — Export turn usage into Harbor AgentContext
+  turn.ts        — Per-turn orchestration: prompt → LLM → concurrent tools → tier management
   session.ts     — Session lifecycle (create/resume/end), embedder selection, memory init
   compile-classic.ts — Classic-mode compiler (full verbatim history, no truncation)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
@@ -174,13 +179,17 @@ src/
   cosine-similarity.ts — Cosine similarity for embedding vectors (context scoring + memory dedup)
   hash.ts        — Shared SHA-256 hashing utility (session scopes, skill scope keys)
   llm.ts         — Provider registry, model building via pi-ai
-  config.ts      — Multi-source JSON/TOML config loading, deep-merge
+  credentials.ts — Credential store (`~/.praana/credentials.json`); key resolution order
+  user-settings.ts — Persistent UX prefs (`~/.praana/settings.json`) applied as session defaults
+  provider-catalog.ts — Live model catalogs (HTTP `/models` + Bedrock control plane); 6h disk cache
+  bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
+  config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode gate (enter/exit/is + intent/approval detection); shared by turn.ts and compiler.ts
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
   ui/
-    tui/           — pi-tui terminal shell: transcript, chrome bars, autocomplete, thinking blocks
+    tui/           — pi-tui terminal shell: transcript, chrome bars, autocomplete, thinking blocks, login/logout wizards, model selector
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall
@@ -189,15 +198,16 @@ src/
     index.ts     — Tool registry
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
-    system.ts    — System tools (shell, read_file, write_file, edit_file)
+    system.ts    — System tools (shell, read_file, write_file, edit_file); write-path concurrency guards
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
   memory/
-    store.ts     — MemoryStore: remember, recall, digest, session lifecycle
+    store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables
     embeddings.ts — OllamaEmbedder
     transformers-embedder.ts — Transformers.js in-process semantic embedder
     transformers-models.ts — Model presets (MiniLM, nomic)
-    summarizer.ts — extractLearnings: transcript → structured learnings via LLM
+    summarizer.ts — extractLearnings: transcript → concise key-point learnings via LLM (skips AGENTS.md/README)
+    normalize-learning.ts — Normalize LLM learning content into scannable key points
     types.ts     — Memory-specific types
   context-engine/
     embedding-cache.ts  — Per-turn embedding cache: precomputes vectors for all context units concurrently; invalidated when unit set changes
@@ -205,6 +215,7 @@ src/
     (+ existing engine files: scoring.ts, engine-compiler.ts, db.ts, checkpoint.ts, telemetry.ts, …)
 ```
 
+Harbor / Terminal-Bench adapter: [`harbor_eval/`](./harbor_eval/README.md) — installed agent that runs `praana run --incognito` inside the task container.
 ### Skills (issues #96, #77, #92)
 
 **Pull model — engine & classic modes share a tiny catalog.** `discoverSkills()` scans project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents) and builds a lightweight `SkillRecord[]` catalog. Each `SkillRecord` carries a `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global). The catalog is rendered into the prompt via `buildSkillMetadataCatalog()` in both modes: a list of `- **name**: description` lines with a `Load a skill with load_skill(skill_id)` header. **Catalog order is sorted descending by usefulness score** when a usefulness map is available; falls back to discovery order. No full bodies, no file paths, no residency tiers.
@@ -285,6 +296,7 @@ User input
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response with tool calls
+  → execute pending tool calls concurrently (write-path guards reject parallel mutators on the same path)
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
@@ -300,6 +312,7 @@ User input
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
   → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response (shared + system + memory tools only)
+  → execute pending tool calls concurrently (same write-path guards)
   → log all events
   → increment turn count (no tier management, no skill tracking)
   → print memory banner
@@ -312,7 +325,7 @@ Default scopes set at session start: `user:<sha256>`, `agent:praana`, `context:<
 - **Project-level** memories carry all three scopes — only visible from that project directory.
 - **Global** memories carry only `user` and `agent` scopes — visible in all project sessions.
 
-The session-end summarizer now classifies each extracted learning as `project` or `global`. `project` learnings are written with the full default scopes (including `context:`); `global` learnings are written without the `context:` scope so they remain visible across projects. Explicit `remember(scope=[...])` calls still override this when a scope is provided.
+The session-end summarizer extracts **concise key-point** learnings (one short sentence each), skips content already present in loaded project context (AGENTS.md / README), and classifies each learning as `project` or `global`. `project` learnings are written with the full default scopes (including `context:`); `global` learnings are written without the `context:` scope so they remain visible across projects. Explicit `remember(scope=[...])` calls still override this when a scope is provided.
 
 Recall enforces AND-scoping: an entry is returned only if it carries *all* scopes in the query. In project sessions, the store queries **both** the full project scopes (`user` + `agent` + `context`) and global-only scopes (`user` + `agent`), then merges and de-duplicates by entry id. Global-only queries exclude entries that carry a `context:` scope, so project facts stay project-local while preferences and cross-project patterns surface everywhere.
 
@@ -337,22 +350,24 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
 - **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
 - **Memory DB:** `~/.praana/memory.db` — plaintext SQLite. No encryption at rest.
-- **Provider keys:** Read from env vars only. Never hardcode or log.
+- **Provider keys:** Credential store (`~/.praana/credentials.json`) preferred; env vars as fallback. Never hardcode or log.
 
 ---
 
 ## Common Gotchas
 
 - `edit_file` requires exact unique text match — whitespace-sensitive. Will fail on duplicate code blocks or trailing whitespace differences.
+- Parallel tool calls are allowed, but concurrent `write_file` / `edit_file` / `batch_*` targeting the **same path** fail with a write-path guard error — serialize dependent mutations.
 - Event log `fsyncSync` on every write — intentional for durability, affects throughput on fast tool loops.
 - Session log path is `events.jsonl` under `~/.praana/sessions/<session_id>/`. Legacy `events.log` files are migrated automatically on session open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
-- Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`.
-- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`.
+- Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`. Array allowlists (`[shell] allowed_paths`, etc.) **append-merge** across layers instead of replacing.
+- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`. First Transformers.js download prompts for consent (#187).
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
 - **Concurrent DB access:** Both `openMemoryDb()` and `openContextEngineDb()` configure WAL mode plus a `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Don't open these databases with raw `new Database()` and then skip the pragmas — missing `busy_timeout` makes parallel sessions fail immediately with `SQLITE_BUSY` instead of retrying.
+- Shell timeouts kill the process **group** (not just the parent) so orphaned children like `find` cannot hang the session.
 
 ---
 

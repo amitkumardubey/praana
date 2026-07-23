@@ -16,15 +16,16 @@ A terminal coding agent that aims to get more useful the more you use it — by 
 
 These exist and work — we're not claiming they're solved problems, just that they're there:
 
-- **Easy onboarding** — auto-detects provider API keys from the environment; `praana setup` (also `praana init`) interactive wizard for config; `praana doctor` health check; `praana providers` / `praana models` list configured providers and models (`--all` includes unconfigured)
-- **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, mid-session model switching, slash-command/file autocomplete
-- **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Ollama (local), umans
-- **Tools** — code search, multi-file edits, diff preview before writes, optional shell sandbox
+- **Easy onboarding** — auto-detects provider API keys; credential store (`~/.praana/credentials.json`); `praana setup` / `/setup` wizard; `/login` / `/logout`; `praana doctor`; `praana providers` / `praana models`
+- **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, searchable `/model` selector, slash-command/file autocomplete
+- **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Amazon Bedrock (live catalog + IAM or API key), Ollama (local), umans
+- **Headless / eval** — `praana run` one-shot for CI; Harbor / Terminal-Bench installed-agent adapter (`harbor_eval/`)
+- **Tools** — code search, multi-file edits, concurrent independent tool calls (write-path guards), optional shell sandbox
 - **Two context modes** — default *engine* mode (tiered working memory, tool-output distillation, session checkpoint, skills) and a *classic* fallback/disable mode (full transcript, like most agents)
-- **Cognitive Memory** (optional) — extracts learnings at the end of a session, scores and consolidates them, and surfaces a ranked digest at the start of the next; project and global scopes
+- **Cognitive Memory** (optional) — extracts concise key-point learnings at session end (skips AGENTS.md/README content; classifies project vs global); ranked digest at next start
 - **Plan mode** — `/plan` gates mutating tools behind your approval so the agent plans before it changes files
 - **Shell access** — `/shell` (or `!`) runs commands inline in the transcript
-- **Session safety** — a repeat-read interceptor warns/blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project; a stale-task banner and scope confirmation appear on resume
+- **Session UX** — persistent `/settings`; `/reasoning` effort; repeat-read interceptor (files-read index); `praana resume` (12-char id or most recent for cwd); stale-task banner + scope confirmation on resume
 
 ---
 
@@ -35,7 +36,7 @@ The honest gap today is that PRAANA *stores and recalls*, but we want it to genu
 - **Memory that learns from use** — strengthening what actually helps you and letting go of what doesn't, instead of just piling up notes.
 - **Better recall out of the box** — semantic search by default, with no separate service to install.
 - **Context that adapts to the task** — surfacing the right things for what you're doing right now, and staying fast on long sessions.
-- **Knowing whether it helps** — building the measurement to tell, honestly, whether memory and the engine beat a plain agent. We won't claim they do until we can show it.
+- **Knowing whether it helps** — Harbor/`praana run` give a headless substrate; the fixed A/B task suite + scoring (#17) is still the missing step. We won't claim engine beats classic until we can show it.
 
 ---
 
@@ -44,7 +45,7 @@ The honest gap today is that PRAANA *stores and recalls*, but we want it to genu
 Smaller, concrete improvements:
 
 - Git tools (`git_status`, `git_diff`, `git_commit`)
-- Quality-of-life: searchable command picker, named sessions, session cost in the status bar, settings that persist
+- Quality-of-life: searchable command picker, named sessions, session cost in the status bar
 
 ---
 

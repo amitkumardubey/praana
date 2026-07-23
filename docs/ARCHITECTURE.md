@@ -1,5 +1,7 @@
 # PRAANA Architecture
 
+> **Sync date:** 2026-07-23 — reflects shipped behaviour through v0.11.1 / PR #281 (Amazon Bedrock, headless `praana run`, Harbor adapter, onboarding/settings wave).
+
 PRAANA is a single-process TypeScript CLI coding agent built around two memory systems:
 
 1. **Adaptive Context** — within-session working memory
@@ -11,8 +13,10 @@ No daemon, no RPC server, no multi-process coordination.
 
 ```
 src/
-  main.ts        — CLI entry point, TTY guard, slash commands, pi-tui launch
-  turn.ts        — Per-turn orchestration (prompt → LLM → tools → banners)
+  main.ts        — CLI entry point, TTY guard, slash commands, pi-tui launch, headless `run` dispatch
+  headless-run.ts — Non-TTY one-shot runner (`praana run`) for Harbor / CI / scripts
+  headless-usage.ts — Export turn usage into Harbor AgentContext
+  turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
@@ -25,9 +29,12 @@ src/
   cosine-similarity.ts — Cosine similarity for Float32Array embedding vectors; shared by context scoring and memory dedup
   hash.ts        — SHA-256 hashing utility; shared by session scope construction and skill scope keys
   model-resolver.ts — /model parsing and provider+model resolution
-  provider-catalog.ts — live /models fetch + 6h cache for OpenAI-compatible providers
+  provider-catalog.ts — live model catalogs (HTTP `/models` + Bedrock control plane) + 6h disk cache
+  bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
+  credentials.ts — Credential store (`~/.praana/credentials.json`); key resolution
+  user-settings.ts — Persistent UX prefs (`~/.praana/settings.json`) applied as session defaults
   llm.ts         — Provider registry and model building via pi-ai
-  config.ts      — Multi-source JSON/TOML config loading & deep-merge
+  config.ts      — Multi-source JSON/TOML config loading & deep-merge (allowlists append-merge)
   types.ts       — Core shared TypeScript types
   ui.ts          — CLI output formatting, banners, and text colors
   utils/
@@ -66,23 +73,26 @@ src/
   tools/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
-    system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
+    system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit; write-path concurrency guards
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   memory/
     index.ts     — Memory store exports
-    store.ts     — High-level MemoryStore API (remember, recall, session start/end); isSessionGood export
+    store.ts     — High-level MemoryStore API (remember, recall, session start/end); isSessionGood export; project/global learning scope
     db.ts        — SQLite schema: entries, entry_scopes, sessions, entries_vec, skill_stats, skill_cooccurrence
     embeddings.ts — Ollama embedder adapter (optional, opt-in)
     types.ts     — Memory-specific types
-    summarizer.ts — LLM-based extraction logic (conversation transcript → learnings JSON)
+    summarizer.ts — LLM-based extraction (transcript → concise key-point learnings JSON; skips AGENTS.md/README)
+    normalize-learning.ts — Normalize raw LLM learning content into scannable key points
     openai-summarizer.ts — Chat completion fetch adapter for summarization
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode); buildSkillMetadataCatalog with usefulness-ranked ordering
     skill-stats-store.ts — Cross-session skill effectiveness: loadUsefulness (dual-scope), flush (boost/decay), co-occurrence recording
     types.ts          — SkillRecord (with scope), LoadedSkill (with used flag), SkillEffect, telemetry types
 ```
+
+Harbor / Terminal-Bench installed-agent adapter lives under `harbor_eval/` (runs `praana run --incognito` inside the task container).
 
 ## Logging
 
@@ -328,9 +338,9 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Key Components
 - `MemoryStore` (`src/memory/store.ts`): Coordinates high-level Cognitive Memory operations, session starts, and session ends.
 - SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.praana/memory.db`.
-- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses Transformers.js (shipped as a dependency); model weights cache in `~/.praana/models/`.
+- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses Transformers.js (shipped as a dependency); model weights download to `~/.praana/models/` after a one-time consent prompt.
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
-- Extraction Logic (`src/memory/summarizer.ts`): At session end, sends the transcript plus the loaded project context (AGENTS.md / CLAUDE.md) to an LLM and extracts up to 5 structured learnings across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) and a scope classification (`project` / `global`). The model is instructed to skip anything already documented in the project context, focusing on session-specific discoveries, decisions, gotchas, and preferences. `project`-scoped learnings are stored with the full default scopes (`user` + `agent` + `context`); `global`-scoped learnings are stored without the `context:` scope so they surface in every project session.
+- Extraction Logic (`src/memory/summarizer.ts` + `normalize-learning.ts`): At session end, sends the transcript plus the loaded project context (AGENTS.md / CLAUDE.md) to an LLM and extracts up to 5 **concise key-point** learnings (one short sentence each) across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) and a scope classification (`project` / `global`). The model is instructed to skip anything already documented in the project context, focusing on session-specific discoveries, decisions, gotchas, and preferences. `project`-scoped learnings are stored with the full default scopes (`user` + `agent` + `context`); `global`-scoped learnings are stored without the `context:` scope so they surface in every project session.
 
 ### Memory Kinds
 
@@ -406,7 +416,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 
 **Active when:** `context_engine.enabled = true` (always) or `measurement_mode = true` (classic/debug — scorecard-only DB, no engine tables). Counters persist across resume via `persistProgress()` called after every turn.
 
-**Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly (see #17).
+**Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly. Headless substrate for evals: `praana run` + Harbor adapter (`harbor_eval/`). The fixed A/B task suite + scoring (#17) is not shipped yet.
 
 ## Plan Mode, Repeat-Read Interceptor, and Session UX
 
@@ -440,7 +450,23 @@ Beyond the `/scorecard` table, the telemetry loop feeds back into the live sessi
 
 ### Shared agent policy (issue #228)
 
-Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. Independent tool calls in one assistant response execute **concurrently**; parallel mutating tools targeting the same path are rejected by write-path guards. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+
+### Concurrent tool execution (issue #260)
+
+After the LLM streams tool calls, `turn.ts` executes the pending batch concurrently. `write_file` / `edit_file` / `batch_write` / `batch_edit` take a per-path lock in `system.ts`; a second concurrent mutator (or a concurrent `read_file` of a path mid-write) fails fast with a clear error. Independent reads, searches, and recall calls are safe to batch.
+
+### Onboarding, credentials, and settings
+
+- **Credential store** (`~/.praana/credentials.json`): preferred over bare env for API keys; setup/login can adopt an env key into the store.
+- **`/login` / `/logout`**: add or remove a provider credential (and optionally switch the active provider). Bedrock uses ambient AWS credentials or a pasted Bedrock API key (bearer token).
+- **`/settings`**: persists UX defaults to `~/.praana/settings.json` (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`). Session `/model` / `/thinking` / `/incognito` / `/debug` do **not** auto-write settings — only `/settings set` / `/settings reset` do.
+- **`/reasoning <level>`**: session override for `llm.reasoning_effort` (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); persisted via a `reasoning_effort_override` system note.
+
+### Headless run and Harbor
+
+- `praana run "<instruction>"` (or `--prompt` / `--max-steps`) runs a non-TTY one-shot session — used by Harbor / CI.
+- `harbor_eval/` ships an installed-agent adapter that installs Bun + PRAANA in the task container and invokes `praana run --incognito`.
 
 ## Configuration
 
@@ -455,6 +481,7 @@ Config files are deep-merged from lower to higher precedence (later overrides ea
 provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | opencode | anthropic | google | mistral | amazon-bedrock
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
 # region = "us-east-1"                # amazon-bedrock only; else AWS_REGION / AWS_DEFAULT_REGION / us-east-1
+# reasoning_effort = "medium"         # off | minimal | low | medium | high | xhigh
 # Optional fallback used when the primary returns timeout, 429, or empty response.
 # PRAANA retries once on the primary, then switches to the fallback for the rest of the session.
 # fallback_provider = "openrouter"
@@ -508,19 +535,20 @@ log_dir = "~/.praana/sessions"
 - `PRAANA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
 - `PRAANA_MEASUREMENT_MODE` — overrides `context_engine.measurement_mode`
 - Provider-specific keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`, etc.
+- Amazon Bedrock: `AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role, or `AWS_BEARER_TOKEN_BEDROCK` / stored Bedrock API key; region via `llm.region` or `AWS_REGION` / `AWS_DEFAULT_REGION`
 
 ### Mid-session model switching
 
-`/model` is handled by `model-resolver.ts` and validated before the switch toast appears.
+`/model` is handled by `model-resolver.ts` and validated before the switch toast appears. Bare `/model` opens a searchable TUI selector.
 
 **Syntax:** `/model [provider] <model-id>` — provider is optional and space-separated only (not `provider/model` as a single token unless it is the model id on the current provider).
 
 **Resolution order:**
 1. pi-ai static catalog (`getModel(provider, id)`)
-2. Live provider catalog from `GET {baseUrl}/models` via `provider-catalog.ts` (6-hour disk cache at `~/.praana/provider-catalog-cache.json`)
+2. Live provider catalog via `provider-catalog.ts` (6-hour disk cache at `~/.praana/provider-catalog-cache.json`) — HTTP `GET {baseUrl}/models` for OpenAI-compatible providers; Bedrock control-plane APIs for `amazon-bedrock`
 3. Reject with an error toast if still unknown
 
-**Live catalog providers:** OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama (OpenAI-compatible `GET {baseUrl}/models`). **Amazon Bedrock** uses the Bedrock control-plane APIs (`ListFoundationModels` + `ListInferenceProfiles`) via the same 6-hour disk cache — chat-capable TEXT models only, preferring inference profile IDs. Anthropic, Google, and Mistral rely on pi-ai static catalogs only.
+**Live catalog providers:** OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama (OpenAI-compatible `GET {baseUrl}/models`). **Amazon Bedrock** uses `ListFoundationModels` + `ListInferenceProfiles` — chat-capable TEXT models only, preferring inference profile IDs. Anthropic, Google, and Mistral rely on pi-ai static catalogs only.
 
 **Persistence:** successful switches write `model_override` and optionally `provider_override` system notes to the event log. `session.ts` restores the latest overrides on resume. Routing prefixes like `openrouter/` or `opencode/` are stripped before API calls.
 
@@ -530,27 +558,32 @@ If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries o
 
 ## UI and Slash Commands
 
-PRAANA's current CLI requires an interactive TTY and launches the pi-tui terminal shell (`src/ui/tui/`). The TUI uses native scrollback, transcript replay, markdown rendering, identity/glance bars, slash-command/file autocomplete, toast overlays, buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
+PRAANA launches the pi-tui terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI uses native scrollback, transcript replay, markdown rendering, identity/glance bars, slash-command/file autocomplete, searchable model selector, toast overlays, buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
 
 Slash commands are handled by `src/slash-commands.ts`:
 
-- `/exit` — ends session, triggers summarizer, saves and quits
+- `/exit` — ends session, triggers summarizer, saves and quits (honest epilogue + 12-char resume id)
 - `/clear` — resets in-session context while keeping the same session ID. Clears working memory (StateGraph + engine extraction/checkpoint cache), hides prior turns from the compiled prompt via a `reset_boundary` event in the log, recalculates context pressure for the glance bar, and clears the TUI transcript. The full event log is retained for audit/resume.
 - `/new` — ends the current session (summariser runs with a short timeout, then continues in the background), reloads config from disk, and starts a fresh session with a new ID and banner. Clears the TUI transcript.
 - `/state` — lists all state objects and tiers, or prints an empty-state guidance message
 - `/stats` — prints session metadata plus working-memory and Cognitive Memory stats
+- `/scorecard` — per-session telemetry scorecard
 - `/digest` — prints the current Cognitive Memory markdown digest
 - `/events` — lists the last 20 events in the event log
 - `/recall <query>` — performs manual vector recall query
-- `/model [provider] <id>` — switch model and optionally provider (persisted to log; validated via pi-ai + live catalog)
+- `/model [provider] <id>` — switch model (bare `/model` opens searchable selector; validated via pi-ai + live catalog)
+- `/reasoning <level>` — set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`)
 - `/sessions` — lists last 15 historical sessions for easy resuming
 - `/incognito <on|off>` — toggles Cognitive Memory persistence
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
 - `/setup` — runs the interactive provider/config setup wizard in-session (replaces /init)
+- `/login [provider]` — add or update a provider credential
+- `/logout [provider]` — remove a provider's credentials
+- `/settings` — view/set persistent UX prefs (`~/.praana/settings.json`)
 - `/shell <cmd>` — runs a shell command inline in the transcript (also `! <cmd>` prefix)
 - `/plan <on|off|execute>` — toggles plan mode (blocks mutating tools until approved)
 - `/help` — prints slash commands documentation
 
-CLI flags: `praana --incognito`, `praana --debug`, `praana --config <path>`, plus subcommands such as `praana resume [<session_id>]` (no id resumes the most recent session for the current cwd), `praana setup` (also `praana init`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
+CLI: `praana --incognito`, `praana --debug`, `praana --config <path>`, `praana resume [<session_id>]` (no id / 12-char prefix supported), `praana run "<instruction>"`, `praana setup` (also `praana init`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. Harbor adapter: `harbor_eval/`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
