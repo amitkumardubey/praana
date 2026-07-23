@@ -136,6 +136,7 @@ export async function runHeadless(
     incognito: opts.incognito ?? false,
   });
   session.debug = opts.debug ?? false;
+  session.headless = true;
 
   const sink = createHeadlessTurnSink();
   let usage: HeadlessUsageReport | null = null;

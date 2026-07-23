@@ -7,6 +7,9 @@ task container and runs a headless one-shot:
 praana run --incognito --max-steps N "<instruction>"
 ```
 
+Headless runs set `Session.headless = true`, which omits the engine
+**Plan-Before-Execute** prompt rule (no interactive user to approve a plan).
+
 ## Prerequisites
 
 1. [Docker](https://docs.docker.com/get-docker/) running locally

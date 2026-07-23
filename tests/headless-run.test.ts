@@ -238,6 +238,8 @@ describe("runHeadless", () => {
     expect(result.response).toBe("done");
     expect(result.usage?.n_input_tokens).toBe(100);
     expect(JSON.parse(readFileSync(usagePath, "utf8")).n_output_tokens).toBe(20);
+    // Headless sessions must mark themselves so compile gates Plan-Before-Execute.
+    expect((session as { headless?: boolean }).headless).toBe(true);
   });
 
   it("ends session with error reason when turn fails", async () => {

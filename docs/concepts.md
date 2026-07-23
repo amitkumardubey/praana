@@ -190,7 +190,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 
 ## Plan Mode
 
-Plan mode (#221) is a safety gate between the agent's reasoning and any state-mutating tool. When armed (via `/plan on`, or auto-detected intent), **mutating tools are blocked** — `write_file`, `edit_file`, and shell commands that create branches or write files — until you approve (`/plan execute`). Read-only tools (`read_file`, `search_code`, `recall`, state reads) stay available so the agent can keep investigating. The gate is enforced in `turn.ts` using `Session.planMode` state from `src/plan-mode.ts`, and a matching rule is injected into the system frame by `compiler.ts`, so the model is told to plan before acting. Plan mode persists across resume via a `system_note` event.
+Plan mode (#221) is a safety gate between the agent's reasoning and any state-mutating tool. When armed (via `/plan on`, or auto-detected intent), **mutating tools are blocked** — `write_file`, `edit_file`, and shell commands that create branches or write files — until you approve (`/plan execute`). Read-only tools (`read_file`, `search_code`, `recall`, state reads) stay available so the agent can keep investigating. The gate is enforced in `turn.ts` using `Session.planMode` state from `src/plan-mode.ts`, and a matching **Plan-Before-Execute** rule is injected into the engine system frame by `compiler.ts`, so the model is told to plan before acting. Plan mode persists across resume via a `system_note` event. Headless `praana run` / Harbor sets `Session.headless = true`, which omits that prompt rule and skips plan-mode auto-enter (no interactive approver).
 
 ---
 

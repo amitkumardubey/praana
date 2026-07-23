@@ -116,6 +116,11 @@ export class Session {
   embeddingCache: EmbeddingCache | null = null;
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
+  /**
+   * True for `praana run` / Harbor one-shots. No interactive user is available
+   * to approve plans, so Plan-Before-Execute and plan-mode auto-enter are gated off.
+   */
+  headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */
   planMode = false;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */

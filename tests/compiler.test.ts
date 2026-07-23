@@ -289,6 +289,43 @@ describe('Compiler', () => {
     expect(prompt).toContain("'go', 'execute', 'proceed', or 'continue'");
   });
 
+  it('omits plan-before-execute when planBeforeExecute is false (headless)', () => {
+    const frame = buildSystemFrame(
+      '/test',
+      'test-1',
+      [],
+      undefined,
+      null,
+      true,
+      undefined,
+      false,
+    );
+    expect(frame).not.toContain('## Plan-Before-Execute Rule');
+    expect(frame).not.toContain('first response must be a plan only');
+    // Adaptive Context memory guidance remains for engine mode.
+    expect(frame).toContain('## Memory Management');
+  });
+
+  it('compile omits plan-before-execute when planBeforeExecute is false', () => {
+    const prompt = compile({
+      stateGraph: {
+        list: () => [],
+        getActive: () => [],
+        getPeripheral: () => [],
+      } as any,
+      memoryDigest: null,
+      recentEvents: [],
+      toolSchemas: [],
+      cwd: '/test',
+      sessionId: 'test-1',
+      tokenBudget: 4000,
+      planBeforeExecute: false,
+    });
+
+    expect(prompt).not.toContain('## Plan-Before-Execute Rule');
+    expect(prompt).toContain('## Memory Management');
+  });
+
   it('includes shared agent policy with precedence and untrusted data rules', () => {
     const prompt = compile({
       stateGraph: {
