@@ -62,6 +62,7 @@ Config is deep-merged from (later overrides earlier):
 
 Key env vars:
 - Provider API keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.
+- Amazon Bedrock: AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role), or `AWS_BEARER_TOKEN_BEDROCK` / a Bedrock API key stored via `/setup` or login. Optional `llm.region` (else `AWS_REGION` / `AWS_DEFAULT_REGION` / `us-east-1`).
 - `PRAANA_MODEL` — override model at runtime
 - `PRAANA_SUMMARIZER_MODEL` — override summariser model
 - `PRAANA_DEBUG=true` — saves compiled prompts per turn to `prompts/`

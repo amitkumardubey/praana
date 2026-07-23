@@ -44,6 +44,7 @@ import {
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
   providerRequiresApiKey,
+  bedrockNeedsApiKeyPrompt,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
@@ -246,6 +247,14 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
         } else {
           state.isCustom = false;
           state.provider = item.value;
+          if (item.value === "amazon-bedrock") {
+            if (bedrockNeedsApiKeyPrompt()) {
+              showBedrockKeyInputField();
+            } else {
+              showModelFetchStep();
+            }
+            return;
+          }
           showKeyEntryStep();
         }
       };
@@ -349,6 +358,39 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
           showKeyInputField(provider, "API key is required for this provider");
           return;
         }
+        showModelFetchStep();
+      };
+      input.onEscape = () => showProviderStep();
+
+      root.addChild(header);
+      root.addChild(new Spacer(1));
+      root.addChild(body);
+      root.addChild(input);
+      root.addChild(footer);
+      tui.setFocus(input);
+      tui.requestRender(true);
+    };
+
+    const showBedrockKeyInputField = (error?: string) => {
+      root.clear();
+      header.setText("Selected: amazon-bedrock");
+      body.setText([
+        "Paste your Bedrock API key (bearer token).",
+        TUI_STYLE.faint("  Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK."),
+        TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
+        ...(error ? ["", chalk.red(`✗ ${error}`)] : []),
+        "",
+      ].join("\n"));
+
+      const input = new MaskedInput();
+      input.onSubmit = (value: string) => {
+        const trimmed = value.trim();
+        if (!trimmed) {
+          showBedrockKeyInputField("Bedrock API key is required when AWS credentials are not detected");
+          return;
+        }
+        saveProviderKey("amazon-bedrock", trimmed);
+        state.keySaved = true;
         showModelFetchStep();
       };
       input.onEscape = () => showProviderStep();

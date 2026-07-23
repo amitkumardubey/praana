@@ -13,6 +13,12 @@ import {
   type ProviderConfig,
 } from "./provider-registry.js";
 import { resolveApiKey, hasApiKey } from "./credentials.js";
+import {
+  isBedrockAvailable,
+  getBedrockMissingCredentialsMessage,
+  resolveBedrockBearerToken,
+} from "./bedrock/credentials.js";
+import { resolveBedrockRegion } from "./bedrock/region.js";
 
 export {
   resolveContextWindowSync,
@@ -176,9 +182,9 @@ export function listKnownProviders(): string[] {
  * local servers like Ollama/vLLM without auth).
  */
 export function isProviderAvailable(provider: string): boolean {
-  // Special-case AWS Bedrock: needs actual AWS credentials.
+  // Special-case AWS Bedrock: ambient AWS credentials or stored bearer token.
   if (provider === "amazon-bedrock") {
-    return !!(process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE || process.env.AWS_SESSION_TOKEN);
+    return isBedrockAvailable();
   }
 
   // 1. Credential store — checked for all providers.
@@ -224,6 +230,10 @@ export function getMissingKeyMessage(provider: string): string | null {
 
   if (isProviderAvailable(provider)) return null;
 
+  if (provider === "amazon-bedrock") {
+    return getBedrockMissingCredentialsMessage();
+  }
+
   const envKey = getProviderEnvKey(provider);
   if (envKey && PROVIDER_REGISTRY[provider]) {
     return `Missing required env var: ${envKey}`;
@@ -258,6 +268,15 @@ type RuntimeModel = Record<string, unknown> & {
   __piOptions?: Record<string, unknown>;
 };
 
+function bedrockPiOptions(config: PraanaConfig["llm"]): Record<string, unknown> {
+  const opts: Record<string, unknown> = {
+    region: resolveBedrockRegion(config),
+  };
+  const bearer = resolveBedrockBearerToken();
+  if (bearer) opts.bearerToken = bearer;
+  return opts;
+}
+
 function buildFromPiAiCatalog(
   config: PraanaConfig["llm"],
   modelId: string,
@@ -275,6 +294,11 @@ function buildFromPiAiCatalog(
       contextWindow ??
       resolveContextWindowSync(config.provider, modelId, config.context_window),
   };
+
+  if (config.provider === "amazon-bedrock") {
+    model.__piOptions = bedrockPiOptions(config);
+    return model;
+  }
 
   // Key resolution: credential store > env var > empty.
   // For pi-ai catalog providers, resolveApiKey checks the credential
@@ -328,10 +352,14 @@ function buildModel(
     model.headers = { ...pc.headers };
   }
 
-  model.__piOptions = {
-    apiKey,
-    headers: pc.headers ? { ...pc.headers } : undefined,
-  };
+  if (config.provider === "amazon-bedrock") {
+    model.__piOptions = bedrockPiOptions(config);
+  } else {
+    model.__piOptions = {
+      apiKey,
+      headers: pc.headers ? { ...pc.headers } : undefined,
+    };
+  }
 
   return model;
 }

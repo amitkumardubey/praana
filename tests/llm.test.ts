@@ -75,6 +75,10 @@ describe("llm provider registry", () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_PROFILE;
     delete process.env.AWS_SESSION_TOKEN;
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+    delete process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
     expect(isProviderAvailable("amazon-bedrock")).toBe(false);
     process.env = original;
   });
@@ -83,6 +87,10 @@ describe("llm provider registry", () => {
     const original = { ...process.env };
     delete process.env.AWS_PROFILE;
     delete process.env.AWS_SESSION_TOKEN;
+    delete process.env.AWS_BEARER_TOKEN_BEDROCK;
+    delete process.env.AWS_WEB_IDENTITY_TOKEN_FILE;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+    delete process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
     process.env.AWS_ACCESS_KEY_ID = "test";
     expect(isProviderAvailable("amazon-bedrock")).toBe(true);
     process.env = original;

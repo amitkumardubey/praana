@@ -26,18 +26,24 @@
 #   together     — Together AI
 #   ollama       — Local Ollama (no API key needed)
 #   opencode — OpenCode Zen (big-pickle, minimax-m2.5, etc.)
-#   amazon-bedrock — AWS Bedrock (uses AWS credentials, not an API key)
+#   amazon-bedrock — AWS Bedrock (AWS credentials and/or Bedrock API key)
 provider = "openrouter"
 
 # Model name passed to the provider.
 # For OpenRouter: use "vendor/model" format, e.g. "deepseek/deepseek-v4-pro"
 # For native providers: use the model id directly, e.g. "claude-sonnet-4-20250514"
 # For OpenCode Zen: e.g. "mimo-v2.5-free", "deepseek-v4-flash-free"
+# For Bedrock: prefer inference profile ids from the live catalog, e.g. "us.anthropic.claude-sonnet-4-20250514-v1:0"
 # Override at runtime via PRAANA_MODEL env var or /model command:
 #   /model gpt-4o
 #   /model openai gpt-4o
 #   /model opencode mimo-v2.5-free
+#   /model amazon-bedrock us.anthropic.claude-sonnet-4-20250514-v1:0
 model = "deepseek/deepseek-v4-flash:free"
+
+# Optional: AWS region for amazon-bedrock catalog + invoke.
+# Precedence: this value → AWS_REGION → AWS_DEFAULT_REGION → us-east-1
+# region = "us-east-1"
 
 # Optional: override detected model context window (input tokens) for pressure and compaction
 # context_window = 128000
@@ -61,10 +67,11 @@ model = "deepseek/deepseek-v4-flash:free"
 #   mistral       → MISTRAL_API_KEY
 #   xai           → XAI_API_KEY
 #   fireworks     → FIREWORKS_API_KEY
+#   amazon-bedrock → AWS credentials chain and/or AWS_BEARER_TOKEN_BEDROCK
+#                    (or paste a Bedrock API key via /setup / login)
 #   together      → TOGETHER_API_KEY
 #   ollama        → (none — runs locally)
 #   opencode → OPENCODE_API_KEY (from https://opencode.ai/auth)
-#   amazon-bedrock → (none — uses AWS credentials chain)
 
 [memory]
 # Enable/disable Cognitive Memory (SQLite-backed cross-session persistence)

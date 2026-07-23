@@ -239,6 +239,14 @@ export function providerRequiresApiKey(provider: string): boolean {
   return getProviderEnvKey(provider) !== null;
 }
 
+/**
+ * True when Bedrock was selected but has no ambient AWS credentials
+ * and no stored/env bearer token — setup/login should prompt for an API key.
+ */
+export function bedrockNeedsApiKeyPrompt(): boolean {
+  return !isProviderAvailable("amazon-bedrock");
+}
+
 export function finalizeProviderSetup(
   provider: string,
   configAction: "write" | "skip" | "overwrite",
