@@ -124,6 +124,8 @@ export interface LlmConfig {
    * Session `/reasoning` overrides this; see issue #38.
    */
   reasoning_effort?: string;
+  /** AWS region for amazon-bedrock catalog + invoke. Ignored by other providers. */
+  region?: string;
 }
 
 // ---- User-Declared Providers (declarative config) ----

@@ -446,6 +446,15 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     delete out.llm.context_window;
   }
 
+  if (out.llm.region !== undefined) {
+    if (typeof out.llm.region !== "string" || !out.llm.region.trim()) {
+      configWarn("Invalid llm.region, ignoring");
+      delete out.llm.region;
+    } else {
+      out.llm.region = out.llm.region.trim();
+    }
+  }
+
   if (out.llm.reasoning_effort !== undefined) {
     const parsed = parseReasoningEffort(String(out.llm.reasoning_effort));
     if (!parsed) {
