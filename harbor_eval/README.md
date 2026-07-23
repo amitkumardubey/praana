@@ -14,7 +14,7 @@ Headless runs set `Session.headless = true`, which omits the engine
 
 1. [Docker](https://docs.docker.com/get-docker/) running locally
 2. Harbor CLI: `uv tool install harbor`
-3. A provider API key (e.g. `OPENROUTER_API_KEY` or `UMANS_AI_CODING_PLAN_API_KEY`)
+3. A provider API key (e.g. `OPENROUTER_API_KEY`, `UMANS_AI_CODING_PLAN_API_KEY`, or Bedrock credentials)
 
 ## Smoke run (1 task)
 
@@ -41,6 +41,21 @@ PYTHONPATH=. harbor run \
   -n 1 \
   --ae OPENROUTER_API_KEY=$OPENROUTER_API_KEY
 ```
+
+Amazon Bedrock example (API key / bearer token):
+
+```bash
+PYTHONPATH=. harbor run \
+  -d terminal-bench@2.0 \
+  -a harbor_eval.praana_agent:Praana \
+  -m amazon-bedrock/global.anthropic.claude-sonnet-5 \
+  -l 1 \
+  -n 1 \
+  --ae AWS_BEARER_TOKEN_BEDROCK=$AWS_BEARER_TOKEN_BEDROCK \
+  --ae AWS_REGION=${AWS_REGION:-us-east-1}
+```
+
+Use a `git_ref` that includes Bedrock bearer-token support (#281 / PRAANA ≥0.11.1). Older refs only detect `AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / `AWS_SESSION_TOKEN`.
 
 ## Agent kwargs (`--ak key=value`)
 

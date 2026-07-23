@@ -50,9 +50,10 @@ def _install_harbor_stubs() -> None:
     class BaseInstalledAgent:
         CLI_FLAGS: list = []
 
-        def __init__(self, logs_dir, *args, version=None, **kwargs):
+        def __init__(self, logs_dir, *args, version=None, extra_env=None, **kwargs):
             self.logs_dir = logs_dir
             self._version = version
+            self._extra_env = dict(extra_env) if extra_env else {}
             self.model_name = kwargs.pop("model_name", None)
             self._parsed_model_provider = None
             self._parsed_model_name = None
@@ -68,6 +69,13 @@ def _install_harbor_stubs() -> None:
                     self._resolved_flags[flag.kwarg] = kwargs[flag.kwarg]
                 elif flag.default is not None:
                     self._resolved_flags[flag.kwarg] = flag.default
+
+        def _get_env(self, key: str) -> str | None:
+            if key in self._extra_env:
+                return self._extra_env[key]
+            import os
+
+            return os.environ.get(key)
 
         def build_cli_flags(self) -> str:
             parts = []
@@ -186,6 +194,30 @@ def test_api_env_sets_usage_path(praana_mod):
     agent = Praana(Path("/tmp"), model_name="umans/umans-coder")
     env = agent._api_env()
     assert env["PRAANA_USAGE_PATH"] == "/logs/agent/praana-usage.json"
+
+
+def test_api_env_forwards_bedrock_bearer_from_extra_env(praana_mod, monkeypatch):
+    Praana, _, _ = praana_mod
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    agent = Praana(
+        Path("/tmp"),
+        model_name="amazon-bedrock/global.anthropic.claude-sonnet-5",
+        extra_env={"AWS_BEARER_TOKEN_BEDROCK": "tok=", "AWS_REGION": "us-east-1"},
+    )
+    env = agent._api_env()
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == "tok="
+    assert env["AWS_REGION"] == "us-east-1"
+
+
+def test_api_env_forwards_bedrock_bearer_from_os_environ(praana_mod, monkeypatch):
+    Praana, _, _ = praana_mod
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "host-tok")
+    agent = Praana(
+        Path("/tmp"),
+        model_name="amazon-bedrock/anthropic.claude-sonnet-4-20250514-v1:0",
+    )
+    env = agent._api_env()
+    assert env["AWS_BEARER_TOKEN_BEDROCK"] == "host-tok"
 
 
 def test_coerce_bool(praana_mod):

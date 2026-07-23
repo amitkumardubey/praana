@@ -13,6 +13,15 @@ Usage (from the PRAANA repo root)::
       -n 1 \\
       --ae OPENROUTER_API_KEY=$OPENROUTER_API_KEY
 
+    # Amazon Bedrock (bearer token) — git_ref must include #281+:
+    PYTHONPATH=. harbor run \\
+      -d terminal-bench@2.0 \\
+      -a harbor_eval.praana_agent:Praana \\
+      -m amazon-bedrock/global.anthropic.claude-sonnet-5 \\
+      -n 1 \\
+      --ae AWS_BEARER_TOKEN_BEDROCK=$AWS_BEARER_TOKEN_BEDROCK \\
+      --ae AWS_REGION=us-east-1
+
 Optional agent kwargs (``--ak key=value``)::
 
     git_ref=main          # git ref / tag to clone (default: main, or Harbor --version)
@@ -30,7 +39,6 @@ and which reasoning level ran.
 from __future__ import annotations
 
 import json
-import os
 import shlex
 from pathlib import Path
 from typing import Any, ClassVar, override
@@ -45,7 +53,8 @@ from harbor.models.agent.context import AgentContext
 from harbor.models.trial.result import AgentInfo, ModelInfo
 
 # Keys commonly needed by PRAANA providers. Harbor's litellm helper does not
-# know about umans; include it explicitly.
+# know about umans or Bedrock; include them explicitly. Prefer forwarding via
+# ``_api_env`` (and ``--ae``) so Modal/DinD always get ``-e`` injections.
 _PRAANA_API_KEYS = (
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -58,6 +67,14 @@ _PRAANA_API_KEYS = (
     "XAI_API_KEY",
     "UMANS_AI_CODING_PLAN_API_KEY",
     "OLLAMA_API_BASE",
+    # Amazon Bedrock (bearer token and/or SigV4 chain + region)
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
 )
 
 _DEFAULT_REPO = "https://github.com/amitkumardubey/praana.git"
@@ -209,8 +226,10 @@ class Praana(BaseInstalledAgent):
             "PRAANA_USAGE_PATH": _USAGE_PATH_IN_CONTAINER,
         }
         for key in _PRAANA_API_KEYS:
-            if key in os.environ and os.environ[key]:
-                env[key] = os.environ[key]
+            # ``_get_env`` prefers Harbor ``--ae`` / extra_env over host os.environ.
+            value = self._get_env(key)
+            if value:
+                env[key] = value
         if self._context_engine is not None:
             env["PRAANA_CONTEXT_ENGINE"] = (
                 "true" if self._context_engine else "false"
