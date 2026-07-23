@@ -103,7 +103,7 @@ Classic mode is intentionally simple:
 - **Full verbatim history** — every user message, agent reply, and tool result from the session event log, with no token-budget truncation.
 - **No Adaptive Context** — no `create_task`, `decide`, tier demotion, or auto-hydrate. Working memory is the transcript itself.
 - **No context engine** — no distillers, artifact store, checkpoint, turn ledger, or scored compilation.
-- **Skills as catalog** — discovered skill names and paths are listed in the prompt; the agent reads `SKILL.md` files with `read_file` when needed. No BM25 matching or hot/warm/cold residency.
+- **Skills as catalog** — discovered skill names and descriptions are listed in the prompt; the agent loads bodies with `load_skill` when needed. No residency tiers or eviction tracking.
 - **Cognitive Memory unchanged** — `recall` / `remember` and the session-start digest still work.
 
 Classic mode is a simpler alternative when the context engine is disabled or unavailable. Set `measurement_mode = true` to record engine-style telemetry while running classic (for internal debugging only).
@@ -160,7 +160,7 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-PRAANA supports multiple embedders: `auto` (Transformers.js, shipped with the package), `transformers`, `transformers-nomic`, and `ollama`.
+PRAANA supports multiple embedders: `auto` (Transformers.js, shipped with the package), `transformers`, `transformers-nomic`, and `ollama`. First Transformers.js download prompts for consent; weights cache in `~/.praana/models/`.
 
 When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
 
@@ -168,7 +168,7 @@ When no semantic embedder is available, recall uses **keyword-only search** (FTS
 
 **Session start:** PRAANA queries the memory store for all entries in scope, ranks them, and builds a markdown digest. This digest is included in the system prompt on every turn.
 
-**Session end** (`/exit`): PRAANA sends the full transcript to a summariser model. The summariser extracts up to 5 learnings and returns them as structured JSON. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
+**Session end** (`/exit`): PRAANA sends the transcript plus loaded project context (AGENTS.md / README) to a summariser model. The summariser extracts up to 5 **concise key-point** learnings (one short sentence each), skips anything already documented in project context, and classifies each as `project` or `global` so scopes are set correctly. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
 
 ---
 
@@ -178,9 +178,9 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 
 | Category | Tools | Mode |
 |---|---|---|
-| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output) | Both |
-| File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` | Both |
-| Shell | `shell` (with optional sandbox allowlist) | Both |
+| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable); engine mode injects a **Files Read This Session** index | Both |
+| File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail) | Both |
+| Shell | `shell` (with optional sandbox allowlist; timeout kills the process group) | Both |
 | Session search | `search_session_log` (in-session events) | Both |
 | Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
