@@ -552,23 +552,20 @@ Context windows: for each catalog id, look up pi-ai `getModels("amazon-bedrock")
 ```typescript
 // tests/provider-catalog-bedrock.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { fetchBedrockLiveCatalog } from "../src/bedrock/catalog.js";
 import {
-  listProviderCatalogModels,
   providerSupportsLiveCatalog,
-  clearProviderCatalogCacheForTests, // add if missing; or use existing invalidate helpers
+  resetProviderCatalogCacheForTests,
 } from "../src/provider-catalog.js";
 
-// Prefer testing fetchBedrockLiveCatalog directly with mocks; then assert
-// providerSupportsLiveCatalog("amazon-bedrock") === true after registry change.
-```
+describe("bedrock live catalog", () => {
+  beforeEach(() => resetProviderCatalogCacheForTests());
+  afterEach(() => resetProviderCatalogCacheForTests());
 
-Include a concrete mock:
+  it("marks amazon-bedrock as live-catalog capable", () => {
+    expect(providerSupportsLiveCatalog("amazon-bedrock")).toBe(true);
+  });
 
-```typescript
   it("builds id→window map from mocked AWS lists", async () => {
     const models = await fetchBedrockLiveCatalog({
       region: "us-east-1",
@@ -596,9 +593,8 @@ Include a concrete mock:
     expect(models["us.anthropic.claude-sonnet-4-20250514-v1:0"]).not.toBeUndefined();
     expect(models["anthropic.claude-sonnet-4-20250514-v1:0"]).toBeUndefined();
   });
+});
 ```
-
-If `clearProviderCatalogCacheForTests` does not exist, add a minimal export in `provider-catalog.ts` for tests (mirror other test resets in the codebase).
 
 - [ ] **Step 2: Run — expect FAIL**
 
@@ -709,21 +705,52 @@ EOF
 - [ ] **Step 1: Write failing test**
 
 ```typescript
+// tests/llm-bedrock-options.test.ts
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { resolveModel } from "../src/llm.js"; // use the public export that builds the runtime model — check actual export name (buildRuntimeModel / getModelForConfig / similar)
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createProvider } from "../src/llm.js";
+import { setApiKey, resetCredentialStoreForTests } from "../src/credentials.js";
 
-// Inspect src/llm.ts exports — use the function turn.ts uses to build models.
-// Assert result.__piOptions.region and __piOptions.bearerToken.
-```
+describe("bedrock __piOptions", () => {
+  let home: string;
+  const saved: Record<string, string | undefined> = {};
 
-Find the public entry (likely something that wraps `buildModel`). If only private, export a test helper or test via the same path used in existing llm tests.
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "praana-bedrock-opts-"));
+    for (const k of ["PRAANA_HOME", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK"]) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    process.env.PRAANA_HOME = home;
+    resetCredentialStoreForTests();
+  });
 
-Concrete assertion once you have the model object:
+  afterEach(() => {
+    resetCredentialStoreForTests();
+    rmSync(home, { recursive: true, force: true });
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
 
-```typescript
-  expect(model.__piOptions?.region).toBe("eu-west-1");
-  expect(model.__piOptions?.bearerToken).toBe("stored-tok");
-  expect(model.__piOptions?.apiKey).toBeUndefined();
+  it("sets region and bearerToken, not apiKey", () => {
+    setApiKey("amazon-bedrock", "stored-tok");
+    const build = createProvider({
+      provider: "amazon-bedrock",
+      model: "us.anthropic.claude-sonnet-4-20250514-v1:0",
+      region: "eu-west-1",
+    });
+    const model = build("us.anthropic.claude-sonnet-4-20250514-v1:0") as {
+      __piOptions?: Record<string, unknown>;
+    };
+    expect(model.__piOptions?.region).toBe("eu-west-1");
+    expect(model.__piOptions?.bearerToken).toBe("stored-tok");
+    expect(model.__piOptions?.apiKey).toBeUndefined();
+  });
+});
 ```
 
 - [ ] **Step 2: Run — expect FAIL**
