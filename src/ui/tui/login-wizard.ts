@@ -37,6 +37,7 @@ import {
   providerRequiresApiKey,
   pickDefaultModel,
   fetchProviderModels,
+  bedrockNeedsApiKeyPrompt,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import {
@@ -141,8 +142,14 @@ export class LoginWizard implements Component, Focusable {
         this.provider = hint;
         if (providerRequiresApiKey(hint)) {
           this.step = hasApiKey(hint) ? "has-key" : "key";
+        } else if (hint === "amazon-bedrock") {
+          if (!bedrockNeedsApiKeyPrompt()) {
+            this.finishKeyless();
+            return;
+          }
+          this.step = "key";
         } else {
-          // Keyless provider (ollama, bedrock) — just switch
+          // Keyless provider (ollama) — just switch
           this.finishKeyless();
           return;
         }
@@ -214,6 +221,12 @@ export class LoginWizard implements Component, Focusable {
         this.provider = item.value;
         if (providerRequiresApiKey(item.value) || isUserDeclaredProvider(item.value)) {
           this.step = hasApiKey(item.value) ? "has-key" : "key";
+        } else if (item.value === "amazon-bedrock") {
+          if (!bedrockNeedsApiKeyPrompt()) {
+            this.finishKeyless();
+            return;
+          }
+          this.step = "key";
         } else {
           this.finishKeyless();
           return;
@@ -289,11 +302,12 @@ export class LoginWizard implements Component, Focusable {
 
   private showKeyEntry(): void {
     const isCustom = isUserDeclaredProvider(this.provider);
+    const isBedrock = this.provider === "amazon-bedrock";
     this.root.addChild(
       new Text(
         TUI_STYLE.info(
-          isCustom
-            ? `Enter API key for ${this.provider}`
+          isBedrock
+            ? "Paste your Bedrock API key (bearer token)"
             : `Enter API key for ${this.provider}`,
         ),
         0,
@@ -302,7 +316,11 @@ export class LoginWizard implements Component, Focusable {
     );
     this.root.addChild(
       new Text(
-        TUI_STYLE.muted("Saved to ~/.praana/credentials.json (0o600)"),
+        TUI_STYLE.muted(
+          isBedrock
+            ? "Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK. Saved to ~/.praana/credentials.json (0o600)"
+            : "Saved to ~/.praana/credentials.json (0o600)",
+        ),
         0,
         0,
       ),
@@ -318,7 +336,7 @@ export class LoginWizard implements Component, Focusable {
           this.finish(false, "");
           return;
         }
-        // For catalog providers, require a key
+        // For catalog providers (including Bedrock API key), require a key
         this.root.clear();
         this.root.addChild(
           new Text(TUI_STYLE.error("Key cannot be empty. Press Esc to cancel."), 0, 0),

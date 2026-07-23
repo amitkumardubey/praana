@@ -20,8 +20,9 @@ import {
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
   providerRequiresApiKey,
+  bedrockNeedsApiKeyPrompt,
 } from "./logic.js";
-import { hasApiKey } from "../llm.js";
+import { hasApiKey, isProviderAvailable } from "../llm.js";
 import type { SetupResult, CustomProviderConfig } from "./types.js";
 import type { ProviderCatalogModelEntry } from "../provider-catalog.js";
 import type { SelectItem } from "@earendil-works/pi-tui";
@@ -143,6 +144,26 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       console.log("");
       console.log(`Selected: ${providerId}`);
 
+      if (providerId === "amazon-bedrock") {
+        if (bedrockNeedsApiKeyPrompt()) {
+          while (true) {
+            const keyInput = await askQuestion(
+              rl,
+              "Paste your Bedrock API key (bearer token): ",
+            );
+            if (keyInput.trim()) {
+              saveProviderKey(providerId, keyInput.trim());
+              keySaved = true;
+              break;
+            }
+            console.error(
+              "✗ Bedrock API key is required when AWS credentials are not detected",
+            );
+          }
+        } else if (isProviderAvailable(providerId)) {
+          console.log(chalk.green("✓ AWS credentials or Bedrock API key detected."));
+        }
+      } else {
       const requiresKey = providerRequiresApiKey(providerId);
       const promptForKey = async (): Promise<boolean> => {
         while (true) {
@@ -177,6 +198,7 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
         } else {
           keySaved = await promptForKey();
         }
+      }
       }
     }
 
