@@ -13,6 +13,10 @@ import {
   type ProviderConfig,
 } from "./provider-registry.js";
 import { resolveApiKey, hasApiKey } from "./credentials.js";
+import {
+  isBedrockAvailable,
+  getBedrockMissingCredentialsMessage,
+} from "./bedrock/credentials.js";
 
 export {
   resolveContextWindowSync,
@@ -176,9 +180,9 @@ export function listKnownProviders(): string[] {
  * local servers like Ollama/vLLM without auth).
  */
 export function isProviderAvailable(provider: string): boolean {
-  // Special-case AWS Bedrock: needs actual AWS credentials.
+  // Special-case AWS Bedrock: ambient AWS credentials or stored bearer token.
   if (provider === "amazon-bedrock") {
-    return !!(process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE || process.env.AWS_SESSION_TOKEN);
+    return isBedrockAvailable();
   }
 
   // 1. Credential store — checked for all providers.
@@ -223,6 +227,10 @@ export function getMissingKeyMessage(provider: string): string | null {
   }
 
   if (isProviderAvailable(provider)) return null;
+
+  if (provider === "amazon-bedrock") {
+    return getBedrockMissingCredentialsMessage();
+  }
 
   const envKey = getProviderEnvKey(provider);
   if (envKey && PROVIDER_REGISTRY[provider]) {
