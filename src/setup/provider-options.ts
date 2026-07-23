@@ -28,7 +28,13 @@ export function buildProviderSelectItems(): SelectItem[] {
     const available = availableSet.has(provider);
     let description: string;
     if (!envKey) {
-      description = "Configure separately";
+      if (available && provider === "amazon-bedrock") {
+        description = "✓ AWS credentials detected";
+      } else if (available) {
+        description = "✓ available";
+      } else {
+        description = "Configure separately";
+      }
     } else if (available) {
       description = `✓ ${envKey} detected`;
     } else {

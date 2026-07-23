@@ -454,6 +454,7 @@ Config files are deep-merged from lower to higher precedence (later overrides ea
 [llm]
 provider = "openrouter"               # openrouter | openai | deepseek | groq | xai | fireworks | together | ollama | opencode | anthropic | google | mistral | amazon-bedrock
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
+# region = "us-east-1"                # amazon-bedrock only; else AWS_REGION / AWS_DEFAULT_REGION / us-east-1
 # Optional fallback used when the primary returns timeout, 429, or empty response.
 # PRAANA retries once on the primary, then switches to the fallback for the rest of the session.
 # fallback_provider = "openrouter"
@@ -519,7 +520,7 @@ log_dir = "~/.praana/sessions"
 2. Live provider catalog from `GET {baseUrl}/models` via `provider-catalog.ts` (6-hour disk cache at `~/.praana/provider-catalog-cache.json`)
 3. Reject with an error toast if still unknown
 
-**Live catalog providers** (OpenAI-compatible `/models`): OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama. Anthropic, Google, Mistral, and Bedrock rely on pi-ai only.
+**Live catalog providers:** OpenRouter, OpenCode, OpenAI, DeepSeek, Groq, xAI, Fireworks, Together, Ollama (OpenAI-compatible `GET {baseUrl}/models`). **Amazon Bedrock** uses the Bedrock control-plane APIs (`ListFoundationModels` + `ListInferenceProfiles`) via the same 6-hour disk cache — chat-capable TEXT models only, preferring inference profile IDs. Anthropic, Google, and Mistral rely on pi-ai static catalogs only.
 
 **Persistence:** successful switches write `model_override` and optionally `provider_override` system notes to the event log. `session.ts` restores the latest overrides on resume. Routing prefixes like `openrouter/` or `opencode/` are stripped before API calls.
 
