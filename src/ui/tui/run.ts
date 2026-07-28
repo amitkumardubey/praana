@@ -35,7 +35,10 @@ import {
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
-import type { TranscriptIndex } from "./transcript/index.js";
+import {
+  resolveExpandedContent,
+  type TranscriptIndex,
+} from "./transcript/index.js";
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
@@ -150,8 +153,6 @@ export async function runTui(
   };
   const projection = new TranscriptProjection({ useUnicode });
   projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
-  const transcript = new TranscriptContainer(tui, transcriptOpts);
-  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
   const toast = new ToastRegion(tui);
   const slashOverlay = new SlashCommandResultOverlay();
@@ -201,6 +202,20 @@ export async function runTui(
     },
   };
   editor.inner.setAutocompleteProvider(autocomplete);
+
+  const transcript = new TranscriptContainer(
+    tui,
+    transcriptOpts,
+    undefined,
+    {
+      onExpand: (entry) =>
+        Promise.resolve(
+          resolveExpandedContent(entry, session.eventLog.readAll()),
+        ),
+      onRequestFocus: (target) => tui.setFocus(target ?? editor),
+    },
+  );
+  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
   const spinnerSlot = new Container();
   const promptSlot = new Container();
@@ -570,6 +585,12 @@ export async function runTui(
       // Any other key dismisses the overlay without consuming it.
       slashOverlayHandle.hide();
       slashOverlayHandle = null;
+    }
+
+    if (matchesKey(data, "f9")) {
+      tui.setFocus(transcript);
+      transcript.setFocused(true);
+      return { consume: true };
     }
 
     if (matchesKey(data, "ctrl+c")) {

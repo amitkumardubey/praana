@@ -5,8 +5,13 @@
  * Streaming state is owned by TranscriptProjection; this class is only an adapter.
  */
 import { Container, Spacer, type Component, type TUI } from "@earendil-works/pi-tui";
+import chalk from "chalk";
 import { needsGap } from "./gap.js";
-import type { IndexedTranscriptEntry, TranscriptGroup } from "./index.js";
+import type {
+  ExpandedContentResult,
+  IndexedTranscriptEntry,
+  TranscriptGroup,
+} from "./index.js";
 import type { TranscriptEntry, ToolEntry } from "./model.js";
 import type { TranscriptRenderOpts } from "./opts.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
@@ -16,6 +21,15 @@ import { ThinkingMessageComponent } from "./components/thinking-message.js";
 import { ToolRowComponent } from "./components/tool-row.js";
 import { TurnFooterComponent } from "./components/turn-footer.js";
 import { UserMessageComponent } from "./components/user-message.js";
+
+export interface TranscriptInteractionOpts {
+  /** Resolve the full body for an expandable entry on demand. */
+  onExpand?: (
+    entry: IndexedTranscriptEntry,
+  ) => Promise<ExpandedContentResult> | ExpandedContentResult;
+  /** Called when the transcript wants to move focus elsewhere (e.g. blur). */
+  onRequestFocus?: (target: Component | null) => void;
+}
 
 export interface VirtualTranscriptOpts {
   /** Complete turn groups rendered above and below the visible viewport. */
@@ -28,6 +42,7 @@ export class TranscriptContainer extends Container {
   private readonly tui: TUI;
   private readonly opts: TranscriptRenderOpts;
   private readonly virtualOpts: VirtualTranscriptOpts;
+  private readonly interaction: TranscriptInteractionOpts;
   /** All indexed transcript groups. */
   private groups: TranscriptGroup[] = [];
   /** Range of mounted group indices (exclusive end). */
@@ -36,11 +51,17 @@ export class TranscriptContainer extends Container {
   private tailFollowing = true;
   /** Parallel array mapping each child to its source entry id (null for spacers). */
   private entryIds: (string | null)[] = [];
+  /** Focus state for transcript navigation. */
+  focused = false;
+  /** Currently selected entry id for focus-mode navigation. */
+  private selectedEntryId: string | null = null;
+  private expandingIds = new Set<string>();
 
   constructor(
     tui: TUI,
     opts: TranscriptRenderOpts,
     virtualOpts?: Partial<VirtualTranscriptOpts>,
+    interaction?: TranscriptInteractionOpts,
   ) {
     super();
     this.tui = tui;
@@ -49,6 +70,7 @@ export class TranscriptContainer extends Container {
       overscanGroups: virtualOpts?.overscanGroups ?? 5,
       pageSizeGroups: virtualOpts?.pageSizeGroups ?? 20,
     };
+    this.interaction = interaction ?? {};
   }
 
   /** Load a full transcript index. Replaces any existing mounted content. */
@@ -71,7 +93,64 @@ export class TranscriptContainer extends Container {
     this.groups = [];
     this.mountedRange = { start: 0, end: 0 };
     this.tailFollowing = true;
+    this.selectedEntryId = null;
     this.requestRender();
+  }
+
+  /** Toggle transcript focus mode. When focused, arrow keys navigate rows. */
+  setFocused(focused: boolean): void {
+    this.focused = focused;
+    if (focused && !this.selectedEntryId) {
+      this.selectLastEntry();
+    }
+    this.requestRender();
+  }
+
+  /** Keyboard navigation when the transcript has focus. */
+  handleInput(data: string): void {
+    // Use direct sequence matching to avoid pi-tui global key-parse state.
+    if (data === "\x1b" || data === "\x1b\x1b") {
+      this.setFocused(false);
+      this.interaction.onRequestFocus?.(null);
+      return;
+    }
+    if (data === "\x1b[A" || data === "\x1bOA") {
+      this.selectPreviousEntry();
+      return;
+    }
+    if (data === "\x1b[B" || data === "\x1bOB") {
+      this.selectNextEntry();
+      return;
+    }
+    if (data === "\x1b[5~" || data === "\x1b[5;2~") {
+      this.onScrollUp();
+      this.selectFirstMountedEntry();
+      return;
+    }
+    if (data === "\x1b[6~" || data === "\x1b[6;2~") {
+      this.onScrollDown();
+      this.selectLastMountedEntry();
+      return;
+    }
+    if (data === "\r" || data === "\n" || data === " ") {
+      void this.toggleSelectedEntry();
+    }
+  }
+
+  override render(width: number): string[] {
+    const selectedChildIndex = this.selectedChildIndex();
+    const lines: string[] = [];
+    for (let i = 0; i < this.children.length; i++) {
+      const childLines = this.children[i]!.render(width);
+      if (this.focused && i === selectedChildIndex) {
+        for (const line of childLines) {
+          lines.push(chalk.inverse(line));
+        }
+      } else {
+        lines.push(...childLines);
+      }
+    }
+    return lines;
   }
 
   /**
@@ -230,6 +309,141 @@ export class TranscriptContainer extends Container {
     // practice (ids are stable per role), so a full remount of the range is
     // acceptable as a fallback.
     this.mountRange(this.mountedRange.start, this.mountedRange.end);
+  }
+
+  // ─── Focus-mode selection helpers ────────────────────────────────────────
+
+  private selectedChildIndex(): number {
+    if (!this.selectedEntryId) return -1;
+    return this.entryIds.indexOf(this.selectedEntryId);
+  }
+
+  private selectLastEntry(): void {
+    for (let i = this.entryIds.length - 1; i >= 0; i--) {
+      const id = this.entryIds[i];
+      if (id) {
+        this.selectedEntryId = id;
+        return;
+      }
+    }
+    this.selectedEntryId = null;
+  }
+
+  private selectFirstMountedEntry(): void {
+    for (let i = 0; i < this.entryIds.length; i++) {
+      const id = this.entryIds[i];
+      if (id) {
+        this.selectedEntryId = id;
+        return;
+      }
+    }
+    this.selectedEntryId = null;
+  }
+
+  private selectLastMountedEntry(): void {
+    for (let i = this.entryIds.length - 1; i >= 0; i--) {
+      const id = this.entryIds[i];
+      if (id) {
+        this.selectedEntryId = id;
+        return;
+      }
+    }
+    this.selectedEntryId = null;
+  }
+
+  private selectPreviousEntry(): void {
+    const start = this.selectedChildIndex();
+    for (let i = start - 1; i >= 0; i--) {
+      const id = this.entryIds[i];
+      if (id) {
+        this.selectedEntryId = id;
+        this.requestRender();
+        return;
+      }
+    }
+    // At the top of the mounted range: page in older entries and try again.
+    if (this.mountedRange.start > 0) {
+      this.onScrollUp();
+      this.selectFirstMountedEntry();
+      this.requestRender();
+    }
+  }
+
+  private selectNextEntry(): void {
+    const start = this.selectedChildIndex();
+    for (let i = start + 1; i < this.entryIds.length; i++) {
+      const id = this.entryIds[i];
+      if (id) {
+        this.selectedEntryId = id;
+        this.requestRender();
+        return;
+      }
+    }
+    // At the bottom of the mounted range: page in newer entries and try again.
+    if (this.mountedRange.end < this.groups.length) {
+      this.onScrollDown();
+      this.selectLastMountedEntry();
+      this.requestRender();
+    }
+  }
+
+  private async toggleSelectedEntry(): Promise<void> {
+    if (!this.selectedEntryId) return;
+    const loc = this.findEntryLocation(this.selectedEntryId);
+    if (!loc) return;
+    const entry = this.groups[loc.groupIndex]!.entries[loc.entryIndex]!;
+    if (entry.role !== "thinking" && entry.role !== "tool") return;
+    if (!entry.expandable) return;
+
+    const expanding = !(entry.expanded ?? false);
+    entry.expanded = expanding;
+
+    if (entry.role === "thinking") {
+      const component = this.findEntryComponent(entry.id);
+      if (component instanceof ThinkingMessageComponent) {
+        component.setExpanded(expanding);
+      }
+      this.requestRender();
+      return;
+    }
+
+    if (!expanding) {
+      const component = this.findEntryComponent(entry.id);
+      if (component instanceof ToolRowComponent) {
+        component.setExpanded(false);
+      }
+      this.requestRender();
+      return;
+    }
+
+    if (entry.resultBody || !this.interaction.onExpand || !entry.sourceEventId) {
+      const component = this.findEntryComponent(entry.id);
+      if (component instanceof ToolRowComponent) {
+        component.setExpanded(true);
+      }
+      this.requestRender();
+      return;
+    }
+
+    this.expandingIds.add(entry.id);
+    this.requestRender();
+    const result = await this.interaction.onExpand(entry);
+    this.expandingIds.delete(entry.id);
+    if (result.ok) {
+      entry.resultBody = result.text;
+    } else {
+      entry.resultBody = `[expand failed: ${result.error}]`;
+      entry.isError = true;
+    }
+    const component = this.findEntryComponent(entry.id);
+    if (component instanceof ToolRowComponent) {
+      component.setResult({
+        resultBody: entry.resultBody,
+        isError: entry.isError,
+        expanded: true,
+      });
+    }
+    this.requestRender();
   }
 
   /** Prepend earlier groups when scrolling upward near the mounted start. */
@@ -448,7 +662,7 @@ export class TranscriptContainer extends Container {
         break;
       case "thinking": {
         const comp = new ThinkingMessageComponent(entry.text, this.opts);
-        comp.setExpanded(false);
+        comp.setExpanded(entry.expanded ?? false);
         comp.setDisplayedLines(2);
         this.addChild(comp);
         this.entryIds.push(entry.id);
@@ -465,7 +679,7 @@ export class TranscriptContainer extends Container {
             resultBody: entry.resultBody,
             isError: entry.isError,
             expandable: entry.expandable,
-            expanded: false,
+            expanded: entry.expanded ?? false,
           },
           this.opts,
         );

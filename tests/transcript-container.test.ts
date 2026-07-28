@@ -299,4 +299,104 @@ describe("TranscriptContainer", () => {
     expect(component).toBeDefined();
     expect((component as ToolRowComponent).getResultSummary()).toBe("10 lines");
   });
+
+  it("selects the last entry when focus mode is enabled", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+    const lines = stripAnsi(container.render(80).join("\n"));
+    expect(container.focused).toBe(true);
+    expect(lines).toContain("reply 5");
+  });
+
+  it("navigates selection up and down in focus mode", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+
+    // Move selection from the last entry upward twice.
+    container.handleInput("\x1b[A"); // up arrow
+    container.handleInput("\x1b[A"); // up arrow
+    const lines = stripAnsi(container.render(80).join("\n"));
+    expect(lines).toContain("turn 5");
+  });
+
+  it("toggles thinking row expansion in focus mode", () => {
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "user-1", role: "user", group: 1, text: "hi" },
+          {
+            id: "think-1",
+            role: "thinking",
+            group: 1,
+            text: "line1\nline2\nline3",
+            expandable: true,
+          },
+        ]),
+      ],
+    });
+    container.setFocused(true);
+
+    let component = container.children.find(
+      (c) => c instanceof ThinkingMessageComponent,
+    ) as ThinkingMessageComponent | undefined;
+    expect(component?.isExpanded()).toBe(false);
+
+    container.handleInput("\r"); // enter toggles expand
+    component = container.children.find(
+      (c) => c instanceof ThinkingMessageComponent,
+    ) as ThinkingMessageComponent | undefined;
+    expect(component?.isExpanded()).toBe(true);
+  });
+
+  it("resolves tool body lazily when expanding in focus mode", async () => {
+    const tui = fakeTui();
+    const onExpand = mock(() => Promise.resolve({ ok: true, text: "full body" }));
+    const container = new TranscriptContainer(
+      tui as never,
+      defaultOpts,
+      { overscanGroups: 1, pageSizeGroups: 2 },
+      { onExpand },
+    );
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "user-1", role: "user", group: 1, text: "hi" },
+          {
+            id: "tool-1",
+            role: "tool",
+            group: 1,
+            toolName: "read_file",
+            toolIcon: "◇",
+            toolLabel: "read src/a.ts",
+            toolPending: "running…",
+            resultSummary: "ok",
+            expandable: true,
+            sourceEventId: "ev-1",
+          },
+        ]),
+      ],
+    });
+    container.setFocused(true);
+
+    container.handleInput("\r"); // enter toggles expand
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(onExpand).toHaveBeenCalled();
+    const component = container.children.find(
+      (c) => c instanceof ToolRowComponent,
+    ) as ToolRowComponent | undefined;
+    expect(component?.isExpanded()).toBe(true);
+    expect(component?.getResultBody()).toBe("full body");
+  });
+
+  it("blurs focus mode on escape", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+    container.handleInput("\x1b"); // escape
+    expect(container.focused).toBe(false);
+  });
 });

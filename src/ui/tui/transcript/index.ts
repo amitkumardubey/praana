@@ -26,6 +26,8 @@ export type IndexedTranscriptEntry = TranscriptEntry & {
   sourceEventId?: string;
   /** True when this entry can be expanded to show more detail. */
   expandable?: boolean;
+  /** Current expansion state (UI-only, session-local). */
+  expanded?: boolean;
 };
 
 export interface ExpandedContent {
