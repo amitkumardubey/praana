@@ -211,13 +211,8 @@ describe("PiTuiSink", () => {
     expect(sink.getContextPreview()).toBeNull();
   });
 
-  it("compacts heavy transcript entries before persisting", () => {
-    const { sink, persistEntry } = makeSink({
-      persistCompaction: {
-        persistThinkingMaxChars: 10,
-        persistToolBodyMaxChars: 0,
-      },
-    });
+  it("persists heavy transcript entries without compaction", () => {
+    const { sink, persistEntry } = makeSink();
     sink.nextGroup();
     sink.appendUser("hello");
     sink.onToolCallsStart();
@@ -234,9 +229,11 @@ describe("PiTuiSink", () => {
 
     const persisted = persistEntry.mock.calls.map((call) => call[0]);
     const thinking = persisted.find((entry) => entry.role === "thinking");
-    const tool = persisted.find((entry) => entry.role === "tool");
+    const tools = persisted.filter((entry) => entry.role === "tool");
+    const tool = tools[tools.length - 1];
 
-    expect(thinking.text.length).toBeLessThanOrEqual(11);
-    expect(tool.resultBody).toBeUndefined();
+    expect(thinking?.text).toBe("very long thinking block content");
+    expect(typeof tool?.resultBody).toBe("string");
+    expect((tool?.resultBody ?? "").length).toBeGreaterThan(1000);
   });
 });

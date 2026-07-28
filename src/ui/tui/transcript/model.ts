@@ -93,127 +93,16 @@ export interface TurnFooterEntry {
   text: string;
 }
 
-// ─── Compaction / windowing ────────────────────────────────────────────────
-
-export interface TranscriptCompactionOpts {
-  persistThinkingMaxChars: number;
-  persistToolBodyMaxChars: number;
-}
-
-export interface TranscriptWindowOpts {
-  maxEntries: number;
-  maxChars: number;
-}
-
-function truncateText(text: string, maxChars: number): string {
-  if (maxChars <= 0 || text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}…`;
-}
-
-export function compactTranscriptEntry(
-  entry: TranscriptEntry,
-  opts: TranscriptCompactionOpts,
-): TranscriptEntry {
-  if (entry.role === "thinking") {
-    return { ...entry, text: truncateText(entry.text, opts.persistThinkingMaxChars) };
-  }
-  if (entry.role === "tool") {
-    return {
-      ...entry,
-      resultBody:
-        opts.persistToolBodyMaxChars > 0 && entry.resultBody
-          ? truncateText(entry.resultBody, opts.persistToolBodyMaxChars)
-          : undefined,
-    };
-  }
-  return entry;
-}
-
-function entryCharWeight(entry: TranscriptEntry): number {
-  switch (entry.role) {
-    case "user":
-    case "assistant":
-    case "thinking":
-    case "system":
-    case "turn_footer":
-      return entry.text.length;
-    case "tool":
-      return (entry.resultBody?.length ?? 0) + (entry.resultText?.length ?? 0);
-    case "recall":
-      return entry.preview.length + (entry.query?.length ?? 0);
-  }
-}
-
-/**
- * Advance an index to the next turn boundary (start of a new group). Keeps
- * complete turns when windowing. If the boundary would move past the end of
- * the array, the original index is returned so the caller can fall back to
- * keeping the last turn/entry.
- */
-function advanceToTurnBoundary(
-  entries: TranscriptEntry[],
-  index: number,
-): number {
-  if (index <= 0 || index >= entries.length) return index;
-  let boundary = index;
-  while (
-    boundary < entries.length &&
-    entries[boundary]!.group === entries[boundary - 1]!.group
-  ) {
-    boundary++;
-  }
-  return boundary;
-}
-
-/**
- * Slice persisted transcript entries to a recent window while keeping turns
- * complete. The budget is applied from the end of the log so the newest turns
- * are retained.
- */
-export function windowTranscriptEntries(
-  entries: TranscriptEntry[],
-  opts: TranscriptWindowOpts,
-): TranscriptEntry[] {
-  if (entries.length === 0) return entries;
-
-  // Entry-count window, translated to a group boundary so we don't split turns.
-  const rawEntryStart = Math.max(0, entries.length - opts.maxEntries);
-  const entryStart = advanceToTurnBoundary(entries, rawEntryStart);
-  const entryLimitGroup =
-    entries[entryStart]?.group ?? entries[entries.length - 1]!.group;
-
-  // Char budget from the end, also translated to a group boundary.
-  let charBudget = opts.maxChars;
-  let rawCharStart: number | null = null;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    charBudget -= entryCharWeight(entries[i]!);
-    if (charBudget < 0) {
-      rawCharStart = i + 1;
-      break;
-    }
-  }
-  const charLimitGroup =
-    rawCharStart === null
-      ? entries[0]!.group
-      : entries[advanceToTurnBoundary(entries, rawCharStart)]?.group ??
-        entries[entries.length - 1]!.group;
-
-  const minGroup = Math.max(entryLimitGroup, charLimitGroup);
-  return entries.filter((entry) => entry.group >= minGroup);
-}
-
 // ─── Resume rebuild ────────────────────────────────────────────────────────
 
 export interface BuildTranscriptOpts {
   useUnicode?: boolean;
-  window?: TranscriptWindowOpts;
 }
 
 /**
  * Rebuild transcript entries from a session event log on resume.
  * Maps only the event kinds relevant to display; skips scoring/engine events.
- * Applies a configurable window to the persisted transcript so resume does not
- * load an unbounded UI tree.
+ * Returns the full indexed transcript; virtual mounting bounds the UI tree.
  */
 export function buildTranscriptFromEvents(
   events: Event[],
@@ -223,11 +112,7 @@ export function buildTranscriptFromEvents(
     if (ev.kind !== "ui_transcript") return [];
     return isPersistedTuiTranscriptPayload(ev.payload) ? [ev.payload.entry] : [];
   });
-  if (persistedEntries.length > 0) {
-    return opts?.window
-      ? windowTranscriptEntries(persistedEntries, opts.window)
-      : persistedEntries;
-  }
+  if (persistedEntries.length > 0) return persistedEntries;
 
   const projection = new TranscriptProjection({ useUnicode: opts?.useUnicode ?? true });
   let groupCounter = 0;
@@ -341,6 +226,5 @@ export function buildTranscriptFromEvents(
     }
   }
 
-  const entries = projection.entries();
-  return opts?.window ? windowTranscriptEntries(entries, opts.window) : entries;
+  return projection.entries();
 }

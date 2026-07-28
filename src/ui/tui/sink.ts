@@ -6,8 +6,6 @@ import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../u
 import type { LogEntry } from "../../logger.js";
 import type { TranscriptContainer } from "./transcript/container.js";
 import {
-  compactTranscriptEntry,
-  type TranscriptCompactionOpts,
   type TranscriptEntry,
   type ToolEntry,
 } from "./transcript/model.js";
@@ -33,8 +31,6 @@ export interface SinkOpts {
   getModel?: () => string;
   projection: TranscriptProjection;
   persistEntry?: (entry: TranscriptEntry) => void;
-  /** If set, heavy transcript rows are compacted before persistence. */
-  persistCompaction?: TranscriptCompactionOpts;
   /** Called when a slash command wants its output shown in an overlay. */
   onSlashCommandResult?: (lines: string[]) => void;
 }
@@ -381,10 +377,7 @@ export class PiTuiSink implements TurnUiSink {
   }
 
   private persist(entry: TranscriptEntry): void {
-    const compaction = this.opts.persistCompaction;
-    this.opts.persistEntry?.(
-      compaction ? compactTranscriptEntry(entry, compaction) : entry,
-    );
+    this.opts.persistEntry?.(entry);
   }
 
   private applyTranscriptEvent(event: Parameters<TranscriptProjection["apply"]>[0]): void {

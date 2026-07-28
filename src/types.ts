@@ -299,14 +299,6 @@ export interface UiConfig {
   show_cost: boolean;
   /** Show the figlet boot banner. */
   banner: boolean;
-  /** Max persisted transcript entries to load on resume. */
-  transcript_resume_max_entries: number;
-  /** Max total chars of persisted transcript to load on resume. */
-  transcript_resume_max_chars: number;
-  /** Max chars of thinking text to persist per entry. */
-  transcript_persist_thinking_max_chars: number;
-  /** Max chars of tool resultBody to persist per entry (0 = omit). */
-  transcript_persist_tool_body_max_chars: number;
 }
 
 export type DistillerIntensity = "lite" | "full";
