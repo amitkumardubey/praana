@@ -57,6 +57,10 @@ export class TranscriptContainer extends Container {
   private selectedEntryId: string | null = null;
   private expandingIds = new Set<string>();
 
+  get pendingExpansions(): ReadonlySet<string> {
+    return this.expandingIds;
+  }
+
   constructor(
     tui: TUI,
     opts: TranscriptRenderOpts,
@@ -501,6 +505,18 @@ export class TranscriptContainer extends Container {
 
   getTotalGroups(): number {
     return this.groups.length;
+  }
+
+  /** True if the given entry is currently expanded (only tool/thinking rows). */
+  isRowExpanded(id: string): boolean {
+    const component = this.findEntryComponent(id);
+    if (component instanceof ThinkingMessageComponent) {
+      return component.isExpanded();
+    }
+    if (component instanceof ToolRowComponent) {
+      return component.isExpanded();
+    }
+    return false;
   }
 
   // ─── Resume bootstrap ────────────────────────────────────────────────────
