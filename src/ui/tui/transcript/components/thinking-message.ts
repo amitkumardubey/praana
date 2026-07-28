@@ -6,9 +6,13 @@ import { renderAccentLines, wrapContent } from "../render-utils.js";
 /** Collapsible thinking block — only materialised when /thinking on. */
 export class ThinkingMessageComponent implements Component {
   private text: string;
+  private expanded: boolean;
+  private displayedLines: number;
 
   constructor(initialText: string, private readonly opts: TranscriptRenderOpts) {
     this.text = initialText;
+    this.expanded = true;
+    this.displayedLines = Infinity;
   }
 
   appendDelta(delta: string): void {
@@ -23,15 +27,33 @@ export class ThinkingMessageComponent implements Component {
     return this.text;
   }
 
+  setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+  }
+
+  isExpanded(): boolean {
+    return this.expanded;
+  }
+
+  setDisplayedLines(lines: number): void {
+    this.displayedLines = lines;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {
-    const lineCount = this.text.split("\n").filter((l) => l.trim()).length;
-    const header = lineCount > 1
-      ? `\u25be thinking (${lineCount} lines)`
-      : "\u25be thinking";
+    const rawLines = this.text.split("\n");
+    const visibleLines = this.expanded
+      ? rawLines
+      : rawLines.slice(0, this.displayedLines);
+    const lineCount = rawLines.filter((l) => l.trim()).length;
+    const header = this.expanded
+      ? lineCount > 1
+        ? `\u25be thinking (${lineCount} lines)`
+        : "\u25be thinking"
+      : `\u25be thinking ${lineCount} lines (collapsed)`;
     const lines = wrapContent(
-      `${header}\n${this.text.trim()}`,
+      `${header}\n${visibleLines.join("\n").trim()}`,
       width,
       TUI_STYLE.thinking,
     );

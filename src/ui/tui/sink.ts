@@ -386,14 +386,14 @@ export class PiTuiSink implements TurnUiSink {
 
     switch (event.type) {
       case "assistant_delta": {
-        if (!this.transcript.appendAssistantDelta(event.id, event.delta)) {
-          this.transcript.renderEntries(projection.entries());
+        if (!this.transcript.appendAssistantDelta(event.id, event.delta) && changed) {
+          this.transcript.appendEntry(changed);
         }
         break;
       }
       case "thinking_delta": {
-        if (!this.transcript.appendThinkingDelta(event.id, event.delta)) {
-          this.transcript.renderEntries(projection.entries());
+        if (!this.transcript.appendThinkingDelta(event.id, event.delta) && changed) {
+          this.transcript.appendEntry(changed);
         }
         break;
       }
@@ -403,12 +403,12 @@ export class PiTuiSink implements TurnUiSink {
           changed.role !== "tool" ||
           !this.transcript.patchToolResult(changed.id, changed as ToolEntry)
         ) {
-          this.transcript.renderEntries(projection.entries());
+          if (changed) this.transcript.appendEntry(changed);
         }
         break;
       }
       default:
-        this.transcript.renderEntries(projection.entries());
+        if (changed) this.transcript.appendEntry(changed);
     }
 
     if (changed && event.type !== "assistant_delta" && event.type !== "thinking_delta") {
@@ -419,7 +419,6 @@ export class PiTuiSink implements TurnUiSink {
   private finalizeStreams(): void {
     const projection = this.opts.projection;
     projection.apply({ type: "streams_finalized", group: this.group });
-    this.transcript.renderEntries(projection.entries());
     const entries = projection.entries();
     const assistant = entries.find((entry) => entry.id === this.assistantStreamId);
     const thinking = entries.find((entry) => entry.id === this.thinkingStreamId);

@@ -164,7 +164,7 @@ const fakeInfo: StartupInfo = {
   model: "test/model",
   bannerLines: [],
   recentConversationLines: [],
-  transcriptBootstrap: [],
+  transcriptBootstrap: { groups: [] },
   isResume: false,
 };
 

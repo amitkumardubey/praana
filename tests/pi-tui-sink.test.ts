@@ -24,6 +24,7 @@ function baseline(overrides: Partial<ContextDisplaySnapshot> = {}): ContextDispl
 function makeSink(extra: Partial<SinkOpts> = {}) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
+  const appendEntry = mock(() => {});
   const appendAssistantDelta = mock(() => true);
   const appendThinkingDelta = mock(() => true);
   const patchToolResult = mock(() => true);
@@ -33,6 +34,7 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
     { requestRender: mock() } as never,
     {
       renderEntries,
+      appendEntry,
       appendAssistantDelta,
       appendThinkingDelta,
       patchToolResult,

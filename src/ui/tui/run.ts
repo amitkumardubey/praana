@@ -35,6 +35,7 @@ import {
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
+import type { TranscriptIndex } from "./transcript/index.js";
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
@@ -67,6 +68,10 @@ function statusBarFromSnapshot(
 import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
+
+function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
+  return index.groups.flatMap((group) => group.entries);
+}
 
 function toastToneToType(
   tone: SlashCommandToastTone,
@@ -144,12 +149,9 @@ export async function runTui(
     useUnicode,
   };
   const projection = new TranscriptProjection({ useUnicode });
-  projection.load(info.transcriptBootstrap ?? []);
-  const transcript = new TranscriptContainer(
-    tui,
-    transcriptOpts,
-    projection.entries(),
-  );
+  projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
+  const transcript = new TranscriptContainer(tui, transcriptOpts);
+  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
   const toast = new ToastRegion(tui);
   const slashOverlay = new SlashCommandResultOverlay();
@@ -486,7 +488,7 @@ export async function runTui(
       }
       if (result.action === "clear_transcript") {
         projection.apply({ type: "transcript_cleared" });
-        transcript.renderEntries([]);
+        transcript.clear();
         piSink?.clearContextPreview();
         refreshChrome();
       }
@@ -496,7 +498,7 @@ export async function runTui(
         session = controller.session;
 
         projection.apply({ type: "transcript_cleared" });
-        transcript.renderEntries([]);
+        transcript.clear();
         piSink?.clearContextPreview();
 
         // Re-apply startup-time configuration that may have changed.

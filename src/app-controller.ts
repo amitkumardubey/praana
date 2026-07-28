@@ -13,7 +13,10 @@ import {
   formatRecentConversationLines,
   formatSessionBannerLines,
 } from "./app-banner.js";
-import { buildTranscriptFromEvents, type TranscriptEntry } from "./ui/tui/transcript/model.js";
+import {
+  buildTranscriptIndex,
+  type TranscriptIndex,
+} from "./ui/tui/transcript/index.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
 import { envOverride } from "./app-identity.js";
 import {
@@ -27,8 +30,8 @@ export interface StartupInfo {
   model: string;
   bannerLines: string[];
   recentConversationLines: string[];
-  /** Full transcript entries rebuilt from event log on resume (TUI). */
-  transcriptBootstrap: TranscriptEntry[];
+  /** Indexed transcript groups rebuilt from event log on resume (TUI). */
+  transcriptBootstrap: TranscriptIndex;
   isResume: boolean;
   /** Shown at startup (e.g. bare resume fell back to a new session). */
   startupNotices: string[];
@@ -118,11 +121,11 @@ export class AppController {
         ? formatRecentConversationLines(this.session)
         : [],
       transcriptBootstrap: didResume
-        ? buildTranscriptFromEvents(
+        ? buildTranscriptIndex(
             eventsAfterResetBoundary(this.session.eventLog.readAll()),
             { useUnicode: this.config.ui.tool_icons === "unicode" },
           )
-        : [],
+        : { groups: [] },
       isResume: didResume,
       startupNotices,
     };
@@ -351,7 +354,7 @@ export class AppController {
         model,
         bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
         recentConversationLines: [],
-        transcriptBootstrap: [],
+        transcriptBootstrap: { groups: [] },
         isResume: false,
         startupNotices: settingsNotices,
       };
