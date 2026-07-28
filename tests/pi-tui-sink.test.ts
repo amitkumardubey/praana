@@ -24,11 +24,19 @@ function baseline(overrides: Partial<ContextDisplaySnapshot> = {}): ContextDispl
 function makeSink(extra: Partial<SinkOpts> = {}) {
   const projection = new TranscriptProjection({ useUnicode: true });
   const renderEntries = mock(() => {});
+  const appendAssistantDelta = mock(() => true);
+  const appendThinkingDelta = mock(() => true);
+  const patchToolResult = mock(() => true);
   const persistEntry = mock(() => {});
   const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
   const sink = new PiTuiSink(
     { requestRender: mock() } as never,
-    { renderEntries } as unknown as TranscriptContainer,
+    {
+      renderEntries,
+      appendAssistantDelta,
+      appendThinkingDelta,
+      patchToolResult,
+    } as unknown as TranscriptContainer,
     { show: mock() } as unknown as ToastRegion,
     {
       ambient: "inline",
@@ -42,7 +50,16 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
       ...extra,
     },
   );
-  return { sink, projection, renderEntries, persistEntry, onContextPreview };
+  return {
+    sink,
+    projection,
+    renderEntries,
+    appendAssistantDelta,
+    appendThinkingDelta,
+    patchToolResult,
+    persistEntry,
+    onContextPreview,
+  };
 }
 
 describe("PiTuiSink", () => {
@@ -192,5 +209,34 @@ describe("PiTuiSink", () => {
 
     sink.clearContextPreview();
     expect(sink.getContextPreview()).toBeNull();
+  });
+
+  it("compacts heavy transcript entries before persisting", () => {
+    const { sink, persistEntry } = makeSink({
+      persistCompaction: {
+        persistThinkingMaxChars: 10,
+        persistToolBodyMaxChars: 0,
+      },
+    });
+    sink.nextGroup();
+    sink.appendUser("hello");
+    sink.onToolCallsStart();
+    sink.onToolCall("call-1", "shell", { command: "cat big.log" });
+    sink.onToolResult(
+      "call-1",
+      "shell",
+      JSON.stringify({ ok: true, stdout: "a".repeat(10_000), stderr: "", exitCode: 0 }),
+      false,
+    );
+    sink.onThinkingDelta("very long thinking block content");
+    sink.onToolCallsStart();
+    sink.appendTurnFooter(1000);
+
+    const persisted = persistEntry.mock.calls.map((call) => call[0]);
+    const thinking = persisted.find((entry) => entry.role === "thinking");
+    const tool = persisted.find((entry) => entry.role === "tool");
+
+    expect(thinking.text.length).toBeLessThanOrEqual(11);
+    expect(tool.resultBody).toBeUndefined();
   });
 });

@@ -25,9 +25,17 @@ function detectIcon(text: string): { icon: string; color: (s: string) => string 
 /** Slash-command output and system notices. */
 export class SystemLineComponent implements Component {
   constructor(
-    private readonly text: string,
+    private text: string,
     private readonly opts: TranscriptRenderOpts,
   ) {}
+
+  getText(): string {
+    return this.text;
+  }
+
+  setText(text: string): void {
+    this.text = text;
+  }
 
   invalidate(): void {}
 

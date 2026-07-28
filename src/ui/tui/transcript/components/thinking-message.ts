@@ -15,6 +15,14 @@ export class ThinkingMessageComponent implements Component {
     this.text += delta;
   }
 
+  setText(text: string): void {
+    this.text = text;
+  }
+
+  getText(): string {
+    return this.text;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {

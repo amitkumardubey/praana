@@ -38,6 +38,18 @@ export class ToolRowComponent implements Component {
     this.state = { ...this.state, ...patch };
   }
 
+  getResultSummary(): string | undefined {
+    return this.state.resultSummary;
+  }
+
+  getResultBody(): string | null | undefined {
+    return this.state.resultBody;
+  }
+
+  getIsError(): boolean | undefined {
+    return this.state.isError;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {

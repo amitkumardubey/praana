@@ -122,6 +122,10 @@ export class AppController {
             eventsAfterResetBoundary(this.session.eventLog.readAll()),
             {
               useUnicode: this.config.ui.tool_icons === "unicode",
+              window: {
+                maxEntries: this.config.ui.transcript_resume_max_entries,
+                maxChars: this.config.ui.transcript_resume_max_chars,
+              },
             },
           )
         : [],

@@ -8,9 +8,17 @@ import { wrapContent } from "../render-utils.js";
 /** User turn — dim left border with vertical padding. */
 export class UserMessageComponent implements Component {
   constructor(
-    private readonly text: string,
+    private text: string,
     private readonly opts: TranscriptRenderOpts,
   ) {}
+
+  getText(): string {
+    return this.text;
+  }
+
+  setText(text: string): void {
+    this.text = text;
+  }
 
   invalidate(): void {}
 

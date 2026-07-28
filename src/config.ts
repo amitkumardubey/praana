@@ -110,6 +110,10 @@ const DEFAULT_CONFIG: PraanaConfig = {
     background_zones: false,
     show_cost: true,
     banner: true,
+    transcript_resume_max_entries: 500,
+    transcript_resume_max_chars: 300_000,
+    transcript_persist_thinking_max_chars: 4_000,
+    transcript_persist_tool_body_max_chars: 0,
   },
   context_engine: {
     enabled: true,
@@ -625,6 +629,18 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     }
     if (typeof out.ui.banner !== "boolean") {
       out.ui.banner = DEFAULT_CONFIG.ui.banner;
+    }
+    if (typeof out.ui.transcript_resume_max_entries !== "number" || out.ui.transcript_resume_max_entries < 1) {
+      out.ui.transcript_resume_max_entries = DEFAULT_CONFIG.ui.transcript_resume_max_entries;
+    }
+    if (typeof out.ui.transcript_resume_max_chars !== "number" || out.ui.transcript_resume_max_chars < 1) {
+      out.ui.transcript_resume_max_chars = DEFAULT_CONFIG.ui.transcript_resume_max_chars;
+    }
+    if (typeof out.ui.transcript_persist_thinking_max_chars !== "number" || out.ui.transcript_persist_thinking_max_chars < 0) {
+      out.ui.transcript_persist_thinking_max_chars = DEFAULT_CONFIG.ui.transcript_persist_thinking_max_chars;
+    }
+    if (typeof out.ui.transcript_persist_tool_body_max_chars !== "number" || out.ui.transcript_persist_tool_body_max_chars < 0) {
+      out.ui.transcript_persist_tool_body_max_chars = DEFAULT_CONFIG.ui.transcript_persist_tool_body_max_chars;
     }
   }
 

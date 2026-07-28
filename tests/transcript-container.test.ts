@@ -164,4 +164,93 @@ describe("TranscriptContainer", () => {
     expect(rendered).toContain("Then I will compare the current rendering behavior");
     expect(rendered).toContain("Finally I will implement the smallest fix");
   });
+
+  it("reuses unchanged components when re-rendering the same entries", () => {
+    const tui = fakeTui();
+    const container = new TranscriptContainer(tui as never, defaultOpts);
+
+    container.renderEntries([
+      { id: "user-1", role: "user", group: 1, text: "hello" },
+      { id: "assistant-1", role: "assistant", group: 1, text: "hi" },
+    ]);
+    const firstUser = container.children.find((c) => c instanceof UserMessageComponent);
+    const firstAssistant = container.children.find(
+      (c) => c instanceof AssistantMessageComponent,
+    );
+
+    container.renderEntries([
+      { id: "user-1", role: "user", group: 1, text: "hello" },
+      { id: "assistant-1", role: "assistant", group: 1, text: "hi" },
+    ]);
+
+    expect(container.children.find((c) => c instanceof UserMessageComponent)).toBe(firstUser);
+    expect(container.children.find((c) => c instanceof AssistantMessageComponent)).toBe(
+      firstAssistant,
+    );
+  });
+
+  it("updates assistant text in place via appendAssistantDelta", () => {
+    const tui = fakeTui();
+    const container = new TranscriptContainer(tui as never, defaultOpts);
+
+    container.renderEntries([
+      { id: "assistant-1", role: "assistant", group: 1, text: "Hel" },
+    ]);
+    const component = container.children.find((c) => c instanceof AssistantMessageComponent);
+
+    container.appendAssistantDelta("assistant-1", "lo");
+
+    expect(component).toBeDefined();
+    expect(component).toBeInstanceOf(AssistantMessageComponent);
+    expect((component as AssistantMessageComponent).getText()).toBe("Hello");
+  });
+
+  it("updates thinking text in place via appendThinkingDelta", () => {
+    const tui = fakeTui();
+    const container = new TranscriptContainer(tui as never, defaultOpts);
+
+    container.renderEntries([
+      { id: "thinking-1", role: "thinking", group: 1, text: "thin" },
+    ]);
+    const component = container.children.find((c) => c instanceof ThinkingMessageComponent);
+
+    container.appendThinkingDelta("thinking-1", "king");
+
+    expect(component).toBeDefined();
+    expect((component as ThinkingMessageComponent).getText()).toBe("thinking");
+  });
+
+  it("patches tool results in place via patchToolResult", () => {
+    const tui = fakeTui();
+    const container = new TranscriptContainer(tui as never, defaultOpts);
+
+    container.renderEntries([
+      {
+        id: "tool-1",
+        role: "tool",
+        group: 1,
+        toolName: "read_file",
+        toolIcon: "◇",
+        toolLabel: "read src/a.ts",
+        toolPending: "running…",
+      },
+    ]);
+    const component = container.children.find((c) => c instanceof ToolRowComponent);
+
+    container.patchToolResult("tool-1", {
+      id: "tool-1",
+      role: "tool",
+      group: 1,
+      toolName: "read_file",
+      toolIcon: "◇",
+      toolLabel: "read src/a.ts",
+      toolPending: "running…",
+      resultSummary: "10 lines",
+      resultBody: undefined,
+      isError: false,
+    });
+
+    expect(component).toBeDefined();
+    expect((component as ToolRowComponent).getResultSummary()).toBe("10 lines");
+  });
 });

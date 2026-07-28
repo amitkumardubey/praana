@@ -420,6 +420,10 @@ export async function runTui(
     engineMode: session.isContextEngineEnabled(),
     projection,
     persistEntry: persistTranscriptEntry,
+    persistCompaction: {
+      persistThinkingMaxChars: config.ui.transcript_persist_thinking_max_chars,
+      persistToolBodyMaxChars: config.ui.transcript_persist_tool_body_max_chars,
+    },
     getModel: () => controller.currentModelOrDefault(),
     onSlashCommandResult: showSlashOverlay,
     onContextPreview: (snapshot) => {
