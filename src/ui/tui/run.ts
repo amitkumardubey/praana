@@ -35,6 +35,10 @@ import {
 import { formatTuiBootSummary } from "./boot-summary.js";
 import { EDITOR_BORDER_STYLE, TUI_STYLE } from "./theme.js";
 import { TranscriptContainer } from "./transcript/container.js";
+import {
+  resolveExpandedContent,
+  type TranscriptIndex,
+} from "./transcript/index.js";
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
@@ -67,6 +71,10 @@ function statusBarFromSnapshot(
 import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
+
+function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
+  return index.groups.flatMap((group) => group.entries);
+}
 
 function toastToneToType(
   tone: SlashCommandToastTone,
@@ -144,12 +152,7 @@ export async function runTui(
     useUnicode,
   };
   const projection = new TranscriptProjection({ useUnicode });
-  projection.load(info.transcriptBootstrap ?? []);
-  const transcript = new TranscriptContainer(
-    tui,
-    transcriptOpts,
-    projection.entries(),
-  );
+  projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
 
   const toast = new ToastRegion(tui);
   const slashOverlay = new SlashCommandResultOverlay();
@@ -199,6 +202,20 @@ export async function runTui(
     },
   };
   editor.inner.setAutocompleteProvider(autocomplete);
+
+  const transcript = new TranscriptContainer(
+    tui,
+    transcriptOpts,
+    undefined,
+    {
+      onExpand: (entry) =>
+        Promise.resolve(
+          resolveExpandedContent(entry, session.eventLog.readAll()),
+        ),
+      onRequestFocus: (target) => tui.setFocus(target ?? editor),
+    },
+  );
+  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
   const spinnerSlot = new Container();
   const promptSlot = new Container();
@@ -486,7 +503,7 @@ export async function runTui(
       }
       if (result.action === "clear_transcript") {
         projection.apply({ type: "transcript_cleared" });
-        transcript.renderEntries([]);
+        transcript.clear();
         piSink?.clearContextPreview();
         refreshChrome();
       }
@@ -496,7 +513,7 @@ export async function runTui(
         session = controller.session;
 
         projection.apply({ type: "transcript_cleared" });
-        transcript.renderEntries([]);
+        transcript.clear();
         piSink?.clearContextPreview();
 
         // Re-apply startup-time configuration that may have changed.
@@ -568,6 +585,12 @@ export async function runTui(
       // Any other key dismisses the overlay without consuming it.
       slashOverlayHandle.hide();
       slashOverlayHandle = null;
+    }
+
+    if (matchesKey(data, "f9")) {
+      tui.setFocus(transcript);
+      transcript.setFocused(true);
+      return { consume: true };
     }
 
     if (matchesKey(data, "ctrl+c")) {

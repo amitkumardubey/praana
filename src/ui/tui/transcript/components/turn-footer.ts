@@ -4,7 +4,15 @@ import { paintZoneLine } from "../../theme.js";
 
 /** Dim per-turn digest line — no accent bar, no top/bottom padding. */
 export class TurnFooterComponent implements Component {
-  constructor(private readonly text: string) {}
+  constructor(private text: string) {}
+
+  getText(): string {
+    return this.text;
+  }
+
+  setText(text: string): void {
+    this.text = text;
+  }
 
   invalidate(): void {}
 

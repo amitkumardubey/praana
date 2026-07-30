@@ -21,6 +21,10 @@ export class AssistantMessageComponent implements Component {
     this.text += delta;
   }
 
+  setText(text: string): void {
+    this.text = text;
+  }
+
   getText(): string {
     return this.text;
   }

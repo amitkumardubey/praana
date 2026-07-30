@@ -1,6 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import type { Event } from "../src/types.js";
-import { buildTranscriptFromEvents } from "../src/ui/tui/transcript/model.js";
+import {
+  buildTranscriptFromEvents,
+  type TranscriptEntry,
+} from "../src/ui/tui/transcript/model.js";
 
 function ev(kind: Event["kind"], payload: Record<string, unknown>): Event {
   return {
@@ -143,6 +146,39 @@ describe("buildTranscriptFromEvents", () => {
     expect(entries).toEqual([
       { id: "ui-user-1", role: "user", group: 1, text: "hi" },
       { id: "ui-assistant-1", role: "assistant", group: 1, text: "projected answer" },
+    ]);
+  });
+
+  it("retains full persisted entries without clipping", () => {
+    const longText = "a".repeat(20_000);
+    const entries = buildTranscriptFromEvents([
+      ev("ui_transcript", {
+        type: "entry",
+        entry: { id: "old-user", role: "user", group: 1, text: "old" },
+      }),
+      ev("ui_transcript", {
+        type: "entry",
+        entry: { id: "new-user", role: "user", group: 2, text: longText },
+      }),
+    ]);
+    expect(entries).toEqual([
+      { id: "old-user", role: "user", group: 1, text: "old" },
+      { id: "new-user", role: "user", group: 2, text: longText },
+    ]);
+  });
+
+  it("retains all legacy replay entries without clipping", () => {
+    const entries = buildTranscriptFromEvents([
+      ev("user_message", { text: "turn 1" }),
+      ev("agent_message", { text: "reply 1" }),
+      ev("user_message", { text: "turn 2" }),
+      ev("agent_message", { text: "reply 2" }),
+    ]);
+    expect(entries.map((e) => e.text)).toEqual([
+      "turn 1",
+      "reply 1",
+      "turn 2",
+      "reply 2",
     ]);
   });
 });

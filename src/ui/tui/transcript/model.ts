@@ -95,14 +95,18 @@ export interface TurnFooterEntry {
 
 // ─── Resume rebuild ────────────────────────────────────────────────────────
 
+export interface BuildTranscriptOpts {
+  useUnicode?: boolean;
+}
+
 /**
  * Rebuild transcript entries from a session event log on resume.
  * Maps only the event kinds relevant to display; skips scoring/engine events.
- * No line-budget windowing — pi-tui handles scrollback natively.
+ * Returns the full indexed transcript; virtual mounting bounds the UI tree.
  */
 export function buildTranscriptFromEvents(
   events: Event[],
-  opts?: { useUnicode?: boolean },
+  opts?: BuildTranscriptOpts,
 ): TranscriptEntry[] {
   const persistedEntries = events.flatMap((ev) => {
     if (ev.kind !== "ui_transcript") return [];

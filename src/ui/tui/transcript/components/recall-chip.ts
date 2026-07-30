@@ -12,6 +12,18 @@ export class RecallChipComponent implements Component {
     private readonly opts: TranscriptRenderOpts,
   ) {}
 
+  getPreview(): string {
+    return this.preview;
+  }
+
+  getCount(): number {
+    return this.count;
+  }
+
+  getQuery(): string | null {
+    return this.query;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {

@@ -2,6 +2,7 @@ import { describe, it, expect, mock } from "bun:test";
 import { Spacer } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
+import type { TranscriptGroup } from "../src/ui/tui/transcript/index.js";
 import { UserMessageComponent } from "../src/ui/tui/transcript/components/user-message.js";
 import { AssistantMessageComponent } from "../src/ui/tui/transcript/components/assistant-message.js";
 import { ToolRowComponent } from "../src/ui/tui/transcript/components/tool-row.js";
@@ -19,22 +20,52 @@ function fakeTui() {
   return { requestRender: mock(() => {}) };
 }
 
+function group(groupNum: number, entries: TranscriptGroup["entries"]): TranscriptGroup {
+  return { group: groupNum, entries };
+}
+
+function makeContainer() {
+  const tui = fakeTui();
+  const container = new TranscriptContainer(tui as never, defaultOpts, {
+    overscanGroups: 1,
+    pageSizeGroups: 2,
+  });
+  return { tui, container };
+}
+
+function manyGroups(count: number): TranscriptGroup[] {
+  const groups: TranscriptGroup[] = [];
+  for (let i = 1; i <= count; i++) {
+    groups.push(
+      group(i, [
+        { id: `user-${i}`, role: "user", group: i, text: `turn ${i}` },
+        { id: `assistant-${i}`, role: "assistant", group: i, text: `reply ${i}` },
+      ]),
+    );
+  }
+  return groups;
+}
+
 describe("TranscriptContainer", () => {
   it("hydrates bootstrap entries into component children", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts, [
-      { id: "1", role: "user", group: 1, text: "hi" },
-      {
-        id: "2",
-        role: "tool",
-        group: 1,
-        toolName: "shell",
-        toolIcon: "❯",
-        toolLabel: "true",
-        toolPending: "running…",
-        resultSummary: "ok",
-      },
-    ]);
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "1", role: "user", group: 1, text: "hi" },
+          {
+            id: "2",
+            role: "tool",
+            group: 1,
+            toolName: "shell",
+            toolIcon: "❯",
+            toolLabel: "true",
+            toolPending: "running…",
+            resultSummary: "ok",
+          },
+        ]),
+      ],
+    });
 
     expect(container.children.some((c) => c instanceof UserMessageComponent)).toBe(
       true,
@@ -44,43 +75,88 @@ describe("TranscriptContainer", () => {
     );
   });
 
-  it("replaces rendered children from semantic entries", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
+  it("mounts only the newest visible range on resume", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
 
-    container.renderEntries([
-      { id: "user-1", role: "user", group: 1, text: "hello" },
-      { id: "assistant-1", role: "assistant", group: 1, text: "hi" },
-    ]);
+    // Budget = 2 + 1*2 = 4 groups, so we mount groups 17..20.
+    const range = container.getMountedGroupRange();
+    expect(range.start).toBe(16);
+    expect(range.end).toBe(20);
+  });
 
-    expect(container.children.some((c) => c instanceof UserMessageComponent)).toBe(
-      true,
-    );
-    expect(
-      container.children.some((c) => c instanceof AssistantMessageComponent),
-    ).toBe(true);
+  it("pages in earlier groups on scroll up", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
 
-    container.renderEntries([
-      { id: "user-2", role: "user", group: 2, text: "second" },
-    ]);
+    container.onScrollUp();
+    const range = container.getMountedGroupRange();
+    expect(range.start).toBe(14);
+    expect(range.end).toBe(20);
+  });
 
-    const users = container.children.filter(
-      (c) => c instanceof UserMessageComponent,
-    );
-    expect(users.length).toBe(1);
-    expect(
-      container.children.some((c) => c instanceof AssistantMessageComponent),
-    ).toBe(false);
+  it("pages in later groups on scroll down after eviction", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
+
+    container.onScrollUp();
+    container.onScrollUp();
+    container.onScrollDown();
+    const range = container.getMountedGroupRange();
+    expect(range.end).toBe(20);
+    expect(range.start).toBeLessThan(16);
+  });
+
+  it("re-enables tail-follow when scrolled back to the newest group", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
+    container.onScrollUp();
+    container.onScrollDown();
+
+    // New tail append should now mount immediately.
+    container.appendEntry({
+      id: "user-21",
+      role: "user",
+      group: 21,
+      text: "turn 21",
+    });
+    expect(container.getMountedGroupRange().end).toBe(21);
+  });
+
+  it("does not tail-follow while reading older history", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
+    container.onScrollUp();
+
+    container.appendEntry({
+      id: "user-21",
+      role: "user",
+      group: 21,
+      text: "turn 21",
+    });
+    expect(container.getMountedGroupRange().end).toBeLessThan(21);
+  });
+
+  it("keeps mounted group count bounded while traversing history", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(100) });
+
+    for (let i = 0; i < 50; i++) container.onScrollUp();
+
+    const range = container.getMountedGroupRange();
+    expect(range.end - range.start).toBeLessThanOrEqual(6);
   });
 
   it("hydrates turn footer entries with trailing spacing", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-
-    container.renderEntries([
-      { id: "user-1", role: "user", group: 1, text: "hello" },
-      { id: "footer-1", role: "turn_footer", group: 1, text: "✓ 1.0s" },
-    ]);
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "user-1", role: "user", group: 1, text: "hello" },
+          { id: "footer-1", role: "turn_footer", group: 1, text: "✓ 1.0s" },
+        ]),
+      ],
+    });
 
     const footerIndex = container.children.findIndex(
       (c) => c instanceof TurnFooterComponent,
@@ -90,31 +166,33 @@ describe("TranscriptContainer", () => {
   });
 
   it("inserts a spacer between consecutive tool rows", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-
-    container.renderEntries([
-      {
-        id: "tool-1",
-        role: "tool",
-        group: 1,
-        toolName: "read_file",
-        toolIcon: "◇",
-        toolLabel: "read src/a.ts",
-        toolPending: "running…",
-        resultSummary: "10 lines",
-      },
-      {
-        id: "tool-2",
-        role: "tool",
-        group: 1,
-        toolName: "read_file",
-        toolIcon: "◇",
-        toolLabel: "read src/b.ts",
-        toolPending: "running…",
-        resultSummary: "20 lines",
-      },
-    ]);
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          {
+            id: "tool-1",
+            role: "tool",
+            group: 1,
+            toolName: "read_file",
+            toolIcon: "◇",
+            toolLabel: "read src/a.ts",
+            toolPending: "running…",
+            resultSummary: "10 lines",
+          },
+          {
+            id: "tool-2",
+            role: "tool",
+            group: 1,
+            toolName: "read_file",
+            toolIcon: "◇",
+            toolLabel: "read src/b.ts",
+            toolPending: "running…",
+            resultSummary: "20 lines",
+          },
+        ]),
+      ],
+    });
 
     const toolIndices = container.children
       .map((child, index) => (child instanceof ToolRowComponent ? index : -1))
@@ -123,12 +201,12 @@ describe("TranscriptContainer", () => {
     expect(container.children[toolIndices[1]! - 1]).toBeInstanceOf(Spacer);
   });
 
-  it("clear removes all children and resets streaming state", () => {
-    const tui = fakeTui();
-    const container = new TranscriptContainer(tui as never, defaultOpts);
-    container.renderEntries([{ id: "x", role: "user", group: 1, text: "x" }]);
+  it("clear removes all children and resets virtual state", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(20) });
     container.clear();
     expect(container.children.length).toBe(0);
+    expect(container.getTotalGroups()).toBe(0);
   });
 
   it("renders tool rows compactly without accent gutters or blank padding", () => {
@@ -150,18 +228,175 @@ describe("TranscriptContainer", () => {
     expect(lines[0]).not.toContain("▌");
   });
 
-  it("renders the full thinking text instead of only a preview", () => {
-    const text = [
-      "First I will inspect the input path and identify the relevant module.",
-      "Then I will compare the current rendering behavior with the expected behavior.",
-      "Finally I will implement the smallest fix and verify it with tests.",
-    ].join("\n");
-    const thinking = new ThinkingMessageComponent(text, defaultOpts);
+  it("renders thinking collapsed by default", () => {
+    const thinking = new ThinkingMessageComponent("line1\nline2\nline3", defaultOpts);
+    thinking.setExpanded(false);
+    thinking.setDisplayedLines(2);
 
     const rendered = thinking.render(120).map(stripAnsi).join("\n");
+    expect(rendered).toContain("collapsed");
+  });
 
-    expect(rendered).toContain("First I will inspect the input path");
-    expect(rendered).toContain("Then I will compare the current rendering behavior");
-    expect(rendered).toContain("Finally I will implement the smallest fix");
+  it("updates assistant text in place via appendAssistantDelta", () => {
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [group(1, [{ id: "assistant-1", role: "assistant", group: 1, text: "Hel" }])],
+    });
+    const component = container.children.find((c) => c instanceof AssistantMessageComponent);
+
+    container.appendAssistantDelta("assistant-1", "lo");
+
+    expect(component).toBeDefined();
+    expect(component).toBeInstanceOf(AssistantMessageComponent);
+    expect((component as AssistantMessageComponent).getText()).toBe("Hello");
+  });
+
+  it("updates thinking text in place via appendThinkingDelta", () => {
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [group(1, [{ id: "thinking-1", role: "thinking", group: 1, text: "thin" }])],
+    });
+    const component = container.children.find((c) => c instanceof ThinkingMessageComponent);
+
+    container.appendThinkingDelta("thinking-1", "king");
+
+    expect(component).toBeDefined();
+    expect((component as ThinkingMessageComponent).getText()).toBe("thinking");
+  });
+
+  it("patches tool results in place via patchToolResult", () => {
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          {
+            id: "tool-1",
+            role: "tool",
+            group: 1,
+            toolName: "read_file",
+            toolIcon: "◇",
+            toolLabel: "read src/a.ts",
+            toolPending: "running…",
+          },
+        ]),
+      ],
+    });
+    const component = container.children.find((c) => c instanceof ToolRowComponent);
+
+    container.patchToolResult("tool-1", {
+      id: "tool-1",
+      role: "tool",
+      group: 1,
+      toolName: "read_file",
+      toolIcon: "◇",
+      toolLabel: "read src/a.ts",
+      toolPending: "running…",
+      resultSummary: "10 lines",
+      resultBody: undefined,
+      isError: false,
+    });
+
+    expect(component).toBeDefined();
+    expect((component as ToolRowComponent).getResultSummary()).toBe("10 lines");
+  });
+
+  it("selects the last entry when focus mode is enabled", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+    const lines = stripAnsi(container.render(80).join("\n"));
+    expect(container.focused).toBe(true);
+    expect(lines).toContain("reply 5");
+  });
+
+  it("navigates selection up and down in focus mode", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+
+    // Move selection from the last entry upward twice.
+    container.handleInput("\x1b[A"); // up arrow
+    container.handleInput("\x1b[A"); // up arrow
+    const lines = stripAnsi(container.render(80).join("\n"));
+    expect(lines).toContain("turn 5");
+  });
+
+  it("toggles thinking row expansion in focus mode", () => {
+    const { container } = makeContainer();
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "user-1", role: "user", group: 1, text: "hi" },
+          {
+            id: "think-1",
+            role: "thinking",
+            group: 1,
+            text: "line1\nline2\nline3",
+            expandable: true,
+          },
+        ]),
+      ],
+    });
+    container.setFocused(true);
+
+    let component = container.children.find(
+      (c) => c instanceof ThinkingMessageComponent,
+    ) as ThinkingMessageComponent | undefined;
+    expect(component?.isExpanded()).toBe(false);
+
+    container.handleInput("\r"); // enter toggles expand
+    component = container.children.find(
+      (c) => c instanceof ThinkingMessageComponent,
+    ) as ThinkingMessageComponent | undefined;
+    expect(component?.isExpanded()).toBe(true);
+  });
+
+  it("resolves tool body lazily when expanding in focus mode", async () => {
+    const tui = fakeTui();
+    const onExpand = mock(() => Promise.resolve({ ok: true, text: "full body" }));
+    const container = new TranscriptContainer(
+      tui as never,
+      defaultOpts,
+      { overscanGroups: 1, pageSizeGroups: 2 },
+      { onExpand },
+    );
+    container.loadIndex({
+      groups: [
+        group(1, [
+          { id: "user-1", role: "user", group: 1, text: "hi" },
+          {
+            id: "tool-1",
+            role: "tool",
+            group: 1,
+            toolName: "read_file",
+            toolIcon: "◇",
+            toolLabel: "read src/a.ts",
+            toolPending: "running…",
+            resultSummary: "ok",
+            expandable: true,
+            sourceEventId: "ev-1",
+          },
+        ]),
+      ],
+    });
+    container.setFocused(true);
+
+    container.handleInput("\r"); // enter toggles expand
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(onExpand).toHaveBeenCalled();
+    const component = container.children.find(
+      (c) => c instanceof ToolRowComponent,
+    ) as ToolRowComponent | undefined;
+    expect(component?.isExpanded()).toBe(true);
+    expect(component?.getResultBody()).toBe("full body");
+  });
+
+  it("blurs focus mode on escape", () => {
+    const { container } = makeContainer();
+    container.loadIndex({ groups: manyGroups(5) });
+    container.setFocused(true);
+    container.handleInput("\x1b"); // escape
+    expect(container.focused).toBe(false);
   });
 });

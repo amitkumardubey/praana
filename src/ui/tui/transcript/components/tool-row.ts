@@ -13,6 +13,10 @@ export interface ToolRowState {
   resultSummary?: string;
   resultBody?: string | null;
   isError?: boolean;
+  /** True when the row can request full content expansion. */
+  expandable?: boolean;
+  /** True when the full body is currently visible. */
+  expanded?: boolean;
 }
 
 /** Inline tool row — updated in place when result arrives. */
@@ -38,6 +42,26 @@ export class ToolRowComponent implements Component {
     this.state = { ...this.state, ...patch };
   }
 
+  getResultSummary(): string | undefined {
+    return this.state.resultSummary;
+  }
+
+  getResultBody(): string | null | undefined {
+    return this.state.resultBody;
+  }
+
+  getIsError(): boolean | undefined {
+    return this.state.isError;
+  }
+
+  isExpanded(): boolean {
+    return this.state.expanded ?? false;
+  }
+
+  setExpanded(expanded: boolean): void {
+    this.state = { ...this.state, expanded };
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {
@@ -60,10 +84,7 @@ export class ToolRowComponent implements Component {
     const row = `  ${icon} ${label} ${summaryStyle(state.resultSummary)}`;
     lines.push(paintZoneLine(row, "raised", bg, width));
 
-    if (
-      state.resultBody &&
-      (state.isError || state.toolName === "shell")
-    ) {
+    if (state.resultBody && (state.expanded || state.isError || state.toolName === "shell")) {
       const bodyWidth = Math.max(10, width - 7);
       const rawLines = state.resultBody.split("\n");
       const shown = rawLines.slice(0, BODY_PREVIEW_LINES);
