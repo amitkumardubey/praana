@@ -236,7 +236,18 @@ export function isValidBaseUrl(
  * explicit for catalog flows.
  */
 export function providerRequiresApiKey(provider: string): boolean {
+  // OAuth-only providers authenticate via /login OAuth, not API key paste.
+  if (provider === "openai-codex" || provider === "github-copilot") return false;
   return getProviderEnvKey(provider) !== null;
+}
+
+/** Providers that offer an OAuth subscription login path. */
+export function providerSupportsOAuth(provider: string): boolean {
+  return (
+    provider === "anthropic" ||
+    provider === "openai-codex" ||
+    provider === "github-copilot"
+  );
 }
 
 /**

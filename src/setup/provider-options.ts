@@ -5,6 +5,8 @@ import {
   isProviderAvailable,
 } from "../llm.js";
 import { getProviderEnvKey, SETUP_UNSUPPORTED_PROVIDERS } from "../provider-registry.js";
+import { hasCredentials } from "../credentials.js";
+import { isOAuthOnlyProvider, supportsOAuthLogin } from "../oauth.js";
 
 /** Special value for the "Custom OpenAI-compatible endpoint" picker entry. */
 export const CUSTOM_PROVIDER_VALUE = "__custom__";
@@ -27,7 +29,25 @@ export function buildProviderSelectItems(): SelectItem[] {
     const envKey = getProviderEnvKey(provider);
     const available = availableSet.has(provider);
     let description: string;
-    if (!envKey) {
+    if (supportsOAuthLogin(provider)) {
+      if (hasCredentials(provider) || available) {
+        description = isOAuthOnlyProvider(provider)
+          ? "✓ OAuth / subscription"
+          : "✓ API key or OAuth";
+      } else if (provider === "anthropic") {
+        description = "API key or Claude Pro/Max OAuth";
+      } else if (provider === "openai-codex") {
+        description = "ChatGPT Plus/Pro Codex OAuth";
+      } else if (provider === "github-copilot") {
+        description = "GitHub Copilot OAuth";
+      } else {
+        description = "OAuth";
+      }
+    } else if (provider === "poolside") {
+      description = available
+        ? "✓ POOLSIDE_API_KEY detected"
+        : "Poolside Platform API key";
+    } else if (!envKey) {
       if (available && provider === "amazon-bedrock") {
         description = "✓ AWS credentials detected";
       } else if (available) {

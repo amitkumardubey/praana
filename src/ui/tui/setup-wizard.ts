@@ -44,9 +44,13 @@ import {
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
   providerRequiresApiKey,
+  providerSupportsOAuth,
   bedrockNeedsApiKeyPrompt,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
+import { hasCredentials, hasOAuthToken } from "../../credentials.js";
+import { isOAuthOnlyProvider } from "../../oauth.js";
+import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { SetupResult, CustomProviderConfig } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
@@ -255,6 +259,10 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
             }
             return;
           }
+          if (providerSupportsOAuth(item.value)) {
+            showOAuthOrKeyStep(item.value);
+            return;
+          }
           showKeyEntryStep();
         }
       };
@@ -268,6 +276,197 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
       root.addChild(footer);
       tui.setFocus(picker);
       tui.requestRender(true);
+    };
+
+    // ── Step: OAuth vs API key for subscription providers ──
+    const showOAuthOrKeyStep = (provider: string) => {
+      if (isOAuthOnlyProvider(provider)) {
+        if (hasCredentials(provider)) {
+          showReuseOAuthStep(provider);
+        } else {
+          void runSetupOAuth(provider);
+        }
+        return;
+      }
+
+      // anthropic: choose method
+      root.clear();
+      header.setText(`Selected: ${provider}`);
+      body.setText("How do you want to authenticate?");
+
+      const items: SelectItem[] = [
+        { value: "oauth", label: "Claude Pro/Max OAuth", description: "Browser sign-in" },
+        { value: "api_key", label: "API key", description: "Paste ANTHROPIC_API_KEY" },
+      ];
+      const list = new SelectList(items, 4, SELECT_THEME);
+      list.onSelect = (item) => {
+        if (item.value === "oauth") {
+          void runSetupOAuth(provider);
+        } else {
+          showKeyEntryStep();
+        }
+      };
+      list.onCancel = () => showProviderStep();
+
+      root.addChild(header);
+      root.addChild(new Spacer(1));
+      root.addChild(body);
+      root.addChild(new Spacer(1));
+      root.addChild(list);
+      root.addChild(footer);
+      tui.setFocus(list);
+      tui.requestRender(true);
+    };
+
+    const showReuseOAuthStep = (provider: string) => {
+      root.clear();
+      header.setText(`Selected: ${provider}`);
+      body.setText(
+        hasOAuthToken(provider)
+          ? "✓ OAuth credentials already stored.\n\nSign in again?"
+          : "✓ Credentials already stored.\n\nReplace them?",
+      );
+      const list = new SelectList(
+        [
+          { value: "yes", label: "Yes — sign in again", description: "" },
+          { value: "no", label: "No — keep existing", description: "" },
+        ],
+        4,
+        SELECT_THEME,
+      );
+      list.onSelect = (item) => {
+        if (item.value === "yes") {
+          void runSetupOAuth(provider);
+        } else {
+          state.keySaved = false;
+          showModelFetchStep();
+        }
+      };
+      list.onCancel = () => showProviderStep();
+      root.addChild(header);
+      root.addChild(new Spacer(1));
+      root.addChild(body);
+      root.addChild(new Spacer(1));
+      root.addChild(list);
+      root.addChild(footer);
+      tui.setFocus(list);
+      tui.requestRender(true);
+    };
+
+    const runSetupOAuth = async (provider: string) => {
+      const abort = new AbortController();
+      const hint = new Text(TUI_STYLE.faint("Esc to cancel"), 0, 0);
+
+      const showStatus = (lines: string[]) => {
+        root.clear();
+        header.setText(`OAuth: ${provider}`);
+        body.setText(lines.join("\n"));
+        hint.setText(TUI_STYLE.faint("Esc to cancel"));
+        root.addChild(header);
+        root.addChild(new Spacer(1));
+        root.addChild(body);
+        root.addChild(new Spacer(1));
+        root.addChild(hint);
+        tui.requestRender(true);
+      };
+
+      const promptText = (
+        message: string,
+        placeholder?: string,
+        contextLines?: string[],
+      ): Promise<string> =>
+        new Promise((resolve, reject) => {
+          const onAbort = () => reject(new Error("cancelled"));
+          abort.signal.addEventListener("abort", onAbort, { once: true });
+          root.clear();
+          header.setText(`OAuth: ${provider}`);
+          const parts: string[] = [];
+          if (contextLines && contextLines.length > 0) {
+            parts.push(...contextLines, "");
+          }
+          parts.push(message);
+          if (placeholder) parts.push(TUI_STYLE.muted(placeholder));
+          body.setText(parts.join("\n"));
+          const input = new Input();
+          input.onSubmit = (value: string) => {
+            const trimmed = value.trim();
+            if (!trimmed) return;
+            abort.signal.removeEventListener("abort", onAbort);
+            resolve(trimmed);
+          };
+          hint.setText(TUI_STYLE.faint("Paste · Enter · Esc cancel"));
+          root.addChild(header);
+          root.addChild(new Spacer(1));
+          root.addChild(body);
+          root.addChild(new Spacer(1));
+          root.addChild(input);
+          root.addChild(hint);
+          tui.setFocus(input);
+          tui.requestRender(true);
+        });
+
+      const promptSelect = (
+        message: string,
+        options: readonly { id: string; label: string; description?: string }[],
+      ): Promise<string | undefined> =>
+        new Promise((resolve) => {
+          root.clear();
+          header.setText(`OAuth: ${provider}`);
+          body.setText(message);
+          const items: SelectItem[] = options.map((o) => ({
+            value: o.id,
+            label: o.label,
+            description: o.description ?? "",
+          }));
+          const list = new SelectList(items, Math.min(8, items.length + 1), SELECT_THEME);
+          list.onSelect = (item) => resolve(item.value);
+          list.onCancel = () => resolve(undefined);
+          root.addChild(header);
+          root.addChild(new Spacer(1));
+          root.addChild(body);
+          root.addChild(new Spacer(1));
+          root.addChild(list);
+          root.addChild(footer);
+          tui.setFocus(list);
+          tui.requestRender(true);
+        });
+
+      showStatus([`Starting OAuth for ${provider}…`]);
+      try {
+        await runOAuthLoginWithUi(provider, {
+          showStatus,
+          promptText,
+          promptSelect,
+          signal: abort.signal,
+        });
+        if (abort.signal.aborted) return;
+        state.keySaved = true;
+        showModelFetchStep();
+      } catch (err) {
+        if (abort.signal.aborted) return;
+        root.clear();
+        header.setText(`OAuth: ${provider}`);
+        body.setText(
+          chalk.red(
+            `OAuth failed: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        const list = new SelectList(
+          [{ value: "back", label: "Back to provider list", description: "" }],
+          2,
+          SELECT_THEME,
+        );
+        list.onSelect = () => showProviderStep();
+        list.onCancel = () => showProviderStep();
+        root.addChild(header);
+        root.addChild(new Spacer(1));
+        root.addChild(body);
+        root.addChild(new Spacer(1));
+        root.addChild(list);
+        root.addChild(footer);
+        tui.setFocus(list);
+        tui.requestRender(true);
+      }
     };
 
     // ── Step: API key entry (catalog providers) ──

@@ -21,8 +21,8 @@ describe("model-context", () => {
     expect(lookupPiAiContextWindow("openrouter", "deepseek/deepseek-v4-flash")).toBe(
       1_048_576,
     );
-    expect(lookupPiAiContextWindow("anthropic", "claude-sonnet-4-20250514")).toBe(
-      200_000,
+    expect(lookupPiAiContextWindow("anthropic", "claude-sonnet-4-6")).toBe(
+      1_000_000,
     );
   });
 
