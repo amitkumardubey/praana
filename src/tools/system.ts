@@ -318,7 +318,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     onScorecardFileRead,
     onScorecardSkillLoad,
     getCurrentTurn,
-    blockRepeatReads = true,
+    blockRepeatReads = false,
     hasReadPath,
     getReadPathMtime,
     clearReadPath,

@@ -501,6 +501,8 @@ export async function runTurn(
         repeatFileReads: session.scorecard.getCounters().repeatFileReads,
       }),
       filesReadIndex,
+      artifactTokens: (id) =>
+        session.contextEngine?.store.getArtifact(id)?.rawTokens,
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {

@@ -87,6 +87,13 @@ export interface EngineCompileInput extends CompileInput {
    * Injected after the checkpoint when non-empty.
    */
   filesReadIndex?: string;
+  /**
+   * Optional resolver for an artifact's raw token count from the artifact
+   * store. Used to render an accurate "N tokens raw" label on stub cards in
+   * the scored section; falls back to a ledger-text estimate when omitted
+   * or when the artifact is not found.
+   */
+  artifactTokens?: (artifactId: string) => number | undefined;
 }
 
 export interface EngineCompileResult {
@@ -147,7 +154,11 @@ function renderTurnDigest(record: TurnRecord): string {
     .join("\n");
 }
 
-function buildArtifactUnit(tc: TurnRecord["toolCalls"][number], turn: number): ContextUnit | null {
+function buildArtifactUnit(
+  tc: TurnRecord["toolCalls"][number],
+  turn: number,
+  artifactTokens?: (artifactId: string) => number | undefined,
+): ContextUnit | null {
   if (!tc.resultArtifactId) return null;
   const command =
     typeof tc.args.command === "string"
@@ -155,12 +166,16 @@ function buildArtifactUnit(tc: TurnRecord["toolCalls"][number], turn: number): C
       : typeof tc.args.path === "string"
         ? tc.args.path
         : undefined;
-  const summary = tc.resultText?.slice(0, 600) ?? "(stored artifact)";
+  // Prefer the artifact store's true raw token count; the ledger's resultText
+  // is truncated (~400 chars) and badly understates the artifact's size.
+  const rawTokens =
+    artifactTokens?.(tc.resultArtifactId) ??
+    unitTokens(tc.resultText?.slice(0, 600) ?? "(stored artifact)");
   const content = buildArtifactCard(
     tc.resultArtifactId,
     tc.tool,
     command,
-    unitTokens(summary),
+    rawTokens,
   );
   return {
     id: tc.resultArtifactId,
@@ -179,6 +194,7 @@ function buildScoredUnits(
   currentTurn: number,
   activityEntries: ActivityEntry[],
   pressureMode: PressureMode,
+  artifactTokens?: (artifactId: string) => number | undefined,
 ): ContextUnit[] {
   const units: ContextUnit[] = [];
 
@@ -190,7 +206,7 @@ function buildScoredUnits(
       // everything else is dropped or already covered by the verbatim section.
       if (age === 0) {
         for (const tc of record.toolCalls) {
-          const unit = buildArtifactUnit(tc, record.turn);
+          const unit = buildArtifactUnit(tc, record.turn, artifactTokens);
           if (unit) units.push(unit);
         }
       }
@@ -220,7 +236,7 @@ function buildScoredUnits(
     }
 
     for (const tc of record.toolCalls) {
-      const unit = buildArtifactUnit(tc, record.turn);
+      const unit = buildArtifactUnit(tc, record.turn, artifactTokens);
       if (unit) units.push(unit);
     }
   }
@@ -531,6 +547,7 @@ async function compileEnginePass(
     input.currentTurn,
     activityEntries,
     checkpointPressureMode,
+    input.artifactTokens,
   );
 
   const weights = input.engineConfig.scoring;

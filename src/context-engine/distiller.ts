@@ -25,6 +25,15 @@ export interface DistillDeferredResult {
 
 const PENDING_MARKER = "[compression pending — full content available via retrieve_artifact]";
 
+/**
+ * Output ≤ input invariant: no distiller may produce a summary larger than
+ * the raw text. If compression would bloat, return the raw text unchanged.
+ * Applied to both the sync and deferred-backfill paths.
+ */
+function clampToInput(summary: string, input: string): string {
+  return summary.length > input.length ? input : summary;
+}
+
 export function buildPendingSummary(): string {
   return PENDING_MARKER;
 }
@@ -69,9 +78,8 @@ export class DistillerRegistry {
       };
     }
     const summary = distiller.distill(input, intensity, contentType);
-    const clamped = summary.length > input.length ? input : summary;
     return {
-      summary: clamped,
+      summary: clampToInput(summary, input),
       distillerName: distiller.name,
       execTimeMs: performance.now() - start,
       deferred: false,
@@ -96,7 +104,7 @@ export class DistillerRegistry {
           const start = performance.now();
           const summary = distiller.distill(input, intensity, contentType);
           return {
-            summary,
+            summary: clampToInput(summary, input),
             distillerName: distiller.name,
             execTimeMs: performance.now() - start,
             deferred: true,

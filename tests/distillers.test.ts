@@ -122,6 +122,67 @@ describe("distillers", () => {
     expect(out).toContain("expect(result).toBe(3)");
   });
 
+  it("TestDistiller caps captured lines at 4K chars", () => {
+    // Regression (#275): a single 53M-char line made failureLimit meaningless.
+    const hugeLine = "F".repeat(10_000);
+    const input = `FAIL tests/x.test.ts\n${hugeLine}\nTests: 1 failed`;
+    const out = new TestDistiller().distill(input, "full");
+    for (const line of out.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(4096);
+    }
+  });
+
+  it("TestDistiller never returns output larger than input", () => {
+    // "Summary:\nTests: 1 passed" (24 chars) would bloat the 15-char input;
+    // the invariant returns the raw input instead.
+    const input = "Tests: 1 passed";
+    const out = new TestDistiller().distill(input, "full");
+    expect(out).toBe(input);
+  });
+
+  it("distillSync enforces the output ≤ input invariant", () => {
+    class BloatingDistiller implements Distiller {
+      readonly name = "bloater";
+      readonly contentTypes: ContentType[] = ["log"];
+      readonly mode = "sync" as const;
+      distill(input: string): string {
+        return `${input}\n${"bloat ".repeat(1000)}`;
+      }
+    }
+    const registry = new DistillerRegistry();
+    registry.register(new BloatingDistiller());
+    const input = "short log line";
+    const result = registry.distillSync(input, "log", "full");
+    expect(result.summary).toBe(input);
+  });
+
+  it("deferred backfill also enforces the output ≤ input invariant", async () => {
+    class BloatingDeferredLogDistiller implements Distiller {
+      readonly name = "bloater-deferred";
+      readonly contentTypes: ContentType[] = ["log"];
+      readonly mode = "deferred" as const;
+      distill(input: string): string {
+        return `${input}\n${"bloat ".repeat(1000)}`;
+      }
+    }
+    const registry = new DistillerRegistry();
+    registry.register(new BloatingDeferredLogDistiller());
+    const store = ArtifactStore.open(":memory:", "sess-deferred-clamp", TEST_CONFIG, registry);
+    const raw = "log line\n".repeat(100);
+    const ingested = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "tail app.log",
+      rawText: raw,
+      contentType: "log",
+      createdTurn: 1,
+    });
+    await store.flushDeferredDistillation();
+    const summary = store.getArtifact(ingested.artifactId!)?.summary ?? "";
+    expect(summary.length).toBeLessThanOrEqual(raw.length);
+    expect(summary).toBe(raw);
+    store.close();
+  });
+
   it("DiffDistiller keeps file metadata needed to understand non-hunk changes", () => {
     const input = `diff --git a/old.ts b/new.ts
 similarity index 91%
