@@ -432,7 +432,7 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 
 ### Repeat-read interceptor (issue #219)
 
-`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `true` = hard-block; `false` = warn). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
+`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `false` = warn; `true` = hard-block). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
 
 ### Resume hardening (issues #185, #220)
 
@@ -524,7 +524,7 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [tools]
-block_repeat_reads = true    # hard-block (default) or warn on repeat read_file of unchanged files
+block_repeat_reads = false   # warn and return artifact card (default); true = hard-block repeat read_file of unchanged files
 
 [session]
 log_dir = "~/.praana/sessions"

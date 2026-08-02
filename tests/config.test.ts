@@ -197,9 +197,9 @@ describe("config loading", () => {
     )).toBe(true);
   });
 
-  it("defaults block_repeat_reads to true", () => {
+  it("defaults block_repeat_reads to false", () => {
     const config = loadConfig(join(root, "missing.toml"));
-    expect(config.tools.block_repeat_reads).toBe(true);
+    expect(config.tools.block_repeat_reads).toBe(false);
   });
 
   it("does not auto-select a provider from environment when [llm] provider is unset", () => {

@@ -255,4 +255,19 @@ describe("context-engine artifact store", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("retrieve returns error when lineStart exceeds content line count", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = largeText(2000);
+    const ingested = store.ingestToolResult({
+      sourceTool: "shell",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    expect(ingested.artifactId).toBeDefined();
+    const result = store.retrieve(ingested.artifactId!, 1, { lineStart: 10 });
+    expect(result.ok).toBe(false);
+    expect((result as { error?: string }).error).toMatch(/lineStart.*exceeds/);
+    store.close();
+  });
 });

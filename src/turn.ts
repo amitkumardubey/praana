@@ -399,7 +399,7 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
-    blockRepeatReads: session.config.tools?.block_repeat_reads ?? true,
+    blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
     hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {

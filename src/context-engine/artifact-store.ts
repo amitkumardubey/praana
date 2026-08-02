@@ -47,6 +47,9 @@ function sha256(text: string): string {
 function sliceByLines(text: string, lineStart?: number, lineEnd?: number): string {
   const lines = text.split("\n");
   const start = Math.max(1, lineStart ?? 1);
+  if (start > lines.length) {
+    throw new Error(`lineStart ${start} exceeds content line count ${lines.length}`);
+  }
   const end = Math.min(lines.length, lineEnd ?? lines.length);
   if (start > end) return "";
   return lines.slice(start - 1, end).join("\n");
