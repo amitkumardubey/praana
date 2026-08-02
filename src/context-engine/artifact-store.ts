@@ -192,12 +192,12 @@ export class ArtifactStore {
         if (existing && existing.sha256 === hash) {
           touchArtifactAccess(this.db, existing.id, input.createdTurn);
           return {
-          promptText: buildArtifactCard(
-            existing.id,
-            existing.sourceTool,
-            existing.command,
-            existing.rawTokens,
-          ),
+            promptText: buildArtifactCard(
+              existing.id,
+              existing.sourceTool,
+              existing.command,
+              existing.rawTokens,
+            ),
             artifactId: existing.id,
             inlined: false,
           };

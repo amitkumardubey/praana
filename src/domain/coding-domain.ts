@@ -93,8 +93,11 @@ export function inferContentTypeFromTool(
   const normalized = command.trim();
   if (!normalized) return null;
 
+  if (sourceTool === "search_code") {
+    return "search_results";
+  }
   if (
-    (sourceTool === "shell" || sourceTool === "search_code") &&
+    sourceTool === "shell" &&
     /(^|\s)(rg|grep|ag|ack)(\s|$)/.test(normalized)
   ) {
     return "search_results";
