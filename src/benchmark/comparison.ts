@@ -4,7 +4,8 @@ import type { TurnComparison, CompilationSnapshot } from "./types.js";
 import type { ReplayTurn } from "./session-replay.js";
 import { compileClassicWithMetrics } from "../compile-classic.js";
 import { compileEngineWithMetrics, type EngineCompileInput } from "../context-engine/engine-compiler.js";
-import { createEmptyCheckpointState, type SessionCheckpoint } from "../context-engine/checkpoint.js";
+import { createEmptyCheckpointState } from "../context-engine/checkpoint.js";
+import type { SessionCheckpoint } from "../context-engine/types.js";
 import { StateGraph } from "../state-graph.js";
 
 /**
@@ -73,24 +74,39 @@ export async function compareTurn(
 
   const engineResult = await compileEngineWithMetrics(engineInput);
 
+  const includedUnits = engineResult.scoreRecords
+    .filter((r) => r.included)
+    .map((r) => ({
+      id: r.unitId,
+      type: r.type,
+      content: "",
+      tokens: r.tokens,
+      sourceTurn: r.turn,
+      score: r.score,
+      pinned: false,
+      artifactRefs: [],
+      breakdown: r.breakdown,
+    }));
+  const excludedUnits = engineResult.scoreRecords
+    .filter((r) => !r.included)
+    .map((r) => ({
+      id: r.unitId,
+      type: r.type,
+      content: "",
+      tokens: r.tokens,
+      sourceTurn: r.turn,
+      score: r.score,
+      pinned: false,
+      artifactRefs: [],
+      breakdown: r.breakdown,
+    }));
+
   const engineSnapshot: CompilationSnapshot = {
     totalTokens: engineResult.metrics.totalTokens,
     metrics: engineResult.metrics,
     scoredUnits: {
-      included: engineResult.includedScored,
-      excluded: engineResult.scoreRecords
-        .filter((r) => !r.included)
-        .map((r) => ({
-          id: r.unitId,
-          type: r.type,
-          content: "",
-          tokens: r.tokens,
-          sourceTurn: r.turn,
-          score: r.score,
-          pinned: false,
-          artifactRefs: [],
-          breakdown: r.breakdown,
-        })),
+      included: includedUnits,
+      excluded: excludedUnits,
     },
     pressureMode: engineResult.pressureMode,
   };
