@@ -178,7 +178,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 
 | Category | Tools | Mode |
 |---|---|---|
-| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable); engine mode injects a **Files Read This Session** index | Both |
+| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail) | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group) | Both |
 | Session search | `search_session_log` (in-session events) | Both |
