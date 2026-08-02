@@ -36,7 +36,8 @@
     "test:watch": "bun test --watch tests/",
     "test:coverage": "bun test --coverage tests/",
     "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts",
-    "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts"
+    "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts",
+    "benchmark": "bun run src/benchmark/index.ts"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock": "^3.1093.0",
