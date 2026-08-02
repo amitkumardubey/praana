@@ -69,7 +69,6 @@ describe("repeat-read interceptor", () => {
             art.sourceTool,
             art.command,
             art.rawTokens,
-            art.summary,
           ),
         };
       },

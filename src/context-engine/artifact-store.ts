@@ -156,15 +156,17 @@ export class ArtifactStore {
         };
       }
       updateArtifactSummary(this.db, job.artifactId, result.summary);
-      this.recordDistillerStat({
-        sourceTool: job.sourceTool,
-        contentType: job.contentType,
-        distiller: result.distillerName,
-        inputTokens: job.inputTokens,
-        outputTokens: estimateTokens(result.summary),
-        execTimeMs: Math.round(result.execTimeMs),
-        turn: job.turn,
-      });
+      if (result.summary) {
+        this.recordDistillerStat({
+          sourceTool: job.sourceTool,
+          contentType: job.contentType,
+          distiller: result.distillerName,
+          inputTokens: job.inputTokens,
+          outputTokens: estimateTokens(result.summary),
+          execTimeMs: Math.round(result.execTimeMs),
+          turn: job.turn,
+        });
+      }
     }
     return jobs.length;
   }
@@ -190,13 +192,12 @@ export class ArtifactStore {
         if (existing && existing.sha256 === hash) {
           touchArtifactAccess(this.db, existing.id, input.createdTurn);
           return {
-            promptText: buildArtifactCard(
-              existing.id,
-              existing.sourceTool,
-              existing.command,
-              existing.rawTokens,
-              existing.summary,
-            ),
+          promptText: buildArtifactCard(
+            existing.id,
+            existing.sourceTool,
+            existing.command,
+            existing.rawTokens,
+          ),
             artifactId: existing.id,
             inlined: false,
           };
@@ -214,7 +215,6 @@ export class ArtifactStore {
           deduped.sourceTool,
           deduped.command ?? input.command,
           deduped.rawTokens,
-          deduped.summary,
         ),
         artifactId: deduped.id,
         inlined: false,
@@ -247,15 +247,17 @@ export class ArtifactStore {
     } else {
       const sync = distilled as DistillResult;
       summary = sync.summary;
-      this.recordDistillerStat({
-        sourceTool: input.sourceTool,
-        contentType,
-        distiller: sync.distillerName,
-        inputTokens: rawTokens,
-        outputTokens: estimateTokens(sync.summary),
-        execTimeMs: Math.round(sync.execTimeMs),
-        turn: input.createdTurn,
-      });
+      if (summary) {
+        this.recordDistillerStat({
+          sourceTool: input.sourceTool,
+          contentType,
+          distiller: sync.distillerName,
+          inputTokens: rawTokens,
+          outputTokens: estimateTokens(sync.summary),
+          execTimeMs: Math.round(sync.execTimeMs),
+          turn: input.createdTurn,
+        });
+      }
     }
 
     const artifact: ContextArtifact = {
@@ -282,7 +284,6 @@ export class ArtifactStore {
         artifact.sourceTool,
         artifact.command,
         artifact.rawTokens,
-        artifact.summary,
       ),
       artifactId: artifact.id,
       inlined: false,

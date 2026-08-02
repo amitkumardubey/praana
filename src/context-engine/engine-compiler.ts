@@ -161,7 +161,6 @@ function buildArtifactUnit(tc: TurnRecord["toolCalls"][number], turn: number): C
     tc.tool,
     command,
     unitTokens(summary),
-    summary,
   );
   return {
     id: tc.resultArtifactId,

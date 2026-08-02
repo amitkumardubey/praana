@@ -1,5 +1,4 @@
 import type { ContentType } from "./types.js";
-import { summarizeGeneric } from "./summarize.js";
 
 export type DistillerIntensity = "lite" | "full";
 export type DistillerMode = "sync" | "deferred";
@@ -62,17 +61,17 @@ export class DistillerRegistry {
     const distiller = this.find(contentType);
     const start = performance.now();
     if (!distiller || distiller.mode === "deferred") {
-      const summary = summarizeGeneric(input, contentType);
       return {
-        summary,
-        distillerName: distiller?.name ?? "generic-fallback",
+        summary: "",
+        distillerName: distiller?.name ?? "none",
         execTimeMs: performance.now() - start,
         deferred: false,
       };
     }
     const summary = distiller.distill(input, intensity, contentType);
+    const clamped = summary.length > input.length ? input : summary;
     return {
-      summary,
+      summary: clamped,
       distillerName: distiller.name,
       execTimeMs: performance.now() - start,
       deferred: false,

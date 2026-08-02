@@ -114,7 +114,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 2. **Tiered working memory with auto-hydration.** State objects (tasks, decisions, constraints, notes) demote from `active` to `soft` to `hard` based on idle turns. Two-pass hydration before each turn — substring keyword match, then BM25 — promotes them back when the current turn references them.
 
-3. **Tool-output distillers with a content-addressed artifact store.** Git diffs, npm test output, TypeScript errors, ripgrep results hit built-in distillers at ingestion. The model sees a focused summary. Full bytes live in an artifact store; `retrieve_artifact` fetches them on demand.
+3. **Tool-output artifact store with stub cards.** Git diffs, npm test output, TypeScript errors, ripgrep results are stored in a content-addressed artifact store. The model sees a tiny stub card (`[artifact: id | tool: command | N tokens raw]` + `Retrieve: retrieve_artifact("id")`). Full bytes are retrievable on demand via `retrieve_artifact`. Specialist truncators (npm-test, git-diff) may still collapse output at the tool edge.
 
 4. **Session resume by O(1) checkpoint + event replay.** A deterministic checkpoint is written every turn — active request, rolling narrative, decisions with rationale, constraints. Resume restores the checkpoint and replays only post-checkpoint events.
 
@@ -128,7 +128,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 | Mode | Default | Behaviour |
 |---|---|---|
-| **Engine** | Yes | Tiered working memory, tool-output distillation, session checkpoint, scored prompt compilation, progressive skills. |
+| **Engine** | Yes | Tiered working memory, stub artifact cards + retrieve on demand, session checkpoint, scored prompt compilation, progressive skills. |
 | **Classic** | Fallback / explicit disable | Full verbatim transcript. Same shape as most coding agents. |
 
 **Cognitive Memory** (optional — `[memory] enabled = true`):

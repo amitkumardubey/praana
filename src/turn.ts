@@ -417,7 +417,6 @@ export async function runTurn(
           art.sourceTool,
           art.command,
           art.rawTokens,
-          art.summary,
         ),
       };
     },

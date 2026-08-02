@@ -1,7 +1,26 @@
 import type { ContentType } from "./types.js";
 export { estimateTokens } from "../token-estimate.js";
 
-/** Generic head/tail summary for Phase 1 (specialized distillers land in Phase 2). */
+/**
+ * Build a compact artifact card for the LLM prompt.
+ * Default is a tiny stub — full bytes are retrievable on demand via
+ * retrieve_artifact. No distillation summary is embedded in the card.
+ */
+export function buildArtifactCard(
+  artifactId: string,
+  sourceTool: string,
+  command: string | undefined,
+  rawTokens: number,
+): string {
+  const label = command ? `${sourceTool}: ${command}` : sourceTool;
+  return `[artifact: ${artifactId} | ${label} | ${rawTokens.toLocaleString()} tokens raw]\nRetrieve: retrieve_artifact("${artifactId}")`;
+}
+
+/**
+ * Generic head/tail summarizer (legacy). Kept for reference; no longer
+ * used as the default card body. Specialist distillers (npm-test, git-diff)
+ * may still produce summaries when they are the matched distiller.
+ */
 export function summarizeGeneric(rawText: string, contentType: ContentType): string {
   if (contentType === "error") {
     return rawText;
@@ -22,20 +41,4 @@ export function summarizeGeneric(rawText: string, contentType: ContentType): str
   const tail = rawText.slice(-tailChars).trimStart();
   const omitted = rawText.length - head.length - tail.length;
   return `${head}\n… [${omitted.toLocaleString()} chars omitted] …\n${tail}`;
-}
-
-export function buildArtifactCard(
-  artifactId: string,
-  sourceTool: string,
-  command: string | undefined,
-  rawTokens: number,
-  summary: string,
-): string {
-  const label = command ? `${sourceTool}: ${command}` : sourceTool;
-  const lines = [
-    `[artifact: ${artifactId} | ${label} | ${rawTokens.toLocaleString()} tokens raw]`,
-    summary,
-    `Retrieve: retrieve_artifact("${artifactId}")`,
-  ];
-  return lines.join("\n");
 }
