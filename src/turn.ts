@@ -20,6 +20,7 @@ import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
+import { resolveOAuthModelAuth } from "./oauth.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -600,8 +601,37 @@ export async function runTurn(
 
   // 4. Create LLM provider and model
   const effectiveLlm = session.getEffectiveLlmConfig();
+  // Refresh OAuth access tokens / baseUrl before building the model (no-op when unused).
+  let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
+  try {
+    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider);
+  } catch (err) {
+    session.getLogger().child("credentials").warn("OAuth token refresh failed", {
+      cause: err as Error,
+      code: "UNKNOWN",
+      details: { provider: effectiveLlm.provider },
+    });
+  }
   const providerFn = createProvider(effectiveLlm, contextWindowTokens);
-  const model = providerFn(resolveModel(modelName));
+  const model = providerFn(resolveModel(modelName)) as Record<string, unknown> & {
+    baseUrl?: string;
+    __piOptions?: Record<string, unknown>;
+  };
+  if (oauthModelAuth) {
+    if (oauthModelAuth.baseUrl) model.baseUrl = oauthModelAuth.baseUrl;
+    model.__piOptions = {
+      ...(model.__piOptions ?? {}),
+      ...(oauthModelAuth.apiKey ? { apiKey: oauthModelAuth.apiKey } : {}),
+      ...(oauthModelAuth.headers
+        ? {
+            headers: {
+              ...((model.__piOptions?.headers as Record<string, string> | undefined) ?? {}),
+              ...oauthModelAuth.headers,
+            },
+          }
+        : {}),
+    };
+  }
 
   const logger = await createSessionLogger({
     sessionId: session.id,

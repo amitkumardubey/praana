@@ -35,11 +35,15 @@ import {
   isValidCustomProviderId,
   isValidBaseUrl,
   providerRequiresApiKey,
+  providerSupportsOAuth,
   pickDefaultModel,
   fetchProviderModels,
   bedrockNeedsApiKeyPrompt,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
+import { hasCredentials, hasOAuthToken } from "../../credentials.js";
+import { isOAuthOnlyProvider } from "../../oauth.js";
+import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import {
   isUserDeclaredProvider,
   listUserDeclaredProviderIds,
@@ -63,10 +67,23 @@ const YES_NO_ITEMS: SelectItem[] = [
   { value: "no", label: "No — use existing key", description: "" },
 ];
 
+const AUTH_METHOD_ITEMS: SelectItem[] = [
+  { value: "oauth", label: "Claude Pro/Max OAuth", description: "Browser sign-in" },
+  { value: "api_key", label: "API key", description: "Paste ANTHROPIC_API_KEY" },
+];
+
+const REAUTH_ITEMS: SelectItem[] = [
+  { value: "yes", label: "Yes — sign in again", description: "" },
+  { value: "no", label: "No — use existing credentials", description: "" },
+];
+
 type Step =
   | "picker"
+  | "auth-method"
   | "has-key"
+  | "has-oauth"
   | "key"
+  | "oauth"
   | "custom-id"
   | "custom-url"
   | "custom-key";
@@ -117,6 +134,10 @@ export class LoginWizard implements Component, Focusable {
 
   private activeInput: Input | null = null;
   private activeList: SelectList | null = null;
+  private oauthAbort: AbortController | null = null;
+  private textPromptResolve: ((value: string) => void) | null = null;
+  private textPromptReject: ((err: Error) => void) | null = null;
+  private selectPromptResolve: ((value: string | undefined) => void) | null = null;
 
   private _focused = false;
 
@@ -138,21 +159,8 @@ export class LoginWizard implements Component, Focusable {
 
     if (hint) {
       if (!isUserDeclaredProvider(hint) && hint in buildProviderMap()) {
-        // Catalog provider
         this.provider = hint;
-        if (providerRequiresApiKey(hint)) {
-          this.step = hasApiKey(hint) ? "has-key" : "key";
-        } else if (hint === "amazon-bedrock") {
-          if (!bedrockNeedsApiKeyPrompt()) {
-            this.finishKeyless();
-            return;
-          }
-          this.step = "key";
-        } else {
-          // Keyless provider (ollama) — just switch
-          this.finishKeyless();
-          return;
-        }
+        this.routeAfterProviderChoice(hint);
       } else if (isUserDeclaredProvider(hint)) {
         // User-declared provider — just needs a key
         this.provider = hint;
@@ -169,6 +177,35 @@ export class LoginWizard implements Component, Focusable {
     this.showStep();
   }
 
+  private routeAfterProviderChoice(provider: string): void {
+    if (providerSupportsOAuth(provider)) {
+      if (isOAuthOnlyProvider(provider)) {
+        this.step = hasCredentials(provider) ? "has-oauth" : "oauth";
+        return;
+      }
+      // anthropic: choose API key vs OAuth
+      if (hasCredentials(provider)) {
+        this.step = hasOAuthToken(provider) ? "has-oauth" : "has-key";
+        return;
+      }
+      this.step = "auth-method";
+      return;
+    }
+    if (providerRequiresApiKey(provider)) {
+      this.step = hasApiKey(provider) ? "has-key" : "key";
+      return;
+    }
+    if (provider === "amazon-bedrock") {
+      if (!bedrockNeedsApiKeyPrompt()) {
+        void this.finishKeyless();
+        return;
+      }
+      this.step = "key";
+      return;
+    }
+    void this.finishKeyless();
+  }
+
   private showStep(): void {
     this.root.clear();
     this.activeInput = null;
@@ -178,11 +215,20 @@ export class LoginWizard implements Component, Focusable {
       case "picker":
         this.showPicker();
         break;
+      case "auth-method":
+        this.showAuthMethodPrompt();
+        break;
       case "has-key":
         this.showHasKeyPrompt();
         break;
+      case "has-oauth":
+        this.showHasOAuthPrompt();
+        break;
       case "key":
         this.showKeyEntry();
+        break;
+      case "oauth":
+        void this.startOAuthFlow();
         break;
       case "custom-id":
         this.showCustomIdEntry();
@@ -217,19 +263,14 @@ export class LoginWizard implements Component, Focusable {
     list.onSelect = (item) => {
       if (item.value === CUSTOM_PROVIDER_VALUE) {
         this.step = "custom-id";
+      } else if (isUserDeclaredProvider(item.value)) {
+        this.provider = item.value;
+        this.step = hasApiKey(item.value) ? "has-key" : "key";
       } else {
         this.provider = item.value;
-        if (providerRequiresApiKey(item.value) || isUserDeclaredProvider(item.value)) {
-          this.step = hasApiKey(item.value) ? "has-key" : "key";
-        } else if (item.value === "amazon-bedrock") {
-          if (!bedrockNeedsApiKeyPrompt()) {
-            this.finishKeyless();
-            return;
-          }
-          this.step = "key";
-        } else {
-          this.finishKeyless();
-          return;
+        this.routeAfterProviderChoice(item.value);
+        if (this.step !== "oauth" && this.step !== "picker" && this.step !== "custom-id") {
+          // finishKeyless may have already completed
         }
       }
       this.showStep();
@@ -258,6 +299,70 @@ export class LoginWizard implements Component, Focusable {
       }
     }
     return items;
+  }
+
+  // ── Step: Auth method (API key vs OAuth) ──
+
+  private showAuthMethodPrompt(): void {
+    this.root.addChild(
+      new Text(TUI_STYLE.info(`How do you want to authenticate ${this.provider}?`), 0, 0),
+    );
+    this.root.addChild(new Spacer(1));
+
+    const items =
+      this.provider === "anthropic"
+        ? AUTH_METHOD_ITEMS
+        : [
+            { value: "oauth", label: "OAuth / subscription", description: "Browser sign-in" },
+            { value: "api_key", label: "API key", description: "Paste a static key" },
+          ];
+    const list = new SelectList(items, 4, SELECT_THEME);
+    list.onSelect = (item) => {
+      this.step = item.value === "oauth" ? "oauth" : "key";
+      this.showStep();
+      this.tui.requestRender();
+    };
+    list.onCancel = () => this.onCancelCallback();
+
+    this.activeList = list;
+    this.root.addChild(list);
+    this.root.addChild(new Spacer(1));
+    this.root.addChild(
+      new Text(TUI_STYLE.faint("↑↓ navigate · Enter select · Esc cancel"), 0, 0),
+    );
+  }
+
+  private showHasOAuthPrompt(): void {
+    this.root.addChild(
+      new Text(
+        TUI_STYLE.info(`You already have OAuth credentials for ${this.provider}.`),
+        0,
+        0,
+      ),
+    );
+    this.root.addChild(new Spacer(1));
+
+    const list = new SelectList(REAUTH_ITEMS, 4, SELECT_THEME);
+    list.onSelect = (item) => {
+      if (item.value === "yes") {
+        this.step = providerSupportsOAuth(this.provider) && !isOAuthOnlyProvider(this.provider)
+          ? "auth-method"
+          : "oauth";
+      } else {
+        void this.finish(false, "");
+        return;
+      }
+      this.showStep();
+      this.tui.requestRender();
+    };
+    list.onCancel = () => this.onCancelCallback();
+
+    this.activeList = list;
+    this.root.addChild(list);
+    this.root.addChild(new Spacer(1));
+    this.root.addChild(
+      new Text(TUI_STYLE.faint("↑↓ navigate · Enter select · Esc cancel"), 0, 0),
+    );
   }
 
   // ── Step: Has key — replace or use existing? ──
@@ -296,6 +401,144 @@ export class LoginWizard implements Component, Focusable {
         0,
       ),
     );
+  }
+
+  // ── Step: OAuth login ──
+
+  private async startOAuthFlow(): Promise<void> {
+    this.oauthAbort?.abort();
+    this.oauthAbort = new AbortController();
+    const signal = this.oauthAbort.signal;
+
+    this.root.clear();
+    this.activeInput = null;
+    this.activeList = null;
+    this.root.addChild(new Text(TUI_STYLE.info(`Starting OAuth for ${this.provider}…`), 0, 0));
+    this.root.addChild(new Spacer(1));
+    this.root.addChild(new Text(TUI_STYLE.faint("Esc to cancel"), 0, 0));
+    this.tui.requestRender();
+
+    const showStatus = (lines: string[]) => {
+      this.root.clear();
+      this.activeList = null;
+      for (const line of lines) {
+        this.root.addChild(new Text(line ? TUI_STYLE.info(line) : "", 0, 0));
+      }
+      this.root.addChild(new Spacer(1));
+      this.root.addChild(new Text(TUI_STYLE.faint("Esc to cancel"), 0, 0));
+      this.tui.requestRender();
+    };
+
+    const promptText = (
+      message: string,
+      placeholder?: string,
+      contextLines?: string[],
+    ): Promise<string> => {
+      return new Promise<string>((resolve, reject) => {
+        this.textPromptResolve = resolve;
+        this.textPromptReject = reject;
+        this.root.clear();
+        this.activeList = null;
+        // Keep auth URL / instructions visible above the paste field.
+        if (contextLines && contextLines.length > 0) {
+          for (const line of contextLines) {
+            this.root.addChild(
+              new Text(line ? TUI_STYLE.info(line) : "", 0, 0),
+            );
+          }
+          this.root.addChild(new Spacer(1));
+        }
+        this.root.addChild(new Text(TUI_STYLE.info(message), 0, 0));
+        if (placeholder) {
+          this.root.addChild(new Text(TUI_STYLE.muted(placeholder), 0, 0));
+        }
+        this.root.addChild(new Spacer(1));
+        const input = new Input();
+        input.onSubmit = (value: string) => {
+          const trimmed = value.trim();
+          if (!trimmed) return;
+          this.textPromptResolve = null;
+          this.textPromptReject = null;
+          resolve(trimmed);
+        };
+        this.activeInput = input;
+        this.activeInput.focused = this._focused;
+        this.root.addChild(input);
+        this.root.addChild(new Spacer(1));
+        this.root.addChild(
+          new Text(TUI_STYLE.faint("Paste · Enter submit · Esc cancel"), 0, 0),
+        );
+        this.tui.requestRender();
+      });
+    };
+
+    const promptSelect = (
+      message: string,
+      options: readonly { id: string; label: string; description?: string }[],
+    ): Promise<string | undefined> => {
+      return new Promise<string | undefined>((resolve) => {
+        this.selectPromptResolve = resolve;
+        this.root.clear();
+        this.activeInput = null;
+        this.root.addChild(new Text(TUI_STYLE.info(message), 0, 0));
+        this.root.addChild(new Spacer(1));
+        const items: SelectItem[] = options.map((o) => ({
+          value: o.id,
+          label: o.label,
+          description: o.description ?? "",
+        }));
+        const list = new SelectList(items, Math.min(8, items.length + 1), SELECT_THEME);
+        list.onSelect = (item) => {
+          this.selectPromptResolve = null;
+          resolve(item.value);
+        };
+        list.onCancel = () => {
+          this.selectPromptResolve = null;
+          resolve(undefined);
+        };
+        this.activeList = list;
+        this.root.addChild(list);
+        this.root.addChild(new Spacer(1));
+        this.root.addChild(
+          new Text(TUI_STYLE.faint("↑↓ navigate · Enter select · Esc cancel"), 0, 0),
+        );
+        this.tui.requestRender();
+      });
+    };
+
+    try {
+      await runOAuthLoginWithUi(this.provider, {
+        showStatus,
+        promptText,
+        promptSelect,
+        signal,
+      });
+      if (signal.aborted) {
+        this.onCancelCallback();
+        return;
+      }
+      await this.finish(false, "");
+    } catch (err) {
+      if (signal.aborted) {
+        this.onCancelCallback();
+        return;
+      }
+      this.root.clear();
+      this.activeInput = null;
+      this.activeList = null;
+      this.root.addChild(
+        new Text(
+          TUI_STYLE.error(
+            `OAuth failed: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+          0,
+          0,
+        ),
+      );
+      this.root.addChild(new Spacer(1));
+      this.root.addChild(new Text(TUI_STYLE.faint("Esc to close"), 0, 0));
+      this.tui.requestRender();
+    }
   }
 
   // ── Step: API key entry ──
@@ -551,6 +794,8 @@ export class LoginWizard implements Component, Focusable {
       saveProviderKey(this.provider, keyValue);
     }
 
+    const usedOAuth = hasOAuthToken(this.provider) && !keySaved;
+
     if (!isCustom) {
       // Catalog provider — fetch live models, then update config and switch
       this.showFetchingModels();
@@ -561,7 +806,9 @@ export class LoginWizard implements Component, Focusable {
         provider: this.provider,
         message: keySaved
           ? `Key saved. Switched to ${this.provider}.`
-          : `Switched to ${this.provider}.`,
+          : usedOAuth
+            ? `Signed in via OAuth. Switched to ${this.provider}.`
+            : `Switched to ${this.provider}.`,
         shouldSwitch: true,
         defaultModel,
       });
@@ -618,6 +865,19 @@ export class LoginWizard implements Component, Focusable {
   handleInput(data: string): void {
     const kb = getKeybindings();
 
+    if (kb.matches(data, "tui.select.cancel")) {
+      if (this.oauthAbort && !this.oauthAbort.signal.aborted) {
+        this.oauthAbort.abort();
+        this.textPromptReject?.(new Error("cancelled"));
+        this.textPromptResolve = null;
+        this.textPromptReject = null;
+        this.selectPromptResolve?.(undefined);
+        this.selectPromptResolve = null;
+        this.onCancelCallback();
+        return;
+      }
+    }
+
     // If a SelectList is active, route navigation keys to it
     if (this.activeList) {
       if (
@@ -635,6 +895,9 @@ export class LoginWizard implements Component, Focusable {
     // If an Input is active, route to it
     if (this.activeInput) {
       if (kb.matches(data, "tui.select.cancel")) {
+        this.textPromptReject?.(new Error("cancelled"));
+        this.textPromptResolve = null;
+        this.textPromptReject = null;
         this.onCancelCallback();
         return;
       }
@@ -642,6 +905,8 @@ export class LoginWizard implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
+
+    // OAuth waiting (no input/list) — Esc already handled above.
   }
 }
 

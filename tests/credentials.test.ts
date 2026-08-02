@@ -8,14 +8,32 @@ import {
   getApiKey,
   setApiKey,
   removeApiKey,
+  removeCredentials,
   hasApiKey,
+  hasOAuthToken,
+  hasCredentials,
+  getOAuthToken,
+  setOAuthToken,
   listStoredProviders,
   resolveApiKey,
+  resolveAuth,
   getCredentialsFilePath,
   ensureCredentialsFileMode,
   resetCredentialStoreForTests,
+  type StoredOAuthCredential,
 } from "../src/credentials.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
+
+function sampleOAuth(overrides?: Partial<StoredOAuthCredential>): StoredOAuthCredential {
+  return {
+    type: "oauth",
+    access: "sk-ant-oat-access",
+    refresh: "refresh-token",
+    expires: Date.now() + 60_000,
+    savedAt: Date.now(),
+    ...overrides,
+  };
+}
 
 describe("credential store", () => {
   let praanaHome: string;
@@ -38,6 +56,11 @@ describe("credential store", () => {
 
   it("stores and retrieves a key by provider id", () => {
     setApiKey("my-provider", "sk-test-123");
+    expect(getApiKey("my-provider")).toBe("sk-test-123");
+  });
+
+  it("trims whitespace when storing api keys", () => {
+    setApiKey("my-provider", "  sk-test-123\n");
     expect(getApiKey("my-provider")).toBe("sk-test-123");
   });
 
@@ -118,6 +141,85 @@ describe("credential store", () => {
     expect(statSync(credPath).mode & 0o077).not.toBe(0);
     ensureCredentialsFileMode();
     expect(statSync(credPath).mode & 0o077).toBe(0);
+  });
+
+  it("stores and retrieves oauth token bundles", () => {
+    const bundle = sampleOAuth({ enterpriseUrl: "https://github.example.com" });
+    setOAuthToken("github-copilot", bundle);
+    expect(hasOAuthToken("github-copilot")).toBe(true);
+    expect(hasApiKey("github-copilot")).toBe(false);
+    expect(hasCredentials("github-copilot")).toBe(true);
+    const stored = getOAuthToken("github-copilot");
+    expect(stored?.access).toBe("sk-ant-oat-access");
+    expect(stored?.refresh).toBe("refresh-token");
+    expect(stored?.enterpriseUrl).toBe("https://github.example.com");
+  });
+
+  it("persists oauth bundles across cache resets", () => {
+    setOAuthToken("openai-codex", sampleOAuth({ access: "codex-access" }));
+    resetCredentialStoreForTests();
+    expect(getOAuthToken("openai-codex")?.access).toBe("codex-access");
+  });
+
+  it("loads legacy key entries without type as api keys", () => {
+    const credPath = getCredentialsFilePath();
+    mkdirSync(dirname(credPath), { recursive: true });
+    writeFileSync(
+      credPath,
+      JSON.stringify({ legacy: { key: "sk-legacy", savedAt: 1 } }),
+      "utf-8",
+    );
+    resetCredentialStoreForTests();
+    expect(getApiKey("legacy")).toBe("sk-legacy");
+    expect(hasCredentials("legacy")).toBe(true);
+  });
+
+  it("ignores malformed oauth entries", () => {
+    const credPath = getCredentialsFilePath();
+    mkdirSync(dirname(credPath), { recursive: true });
+    writeFileSync(
+      credPath,
+      JSON.stringify({
+        bad: { type: "oauth", access: "", refresh: "r", expires: 1 },
+      }),
+      "utf-8",
+    );
+    resetCredentialStoreForTests();
+    expect(getOAuthToken("bad")).toBeUndefined();
+    expect(hasCredentials("bad")).toBe(false);
+  });
+
+  it("removeCredentials clears oauth bundles", () => {
+    setOAuthToken("anthropic", sampleOAuth());
+    expect(removeCredentials("anthropic")).toBe(true);
+    expect(hasOAuthToken("anthropic")).toBe(false);
+    expect(removeApiKey("anthropic")).toBe(false);
+  });
+
+  it("setApiKey replaces an oauth entry and setOAuthToken replaces a key", () => {
+    setOAuthToken("anthropic", sampleOAuth());
+    setApiKey("anthropic", "sk-ant-api");
+    expect(hasOAuthToken("anthropic")).toBe(false);
+    expect(getApiKey("anthropic")).toBe("sk-ant-api");
+    setOAuthToken("anthropic", sampleOAuth({ access: "sk-ant-oat-new" }));
+    expect(getApiKey("anthropic")).toBeUndefined();
+    expect(getOAuthToken("anthropic")?.access).toBe("sk-ant-oat-new");
+  });
+
+  it("lists providers with oauth or api keys", () => {
+    setApiKey("openrouter", "sk-or");
+    setOAuthToken("openai-codex", sampleOAuth());
+    expect(listStoredProviders().sort()).toEqual(["openai-codex", "openrouter"]);
+  });
+
+  it("resolveApiKey and resolveAuth return oauth access tokens", () => {
+    setOAuthToken("openai-codex", sampleOAuth({ access: "codex-token" }));
+    expect(resolveApiKey("openai-codex")).toBe("codex-token");
+    expect(resolveAuth("openai-codex")).toEqual({
+      kind: "oauth",
+      apiKey: "codex-token",
+      expires: expect.any(Number),
+    });
   });
 });
 

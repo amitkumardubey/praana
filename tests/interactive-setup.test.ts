@@ -49,6 +49,13 @@ describe("buildProviderSelectItems", () => {
     }
   });
 
+  it("includes poolside as a Platform API-key provider", () => {
+    const items = buildProviderSelectItems();
+    const poolside = items.find((i) => i.value === "poolside");
+    expect(poolside).toBeDefined();
+    expect(poolside!.description).toMatch(/Poolside|POOLSIDE_API_KEY/);
+  });
+
   it("includes env key in description for providers without a detected key", () => {
     const items = buildProviderSelectItems();
     const openrouter = items.find((i) => i.value === "openrouter");

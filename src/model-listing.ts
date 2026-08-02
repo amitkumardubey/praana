@@ -93,7 +93,9 @@ export async function listModelsForProvider(
     byId.set(entry.modelId, entry);
   }
 
-  if (providerSupportsLiveCatalog(provider)) {
+  // Skip live catalog for unavailable providers — avoids slow AWS/network
+  // probes when listing with --all, and pi-ai static catalog is enough.
+  if (available && providerSupportsLiveCatalog(provider)) {
     try {
       const catalog = await listProviderCatalogModels(provider);
       for (const { id, contextWindow } of catalog) {

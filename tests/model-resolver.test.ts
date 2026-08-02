@@ -111,12 +111,12 @@ describe("resolveModelSpecifierSync", () => {
 
   it("resolves native anthropic model when provider is explicit", () => {
     const result = resolveModelSpecifierSync(
-      "claude-sonnet-4-20250514",
+      "claude-sonnet-4-6",
       "openrouter",
       "anthropic",
     );
     expect(result.provider).toBe("anthropic");
-    expect(result.modelId).toBe("claude-sonnet-4-20250514");
+    expect(result.modelId).toBe("claude-sonnet-4-6");
     expect(result.switchedProvider).toBe(true);
     expect(result.source).toBe("native-catalog");
   });

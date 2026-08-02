@@ -20,9 +20,11 @@ import {
   formatEnvKeyOfferMessage,
   adoptEnvKeyForProvider,
   providerRequiresApiKey,
+  providerSupportsOAuth,
   bedrockNeedsApiKeyPrompt,
 } from "./logic.js";
 import { hasApiKey, isProviderAvailable } from "../llm.js";
+import { isOAuthOnlyProvider } from "../oauth.js";
 import type { SetupResult, CustomProviderConfig } from "./types.js";
 import type { ProviderCatalogModelEntry } from "../provider-catalog.js";
 import type { SelectItem } from "@earendil-works/pi-tui";
@@ -162,6 +164,19 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
           }
         } else if (isProviderAvailable(providerId)) {
           console.log(chalk.green("✓ AWS credentials or Bedrock API key detected."));
+        }
+      } else if (providerSupportsOAuth(providerId) && isOAuthOnlyProvider(providerId)) {
+        console.log(
+          chalk.yellow(
+            `  ${providerId} uses OAuth. Run \`praana\` then \`/login ${providerId}\` in the TUI to sign in.`,
+          ),
+        );
+        if (!isProviderAvailable(providerId)) {
+          console.log(
+            chalk.yellow(
+              "  Continuing without credentials — the next turn will fail until you sign in.",
+            ),
+          );
         }
       } else {
       const requiresKey = providerRequiresApiKey(providerId);

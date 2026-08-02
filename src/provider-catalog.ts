@@ -367,7 +367,11 @@ async function fetchProviderCatalogFresh(
       };
       // Key resolution: credential store > env_key > keyless.
       const apiKey = getApiKey(provider)
-        ?? (registryEntry.envKey ? process.env[registryEntry.envKey] : null)
+        ?? (registryEntry.envKey
+          ? [registryEntry.envKey, ...(registryEntry.envKeyAliases ?? [])]
+              .map((name) => process.env[name]?.trim())
+              .find((v) => !!v)
+          : null)
         ?? null;
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 

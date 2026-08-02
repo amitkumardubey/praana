@@ -9,6 +9,20 @@ import type { UserProviderConfig } from "./types.js";
  * in one file prevents the two copies from drifting apart.
  */
 
+/**
+ * pi-ai openai-completions compat overrides.
+ * Used to avoid sending OpenAI-only fields that break OpenAI-compatible gateways.
+ */
+export interface ProviderWireCompat {
+  supportsStore?: boolean;
+  supportsDeveloperRole?: boolean;
+  supportsReasoningEffort?: boolean;
+  supportsUsageInStreaming?: boolean;
+  maxTokensField?: "max_tokens" | "max_completion_tokens";
+  thinkingFormat?: string;
+  chatTemplateKwargs?: Record<string, unknown>;
+}
+
 export interface ProviderConfig {
   /** pi-ai API type identifier */
   api: string;
@@ -16,10 +30,14 @@ export interface ProviderConfig {
   provider: string;
   /** Env var to check for API key, or null if none needed */
   envKey: string | null;
+  /** Additional env vars accepted as aliases for the primary envKey */
+  envKeyAliases?: string[];
   /** Default base URL for this provider's API */
   baseUrl: string;
   /** Optional HTTP headers sent with every request */
   headers?: Record<string, string>;
+  /** Wire-protocol compat overrides for openai-completions / similar */
+  compat?: ProviderWireCompat;
 }
 
 // ── User-declared providers (module-level, set at config load) ──
@@ -149,8 +167,35 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
   umans: {
     api: "openai-completions",
     provider: "umans",
-    envKey: "UMANS_AI_CODING_PLAN_API_KEY",
+    // Docs use UMANS_API_KEY; keep the older models.dev name as an alias.
+    envKey: "UMANS_API_KEY",
+    envKeyAliases: ["UMANS_AI_CODING_PLAN_API_KEY"],
     baseUrl: "https://api.code.umans.ai/v1",
+    // Avoid OpenAI-only fields that many gateways reject.
+    compat: {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsUsageInStreaming: false,
+      maxTokensField: "max_tokens",
+    },
+  },
+  // Poolside Platform — OpenAI-compatible; paste API key from platform.poolside.ai
+  // (enterprise browser OAuth is a separate follow-up).
+  poolside: {
+    api: "openai-completions",
+    provider: "poolside",
+    envKey: "POOLSIDE_API_KEY",
+    baseUrl: "https://inference.poolside.ai/v1",
+    // Platform rejects OpenAI-only fields (store / stream_options / developer role)
+    // with HTTP 400. Thinking uses chat_template_kwargs per Poolside docs.
+    compat: {
+      supportsStore: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      maxTokensField: "max_tokens",
+      thinkingFormat: "qwen-chat-template",
+    },
   },
   nvidia: {
     api: "openai-completions",
@@ -189,6 +234,21 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     provider: "amazon-bedrock",
     envKey: null, // uses AWS credentials (env / IAM / profile)
     baseUrl: "",
+  },
+
+  // ── Subscription OAuth (pi-ai/oauth) ──
+  // envKey null + not keyless: availability requires stored OAuth (or Copilot env token).
+  "openai-codex": {
+    api: "openai-codex-responses",
+    provider: "openai-codex",
+    envKey: null,
+    baseUrl: "https://chatgpt.com/backend-api",
+  },
+  "github-copilot": {
+    api: "anthropic-messages", // catalog mixes APIs; wire protocol comes from model entries
+    provider: "github-copilot",
+    envKey: "COPILOT_GITHUB_TOKEN",
+    baseUrl: "https://api.individual.githubcopilot.com",
   },
 };
 
@@ -256,6 +316,7 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "together",
   "ollama",
   "umans",
+  "poolside",
   "amazon-bedrock",
 ];
 
@@ -273,6 +334,15 @@ export const OPENAI_COMPATIBLE_API_IDS = new Set([
 
 /** Providers that should not appear in the interactive setup picker. */
 export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama"]);
+
+/** All env var names accepted for a provider (primary + aliases). */
+export function getProviderEnvKeys(provider: string): string[] {
+  const userEnvKey = getUserProviderEnvKey(provider);
+  if (userEnvKey) return [userEnvKey];
+  const entry = PROVIDER_REGISTRY[provider];
+  if (!entry?.envKey) return [];
+  return [entry.envKey, ...(entry.envKeyAliases ?? [])];
+}
 
 /** Return the env var name required by a provider, or null. */
 export function getProviderEnvKey(provider: string): string | null {

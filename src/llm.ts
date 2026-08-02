@@ -6,19 +6,21 @@ import {
   PROVIDER_REGISTRY,
   REASONING_MODEL_HINTS,
   getProviderEnvKey,
+  getProviderEnvKeys,
   getUserProviderRegistryEntry,
   isUserDeclaredProvider,
   getUserProviderConfig,
   listUserDeclaredProviderIds,
   type ProviderConfig,
 } from "./provider-registry.js";
-import { resolveApiKey, hasApiKey } from "./credentials.js";
+import { resolveApiKey, hasApiKey, hasCredentials } from "./credentials.js";
 import {
   isBedrockAvailable,
   getBedrockMissingCredentialsMessage,
   resolveBedrockBearerToken,
 } from "./bedrock/credentials.js";
 import { resolveBedrockRegion } from "./bedrock/region.js";
+import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
 
 export {
   resolveContextWindowSync,
@@ -33,7 +35,13 @@ export {
   setUserProviders,
 } from "./provider-registry.js";
 export type { ProviderConfig } from "./provider-registry.js";
-export { resolveApiKey, hasApiKey, getApiKey, setApiKey } from "./credentials.js";
+export {
+  resolveApiKey,
+  hasApiKey,
+  hasCredentials,
+  getApiKey,
+  setApiKey,
+} from "./credentials.js";
 
 // ── Provider auto-detection ───────────────────────────────────
 
@@ -53,12 +61,13 @@ const DETECTION_PRECEDENCE: string[] = [
   "together",
   "opencode",
   "umans",
+  "poolside",
   "openrouter",
   "amazon-bedrock",  // AWS credentials (envKey: null, special check in isProviderAvailable)
   "ollama",          // local, no key (PRAANA-specific, not in pi-ai)
 ];
 export const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: "claude-sonnet-4-20250514",
+  anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
   deepseek: "deepseek-chat",
   groq: "llama-3.1-70b-versatile",
@@ -70,7 +79,10 @@ export const DEFAULT_MODELS: Record<string, string> = {
   opencode: "gpt-4o",
   ollama: "llama3",
   umans: "umans-coder",
+  poolside: "poolside/laguna-s-2.1",
   "amazon-bedrock": "anthropic.claude-sonnet-4-20250514-v1:0",
+  "openai-codex": "gpt-5.4",
+  "github-copilot": "gpt-4.1",
 };
 
 export function pickFirstCatalogModel(provider: string): string | undefined {
@@ -187,8 +199,8 @@ export function isProviderAvailable(provider: string): boolean {
     return isBedrockAvailable();
   }
 
-  // 1. Credential store — checked for all providers.
-  if (hasApiKey(provider)) return true;
+  // 1. Credential store — API key or OAuth bundle.
+  if (hasCredentials(provider)) return true;
 
   // 2. User-declared providers.
   if (isUserDeclaredProvider(provider)) {
@@ -203,12 +215,26 @@ export function isProviderAvailable(provider: string): boolean {
   // 3. Registry providers.
   const registryEntry = PROVIDER_REGISTRY[provider];
 
+  // OAuth-only providers (Codex) are not keyless — require stored OAuth.
+  // Copilot also accepts common GitHub token env vars.
+  if (isOAuthOnlyProvider(provider)) {
+    if (provider === "github-copilot") {
+      return !!(
+        process.env.COPILOT_GITHUB_TOKEN ||
+        process.env.GH_TOKEN ||
+        process.env.GITHUB_TOKEN ||
+        (registryEntry?.envKey && process.env[registryEntry.envKey])
+      );
+    }
+    return false;
+  }
+
   // Providers explicitly marked keyless in the registry (ollama).
   if (registryEntry && registryEntry.envKey === null) return true;
 
-  // Registry entry with an env key — check if that env var is set.
+  // Registry entry with an env key — check primary + aliases.
   if (registryEntry?.envKey) {
-    return !!process.env[registryEntry.envKey];
+    return getProviderEnvKeys(provider).some((name) => !!process.env[name]?.trim());
   }
 
   // 4. For providers known to pi-ai but NOT in our registry, use pi-ai's
@@ -232,6 +258,13 @@ export function getMissingKeyMessage(provider: string): string | null {
 
   if (provider === "amazon-bedrock") {
     return getBedrockMissingCredentialsMessage();
+  }
+
+  if (supportsOAuthLogin(provider)) {
+    if (isOAuthOnlyProvider(provider)) {
+      return `Not authenticated. Run /login ${provider} to sign in via OAuth.`;
+    }
+    return `Missing credentials. Run /login ${provider} (API key or OAuth), or set ${getProviderEnvKey(provider) ?? "an API key"}.`;
   }
 
   const envKey = getProviderEnvKey(provider);
@@ -300,16 +333,17 @@ function buildFromPiAiCatalog(
     return model;
   }
 
-  // Key resolution: credential store > env var > empty.
-  // For pi-ai catalog providers, resolveApiKey checks the credential
-  // store first, then the provider's env key.
+  // Key resolution: credential store (api key or oauth access) > env var > empty.
   const pc = getProviderConfig(config.provider);
-  const apiKey = resolveApiKey(config.provider, pc.envKey);
+  const apiKey = resolveApiKey(config.provider, pc.envKey, pc.envKeyAliases);
 
   model.__piOptions = {
     apiKey,
     headers: catalogModel.headers ? { ...catalogModel.headers } : undefined,
   };
+  if (pc.compat) {
+    model.compat = { ...(model.compat as object | undefined), ...pc.compat };
+  }
 
   return model;
 }
@@ -327,7 +361,7 @@ function buildModel(
 
   const baseUrl = config.base_url ?? pc.baseUrl;
   // Key resolution: credential store > env_key > "no-key" sentinel.
-  const apiKey = resolveApiKey(config.provider, pc.envKey);
+  const apiKey = resolveApiKey(config.provider, pc.envKey, pc.envKeyAliases);
 
   // Check for user-declared model metadata overrides.
   const userModel = getUserDeclaredModel(config.provider, normalizedId);
@@ -347,6 +381,10 @@ function buildModel(
       resolveContextWindowSync(config.provider, normalizedId, config.context_window),
     maxTokens: userModel?.max_tokens ?? 8192,
   };
+
+  if (pc.compat) {
+    model.compat = { ...pc.compat };
+  }
 
   if (pc.headers) {
     model.headers = { ...pc.headers };
