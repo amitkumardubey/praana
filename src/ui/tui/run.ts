@@ -44,7 +44,7 @@ import { TranscriptProjection } from "./transcript/projection.js";
 import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
-import { PiTuiSink } from "./sink.js";
+import { OpenTuiSink } from "./sink.js";
 import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
 import { LoginWizard } from "./login-wizard.js";
@@ -133,7 +133,7 @@ export async function runTui(
   const glanceBar = new GlanceBar(tui);
   glanceBar.setBackgroundZones(config.ui.background_zones);
 
-  let piSink: PiTuiSink | null = null;
+  let sink: OpenTuiSink | null = null;
   const refreshChrome = () => {
     const base = controller.getStatusBarInput();
     const preview = piSink?.getContextPreview() ?? null;
@@ -429,7 +429,7 @@ export async function runTui(
     });
   };
 
-  const sink = new PiTuiSink(tui, transcript, toast, {
+  const sink = new OpenTuiSink(tui, transcript, toast, {
     ambient: config.ui.ambient,
     showThinking: () => controller.showThinking,
     onSpinnerMessage: (msg) => { spinner.setMessage(msg); },

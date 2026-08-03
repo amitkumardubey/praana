@@ -1,7 +1,7 @@
 /**
  * TurnUiSink → TranscriptContainer routing (design §4 ambient signals).
  */
-import type { TUI } from "@earendil-works/pi-tui";
+import type { RenderContext } from "@opentui/core";
 import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
 import type { LogEntry } from "../../logger.js";
 import type { TranscriptContainer } from "./transcript/container.js";
@@ -35,11 +35,11 @@ export interface SinkOpts {
   onSlashCommandResult?: (lines: string[]) => void;
 }
 
-export class PiTuiSink implements TurnUiSink {
-  /** Buffer shell output into tool rows — raw stdout corrupts pi-tui redraws. */
+export class OpenTuiSink implements TurnUiSink {
+  /** Buffer shell output into tool rows — raw stdout corrupts OpenTUI redraws. */
   readonly shellLiveStream = false;
 
-  private readonly tui: TUI;
+  private readonly ctx: RenderContext;
   private readonly transcript: TranscriptContainer;
   private readonly toast: ToastRegion;
   private readonly opts: SinkOpts;
@@ -62,12 +62,12 @@ export class PiTuiSink implements TurnUiSink {
   private nextLocalId = 1;
 
   constructor(
-    tui: TUI,
+    ctx: RenderContext,
     transcript: TranscriptContainer,
     toast: ToastRegion,
     opts: SinkOpts,
   ) {
-    this.tui = tui;
+    this.ctx = ctx;
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
@@ -337,7 +337,7 @@ export class PiTuiSink implements TurnUiSink {
         text: msg,
       });
       this.toast.show(msg, "error");
-      this.tui.requestRender();
+      this.ctx.requestRender();
     }
   }
 

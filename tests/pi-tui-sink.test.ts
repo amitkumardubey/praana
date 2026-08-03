@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { PiTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
+import { OpenTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
 import type { ToastRegion } from "../src/ui/tui/toast-region.js";
@@ -30,7 +30,7 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
   const patchToolResult = mock(() => true);
   const persistEntry = mock(() => {});
   const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
-  const sink = new PiTuiSink(
+  const sink = new OpenTuiSink(
     { requestRender: mock() } as never,
     {
       renderEntries,
@@ -64,7 +64,7 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
   };
 }
 
-describe("PiTuiSink", () => {
+describe("OpenTuiSink", () => {
   it("disables shell live streaming so output stays in the transcript", () => {
     const { sink } = makeSink();
     expect(sink.shellLiveStream).toBe(false);
