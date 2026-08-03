@@ -1,43 +1,43 @@
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { TUI_STYLE, paintZoneLine, type ZoneKind, type TextStyle } from "../theme.js";
-import type { TranscriptRole } from "./model.js";
+/** Plain-text wrap/accent helpers for transcript components.
+ * OpenTUI's renderer handles ANSI-aware width math internally; these helpers
+ * exist only for components that need pre-split text lines. */
+import { TUI_STYLE } from "../theme.js";
 
-const ACCENT: Record<TranscriptRole, TextStyle> = {
-  user: TUI_STYLE.user,
-  assistant: TUI_STYLE.assistant,
-  thinking: TUI_STYLE.thinking,
-  tool: TUI_STYLE.tool,
-  recall: TUI_STYLE.memory,
-  system: TUI_STYLE.muted,
-  turn_footer: TUI_STYLE.faint,
-};
+export type TextStyle = (text: string) => string;
 
-export function accentBar(role: TranscriptRole): string {
-  return ACCENT[role]("▌");
-}
-
-export function renderAccentLines(
-  lines: string[],
-  role: TranscriptRole,
-  zone: ZoneKind,
-  backgroundZones: boolean,
-  width: number,
-): string[] {
-  const bar = accentBar(role);
-  const indent = "   ";
-  const blank = paintZoneLine("", zone, backgroundZones, width);
-  const painted = lines.map((line, i) => {
-    const row = (i === 0 ? `${bar}  ` : indent) + line;
-    return paintZoneLine(row, zone, backgroundZones, width);
-  });
-  return [blank, ...painted, blank];
-}
-
+/** Split text at width boundaries, preserving embedded ANSI codes only when
+ *  they span the boundary (rare here — callers pass plain or lightly-styled text).
+ *  OpenTUI's own TextRenderable wraps at its own width; this is used for
+ *  pre-splitting in tool-row bodies and similar. */
 export function wrapContent(
   text: string,
   width: number,
-  styler: (s: string) => string,
+  color: TextStyle = TUI_STYLE.text,
 ): string[] {
-  const contentWidth = Math.max(10, width - 4);
-  return wrapTextWithAnsi(styler(text), contentWidth);
+  if (width <= 0) return [text];
+  const words = text.split(" ");
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length > width && current) {
+      lines.push(color(current));
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(color(current));
+  return lines.length > 0 ? lines : [color(text)];
+}
+
+/** No-op passthrough; accent bars are handled by OpenTUI layout (zones disabled). */
+export function renderAccentLines(
+  lines: string[],
+  _role: string,
+  _zone: string,
+  _showBorder: boolean,
+  _width: number,
+): string[] {
+  return lines;
 }

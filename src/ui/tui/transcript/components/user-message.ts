@@ -1,16 +1,19 @@
-import type { Component } from "@earendil-works/pi-tui";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import chalk from "chalk";
+import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
 import { TUI_STYLE } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
-import { wrapContent } from "../render-utils.js";
 
-/** User turn — dim left border with vertical padding. */
-export class UserMessageComponent implements Component {
-  constructor(
-    private text: string,
-    private readonly opts: TranscriptRenderOpts,
-  ) {}
+export class UserMessageComponent extends BoxRenderable {
+  private readonly opts: TranscriptRenderOpts;
+  private readonly textNode: TextRenderable;
+  private text: string;
+
+  constructor(ctx: RenderContext, text: string, opts: TranscriptRenderOpts) {
+    super(ctx, { id: "user-message", flexDirection: "column" });
+    this.text = text;
+    this.opts = opts;
+    this.textNode = new TextRenderable(ctx, { content: this.paint() });
+    this.add(this.textNode);
+  }
 
   getText(): string {
     return this.text;
@@ -18,26 +21,10 @@ export class UserMessageComponent implements Component {
 
   setText(text: string): void {
     this.text = text;
+    this.textNode.content = this.paint();
   }
 
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    const BORDER = "│";
-    const hPad = 2;
-    const lines = wrapContent(this.text, width - 1 - hPad, TUI_STYLE.user);
-
-    const emptyLine = `${BORDER}${" ".repeat(width - 1)}`;
-
-    return [
-      "",
-      emptyLine,
-      ...lines.map((line) => {
-        const padded = line + " ".repeat(Math.max(0, width - 1 - hPad - visibleWidth(line)));
-        return `${BORDER} ${padded}`;
-      }),
-      emptyLine,
-      "",
-    ];
+  private paint(): string {
+    return TUI_STYLE.user(this.text);
   }
 }

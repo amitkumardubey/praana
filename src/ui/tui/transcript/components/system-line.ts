@@ -1,9 +1,7 @@
-import type { Component } from "@earendil-works/pi-tui";
+import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
 import { TUI_STYLE } from "../../theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
-import { renderAccentLines, wrapContent } from "../render-utils.js";
 
-/** Detect a tone prefix icon from the text content. */
 function detectIcon(text: string): { icon: string; color: (s: string) => string } {
   const t = text.toLowerCase();
   if (/^(error|\[error\]|\u2715|fail|exception|crash)/.test(t) || /\berror\b/.test(t)) {
@@ -18,16 +16,22 @@ function detectIcon(text: string): { icon: string; color: (s: string) => string 
   if (/^(\u26a1|aborted|interrupted)/.test(t)) {
     return { icon: "\u26a1 ", color: TUI_STYLE.warning };
   }
-  // default: neutral info bullet
   return { icon: "\xb7 ", color: TUI_STYLE.system };
 }
 
 /** Slash-command output and system notices. */
-export class SystemLineComponent implements Component {
-  constructor(
-    private text: string,
-    private readonly opts: TranscriptRenderOpts,
-  ) {}
+export class SystemLineComponent extends BoxRenderable {
+  private readonly opts: TranscriptRenderOpts;
+  private readonly textNode: TextRenderable;
+  private text: string;
+
+  constructor(ctx: RenderContext, text: string, opts: TranscriptRenderOpts) {
+    super(ctx, { id: "system-line", flexDirection: "column" });
+    this.text = text;
+    this.opts = opts;
+    this.textNode = new TextRenderable(ctx, { content: this.paint() });
+    this.add(this.textNode);
+  }
 
   getText(): string {
     return this.text;
@@ -35,19 +39,11 @@ export class SystemLineComponent implements Component {
 
   setText(text: string): void {
     this.text = text;
+    this.textNode.content = this.paint();
   }
 
-  invalidate(): void {}
-
-  render(width: number): string[] {
+  private paint(): string {
     const { icon, color } = detectIcon(this.text);
-    const lines = wrapContent(icon + this.text, width, color);
-    return renderAccentLines(
-      lines,
-      "system",
-      "raised",
-      false,
-      width,
-    );
+    return color(icon + this.text);
   }
 }

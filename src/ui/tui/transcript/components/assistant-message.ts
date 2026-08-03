@@ -1,48 +1,67 @@
-import { Markdown, type Component } from "@earendil-works/pi-tui";
+import {
+  BoxRenderable,
+  MarkdownRenderable,
+  TextRenderable,
+  type RenderContext,
+  type SyntaxStyle,
+} from "@opentui/core";
 import { TUI_STYLE } from "../../theme.js";
-import { buildMarkdownTheme } from "../markdown-theme.js";
+import { buildMarkdownSyntaxStyle } from "../markdown-theme.js";
 import type { TranscriptRenderOpts } from "../opts.js";
-import { wrapContent } from "../render-utils.js";
 
-/** Streaming assistant prose — canvas zone. */
-export class AssistantMessageComponent implements Component {
+export class AssistantMessageComponent extends BoxRenderable {
+  private readonly opts: TranscriptRenderOpts;
+  private readonly syntaxStyle: SyntaxStyle;
+  private readonly markdownNode: MarkdownRenderable;
+  private readonly plainNode: TextRenderable;
   private text: string;
-  private readonly markdownTheme;
 
-  constructor(
-    initialText: string,
-    private readonly opts: TranscriptRenderOpts,
-  ) {
-    this.text = initialText;
-    this.markdownTheme = buildMarkdownTheme(opts.syntaxTheme);
+  constructor(ctx: RenderContext, text: string, opts: TranscriptRenderOpts) {
+    super(ctx, {
+      id: "assistant-message",
+      flexDirection: "column",
+      flexGrow: 1,
+    });
+    this.text = text;
+    this.opts = opts;
+    this.syntaxStyle = buildMarkdownSyntaxStyle(opts.syntaxTheme);
+    this.markdownNode = new MarkdownRenderable(ctx, {
+      content: text,
+      syntaxStyle: this.syntaxStyle,
+      flexGrow: 1,
+    });
+    this.plainNode = new TextRenderable(ctx, { content: TUI_STYLE.text(text), flexGrow: 1 });
+    this.add(this.opts.markdownRendering ? this.markdownNode : this.plainNode);
+    this.syncVisibility();
   }
 
   appendDelta(delta: string): void {
     this.text += delta;
+    if (this.opts.markdownRendering) {
+      this.markdownNode.content = this.text;
+      this.markdownNode.streaming = true;
+    } else {
+      this.plainNode.content = TUI_STYLE.text(this.text);
+    }
   }
 
   setText(text: string): void {
     this.text = text;
+    if (this.opts.markdownRendering) {
+      this.markdownNode.content = text;
+      this.markdownNode.streaming = false;
+    } else {
+      this.plainNode.content = TUI_STYLE.text(text);
+    }
   }
 
   getText(): string {
     return this.text;
   }
 
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    const PAD = "  ";
-    const contentWidth = Math.max(10, width - 4 - PAD.length);
-    let lines: string[];
-    if (this.opts.markdownRendering) {
-      const md = new Markdown(this.text, 0, 0, this.markdownTheme, {
-        color: TUI_STYLE.text,
-      });
-      lines = md.render(contentWidth);
-    } else {
-      lines = wrapContent(this.text, width - PAD.length, TUI_STYLE.text);
-    }
-    return ["", ...lines.map((l) => PAD + l), ""];
+  private syncVisibility(): void {
+    const useMd = this.opts.markdownRendering;
+    this.markdownNode.visible = useMd;
+    this.plainNode.visible = !useMd;
   }
 }
