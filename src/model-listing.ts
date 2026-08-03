@@ -1,5 +1,4 @@
 import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
-import { fuzzyFilter } from "@earendil-works/pi-tui";
 import {
   listKnownProviders,
   isProviderAvailable,
@@ -305,6 +304,37 @@ export function buildModelAutocompleteItems(
 }
 
 const MAX_AUTOCOMPLETE_RESULTS = 50;
+
+interface FuzzyMatch<T> {
+  item: T;
+  score: number;
+}
+
+/** Simple subsequence fuzzy filter: `query` characters must appear in order in `text`. */
+export function fuzzyFilter<T>(
+  items: T[],
+  query: string,
+  getText: (item: T) => string,
+): T[] {
+  if (!query) return items;
+  const q = query.toLowerCase();
+  const results: FuzzyMatch<T>[] = [];
+  for (const item of items) {
+    const text = getText(item).toLowerCase();
+    let qi = 0;
+    let score = 0;
+    let lastMatch = -1;
+    for (let ti = 0; ti < text.length && qi < q.length; ti++) {
+      if (text[ti] === q[qi]) {
+        score += lastMatch === ti - 1 ? 2 : 1;
+        lastMatch = ti;
+        qi++;
+      }
+    }
+    if (qi === q.length) results.push({ item, score });
+  }
+  return results.sort((a, b) => b.score - a.score).map((m) => m.item);
+}
 
 /** Fuzzy-filter autocomplete items by provider and/or model id. */
 export function filterModelAutocompleteItems(
