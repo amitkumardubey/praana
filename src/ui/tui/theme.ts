@@ -1,5 +1,7 @@
-/* Terminal-native semantic styling for the PRAANA pi-tui TUI. */
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+/* Terminal-native semantic styling for the PRAANA OpenTUI-based TUI.
+ * OpenTUI's native renderer handles ANSI-aware width math internally;
+ * the small helpers below are retained only for the single chrome-bar
+ * `paintZoneLine` pad/truncate contract used by identity-bar.ts / glance-bar.ts. */
 import chalk from "chalk";
 import type { Theme as HighlightTheme } from "cli-highlight";
 
@@ -48,6 +50,25 @@ export function zoneBg(
   return undefined;
 }
 
+/** Strip ANSI escape codes (SGR sequences) for visible-width math on styled text. */
+export function stripAnsiEscapes(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+/** Visible (non-ANSI) length of a string. */
+export function visibleTextWidth(text: string): number {
+  return stripAnsiEscapes(text).length;
+}
+
+/** Truncate plain (unstyled) text to `width` visible characters. */
+export function truncatePlainText(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (text.length <= width) return text;
+  if (width === 1) return text.slice(0, 1);
+  return text.slice(0, width - 1) + "…";
+}
+
 export function paintZoneLine(
   line: string,
   kind: ZoneKind,
@@ -55,13 +76,9 @@ export function paintZoneLine(
   width: number,
 ): string {
   const bg = zoneBg(kind, enabled);
-  // Truncate only (no padding) — the built-in pad path in truncateToWidth
-  // miscounts double-width emoji by 1, producing a line that is width+1.
-  const truncated = truncateToWidth(line, width, "…", false);
+  const truncated = truncatePlainText(line, width);
   if (!bg) return truncated;
-  // Pad using visibleWidth for measurement — this is the same function
-  // pi-tui uses to validate rendered lines, so the padding is always exact.
-  const actual = visibleWidth(truncated);
+  const actual = visibleTextWidth(truncated);
   const padding = " ".repeat(Math.max(0, width - actual));
   return bg(truncated + padding);
 }
