@@ -1,30 +1,14 @@
 /**
- * pi-tui TUI entry — ambient intelligence layout (design §5).
+ * OpenTUI entry — ambient intelligence layout (design §5).
  */
 import {
-  installPiTuiLogRedirect,
-  rewritePiTuiCrashErrorMessage,
-} from "./redirect-pi-logs.js";
-
-// ⚠️ Import-time side effect. This module must patch `node:fs` before the
-// `@earendil-works/pi-tui` import is evaluated, because pi-tui resolves the
-// fs functions it will use at load time. Any test or script that imports this
-// module will therefore install the redirect. See the ADR in
-// redirect-pi-logs.ts for why this is unavoidable today.
-installPiTuiLogRedirect();
-
-import {
-  TUI,
-  ProcessTerminal,
-  Container,
-  Loader,
-  CombinedAutocompleteProvider,
-  type SlashCommand,
-  type AutocompleteProvider,
-  type AutocompleteItem,
-  type OverlayHandle,
-  matchesKey,
-} from "@earendil-works/pi-tui";
+  createCliRenderer,
+  BoxRenderable,
+  TextRenderable,
+  type KeyEvent,
+  type RenderContext,
+  type CliRenderer,
+} from "@opentui/core";
 import { InvertedEditor } from "./inverted-editor.js";
 import chalk from "chalk";
 import type { AppController, StartupInfo } from "../../app-controller.js";
@@ -52,6 +36,7 @@ import { LogoutWizard } from "./logout-wizard.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
 import { SLASH_COMMAND_METADATA } from "../../slash-commands.js";
+import { Spinner } from "./spinner.js";
 
 function statusBarFromSnapshot(
   base: StatusBarInput,
@@ -84,13 +69,20 @@ function toastToneToType(
   return "info";
 }
 
-// Derived from the single source of truth in slash-commands.ts so the
-// autocomplete dropdown can never drift from the real command set.
-const SLASH_COMMANDS: SlashCommand[] = SLASH_COMMAND_METADATA.map((c) => ({
-  name: c.name,
-  description: c.description,
-  ...(c.argumentHint ? { argumentHint: c.argumentHint } : {}),
-}));
+function matchesKey(key: KeyEvent, combo: string): boolean {
+  const parts = combo.toLowerCase().split("+");
+  const hasCtrl = parts.includes("ctrl");
+  const hasMeta = parts.includes("meta") || parts.includes("cmd");
+  const hasShift = parts.includes("shift");
+  const name = parts.filter((p) => !["ctrl", "meta", "cmd", "shift"].includes(p))[0];
+
+  return (
+    key.ctrl === hasCtrl &&
+    key.meta === hasMeta &&
+    key.shift === hasShift &&
+    key.name === name
+  );
+}
 
 function versionNumber(): string {
   return APP_VERSION.replace(/^v/, "");
@@ -123,14 +115,31 @@ export async function runTui(
     process.stdout.write(line + "\n");
   }
 
-  const terminal = new ProcessTerminal();
-  const tui = new TUI(terminal, true);
+  const renderer = await createCliRenderer({
+    stdin: process.stdin,
+    stdout: process.stdout,
+    width: process.stdout.columns ?? 80,
+    height: process.stdout.rows ?? 24,
+    exitOnCtrlC: false,
+  });
 
-  const identityBar = new IdentityBar();
+  const ctx: RenderContext = renderer;
+  const root = new BoxRenderable(ctx, { id: "tui-root", flexDirection: "column" });
+
+  const transcriptOpts = {
+    markdownRendering: config.ui.markdown_rendering,
+    syntaxTheme: config.ui.syntax_theme,
+    backgroundZones: config.ui.background_zones,
+    useUnicode,
+  };
+  const projection = new TranscriptProjection({ useUnicode });
+  projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
+
+  const identityBar = new IdentityBar(ctx);
   identityBar.setBackgroundZones(config.ui.background_zones);
   identityBar.setInput(controller.getStatusBarInput());
 
-  const glanceBar = new GlanceBar(tui);
+  const glanceBar = new GlanceBar(ctx);
   glanceBar.setBackgroundZones(config.ui.background_zones);
 
   const refreshChrome = () => {
@@ -142,67 +151,9 @@ export async function runTui(
       showCost: config.ui.show_cost,
     });
   };
-  refreshChrome();
-
-  const transcriptOpts = {
-    markdownRendering: config.ui.markdown_rendering,
-    syntaxTheme: config.ui.syntax_theme,
-    backgroundZones: config.ui.background_zones,
-    useUnicode,
-  };
-  const projection = new TranscriptProjection({ useUnicode });
-  projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
-
-  const toast = new ToastRegion(tui);
-  let slashOverlayHandle: OverlayHandle | null = null;
-
-  const spinner = new Loader(
-    tui,
-    TUI_STYLE.assistant,
-    TUI_STYLE.muted,
-    "thinking…",
-    { frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], intervalMs: 80 },
-  );
-
-  const editorTheme = {
-    borderColor: EDITOR_BORDER_STYLE,
-    selectList: {
-      selectedPrefix: TUI_STYLE.assistant,
-      selectedText: (s: string) => chalk.bold(s),
-      description: TUI_STYLE.muted,
-      scrollInfo: TUI_STYLE.faint,
-      noMatch: TUI_STYLE.muted,
-    },
-  };
-  const editor = new InvertedEditor(tui, editorTheme, { autocompleteMaxVisible: 12, paddingY: 0 });
-
-  const baseProvider = new CombinedAutocompleteProvider(SLASH_COMMANDS, controller.cwd);
-  const autocomplete: AutocompleteProvider = {
-    getSuggestions: baseProvider.getSuggestions
-      ? baseProvider.getSuggestions.bind(baseProvider)
-      : async () => null,
-    shouldTriggerFileCompletion: baseProvider.shouldTriggerFileCompletion
-      ? baseProvider.shouldTriggerFileCompletion.bind(baseProvider)
-      : undefined,
-    applyCompletion(
-      lines: string[],
-      cursorLine: number,
-      cursorCol: number,
-      item: AutocompleteItem,
-      prefix: string,
-    ) {
-      const isSlashItem = prefix.startsWith("/") && !prefix.slice(1).includes("/");
-      const fixedItem =
-        isSlashItem && item.value.startsWith("/")
-          ? { ...item, value: item.value.slice(1) }
-          : item;
-      return baseProvider.applyCompletion(lines, cursorLine, cursorCol, fixedItem, prefix);
-    },
-  };
-  editor.inner.setAutocompleteProvider(autocomplete);
 
   const transcript = new TranscriptContainer(
-    tui,
+    ctx,
     transcriptOpts,
     undefined,
     {
@@ -210,54 +161,69 @@ export async function runTui(
         Promise.resolve(
           resolveExpandedContent(entry, session.eventLog.readAll()),
         ),
-      onRequestFocus: (target) => tui.setFocus(target ?? editor),
+      onRequestFocus: (target: unknown) => {
+        const t = target as { focus?: () => void } | null;
+        if (t?.focus) t.focus();
+        else editor.focus();
+      },
     },
   );
   transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
-  const spinnerSlot = new Container();
-  const promptSlot = new Container();
-  promptSlot.addChild(editor);
-  const body = new Container();
-  body.addChild(transcript);
-  tui.addChild(body);
-  tui.addChild(toast);
-  tui.addChild(spinnerSlot);
-  tui.addChild(promptSlot);
-  // Identity bar sits below the editor, above the glance bar — all three
-  // are pinned at the bottom because they are the last children rendered
-  // and the viewport always shows the tail of the content buffer.
-  tui.addChild(identityBar);
-  tui.addChild(glanceBar);
-  tui.setFocus(editor);
+  const toast = new ToastRegion(ctx);
+  const spinner = new Spinner(ctx, "thinking…");
+
+  const editor = new InvertedEditor(ctx, { paddingY: 0 });
+
+  const body = new BoxRenderable(ctx, { id: "body", flexDirection: "column", flexGrow: 1 });
+  body.add(transcript);
+
+  const promptSlot = new BoxRenderable(ctx, { id: "prompt-slot", flexDirection: "column" });
+  promptSlot.add(editor);
+
+  const spinnerSlot = new BoxRenderable(ctx, { id: "spinner-slot", flexDirection: "column" });
+
+  root.add(body);
+  root.add(toast);
+  root.add(spinnerSlot);
+  root.add(promptSlot);
+  root.add(identityBar);
+  root.add(glanceBar);
+
+  renderer.root.add(root);
+
+  let slashOverlayHandle: import("./overlay.js").OverlayHandle | null = null;
+
+  const clearSlot = (slot: BoxRenderable) => {
+    for (const child of slot.getChildren()) {
+      slot.remove(child);
+    }
+  };
 
   const closeModelSelector = () => {
-    promptSlot.clear();
-    promptSlot.addChild(editor);
-    tui.setFocus(editor);
-    tui.requestRender();
+    clearSlot(promptSlot);
+    promptSlot.add(editor);
+    editor.focus();
+    renderer.requestRender();
   };
 
   const openModelSelector = () => {
     if (slashOverlayHandle) {
-      dismissSlashCommandResult(tui as never, slashOverlayHandle);
+      dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
-    const selector = new ModelSelector({
-      tui,
+    const selector = new ModelSelector(ctx, {
       currentProvider: session.getEffectiveProvider(),
       currentModelId: session.getActiveModelId(),
       maxVisible: Math.max(6, Math.min(12, (process.stdout.rows ?? 24) - 14)),
       loadModels: () => listAllAvailableModels(),
       onCancel: () => closeModelSelector(),
-      onSelect: (provider, modelId) => {
+      onSelect: (provider: string, modelId: string) => {
         void (async () => {
           closeModelSelector();
-          editor.inner.disableSubmit = true;
-          spinnerSlot.addChild(spinner);
+          spinnerSlot.add(spinner);
           spinner.setMessage("switching model…");
-          spinner.start();
 
           let switchResult: import("../../slash-commands.js").SlashCommandResult;
           try {
@@ -266,8 +232,7 @@ export async function runTui(
             );
           } finally {
             spinner.stop();
-            spinnerSlot.removeChild(spinner);
-            editor.inner.disableSubmit = false;
+            spinnerSlot.remove(spinner);
           }
 
           if (switchResult.display === "toast" && switchResult.toastTone) {
@@ -281,43 +246,39 @@ export async function runTui(
           if (switchResult.action === "refresh_status") {
             refreshChrome();
           }
-          tui.requestRender();
+          renderer.requestRender();
         })();
       },
     });
 
-    promptSlot.clear();
-    promptSlot.addChild(selector);
-    tui.setFocus(selector);
-    selector.start();
-    tui.requestRender(true);
+    clearSlot(promptSlot);
+    promptSlot.add(selector);
+    selector.focus();
+    renderer.requestRender();
   };
 
   const closeLoginWizard = () => {
-    promptSlot.clear();
-    promptSlot.addChild(editor);
-    tui.setFocus(editor);
-    tui.requestRender();
+    clearSlot(promptSlot);
+    promptSlot.add(editor);
+    editor.focus();
+    renderer.requestRender();
   };
 
   const openLoginWizard = (providerHint?: string) => {
     if (slashOverlayHandle) {
-      dismissSlashCommandResult(tui as never, slashOverlayHandle);
+      dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
-    const wizard = new LoginWizard({
-      tui,
+    const wizard = new LoginWizard(ctx, undefined, {
       currentProvider: session.getEffectiveProvider(),
       initialProvider: providerHint,
-      onComplete: (result) => {
+      onComplete: (result: import("./login-wizard.js").LoginWizardResult) => {
         closeLoginWizard();
 
         if (result.shouldSwitch && result.defaultModel) {
-          editor.inner.disableSubmit = true;
-          spinnerSlot.addChild(spinner);
+          spinnerSlot.add(spinner);
           spinner.setMessage("switching model…");
-          spinner.start();
 
           void (async () => {
             let switchResult: import("../../slash-commands.js").SlashCommandResult;
@@ -327,8 +288,7 @@ export async function runTui(
               );
             } finally {
               spinner.stop();
-              spinnerSlot.removeChild(spinner);
-              editor.inner.disableSubmit = false;
+              spinnerSlot.remove(spinner);
             }
 
             if (switchResult.display === "toast" && switchResult.toastTone) {
@@ -342,63 +302,60 @@ export async function runTui(
             if (switchResult.action === "refresh_status") {
               refreshChrome();
             }
-            tui.requestRender();
+            renderer.requestRender();
           })();
         } else if (result.shouldSwitch) {
-          // No default model — just switch the provider
           session.setProviderOverride(result.provider);
           toast.show(result.message, "success");
           refreshChrome();
-          tui.requestRender();
+          renderer.requestRender();
         } else {
-          // Custom or user-declared — just show the message
           const tone: "info" | "success" =
             result.message.includes("Run /new") ? "info" : "success";
           toast.show(result.message, tone);
           refreshChrome();
-          tui.requestRender();
+          renderer.requestRender();
         }
       },
       onCancel: () => closeLoginWizard(),
     });
 
-    promptSlot.clear();
-    promptSlot.addChild(wizard);
-    tui.setFocus(wizard);
-    tui.requestRender(true);
+    clearSlot(promptSlot);
+    promptSlot.add(wizard);
+    wizard.focus();
+    renderer.requestRender();
   };
 
   const closeLogoutWizard = () => {
-    promptSlot.clear();
-    promptSlot.addChild(editor);
-    tui.setFocus(editor);
-    tui.requestRender();
+    clearSlot(promptSlot);
+    promptSlot.add(editor);
+    editor.focus();
+    renderer.requestRender();
   };
 
   const openLogoutWizard = () => {
     if (slashOverlayHandle) {
-      dismissSlashCommandResult(tui as never, slashOverlayHandle);
+      dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
-    const wizard = new LogoutWizard({
-      tui,
+    const wizard = new LogoutWizard(ctx, [], {
       currentProvider: session.getEffectiveProvider(),
-      onComplete: (result) => {
+      onComplete: (result: import("./logout-wizard.js").LogoutWizardResult) => {
         closeLogoutWizard();
         const tone: "info" | "success" =
           result.message.includes("Run /new") ? "info" : "success";
         toast.show(result.message, tone);
         refreshChrome();
-        tui.requestRender();
+        renderer.requestRender();
       },
       onCancel: () => closeLogoutWizard(),
     });
 
-    promptSlot.clear();
-    promptSlot.addChild(wizard);
-    tui.setFocus(wizard);
-    tui.requestRender(true);
+    clearSlot(promptSlot);
+    promptSlot.add(wizard);
+    wizard.focus();
+    renderer.requestRender();
   };
 
   const modelId = controller.currentModelOrDefault();
@@ -414,22 +371,22 @@ export async function runTui(
 
   const showSlashOverlay = (lines: string[]) => {
     if (slashOverlayHandle) {
-      dismissSlashCommandResult(tui as never, slashOverlayHandle);
+      dismissSlashCommandResult(renderer, slashOverlayHandle);
     }
-    slashOverlayHandle = showSlashCommandResult(tui as never, lines);
+    slashOverlayHandle = showSlashCommandResult(renderer, lines);
   };
 
-  const openTuiSink = new OpenTuiSink(tui, transcript, toast, {
+  const openTuiSink = new OpenTuiSink(ctx, transcript, toast, {
     ambient: config.ui.ambient,
     showThinking: () => controller.showThinking,
-    onSpinnerMessage: (msg) => { spinner.setMessage(msg); },
+    onSpinnerMessage: (msg: string) => { spinner.setMessage(msg); },
     ctxWindowTokens: ctxWindow,
     engineMode: session.isContextEngineEnabled(),
     projection,
     persistEntry: persistTranscriptEntry,
     getModel: () => controller.currentModelOrDefault(),
     onSlashCommandResult: showSlashOverlay,
-    onContextPreview: (snapshot) => {
+    onContextPreview: (snapshot: ContextDisplaySnapshot) => {
       glanceBar.update({
         status: statusBarFromSnapshot(controller.getStatusBarInput(), snapshot),
         showCost: config.ui.show_cost,
@@ -437,12 +394,13 @@ export async function runTui(
     },
   });
 
+  refreshChrome();
+
   let turnStartedAt = 0;
 
-  editor.inner.onSubmit = async (rawInput: string) => {
+  editor.onSubmit = async (rawInput: string) => {
     let input = rawInput.trim();
     if (!input) return;
-    editor.inner.addToHistory(input);
     toast.clearErrors();
 
     if (input.startsWith("!")) {
@@ -455,18 +413,15 @@ export async function runTui(
     }
 
     if (input.startsWith("/")) {
-      editor.inner.disableSubmit = true;
-      spinnerSlot.addChild(spinner);
+      spinnerSlot.add(spinner);
       spinner.setMessage("running command…");
-      spinner.start();
 
       let result: import("../../slash-commands.js").SlashCommandResult;
       try {
         result = await controller.executeSlashCommand(input);
       } finally {
         spinner.stop();
-        spinnerSlot.removeChild(spinner);
-        editor.inner.disableSubmit = false;
+        spinnerSlot.remove(spinner);
       }
 
       if (result.display === "inline_transcript") {
@@ -505,7 +460,6 @@ export async function runTui(
         transcript.clear();
         openTuiSink?.clearContextPreview();
 
-        // Re-apply startup-time configuration that may have changed.
         identityBar.setBackgroundZones(config.ui.background_zones);
         glanceBar.setBackgroundZones(config.ui.background_zones);
         transcriptOpts.markdownRendering = config.ui.markdown_rendering;
@@ -514,7 +468,6 @@ export async function runTui(
         transcriptOpts.useUnicode = config.ui.tool_icons === "unicode";
         projection.setUseUnicode(transcriptOpts.useUnicode);
 
-        // Render the new-session banner into the transcript.
         openTuiSink.onSystemLines(newInfo.bannerLines);
         openTuiSink.nextGroup();
 
@@ -535,76 +488,66 @@ export async function runTui(
         openLogoutWizard();
         return;
       }
-      tui.requestRender();
+      renderer.requestRender();
       return;
     }
 
     openTuiSink.nextGroup();
     openTuiSink.appendUser(input);
-    editor.inner.disableSubmit = true;
-    spinnerSlot.addChild(spinner);
+    spinnerSlot.add(spinner);
     spinner.setMessage("thinking…");
-    spinner.start();
     turnStartedAt = Date.now();
 
     try {
       await controller.runUserTurn(input, openTuiSink);
     } finally {
       spinner.stop();
-      spinnerSlot.removeChild(spinner);
-      editor.inner.disableSubmit = false;
+      spinnerSlot.remove(spinner);
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
-      tui.requestRender();
+      renderer.requestRender();
     }
   };
 
-  tui.addInputListener((data) => {
+  // Key event handling via the renderer's keypress handler
+  renderer.on("keypress", (key: KeyEvent) => {
     if (slashOverlayHandle) {
-      dismissSlashCommandResult(tui as never, slashOverlayHandle);
+      dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
-      return { consume: true };
+      return;
     }
 
-    if (matchesKey(data, "f9")) {
-      tui.setFocus(transcript);
+    if (matchesKey(key, "f9")) {
+      transcript.focus();
       transcript.setFocused(true);
-      return { consume: true };
+      return;
     }
 
-    if (matchesKey(data, "ctrl+c")) {
-      // Three-way interrupt: working → abort turn; idle + text → clear input;
-      // idle + empty → exit the app.
+    if (matchesKey(key, "ctrl+c")) {
       const action = controller.handleUserInterrupt(
-        editor.inner.getText().length === 0,
+        editor.getText().length === 0,
       );
       if (action === "abort_turn") {
         spinner.stop();
-        spinnerSlot.removeChild(spinner);
-        editor.inner.disableSubmit = false;
+        spinnerSlot.remove(spinner);
         openTuiSink.onFallback("⚡ turn aborted");
-        tui.requestRender();
-        return { consume: true };
+        renderer.requestRender();
+        return;
       }
       if (action === "clear_input") {
-        editor.inner.setText("");
-        tui.requestRender();
-        return { consume: true };
+        editor.setText("");
+        renderer.requestRender();
+        return;
       }
       if (action === "exit") {
         void doShutdown();
-        return { consume: true };
+        return;
       }
-      // "noop" — rapid repeat inside the debounce window; swallow it.
-      return { consume: true };
     }
-    return undefined;
   });
 
   async function doShutdown(): Promise<void> {
-    editor.inner.disableSubmit = true;
-    tui.stop();
-    // Clear any leftover TTY/editor glyph after unmount (issue #181 stray char).
+    renderer.destroy();
     process.stderr.write("\r\x1b[2K\nSaving session…\n");
     const status = await controller.shutdown();
 
@@ -620,14 +563,5 @@ export async function runTui(
       console.log(line);
     }
     process.exit(0);
-  }
-
-  try {
-    tui.start();
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("Debug log written to:")) {
-      err.message = rewritePiTuiCrashErrorMessage(err.message);
-    }
-    throw err;
   }
 }
