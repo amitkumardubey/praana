@@ -1,29 +1,26 @@
 /**
- * pi-tui setup wizard — provider picker, key collection, and config creation.
+ * OpenTUI setup wizard — provider picker, key collection, and config creation.
  *
  * Flow:
- *   1. Provider picker (includes "Custom OpenAI-compatible endpoint")
- *   2. API key entry (masked) → saved to ~/.praana/credentials.json
- *   3. Model list fetch (best-effort) → model picker or manual entry
- *   4. Config write → ~/.praana/config.toml
+ *   1. Boot banner
+ *   2. Provider picker (includes "Custom OpenAI-compatible endpoint")
+ *   3. API key entry (masked) → saved to ~/.praana/credentials.json
+ *   4. Model list fetch (best-effort) → model picker or manual entry
+ *   5. Config write → ~/.praana/config.toml
  *
  * No "export KEY=..." instructions, no "restart" message.
  */
-import chalk from "chalk";
 import {
-  TUI,
-  ProcessTerminal,
-  Container,
-  Text,
-  Spacer,
-  Input,
-  SelectList,
-  fuzzyFilter,
-  getKeybindings,
-  type SelectItem,
-  type SelectListTheme,
-  type Component,
-} from "@earendil-works/pi-tui";
+  createCliRenderer,
+  BoxRenderable,
+  TextRenderable,
+  InputRenderable,
+  SelectRenderable,
+  SelectRenderableEvents,
+  type RenderContext,
+  type CliRenderer,
+  type KeyEvent,
+} from "@opentui/core";
 import { existsSync } from "node:fs";
 import { APP_VERSION } from "../../app-banner.js";
 import { TUI_STYLE } from "./theme.js";
@@ -54,119 +51,119 @@ import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { SetupResult, CustomProviderConfig } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
+import { fuzzyFilter } from "../../model-listing.js";
 
-const SELECT_THEME: SelectListTheme = {
-  selectedPrefix: TUI_STYLE.assistant,
-  selectedText: (s: string) => chalk.bold(s),
-  description: TUI_STYLE.muted,
-  scrollInfo: TUI_STYLE.faint,
-  noMatch: TUI_STYLE.muted,
-};
-
-const YES_NO_ITEMS: SelectItem[] = [
-  { value: "yes", label: "Yes", description: "" },
-  { value: "no", label: "No", description: "" },
+const YES_NO_OPTIONS = [
+  { value: "yes", name: "Yes", description: "" },
+  { value: "no", name: "No", description: "" },
 ];
 
-/**
- * Masked input — extends Input to display • characters instead of the
- * actual value. Used for API key entry. setValue preserves the cursor
- * position when the new value has the same length.
- */
-class MaskedInput extends Input {
-  render(width: number): string[] {
-    const actual = this.getValue();
-    if (!actual) return super.render(width);
-    this.setValue("•".repeat(actual.length));
-    const lines = super.render(width);
-    this.setValue(actual);
-    return lines;
+class EscapableSelect extends SelectRenderable {
+  onCancel: (() => void) | null = null;
+
+  override handleKeyPress(key: KeyEvent): boolean {
+    if (key.name === "escape" && this.onCancel) {
+      this.onCancel();
+      return true;
+    }
+    return super.handleKeyPress(key);
   }
 }
 
-/** Provider list with type-to-filter (fuzzy) and arrow navigation. */
-class ProviderPicker implements Component {
-  private readonly allItems: SelectItem[];
-  private readonly maxVisible: number;
-  private list: SelectList;
+class MaskedInput extends InputRenderable {
+  private _maskedValue = "";
+  override insertText(text: string): void {
+    this._maskedValue += text;
+    super.insertText("•".repeat(text.length));
+  }
+  override deleteCharBackward(): boolean {
+    this._maskedValue = this._maskedValue.slice(0, -1);
+    return super.deleteCharBackward();
+  }
+  override deleteChar(): boolean {
+    this._maskedValue = this._maskedValue.slice(0, -1);
+    return super.deleteChar();
+  }
+  override deleteWordBackward(): boolean {
+    this._maskedValue = "";
+    return super.deleteWordBackward();
+  }
+  get actualValue(): string {
+    return this._maskedValue;
+  }
+  set actualValue(value: string) {
+    this._maskedValue = value;
+    this.setText("•".repeat(value.length));
+    this.cursorOffset = value.length;
+  }
+  override focus(): void {
+    super.focus();
+    this._maskedValue = "";
+  }
+}
+
+interface ProviderPickerItem {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+class ProviderPicker extends BoxRenderable {
+  private readonly allItems: ProviderPickerItem[];
+  private readonly listHeight: number;
+  private select: EscapableSelect;
   private filter = "";
 
-  onSelect?: (item: SelectItem) => void;
+  onSelect?: (item: ProviderPickerItem) => void;
   onCancel?: () => void;
   onChange?: () => void;
 
-  constructor(items: SelectItem[], maxVisible: number) {
+  constructor(ctx: RenderContext, items: ProviderPickerItem[], listHeight: number) {
+    super(ctx, { id: "provider-picker", flexDirection: "column" });
     this.allItems = items;
-    this.maxVisible = maxVisible;
-    this.list = this.createList(items);
+    this.listHeight = listHeight;
+
+    this.select = new EscapableSelect(ctx, {
+      id: "provider-picker-list",
+      width: 40,
+      height: listHeight,
+      options: items.map((item) => ({ name: item.label, description: item.description ?? "", value: item.value })),
+      showScrollIndicator: true,
+    });
+    this.select.onCancel = () => this.onCancel?.();
+    this.select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+      const found = this.allItems.find((i) => i.value === option.value);
+      if (found) this.onSelect?.(found);
+    });
+
+    this.add(this.select);
   }
 
-  private createList(items: SelectItem[]): SelectList {
-    const list = new SelectList(items, this.maxVisible, SELECT_THEME);
-    list.onSelect = (item) => this.onSelect?.(item);
-    list.onCancel = () => this.onCancel?.();
-    return list;
-  }
-
-  private applyFilter(): void {
-    const query = this.filter.trim();
-    const filtered = query
-      ? fuzzyFilter(
-          this.allItems,
-          query,
-          (item) => `${item.value} ${item.label} ${item.description ?? ""}`,
-        )
+  private filtered(): ProviderPickerItem[] {
+    return this.filter
+      ? fuzzyFilter(this.allItems, this.filter, (i) => `${i.value} ${i.label} ${i.description ?? ""}`)
       : this.allItems;
-    const prev = this.list.getSelectedItem()?.value;
-    this.list = this.createList(filtered);
-    if (prev) {
-      const idx = filtered.findIndex((i) => i.value === prev);
-      if (idx >= 0) this.list.setSelectedIndex(idx);
-    }
+  }
+
+  applyFilter(): void {
+    const filtered = this.filtered();
+    const options = filtered.map((item) => ({
+      name: item.label,
+      description: item.description ?? "",
+      value: item.value,
+    }));
+    this.select.options = options;
+    this.select.setSelectedIndex(0);
     this.onChange?.();
+    this.requestRender();
   }
 
-  invalidate(): void {
-    this.list.invalidate();
+  override focus(): void {
+    this.select.focus();
   }
 
-  render(width: number): string[] {
-    const lines: string[] = [];
-    const filterLabel = this.filter.length > 0 ? this.filter : "type to filter…";
-    lines.push(TUI_STYLE.muted(`  Filter: ${filterLabel}`));
-    lines.push("");
-    lines.push(...this.list.render(width));
-    lines.push("");
-    lines.push(
-      TUI_STYLE.faint(
-        "  ↑↓ navigate · Enter select · type to filter · Backspace clear · Esc cancel",
-      ),
-    );
-    return lines;
-  }
-
-  handleInput(data: string): void {
-    const kb = getKeybindings();
-    if (
-      kb.matches(data, "tui.select.up") ||
-      kb.matches(data, "tui.select.down") ||
-      kb.matches(data, "tui.select.confirm") ||
-      kb.matches(data, "tui.select.cancel")
-    ) {
-      this.list.handleInput(data);
-      return;
-    }
-    if (kb.matches(data, "tui.editor.deleteCharBackward")) {
-      if (this.filter.length > 0) {
-        this.filter = this.filter.slice(0, -1);
-        this.applyFilter();
-      }
-      return;
-    }
-    if (data.length === 1 && data >= " " && data <= "~") {
-      this.filter += data;
-      this.applyFilter();
-    }
+  override blur(): void {
+    this.select.blur();
   }
 }
 
@@ -174,19 +171,62 @@ function versionNumber(): string {
   return APP_VERSION.replace(/^v/, "");
 }
 
-/** Run the interactive setup wizard in a standalone pi-tui session. */
-export async function runSetupWizardTui(): Promise<SetupResult> {
+const AUTH_METHOD_ITEMS = [
+  { value: "oauth", name: "Claude Pro/Max OAuth", description: "Browser sign-in" },
+  { value: "api_key", name: "API key", description: "Paste ANTHROPIC_API_KEY" },
+];
+
+const REAUTH_ITEMS = [
+  { value: "yes", name: "Yes — sign in again", description: "" },
+  { value: "no", name: "No — keep existing", description: "" },
+];
+
+interface WizardState {
+  provider: string;
+  isCustom: boolean;
+  customProviderId: string;
+  customBaseUrl: string;
+  apiKey: string;
+  keySaved: boolean;
+  model: string;
+}
+
+export interface RunSetupWizardOptions {
+  /** Test-only: pre-scripted input bytes fed to stdin instead of a real TTY. */
+  simulateInput?: string[];
+}
+
+/** Run the interactive setup wizard in a standalone OpenTUI session. */
+export async function runSetupWizardTui(options?: RunSetupWizardOptions): Promise<SetupResult> {
+  const stdin = options?.simulateInput
+    ? createMockStdin(options.simulateInput)
+    : (process.stdin as unknown as NodeJS.ReadableStream);
+
+  const renderer = await createCliRenderer({
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    stdout: process.stdout,
+    width: process.stdout.columns ?? 80,
+    height: process.stdout.rows ?? 24,
+    exitOnCtrlC: false,
+  });
+
+  try {
+    return await runSetupWizardOnRenderer(renderer);
+  } finally {
+    renderer.destroy();
+  }
+}
+
+async function runSetupWizardOnRenderer(renderer: CliRenderer): Promise<SetupResult> {
   return new Promise((resolve) => {
-    const terminal = new ProcessTerminal();
-    const tui = new TUI(terminal, true);
+    const ctx = renderer;
+    const root = new BoxRenderable(ctx, { id: "setup-wizard-root", flexDirection: "column" });
 
-    const root = new Container();
-    const header = new Text("", 0, 0);
-    const body = new Text("", 0, 0);
-    const footer = new Spacer(1);
+    const header = new TextRenderable(ctx, { content: "" });
+    const body = new TextRenderable(ctx, { content: "" });
+    const footer = new TextRenderable(ctx, { content: "" });
 
-    // Wizard state — tracks collected data across steps.
-    const state = {
+    const state: WizardState = {
       provider: "",
       isCustom: false,
       customProviderId: "",
@@ -200,8 +240,6 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
     const maxVisible = Math.max(5, Math.min(14, termHeight - 14));
 
     const finish = (result: SetupResult) => {
-      process.removeListener("SIGINT", sigintHandler);
-      tui.stop();
       resolve(result);
     };
 
@@ -229,56 +267,82 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
       );
     };
 
-    // ── Step: Provider picker ──
-    const showProviderStep = () => {
-      root.clear();
-      const detected = formatDetectedProviderLines();
-      const intro = [
-        "No provider configured. Let's set one up.",
-        "",
-        ...detected,
-        ...(detected.length > 0 ? [""] : []),
-        "Choose a provider:",
-      ].join("\n");
-      header.setText(intro);
-
-      const picker = new ProviderPicker(buildProviderSelectItems(), maxVisible);
-      picker.onChange = () => tui.requestRender(true);
-      picker.onSelect = (item) => {
-        if (item.value === CUSTOM_PROVIDER_VALUE) {
-          state.isCustom = true;
-          showCustomIdStep();
-        } else {
-          state.isCustom = false;
-          state.provider = item.value;
-          if (item.value === "amazon-bedrock") {
-            if (bedrockNeedsApiKeyPrompt()) {
-              showBedrockKeyInputField();
-            } else {
-              showModelFetchStep();
-            }
-            return;
-          }
-          if (providerSupportsOAuth(item.value)) {
-            showOAuthOrKeyStep(item.value);
-            return;
-          }
-          showKeyEntryStep();
-        }
-      };
-      picker.onCancel = () => {
-        finish({ success: false, message: "Setup cancelled." });
-      };
-
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(picker);
-      root.addChild(footer);
-      tui.setFocus(picker);
-      tui.requestRender(true);
+    const clear = () => {
+      for (const child of root.getChildren()) {
+        root.remove(child);
+      }
     };
 
-    // ── Step: OAuth vs API key for subscription providers ──
+    const render = () => {
+      renderer.requestRender();
+    };
+
+    const focusComponent = (comp: { focus: () => void }) => {
+      comp.focus();
+    };
+
+    const showStep = (renderFn: () => void) => {
+      clear();
+      renderFn();
+      render();
+    };
+
+    // ── Step: Provider picker ──
+    const showProviderStep = () => {
+      showStep(() => {
+        const detected = formatDetectedProviderLines();
+        const intro = [
+          "No provider configured. Let's set one up.",
+          "",
+          ...detected,
+          ...(detected.length > 0 ? [""] : []),
+          "Choose a provider:",
+        ].join("\n");
+        header.content = intro;
+
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" })); // spacer
+
+        const picker = new ProviderPicker(
+          ctx,
+          buildProviderSelectItems(),
+          maxVisible,
+        );
+        picker.onChange = () => render();
+        picker.onSelect = (item) => {
+          if (item.value === CUSTOM_PROVIDER_VALUE) {
+            state.isCustom = true;
+            showCustomIdStep();
+          } else {
+            state.isCustom = false;
+            state.provider = item.value;
+            if (item.value === "amazon-bedrock") {
+              if (bedrockNeedsApiKeyPrompt()) {
+                showBedrockKeyInputField();
+              } else {
+                showModelFetchStep();
+              }
+              return;
+            }
+            if (providerSupportsOAuth(item.value)) {
+              showOAuthOrKeyStep(item.value);
+              return;
+            }
+            showKeyEntryStep();
+          }
+        };
+        picker.onCancel = () => {
+          finish({ success: false, message: "Setup cancelled." });
+        };
+
+        root.add(picker);
+        root.add(new TextRenderable(ctx, { content: "" })); // spacer
+        root.add(footer);
+        focusComponent(picker);
+      });
+    };
+
+    // ── Step: OAuth vs API key ──
     const showOAuthOrKeyStep = (provider: string) => {
       if (isOAuthOnlyProvider(provider)) {
         if (hasCredentials(provider)) {
@@ -289,442 +353,448 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
         return;
       }
 
-      // anthropic: choose method
-      root.clear();
-      header.setText(`Selected: ${provider}`);
-      body.setText("How do you want to authenticate?");
+      showStep(() => {
+        header.content = `Selected: ${provider}`;
+        body.content = "How do you want to authenticate?";
 
-      const items: SelectItem[] = [
-        { value: "oauth", label: "Claude Pro/Max OAuth", description: "Browser sign-in" },
-        { value: "api_key", label: "API key", description: "Paste ANTHROPIC_API_KEY" },
-      ];
-      const list = new SelectList(items, 4, SELECT_THEME);
-      list.onSelect = (item) => {
-        if (item.value === "oauth") {
-          void runSetupOAuth(provider);
-        } else {
-          showKeyEntryStep();
-        }
-      };
-      list.onCancel = () => showProviderStep();
+        const select = new EscapableSelect(ctx, {
+          id: "setup-auth-method",
+          width: 40,
+          height: 6,
+          options: AUTH_METHOD_ITEMS,
+        });
+        select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+          if (option.value === "oauth") {
+            void runSetupOAuth(provider);
+          } else {
+            showKeyEntryStep();
+          }
+        });
+        select.onCancel = () => showProviderStep();
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(new Spacer(1));
-      root.addChild(list);
-      root.addChild(footer);
-      tui.setFocus(list);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(select);
+        root.add(footer);
+        focusComponent(select);
+      });
     };
 
     const showReuseOAuthStep = (provider: string) => {
-      root.clear();
-      header.setText(`Selected: ${provider}`);
-      body.setText(
-        hasOAuthToken(provider)
+      showStep(() => {
+        header.content = `Selected: ${provider}`;
+        body.content = hasOAuthToken(provider)
           ? "✓ OAuth credentials already stored.\n\nSign in again?"
-          : "✓ Credentials already stored.\n\nReplace them?",
-      );
-      const list = new SelectList(
-        [
-          { value: "yes", label: "Yes — sign in again", description: "" },
-          { value: "no", label: "No — keep existing", description: "" },
-        ],
-        4,
-        SELECT_THEME,
-      );
-      list.onSelect = (item) => {
-        if (item.value === "yes") {
-          void runSetupOAuth(provider);
-        } else {
-          state.keySaved = false;
-          showModelFetchStep();
-        }
-      };
-      list.onCancel = () => showProviderStep();
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(new Spacer(1));
-      root.addChild(list);
-      root.addChild(footer);
-      tui.setFocus(list);
-      tui.requestRender(true);
+          : "✓ Credentials already stored.\n\nReplace them?";
+
+        const select = new EscapableSelect(ctx, {
+          id: "setup-reuse-oauth",
+          width: 40,
+          height: 6,
+          options: REAUTH_ITEMS,
+        });
+        select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+          if (option.value === "yes") {
+            void runSetupOAuth(provider);
+          } else {
+            state.keySaved = false;
+            showModelFetchStep();
+          }
+        });
+        select.onCancel = () => showProviderStep();
+
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(select);
+        root.add(footer);
+        focusComponent(select);
+      });
     };
 
     const runSetupOAuth = async (provider: string) => {
       const abort = new AbortController();
-      const hint = new Text(TUI_STYLE.faint("Esc to cancel"), 0, 0);
-
-      const showStatus = (lines: string[]) => {
-        root.clear();
-        header.setText(`OAuth: ${provider}`);
-        body.setText(lines.join("\n"));
-        hint.setText(TUI_STYLE.faint("Esc to cancel"));
-        root.addChild(header);
-        root.addChild(new Spacer(1));
-        root.addChild(body);
-        root.addChild(new Spacer(1));
-        root.addChild(hint);
-        tui.requestRender(true);
-      };
 
       const promptText = (
         message: string,
         placeholder?: string,
         contextLines?: string[],
-      ): Promise<string> =>
-        new Promise((resolve, reject) => {
+      ): Promise<string> => {
+        return new Promise((resolve, reject) => {
           const onAbort = () => reject(new Error("cancelled"));
           abort.signal.addEventListener("abort", onAbort, { once: true });
-          root.clear();
-          header.setText(`OAuth: ${provider}`);
+
+          const input = new InputRenderable(ctx, { id: "setup-oauth-input" });
+          input.onSubmit = () => {
+            const trimmed = input.value.trim();
+            if (!trimmed) return;
+            abort.signal.removeEventListener("abort", onAbort);
+            resolve(trimmed);
+          };
+
+          clear();
+          header.content = `OAuth: ${provider}`;
           const parts: string[] = [];
           if (contextLines && contextLines.length > 0) {
             parts.push(...contextLines, "");
           }
           parts.push(message);
           if (placeholder) parts.push(TUI_STYLE.muted(placeholder));
-          body.setText(parts.join("\n"));
-          const input = new Input();
-          input.onSubmit = (value: string) => {
-            const trimmed = value.trim();
-            if (!trimmed) return;
-            abort.signal.removeEventListener("abort", onAbort);
-            resolve(trimmed);
-          };
-          hint.setText(TUI_STYLE.faint("Paste · Enter · Esc cancel"));
-          root.addChild(header);
-          root.addChild(new Spacer(1));
-          root.addChild(body);
-          root.addChild(new Spacer(1));
-          root.addChild(input);
-          root.addChild(hint);
-          tui.setFocus(input);
-          tui.requestRender(true);
+          body.content = parts.join("\n");
+
+          root.add(header);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(body);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(input);
+          root.add(new TextRenderable(ctx, { content: TUI_STYLE.faint("Paste · Enter · Esc cancel") }));
+          input.focus();
+          render();
         });
+      };
 
       const promptSelect = (
         message: string,
         options: readonly { id: string; label: string; description?: string }[],
-      ): Promise<string | undefined> =>
-        new Promise((resolve) => {
-          root.clear();
-          header.setText(`OAuth: ${provider}`);
-          body.setText(message);
-          const items: SelectItem[] = options.map((o) => ({
-            value: o.id,
-            label: o.label,
-            description: o.description ?? "",
-          }));
-          const list = new SelectList(items, Math.min(8, items.length + 1), SELECT_THEME);
-          list.onSelect = (item) => resolve(item.value);
-          list.onCancel = () => resolve(undefined);
-          root.addChild(header);
-          root.addChild(new Spacer(1));
-          root.addChild(body);
-          root.addChild(new Spacer(1));
-          root.addChild(list);
-          root.addChild(footer);
-          tui.setFocus(list);
-          tui.requestRender(true);
-        });
+      ): Promise<string | undefined> => {
+        return new Promise((resolve) => {
+          clear();
+          header.content = `OAuth: ${provider}`;
+          body.content = message;
+          const select = new EscapableSelect(ctx, {
+            id: "setup-oauth-select",
+            width: 40,
+            height: Math.min(8, options.length + 1),
+            options: options.map((o) => ({ name: o.label, description: o.description ?? "", value: o.id })),
+          });
+          select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+            resolve(typeof option.value === "string" ? option.value : undefined);
+          });
+          select.onCancel = () => resolve(undefined);
 
-      showStatus([`Starting OAuth for ${provider}…`]);
+          root.add(header);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(body);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(select);
+          root.add(footer);
+          focusComponent(select);
+          render();
+        });
+      };
+
+      clear();
+      header.content = "OAuth";
+      body.content = `Starting OAuth for ${provider}…`;
+      root.add(header);
+      root.add(new TextRenderable(ctx, { content: "" }));
+      root.add(body);
+      root.add(new TextRenderable(ctx, { content: TUI_STYLE.faint("Esc to cancel") }));
+      render();
+
       try {
         await runOAuthLoginWithUi(provider, {
-          showStatus,
+          signal: abort.signal,
+          showStatus: (lines: string[]) => {
+            body.content = lines.join("\n");
+            render();
+          },
           promptText,
           promptSelect,
-          signal: abort.signal,
         });
         if (abort.signal.aborted) return;
         state.keySaved = true;
         showModelFetchStep();
       } catch (err) {
         if (abort.signal.aborted) return;
-        root.clear();
-        header.setText(`OAuth: ${provider}`);
-        body.setText(
-          chalk.red(
-            `OAuth failed: ${err instanceof Error ? err.message : String(err)}`,
-          ),
+        clear();
+        header.content = `OAuth: ${provider}`;
+        body.content = TUI_STYLE.error(
+          `OAuth failed: ${err instanceof Error ? err.message : String(err)}`,
         );
-        const list = new SelectList(
-          [{ value: "back", label: "Back to provider list", description: "" }],
-          2,
-          SELECT_THEME,
-        );
-        list.onSelect = () => showProviderStep();
-        list.onCancel = () => showProviderStep();
-        root.addChild(header);
-        root.addChild(new Spacer(1));
-        root.addChild(body);
-        root.addChild(new Spacer(1));
-        root.addChild(list);
-        root.addChild(footer);
-        tui.setFocus(list);
-        tui.requestRender(true);
+        const backSelect = new EscapableSelect(ctx, {
+          id: "setup-oauth-back",
+          width: 40,
+          height: 4,
+          options: [{ name: "Back to provider list", description: "", value: "back" }],
+        });
+        backSelect.on(SelectRenderableEvents.ITEM_SELECTED, () => showProviderStep());
+        backSelect.onCancel = () => showProviderStep();
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(backSelect);
+        root.add(footer);
+        focusComponent(backSelect);
+        render();
       }
     };
 
     // ── Step: API key entry (catalog providers) ──
-    // Order: credential store → offer env key → paste (MaskedInput).
     const showKeyEntryStep = () => {
       const provider = state.provider;
       const keyExists = hasApiKey(provider);
       const envOffer = !keyExists ? formatEnvKeyOfferMessage(provider) : null;
 
-      root.clear();
+      showStep(() => {
+        header.content = `Selected: ${provider}`;
 
-      if (keyExists) {
-        header.setText(`Selected: ${provider}`);
-        body.setText([
-          chalk.green("✓ API key detected in credential store."),
-          "",
-          "Replace with a new key?",
-        ].join("\n"));
+        if (keyExists) {
+          body.content = [
+            TUI_STYLE.success("✓ API key detected in credential store."),
+            "",
+            "Replace with a new key?",
+          ].join("\n");
 
-        const list = new SelectList(YES_NO_ITEMS, 4, SELECT_THEME);
-        list.onSelect = (item) => {
-          if (item.value === "yes") {
-            showKeyInputField(provider);
-          } else {
-            state.keySaved = false;
-            showModelFetchStep();
-          }
-        };
-        list.onCancel = () => showProviderStep();
+          const select = new EscapableSelect(ctx, {
+            id: "setup-key-replace",
+            width: 40,
+            height: 6,
+            options: YES_NO_OPTIONS,
+          });
+          select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+            if (option.value === "yes") {
+              showKeyInputField(provider);
+            } else {
+              state.keySaved = false;
+              showModelFetchStep();
+            }
+          });
+          select.onCancel = () => showProviderStep();
 
-        root.addChild(header);
-        root.addChild(new Spacer(1));
-        root.addChild(body);
-        root.addChild(new Spacer(1));
-        root.addChild(list);
-        root.addChild(footer);
-        tui.setFocus(list);
-        tui.requestRender(true);
-      } else if (envOffer) {
-        header.setText(`Selected: ${provider}`);
-        body.setText(envOffer);
+          root.add(header);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(body);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(select);
+          root.add(footer);
+          focusComponent(select);
+        } else if (envOffer) {
+          body.content = envOffer;
 
-        const list = new SelectList(YES_NO_ITEMS, 4, SELECT_THEME);
-        list.onSelect = (item) => {
-          if (item.value === "yes") {
-            state.keySaved = adoptEnvKeyForProvider(provider);
-            showModelFetchStep();
-          } else {
-            showKeyInputField(provider);
-          }
-        };
-        list.onCancel = () => showProviderStep();
+          const select = new EscapableSelect(ctx, {
+            id: "setup-env-key",
+            width: 40,
+            height: 6,
+            options: YES_NO_OPTIONS,
+          });
+          select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+            if (option.value === "yes") {
+              state.keySaved = adoptEnvKeyForProvider(provider);
+              showModelFetchStep();
+            } else {
+              showKeyInputField(provider);
+            }
+          });
+          select.onCancel = () => showProviderStep();
 
-        root.addChild(header);
-        root.addChild(new Spacer(1));
-        root.addChild(body);
-        root.addChild(new Spacer(1));
-        root.addChild(list);
-        root.addChild(footer);
-        tui.setFocus(list);
-        tui.requestRender(true);
-      } else {
-        showKeyInputField(provider);
-      }
+          root.add(header);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(body);
+          root.add(new TextRenderable(ctx, { content: "" }));
+          root.add(select);
+          root.add(footer);
+          focusComponent(select);
+        } else {
+          showKeyInputField(provider);
+        }
+      });
     };
 
     const showKeyInputField = (provider: string, error?: string) => {
-      root.clear();
-      header.setText(`Selected: ${provider}`);
       const requiresKey = providerRequiresApiKey(provider);
-      body.setText([
-        "Paste your API key.",
-        TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
-        ...(error ? ["", chalk.red(`✗ ${error}`)] : []),
-        "",
-      ].join("\n"));
 
-      const input = new MaskedInput();
-      input.onSubmit = (value: string) => {
-        const trimmed = value.trim();
-        if (trimmed) {
-          saveProviderKey(provider, trimmed);
-          state.keySaved = true;
+      showStep(() => {
+        header.content = `Selected: ${provider}`;
+        const parts: string[] = [
+          "Paste your API key.",
+          TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
+          ...(error ? ["", TUI_STYLE.error(`✗ ${error}`)] : []),
+          "",
+        ];
+        body.content = parts.join("\n");
+
+        const input = new MaskedInput(ctx, { id: "setup-key-input" });
+        input.onSubmit = () => {
+          const trimmed = input.actualValue.trim();
+          if (trimmed) {
+            saveProviderKey(provider, trimmed);
+            state.keySaved = true;
+            showModelFetchStep();
+            return;
+          }
+          if (requiresKey) {
+            showKeyInputField(provider, "API key is required for this provider");
+            return;
+          }
           showModelFetchStep();
-          return;
-        }
-        if (requiresKey) {
-          showKeyInputField(provider, "API key is required for this provider");
-          return;
-        }
-        showModelFetchStep();
-      };
-      input.onEscape = () => showProviderStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     const showBedrockKeyInputField = (error?: string) => {
-      root.clear();
-      header.setText("Selected: amazon-bedrock");
-      body.setText([
-        "Paste your Bedrock API key (bearer token).",
-        TUI_STYLE.faint("  Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK."),
-        TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
-        ...(error ? ["", chalk.red(`✗ ${error}`)] : []),
-        "",
-      ].join("\n"));
+      showStep(() => {
+        header.content = "Selected: amazon-bedrock";
+        const parts: string[] = [
+          "Paste your Bedrock API key (bearer token).",
+          TUI_STYLE.faint("  Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK."),
+          TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
+          ...(error ? ["", TUI_STYLE.error(`✗ ${error}`)] : []),
+          "",
+        ];
+        body.content = parts.join("\n");
 
-      const input = new MaskedInput();
-      input.onSubmit = (value: string) => {
-        const trimmed = value.trim();
-        if (!trimmed) {
-          showBedrockKeyInputField("Bedrock API key is required when AWS credentials are not detected");
-          return;
-        }
-        saveProviderKey("amazon-bedrock", trimmed);
-        state.keySaved = true;
-        showModelFetchStep();
-      };
-      input.onEscape = () => showProviderStep();
+        const input = new MaskedInput(ctx, { id: "setup-bedrock-key-input" });
+        input.onSubmit = () => {
+          const trimmed = input.actualValue.trim();
+          if (!trimmed) {
+            showBedrockKeyInputField("Bedrock API key is required when AWS credentials are not detected");
+            return;
+          }
+          saveProviderKey("amazon-bedrock", trimmed);
+          state.keySaved = true;
+          showModelFetchStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     // ── Step: Custom provider id ──
     const showCustomIdStep = () => {
-      root.clear();
-      header.setText("Custom OpenAI-compatible endpoint");
-      body.setText([
-        "Enter a provider id (lowercase, no spaces).",
-        TUI_STYLE.faint("  e.g. my-llama, vllm-local, lm-studio"),
-        "",
-      ].join("\n"));
+      showStep(() => {
+        header.content = "Custom OpenAI-compatible endpoint";
+        body.content = [
+          "Enter a provider id (lowercase, no spaces).",
+          TUI_STYLE.faint("  e.g. my-llama, vllm-local, lm-studio"),
+          "",
+        ].join("\n");
 
-      const input = new Input();
-      input.onSubmit = (value: string) => {
-        const validation = isValidCustomProviderId(value.trim());
-        if (!validation.valid) {
-          body.setText([
-            "Enter a provider id (lowercase, no spaces).",
-            TUI_STYLE.faint("  e.g. my-llama, vllm-local, lm-studio"),
-            "",
-            chalk.red(`✗ ${validation.error}`),
-            "",
-          ].join("\n"));
-          tui.requestRender(true);
-          return;
-        }
-        state.customProviderId = value.trim();
-        showCustomBaseUrlStep();
-      };
-      input.onEscape = () => showProviderStep();
+        const input = new InputRenderable(ctx, { id: "setup-custom-id" });
+        input.onSubmit = () => {
+          const validation = isValidCustomProviderId(input.value.trim());
+          if (!validation.valid) {
+            body.content = [
+              "Enter a provider id (lowercase, no spaces).",
+              TUI_STYLE.faint("  e.g. my-llama, vllm-local, lm-studio"),
+              "",
+              TUI_STYLE.error(`✗ ${validation.error}`),
+              "",
+            ].join("\n");
+            render();
+            return;
+          }
+          state.customProviderId = input.value.trim();
+          showCustomBaseUrlStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     // ── Step: Custom base URL ──
     const showCustomBaseUrlStep = () => {
-      root.clear();
-      header.setText(`Custom provider: ${state.customProviderId}`);
-      body.setText([
-        "Enter the base URL.",
-        TUI_STYLE.faint("  e.g. http://localhost:8080/v1, https://api.together.xyz/v1"),
-        "",
-      ].join("\n"));
+      showStep(() => {
+        header.content = `Custom provider: ${state.customProviderId}`;
+        body.content = [
+          "Enter the base URL.",
+          TUI_STYLE.faint("  e.g. http://localhost:8080/v1, https://api.together.xyz/v1"),
+          "",
+        ].join("\n");
 
-      const input = new Input();
-      input.onSubmit = (value: string) => {
-        const validation = isValidBaseUrl(value.trim());
-        if (!validation.valid) {
-          body.setText([
-            "Enter the base URL.",
-            TUI_STYLE.faint("  e.g. http://localhost:8080/v1, https://api.together.xyz/v1"),
-            "",
-            chalk.red(`✗ ${validation.error}`),
-            "",
-          ].join("\n"));
-          tui.requestRender(true);
-          return;
-        }
-        state.customBaseUrl = value.trim();
-        showCustomKeyStep();
-      };
-      input.onEscape = () => showCustomIdStep();
+        const input = new InputRenderable(ctx, { id: "setup-custom-url" });
+        input.onSubmit = () => {
+          const validation = isValidBaseUrl(input.value.trim());
+          if (!validation.valid) {
+            body.content = [
+              "Enter the base URL.",
+              TUI_STYLE.faint("  e.g. http://localhost:8080/v1, https://api.together.xyz/v1"),
+              "",
+              TUI_STYLE.error(`✗ ${validation.error}`),
+              "",
+            ].join("\n");
+            render();
+            return;
+          }
+          state.customBaseUrl = input.value.trim();
+          showCustomKeyStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     // ── Step: Custom API key (optional) ──
     const showCustomKeyStep = () => {
-      root.clear();
-      header.setText(`Custom provider: ${state.customProviderId}`);
-      body.setText([
-        "Enter API key (or press Enter to skip for keyless servers).",
-        TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
-        "",
-      ].join("\n"));
+      showStep(() => {
+        header.content = `Custom provider: ${state.customProviderId}`;
+        body.content = [
+          "Enter API key (or press Enter to skip for keyless servers).",
+          TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
+          "",
+        ].join("\n");
 
-      const input = new MaskedInput();
-      input.onSubmit = (value: string) => {
-        if (value.trim()) {
-          saveProviderKey(state.customProviderId, value);
-          state.apiKey = value.trim();
-          state.keySaved = true;
-        } else {
-          state.keySaved = false;
-        }
-        showModelFetchStep();
-      };
-      input.onEscape = () => showCustomBaseUrlStep();
+        const input = new MaskedInput(ctx, { id: "setup-custom-key" });
+        input.onSubmit = () => {
+          if (input.actualValue.trim()) {
+            saveProviderKey(state.customProviderId, input.actualValue);
+            state.apiKey = input.actualValue.trim();
+            state.keySaved = true;
+          } else {
+            state.keySaved = false;
+          }
+          showModelFetchStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     // ── Step: Model fetch + picker ──
     const showModelFetchStep = () => {
-      root.clear();
-      const provider = getProviderForConfig();
-      header.setText("Fetching models…");
-      body.setText(TUI_STYLE.faint(`  Contacting ${provider}…`));
+      showStep(() => {
+        const provider = getProviderForConfig();
+        header.content = "Fetching models…";
+        body.content = TUI_STYLE.faint(`  Contacting ${provider}…`);
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(footer);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(footer);
+        render();
+      });
 
-      // Start async fetch — the TUI continues rendering while we wait.
       const fetchPromise = state.isCustom
         ? fetchCustomProviderModels(state.customBaseUrl, state.apiKey || undefined)
         : fetchProviderModels(state.provider);
@@ -739,137 +809,150 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
     };
 
     const showModelPickerStep = (models: ProviderCatalogModelEntry[]) => {
-      root.clear();
-      const provider = getProviderForConfig();
-      header.setText(`Pick a default model for ${provider}`);
+      showStep(() => {
+        const provider = getProviderForConfig();
+        header.content = `Pick a default model for ${provider}`;
 
-      const items: SelectItem[] = models.map((m) => ({
-        value: m.id,
-        label: m.id,
-        description: m.contextWindow
-          ? `${Math.round(m.contextWindow / 1000)}k context`
-          : undefined,
-      }));
+        const items = models.map((m) => ({
+          value: m.id,
+          name: m.id,
+          description: m.contextWindow
+            ? `${Math.round(m.contextWindow / 1000)}k context`
+            : "",
+        }));
 
-      const list = new SelectList(items, maxVisible, SELECT_THEME);
-      list.onSelect = (item) => {
-        state.model = item.value;
-        showConfirmStep();
-      };
-      list.onCancel = () => showManualModelStep();
+        const select = new EscapableSelect(ctx, {
+          id: "setup-model-picker",
+          width: 40,
+          height: maxVisible,
+          options: items,
+          showScrollIndicator: true,
+        });
+        select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+          state.model = typeof option.value === "string" ? option.value : "";
+          showConfirmStep();
+        });
+        select.onCancel = () => showManualModelStep();
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(list);
-      root.addChild(footer);
-      tui.setFocus(list);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(select);
+        root.add(footer);
+        focusComponent(select);
+      });
     };
 
     const showManualModelStep = () => {
-      root.clear();
-      const provider = getProviderForConfig();
-      const defaultModel = pickDefaultModel(provider);
-      header.setText(`Enter model id for ${provider}`);
-      const hint = defaultModel
-        ? TUI_STYLE.faint(`  Press Enter for default: ${defaultModel}`)
-        : TUI_STYLE.faint("  e.g. llama-3.1-8b-instruct");
-      body.setText([
-        "Enter the model id to use as default.",
-        hint,
-        "",
-      ].join("\n"));
+      showStep(() => {
+        const provider = getProviderForConfig();
+        const defaultModel = pickDefaultModel(provider);
+        header.content = `Enter model id for ${provider}`;
+        body.content = [
+          "Enter the model id to use as default.",
+          defaultModel
+            ? TUI_STYLE.faint(`  Press Enter for default: ${defaultModel}`)
+            : TUI_STYLE.faint("  e.g. llama-3.1-8b-instruct"),
+          "",
+        ].join("\n");
 
-      const input = new Input();
-      if (defaultModel) input.setValue(defaultModel);
-      input.onSubmit = (value: string) => {
-        state.model = value.trim() || defaultModel;
-        showConfirmStep();
-      };
-      input.onEscape = () => showModelFetchStep();
+        const input = new InputRenderable(ctx, { id: "setup-custom-model" });
+        if (defaultModel) input.value = defaultModel;
+        input.onSubmit = () => {
+          state.model = input.value.trim() || defaultModel || "";
+          showConfirmStep();
+        };
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(input);
-      root.addChild(footer);
-      tui.setFocus(input);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(input);
+        root.add(footer);
+        focusComponent(input);
+      });
     };
 
     // ── Step: Confirm + write ──
     const showConfirmStep = () => {
       const provider = getProviderForConfig();
-      root.clear();
 
-      const keyStatus = state.keySaved
-        ? `Key: ${chalk.green("saved to credential store")}`
-        : hasApiKey(provider)
-          ? `Key: ${chalk.green("in credential store")}`
-          : "Key: (not set)";
-
-      const summary: string[] = [
-        `Provider: ${chalk.bold(provider)}`,
-        state.model ? `Model: ${state.model}` : "Model: (auto-detect)",
-        keyStatus,
-        "",
-        "Create ~/.praana/config.toml?",
-      ];
-      header.setText(`Selected: ${provider}`);
-      body.setText(summary.join("\n"));
-
-      const list = new SelectList(YES_NO_ITEMS, 4, SELECT_THEME);
-      list.onSelect = (item) => {
-        if (item.value === "no") {
-          doFinalize("skip");
-        } else if (existsSync(getSetupConfigPath())) {
-          showOverwriteStep();
+      showStep(() => {
+        let keyStatus: string;
+        if (state.keySaved) {
+          keyStatus = `Key: ${TUI_STYLE.success("saved to credential store")}`;
+        } else if (hasApiKey(provider)) {
+          keyStatus = `Key: ${TUI_STYLE.success("in credential store")}`;
         } else {
-          doFinalize("write");
+          keyStatus = "Key: (not set)";
         }
-      };
-      list.onCancel = () => showProviderStep();
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(new Spacer(1));
-      root.addChild(list);
-      root.addChild(footer);
-      tui.setFocus(list);
-      tui.requestRender(true);
+        const summary: string[] = [
+          `Provider: ${TUI_STYLE.success(provider)}`,
+          state.model ? `Model: ${state.model}` : "Model: (auto-detect)",
+          keyStatus,
+          "",
+          "Create ~/.praana/config.toml?",
+        ];
+        header.content = `Selected: ${provider}`;
+        body.content = summary.join("\n");
+
+        const select = new EscapableSelect(ctx, {
+          id: "setup-confirm",
+          width: 40,
+          height: 6,
+          options: YES_NO_OPTIONS,
+        });
+        select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+          if (option.value === "no") {
+            doFinalize("skip");
+          } else if (existsSync(getSetupConfigPath())) {
+            showOverwriteStep();
+          } else {
+            doFinalize("write");
+          }
+        });
+        select.onCancel = () => showProviderStep();
+
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(select);
+        root.add(footer);
+        focusComponent(select);
+      });
     };
 
     const showOverwriteStep = () => {
-      root.clear();
-      header.setText(`Config exists at ${getSetupConfigPath()}`);
-      body.setText("Overwrite?");
+      showStep(() => {
+        header.content = `Config exists at ${getSetupConfigPath()}`;
+        body.content = "Overwrite?";
 
-      const list = new SelectList(YES_NO_ITEMS, 4, SELECT_THEME);
-      list.onSelect = (item) => {
-        if (item.value === "yes") {
-          doFinalize("overwrite");
-        } else {
-          doFinalize("skip");
-        }
-      };
-      list.onCancel = () => showConfirmStep();
+        const select = new EscapableSelect(ctx, {
+          id: "setup-overwrite",
+          width: 40,
+          height: 6,
+          options: YES_NO_OPTIONS,
+        });
+        select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+          if (option.value === "yes") {
+            doFinalize("overwrite");
+          } else {
+            doFinalize("skip");
+          }
+        });
+        select.onCancel = () => showConfirmStep();
 
-      root.addChild(header);
-      root.addChild(new Spacer(1));
-      root.addChild(body);
-      root.addChild(new Spacer(1));
-      root.addChild(list);
-      root.addChild(footer);
-      tui.setFocus(list);
-      tui.requestRender(true);
+        root.add(header);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(body);
+        root.add(new TextRenderable(ctx, { content: "" }));
+        root.add(select);
+        root.add(footer);
+        focusComponent(select);
+      });
     };
 
-    const sigintHandler = () => {
-      finish({ success: false, message: "Setup cancelled." });
-    };
-    process.on("SIGINT", sigintHandler);
-
+    // Boot banner
     const width = process.stdout.columns ?? 80;
     const bannerLines = renderBootBanner({
       version: versionNumber(),
@@ -882,8 +965,12 @@ export async function runSetupWizardTui(): Promise<SetupResult> {
       process.stdout.write(line + "\n");
     }
 
-    tui.addChild(root);
-    tui.start();
+    renderer.root.add(root);
     showProviderStep();
   });
+}
+
+function createMockStdin(chunks: string[]): NodeJS.ReadableStream {
+  const { Readable } = require("node:stream");
+  return Readable.from(chunks) as unknown as NodeJS.ReadableStream;
 }
