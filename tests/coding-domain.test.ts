@@ -182,6 +182,17 @@ describe("inferContentTypeFromTool", () => {
   it("non-shell tool → null", () => {
     expect(inferContentTypeFromTool("read_file", "rg foo")).toBe(null);
   });
+
+  it("search_code tool → search_results", () => {
+    expect(inferContentTypeFromTool("search_code", "src/")).toBe("search_results");
+  });
+
+  it("search_code inference ignores command content — query may mention tests", () => {
+    // Regression (#275): search_code results fell through to content-based
+    // classification and were mislabeled test_output when the output
+    // contained PASS/FAIL markers.
+    expect(inferContentTypeFromTool("search_code", "npm test")).toBe("search_results");
+  });
 });
 
 // ---------------------------------------------------------------------------

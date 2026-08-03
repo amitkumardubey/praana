@@ -12,23 +12,25 @@ export class TestDistiller implements Distiller {
     const summaries: string[] = [];
     let captureFailure = false;
     const failureLimit = intensity === "full" ? 80 : 140;
+    const lineCap = 4096;
 
     for (const line of lines) {
       const trimmed = line.trim();
+      const capped = line.length > lineCap ? line.slice(0, lineCap) : line;
       const isFailureStart =
-        /^\s*(FAIL|✕|×)\s/.test(line) ||
-        /\bFAIL\b/.test(line) ||
+        /^\s*(FAIL|✕|×)\s/.test(capped) ||
+        /\bFAIL\b/.test(capped) ||
         /^AssertionError\b/.test(trimmed) ||
         /^(TypeError|ReferenceError|Error):/.test(trimmed);
-      const isPassingSuite = /^\s*(PASS|✓)\s/.test(line);
+      const isPassingSuite = /^\s*(PASS|✓)\s/.test(capped);
       const isSummary =
         /^(Test Files|Tests|Test Suites|Snapshots|Time):/.test(trimmed) ||
         /^Tests:\s+/.test(trimmed) ||
         /^\d+\s+(passed|failed)\b/i.test(trimmed);
 
       if (isSummary) {
-        summaries.push(line);
-        if (/failed/i.test(line)) captureFailure = true;
+        summaries.push(capped);
+        if (/failed/i.test(capped)) captureFailure = true;
         continue;
       }
 
@@ -42,7 +44,7 @@ export class TestDistiller implements Distiller {
       }
 
       if (captureFailure && failures.length < failureLimit) {
-        failures.push(line);
+        failures.push(capped);
       }
     }
 
@@ -55,6 +57,7 @@ export class TestDistiller implements Distiller {
     } else {
       parts.push(`Test output: ${lines.length} lines`);
     }
-    return parts.join("\n");
+    const result = parts.join("\n");
+    return result.length > input.length ? input : result;
   }
 }

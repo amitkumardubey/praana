@@ -42,11 +42,11 @@ src/
   context-engine/
     index.ts          — ContextEngine facade (store, ledger, extraction, checkpoint, telemetry, workflow patterns)
     types.ts          — Engine-level interfaces; WorkflowPattern
-    artifact-store.ts — Content-addressed blob store with distiller integration
+    artifact-store.ts — Content-addressed blob store; stub cards by default, distilled summaries stored for stats/memory promotion (never rendered in prompts)
     turn-ledger.ts    — Append-only typed turn records with BM25 search
     distiller.ts      — DistillerRegistry, sync/deferred dispatch, intensity selection
     classify.ts       — Fast regex-based content-type classification
-    summarize.ts      — Generic head/tail summarisation; re-exports estimateTokens from token-estimate.ts
+    summarize.ts      — Stub card builder (buildArtifactCard); legacy summarizeGeneric kept for reference; re-exports estimateTokens from token-estimate.ts
     extraction.ts     — Post-turn deterministic extraction (TurnDigest, activity, errors)
     turn-digest.ts    — TurnDigest extraction and state-graph diffing
     activity-log.ts   — ActivityEntry derivation and rolling buffer
@@ -64,12 +64,11 @@ src/
     workflow-tracker.ts — Workflow pattern tracking: extract tool sequences + artifact types, persist to workflow_patterns table, render compact Workflow Context section
     db.ts             — SQLite schema for all engine tables: artifacts, turns, checkpoint, scorecard, workflow_patterns
   distillers/
-    index.ts       — Default distiller registry factory
-    git-diff.ts     — Diff hunk compaction with context reduction
-    npm-test.ts     — Test output: collect failures, summarise passes
+    git-diff.ts    — Diff hunk compaction with context reduction
+    npm-test.ts     — Test output: failure detail + summary lines, per-line 4K char cap, output ≤ input invariant
     tsc-errors.ts   — Build error deduplication
     rg-results.ts   — Search result dedup and top-k
-    generic.ts      — Log template mining + generic head/tail
+    generic.ts      — GenericDistiller (prose/code/json head-tail + JSON compaction) and LogDistiller (log template mining); summaries feed stats + memory promotion, not cards
   tools/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools

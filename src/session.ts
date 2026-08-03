@@ -82,6 +82,18 @@ export function visibleCheckpointAfterBoundary(
   return checkpoint;
 }
 
+/**
+ * M4 artifact promotion guard: a distilled summary is only promotable to
+ * Cognitive Memory when it is non-empty human-readable prose — not a stub
+ * (no matching distiller → empty summary) and not a JSON blob.
+ * Exported for tests.
+ */
+export function isPromotableArtifactSummary(summary: string): boolean {
+  const trimmed = summary.trimStart();
+  if (!trimmed) return false;
+  return !trimmed.startsWith("{") && !trimmed.startsWith("[");
+}
+
 /** Outcome of the session-end memory summarization step (issue #181 epilogue). */
 export type SessionEndStatus = {
   memory: "completed" | "background" | "skipped" | "failed";
@@ -1331,14 +1343,14 @@ export class Session {
         skipped++;
         continue;
       }
-      // Extra guard: skip if the summary looks like a JSON blob (starts with {).
-      const trimmedSummary = artifact.summary.trimStart();
-      if (trimmedSummary.startsWith("{") || trimmedSummary.startsWith("[")) {
+      // Extra guards: skip empty summaries (stub cards with no matching
+      // distiller) and summaries that look like JSON blobs (start with {/[).
+      if (!isPromotableArtifactSummary(artifact.summary)) {
         skipped++;
         continue;
       }
       // Cap to 200 chars — matches the learning size from the LLM summariser.
-      const content = trimmedSummary.slice(0, 200);
+      const content = artifact.summary.trimStart().slice(0, 200);
       try {
         const result = await this.memoryStore.remember(content, {
           kind: "fact",

@@ -866,9 +866,67 @@ describe("engine compiler", () => {
       (r) => r.included,
     ).length;
     expect(testingIncluded).toBeGreaterThanOrEqual(generalIncluded);
-    expect(testingResult.metrics.totalTokens).not.toBe(
-      generalResult.metrics.totalTokens,
-    );
+    // With stub artifact cards the token difference may be zero, but the
+    // budget allocation still controls which scored units are included.
+    // Verify that the testing allocation (artifacts=0.35) includes at least
+    // as many artifact records as the general allocation (artifacts=0.25).
+    const testingArtifacts = testingResult.scoreRecords.filter(
+      (r) => r.included && r.type === "artifact_card",
+    ).length;
+    const generalArtifacts = generalResult.scoreRecords.filter(
+      (r) => r.included && r.type === "artifact_card",
+    ).length;
+    expect(testingArtifacts).toBeGreaterThanOrEqual(generalArtifacts);
+  });
+
+  it("scored artifact stub cards show the artifact store's raw token count", async () => {
+    const input = {
+      stateGraph: emptyStateGraph(),
+      memoryDigest: null,
+      recentEvents: [],
+      userInput: "check the search results",
+      toolSchemas: [],
+      cwd: "/tmp",
+      sessionId: "s1",
+      tokenBudget: 20000,
+      currentTurn: 10,
+      turnRecords: [
+        {
+          turn: 5,
+          userMessage: "find foo",
+          assistantMessage: "searching",
+          toolCalls: [
+            {
+              tool: "search_code",
+              args: { path: "src/" },
+              resultArtifactId: "art_big1234567",
+              // Ledger text is truncated (~400 chars); it must not drive the
+              // "N tokens raw" label when a store resolver is available.
+              resultText: "Y".repeat(800),
+            },
+          ],
+          artifactIds: ["art_big1234567"],
+          filesRead: [],
+          filesWritten: [],
+          errors: [],
+          tokenCount: 100,
+          timestamp: 1,
+        },
+      ],
+      engineConfig: ENGINE_CONFIG,
+    };
+
+    const withResolver = await compileEngineWithMetrics({
+      ...input,
+      artifactTokens: (id: string) => (id === "art_big1234567" ? 42_100 : undefined),
+    });
+    expect(withResolver.prompt).toContain("42,100 tokens raw");
+    expect(withResolver.prompt).toContain('retrieve_artifact("art_big1234567")');
+
+    // Without a resolver, fall back to the ledger-text estimate.
+    const withoutResolver = await compileEngineWithMetrics(input);
+    expect(withoutResolver.prompt).toContain('retrieve_artifact("art_big1234567")');
+    expect(withoutResolver.prompt).not.toContain("42,100 tokens raw");
   });
 });
 

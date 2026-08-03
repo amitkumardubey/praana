@@ -186,6 +186,42 @@ describe("context-engine artifact store", () => {
     expect(classifyContentType("FAIL tests/a.test.ts\n✓ 2 passed")).toBe("test_output");
   });
 
+  it("classifyContentType scans only the first 4K chars — a deep PASS does not misclassify", () => {
+    // Regression (#275): a 53M-char search result containing "PASS" at
+    // position 42.9M was classified as test_output and "distilled" into a
+    // summary larger than the input.
+    const head = "src/a.ts:1:export function foo()\n".repeat(200); // ~6.6K chars
+    const text = `${head}\nPASS tests/foo.test.ts\nTests: 1 passed`;
+    expect(text.length).toBeGreaterThan(4096);
+    expect(classifyContentType(text)).not.toBe("test_output");
+  });
+
+  it("classifyContentType still detects test output within the 4K head window", () => {
+    const text = `PASS tests/foo.test.ts\nTests: 1 passed\n${"x\n".repeat(5000)}`;
+    expect(classifyContentType(text)).toBe("test_output");
+  });
+
+  it("artifact cards are bounded stubs that embed no raw content", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = largeText(5000);
+    const ingested = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "make all",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.promptText).toMatch(
+      /^\[artifact: art_[a-f0-9]{12} \| shell: make all \| [\d,]+ tokens raw\]\nRetrieve: retrieve_artifact\("art_[a-f0-9]{12}"\)$/,
+    );
+    expect(ingested.promptText.length).toBeLessThan(200);
+    expect(ingested.promptText).not.toContain(raw.slice(0, 100));
+    // Full bytes remain retrievable on demand.
+    const retrieved = store.retrieve(ingested.artifactId!, 1);
+    expect(retrieved.ok).toBe(true);
+    expect((retrieved as { ok: true; content: string }).content).toBe(raw);
+  });
+
   it("lists read_file artifacts via listFileReads", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     store.ingestToolResult({

@@ -7,9 +7,12 @@ import {
 } from "../domain/coding-domain.js";
 import type { ContentType } from "./types.js";
 
-/** Fast regex-based content-type classification (<1ms). */
+/** Fast regex-based content-type classification (<1ms). Scans at most
+ *  the first 4K chars to avoid misclassifying huge inputs (e.g. a 53M-char
+ *  search result that happens to contain "PASS" deep in the output). */
 export function classifyContentType(text: string): ContentType {
-  const trimmed = text.trim();
+  const head = text.slice(0, 4096);
+  const trimmed = head.trim();
   if (!trimmed) return "other";
 
   if (isDiffContent(trimmed)) return "diff";

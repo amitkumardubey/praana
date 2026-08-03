@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from "bun:test";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { isPromotableArtifactSummary } from "../src/session.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { listHighValueArtifacts } from "../src/context-engine/db.js";
 import { MemoryStore } from "../src/memory/store.js";
@@ -120,6 +121,18 @@ describe("M4 artifact promotion — listing", () => {
     expect(() => listHighValueArtifacts(db, "any", 0)).toThrow();
     expect(() => listHighValueArtifacts(db, "any", -1)).toThrow();
     db.close();
+  });
+});
+
+describe("M4 artifact promotion — summary guard", () => {
+  it("rejects empty, whitespace-only, and JSON-blob summaries", () => {
+    // Stub cards with no matching distiller store an empty summary; promoting
+    // it would write a blank fact into Cognitive Memory.
+    expect(isPromotableArtifactSummary("")).toBe(false);
+    expect(isPromotableArtifactSummary("   \n  ")).toBe(false);
+    expect(isPromotableArtifactSummary('{"ok":true}')).toBe(false);
+    expect(isPromotableArtifactSummary("  [1,2,3]")).toBe(false);
+    expect(isPromotableArtifactSummary("Review notes for module X")).toBe(true);
   });
 });
 
