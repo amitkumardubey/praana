@@ -1,14 +1,14 @@
 /**
- * Ephemeral toast overlay region.
+ * Ephemeral toast overlay region (OpenTUI).
  *
  * Toasts appear above the input, auto-dismiss after their tone timeout, and
  * are never written to the scrollback transcript. Errors are sticky until the
  * next user interaction clears them.
  *
  * Design §8:
- *   info/success → 3s, warn → 5s, error → sticky (until next user input)
+ *   info/success → 3s, warn → 5s, error → sticky (until clearErrors())
  */
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
 import { TUI_STYLE } from "./theme.js";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
@@ -17,14 +17,15 @@ interface Toast {
   id: number;
   message: string;
   tone: ToastTone;
-  expiresAt: number | null; // null = sticky
+  expiresAt: number | null;
+  node: TextRenderable;
 }
 
 const TOAST_DURATION: Record<ToastTone, number | null> = {
   info: 3000,
   success: 3000,
   warn: 5000,
-  error: null, // sticky until clearErrors()
+  error: null,
 };
 
 const TONE_GLYPH: Record<ToastTone, string> = {
@@ -34,58 +35,51 @@ const TONE_GLYPH: Record<ToastTone, string> = {
   error: "✕",
 };
 
-export class ToastRegion implements Component {
+export class ToastRegion extends BoxRenderable {
   private toasts: Toast[] = [];
   private nextId = 1;
-  private readonly tui: TUI;
 
-  constructor(tui: TUI) {
-    this.tui = tui;
+  constructor(ctx: RenderContext) {
+    super(ctx, { id: "toast-region", flexDirection: "column" });
   }
 
   show(message: string, tone: ToastTone = "info"): void {
     const duration = TOAST_DURATION[tone];
     const expiresAt = duration !== null ? Date.now() + duration : null;
     const id = this.nextId++;
-    this.toasts.push({ id, message, tone, expiresAt });
-    this.tui.requestRender();
+    const color =
+      tone === "error"
+        ? TUI_STYLE.error
+        : tone === "warn"
+          ? TUI_STYLE.warning
+          : tone === "success"
+            ? TUI_STYLE.success
+            : TUI_STYLE.info;
+    const node = new TextRenderable(this.ctx, { content: color(`  ${TONE_GLYPH[tone]} ${message}`) });
+    this.toasts.push({ id, message, tone, expiresAt, node });
+    this.add(node);
+    this.ctx.requestRender();
     if (expiresAt !== null) {
-      setTimeout(() => { this.dismiss(id); }, duration!);
+      setTimeout(() => this.dismiss(id), duration!);
     }
   }
 
   clearErrors(): void {
-    this.toasts = this.toasts.filter((t) => t.tone !== "error");
-    this.tui.requestRender();
+    this.toasts = this.toasts.filter((t) => {
+      if (t.tone === "error") {
+        this.remove(t.node);
+        return false;
+      }
+      return true;
+    });
+    this.ctx.requestRender();
   }
 
   private dismiss(id: number): void {
-    const before = this.toasts.length;
-    this.toasts = this.toasts.filter((t) => t.expiresAt === null || t.id !== id);
-    if (this.toasts.length !== before) this.tui.requestRender();
-  }
-
-  invalidate(): void {
-    // No cache; render() is pure.
-  }
-
-  render(width: number): string[] {
-    // Expire any timed-out toasts inline before render.
-    const now = Date.now();
-    this.toasts = this.toasts.filter((t) => t.expiresAt === null || t.expiresAt > now);
-
-    return this.toasts.map((t) => {
-      const glyph = TONE_GLYPH[t.tone];
-      const color =
-        t.tone === "error"
-          ? TUI_STYLE.error
-          : t.tone === "warn"
-            ? TUI_STYLE.warning
-            : t.tone === "success"
-              ? TUI_STYLE.success
-              : TUI_STYLE.info;
-      const line = `  ${color(glyph)} ${t.message}`;
-      return truncateToWidth(line, width, "…", false);
-    });
+    const toast = this.toasts.find((t) => t.id === id);
+    if (!toast) return;
+    this.remove(toast.node);
+    this.toasts = this.toasts.filter((t) => t.id !== id);
+    this.ctx.requestRender();
   }
 }
