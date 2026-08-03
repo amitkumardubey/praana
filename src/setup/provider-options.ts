@@ -1,4 +1,8 @@
-import type { SelectItem } from "@earendil-works/pi-tui";
+export interface SelectItem {
+  label: string;
+  value: string;
+  description?: string;
+}
 import {
   listKnownProviders,
   listAvailableProviders,

@@ -7,6 +7,7 @@ import {
   buildProviderSelectItems,
   formatDetectedProviderLines,
   CUSTOM_PROVIDER_VALUE,
+  type SelectItem,
 } from "./provider-options.js";
 import { getSetupConfigPath } from "./config-writer.js";
 import {
@@ -27,7 +28,6 @@ import { hasApiKey, isProviderAvailable } from "../llm.js";
 import { isOAuthOnlyProvider } from "../oauth.js";
 import type { SetupResult, CustomProviderConfig } from "./types.js";
 import type { ProviderCatalogModelEntry } from "../provider-catalog.js";
-import type { SelectItem } from "@earendil-works/pi-tui";
 
 /**
  * Readline-based setup fallback when pi-tui is unavailable.

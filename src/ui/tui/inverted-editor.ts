@@ -5,7 +5,7 @@
  * The prompt "❯ " is rendered as part of the textarea content.
  * Vertical padding and a bottom border provide visual separation.
  */
-import { BoxRenderable, TextareaRenderable, type RenderContext } from "@opentui/core";
+import { BoxRenderable, TextareaRenderable, type RenderContext, type StyledText } from "@opentui/core";
 
 const PROMPT = "❯ ";
 
@@ -80,7 +80,7 @@ export class InvertedEditor extends BoxRenderable {
     this.inner.placeholder = value;
   }
 
-  get placeholder(): string | null {
+  get placeholder(): StyledText | string | null {
     return this.inner.placeholder;
   }
 
