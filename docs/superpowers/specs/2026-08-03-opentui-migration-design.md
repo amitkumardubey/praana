@@ -34,15 +34,15 @@ Everything under `src/ui/tui/`:
 - `logout-wizard.ts` (180 lines) — `/logout` flow
 - `setup-wizard.ts` (889 lines) — first-run standalone TUI
 - `download-consent.ts` (104 lines) — standalone pre-session consent TUI
-- `toast-region.ts`, `slash-command-overlay.ts`, `boot-summary.ts`, `banner.ts`, `tool-icons.ts`, `render-utils.ts`, `markdown-theme.ts`, `redirect-pi-logs.ts` — remaining utilities
+- `toast-region.ts`, `slash-command-overlay.ts`, `boot-summary.ts`, `banner.ts`, `tool-icons.ts`, `render-utils.ts`, `markdown-theme.ts` — remaining utilities
 
 ### Dropped (net simplification)
 - `redirect-pi-logs.ts` and `tests/redirect-pi-logs.test.ts` — pi-tui-specific hack to redirect pi-tui's hardcoded crash-log path (`~/.pi/agent/pi-crash.log`). OpenTUI has no equivalent hardcoded logger, so this is deleted outright.
 
-### Type-only pi-tui references (migrate to local utils)
-- `src/setup/setup-readline.ts` — imports `SelectItem` type from pi-tui
-- `src/setup/provider-options.ts` — imports `SelectItem` type from pi-tui
-- `src/model-listing.ts` — imports `fuzzyFilter` from pi-tui; port to a small local util
+### Type-only pi-tui references (migrate to OpenTUI's `SelectOption`)
+- `src/setup/setup-readline.ts` — imports `SelectItem` type from pi-tui; replace with `@opentui/core`'s `SelectOption` type
+- `src/setup/provider-options.ts` — imports `SelectItem` type from pi-tui; replace with `@opentui/core`'s `SelectOption` type
+- `src/model-listing.ts` — imports `fuzzyFilter` from pi-tui; port to a small local util (same one used for `SelectRenderable` filtering per Component Mapping)
 
 ## Component Mapping
 
