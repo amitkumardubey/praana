@@ -45,7 +45,7 @@ import { IdentityBar } from "./chrome/identity-bar.js";
 import { GlanceBar } from "./chrome/glance-bar.js";
 import { ToastRegion } from "./toast-region.js";
 import { OpenTuiSink } from "./sink.js";
-import { SlashCommandResultOverlay } from "./slash-command-overlay.js";
+import { showSlashCommandResult, dismissSlashCommandResult } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
 import { LoginWizard } from "./login-wizard.js";
 import { LogoutWizard } from "./logout-wizard.js";
@@ -133,10 +133,9 @@ export async function runTui(
   const glanceBar = new GlanceBar(tui);
   glanceBar.setBackgroundZones(config.ui.background_zones);
 
-  let sink: OpenTuiSink | null = null;
   const refreshChrome = () => {
     const base = controller.getStatusBarInput();
-    const preview = piSink?.getContextPreview() ?? null;
+    const preview = openTuiSink?.getContextPreview() ?? null;
     identityBar.setInput(base);
     glanceBar.update({
       status: preview ? statusBarFromSnapshot(base, preview) : base,
@@ -155,7 +154,6 @@ export async function runTui(
   projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
 
   const toast = new ToastRegion(tui);
-  const slashOverlay = new SlashCommandResultOverlay();
   let slashOverlayHandle: OverlayHandle | null = null;
 
   const spinner = new Loader(
@@ -241,8 +239,8 @@ export async function runTui(
   };
 
   const openModelSelector = () => {
-    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
-      slashOverlayHandle.hide();
+    if (slashOverlayHandle) {
+      dismissSlashCommandResult(tui as never, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
@@ -303,8 +301,8 @@ export async function runTui(
   };
 
   const openLoginWizard = (providerHint?: string) => {
-    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
-      slashOverlayHandle.hide();
+    if (slashOverlayHandle) {
+      dismissSlashCommandResult(tui as never, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
@@ -378,8 +376,8 @@ export async function runTui(
   };
 
   const openLogoutWizard = () => {
-    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
-      slashOverlayHandle.hide();
+    if (slashOverlayHandle) {
+      dismissSlashCommandResult(tui as never, slashOverlayHandle);
       slashOverlayHandle = null;
     }
 
@@ -415,21 +413,13 @@ export async function runTui(
   };
 
   const showSlashOverlay = (lines: string[]) => {
-    slashOverlay.setLines(lines);
-    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
-      tui.requestRender();
-      return;
+    if (slashOverlayHandle) {
+      dismissSlashCommandResult(tui as never, slashOverlayHandle);
     }
-    slashOverlayHandle = tui.showOverlay(slashOverlay, {
-      anchor: "bottom-center",
-      width: "75%",
-      maxHeight: "50%",
-      margin: { top: 2, bottom: 6 },
-      nonCapturing: true,
-    });
+    slashOverlayHandle = showSlashCommandResult(tui as never, lines);
   };
 
-  const sink = new OpenTuiSink(tui, transcript, toast, {
+  const openTuiSink = new OpenTuiSink(tui, transcript, toast, {
     ambient: config.ui.ambient,
     showThinking: () => controller.showThinking,
     onSpinnerMessage: (msg) => { spinner.setMessage(msg); },
@@ -446,7 +436,6 @@ export async function runTui(
       });
     },
   });
-  piSink = sink;
 
   let turnStartedAt = 0;
 
@@ -481,12 +470,12 @@ export async function runTui(
       }
 
       if (result.display === "inline_transcript") {
-        sink.nextGroup();
-        sink.appendUser(input);
+        openTuiSink.nextGroup();
+        openTuiSink.appendUser(input);
         if (result.shellRun) {
-          sink.appendShellRun(result.shellRun);
+          openTuiSink.appendShellRun(result.shellRun);
         } else if (result.lines.length > 0) {
-          sink.onSystemLines(result.lines);
+          openTuiSink.onSystemLines(result.lines);
         }
       } else if (result.display === "toast" && result.toastTone) {
         toast.show(
@@ -494,7 +483,7 @@ export async function runTui(
           toastToneToType(result.toastTone),
         );
       } else if (result.lines.length > 0) {
-        sink.onSlashCommandResult?.(result.lines);
+        openTuiSink.onSlashCommandResult?.(result.lines);
       }
 
       if (result.action === "exit") {
@@ -504,7 +493,7 @@ export async function runTui(
       if (result.action === "clear_transcript") {
         projection.apply({ type: "transcript_cleared" });
         transcript.clear();
-        piSink?.clearContextPreview();
+        openTuiSink?.clearContextPreview();
         refreshChrome();
       }
       if (result.action === "new_session") {
@@ -514,7 +503,7 @@ export async function runTui(
 
         projection.apply({ type: "transcript_cleared" });
         transcript.clear();
-        piSink?.clearContextPreview();
+        openTuiSink?.clearContextPreview();
 
         // Re-apply startup-time configuration that may have changed.
         identityBar.setBackgroundZones(config.ui.background_zones);
@@ -526,8 +515,8 @@ export async function runTui(
         projection.setUseUnicode(transcriptOpts.useUnicode);
 
         // Render the new-session banner into the transcript.
-        sink.onSystemLines(newInfo.bannerLines);
-        sink.nextGroup();
+        openTuiSink.onSystemLines(newInfo.bannerLines);
+        openTuiSink.nextGroup();
 
         refreshChrome();
       }
@@ -550,8 +539,8 @@ export async function runTui(
       return;
     }
 
-    sink.nextGroup();
-    sink.appendUser(input);
+    openTuiSink.nextGroup();
+    openTuiSink.appendUser(input);
     editor.inner.disableSubmit = true;
     spinnerSlot.addChild(spinner);
     spinner.setMessage("thinking…");
@@ -559,32 +548,22 @@ export async function runTui(
     turnStartedAt = Date.now();
 
     try {
-      await controller.runUserTurn(input, sink);
+      await controller.runUserTurn(input, openTuiSink);
     } finally {
       spinner.stop();
       spinnerSlot.removeChild(spinner);
       editor.inner.disableSubmit = false;
-      sink.appendTurnFooter(Date.now() - turnStartedAt);
+      openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
       tui.requestRender();
     }
   };
 
   tui.addInputListener((data) => {
-    if (slashOverlayHandle && !slashOverlayHandle.isHidden()) {
-      if (
-        data === "\r" ||
-        data === "\n" ||
-        matchesKey(data, "escape") ||
-        data === "q"
-      ) {
-        slashOverlayHandle.hide();
-        slashOverlayHandle = null;
-        return { consume: true };
-      }
-      // Any other key dismisses the overlay without consuming it.
-      slashOverlayHandle.hide();
+    if (slashOverlayHandle) {
+      dismissSlashCommandResult(tui as never, slashOverlayHandle);
       slashOverlayHandle = null;
+      return { consume: true };
     }
 
     if (matchesKey(data, "f9")) {
@@ -603,7 +582,7 @@ export async function runTui(
         spinner.stop();
         spinnerSlot.removeChild(spinner);
         editor.inner.disableSubmit = false;
-        sink.onFallback("⚡ turn aborted");
+        openTuiSink.onFallback("⚡ turn aborted");
         tui.requestRender();
         return { consume: true };
       }
