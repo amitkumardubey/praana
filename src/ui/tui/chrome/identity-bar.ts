@@ -1,37 +1,44 @@
 /**
  * Top identity chrome — brand, model, cwd · branch (design §5).
  */
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
 import type { StatusBarInput } from "../../../status-bar.js";
 import { formatTuiIdentityLine } from "./glance-format.js";
-import { paintZoneLine, type ZoneKind } from "../theme.js";
+import { paintZoneLine, truncatePlainText, type ZoneKind } from "../theme.js";
 
-export class IdentityBar implements Component {
+export class IdentityBar extends BoxRenderable {
+  private readonly textNode: TextRenderable;
   private input: StatusBarInput | null = null;
   private backgroundZones = true;
 
+  constructor(ctx: RenderContext) {
+    super(ctx, { id: "identity-bar", flexDirection: "row" });
+    this.textNode = new TextRenderable(ctx, { id: "identity-bar-text", content: " praana" });
+    this.add(this.textNode);
+  }
+
   setInput(input: StatusBarInput): void {
     this.input = input;
+    this.repaint();
   }
 
   setBackgroundZones(enabled: boolean): void {
     this.backgroundZones = enabled;
+    this.repaint();
   }
 
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    if (width <= 0) return [""];
-    const line = this.input
-      ? formatTuiIdentityLine(this.input)
-      : "praana";
-    const painted = paintZoneLine(
-      truncateToWidth(" " + line, width, "…"),
+  private repaint(): void {
+    const width = this.width || 80;
+    const line = this.input ? formatTuiIdentityLine(this.input) : "praana";
+    this.textNode.content = paintZoneLine(
+      truncatePlainText(" " + line, width),
       "chrome" satisfies ZoneKind,
       this.backgroundZones,
       width,
     );
-    return [painted];
+  }
+
+  protected onResize(_width: number, _height: number): void {
+    this.repaint();
   }
 }

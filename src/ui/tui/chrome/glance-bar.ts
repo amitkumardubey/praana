@@ -1,51 +1,55 @@
 /**
  * Bottom glance chrome — ctx%, tiers, skills, cost, flags (design §5).
  */
-import { truncateToWidth } from "@earendil-works/pi-tui";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
 import chalk from "chalk";
 import type { StatusBarInput } from "../../../status-bar.js";
 import { formatTuiGlanceLine } from "./glance-format.js";
-import { paintZoneLine } from "../theme.js";
+import { paintZoneLine, truncatePlainText } from "../theme.js";
 
 export interface GlanceBarInput {
   status: StatusBarInput;
   showCost: boolean;
 }
 
-export class GlanceBar implements Component {
+export class GlanceBar extends BoxRenderable {
+  private readonly textNode: TextRenderable;
   private input: GlanceBarInput | null = null;
   private backgroundZones = true;
-  private readonly tui: TUI;
 
-  constructor(tui: TUI) {
-    this.tui = tui;
+  constructor(ctx: RenderContext) {
+    super(ctx, { id: "glance-bar", flexDirection: "row" });
+    this.textNode = new TextRenderable(ctx, { id: "glance-bar-text", content: " initializing…" });
+    this.add(this.textNode);
   }
 
   update(input: GlanceBarInput): void {
     this.input = input;
-    this.tui.requestRender();
+    this.repaint();
+    (this as unknown as { requestRender: () => void }).requestRender();
   }
 
   setBackgroundZones(enabled: boolean): void {
     this.backgroundZones = enabled;
+    this.repaint();
   }
 
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    if (width <= 0) return [""];
+  private repaint(): void {
+    const width = this.width || 80;
     const line = this.input
       ? formatTuiGlanceLine(this.input.status, {
           showCost: this.input.showCost,
         })
       : chalk.dim("initializing…");
-    const painted = paintZoneLine(
-      truncateToWidth(" " + line, width, "…"),
+    this.textNode.content = paintZoneLine(
+      truncatePlainText(" " + line, width),
       "chrome",
       this.backgroundZones,
       width,
     );
-    return [painted];
+  }
+
+  protected onResize(_width: number, _height: number): void {
+    this.repaint();
   }
 }
