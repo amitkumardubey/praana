@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PRAANA — launch screen prototype</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/fontsource/css/commit-mono@5.2.5/index.min.css" />
+  <style>
+    :root {
+      --bg: #1e2129;
+      --canvas: #252833;
+      --chrome: #1a1d24;
+      --line: #3a3f4b;
+      --fg: #c8cdd8;
+      --muted: #7a8294;
+      --faint: #5c6474;
+      --brand: #e8ecf4;
+      --info: #6aa6b5;
+      --info-bg: #2a3d45;
+      --success: #8fad78;
+      --success-bg: #2a3828;
+      --cell: 14px;
+      --row: 22px;
+      --font: "Commit Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 600px at 50% -10%, #2a3140 0%, transparent 55%),
+        #12141a;
+      color: var(--fg);
+      font-family: var(--font);
+      font-size: var(--cell);
+      line-height: var(--row);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .stage {
+      width: min(1100px, 100%);
+      display: grid;
+      gap: 16px;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+
+    .toolbar strong {
+      color: var(--brand);
+      font-weight: 600;
+    }
+
+    .seg-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #161922;
+      flex-wrap: wrap;
+    }
+
+    .seg-toggle button {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .seg-toggle button[aria-pressed="true"] {
+      background: #2b3140;
+      color: var(--brand);
+    }
+
+    .hint { color: var(--faint); }
+
+    .term {
+      --term-bg: #181b22;
+      --canvas: #1c202b;
+      --chrome: #14171e;
+      --line: #2f3544;
+      background: var(--term-bg);
+      border: 1px solid #323846;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.35),
+        0 24px 60px rgba(0, 0, 0, 0.45);
+      height: min(640px, 78vh);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .term::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.025), transparent 18%),
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent calc(var(--row) - 1px),
+          rgba(0, 0, 0, 0.08) calc(var(--row) - 1px),
+          rgba(0, 0, 0, 0.08) var(--row)
+        );
+      opacity: 0.35;
+      mix-blend-mode: soft-light;
+    }
+
+    .term > * { position: relative; z-index: 1; }
+
+    .body {
+      flex: 1;
+      min-height: 0;
+      padding: 0;
+      overflow: auto;
+      background:
+        radial-gradient(ellipse 70% 55% at 50% 45%, #262b38 0%, transparent 70%),
+        var(--canvas);
+    }
+
+    .launch {
+      height: 100%;
+      width: 100%;
+      min-height: 280px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      animation: rise 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      padding: 16px;
+    }
+
+    .launch > div {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .launch-mark {
+      color: var(--brand);
+      font-size: 14px;
+      line-height: 1.05;
+      white-space: pre;
+      text-align: left;
+      margin: 0 auto;
+      text-shadow: 0 0 40px rgba(232, 236, 244, 0.06);
+    }
+
+    .launch-mark .c1 { color: var(--brand); }
+    .launch-mark .c2 { color: var(--info); }
+
+    .launch-pulse {
+      margin-top: 12px;
+      min-height: 1em;
+      min-width: 5ch;
+      color: var(--info);
+      font-size: 14px;
+      letter-spacing: 0.12em;
+      text-indent: 0.12em;
+      line-height: 1;
+      white-space: pre;
+      opacity: 0.9;
+    }
+
+    .launch-meta {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      line-height: 1.55;
+      width: 100%;
+      text-align: center;
+    }
+
+    .launch-meta-version {
+      margin-top: 14px;
+    }
+
+    .launch-meta-skills {
+      margin-top: 14px;
+    }
+
+    .chrome {
+      flex-shrink: 0;
+      background: var(--chrome);
+      display: grid;
+      gap: 0;
+    }
+
+    .prompt {
+      border-top: 1px solid #3a4254;
+      padding: 6px 14px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .prompt-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      min-height: var(--row);
+    }
+
+    .prompt-glyph {
+      color: var(--info);
+      flex-shrink: 0;
+      user-select: none;
+      margin-right: 2px;
+    }
+
+    .prompt-input {
+      flex: 1;
+      min-width: 0;
+      color: var(--fg);
+      caret-color: var(--brand);
+      outline: none;
+      border: 0;
+      background: transparent;
+      font: inherit;
+      line-height: var(--row);
+      resize: none;
+      field-sizing: content;
+      min-height: var(--row);
+      max-height: calc(var(--row) * 6);
+      overflow-y: auto;
+    }
+
+    .prompt-input::placeholder { color: var(--faint); }
+    .prompt-input:focus { outline: none; }
+
+    /* A — Current: ❯ + hairline (today’s TUI) */
+    .chrome[data-prompt="current"] .prompt {
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+
+    /* B — Quiet: no border, dim › */
+    .chrome[data-prompt="quiet"] .prompt {
+      border-top-color: transparent;
+      padding-top: 4px;
+    }
+    .chrome[data-prompt="quiet"] .prompt-glyph {
+      color: var(--faint);
+    }
+
+    /* C — Brand: “praana ›” lead-in */
+    .chrome[data-prompt="brand"] .prompt-glyph {
+      color: var(--brand);
+      font-weight: 600;
+    }
+    .chrome[data-prompt="brand"] .prompt-glyph .arrow {
+      color: var(--info);
+      font-weight: 400;
+    }
+
+    /* D — Inset: reverse-video input row (classic CLI feel) */
+    .chrome[data-prompt="inset"] .prompt {
+      padding: 6px 10px 8px;
+    }
+    .chrome[data-prompt="inset"] .prompt-row {
+      background: #2a3140;
+      padding: 2px 8px;
+      border-radius: 2px;
+      gap: 0;
+    }
+    .chrome[data-prompt="inset"] .prompt-glyph {
+      color: var(--brand);
+      margin-right: 0.75ch;
+    }
+    .chrome[data-prompt="inset"] .prompt-input {
+      caret-color: var(--info);
+    }
+
+    /* E — Box caret: [>] like early screenshot */
+    .chrome[data-prompt="box"] .prompt-glyph {
+      display: inline-grid;
+      place-items: center;
+      width: 1.15em;
+      height: 1.15em;
+      margin-top: 2px;
+      margin-right: 8px;
+      border: 1px solid var(--info);
+      color: var(--info);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    .status-stack {
+      padding: 4px 14px 8px;
+      display: grid;
+      gap: 2px;
+    }
+
+    .identity, .glance {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      white-space: nowrap;
+      overflow: hidden;
+      min-height: var(--row);
+    }
+
+    .identity {
+      gap: 0;
+      width: 100%;
+    }
+
+    .identity-left, .identity-right {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .identity-right {
+      margin-left: auto;
+      padding-left: 12px;
+      color: var(--muted);
+      flex-shrink: 0;
+      max-width: 55%;
+    }
+
+    .identity .tag {
+      color: var(--faint);
+      margin-right: 4px;
+    }
+
+    .identity .branch-mark {
+      color: var(--info);
+    }
+
+    /* Locked identity: slash + brand, all muted, split */
+    .chrome[data-identity="slash-brand"] .identity {
+      gap: 0;
+      width: 100%;
+    }
+    .chrome[data-identity="slash-brand"] .identity .id-brand,
+    .chrome[data-identity="slash-brand"] .identity .id-model,
+    .chrome[data-identity="slash-brand"] .identity .id-path,
+    .chrome[data-identity="slash-brand"] .identity .branch-mark,
+    .chrome[data-identity="slash-brand"] .identity .sep {
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .chrome[data-identity="slash-brand"] .identity .sep {
+      margin: 0 0.6ch;
+      letter-spacing: 0.15em;
+    }
+    .chrome[data-identity="slash-brand"] .identity-right {
+      max-width: 42%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chrome[data-identity="slash-brand"] .identity-left {
+      flex-shrink: 0;
+    }
+
+    .glance { gap: 0; width: 100%; }
+
+    .glance .g-sep {
+      color: var(--faint);
+      margin: 0 0.35ch;
+      letter-spacing: 0;
+    }
+
+    .glance .g-gap {
+      display: inline-block;
+      width: 1.5ch;
+    }
+
+    .glance-left, .glance-right {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .glance-right {
+      margin-left: auto;
+      padding-left: 12px;
+      flex-shrink: 0;
+    }
+
+    /* Glance variants */
+    .chrome[data-glance="muted"] .glance .t-ok,
+    .chrome[data-glance="muted"] .glance .t-muted,
+    .chrome[data-glance="muted"] .glance .t-faint,
+    .chrome[data-glance="muted"] .glance .badge-info {
+      color: var(--muted);
+      background: transparent;
+      padding: 0;
+    }
+
+    .chrome[data-glance="muted"] .glance .badge-ok,
+    .chrome[data-glance="muted"] .glance .flag-on {
+      color: #7aaf8a;
+      background: transparent;
+      padding: 0;
+    }
+
+    .chrome[data-glance="spaced"] .glance {
+      gap: 0;
+    }
+
+    .chrome[data-glance="compact"] .glance {
+      gap: 0;
+    }
+
+    .sep { color: var(--faint); }
+    .id-brand { color: var(--brand); font-weight: 600; }
+    .id-model { color: var(--fg); }
+    .id-path { color: var(--muted); }
+
+    .badge {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      line-height: calc(var(--row) - 2px);
+    }
+
+    .badge-info { background: var(--info-bg); color: var(--info); }
+    .badge-ok { background: var(--success-bg); color: var(--success); }
+    .t-ok { color: var(--success); }
+    .t-info { color: var(--info); }
+    .t-muted { color: var(--muted); }
+    .t-faint { color: var(--faint); }
+
+    .launch-tagline {
+      display: none;
+    }
+
+    /* Brand directions — accent + atmosphere */
+    .term[data-brand="breath"] {
+      --info: #6eb8c4;
+      --info-bg: #243840;
+      --brand: #e6eef0;
+      --canvas: #1a2228;
+    }
+    .term[data-brand="breath"] .body {
+      background:
+        radial-gradient(ellipse 65% 50% at 50% 42%, #243038 0%, transparent 70%),
+        var(--canvas);
+    }
+    .term[data-brand="breath"] .launch-pulse { color: var(--info); }
+    .term[data-brand="breath"] .prompt-glyph { color: var(--info); }
+    .term[data-brand="breath"] .chrome[data-prompt="inset"] .prompt-row {
+      background: #243038;
+    }
+
+    .term[data-brand="ember"] {
+      --info: #d4a574;
+      --info-bg: #3a2e24;
+      --success: #b8a878;
+      --success-bg: #2e2a22;
+      --brand: #f0e6d8;
+      --canvas: #1f1c18;
+    }
+    .term[data-brand="ember"] .body {
+      background:
+        radial-gradient(ellipse 65% 50% at 50% 42%, #2e2820 0%, transparent 70%),
+        var(--canvas);
+    }
+    .term[data-brand="ember"] .launch-pulse { color: var(--info); }
+    .term[data-brand="ember"] .prompt-glyph { color: var(--info); }
+    .term[data-brand="ember"] .chrome[data-prompt="inset"] .prompt-row {
+      background: #2a2620;
+    }
+
+    .term[data-brand="signal"] {
+      --info: #7aaf8a;
+      --info-bg: #243028;
+      --success: #7aaf8a;
+      --success-bg: #243028;
+      --brand: #e4ece6;
+      --canvas: #1a1f1c;
+    }
+    .term[data-brand="signal"] .body {
+      background:
+        radial-gradient(ellipse 65% 50% at 50% 42%, #243028 0%, transparent 70%),
+        var(--canvas);
+    }
+    .term[data-brand="signal"] .launch-pulse { color: var(--info); }
+    .term[data-brand="signal"] .prompt-glyph { color: var(--info); }
+    .term[data-brand="signal"] .chrome[data-prompt="inset"] .prompt-row {
+      background: #222a24;
+    }
+
+    .term[data-brand="steel"] {
+      --info: var(--accent);
+      --info-bg: var(--accent-bg);
+      --success: var(--accent);
+      --success-bg: var(--accent-bg);
+      --brand: #d8dce4;
+      --canvas: #1c1e24;
+      --accent: #8a929e;
+      --accent-bg: #2a2e36;
+    }
+    .term[data-brand="steel"] .body {
+      background:
+        radial-gradient(ellipse 65% 50% at 50% 42%, #262830 0%, transparent 70%),
+        var(--canvas);
+    }
+    .term[data-brand="steel"] .launch-pulse { color: var(--accent); }
+    .term[data-brand="steel"] .prompt-glyph { color: var(--accent); }
+    .term[data-brand="steel"] .chrome[data-prompt="inset"] .prompt-row {
+      background: #262830;
+    }
+    .term[data-brand="steel"] .launch-mark {
+      color: var(--brand);
+    }
+
+    /* Accent swatches on steel */
+    .term[data-accent="ice"] {
+      --accent: #7eb0c8;
+      --accent-bg: #243038;
+    }
+    .term[data-accent="mint"] {
+      --accent: #7eaf9a;
+      --accent-bg: #24302c;
+    }
+    .term[data-accent="amber"] {
+      --accent: #c9a66b;
+      --accent-bg: #322a20;
+    }
+    .term[data-accent="violet"] {
+      --accent: #9a8fb8;
+      --accent-bg: #2c2838;
+    }
+    .term[data-accent="coral"] {
+      --accent: #c4887a;
+      --accent-bg: #322824;
+    }
+
+    .notes code {
+      color: var(--muted);
+      font-family: inherit;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes blink {
+      50% { opacity: 0.35; }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="toolbar">
+      <strong>PRAANA launch</strong>
+      <span class="hint">LOCKED · see design-proto/LAUNCH-LOCK.md</span>
+    </div>
+
+    <div class="term" data-brand="steel" data-accent="coral" aria-label="Terminal prototype">
+      <div class="body" id="body">
+        <div class="launch"><div class="hint">loading fonts…</div></div>
+      </div>
+      <div class="chrome" id="chrome" data-prompt="inset" data-identity="slash-brand" data-glance="muted"></div>
+    </div>
+
+    <p class="notes" id="notes"></p>
+  </div>
+
+  <script>
+    const DATA = {
+      version: "v0.12.0",
+      provider: "umans",
+      model: "umans-glm-5.2",
+      skills: 104,
+      cwd: "~/projects/experiments/praana",
+      branch: "feat/ad/opentui-solid",
+      ctxUsed: "0",
+      ctxWindow: "406k",
+      ctxPct: "0%w",
+      wm: "1A",
+      effort: "medium",
+      mem: "on",
+    };
+
+    const ACCENT = "coral";
+
+    function gSep() {
+      return `<span class="g-sep">·</span>`;
+    }
+
+    function identityHtml() {
+      return `
+        <span class="id-brand">praana</span><span class="sep">·</span>
+        <span class="id-model">${DATA.provider}/${DATA.model}</span><span class="sep">·</span>
+        <span class="id-path">${DATA.cwd}</span><span class="sep">·</span>
+        <span class="branch-mark">${DATA.branch}</span>`;
+    }
+
+    function glanceHtml() {
+      return `
+        <div class="glance-left">
+          <span class="t-ok">ctx ${DATA.ctxUsed}/${DATA.ctxWindow} ${DATA.ctxPct}</span>${gSep()}
+          <span class="badge badge-info">wm ${DATA.wm}</span>${gSep()}
+          <span class="t-muted">skills ${DATA.skills}</span>${gSep()}
+          <span class="t-faint">think ${DATA.effort}</span>
+        </div>
+        <div class="glance-right">
+          <span class="badge badge-ok flag-on">engine on</span>${gSep()}
+          <span class="badge badge-ok flag-on">mem ${DATA.mem}</span>
+        </div>`;
+    }
+
+    const FONT_BASE =
+      "https://cdn.jsdelivr.net/gh/anomalyco/opentui@main/packages/core/src/lib/fonts";
+
+    const fontCache = {};
+    let pulseTimer = null;
+    const PULSE_FRAMES = ["  -  ", " --- ", "-----", " --- ", "  -  "];
+
+    const body = document.getElementById("body");
+    const chrome = document.getElementById("chrome");
+    const notes = document.getElementById("notes");
+    const term = document.querySelector(".term");
+
+    function sep() {
+      return `<span class="sep"> · </span>`;
+    }
+
+    function stripColorTags(line) {
+      return line.replace(/<\/?c\d+>/g, "");
+    }
+
+    /** Render OpenTUI/cfonts definition to colored HTML lines. */
+    function renderAsciiFont(text, fontDef) {
+      const lines = Array.from({ length: fontDef.lines }, () => []);
+      const upper = text.toUpperCase();
+      const gap = fontDef.letterspace_size ?? 1;
+
+      for (let i = 0; i < upper.length; i++) {
+        const ch = upper[i];
+        const glyph = fontDef.chars[ch] || fontDef.chars[" "];
+        if (!glyph) continue;
+
+        for (let row = 0; row < fontDef.lines; row++) {
+          const raw = glyph[row] ?? "";
+          let html = "";
+          const re = /<c(\d+)>(.*?)<\/c\d+>|([^<]+)/g;
+          let m;
+          while ((m = re.exec(raw)) !== null) {
+            if (m[1]) {
+              html += `<span class="c${m[1]}">${escapeHtml(m[2])}</span>`;
+            } else if (m[3]) {
+              html += escapeHtml(m[3]);
+            }
+          }
+          if (!html) html = escapeHtml(stripColorTags(raw));
+          lines[row].push(html);
+        }
+
+        if (i < upper.length - 1 && gap > 0) {
+          const space = " ".repeat(gap);
+          for (let row = 0; row < fontDef.lines; row++) {
+            lines[row].push(escapeHtml(space));
+          }
+        }
+      }
+
+      return lines.map((parts) => parts.join("")).join("\n");
+    }
+
+    function escapeHtml(s) {
+      return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    async function loadFont(name) {
+      if (fontCache[name]) return fontCache[name];
+      const res = await fetch(`${FONT_BASE}/${name}.json`);
+      if (!res.ok) throw new Error(`Failed to load ${name}`);
+      fontCache[name] = await res.json();
+      return fontCache[name];
+    }
+
+    function stopPulse() {
+      if (pulseTimer) {
+        clearInterval(pulseTimer);
+        pulseTimer = null;
+      }
+    }
+
+    function startPulse() {
+      stopPulse();
+      const el = document.getElementById("launch-pulse");
+      if (!el) return;
+      let i = 0;
+      pulseTimer = setInterval(() => {
+        i = (i + 1) % PULSE_FRAMES.length;
+        el.textContent = PULSE_FRAMES[i];
+      }, 480);
+    }
+
+    function renderChrome() {
+      term.dataset.brand = "steel";
+      term.dataset.accent = ACCENT;
+      chrome.dataset.prompt = "inset";
+      chrome.dataset.identity = "slash-brand";
+      chrome.dataset.glance = "muted";
+      notes.innerHTML = `
+        <strong>LOCKED</strong> — launch screen frozen.
+        Spec: <code>design-proto/LAUNCH-LOCK.md</code>.
+        Next: implement in OpenTUI when you’re ready.
+      `;
+
+      chrome.innerHTML = `
+        <div class="prompt">
+          <div class="prompt-row">
+            <span class="prompt-glyph">❯</span>
+            <textarea
+              class="prompt-input"
+              id="prompt-input"
+              rows="1"
+              placeholder="message praana"
+              spellcheck="false"
+              autocomplete="off"
+            ></textarea>
+          </div>
+        </div>
+        <div class="status-stack">
+          <div class="identity">${identityHtml()}</div>
+          <div class="glance">${glanceHtml()}</div>
+        </div>
+      `;
+
+      const input = document.getElementById("prompt-input");
+      if (input) {
+        input.addEventListener("input", () => {
+          input.style.height = "auto";
+          input.style.height = `${Math.min(input.scrollHeight, 22 * 6)}px`;
+        });
+      }
+    }
+
+    async function renderLaunch() {
+      term.dataset.brand = "steel";
+      term.dataset.accent = ACCENT;
+      try {
+        const fontDef = await loadFont("tiny");
+        const art = renderAsciiFont("praana", fontDef);
+        body.innerHTML = `
+          <div class="launch">
+            <div>
+              <pre class="launch-mark">${art}</pre>
+              <div class="launch-meta launch-meta-version">
+                <span>${DATA.version}</span>
+              </div>
+              <div class="launch-pulse" id="launch-pulse">  -  </div>
+              <div class="launch-meta launch-meta-skills">
+                <span>${DATA.skills} skills discovered</span>
+              </div>
+            </div>
+          </div>
+        `;
+        startPulse();
+        renderChrome();
+      } catch (err) {
+        body.innerHTML = `<div class="launch"><div class="hint">Could not load tiny font: ${err.message}</div></div>`;
+        renderChrome();
+      }
+    }
+
+    renderLaunch();
+  </script>
+</body>
+</html>
