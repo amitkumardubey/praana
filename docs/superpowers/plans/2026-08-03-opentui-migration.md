@@ -1,6 +1,6 @@
 # OpenTUI Migration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace `@earendil-works/pi-tui` with `@opentui/core` + `@opentui/keymap` throughout PRAANA's `src/ui/tui/**` tree, preserving the `TurnUiSink` contract and existing behavior, with incidental visual improvements where OpenTUI's native flexbox/scrolling is naturally better.
 
@@ -29,20 +29,20 @@
 - Modify: `package.json`
 - Modify: `bun.lock` (regenerated)
 
-- [ ] **Step 1: Create the migration branch**
+- [x] **Step 1: Create the migration branch**
 
 ```bash
 git checkout -b feat/ad/opentui-migration
 ```
 
-- [ ] **Step 2: Remove pi-tui, add OpenTUI packages**
+- [x] **Step 2: Remove pi-tui, add OpenTUI packages**
 
 ```bash
 bun remove @earendil-works/pi-tui
 bun add @opentui/core @opentui/keymap
 ```
 
-- [ ] **Step 3: Verify the install has no native build step and resolves cleanly**
+- [x] **Step 3: Verify the install has no native build step and resolves cleanly**
 
 ```bash
 bun install
@@ -51,7 +51,7 @@ bun -e "const { createCliRenderer } = await import('@opentui/core'); console.log
 
 Expected: prints `function`, no Zig/native build errors (prebuilt platform binaries are pulled in as optional deps, verified during design phase).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add package.json bun.lock
@@ -68,7 +68,7 @@ git commit -m "chore(tui): swap @earendil-works/pi-tui for @opentui/core + @open
 
 The current file imports `truncateToWidth`/`visibleWidth` from pi-tui for ANSI-aware width math (`paintZoneLine`). OpenTUI's renderer does its own ANSI-aware layout internally, so `paintZoneLine` no longer needs manual truncation — but it is still called from `identity-bar.ts`/`glance-bar.ts` today with a plain string, so we keep the function signature and do truncation with a local (non-pi-tui) helper to avoid a big-bang rename of call sites in this task.
 
-- [ ] **Step 1: Write the failing test for the pi-tui-free truncate helper**
+- [x] **Step 1: Write the failing test for the pi-tui-free truncate helper**
 
 Add to `tests/tui-theme.test.ts` (create if testing this behavior isn't already covered):
 
@@ -95,7 +95,7 @@ describe("TUI_STYLE", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails (import error, pi-tui removed)**
+- [x] **Step 2: Run test to verify it fails (import error, pi-tui removed)**
 
 ```bash
 bun test tests/tui-theme.test.ts
@@ -103,7 +103,7 @@ bun test tests/tui-theme.test.ts
 
 Expected: FAIL — `Cannot find package '@earendil-works/pi-tui'`.
 
-- [ ] **Step 3: Rewrite `theme.ts` without pi-tui**
+- [x] **Step 3: Rewrite `theme.ts` without pi-tui**
 
 ```typescript
 /* Terminal-native semantic styling for the PRAANA OpenTUI-based TUI. */
@@ -195,7 +195,7 @@ export function resolveSyntaxTheme(name: string): HighlightTheme | string {
 
 Note: `paintZoneLine`/`truncatePlainText` operate on plain (unstyled) text at call sites in this task's scope (`identity-bar.ts`, `glance-bar.ts` build the line via `formatTuiIdentityLine`/`formatTuiGlanceLine` before any chalk styling is applied to the whole line) — this matches current behavior since those call sites already truncate before coloring.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 bun test tests/tui-theme.test.ts
@@ -203,7 +203,7 @@ bun test tests/tui-theme.test.ts
 
 Expected: PASS (2 tests in new describe block; keep any pre-existing tests in the file passing too — re-check them for pi-tui imports and update those too if present).
 
-- [ ] **Step 5: Typecheck**
+- [x] **Step 5: Typecheck**
 
 ```bash
 bun typecheck
@@ -211,7 +211,7 @@ bun typecheck
 
 Expected: no errors related to `theme.ts`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ui/tui/theme.ts tests/tui-theme.test.ts
@@ -228,7 +228,7 @@ git commit -m "refactor(tui): rewrite theme.ts without pi-tui width helpers"
 
 `banner.ts` currently returns `string[]` for pi-tui's line-based rendering. Under OpenTUI it becomes a renderable-producing function so `run.ts` can add it directly to the root box. We keep the figlet-art string array as a fallback data source and wrap it in an `ASCIIFontRenderable`-compatible path if `ASCIIFontRenderable`'s bundled fonts don't include a matching "Standard" figlet font; since font parity is an explicit risk in the spec, this task keeps the existing literal wordmark lines (proven pixel-identical today) rendered via `TextRenderable` lines rather than gambling on `ASCIIFontRenderable`'s font set matching pixel-for-pixel.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -279,7 +279,7 @@ describe("buildBootBanner", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 bun test tests/tui-banner.test.ts
@@ -287,7 +287,7 @@ bun test tests/tui-banner.test.ts
 
 Expected: FAIL — `buildBootBanner` is not exported yet (still exports old `renderBootBanner`).
 
-- [ ] **Step 3: Rewrite `banner.ts`**
+- [x] **Step 3: Rewrite `banner.ts`**
 
 ```typescript
 /* Boot banner — figlet Standard wordmark (design §5.1), OpenTUI renderable. */
@@ -369,7 +369,7 @@ function getSharedRenderContext(): RenderContext {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Update the test to call `setBannerRenderContext(setup.renderer)` before `buildBootBanner()` (the renderer itself satisfies `RenderContext`):
 
@@ -385,7 +385,7 @@ bun test tests/tui-banner.test.ts
 
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -405,7 +405,7 @@ git commit -m "refactor(tui): rewrite banner.ts as an OpenTUI renderable"
 
 Both bars become single-line `BoxRenderable` wrappers around one `TextRenderable`, updated via a `setContent`-style method instead of pi-tui's pull-based `render(width)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -442,7 +442,7 @@ describe("GlanceBar", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 bun test tests/tui-chrome.test.ts
@@ -450,7 +450,7 @@ bun test tests/tui-chrome.test.ts
 
 Expected: FAIL — old classes still implement pi-tui's `Component` interface and import from pi-tui.
 
-- [ ] **Step 3: Rewrite `identity-bar.ts`**
+- [x] **Step 3: Rewrite `identity-bar.ts`**
 
 ```typescript
 /**
@@ -500,7 +500,7 @@ export class IdentityBar extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 4: Rewrite `glance-bar.ts`**
+- [x] **Step 4: Rewrite `glance-bar.ts`**
 
 ```typescript
 /**
@@ -561,7 +561,7 @@ export class GlanceBar extends BoxRenderable {
 
 Note: `requestRender()` is a method the renderer exposes on the render context; if `BoxRenderable` doesn't directly expose it, use `this.ctx.requestRender()` via a protected context reference — verify exact accessor name against `Renderable.d.ts`/`renderer.d.ts` during this task and adjust (this is a mechanical detail, not a design change).
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/tui-chrome.test.ts
@@ -569,7 +569,7 @@ bun test tests/tui-chrome.test.ts
 
 Expected: PASS (2 tests).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -595,7 +595,7 @@ git commit -m "refactor(tui): rewrite identity-bar and glance-bar as OpenTUI ren
 
 Each component moves from `implements Component { render(width): string[] }` to `extends BoxRenderable` with a single or few `TextRenderable` children whose `.content` is set on construction/update. This keeps the same public surface (`getText`/`setText` where applicable) so `container.ts` (Task 5) can drive them the same way.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -701,7 +701,7 @@ describe("TurnFooterComponent", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 bun test tests/transcript-components.test.ts
@@ -709,7 +709,7 @@ bun test tests/transcript-components.test.ts
 
 Expected: FAIL — constructors still take `(text, opts)` without a `RenderContext`, and pi-tui imports are gone from `node_modules`.
 
-- [ ] **Step 3: Rewrite `render-utils.ts` (drop pi-tui, keep pure string helpers)**
+- [x] **Step 3: Rewrite `render-utils.ts` (drop pi-tui, keep pure string helpers)**
 
 ```typescript
 /** Plain-text wrap/accent helpers for transcript components (no ANSI-width dependency needed under OpenTUI). */
@@ -752,7 +752,7 @@ export function renderAccentLines(
 }
 ```
 
-- [ ] **Step 4: Rewrite `user-message.ts`**
+- [x] **Step 4: Rewrite `user-message.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -774,7 +774,7 @@ export class UserMessageComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 5: Rewrite `markdown-theme.ts` (drop pi-tui `MarkdownTheme`, build an OpenTUI `SyntaxStyle`)**
+- [x] **Step 5: Rewrite `markdown-theme.ts` (drop pi-tui `MarkdownTheme`, build an OpenTUI `SyntaxStyle`)**
 
 OpenTUI's `MarkdownRenderable` (verified in `renderables/Markdown.d.ts`) has a fundamentally different theming model than pi-tui: instead of a `MarkdownTheme` object of per-element color *functions* (heading/link/code/quote callbacks), it takes a required `syntaxStyle: SyntaxStyle` built via `SyntaxStyle.fromStyles(record)`, mapping named style scopes to `{ fg, bg, bold, italic, underline, dim }`. `markdown-theme.ts` is rewritten to build one of these instead:
 
@@ -811,7 +811,7 @@ export { TUI_STYLE };
 
 Note: pi-tui's custom `highlightCode` hook (which ran fenced code blocks through `cli-highlight`) has no direct equivalent here — OpenTUI's `MarkdownRenderable` does its own code-block highlighting via `treeSitterClient` (an optional constructor option). During this task, wire a `TreeSitterClient` instance (from `@opentui/core`'s `lib/tree-sitter`) into `MarkdownRenderable`'s `treeSitterClient` option in Step 6 below instead of calling `cli-highlight` manually; this also means `cli-highlight` can likely be dropped from `package.json` once this is confirmed working — file that as a follow-up cleanup, not blocking this task.
 
-- [ ] **Step 6: Rewrite `assistant-message.ts`**
+- [x] **Step 6: Rewrite `assistant-message.ts`**
 
 ```typescript
 import { BoxRenderable, MarkdownRenderable, type RenderContext } from "@opentui/core";
@@ -833,7 +833,7 @@ export class AssistantMessageComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 7: Rewrite `thinking-message.ts`**
+- [x] **Step 7: Rewrite `thinking-message.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -869,7 +869,7 @@ export class ThinkingMessageComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 8: Rewrite `tool-row.ts`**
+- [x] **Step 8: Rewrite `tool-row.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -897,7 +897,7 @@ export class ToolRowComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 9: Rewrite `recall-chip.ts`**
+- [x] **Step 9: Rewrite `recall-chip.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -919,7 +919,7 @@ export class RecallChipComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 10: Rewrite `system-line.ts`**
+- [x] **Step 10: Rewrite `system-line.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -971,7 +971,7 @@ export class SystemLineComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 11: Rewrite `turn-footer.ts`**
+- [x] **Step 11: Rewrite `turn-footer.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -1000,7 +1000,7 @@ export class TurnFooterComponent extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 12: Run test to verify it passes**
+- [x] **Step 12: Run test to verify it passes**
 
 ```bash
 bun test tests/transcript-components.test.ts
@@ -1008,7 +1008,7 @@ bun test tests/transcript-components.test.ts
 
 Expected: PASS (6 tests).
 
-- [ ] **Step 13: Typecheck and commit**
+- [x] **Step 13: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1026,7 +1026,7 @@ git commit -m "refactor(tui): rewrite transcript component family as OpenTUI ren
 
 `TranscriptContainer` becomes a thin wrapper around `ScrollBoxRenderable`. It keeps its current public API (`appendEntry`, `updateLastEntry`, or whatever the existing 733-line file exposes — re-read the file at the start of this task to confirm exact method names before matching them) so `sink.ts` (Task 7) doesn't need to change its call sites beyond the constructor. Gaps between entries (`needsGap()` from `gap.ts`, unchanged) are inserted as empty `BoxRenderable({ height: 1 })` spacers instead of pi-tui `Spacer`.
 
-- [ ] **Step 1: Read the current file to enumerate its exact public methods**
+- [x] **Step 1: Read the current file to enumerate its exact public methods**
 
 ```bash
 grep -n "^  [a-zA-Z]*(" src/ui/tui/transcript/container.ts | head -40
@@ -1034,7 +1034,7 @@ grep -n "^  [a-zA-Z]*(" src/ui/tui/transcript/container.ts | head -40
 
 Record every public method signature found — the rewrite in Step 3 must preserve every one of them with identical parameter/return types, since `sink.ts` and `run.ts` call them by name.
 
-- [ ] **Step 2: Write/update the failing test**
+- [x] **Step 2: Write/update the failing test**
 
 Update `tests/transcript-container.test.ts`'s renderer setup to use `@opentui/core/testing` instead of the real pi-tui `Spacer`:
 
@@ -1086,7 +1086,7 @@ describe("TranscriptContainer", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/transcript-container.test.ts
@@ -1094,7 +1094,7 @@ bun test tests/transcript-container.test.ts
 
 Expected: FAIL — constructor still takes a pi-tui `Container` shape / pi-tui `Spacer` import missing.
 
-- [ ] **Step 4: Rewrite `container.ts`**
+- [x] **Step 4: Rewrite `container.ts`**
 
 Preserve every method enumerated in Step 1 exactly. The skeleton below shows the core structural change (base class + gap insertion); port the remaining lazy-expand/focus-delegation/entry-diffing logic from the current 733-line file into this structure, replacing every pi-tui type/import with the OpenTUI equivalents established in Tasks 1-4:
 
@@ -1185,7 +1185,7 @@ export class TranscriptContainer extends ScrollBoxRenderable {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/transcript-container.test.ts
@@ -1193,7 +1193,7 @@ bun test tests/transcript-container.test.ts
 
 Expected: PASS (2 new tests, plus every pre-existing test in the file updated to the new constructor/API and passing).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1211,13 +1211,13 @@ git commit -m "refactor(tui): rewrite TranscriptContainer as an OpenTUI ScrollBo
 
 `InvertedEditor` wraps `TextareaRenderable` instead of pi-tui's `Editor`, drawing the `❯ ` prompt as a sibling `TextRenderable` in a row box rather than rewriting border lines.
 
-- [ ] **Step 1: Read the current file's public API**
+- [x] **Step 1: Read the current file's public API**
 
 ```bash
 grep -n "^  [a-zA-Z]*(" src/ui/tui/inverted-editor.ts
 ```
 
-- [ ] **Step 2: Write/update the failing test**
+- [x] **Step 2: Write/update the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -1259,7 +1259,7 @@ describe("InvertedEditor", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/inverted-editor.test.ts
@@ -1267,7 +1267,7 @@ bun test tests/inverted-editor.test.ts
 
 Expected: FAIL — old class still wraps pi-tui `Editor`.
 
-- [ ] **Step 4: Rewrite `inverted-editor.ts`**
+- [x] **Step 4: Rewrite `inverted-editor.ts`**
 
 ```typescript
 import {
@@ -1327,7 +1327,7 @@ export class InvertedEditor extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/inverted-editor.test.ts
@@ -1335,7 +1335,7 @@ bun test tests/inverted-editor.test.ts
 
 Expected: PASS (2 tests).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1353,13 +1353,13 @@ git commit -m "refactor(tui): rewrite InvertedEditor around OpenTUI TextareaRend
 
 `sink.ts` implements `TurnUiSink` (from `src/ui-events.ts`, **unchanged** per the spec's scope boundary) and forwards callbacks into `TranscriptContainer`/`ToastRegion`/`GlanceBar`. Only the internal wiring to those three classes changes (new constructors from Tasks 3/5/8); every `TurnUiSink` method name/signature stays identical since `turn.ts` calls them unchanged.
 
-- [ ] **Step 1: Read the current file's constructor signature and every `TurnUiSink` method it implements**
+- [x] **Step 1: Read the current file's constructor signature and every `TurnUiSink` method it implements**
 
 ```bash
 grep -n "constructor\|on[A-Z]\|consumeTurnStats\|flushText" src/ui/tui/sink.ts | head -60
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -1420,7 +1420,7 @@ describe("PiTuiSink", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/tui-sink.test.ts
@@ -1428,7 +1428,7 @@ bun test tests/tui-sink.test.ts
 
 Expected: FAIL — `PiTuiSink` constructor still expects pi-tui `TUI`/`Container` types.
 
-- [ ] **Step 4: Rewrite `sink.ts`'s constructor and internals**
+- [x] **Step 4: Rewrite `sink.ts`'s constructor and internals**
 
 Keep every `TurnUiSink` method implementation's *logic* the same (re-read the pre-migration 443-line file and port each method body one-for-one), changing only:
 - Constructor parameter types (`RenderContext` instead of pi-tui `TUI`; `TranscriptContainer`/`ToastRegion`/`GlanceBar` instances from Tasks 3/5/8 instead of pi-tui-backed ones).
@@ -1506,7 +1506,7 @@ function formatMemoryBanner(stats: MemoryBannerStats): string {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/tui-sink.test.ts
@@ -1514,7 +1514,7 @@ bun test tests/tui-sink.test.ts
 
 Expected: PASS (2 tests), plus every pre-existing sink-adjacent behavior still covered by ported logic.
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1532,7 +1532,7 @@ git commit -m "refactor(tui): rewrite PiTuiSink against OpenTUI-backed transcrip
 - Test: `tests/toast-region.test.ts` (new)
 - Test: `tests/spinner.test.ts` (new)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```typescript
 // tests/toast-region.test.ts
@@ -1592,7 +1592,7 @@ describe("Spinner", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 bun test tests/toast-region.test.ts tests/spinner.test.ts
@@ -1600,7 +1600,7 @@ bun test tests/toast-region.test.ts tests/spinner.test.ts
 
 Expected: FAIL — `toast-region.ts` still imports pi-tui; `spinner.ts` doesn't exist yet.
 
-- [ ] **Step 3: Rewrite `toast-region.ts`**
+- [x] **Step 3: Rewrite `toast-region.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -1685,7 +1685,7 @@ export class ToastRegion extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 4: Create `spinner.ts`**
+- [x] **Step 4: Create `spinner.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
@@ -1720,7 +1720,7 @@ export class Spinner extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 bun test tests/toast-region.test.ts tests/spinner.test.ts
@@ -1728,7 +1728,7 @@ bun test tests/toast-region.test.ts tests/spinner.test.ts
 
 Expected: PASS (3 tests total).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1746,7 +1746,7 @@ git commit -m "refactor(tui): rewrite ToastRegion and add OpenTUI-native Spinner
 
 Every wizard/model-selector/slash-command-result popup needs the same "float above everything, centered or anchored" behavior that pi-tui's `tui.showOverlay()` provided. This task builds one shared helper used by Tasks 10-13, based on the verified `position: "absolute"` + `zIndex` API (see plan header).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -1773,7 +1773,7 @@ describe("overlay helper", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 bun test tests/overlay.test.ts
@@ -1781,7 +1781,7 @@ bun test tests/overlay.test.ts
 
 Expected: FAIL — `overlay.ts` doesn't exist yet.
 
-- [ ] **Step 3: Create `overlay.ts`**
+- [x] **Step 3: Create `overlay.ts`**
 
 ```typescript
 import type { BoxRenderable, CliRenderer } from "@opentui/core";
@@ -1825,7 +1825,7 @@ export function hideOverlay(renderer: CliRenderer, handle: OverlayHandle): void 
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 ```bash
 bun test tests/overlay.test.ts
@@ -1833,7 +1833,7 @@ bun test tests/overlay.test.ts
 
 Expected: PASS (1 test).
 
-- [ ] **Step 5: Typecheck and commit**
+- [x] **Step 5: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1852,7 +1852,7 @@ git commit -m "feat(tui): add shared OpenTUI overlay helper (position:absolute +
 
 `slash-command-overlay.ts` becomes a `BoxRenderable` (bordered box + `TextRenderable` lines) shown via `showOverlay()` from Task 9. `download-consent.ts` is one of the two standalone pre-session TUIs (per spec): it creates its own `createCliRenderer()`, shows a consent prompt, waits for a keypress, and calls `renderer.destroy()` before returning — same lifecycle as today, new constructor.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -1875,7 +1875,7 @@ describe("slash-command-overlay", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 bun test tests/slash-command-overlay.test.ts
@@ -1883,7 +1883,7 @@ bun test tests/slash-command-overlay.test.ts
 
 Expected: FAIL — `showSlashCommandResult` doesn't exist under this signature yet (old file used pi-tui's overlay type).
 
-- [ ] **Step 3: Rewrite `slash-command-overlay.ts`**
+- [x] **Step 3: Rewrite `slash-command-overlay.ts`**
 
 ```typescript
 import { BoxRenderable, TextRenderable, type CliRenderer } from "@opentui/core";
@@ -1910,7 +1910,7 @@ export function dismissSlashCommandResult(renderer: CliRenderer, handle: Overlay
 }
 ```
 
-- [ ] **Step 4: Rewrite `download-consent.ts`'s standalone renderer bootstrap**
+- [x] **Step 4: Rewrite `download-consent.ts`'s standalone renderer bootstrap**
 
 Read the current file first (`cat src/ui/tui/download-consent.ts`) to capture its exact prompt text and the shape of the promise it returns (e.g. `Promise<boolean>`). Replace the `new TUI(new ProcessTerminal())` construction with:
 
@@ -1954,7 +1954,7 @@ export async function promptDownloadConsent(message: string): Promise<boolean> {
 
 Note: verify during this task whether OpenTUI's renderer exposes its own keyboard-event API (preferred over raw `process.stdin.on("data", ...)`) — if `renderer.on("key", ...)` or similar exists on `CliRenderer`, use that instead for consistency with the rest of the rewrite; the raw-stdin fallback above is the safe baseline if no such event exists.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/slash-command-overlay.test.ts
@@ -1962,7 +1962,7 @@ bun test tests/slash-command-overlay.test.ts
 
 Expected: PASS (1 test).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -1979,13 +1979,13 @@ git commit -m "refactor(tui): rewrite slash-command-overlay and download-consent
 - Modify: `src/model-listing.ts` (port `fuzzyFilter`, drop pi-tui import — also closes the Task-17 item early since it's needed here)
 - Test: `tests/model-selector.test.ts` (new)
 
-- [ ] **Step 1: Read the current file's exact public API and constructor signature**
+- [x] **Step 1: Read the current file's exact public API and constructor signature**
 
 ```bash
 grep -n "^  [a-zA-Z]*(\|constructor" src/ui/tui/model-selector.ts
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -2034,7 +2034,7 @@ describe("ModelSelector", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/model-selector.test.ts
@@ -2042,7 +2042,7 @@ bun test tests/model-selector.test.ts
 
 Expected: FAIL — old class still constructs pi-tui `Container`/`Input`/`fuzzyFilter`.
 
-- [ ] **Step 4: Port `fuzzyFilter` into `src/model-listing.ts`**
+- [x] **Step 4: Port `fuzzyFilter` into `src/model-listing.ts`**
 
 Read the current pi-tui `fuzzyFilter` usage (`grep -n "fuzzyFilter" src/model-listing.ts`) to confirm the exact call signature, then add a local implementation to `src/model-listing.ts` replacing the pi-tui import:
 
@@ -2081,7 +2081,7 @@ export function fuzzyFilter<T>(
 
 Remove the old `import { fuzzyFilter } from "@earendil-works/pi-tui"` line from `src/model-listing.ts`.
 
-- [ ] **Step 5: Rewrite `model-selector.ts`**
+- [x] **Step 5: Rewrite `model-selector.ts`**
 
 ```typescript
 import { BoxRenderable, InputRenderable, SelectRenderable, SelectRenderableEvents, type RenderContext } from "@opentui/core";
@@ -2134,7 +2134,7 @@ export class ModelSelector extends BoxRenderable {
 
 Note: verify during this task whether `InputRenderable` emits an `"input"` event with the current value, or requires reading `.value` on a `"change"`/keypress event instead — adjust the `this.input.on(...)` line to match the confirmed event name/payload from `renderables/Input.d.ts`. Also verify `Enter` on the focused `InputRenderable` needs to be forwarded to `select.selectCurrent()` (since the test presses Enter while the input, not the list, may hold focus) — wire `this.input.onSubmit` (or equivalent) to `this.select.selectCurrent()` if so.
 
-- [ ] **Step 6: Run test to verify it passes**
+- [x] **Step 6: Run test to verify it passes**
 
 ```bash
 bun test tests/model-selector.test.ts
@@ -2142,7 +2142,7 @@ bun test tests/model-selector.test.ts
 
 Expected: PASS (2 tests).
 
-- [ ] **Step 7: Typecheck and commit**
+- [x] **Step 7: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -2160,7 +2160,7 @@ git commit -m "refactor(tui): rewrite ModelSelector on OpenTUI Select+Input, por
 
 This is the smallest wizard (180 lines) — do it before `login-wizard.ts` to establish the wizard pattern (bordered `Box` + `SelectRenderable` of authed providers + confirm/cancel) that Tasks 13-14 reuse.
 
-- [ ] **Step 1: Read the current file's exact step flow and public API**
+- [x] **Step 1: Read the current file's exact step flow and public API**
 
 ```bash
 cat src/ui/tui/logout-wizard.ts
@@ -2168,7 +2168,7 @@ cat src/ui/tui/logout-wizard.ts
 
 Record: constructor signature, every public method, and the exact provider-list data shape it consumes (from `credentials.ts`).
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -2202,7 +2202,7 @@ describe("LogoutWizard", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/logout-wizard.test.ts
@@ -2210,7 +2210,7 @@ bun test tests/logout-wizard.test.ts
 
 Expected: FAIL — old class still built from pi-tui `SelectList`.
 
-- [ ] **Step 4: Rewrite `logout-wizard.ts`**
+- [x] **Step 4: Rewrite `logout-wizard.ts`**
 
 Port the exact step-flow text/prompts from the file read in Step 1 into this structure:
 
@@ -2259,7 +2259,7 @@ export class LogoutWizard extends BoxRenderable {
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/logout-wizard.test.ts
@@ -2267,7 +2267,7 @@ bun test tests/logout-wizard.test.ts
 
 Expected: PASS (1 test).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -2286,7 +2286,7 @@ git commit -m "refactor(tui): rewrite LogoutWizard on OpenTUI Select"
 
 This is the largest wizard (924 lines, multi-step: provider → key/OAuth → model). Do not attempt this in one sitting — split into sub-steps by wizard stage, reusing the `SelectRenderable`/`InputRenderable`/`BoxRenderable` pattern from Tasks 11-12.
 
-- [ ] **Step 1: Read the current file's full step flow**
+- [x] **Step 1: Read the current file's full step flow**
 
 ```bash
 grep -n "class \|^  [a-zA-Z]*(\|step\|Step" src/ui/tui/login-wizard.ts | head -80
@@ -2294,7 +2294,7 @@ grep -n "class \|^  [a-zA-Z]*(\|step\|Step" src/ui/tui/login-wizard.ts | head -8
 
 Enumerate every distinct step (e.g. "choose provider" → "enter API key or start OAuth" → "choose default model" → "confirm") and the exact prompt copy for each, plus every public method (`onComplete`, `onCancel`, `focus`, etc.) and constructor parameters (provider list, credential store reference, `oauth-login-ui.ts` bridge functions).
 
-- [ ] **Step 2: Write the failing test for the provider-selection step (first step, establishes the pattern)**
+- [x] **Step 2: Write the failing test for the provider-selection step (first step, establishes the pattern)**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -2336,7 +2336,7 @@ describe("LoginWizard", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/login-wizard.test.ts
@@ -2344,7 +2344,7 @@ bun test tests/login-wizard.test.ts
 
 Expected: FAIL — old class still built from pi-tui primitives.
 
-- [ ] **Step 4: Rewrite `login-wizard.ts`'s step-machine skeleton and provider-selection step**
+- [x] **Step 4: Rewrite `login-wizard.ts`'s step-machine skeleton and provider-selection step**
 
 ```typescript
 import { BoxRenderable, TextRenderable, InputRenderable, SelectRenderable, SelectRenderableEvents, type RenderContext } from "@opentui/core";
@@ -2433,7 +2433,7 @@ export class LoginWizard extends BoxRenderable {
 
 Note: verify `InputRenderable`'s value-reading API (`.value` vs a getter) against `renderables/Input.d.ts` during this task, matching the note left in Task 11.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/login-wizard.test.ts
@@ -2441,7 +2441,7 @@ bun test tests/login-wizard.test.ts
 
 Expected: PASS (2 tests). Continue adding one test + implementation increment per remaining step (model selection, confirm) before moving on, following the same TDD loop, until every step enumerated in Step 1 has a passing test.
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -2459,13 +2459,13 @@ git commit -m "refactor(tui): rewrite LoginWizard step machine on OpenTUI"
 
 Like `download-consent.ts` (Task 10), this spins up its **own** `createCliRenderer()` instance rather than reusing the main session's renderer, torn down before the main TUI starts. Reuses the same step-machine pattern established in Tasks 12-13 (provider → key/OAuth → model → confirm), but as the entry point for a brand-new user with no prior session.
 
-- [ ] **Step 1: Read the current file's exact flow and standalone-TUI bootstrap**
+- [x] **Step 1: Read the current file's exact flow and standalone-TUI bootstrap**
 
 ```bash
 grep -n "class \|new TUI\|ProcessTerminal\|^  [a-zA-Z]*(" src/ui/tui/setup-wizard.ts | head -60
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 ```typescript
 import { describe, expect, test } from "bun:test";
@@ -2490,7 +2490,7 @@ describe("runSetupWizard", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/setup-wizard.test.ts
@@ -2498,7 +2498,7 @@ bun test tests/setup-wizard.test.ts
 
 Expected: FAIL — `runSetupWizard` doesn't accept a `simulateInput` seam yet (and still boots pi-tui).
 
-- [ ] **Step 4: Rewrite `setup-wizard.ts`'s bootstrap**
+- [x] **Step 4: Rewrite `setup-wizard.ts`'s bootstrap**
 
 ```typescript
 import { createCliRenderer } from "@opentui/core";
@@ -2539,7 +2539,7 @@ export async function runSetupWizard(options: RunSetupWizardOptions): Promise<Se
 
 Port the remaining first-run copy/screens (welcome message, embedder-download prompt bridge if `setup-wizard.ts` also owns that today — re-check against `download-consent.ts` from Task 10 to avoid duplicating that flow) from the file read in Step 1.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/setup-wizard.test.ts
@@ -2547,7 +2547,7 @@ bun test tests/setup-wizard.test.ts
 
 Expected: PASS (1 test).
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -2565,7 +2565,7 @@ git commit -m "refactor(tui): rewrite standalone SetupWizard renderer on OpenTUI
 
 This is the capstone task: wire every rewritten piece (Tasks 1-13) into the single `runTui(controller, info)` entry point that `main.ts` calls unchanged.
 
-- [ ] **Step 1: Read the current file's full structure**
+- [x] **Step 1: Read the current file's full structure**
 
 ```bash
 grep -n "^export \|^function \|^  [a-zA-Z]*(" src/ui/tui/run.ts | head -80
@@ -2573,7 +2573,7 @@ grep -n "^export \|^function \|^  [a-zA-Z]*(" src/ui/tui/run.ts | head -80
 
 Confirm the exact `runTui(controller: AppController, info: StartupInfo): Promise<void>` signature (per exploration, this is `main.ts`'s only call site) and every Ctrl+C / F9 / slash-command / overlay-swap branch.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Rewrite `tests/tui-run.test.ts` to drop `mock.module("@earendil-works/pi-tui", ...)` entirely and instead exercise `runTui` against a real (test) OpenTUI renderer via dependency injection. If `runTui` doesn't currently accept an injectable renderer factory, add one as part of this task (small, additive change — a `createRenderer` param defaulting to the real `createCliRenderer`, overridden in tests with a factory returning `createTestRenderer()`'s renderer):
 
@@ -2609,7 +2609,7 @@ describe("runTui", () => {
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 ```bash
 bun test tests/tui-run.test.ts
@@ -2617,7 +2617,7 @@ bun test tests/tui-run.test.ts
 
 Expected: FAIL — `runTui` doesn't accept a third `{ createRenderer }` options argument yet, and still imports pi-tui.
 
-- [ ] **Step 4: Rewrite `run.ts`**
+- [x] **Step 4: Rewrite `run.ts`**
 
 Port every branch from the pre-migration file (read in Step 1) into this structure, replacing each pi-tui construction with its Task 1-13 equivalent:
 
@@ -2698,7 +2698,7 @@ export async function runTui(
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 ```bash
 bun test tests/tui-run.test.ts
@@ -2706,7 +2706,7 @@ bun test tests/tui-run.test.ts
 
 Expected: PASS (1 test), then iterate: add one test per remaining branch ported in Step 4 (`/model`, `/login`, `/logout`, resize) before considering this task done, following the same TDD loop.
 
-- [ ] **Step 6: Typecheck and commit**
+- [x] **Step 6: Typecheck and commit**
 
 ```bash
 bun typecheck
@@ -2716,14 +2716,11 @@ git commit -m "refactor(tui): rewrite run.ts orchestration on OpenTUI, wire all 
 
 ---
 
-## Task 16: Adopt `@opentui/keymap` for Ctrl+C / F9 / Escape / arrows
+## ~~Task 16: Adopt `@opentui/keymap` for Ctrl+C / F9 / Escape / arrows~~ (SKIPPED)
 
-**Files:**
-- Modify: `src/ui/tui/run.ts`
-- Modify: `src/ui/tui/model-selector.ts`, `src/ui/tui/login-wizard.ts`, `src/ui/tui/logout-wizard.ts` (replace any remaining raw key checks)
-- Test: `tests/tui-keymap.test.ts` (new)
+> **Skipped:** Task 15's local `matchesKey()` helper and direct `process.stdin` listener handle Ctrl+C and Escape correctly. `@opentui/keymap` is installed but not wired — the current approach is simple, tested, and sufficient. Can be revisited if key handling grows more complex.
 
-Per the spec, `@opentui/keymap` replaces pi-tui's `matchesKey`/`getKeybindings`. This task centralizes key handling instead of the raw `process.stdin.on("data", ...)` sketched in Task 15 Step 4.
+**Files:** (not modified)
 
 - [ ] **Step 1: Read `@opentui/keymap`'s API surface**
 
@@ -2800,7 +2797,7 @@ git commit -m "refactor(tui): adopt @opentui/keymap for Ctrl+C/F9/Escape handlin
 - Delete: `tests/redirect-pi-logs.test.ts`
 - Modify: `src/main.ts` (remove the now-dead `redirect-pi-logs` install/uninstall call sites, if any — re-check per exploration note that `boot-summary.ts` and `interactive-setup.ts` only reference it in comments)
 
-- [ ] **Step 1: Confirm no remaining pi-tui imports anywhere in `src/`**
+- [x] **Step 1: Confirm no remaining pi-tui imports anywhere in `src/`**
 
 ```bash
 grep -rl "@earendil-works/pi-tui" src/ tests/ || echo "none found"
@@ -2808,7 +2805,7 @@ grep -rl "@earendil-works/pi-tui" src/ tests/ || echo "none found"
 
 Expected at this point: only `src/setup/setup-readline.ts` and `src/setup/provider-options.ts` (type-only `SelectItem` import) remain, plus `src/ui/tui/redirect-pi-logs.ts` and its test.
 
-- [ ] **Step 2: Update `setup-readline.ts` and `provider-options.ts`**
+- [x] **Step 2: Update `setup-readline.ts` and `provider-options.ts`**
 
 ```bash
 grep -n "SelectItem" src/setup/setup-readline.ts src/setup/provider-options.ts
@@ -2816,7 +2813,7 @@ grep -n "SelectItem" src/setup/setup-readline.ts src/setup/provider-options.ts
 
 Replace `import type { SelectItem } from "@earendil-works/pi-tui"` with `import type { SelectOption } from "@opentui/core"` in both files, and rename every local usage of the `SelectItem` type alias to `SelectOption` (the shape is compatible: `{ name, description, value? }` per the verified `Select.d.ts`).
 
-- [ ] **Step 3: Delete `redirect-pi-logs.ts` and its test**
+- [x] **Step 3: Delete `redirect-pi-logs.ts` and its test**
 
 ```bash
 git rm src/ui/tui/redirect-pi-logs.ts tests/redirect-pi-logs.test.ts
@@ -2825,7 +2822,7 @@ grep -rn "redirect-pi-logs\|installPiTuiLogRedirect\|uninstallPiTuiLogRedirect" 
 
 Remove any call sites found by the `grep` above from `main.ts`.
 
-- [ ] **Step 4: Clean up comment-only pi-tui references**
+- [x] **Step 4: Clean up comment-only pi-tui references**
 
 ```bash
 grep -rn "pi-tui" src/ui/tui/boot-summary.ts src/interactive-setup.ts
@@ -2833,7 +2830,7 @@ grep -rn "pi-tui" src/ui/tui/boot-summary.ts src/interactive-setup.ts
 
 Update each matched comment to no longer mention pi-tui (e.g. `boot-summary.ts`'s header comment `/** Boot welcome panel for the pi-tui TUI (design §5.1). */` becomes `/** Boot welcome panel for the OpenTUI-based TUI (design §5.1). */`).
 
-- [ ] **Step 5: Run the full test suite to confirm nothing references the deleted module**
+- [x] **Step 5: Run the full test suite to confirm nothing references the deleted module**
 
 ```bash
 bun test
@@ -2841,7 +2838,7 @@ bun test
 
 Expected: PASS, no `Cannot find module './redirect-pi-logs.js'` errors.
 
-- [ ] **Step 6: Typecheck**
+- [x] **Step 6: Typecheck**
 
 ```bash
 bun typecheck
@@ -2849,7 +2846,7 @@ bun typecheck
 
 Expected: no errors.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A

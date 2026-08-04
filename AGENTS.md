@@ -302,7 +302,7 @@ Full details: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Key terms: [docs/c
 
 ```
 src/
-  main.ts        — CLI entry: TTY guard, slash commands, pi-tui launch, headless `run` dispatch
+  main.ts        — CLI entry: TTY guard, slash commands, OpenTUI launch, headless `run` dispatch
   headless-run.ts — Non-TTY one-shot runner (`praana run`) for Harbor / CI
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration: prompt → LLM → concurrent tools → tier management
@@ -329,11 +329,11 @@ src/
   circuit/       — #301 loop gate + headless token/time wrap-up
   redact/        — #302 secret detectors (post_tool_call results + logged tool_call args)
   verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
-  interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
+  interactive-setup.ts — Dispatches TTY OpenTUI setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
   ui/
-    tui/           — pi-tui terminal shell: transcript, chrome bars, autocomplete, thinking blocks, login/logout wizards, model selector
+    tui/           — OpenTUI terminal shell: transcript, chrome bars, autocomplete, thinking blocks, login/logout wizards, model selector
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall
