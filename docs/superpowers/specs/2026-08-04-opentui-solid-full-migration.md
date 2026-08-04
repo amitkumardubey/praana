@@ -144,11 +144,11 @@ Solid toolchain, Prompt module, hybrid `run.tsx`.
 
 **Goal:** Setup and consent use `render(() => …)` only.
 
-| Target | Today |
+| Target | Status |
 |--------|--------|
-| Setup wizard | `setup-wizard.ts` (~900 lines — multi-commit OK) |
-| Download consent | `download-consent.ts` |
-| OAuth helper | `oauth-login-ui.ts` |
+| Download consent | Done — `download-consent.tsx` (Solid) |
+| OAuth helper | Interface/helpers — keep; used by login/setup |
+| Setup wizard | In progress — Solid step machine |
 
 **Work**
 
@@ -161,7 +161,7 @@ Solid toolchain, Prompt module, hybrid `run.tsx`.
 - `praana setup` + first-run consent work under interminai.
 - Non-TTY consent tests still pass.
 
-**PR:** `feat(tui): solid setup and download consent`
+**Commit:** `feat(tui): solid setup and download consent` (may split)
 
 ---
 
