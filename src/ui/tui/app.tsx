@@ -1,43 +1,51 @@
 /**
  * Solid TUI application root.
  *
- * Transcript / toasts / wizards attach into `body` during migration.
- * Prompt is fully Solid. Chrome bars attach into `chrome`.
+ * Transcript / wizards still attach into `body` during later phases.
+ * Prompt, chrome, toast, and spinner are Solid.
  */
-import { onMount } from "solid-js";
-import { useRenderer } from "@opentui/solid";
+import { createEffect, onMount } from "solid-js";
+import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { BoxRenderable } from "@opentui/core";
 import { Prompt, type PromptHandle } from "./prompt/index.js";
+import { IdentityBar, GlanceBar } from "./chrome/bars.js";
+import { ToastHost } from "./toast-host.js";
+import { SpinnerHost } from "./spinner-host.js";
+import type { ShellUi } from "./shell-ui.js";
 
 export interface AppReady {
   body: BoxRenderable;
-  chrome: BoxRenderable;
   prompt: PromptHandle;
 }
 
 export interface AppProps {
   cwd: string;
+  ui: ShellUi;
   onSubmit: (text: string) => void | Promise<void>;
   onReady: (api: AppReady) => void;
 }
 
 export function App(props: AppProps) {
   const renderer = useRenderer();
+  const dimensions = useTerminalDimensions();
   let body!: BoxRenderable;
-  let chrome!: BoxRenderable;
   let promptApi: PromptHandle | undefined;
   let readySent = false;
 
   const tryReady = () => {
-    if (readySent || !body || !chrome || !promptApi) return;
+    if (readySent || !body || !promptApi) return;
     readySent = true;
-    props.onReady({ body, chrome, prompt: promptApi });
+    props.onReady({ body, prompt: promptApi });
     promptApi.focus();
     renderer.requestRender();
   };
 
   onMount(() => {
     queueMicrotask(tryReady);
+  });
+
+  createEffect(() => {
+    props.ui.chrome.setWidth(dimensions().width || 80);
   });
 
   return (
@@ -52,6 +60,9 @@ export function App(props: AppProps) {
         minHeight={1}
       />
 
+      <ToastHost toasts={props.ui.toasts} />
+      <SpinnerHost active={props.ui.spinner.active} message={props.ui.spinner.message} />
+
       <Prompt
         cwd={props.cwd}
         focused
@@ -62,14 +73,10 @@ export function App(props: AppProps) {
         onSubmit={props.onSubmit}
       />
 
-      <box
-        id="chrome"
-        ref={(el: BoxRenderable) => {
-          chrome = el;
-        }}
-        flexDirection="column"
-        flexShrink={0}
-      />
+      <box id="chrome" flexDirection="column" flexShrink={0}>
+        <IdentityBar line={props.ui.chrome.identityLine} />
+        <GlanceBar line={props.ui.chrome.glanceLine} />
+      </box>
     </box>
   );
 }

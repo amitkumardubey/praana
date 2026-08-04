@@ -1,8 +1,8 @@
 /**
  * OpenTUI + Solid entry — ambient intelligence layout (design §5).
  *
- * Solid owns the app shell and Prompt; transcript/toasts/wizards attach into
- * host boxes during the migration.
+ * Solid owns App shell, Prompt, chrome, toast, and spinner.
+ * Transcript + wizards still attach into the body host box (Phase 2/3).
  */
 import {
   createCliRenderer,
@@ -24,9 +24,6 @@ import {
 } from "./transcript/index.js";
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
-import { IdentityBar } from "./chrome/identity-bar.js";
-import { GlanceBar } from "./chrome/glance-bar.js";
-import { ToastRegion } from "./toast-region.js";
 import { OpenTuiSink } from "./sink.js";
 import { showSlashCommandResult, dismissSlashCommandResult } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
@@ -34,27 +31,12 @@ import { LoginWizard } from "./login-wizard.js";
 import { LogoutWizard } from "./logout-wizard.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
-import { Spinner } from "./spinner.js";
 import { App } from "./app.js";
+import { createShellUi } from "./shell-ui.js";
 import type { PromptHandle } from "./prompt/index.js";
-import { DEFAULT_CONTEXT_WINDOW, type StatusBarInput } from "../../status-bar.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
-
-function statusBarFromSnapshot(
-  base: StatusBarInput,
-  snapshot: ContextDisplaySnapshot,
-): StatusBarInput {
-  return {
-    ...base,
-    contextUsedTokens: snapshot.usedTokens,
-    contextWindowTokens: snapshot.windowTokens,
-    contextDisplayMode: snapshot.mode,
-    contextWeightedPct: snapshot.weightedPct,
-    contextRawPct: snapshot.rawPct,
-    contextPressureMode: snapshot.pressureMode,
-  };
-}
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -123,6 +105,8 @@ export async function runTui(
   });
 
   const ctx: RenderContext = renderer;
+  const ui = createShellUi();
+  ui.chrome.setBackgroundZones(config.ui.background_zones);
 
   const transcriptOpts = {
     markdownRendering: config.ui.markdown_rendering,
@@ -138,14 +122,9 @@ export async function runTui(
   let slashOverlayHandle: import("./overlay.js").OverlayHandle | null = null;
   let turnStartedAt = 0;
 
-  // Hosts filled in App.onReady
   let overlaySlot: BoxRenderable | null = null;
-  let spinnerSlot: BoxRenderable | null = null;
   let transcript: TranscriptContainer | null = null;
-  let toast: ToastRegion | null = null;
-  let spinner: Spinner | null = null;
-  let identityBar: IdentityBar | null = null;
-  let glanceBar: GlanceBar | null = null;
+  let ready = false;
 
   const clearSlot = (slot: BoxRenderable) => {
     for (const child of slot.getChildren()) {
@@ -154,13 +133,12 @@ export async function runTui(
   };
 
   const refreshChrome = () => {
-    if (!identityBar || !glanceBar) return;
     const base = controller.getStatusBarInput();
     const preview = openTuiSink?.getContextPreview() ?? null;
-    identityBar.setInput(base);
-    glanceBar.update({
-      status: preview ? statusBarFromSnapshot(base, preview) : base,
+    ui.chrome.setStatus(base, {
       showCost: config.ui.show_cost,
+      backgroundZones: config.ui.background_zones,
+      preview,
     });
   };
 
@@ -176,7 +154,7 @@ export async function runTui(
   };
 
   const openModelSelector = () => {
-    if (!overlaySlot || !spinnerSlot || !toast || !spinner) return;
+    if (!overlaySlot || !ready) return;
     if (slashOverlayHandle) {
       dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
@@ -191,8 +169,7 @@ export async function runTui(
       onSelect: (provider: string, modelId: string) => {
         void (async () => {
           closeOverlay();
-          spinnerSlot!.add(spinner!);
-          spinner!.setMessage("switching model…");
+          ui.spinner.start("switching model…");
 
           let switchResult: import("../../slash-commands.js").SlashCommandResult;
           try {
@@ -200,17 +177,16 @@ export async function runTui(
               `/model ${provider} ${modelId}`,
             );
           } finally {
-            spinner!.stop();
-            spinnerSlot!.remove(spinner!);
+            ui.spinner.stop();
           }
 
           if (switchResult.display === "toast" && switchResult.toastTone) {
-            toast!.show(
+            ui.toast.show(
               switchResult.lines.join(" "),
               toastToneToType(switchResult.toastTone),
             );
           } else if (switchResult.lines.length > 0) {
-            toast!.show(switchResult.lines.join(" "), "info");
+            ui.toast.show(switchResult.lines.join(" "), "info");
           }
           if (switchResult.action === "refresh_status") {
             refreshChrome();
@@ -227,7 +203,7 @@ export async function runTui(
   };
 
   const openLoginWizard = (providerHint?: string) => {
-    if (!overlaySlot || !spinnerSlot || !toast || !spinner) return;
+    if (!overlaySlot || !ready) return;
     if (slashOverlayHandle) {
       dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
@@ -240,8 +216,7 @@ export async function runTui(
         closeOverlay();
 
         if (result.shouldSwitch && result.defaultModel) {
-          spinnerSlot!.add(spinner!);
-          spinner!.setMessage("switching model…");
+          ui.spinner.start("switching model…");
 
           void (async () => {
             let switchResult: import("../../slash-commands.js").SlashCommandResult;
@@ -250,17 +225,16 @@ export async function runTui(
                 `/model ${result.provider} ${result.defaultModel}`,
               );
             } finally {
-              spinner!.stop();
-              spinnerSlot!.remove(spinner!);
+              ui.spinner.stop();
             }
 
             if (switchResult.display === "toast" && switchResult.toastTone) {
-              toast!.show(
+              ui.toast.show(
                 switchResult.lines.join(" "),
                 toastToneToType(switchResult.toastTone),
               );
             } else if (switchResult.lines.length > 0) {
-              toast!.show(switchResult.lines.join(" "), "info");
+              ui.toast.show(switchResult.lines.join(" "), "info");
             }
             if (switchResult.action === "refresh_status") {
               refreshChrome();
@@ -269,13 +243,13 @@ export async function runTui(
           })();
         } else if (result.shouldSwitch) {
           session.setProviderOverride(result.provider);
-          toast!.show(result.message, "success");
+          ui.toast.show(result.message, "success");
           refreshChrome();
           renderer.requestRender();
         } else {
           const tone: "info" | "success" =
             result.message.includes("Run /new") ? "info" : "success";
-          toast!.show(result.message, tone);
+          ui.toast.show(result.message, tone);
           refreshChrome();
           renderer.requestRender();
         }
@@ -290,7 +264,7 @@ export async function runTui(
   };
 
   const openLogoutWizard = () => {
-    if (!overlaySlot || !toast) return;
+    if (!overlaySlot || !ready) return;
     if (slashOverlayHandle) {
       dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
@@ -302,7 +276,7 @@ export async function runTui(
         closeOverlay();
         const tone: "info" | "success" =
           result.message.includes("Run /new") ? "info" : "success";
-        toast!.show(result.message, tone);
+        ui.toast.show(result.message, tone);
         refreshChrome();
         renderer.requestRender();
       },
@@ -316,6 +290,7 @@ export async function runTui(
   };
 
   async function doShutdown(): Promise<void> {
+    ui.dispose();
     renderer.destroy();
     process.stderr.write("\r\x1b[2K\nSaving session…\n");
     const status = await controller.shutdown();
@@ -335,30 +310,28 @@ export async function runTui(
   }
 
   const handleSubmit = async (rawInput: string) => {
-    if (!openTuiSink || !toast || !spinner || !spinnerSlot || !transcript) return;
+    if (!openTuiSink || !ready || !transcript) return;
     let input = rawInput.trim();
     if (!input) return;
-    toast.clearErrors();
+    ui.toast.clearErrors();
 
     if (input.startsWith("!")) {
       const command = input.slice(1).trim();
       if (!command) {
-        toast.show("Usage: !<command>", "error");
+        ui.toast.show("Usage: !<command>", "error");
         return;
       }
       input = `/shell ${command}`;
     }
 
     if (input.startsWith("/")) {
-      spinnerSlot.add(spinner);
-      spinner.setMessage("running command…");
+      ui.spinner.start("running command…");
 
       let result: import("../../slash-commands.js").SlashCommandResult;
       try {
         result = await controller.executeSlashCommand(input);
       } finally {
-        spinner.stop();
-        spinnerSlot.remove(spinner);
+        ui.spinner.stop();
       }
 
       if (result.display === "inline_transcript") {
@@ -370,7 +343,7 @@ export async function runTui(
           openTuiSink.onSystemLines(result.lines);
         }
       } else if (result.display === "toast" && result.toastTone) {
-        toast.show(
+        ui.toast.show(
           result.lines.join(" "),
           toastToneToType(result.toastTone),
         );
@@ -397,8 +370,7 @@ export async function runTui(
         transcript.clear();
         openTuiSink.clearContextPreview();
 
-        identityBar?.setBackgroundZones(config.ui.background_zones);
-        glanceBar?.setBackgroundZones(config.ui.background_zones);
+        ui.chrome.setBackgroundZones(config.ui.background_zones);
         transcriptOpts.markdownRendering = config.ui.markdown_rendering;
         transcriptOpts.syntaxTheme = config.ui.syntax_theme;
         transcriptOpts.backgroundZones = config.ui.background_zones;
@@ -431,15 +403,13 @@ export async function runTui(
 
     openTuiSink.nextGroup();
     openTuiSink.appendUser(input);
-    spinnerSlot.add(spinner);
-    spinner.setMessage("thinking…");
+    ui.spinner.start("thinking…");
     turnStartedAt = Date.now();
 
     try {
       await controller.runUserTurn(input, openTuiSink);
     } finally {
-      spinner.stop();
-      spinnerSlot.remove(spinner);
+      ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
       renderer.requestRender();
@@ -450,9 +420,11 @@ export async function runTui(
     () => (
       <App
         cwd={info.cwd}
+        ui={ui}
         onSubmit={handleSubmit}
-        onReady={({ body, chrome, prompt: promptApi }) => {
+        onReady={({ body, prompt: promptApi }) => {
           prompt = promptApi;
+          ready = true;
 
           transcript = new TranscriptContainer(
             ctx,
@@ -472,25 +444,13 @@ export async function runTui(
           );
           transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
 
-          toast = new ToastRegion(ctx);
-          spinner = new Spinner(ctx, "thinking…");
-          spinnerSlot = new BoxRenderable(ctx, { id: "spinner-slot", flexDirection: "column" });
-          overlaySlot = new BoxRenderable(ctx, { id: "overlay-slot", flexDirection: "column" });
+          overlaySlot = new BoxRenderable(ctx, {
+            id: "overlay-slot",
+            flexDirection: "column",
+          });
 
           body.add(transcript);
-          body.add(toast);
-          body.add(spinnerSlot);
           body.add(overlaySlot);
-
-          identityBar = new IdentityBar(ctx);
-          identityBar.setBackgroundZones(config.ui.background_zones);
-          identityBar.setInput(controller.getStatusBarInput());
-
-          glanceBar = new GlanceBar(ctx);
-          glanceBar.setBackgroundZones(config.ui.background_zones);
-
-          chrome.add(identityBar);
-          chrome.add(glanceBar);
 
           const modelId = controller.currentModelOrDefault();
           const ctxWindow =
@@ -510,11 +470,11 @@ export async function runTui(
             slashOverlayHandle = showSlashCommandResult(renderer, lines);
           };
 
-          openTuiSink = new OpenTuiSink(ctx, transcript, toast, {
+          openTuiSink = new OpenTuiSink(ctx, transcript, ui.toast, {
             ambient: config.ui.ambient,
             showThinking: () => controller.showThinking,
             onSpinnerMessage: (msg: string) => {
-              spinner?.setMessage(msg);
+              ui.spinner.setMessage(msg);
             },
             ctxWindowTokens: ctxWindow,
             engineMode: session.isContextEngineEnabled(),
@@ -523,9 +483,10 @@ export async function runTui(
             getModel: () => controller.currentModelOrDefault(),
             onSlashCommandResult: showSlashOverlay,
             onContextPreview: (snapshot: ContextDisplaySnapshot) => {
-              glanceBar?.update({
-                status: statusBarFromSnapshot(controller.getStatusBarInput(), snapshot),
+              ui.chrome.setStatus(controller.getStatusBarInput(), {
                 showCost: config.ui.show_cost,
+                backgroundZones: config.ui.background_zones,
+                preview: snapshot,
               });
             },
           });
@@ -557,8 +518,7 @@ export async function runTui(
         (prompt?.getText().length ?? 0) === 0,
       );
       if (action === "abort_turn") {
-        spinner?.stop();
-        if (spinner && spinnerSlot) spinnerSlot.remove(spinner);
+        ui.spinner.stop();
         openTuiSink?.onFallback("⚡ turn aborted");
         renderer.requestRender();
         return;

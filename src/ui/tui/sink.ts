@@ -10,7 +10,7 @@ import {
   type ToolEntry,
 } from "./transcript/model.js";
 import type { TranscriptProjection } from "./transcript/projection.js";
-import type { ToastRegion } from "./toast-region.js";
+import type { ToastApi } from "./shell-ui.js";
 import { formatTurnFooterDigest } from "./tool-icons.js";
 import {
   type ContextDisplaySnapshot,
@@ -41,7 +41,7 @@ export class OpenTuiSink implements TurnUiSink {
 
   private readonly ctx: RenderContext;
   private readonly transcript: TranscriptContainer;
-  private readonly toast: ToastRegion;
+  private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
 
   private group = 1;
@@ -64,7 +64,7 @@ export class OpenTuiSink implements TurnUiSink {
   constructor(
     ctx: RenderContext,
     transcript: TranscriptContainer,
-    toast: ToastRegion,
+    toast: ToastApi,
     opts: SinkOpts,
   ) {
     this.ctx = ctx;
