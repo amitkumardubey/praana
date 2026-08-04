@@ -19,11 +19,10 @@ Finish migrating PRAANA’s interactive TUI from the current **hybrid** (Solid `
 | Solid chrome / toast / spinner via [`shell-ui.ts`](../../src/ui/tui/shell-ui.ts) | Done (Phase 1) |
 | Solid transcript + store + sink mount | Done (Phase 2) |
 | Solid overlays (slash / model / logout + login bridge) | Done (Phase 3) |
+| Solid download consent + setup wizard | Done (Phase 4) |
 | [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Thin — session wiring only |
 
-**Still imperative:** login wizard body (bridged into Solid frame), setup wizard, download consent, oauth-login UI; legacy overlay/selector/transcript container classes unused by live path but present.
-
-**Note:** OpenTUI `Portal` was unreliable for overlays in this spike; overlays use `position: absolute` on the app root instead (same approach as the Prompt autocomplete popup).
+**Still imperative (cleanup in Phase 5):** login wizard body (bridged), legacy chrome/transcript/overlay class files unused by live path; `oauth-login-ui.ts` remains a sink/helper module.
 
 
 **Invariant:** no changes to `turn.ts` / `session.ts` / `TurnUiSink` method contracts. Pure helpers (formatters, projection, theme) may stay plain TS.
@@ -37,9 +36,9 @@ flowchart LR
     P1[Phase1 Chrome Toast Spinner]
     P2[Phase2 Transcript Sink]
     P3[Phase3 Overlays Wizards]
+    P4[Phase4 Standalone TUIs]
   end
   subgraph next [Remaining]
-    P4[Phase4 Standalone TUIs]
     P5[Phase5 Cleanup Tests Docs]
   end
   Toolchain --> AppShell --> Prompt --> P1 --> P2 --> P3 --> P4 --> P5
@@ -140,28 +139,23 @@ Solid toolchain, Prompt module, hybrid `run.tsx`.
 
 ---
 
-## Phase 4 — Standalone pre-session TUIs
+## Phase 4 — Standalone pre-session TUIs (complete)
 
 **Goal:** Setup and consent use `render(() => …)` only.
 
-| Target | Status |
+| Target | Solid path |
 |--------|--------|
-| Download consent | Done — `download-consent.tsx` (Solid) |
-| OAuth helper | Interface/helpers — keep; used by login/setup |
-| Setup wizard | In progress — Solid step machine |
+| Download consent | `download-consent.tsx` |
+| Setup wizard | `setup-wizard.tsx` (signal step machine) |
+| OAuth helper | `oauth-login-ui.ts` — sink interface + helpers (unchanged; consumed by Solid/bridged wizards) |
 
-**Work**
+**Done**
 
-1. Step machine as Solid signals (provider → auth → model → confirm).
-2. Shared Solid primitives: escapable select, masked input.
-3. Same lifecycle: destroy standalone renderer before main `App`.
+1. Solid consent + Solid setup step machine (provider → auth → model → confirm).
+2. Same lifecycle: destroy standalone renderer before main `App`.
+3. Non-TTY consent auto-proceed preserved; setup logic tests green.
 
-**Exit**
-
-- `praana setup` + first-run consent work under interminai.
-- Non-TTY consent tests still pass.
-
-**Commit:** `feat(tui): solid setup and download consent` (may split)
+**Commit:** `feat(tui): solid setup wizard` (consent already landed separately)
 
 ---
 
