@@ -17,9 +17,10 @@ Finish migrating PRAANA’s interactive TUI from the current **hybrid** (Solid `
 | Solid [`app.tsx`](../../src/ui/tui/app.tsx) shell | Done |
 | Solid [`prompt/`](../../src/ui/tui/prompt/) — grow, history, paste collapse, autocomplete | Done |
 | Solid chrome / toast / spinner via [`shell-ui.ts`](../../src/ui/tui/shell-ui.ts) | Done (Phase 1) |
-| [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Hybrid — still `new`s transcript + overlays |
+| Solid transcript + store + sink mount | Done (Phase 2) |
+| [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Hybrid — still `new`s overlay wizards |
 
-**Still imperative:** transcript + sink, model selector, login/logout, slash overlay, setup wizard, download consent, oauth-login UI; legacy `identity-bar.ts` / `glance-bar.ts` / `toast-region.ts` / `spinner.ts` / `inverted-editor.ts` unused by live path but present.
+**Still imperative:** model selector, login/logout, slash overlay, setup wizard, download consent, oauth-login UI; legacy transcript container/components and chrome/toast/spinner classes unused by live path but present.
 
 **Invariant:** no changes to `turn.ts` / `session.ts` / `TurnUiSink` method contracts. Pure helpers (formatters, projection, theme) may stay plain TS.
 
@@ -30,9 +31,9 @@ flowchart LR
     AppShell
     Prompt
     P1[Phase1 Chrome Toast Spinner]
+    P2[Phase2 Transcript Sink]
   end
   subgraph next [Remaining]
-    P2[Phase2 Transcript Sink]
     P3[Phase3 Overlays Wizards]
     P4[Phase4 Standalone TUIs]
     P5[Phase5 Cleanup Tests Docs]
@@ -76,33 +77,33 @@ Solid toolchain, Prompt module, hybrid `run.tsx`.
 
 ---
 
-## Phase 2 — Transcript + sink (largest)
+## Phase 2 — Transcript + sink (complete)
 
 **Goal:** Transcript is a Solid tree; sink mutates Solid stores, not `BoxRenderable.add`.
 
-| Target | Today |
+| Target | Solid path |
 |--------|--------|
-| Scroll container | `transcript/container.ts` |
-| Entry UIs | `transcript/components/*.ts` |
-| Sink | `sink.ts` → new `SolidSink` |
+| Store / mount | `transcript/store.ts`, `transcript/mount.ts` |
+| Scroll view + entries | `transcript/view.tsx`, `transcript/entries.tsx` |
+| Sink | `sink.ts` → `TranscriptMount` (no RenderContext) |
 | Keep pure TS | `projection.ts`, `model.ts`, events/gap/opts |
 
-**Work**
+**Done**
 
-1. Solid store: ordered entries + streaming buffers (assistant/thinking).
+1. Solid store: ordered entries + streaming id set + focus selection.
 2. Components: user, assistant (`markdown`), tool row, thinking, system, recall, turn footer.
-3. `scrollbox` sticky-bottom; F9 focus via keyboard/traits.
-4. `SolidSink` implements `TurnUiSink` (same methods as `OpenTuiSink`).
-5. Resume: load bootstrap index into store.
-6. `testRender` coverage for a few entry types.
+3. `scrollbox` sticky-bottom; F9 focus via store + key handlers.
+4. `OpenTuiSink` drives `TranscriptMount` (same TurnUiSink methods).
+5. Resume: `loadIndex` into store from bootstrap.
+6. Unit tests: `tests/transcript-store.test.ts`.
 
 **Exit**
 
-- Full chat turn (user, stream, tools, footer) looks correct.
-- Resume restores transcript.
-- Interminai tool-turn smoke; F9 works.
+- Chat turn rows render (user / system / tools / footer); LLM stream path unchanged.
+- Resume loads bootstrap into store.
+- Interminai: `/shell` and error/footer rows visible; F9 focuses transcript.
 
-**PR:** `feat(tui): solid transcript and sink` (allow split PR if oversized)
+**Commit:** `feat(tui): solid transcript and sink`
 
 ---
 

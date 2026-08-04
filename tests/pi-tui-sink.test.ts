@@ -1,8 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
 import { OpenTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
-import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
-import type { ToastRegion } from "../src/ui/tui/toast-region.js";
+import type { TranscriptMount } from "../src/ui/tui/transcript/mount.js";
+import type { ToastApi } from "../src/ui/tui/shell-ui.js";
 import type { ContextDisplaySnapshot } from "../src/context-display.js";
 
 function baseline(overrides: Partial<ContextDisplaySnapshot> = {}): ContextDisplaySnapshot {
@@ -31,15 +31,14 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
   const persistEntry = mock(() => {});
   const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
   const sink = new OpenTuiSink(
-    { requestRender: mock() } as never,
     {
       renderEntries,
       appendEntry,
       appendAssistantDelta,
       appendThinkingDelta,
       patchToolResult,
-    } as unknown as TranscriptContainer,
-    { show: mock() } as unknown as ToastRegion,
+    } as unknown as TranscriptMount,
+    { show: mock(), clearErrors: mock() } as unknown as ToastApi,
     {
       ambient: "inline",
       showThinking: () => true,

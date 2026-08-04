@@ -1,8 +1,8 @@
 /**
  * Solid TUI application root.
  *
- * Transcript / wizards still attach into `body` during later phases.
- * Prompt, chrome, toast, and spinner are Solid.
+ * Solid owns Prompt, chrome, toast, spinner, and transcript.
+ * Overlay wizards still attach into a host box (Phase 3).
  */
 import { createEffect, onMount } from "solid-js";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
@@ -11,16 +11,25 @@ import { Prompt, type PromptHandle } from "./prompt/index.js";
 import { IdentityBar, GlanceBar } from "./chrome/bars.js";
 import { ToastHost } from "./toast-host.js";
 import { SpinnerHost } from "./spinner-host.js";
+import { TranscriptView } from "./transcript/view.js";
+import type { TranscriptStoreApi } from "./transcript/store.js";
+import type { TranscriptRenderOpts } from "./transcript/opts.js";
+import type { ExpandedContentResult, IndexedTranscriptEntry } from "./transcript/index.js";
 import type { ShellUi } from "./shell-ui.js";
 
 export interface AppReady {
-  body: BoxRenderable;
+  overlayHost: BoxRenderable;
   prompt: PromptHandle;
 }
 
 export interface AppProps {
   cwd: string;
   ui: ShellUi;
+  transcript: TranscriptStoreApi;
+  transcriptOpts: TranscriptRenderOpts;
+  onExpand?: (
+    entry: IndexedTranscriptEntry,
+  ) => Promise<ExpandedContentResult> | ExpandedContentResult;
   onSubmit: (text: string) => void | Promise<void>;
   onReady: (api: AppReady) => void;
 }
@@ -28,14 +37,14 @@ export interface AppProps {
 export function App(props: AppProps) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
-  let body!: BoxRenderable;
+  let overlayHost!: BoxRenderable;
   let promptApi: PromptHandle | undefined;
   let readySent = false;
 
   const tryReady = () => {
-    if (readySent || !body || !promptApi) return;
+    if (readySent || !overlayHost || !promptApi) return;
     readySent = true;
-    props.onReady({ body, prompt: promptApi });
+    props.onReady({ overlayHost, prompt: promptApi });
     promptApi.focus();
     renderer.requestRender();
   };
@@ -50,15 +59,23 @@ export function App(props: AppProps) {
 
   return (
     <box id="tui-root" flexDirection="column" width="100%" height="100%">
-      <box
-        id="body"
-        ref={(el: BoxRenderable) => {
-          body = el;
-        }}
-        flexGrow={1}
-        flexDirection="column"
-        minHeight={1}
-      />
+      <box id="body" flexGrow={1} flexDirection="column" minHeight={1}>
+        <TranscriptView
+          store={props.transcript}
+          opts={props.transcriptOpts}
+          onExpand={props.onExpand}
+          onRequestFocus={() => promptApi?.focus()}
+        />
+        <box
+          id="overlay-slot"
+          ref={(el: BoxRenderable) => {
+            overlayHost = el;
+            tryReady();
+          }}
+          flexDirection="column"
+          flexShrink={0}
+        />
+      </box>
 
       <ToastHost toasts={props.ui.toasts} />
       <SpinnerHost active={props.ui.spinner.active} message={props.ui.spinner.message} />

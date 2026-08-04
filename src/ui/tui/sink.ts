@@ -1,14 +1,13 @@
 /**
- * TurnUiSink → TranscriptContainer routing (design §4 ambient signals).
+ * TurnUiSink → transcript mount routing (design §4 ambient signals).
  */
-import type { RenderContext } from "@opentui/core";
 import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
 import type { LogEntry } from "../../logger.js";
-import type { TranscriptContainer } from "./transcript/container.js";
 import {
   type TranscriptEntry,
   type ToolEntry,
 } from "./transcript/model.js";
+import type { TranscriptMount } from "./transcript/mount.js";
 import type { TranscriptProjection } from "./transcript/projection.js";
 import type { ToastApi } from "./shell-ui.js";
 import { formatTurnFooterDigest } from "./tool-icons.js";
@@ -39,8 +38,7 @@ export class OpenTuiSink implements TurnUiSink {
   /** Buffer shell output into tool rows — raw stdout corrupts OpenTUI redraws. */
   readonly shellLiveStream = false;
 
-  private readonly ctx: RenderContext;
-  private readonly transcript: TranscriptContainer;
+  private readonly transcript: TranscriptMount;
   private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
 
@@ -62,12 +60,10 @@ export class OpenTuiSink implements TurnUiSink {
   private nextLocalId = 1;
 
   constructor(
-    ctx: RenderContext,
-    transcript: TranscriptContainer,
+    transcript: TranscriptMount,
     toast: ToastApi,
     opts: SinkOpts,
   ) {
-    this.ctx = ctx;
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
@@ -337,7 +333,6 @@ export class OpenTuiSink implements TurnUiSink {
         text: msg,
       });
       this.toast.show(msg, "error");
-      this.ctx.requestRender();
     }
   }
 
@@ -434,6 +429,7 @@ export class OpenTuiSink implements TurnUiSink {
     const thinking = entries.find((entry) => entry.id === this.thinkingStreamId);
     if (assistant) this.persist(assistant);
     if (thinking) this.persist(thinking);
+    this.transcript.finalizeStreams?.([this.assistantStreamId, this.thinkingStreamId]);
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
   }

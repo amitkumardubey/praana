@@ -1,12 +1,11 @@
 /**
  * OpenTUI + Solid entry — ambient intelligence layout (design §5).
  *
- * Solid owns App shell, Prompt, chrome, toast, and spinner.
- * Transcript + wizards still attach into the body host box (Phase 2/3).
+ * Solid owns App shell, Prompt, chrome, toast, spinner, and transcript.
+ * Overlay wizards still attach into a host box (Phase 3).
  */
 import {
   createCliRenderer,
-  BoxRenderable,
   type KeyEvent,
   type RenderContext,
 } from "@opentui/core";
@@ -17,13 +16,13 @@ import {
   formatSessionEndEpilogue,
 } from "../../app-banner.js";
 import { formatTuiBootSummary } from "./boot-summary.js";
-import { TranscriptContainer } from "./transcript/container.js";
 import {
   resolveExpandedContent,
   type TranscriptIndex,
 } from "./transcript/index.js";
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
+import { createTranscriptStore } from "./transcript/store.js";
 import { OpenTuiSink } from "./sink.js";
 import { showSlashCommandResult, dismissSlashCommandResult } from "./slash-command-overlay.js";
 import { ModelSelector } from "./model-selector.js";
@@ -37,6 +36,7 @@ import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
+import type { BoxRenderable } from "@opentui/core";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -117,13 +117,15 @@ export async function runTui(
   const projection = new TranscriptProjection({ useUnicode });
   projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
 
+  const transcript = createTranscriptStore();
+  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
+
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
   let slashOverlayHandle: import("./overlay.js").OverlayHandle | null = null;
   let turnStartedAt = 0;
 
   let overlaySlot: BoxRenderable | null = null;
-  let transcript: TranscriptContainer | null = null;
   let ready = false;
 
   const clearSlot = (slot: BoxRenderable) => {
@@ -290,6 +292,7 @@ export async function runTui(
   };
 
   async function doShutdown(): Promise<void> {
+    transcript.dispose();
     ui.dispose();
     renderer.destroy();
     process.stderr.write("\r\x1b[2K\nSaving session…\n");
@@ -310,7 +313,7 @@ export async function runTui(
   }
 
   const handleSubmit = async (rawInput: string) => {
-    if (!openTuiSink || !ready || !transcript) return;
+    if (!openTuiSink || !ready) return;
     let input = rawInput.trim();
     if (!input) return;
     ui.toast.clearErrors();
@@ -421,36 +424,18 @@ export async function runTui(
       <App
         cwd={info.cwd}
         ui={ui}
+        transcript={transcript}
+        transcriptOpts={transcriptOpts}
+        onExpand={(entry) =>
+          Promise.resolve(
+            resolveExpandedContent(entry, session.eventLog.readAll()),
+          )
+        }
         onSubmit={handleSubmit}
-        onReady={({ body, prompt: promptApi }) => {
+        onReady={({ overlayHost, prompt: promptApi }) => {
           prompt = promptApi;
+          overlaySlot = overlayHost;
           ready = true;
-
-          transcript = new TranscriptContainer(
-            ctx,
-            transcriptOpts,
-            undefined,
-            {
-              onExpand: (entry) =>
-                Promise.resolve(
-                  resolveExpandedContent(entry, session.eventLog.readAll()),
-                ),
-              onRequestFocus: (target: unknown) => {
-                const t = target as { focus?: () => void } | null;
-                if (t?.focus) t.focus();
-                else prompt?.focus();
-              },
-            },
-          );
-          transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
-
-          overlaySlot = new BoxRenderable(ctx, {
-            id: "overlay-slot",
-            flexDirection: "column",
-          });
-
-          body.add(transcript);
-          body.add(overlaySlot);
 
           const modelId = controller.currentModelOrDefault();
           const ctxWindow =
@@ -470,7 +455,7 @@ export async function runTui(
             slashOverlayHandle = showSlashCommandResult(renderer, lines);
           };
 
-          openTuiSink = new OpenTuiSink(ctx, transcript, ui.toast, {
+          openTuiSink = new OpenTuiSink(transcript.mount, ui.toast, {
             ambient: config.ui.ambient,
             showThinking: () => controller.showThinking,
             onSpinnerMessage: (msg: string) => {
@@ -507,9 +492,9 @@ export async function runTui(
       return;
     }
 
-    if (matchesKey(key, "f9") && transcript) {
-      transcript.focus();
+    if (matchesKey(key, "f9")) {
       transcript.setFocused(true);
+      renderer.requestRender();
       return;
     }
 
