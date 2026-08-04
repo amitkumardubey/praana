@@ -1,68 +1,70 @@
 /**
- * Tests for the OpenTUI login wizard.
+ * Tests for Solid login routing helpers.
  */
 import { describe, expect, test } from "bun:test";
-import { createTestRenderer } from "@opentui/core/testing";
-import { LoginWizard } from "../src/ui/tui/login-wizard.js";
+import {
+  routeAfterLoginProviderChoice,
+  routeLoginHint,
+} from "../src/ui/tui/overlays/login.js";
 
-const mockProviders = [
-  { id: "anthropic", label: "Anthropic" },
-  { id: "bedrock", label: "Amazon Bedrock" },
-  {
-    id: "openai",
-    label: "OpenAI",
-  },
-];
-
-describe("LoginWizard", () => {
-  test("step 1 shows the provider list", async () => {
-    const setup = await createTestRenderer({ width: 60, height: 20 });
-    try {
-      const wizard = new LoginWizard(setup.renderer, mockProviders, {
-        currentProvider: "anthropic",
-        onComplete: () => {},
-        onCancel: () => {},
-      });
-      setup.renderer.root.add(wizard);
-      wizard.focus();
-      await setup.renderOnce();
-      await setup.flush();
-      const frame = setup.captureCharFrame();
-      expect(frame).toContain("Anthropic");
-      expect(frame).toContain("Amazon Bedrock");
-      expect(frame).toContain("OpenAI");
-    } finally {
-      setup.renderer.destroy();
-    }
+describe("login overlay routing", () => {
+  test("routes an unknown /login hint into custom-provider URL entry", () => {
+    expect(
+      routeLoginHint("local-llm", {
+        isKnownProvider: false,
+        isUserDeclaredProvider: false,
+        hasApiKey: false,
+        hasCredentials: false,
+        hasOAuthToken: false,
+        providerRequiresApiKey: false,
+        providerSupportsOAuth: false,
+        isOAuthOnlyProvider: false,
+        bedrockNeedsApiKeyPrompt: false,
+      }),
+    ).toEqual({ step: "custom-url", customId: "local-llm" });
   });
 
-  test("selecting a provider advances to the auth method step", async () => {
-    const setup = await createTestRenderer({ width: 60, height: 20 });
-    try {
-      const wizard = new LoginWizard(setup.renderer, mockProviders, {
-        currentProvider: "anthropic",
-        onComplete: () => {},
-        onCancel: () => {},
-      });
-      setup.renderer.root.add(wizard);
-      wizard.focus();
-      await setup.renderOnce();
-      await setup.flush();
+  test("routes an OAuth provider without credentials to auth-method selection", () => {
+    expect(
+      routeAfterLoginProviderChoice("anthropic", {
+        hasApiKey: false,
+        hasCredentials: false,
+        hasOAuthToken: false,
+        providerRequiresApiKey: true,
+        providerSupportsOAuth: true,
+        isOAuthOnlyProvider: false,
+        bedrockNeedsApiKeyPrompt: false,
+      }),
+    ).toBe("auth-method");
+  });
 
-      await setup.mockInput.pressEnter();
-      await setup.renderOnce();
-      await setup.flush();
+  test("treats a user-declared provider as custom even when its id is catalogued", () => {
+    expect(
+      routeLoginHint("openai", {
+        isKnownProvider: true,
+        isUserDeclaredProvider: true,
+        hasApiKey: true,
+        hasCredentials: false,
+        hasOAuthToken: false,
+        providerRequiresApiKey: false,
+        providerSupportsOAuth: false,
+        isOAuthOnlyProvider: false,
+        bedrockNeedsApiKeyPrompt: false,
+      }),
+    ).toEqual({ step: "has-key", provider: "openai" });
+  });
 
-      // Navigate down to "API key" option in auth-method step
-      setup.mockInput.pressArrow("down");
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      await setup.renderOnce();
-      await setup.flush();
-
-      const frame = setup.captureCharFrame();
-      expect(frame).toContain("API key");
-    } finally {
-      setup.renderer.destroy();
-    }
+  test("routes Bedrock without ambient credentials to key entry", () => {
+    expect(
+      routeAfterLoginProviderChoice("amazon-bedrock", {
+        hasApiKey: false,
+        hasCredentials: false,
+        hasOAuthToken: false,
+        providerRequiresApiKey: false,
+        providerSupportsOAuth: false,
+        isOAuthOnlyProvider: false,
+        bedrockNeedsApiKeyPrompt: true,
+      }),
+    ).toBe("key");
   });
 });

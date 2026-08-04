@@ -31,7 +31,7 @@ import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
-import type { LoginWizardResult } from "./login-wizard.js";
+import type { LoginWizardResult } from "./overlays/login.js";
 import type { LogoutWizardResult } from "./overlays/logout.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {

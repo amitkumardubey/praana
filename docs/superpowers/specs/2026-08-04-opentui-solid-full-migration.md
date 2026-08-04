@@ -21,7 +21,7 @@ PRAANA’s interactive TUI runs on **`@opentui/solid`**. Imperative OpenTUI host
 | Legacy imperative hosts deleted | Done (Phase 5) |
 | [`run.tsx`](../../src/ui/tui/run.tsx) | Thin session bridge |
 
-**Still bridged (not deleted):** `login-wizard.ts` (mounted via `overlays/login-bridge.tsx`), `oauth-login-ui.ts` sink helpers.
+**Still imperative:** `oauth-login-ui.ts` sink helpers. The `/login` overlay is Solid.
 
 **Note:** Prefer `position: absolute` overlays over OpenTUI `Portal` for in-app modals (Portal was unreliable in this migration).
 
@@ -62,4 +62,4 @@ flowchart LR
 - OpenCode-level keybind/config/extmarks/image-attachment product surface
 - Headless `praana run` rewrite
 - Adaptive Context / Cognitive Memory backend changes
-- Full Solid rewrite of in-session `login-wizard.ts` (still bridged)
+- Full Solid rewrite of in-session `/login` wizard

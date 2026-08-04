@@ -9,8 +9,7 @@ import type { OverlayUi } from "./state.js";
 import { SlashResultOverlay } from "./slash-result.js";
 import { ModelSelectorOverlay } from "./model-selector.js";
 import { LogoutOverlay } from "./logout.js";
-import { LoginBridge } from "./login-bridge.js";
-import type { LoginWizardResult } from "../login-wizard.js";
+import { LoginOverlay, type LoginWizardResult } from "./login.js";
 import type { LogoutWizardResult } from "./logout.js";
 
 export interface OverlayHostProps {
@@ -48,7 +47,7 @@ export function OverlayHost(props: OverlayHostProps) {
 
   createEffect(() => {
     const k = kind();
-    if (k !== "model" && k !== "logout") return;
+    if (k !== "model" && k !== "login" && k !== "logout") return;
     const onKey = (key: KeyEvent) => {
       if (key.name === "escape") props.onDismiss();
     };
@@ -87,7 +86,7 @@ export function OverlayHost(props: OverlayHostProps) {
           />
         </Show>
         <Show when={kind() === "login"}>
-          <LoginBridge
+          <LoginOverlay
             currentProvider={props.currentProvider()}
             initialProvider={props.overlay.loginHint()}
             onComplete={props.onLoginComplete}
