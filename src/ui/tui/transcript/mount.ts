@@ -1,6 +1,6 @@
 /**
  * Minimal transcript mount surface used by OpenTuiSink.
- * Implemented by the Solid transcript store (and formerly TranscriptContainer).
+ * Implemented by the Solid transcript store.
  */
 import type { IndexedTranscriptEntry } from "./index.js";
 import type { ToolEntry } from "./model.js";

@@ -32,7 +32,7 @@ import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
 import type { LoginWizardResult } from "./login-wizard.js";
-import type { LogoutWizardResult } from "./logout-wizard.js";
+import type { LogoutWizardResult } from "./overlays/logout.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);

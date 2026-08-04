@@ -333,7 +333,8 @@ src/
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
   ui/
-    tui/           — OpenTUI + Solid terminal shell (Prompt, transcript, chrome, overlays, setup, consent); login wizard body still bridged; Phase 5 deletes legacy imperative leftovers
+    tui/           — OpenTUI + Solid terminal shell (Prompt, transcript, chrome, overlays, setup, consent); `/login` still bridges imperative LoginWizard
+
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall

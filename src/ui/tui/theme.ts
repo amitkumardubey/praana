@@ -1,7 +1,7 @@
 /* Terminal-native semantic styling for the PRAANA OpenTUI-based TUI.
  * OpenTUI's native renderer handles ANSI-aware width math internally;
  * the small helpers below are retained only for the single chrome-bar
- * `paintZoneLine` pad/truncate contract used by identity-bar.ts / glance-bar.ts. */
+ * `paintZoneLine` pad/truncate contract used by chrome bars. */
 import chalk from "chalk";
 import type { Theme as HighlightTheme } from "cli-highlight";
 

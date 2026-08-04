@@ -18,7 +18,7 @@ import type { ExpandedContentResult, IndexedTranscriptEntry } from "./transcript
 import type { ShellUi } from "./shell-ui.js";
 import type { ModelListEntry } from "../../model-listing.js";
 import type { LoginWizardResult } from "./login-wizard.js";
-import type { LogoutWizardResult } from "./logout-wizard.js";
+import type { LogoutWizardResult } from "./overlays/logout.js";
 
 export interface AppReady {
   prompt: PromptHandle;

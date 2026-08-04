@@ -11,7 +11,7 @@ import { ModelSelectorOverlay } from "./model-selector.js";
 import { LogoutOverlay } from "./logout.js";
 import { LoginBridge } from "./login-bridge.js";
 import type { LoginWizardResult } from "../login-wizard.js";
-import type { LogoutWizardResult } from "../logout-wizard.js";
+import type { LogoutWizardResult } from "./logout.js";
 
 export interface OverlayHostProps {
   overlay: OverlayUi;

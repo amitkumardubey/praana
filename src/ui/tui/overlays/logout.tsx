@@ -7,7 +7,13 @@ import { isUserDeclaredProvider } from "../../../provider-registry.js";
 import { removeProviderSection } from "../../../setup/config-writer.js";
 import { TUI_STYLE } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
-import type { LogoutWizardResult } from "../logout-wizard.js";
+
+export interface LogoutWizardResult {
+  provider: string;
+  message: string;
+  sectionRemoved: boolean;
+  isActiveProvider: boolean;
+}
 
 export interface LogoutOverlayProps {
   currentProvider: string;

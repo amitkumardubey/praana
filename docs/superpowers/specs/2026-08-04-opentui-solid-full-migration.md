@@ -2,30 +2,28 @@
 
 **Date:** 2026-08-04  
 **Branch:** `feat/ad/opentui-solid`  
-**Status:** Active  
+**Status:** Complete (Phases 0–5)  
 **Related:** [OpenTUI migration design](./2026-08-03-opentui-migration-design.md)
 
 ## Summary
 
-Finish migrating PRAANA’s interactive TUI from the current **hybrid** (Solid `App`/`Prompt` + imperative hosts for transcript/chrome/wizards) to a **fully Solid** shell on `@opentui/solid`, keeping OpenTUI’s Zig renderer and the `TurnUiSink` / session / turn contracts unchanged.
+PRAANA’s interactive TUI runs on **`@opentui/solid`**. Imperative OpenTUI host classes for chrome, transcript, toast/spinner, and in-session overlays were retired. `TurnUiSink` / session / turn contracts are unchanged.
 
-## Current state (done)
+## Current state
 
 | Area | Status |
 |------|--------|
 | `solid-js` + `@opentui/solid`, bun preload, `jsxImportSource` | Done |
-| Solid [`app.tsx`](../../src/ui/tui/app.tsx) shell | Done |
-| Solid [`prompt/`](../../src/ui/tui/prompt/) — grow, history, paste collapse, autocomplete | Done |
-| Solid chrome / toast / spinner via [`shell-ui.ts`](../../src/ui/tui/shell-ui.ts) | Done (Phase 1) |
-| Solid transcript + store + sink mount | Done (Phase 2) |
-| Solid overlays (slash / model / logout + login bridge) | Done (Phase 3) |
-| Solid download consent + setup wizard | Done (Phase 4) |
-| [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Thin — session wiring only |
+| Solid App / Prompt / chrome / toast / spinner | Done |
+| Solid transcript store + view + sink mount | Done |
+| Solid overlays (slash / model / logout; login bridged) | Done |
+| Solid download consent + setup wizard | Done |
+| Legacy imperative hosts deleted | Done (Phase 5) |
+| [`run.tsx`](../../src/ui/tui/run.tsx) | Thin session bridge |
 
-**Still imperative (cleanup in Phase 5):** login wizard body (bridged), legacy chrome/transcript/overlay class files unused by live path; `oauth-login-ui.ts` remains a sink/helper module.
+**Still bridged (not deleted):** `login-wizard.ts` (mounted via `overlays/login-bridge.tsx`), `oauth-login-ui.ts` sink helpers.
 
-
-**Invariant:** no changes to `turn.ts` / `session.ts` / `TurnUiSink` method contracts. Pure helpers (formatters, projection, theme) may stay plain TS.
+**Note:** Prefer `position: absolute` overlays over OpenTUI `Portal` for in-app modals (Portal was unreliable in this migration).
 
 ```mermaid
 flowchart LR
@@ -37,8 +35,6 @@ flowchart LR
     P2[Phase2 Transcript Sink]
     P3[Phase3 Overlays Wizards]
     P4[Phase4 Standalone TUIs]
-  end
-  subgraph next [Remaining]
     P5[Phase5 Cleanup Tests Docs]
   end
   Toolchain --> AppShell --> Prompt --> P1 --> P2 --> P3 --> P4 --> P5
@@ -46,157 +42,24 @@ flowchart LR
 
 ---
 
-## Phase 0 — Baseline (complete)
-
-Solid toolchain, Prompt module, hybrid `run.tsx`.
-
-**Exit:** `bun typecheck` clean; Prompt smoke via interminai.
-
----
-
-## Phase 1 — Chrome, toast, spinner (complete)
-
-**Goal:** Remove imperative chrome/toast/spinner construction from `run.tsx` `onReady`.
-
-| Target | Solid path |
-|--------|--------|
-| Identity / glance | `chrome/bars.tsx` + `shell-ui` chrome API |
-| Formatters (keep pure) | `chrome/glance-format.ts` |
-| Toasts | `toast-host.tsx` + `ui.toast` |
-| Spinner | `spinner-host.tsx` + `ui.spinner` |
-
-**Done**
-
-1. Solid `IdentityBar` / `GlanceBar` driven by `createShellUi()` signals.
-2. `ToastHost` + `SpinnerHost` in `App`.
-3. Bridge: `ui.chrome.setStatus` / `ui.toast` / `ui.spinner` — no imperative class construction in `run.tsx`.
-
-**Exit**
-
-- No IdentityBar/GlanceBar/ToastRegion/Spinner class construction in `run.tsx`.
-- Interminai: chrome updates after `/stats`; toast on slash feedback; spinner during a turn.
-
-**Commit:** `feat(tui): solid chrome toast spinner`
-
----
-
-## Phase 2 — Transcript + sink (complete)
-
-**Goal:** Transcript is a Solid tree; sink mutates Solid stores, not `BoxRenderable.add`.
-
-| Target | Solid path |
-|--------|--------|
-| Store / mount | `transcript/store.ts`, `transcript/mount.ts` |
-| Scroll view + entries | `transcript/view.tsx`, `transcript/entries.tsx` |
-| Sink | `sink.ts` → `TranscriptMount` (no RenderContext) |
-| Keep pure TS | `projection.ts`, `model.ts`, events/gap/opts |
-
-**Done**
-
-1. Solid store: ordered entries + streaming id set + focus selection.
-2. Components: user, assistant (`markdown`), tool row, thinking, system, recall, turn footer.
-3. `scrollbox` sticky-bottom; F9 focus via store + key handlers.
-4. `OpenTuiSink` drives `TranscriptMount` (same TurnUiSink methods).
-5. Resume: `loadIndex` into store from bootstrap.
-6. Unit tests: `tests/transcript-store.test.ts`.
-
-**Exit**
-
-- Chat turn rows render (user / system / tools / footer); LLM stream path unchanged.
-- Resume loads bootstrap into store.
-- Interminai: `/shell` and error/footer rows visible; F9 focuses transcript.
-
-**Commit:** `feat(tui): solid transcript and sink`
-
----
-
-## Phase 3 — In-session overlays and wizards (complete)
-
-**Goal:** Model selector, login/logout, slash-result are Solid; Prompt focus restores cleanly.
-
-| Target | Solid path |
-|--------|--------|
-| Overlay state | `overlays/state.ts` |
-| Frame / host | `overlays/frame.tsx`, `overlays/host.tsx` (absolute z-index, not Portal) |
-| Slash result | `overlays/slash-result.tsx` |
-| Model selector | `overlays/model-selector.tsx` |
-| Logout | `overlays/logout.tsx` |
-| Login | `overlays/login-bridge.tsx` mounts imperative `LoginWizard` (full Solid rewrite deferred) |
-
-**Done**
-
-1. App overlay signal: `none | model | login | logout | slash`.
-2. Esc/any-key dismiss → `overlay.dismiss()` + `prompt.focus()`.
-3. Removed imperative `overlaySlot` / `clearSlot` from `run.tsx`.
-4. Overlays paint above chrome via absolute host (Portal skipped — unreliable here).
-
-**Exit**
-
-- `/model`, `/help` open/close under interminai; Prompt accepts keys after.
-- Login remains bridged; logout is Solid.
-
-**Commit:** `feat(tui): solid overlays and wizards`
-
----
-
-## Phase 4 — Standalone pre-session TUIs (complete)
-
-**Goal:** Setup and consent use `render(() => …)` only.
-
-| Target | Solid path |
-|--------|--------|
-| Download consent | `download-consent.tsx` |
-| Setup wizard | `setup-wizard.tsx` (signal step machine) |
-| OAuth helper | `oauth-login-ui.ts` — sink interface + helpers (unchanged; consumed by Solid/bridged wizards) |
-
-**Done**
-
-1. Solid consent + Solid setup step machine (provider → auth → model → confirm).
-2. Same lifecycle: destroy standalone renderer before main `App`.
-3. Non-TTY consent auto-proceed preserved; setup logic tests green.
-
-**Commit:** `feat(tui): solid setup wizard` (consent already landed separately)
-
----
-
-## Phase 5 — Cleanup, tests, docs
+## Phase 5 — Cleanup, tests, docs (complete)
 
 **Goal:** Solid-only interactive TUI; docs/tests match.
 
-**Work**
+**Done**
 
-1. Delete `inverted-editor.ts` and unused imperative wrappers.
-2. Thin `run.tsx`: create renderer, `render(() => <App />)`, wire controller only.
-3. Rewrite `tests/tui-run.test.ts` with `testRender` (un-skip).
-4. Expand Prompt/overlay/transcript `testRender` coverage.
-5. Update `AGENTS.md`, `ARCHITECTURE.md`, migration notes: OpenTUI **Solid** is the TUI stack.
-6. Full `bun typecheck && bun test` + interminai checklist (boot, chat, tools, `/model`, `/login`, `/help`, `/exit`, setup, consent).
+1. Deleted unused imperative modules (`inverted-editor`, toast-region, spinner class, chrome bars, model-selector class, logout-wizard class, slash/overlay helpers, transcript container + components).
+2. Replaced obsolete unit tests with Solid-oriented suites (`tui-chrome` formatters, `overlay-state`, thin `tui-run` primitives).
+3. Updated transcript benchmark to `createTranscriptStore`.
+4. Docs: AGENTS / ARCHITECTURE / this migration note.
 
-**PR:** `chore(tui): retire imperative tui hosts and harden solid tests`
+**Commit:** `chore(tui): retire imperative tui hosts and harden solid tests`
 
 ---
 
-## Suggested PR order
+## Out of scope (unchanged)
 
-| PR | Phase |
-|----|--------|
-| A | 1 — chrome / toast / spinner |
-| B | 2 — transcript / sink |
-| C | 3 — overlays / wizards |
-| D | 4 — setup / consent |
-| E | 5 — cleanup / tests / docs |
-
-Each PR: typecheck + targeted tests + interminai for that phase’s surfaces.
-
-## Risks
-
-- **Transcript fidelity** in Phase 2 — keep projection pure; prefer visual parity over a rushed big-bang.
-- **Focus ownership** — rule: overlay focused XOR Prompt focused.
-- **testRender vs mock.module** — prefer real `testRender`; avoid global mocks.
-- **Setup wizard size** — split by step components inside Phase 4.
-
-## Out of scope
-
-- OpenCode-level keybind/config/extmarks/image-attachment product surface (can follow later).
-- Headless `praana run` rewrite.
-- Adaptive Context / Cognitive Memory backend changes.
+- OpenCode-level keybind/config/extmarks/image-attachment product surface
+- Headless `praana run` rewrite
+- Adaptive Context / Cognitive Memory backend changes
+- Full Solid rewrite of in-session `login-wizard.ts` (still bridged)

@@ -582,7 +582,7 @@ If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries o
 
 ## UI and Slash Commands
 
-PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI uses a Solid `Prompt` (auto-grow, history, large-paste collapse, slash/file autocomplete), Solid chrome/toast/spinner via `shell-ui`, Solid transcript via `createTranscriptStore` + `TranscriptView`, Solid in-session overlays (`/model`, `/help`, logout; login bridged), buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
+PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI is Solid end-to-end for Prompt, transcript, chrome/toast/spinner, overlays, setup, and download consent (`login-wizard` remains an imperative bridge for `/login`). Buffered shell output and thinking-text rendering when `/thinking on` are supported.
 
 Slash commands are handled by `src/slash-commands.ts`:
 
