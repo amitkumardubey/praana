@@ -1,13 +1,11 @@
 /**
  * OpenTUI + Solid entry — ambient intelligence layout (design §5).
  *
- * Solid owns App shell, Prompt, chrome, toast, spinner, and transcript.
- * Overlay wizards still attach into a host box (Phase 3).
+ * Solid owns App shell, Prompt, chrome, toast, spinner, transcript, and overlays.
  */
 import {
   createCliRenderer,
   type KeyEvent,
-  type RenderContext,
 } from "@opentui/core";
 import { render } from "@opentui/solid";
 import type { AppController, StartupInfo } from "../../app-controller.js";
@@ -24,19 +22,17 @@ import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
 import { OpenTuiSink } from "./sink.js";
-import { showSlashCommandResult, dismissSlashCommandResult } from "./slash-command-overlay.js";
-import { ModelSelector } from "./model-selector.js";
-import { LoginWizard } from "./login-wizard.js";
-import { LogoutWizard } from "./logout-wizard.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { renderBootBanner } from "./banner.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
+import { createOverlayUi } from "./overlays/state.js";
 import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
-import type { BoxRenderable } from "@opentui/core";
+import type { LoginWizardResult } from "./login-wizard.js";
+import type { LogoutWizardResult } from "./logout-wizard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -104,8 +100,8 @@ export async function runTui(
     exitOnCtrlC: false,
   });
 
-  const ctx: RenderContext = renderer;
   const ui = createShellUi();
+  const overlay = createOverlayUi();
   ui.chrome.setBackgroundZones(config.ui.background_zones);
 
   const transcriptOpts = {
@@ -122,17 +118,8 @@ export async function runTui(
 
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
-  let slashOverlayHandle: import("./overlay.js").OverlayHandle | null = null;
   let turnStartedAt = 0;
-
-  let overlaySlot: BoxRenderable | null = null;
   let ready = false;
-
-  const clearSlot = (slot: BoxRenderable) => {
-    for (const child of slot.getChildren()) {
-      slot.remove(child);
-    }
-  };
 
   const refreshChrome = () => {
     const base = controller.getStatusBarInput();
@@ -149,150 +136,94 @@ export async function runTui(
     renderer.requestRender();
   };
 
-  const closeOverlay = () => {
-    if (!overlaySlot) return;
-    clearSlot(overlaySlot);
+  const dismissOverlay = () => {
+    overlay.dismiss();
     focusPrompt();
   };
 
-  const openModelSelector = () => {
-    if (!overlaySlot || !ready) return;
-    if (slashOverlayHandle) {
-      dismissSlashCommandResult(renderer, slashOverlayHandle);
-      slashOverlayHandle = null;
-    }
+  const handleModelSelect = (provider: string, modelId: string) => {
+    void (async () => {
+      dismissOverlay();
+      ui.spinner.start("switching model…");
 
-    const selector = new ModelSelector(ctx, {
-      currentProvider: session.getEffectiveProvider(),
-      currentModelId: session.getActiveModelId(),
-      maxVisible: Math.max(6, Math.min(12, (process.stdout.rows ?? 24) - 14)),
-      loadModels: () => listAllAvailableModels(),
-      onCancel: () => closeOverlay(),
-      onSelect: (provider: string, modelId: string) => {
-        void (async () => {
-          closeOverlay();
-          ui.spinner.start("switching model…");
+      let switchResult: import("../../slash-commands.js").SlashCommandResult;
+      try {
+        switchResult = await controller.executeSlashCommand(
+          `/model ${provider} ${modelId}`,
+        );
+      } finally {
+        ui.spinner.stop();
+      }
 
-          let switchResult: import("../../slash-commands.js").SlashCommandResult;
-          try {
-            switchResult = await controller.executeSlashCommand(
-              `/model ${provider} ${modelId}`,
-            );
-          } finally {
-            ui.spinner.stop();
-          }
-
-          if (switchResult.display === "toast" && switchResult.toastTone) {
-            ui.toast.show(
-              switchResult.lines.join(" "),
-              toastToneToType(switchResult.toastTone),
-            );
-          } else if (switchResult.lines.length > 0) {
-            ui.toast.show(switchResult.lines.join(" "), "info");
-          }
-          if (switchResult.action === "refresh_status") {
-            refreshChrome();
-          }
-          renderer.requestRender();
-        })();
-      },
-    });
-
-    clearSlot(overlaySlot);
-    overlaySlot.add(selector);
-    selector.focus();
-    renderer.requestRender();
-  };
-
-  const openLoginWizard = (providerHint?: string) => {
-    if (!overlaySlot || !ready) return;
-    if (slashOverlayHandle) {
-      dismissSlashCommandResult(renderer, slashOverlayHandle);
-      slashOverlayHandle = null;
-    }
-
-    const wizard = new LoginWizard(ctx, undefined, {
-      currentProvider: session.getEffectiveProvider(),
-      initialProvider: providerHint,
-      onComplete: (result: import("./login-wizard.js").LoginWizardResult) => {
-        closeOverlay();
-
-        if (result.shouldSwitch && result.defaultModel) {
-          ui.spinner.start("switching model…");
-
-          void (async () => {
-            let switchResult: import("../../slash-commands.js").SlashCommandResult;
-            try {
-              switchResult = await controller.executeSlashCommand(
-                `/model ${result.provider} ${result.defaultModel}`,
-              );
-            } finally {
-              ui.spinner.stop();
-            }
-
-            if (switchResult.display === "toast" && switchResult.toastTone) {
-              ui.toast.show(
-                switchResult.lines.join(" "),
-                toastToneToType(switchResult.toastTone),
-              );
-            } else if (switchResult.lines.length > 0) {
-              ui.toast.show(switchResult.lines.join(" "), "info");
-            }
-            if (switchResult.action === "refresh_status") {
-              refreshChrome();
-            }
-            renderer.requestRender();
-          })();
-        } else if (result.shouldSwitch) {
-          session.setProviderOverride(result.provider);
-          ui.toast.show(result.message, "success");
-          refreshChrome();
-          renderer.requestRender();
-        } else {
-          const tone: "info" | "success" =
-            result.message.includes("Run /new") ? "info" : "success";
-          ui.toast.show(result.message, tone);
-          refreshChrome();
-          renderer.requestRender();
-        }
-      },
-      onCancel: () => closeOverlay(),
-    });
-
-    clearSlot(overlaySlot);
-    overlaySlot.add(wizard);
-    wizard.focus();
-    renderer.requestRender();
-  };
-
-  const openLogoutWizard = () => {
-    if (!overlaySlot || !ready) return;
-    if (slashOverlayHandle) {
-      dismissSlashCommandResult(renderer, slashOverlayHandle);
-      slashOverlayHandle = null;
-    }
-
-    const wizard = new LogoutWizard(ctx, [], {
-      currentProvider: session.getEffectiveProvider(),
-      onComplete: (result: import("./logout-wizard.js").LogoutWizardResult) => {
-        closeOverlay();
-        const tone: "info" | "success" =
-          result.message.includes("Run /new") ? "info" : "success";
-        ui.toast.show(result.message, tone);
+      if (switchResult.display === "toast" && switchResult.toastTone) {
+        ui.toast.show(
+          switchResult.lines.join(" "),
+          toastToneToType(switchResult.toastTone),
+        );
+      } else if (switchResult.lines.length > 0) {
+        ui.toast.show(switchResult.lines.join(" "), "info");
+      }
+      if (switchResult.action === "refresh_status") {
         refreshChrome();
-        renderer.requestRender();
-      },
-      onCancel: () => closeOverlay(),
-    });
+      }
+      renderer.requestRender();
+    })();
+  };
 
-    clearSlot(overlaySlot);
-    overlaySlot.add(wizard);
-    wizard.focus();
+  const handleLoginComplete = (result: LoginWizardResult) => {
+    dismissOverlay();
+
+    if (result.shouldSwitch && result.defaultModel) {
+      ui.spinner.start("switching model…");
+      void (async () => {
+        let switchResult: import("../../slash-commands.js").SlashCommandResult;
+        try {
+          switchResult = await controller.executeSlashCommand(
+            `/model ${result.provider} ${result.defaultModel}`,
+          );
+        } finally {
+          ui.spinner.stop();
+        }
+
+        if (switchResult.display === "toast" && switchResult.toastTone) {
+          ui.toast.show(
+            switchResult.lines.join(" "),
+            toastToneToType(switchResult.toastTone),
+          );
+        } else if (switchResult.lines.length > 0) {
+          ui.toast.show(switchResult.lines.join(" "), "info");
+        }
+        if (switchResult.action === "refresh_status") {
+          refreshChrome();
+        }
+        renderer.requestRender();
+      })();
+    } else if (result.shouldSwitch) {
+      session.setProviderOverride(result.provider);
+      ui.toast.show(result.message, "success");
+      refreshChrome();
+      renderer.requestRender();
+    } else {
+      const tone: "info" | "success" =
+        result.message.includes("Run /new") ? "info" : "success";
+      ui.toast.show(result.message, tone);
+      refreshChrome();
+      renderer.requestRender();
+    }
+  };
+
+  const handleLogoutComplete = (result: LogoutWizardResult) => {
+    dismissOverlay();
+    const tone: "info" | "success" =
+      result.message.includes("Run /new") ? "info" : "success";
+    ui.toast.show(result.message, tone);
+    refreshChrome();
     renderer.requestRender();
   };
 
   async function doShutdown(): Promise<void> {
     transcript.dispose();
+    overlay.dispose();
     ui.dispose();
     renderer.destroy();
     process.stderr.write("\r\x1b[2K\nSaving session…\n");
@@ -389,15 +320,18 @@ export async function runTui(
         refreshChrome();
       }
       if (result.action === "open_model_selector") {
-        openModelSelector();
+        overlay.showModel();
+        renderer.requestRender();
         return;
       }
       if (result.action === "open_login_wizard") {
-        openLoginWizard(result.loginProviderHint);
+        overlay.showLogin(result.loginProviderHint);
+        renderer.requestRender();
         return;
       }
       if (result.action === "open_logout_wizard") {
-        openLogoutWizard();
+        overlay.showLogout();
+        renderer.requestRender();
         return;
       }
       renderer.requestRender();
@@ -424,17 +358,24 @@ export async function runTui(
       <App
         cwd={info.cwd}
         ui={ui}
+        overlay={overlay}
         transcript={transcript}
         transcriptOpts={transcriptOpts}
+        currentProvider={() => session.getEffectiveProvider()}
+        currentModelId={() => session.getActiveModelId()}
+        loadModels={() => listAllAvailableModels()}
+        onModelSelect={handleModelSelect}
+        onLoginComplete={handleLoginComplete}
+        onLogoutComplete={handleLogoutComplete}
+        onOverlayDismiss={dismissOverlay}
         onExpand={(entry) =>
           Promise.resolve(
             resolveExpandedContent(entry, session.eventLog.readAll()),
           )
         }
         onSubmit={handleSubmit}
-        onReady={({ overlayHost, prompt: promptApi }) => {
+        onReady={({ prompt: promptApi }) => {
           prompt = promptApi;
-          overlaySlot = overlayHost;
           ready = true;
 
           const modelId = controller.currentModelOrDefault();
@@ -448,13 +389,6 @@ export async function runTui(
             });
           };
 
-          const showSlashOverlay = (lines: string[]) => {
-            if (slashOverlayHandle) {
-              dismissSlashCommandResult(renderer, slashOverlayHandle);
-            }
-            slashOverlayHandle = showSlashCommandResult(renderer, lines);
-          };
-
           openTuiSink = new OpenTuiSink(transcript.mount, ui.toast, {
             ambient: config.ui.ambient,
             showThinking: () => controller.showThinking,
@@ -466,7 +400,10 @@ export async function runTui(
             projection,
             persistEntry: persistTranscriptEntry,
             getModel: () => controller.currentModelOrDefault(),
-            onSlashCommandResult: showSlashOverlay,
+            onSlashCommandResult: (lines: string[]) => {
+              overlay.showSlash(lines);
+              renderer.requestRender();
+            },
             onContextPreview: (snapshot: ContextDisplaySnapshot) => {
               ui.chrome.setStatus(controller.getStatusBarInput(), {
                 showCost: config.ui.show_cost,
@@ -486,12 +423,6 @@ export async function runTui(
   );
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
-    if (slashOverlayHandle) {
-      dismissSlashCommandResult(renderer, slashOverlayHandle);
-      slashOverlayHandle = null;
-      return;
-    }
-
     if (matchesKey(key, "f9")) {
       transcript.setFocused(true);
       renderer.requestRender();

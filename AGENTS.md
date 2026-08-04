@@ -333,7 +333,7 @@ src/
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
   ui/
-    tui/           — OpenTUI + Solid terminal shell: Solid Prompt, transcript store/view, chrome/toast/spinner via shell-ui; login/logout wizards + model selector still imperative (Phase 3)
+    tui/           — OpenTUI + Solid terminal shell: Prompt, transcript, chrome/toast/spinner, overlays; login wizard still bridged; setup/consent still imperative (Phase 4)
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode only)
     skill-stats-store.ts — Cross-session skill effectiveness: boost/decay usefulness scores, flush to memory.db skill_stats table; dual-scope read mirrors memory recall

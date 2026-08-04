@@ -1,32 +1,42 @@
 /**
  * Solid TUI application root.
  *
- * Solid owns Prompt, chrome, toast, spinner, and transcript.
- * Overlay wizards still attach into a host box (Phase 3).
+ * Solid owns Prompt, chrome, toast, spinner, transcript, and overlays.
  */
 import { createEffect, onMount } from "solid-js";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
-import type { BoxRenderable } from "@opentui/core";
 import { Prompt, type PromptHandle } from "./prompt/index.js";
 import { IdentityBar, GlanceBar } from "./chrome/bars.js";
 import { ToastHost } from "./toast-host.js";
 import { SpinnerHost } from "./spinner-host.js";
 import { TranscriptView } from "./transcript/view.js";
+import { OverlayHost } from "./overlays/host.js";
+import type { OverlayUi } from "./overlays/state.js";
 import type { TranscriptStoreApi } from "./transcript/store.js";
 import type { TranscriptRenderOpts } from "./transcript/opts.js";
 import type { ExpandedContentResult, IndexedTranscriptEntry } from "./transcript/index.js";
 import type { ShellUi } from "./shell-ui.js";
+import type { ModelListEntry } from "../../model-listing.js";
+import type { LoginWizardResult } from "./login-wizard.js";
+import type { LogoutWizardResult } from "./logout-wizard.js";
 
 export interface AppReady {
-  overlayHost: BoxRenderable;
   prompt: PromptHandle;
 }
 
 export interface AppProps {
   cwd: string;
   ui: ShellUi;
+  overlay: OverlayUi;
   transcript: TranscriptStoreApi;
   transcriptOpts: TranscriptRenderOpts;
+  currentProvider: () => string;
+  currentModelId: () => string;
+  loadModels: () => Promise<ModelListEntry[]>;
+  onModelSelect: (provider: string, modelId: string) => void;
+  onLoginComplete: (result: LoginWizardResult) => void;
+  onLogoutComplete: (result: LogoutWizardResult) => void;
+  onOverlayDismiss: () => void;
   onExpand?: (
     entry: IndexedTranscriptEntry,
   ) => Promise<ExpandedContentResult> | ExpandedContentResult;
@@ -37,14 +47,13 @@ export interface AppProps {
 export function App(props: AppProps) {
   const renderer = useRenderer();
   const dimensions = useTerminalDimensions();
-  let overlayHost!: BoxRenderable;
   let promptApi: PromptHandle | undefined;
   let readySent = false;
 
   const tryReady = () => {
-    if (readySent || !overlayHost || !promptApi) return;
+    if (readySent || !promptApi) return;
     readySent = true;
-    props.onReady({ overlayHost, prompt: promptApi });
+    props.onReady({ prompt: promptApi });
     promptApi.focus();
     renderer.requestRender();
   };
@@ -66,15 +75,6 @@ export function App(props: AppProps) {
           onExpand={props.onExpand}
           onRequestFocus={() => promptApi?.focus()}
         />
-        <box
-          id="overlay-slot"
-          ref={(el: BoxRenderable) => {
-            overlayHost = el;
-            tryReady();
-          }}
-          flexDirection="column"
-          flexShrink={0}
-        />
       </box>
 
       <ToastHost toasts={props.ui.toasts} />
@@ -94,6 +94,17 @@ export function App(props: AppProps) {
         <IdentityBar line={props.ui.chrome.identityLine} />
         <GlanceBar line={props.ui.chrome.glanceLine} />
       </box>
+
+      <OverlayHost
+        overlay={props.overlay}
+        currentProvider={props.currentProvider}
+        currentModelId={props.currentModelId}
+        loadModels={props.loadModels}
+        onModelSelect={props.onModelSelect}
+        onLoginComplete={props.onLoginComplete}
+        onLogoutComplete={props.onLogoutComplete}
+        onDismiss={props.onOverlayDismiss}
+      />
     </box>
   );
 }

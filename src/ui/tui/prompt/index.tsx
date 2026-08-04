@@ -13,7 +13,6 @@ import {
 } from "solid-js";
 import {
   useTerminalDimensions,
-  Portal,
   useRenderer,
 } from "@opentui/solid";
 import type { KeyEvent, TextareaRenderable, PasteEvent } from "@opentui/core";
@@ -298,30 +297,29 @@ export function Prompt(props: PromptProps) {
 
       <Show when={ac()}>
         {(result) => (
-          <Portal mount={renderer.root}>
-            <box
-              position="absolute"
-              left={2}
-              top={popupY()}
-              width={Math.min(60, (dimensions().width || 80) - 4)}
-              height={Math.min(8, result().items.length + 2)}
-              border
-              borderStyle="rounded"
-              padding={1}
-              title="completions"
-              backgroundColor="#1a1a1a"
-            >
-              <For each={result().items}>
-                {(item, i) => (
-                  <text>
-                    {i() === acIndex() ? "› " : "  "}
-                    {item.label}
-                    {item.description ? `  ${item.description}` : ""}
-                  </text>
-                )}
-              </For>
-            </box>
-          </Portal>
+          <box
+            position="absolute"
+            zIndex={1100}
+            left={2}
+            top={popupY()}
+            width={Math.min(60, (dimensions().width || 80) - 4)}
+            height={Math.min(8, result().items.length + 2)}
+            border
+            borderStyle="rounded"
+            padding={1}
+            title="completions"
+            backgroundColor="#1a1a1a"
+          >
+            <For each={result().items}>
+              {(item, i) => (
+                <text>
+                  {i() === acIndex() ? "› " : "  "}
+                  {item.label}
+                  {item.description ? `  ${item.description}` : ""}
+                </text>
+              )}
+            </For>
+          </box>
         )}
       </Show>
     </>

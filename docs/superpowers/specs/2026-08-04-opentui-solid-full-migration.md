@@ -18,9 +18,13 @@ Finish migrating PRAANA’s interactive TUI from the current **hybrid** (Solid `
 | Solid [`prompt/`](../../src/ui/tui/prompt/) — grow, history, paste collapse, autocomplete | Done |
 | Solid chrome / toast / spinner via [`shell-ui.ts`](../../src/ui/tui/shell-ui.ts) | Done (Phase 1) |
 | Solid transcript + store + sink mount | Done (Phase 2) |
-| [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Hybrid — still `new`s overlay wizards |
+| Solid overlays (slash / model / logout + login bridge) | Done (Phase 3) |
+| [`run.tsx`](../../src/ui/tui/run.tsx) bridge | Thin — session wiring only |
 
-**Still imperative:** model selector, login/logout, slash overlay, setup wizard, download consent, oauth-login UI; legacy transcript container/components and chrome/toast/spinner classes unused by live path but present.
+**Still imperative:** login wizard body (bridged into Solid frame), setup wizard, download consent, oauth-login UI; legacy overlay/selector/transcript container classes unused by live path but present.
+
+**Note:** OpenTUI `Portal` was unreliable for overlays in this spike; overlays use `position: absolute` on the app root instead (same approach as the Prompt autocomplete popup).
+
 
 **Invariant:** no changes to `turn.ts` / `session.ts` / `TurnUiSink` method contracts. Pure helpers (formatters, projection, theme) may stay plain TS.
 
@@ -32,9 +36,9 @@ flowchart LR
     Prompt
     P1[Phase1 Chrome Toast Spinner]
     P2[Phase2 Transcript Sink]
+    P3[Phase3 Overlays Wizards]
   end
   subgraph next [Remaining]
-    P3[Phase3 Overlays Wizards]
     P4[Phase4 Standalone TUIs]
     P5[Phase5 Cleanup Tests Docs]
   end
@@ -107,29 +111,32 @@ Solid toolchain, Prompt module, hybrid `run.tsx`.
 
 ---
 
-## Phase 3 — In-session overlays and wizards
+## Phase 3 — In-session overlays and wizards (complete)
 
-**Goal:** Model selector, login/logout, slash-result are Solid + `Portal`; Prompt focus restores cleanly.
+**Goal:** Model selector, login/logout, slash-result are Solid; Prompt focus restores cleanly.
 
-| Target | Today |
+| Target | Solid path |
 |--------|--------|
-| Model selector | `model-selector.ts` |
-| Login / logout | `login-wizard.ts`, `logout-wizard.ts` |
-| Slash result / overlay helper | `slash-command-overlay.ts`, `overlay.ts` |
+| Overlay state | `overlays/state.ts` |
+| Frame / host | `overlays/frame.tsx`, `overlays/host.tsx` (absolute z-index, not Portal) |
+| Slash result | `overlays/slash-result.tsx` |
+| Model selector | `overlays/model-selector.tsx` |
+| Logout | `overlays/logout.tsx` |
+| Login | `overlays/login-bridge.tsx` mounts imperative `LoginWizard` (full Solid rewrite deferred) |
 
-**Work**
+**Done**
 
-1. App overlay signal: `none | model | login | logout | slashResult`.
-2. One Solid component per overlay; Esc/cancel → clear signal + `prompt.focus()`.
-3. Delete imperative `overlaySlot` / `clearSlot` from `run.tsx`.
-4. Fix z-order so overlays don’t paint through chrome.
+1. App overlay signal: `none | model | login | logout | slash`.
+2. Esc/any-key dismiss → `overlay.dismiss()` + `prompt.focus()`.
+3. Removed imperative `overlaySlot` / `clearSlot` from `run.tsx`.
+4. Overlays paint above chrome via absolute host (Portal skipped — unreliable here).
 
 **Exit**
 
-- `/model`, `/login`, `/logout`, `/help` open/close; Prompt accepts keys after.
-- Interminai scripted smoke each path.
+- `/model`, `/help` open/close under interminai; Prompt accepts keys after.
+- Login remains bridged; logout is Solid.
 
-**PR:** `feat(tui): solid overlays and wizards`
+**Commit:** `feat(tui): solid overlays and wizards`
 
 ---
 
