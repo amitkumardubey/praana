@@ -13,7 +13,7 @@ No daemon, no RPC server, no multi-process coordination.
 
 ```
 src/
-  main.ts        — CLI entry point, TTY guard, slash commands, pi-tui launch, headless `run` dispatch
+  main.ts        — CLI entry point, TTY guard, slash commands, OpenTUI+Solid launch, headless `run` dispatch
   headless-run.ts — Non-TTY one-shot runner (`praana run`) for Harbor / CI / scripts
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
@@ -582,7 +582,7 @@ If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries o
 
 ## UI and Slash Commands
 
-PRAANA launches the pi-tui terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI uses native scrollback, transcript replay, markdown rendering, identity/glance bars, slash-command/file autocomplete, searchable model selector, toast overlays, buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
+PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI uses a Solid `Prompt` (auto-grow, history, large-paste collapse, slash/file autocomplete), native scrollback, transcript replay, markdown rendering, identity/glance bars, searchable model selector, toast overlays, buffered shell output, and full thinking-text rendering when `/thinking on` is enabled.
 
 Slash commands are handled by `src/slash-commands.ts`:
 
