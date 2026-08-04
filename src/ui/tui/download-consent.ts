@@ -10,13 +10,19 @@
  * completes before `runTui()` is called in `main.ts`. So a standalone
  * `createCliRenderer()` session is safe — no conflict with the main TUI.
  */
-import chalk from "chalk";
-import { createCliRenderer, BoxRenderable, TextRenderable } from "@opentui/core";
+import {
+  createCliRenderer,
+  BoxRenderable,
+  TextRenderable,
+  SelectRenderable,
+  SelectRenderableEvents,
+  type KeyEvent,
+} from "@opentui/core";
 import { TUI_STYLE } from "./theme.js";
 
-const DOWNLOAD_ITEMS = [
-  { value: "proceed", label: "Proceed", description: "Download and enable semantic search" },
-  { value: "cancel", label: "Cancel", description: "Skip — keyword-only search still works" },
+const DOWNLOAD_OPTIONS = [
+  { value: "proceed", name: "Proceed", description: "Download and enable semantic search" },
+  { value: "cancel", name: "Cancel", description: "Skip — keyword-only search still works" },
 ];
 
 /** Approximate download size hint per known model id. */
@@ -27,7 +33,7 @@ const MODEL_SIZE_HINT: Record<string, string> = {
 
 /**
  * Show a Proceed/Cancel overlay. Resolves `true` if the user picks Proceed,
- * `false` if they pick Cancel or press Ctrl+C.
+ * `false` if they pick Cancel or press Ctrl+C / Escape.
  */
 export async function confirmModelDownload(modelId: string): Promise<boolean> {
   if (!process.stderr.isTTY) return true;
@@ -51,23 +57,41 @@ export async function confirmModelDownload(modelId: string): Promise<boolean> {
     box.add(new TextRenderable(renderer, { content: "" }));
     box.add(new TextRenderable(renderer, { content: TUI_STYLE.muted("Cancel is safe — keyword-only search still works, just less precise.") }));
     box.add(new TextRenderable(renderer, { content: "" }));
-    box.add(new TextRenderable(renderer, { content: TUI_STYLE.info("Press Y to proceed, N to skip.") }));
+
+    const select = new SelectRenderable(renderer, {
+      id: "download-consent-select",
+      height: 4,
+      width: Math.min(64, (renderer.root.width ?? 80) - 8),
+      options: DOWNLOAD_OPTIONS,
+      showDescription: true,
+      showSelectionIndicator: true,
+    });
+    box.add(select);
 
     renderer.root.add(box);
+    select.focus();
     renderer.requestRender();
 
     return await new Promise<boolean>((resolve) => {
-      const listener = (data: Buffer) => {
-        const key = data.toString().toLowerCase();
-        if (key === "y") {
-          process.stdin.off("data", listener);
-          resolve(true);
-        } else if (key === "n" || key === "\u001b") {
-          process.stdin.off("data", listener);
-          resolve(false);
+      let settled = false;
+      const finish = (result: boolean) => {
+        if (settled) return;
+        settled = true;
+        renderer.keyInput.off("keypress", onKeypress);
+        resolve(result);
+      };
+
+      const onKeypress = (key: KeyEvent) => {
+        // exitOnCtrlC is false so Ctrl+C arrives here instead of destroying the process.
+        if ((key.name === "c" && key.ctrl) || key.name === "escape") {
+          finish(false);
         }
       };
-      process.stdin.on("data", listener);
+      renderer.keyInput.on("keypress", onKeypress);
+
+      select.on(SelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+        finish(option.value === "proceed");
+      });
     });
   } finally {
     renderer.destroy();

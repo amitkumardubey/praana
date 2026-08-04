@@ -61,12 +61,44 @@ export function visibleTextWidth(text: string): number {
   return stripAnsiEscapes(text).length;
 }
 
-/** Truncate plain (unstyled) text to `width` visible characters. */
+/**
+ * Truncate text to `width` visible characters.
+ * Preserves ANSI SGR sequences so chalk-styled chrome lines (identity/glance)
+ * are not split mid-escape; appends a reset when truncation cuts styled text.
+ */
 export function truncatePlainText(text: string, width: number): string {
   if (width <= 0) return "";
-  if (text.length <= width) return text;
-  if (width === 1) return text.slice(0, 1);
-  return text.slice(0, width - 1) + "…";
+  if (visibleTextWidth(text) <= width) return text;
+
+  const target = width === 1 ? 1 : width - 1;
+  let result = "";
+  let visible = 0;
+  let i = 0;
+  let sawAnsi = false;
+
+  while (i < text.length && visible < target) {
+    if (text.charCodeAt(i) === 0x1b && text[i + 1] === "[") {
+      sawAnsi = true;
+      const end = text.indexOf("m", i + 2);
+      if (end === -1) {
+        result += text[i];
+        i += 1;
+        visible += 1;
+      } else {
+        result += text.slice(i, end + 1);
+        i = end + 1;
+      }
+      continue;
+    }
+    result += text[i];
+    i += 1;
+    visible += 1;
+  }
+
+  if (width === 1) {
+    return sawAnsi ? `${result}\x1b[0m` : result;
+  }
+  return sawAnsi ? `${result}…\x1b[0m` : `${result}…`;
 }
 
 export function paintZoneLine(

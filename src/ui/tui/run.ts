@@ -401,6 +401,7 @@ export async function runTui(
   editor.onSubmit = async (rawInput: string) => {
     let input = rawInput.trim();
     if (!input) return;
+    editor.setText("");
     toast.clearErrors();
 
     if (input.startsWith("!")) {
@@ -509,8 +510,8 @@ export async function runTui(
     }
   };
 
-  // Key event handling via the renderer's keypress handler
-  renderer.on("keypress", (key: KeyEvent) => {
+  // Key events come through keyInput (KeyHandler), not CliRenderer's EventEmitter.
+  renderer.keyInput.on("keypress", (key: KeyEvent) => {
     if (slashOverlayHandle) {
       dismissSlashCommandResult(renderer, slashOverlayHandle);
       slashOverlayHandle = null;
@@ -545,6 +546,11 @@ export async function runTui(
       }
     }
   });
+
+  // Initial focus — BoxRenderable itself is not focusable; InvertedEditor.focus()
+  // delegates to the textarea so the prompt accepts keys on startup.
+  editor.focus();
+  renderer.requestRender();
 
   async function doShutdown(): Promise<void> {
     renderer.destroy();

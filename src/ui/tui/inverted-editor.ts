@@ -2,10 +2,10 @@
  * OpenTUI wrapper around TextareaRenderable that applies inverse video styling
  * and vertical padding to the input bar.
  *
- * The prompt "❯ " is rendered as part of the textarea content.
+ * The prompt "❯ " is a sibling TextRenderable so it is not user-editable.
  * Vertical padding and a bottom border provide visual separation.
  */
-import { BoxRenderable, TextareaRenderable, type RenderContext, type StyledText } from "@opentui/core";
+import { BoxRenderable, TextRenderable, TextareaRenderable, type RenderContext, type StyledText } from "@opentui/core";
 
 const PROMPT = "❯ ";
 
@@ -18,9 +18,9 @@ export class InvertedEditor extends BoxRenderable {
 
   set focused(v: boolean) {
     if (v) {
-      this.inner.focus();
+      this.focus();
     } else {
-      this.inner.blur();
+      this.blur();
     }
   }
 
@@ -28,6 +28,7 @@ export class InvertedEditor extends BoxRenderable {
     super(ctx, { id: "inverted-editor", flexDirection: "column" });
 
     this.inner = new TextareaRenderable(ctx, {
+      id: "inverted-editor-textarea",
       flexGrow: 1,
       minWidth: 1,
       textColor: "white",
@@ -35,6 +36,14 @@ export class InvertedEditor extends BoxRenderable {
       cursorColor: "white",
       cursorStyle: { style: "block", blinking: true },
       placeholder: options?.placeholder ?? "",
+      // Chat prompt: Enter submits (OpenTUI Textarea defaults Enter→newline / Meta+Enter→submit).
+      keyBindings: [
+        { name: "return", action: "submit" },
+        { name: "kpenter", action: "submit" },
+        { name: "linefeed", action: "submit" },
+        { name: "return", shift: true, action: "newline" },
+        { name: "kpenter", shift: true, action: "newline" },
+      ],
     });
 
     const paddingY = options?.paddingY ?? 1;
@@ -43,7 +52,15 @@ export class InvertedEditor extends BoxRenderable {
       this.add(new BoxRenderable(ctx, { height: paddingY }));
     }
 
-    this.add(this.inner);
+    const row = new BoxRenderable(ctx, {
+      id: "inverted-editor-row",
+      flexDirection: "row",
+      flexGrow: 1,
+      minHeight: 1,
+    });
+    row.add(new TextRenderable(ctx, { id: "inverted-editor-prompt", content: PROMPT }));
+    row.add(this.inner);
+    this.add(row);
 
     if (paddingY > 0) {
       this.add(new BoxRenderable(ctx, { height: paddingY }));
@@ -52,16 +69,21 @@ export class InvertedEditor extends BoxRenderable {
     this.add(new BoxRenderable(ctx, { height: 1, border: ["bottom"], borderColor: "gray" }));
   }
 
+  /** Delegate to the textarea — BoxRenderable.focus() is a no-op when not focusable. */
+  override focus(): void {
+    this.inner.focus();
+  }
+
+  override blur(): void {
+    this.inner.blur();
+  }
+
   setText(text: string): void {
-    this.inner.setText(PROMPT + text);
+    this.inner.setText(text);
   }
 
   getText(): string {
-    const text = this.inner.plainText;
-    if (text.startsWith(PROMPT)) {
-      return text.slice(PROMPT.length);
-    }
-    return text;
+    return this.inner.plainText;
   }
 
   set onSubmit(handler: ((text: string) => void) | undefined) {

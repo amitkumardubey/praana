@@ -16,9 +16,13 @@ let latestEditorInner: FakeTextareaRenderable | null = null;
 class FakeCliRenderer {
   destroy = mock();
   requestRender = mock();
-  on = mock((event: string, handler: (...args: unknown[]) => void) => {
-    if (event === "keypress") capturedKeypressHandler = handler as never;
-  });
+  keyInput = {
+    on: mock((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "keypress") capturedKeypressHandler = handler as never;
+    }),
+    off: mock(),
+  };
+  on = mock();
   root = { add: mock() };
 }
 class FakeBoxRenderable {

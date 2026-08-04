@@ -56,6 +56,20 @@ describe("InvertedEditor", () => {
     }
   });
 
+  it("focus() delegates to the inner textarea (BoxRenderable focus is a no-op)", async () => {
+    const setup = await createTestRenderer({ width: 60, height: 20 });
+    try {
+      const ed = new InvertedEditor(setup.renderer, { paddingY: 0 });
+      setup.renderer.root.add(ed);
+      ed.focus();
+      await setup.renderOnce();
+      expect(ed.focused).toBe(true);
+      expect(ed.inner.focused).toBe(true);
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+
   it("blurs the textarea when focused is set to false", async () => {
     const setup = await createTestRenderer({ width: 60, height: 20 });
     try {
@@ -80,6 +94,22 @@ describe("InvertedEditor", () => {
     }
   });
 
+  it("keeps the prompt outside the editable buffer", async () => {
+    const setup = await createTestRenderer({ width: 60, height: 20 });
+    try {
+      const ed = new InvertedEditor(setup.renderer, { paddingY: 0 });
+      ed.setText("hello");
+      expect(ed.getText()).toBe("hello");
+      expect(ed.inner.plainText).toBe("hello");
+      expect(ed.inner.plainText).not.toContain("❯");
+      setup.renderer.root.add(ed);
+      await setup.renderOnce();
+      expect(setup.captureCharFrame()).toContain("❯");
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+
   it("onSubmit is called when the textarea submits", async () => {
     const setup = await createTestRenderer({ width: 60, height: 20 });
     try {
@@ -91,6 +121,25 @@ describe("InvertedEditor", () => {
       ed.setText("hello");
       ed.inner.submit();
       expect(submittedText).toBe("hello");
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+
+  it("submits on Enter (not newline)", async () => {
+    const setup = await createTestRenderer({ width: 60, height: 20 });
+    try {
+      const ed = new InvertedEditor(setup.renderer, { paddingY: 0 });
+      setup.renderer.root.add(ed);
+      ed.focus();
+      let submittedText = "";
+      ed.onSubmit = (text: string) => {
+        submittedText = text;
+      };
+      ed.setText("enter-submits");
+      await setup.mockInput.pressEnter();
+      expect(submittedText).toBe("enter-submits");
+      expect(ed.getText()).toBe("enter-submits");
     } finally {
       setup.renderer.destroy();
     }
