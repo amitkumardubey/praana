@@ -69,6 +69,8 @@ export interface LoggerOptions {
   writeLine?: (line: string) => void;
   /** TUI boot — capture notice lines instead of writing to stderr. */
   captureNotice?: (line: string) => void;
+  /** Suppress formatted log output on stderr while the full TUI owns the terminal. */
+  suppressStderr?: boolean;
 }
 
 /** Daily rotated logs; symlink at `current.log` points to today's file. */
@@ -201,6 +203,14 @@ async function createRollingFileDestination(basePath: string): Promise<Destinati
 }
 
 function createStderrDestination(options: LoggerOptions): DestinationStream {
+  if (options.suppressStderr) {
+    return new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+  }
+
   if (options.writeLine) {
     return new Writable({
       write(chunk, _encoding, callback) {
@@ -279,6 +289,7 @@ export class PraanaLogger {
       sessionFileStream: options.sessionFileStream,
       writeLine: options.writeLine,
       captureNotice: options.captureNotice,
+      suppressStderr: options.suppressStderr ?? false,
     };
     this.pino = createPinoLogger(this.options).child({ domain: this.options.domain });
   }
@@ -408,6 +419,7 @@ export async function createSessionLogger(opts: {
   sessionLogDir: string;
   debug?: boolean;
   captureNotice?: (line: string) => void;
+  suppressStderr?: boolean;
 }): Promise<PraanaLogger> {
   if (isTestEnv()) {
     return new PraanaLogger({
@@ -432,6 +444,7 @@ export async function createSessionLogger(opts: {
     appFileStream: appStream,
     sessionFileStream: sessionStream,
     captureNotice: opts.captureNotice,
+    suppressStderr: opts.suppressStderr,
   });
 }
 
@@ -469,15 +482,123 @@ export function extractLlmErrorMessage(message: unknown): string | undefined {
   return undefined;
 }
 
+/** Cap for user-visible LLM error text so a long raw payload never overflows
+ *  or wraps into the chrome bars. Longer messages are cut with an ellipsis. */
+export const LLM_ERROR_DISPLAY_MAX = 160;
+
+/** Parse `NNN: {json}` / bare `{json}` / plain text into { status, message }.
+ *  The `message` field inside JSON payloads is the human-readable part many
+ *  providers ship (e.g. `403: {"type":"...","message":"Your account..."}`). */
+export function parseLlmError(raw: string | undefined | null): {
+  status?: number;
+  message?: string;
+  type?: string;
+} {
+  if (!raw) return {};
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+
+  // `403: {...}` — optional leading HTTP status + colon.
+  const statusMatch = /^\s*(\d{3})\s*:\s*(.*)$/s.exec(trimmed);
+  const status = statusMatch ? Number(statusMatch[1]) : undefined;
+  const body = statusMatch ? statusMatch[2] : trimmed;
+
+  let type: string | undefined;
+  let message: string | undefined;
+  if (body.startsWith("{") || body.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(body) as {
+        type?: string;
+        reason?: string;
+        message?: string;
+        error?: string | { message?: string };
+        error_description?: string;
+      };
+      type = parsed.type;
+      message =
+        typeof parsed.message === "string" && parsed.message.trim()
+          ? parsed.message.trim()
+          : typeof parsed.error === "string"
+            ? parsed.error.trim()
+            : typeof parsed.error === "object" && typeof parsed.error.message === "string"
+              ? parsed.error.message.trim()
+              : typeof parsed.error_description === "string"
+                ? parsed.error_description.trim()
+                : undefined;
+    } catch {
+      // Not valid JSON — fall through to treat `body` as plain text.
+    }
+  }
+
+  return { status, message: message || undefined, type };
+}
+
+/** Friendly, short status text for common LLM HTTP error codes. */
+export function describeLlmStatus(status: number | undefined): string | undefined {
+  switch (status) {
+    case 401:
+      return "authentication failed";
+    case 403:
+      return "access denied";
+    case 404:
+      return "model or endpoint not found";
+    case 429:
+      return "rate limited";
+    case 500:
+    case 502:
+    case 503:
+      return "provider unavailable";
+    default:
+      return undefined;
+  }
+}
+
+/** Build a short, human-readable LLM error line, collapsing raw JSON payloads. */
+export function friendlyLlmError(raw: string | undefined | null): string | undefined {
+  const { status, message, type } = parseLlmError(raw);
+  const statusText = describeLlmStatus(status);
+
+  let text: string;
+  if (message) {
+    text = statusText ? `${statusText} — ${message}` : message;
+  } else if (statusText) {
+    text = `${statusText}${status ? ` (HTTP ${status})` : ""}`;
+  } else {
+    const trimmed = raw?.trim();
+    if (!trimmed) return undefined;
+    text = trimmed;
+  }
+
+  // Derive a hint for the most actionable cases.
+  if (type === "account_suspended" || /cancel|suspend|reactivat/i.test(text)) {
+    text += " — reactivate billing at your provider's account page";
+  } else if (status === 429) {
+    text += " — retry shortly";
+  } else if (status === 401 || status === 403) {
+    text += " — check credentials or switch provider with /model";
+  }
+
+  return text.length > LLM_ERROR_DISPLAY_MAX
+    ? `${text.slice(0, LLM_ERROR_DISPLAY_MAX - 1)}…`
+    : text;
+}
+
 export function formatUserFacingLlmError(opts: {
   reason: string;
   llmMessage?: string;
   model: string;
   provider: string;
 }): string {
-  const detail = opts.llmMessage?.trim();
-  if (detail) {
-    return `[LLM error: ${detail}]`;
+  const raw = opts.llmMessage?.trim();
+  // Collapse provider JSON payloads (`403: {"message":...}`) into one short
+  // line; leave plain-text errors verbatim so callers/tests keep the original.
+  if (raw) {
+    const parsed = parseLlmError(raw);
+    if (parsed.message || parsed.status !== undefined) {
+      const detail = friendlyLlmError(raw);
+      return detail ? `[LLM error: ${detail}]` : `[LLM error: ${raw}]`;
+    }
+    return `[LLM error: ${raw}]`;
   }
   if (opts.reason === "error") {
     return `[LLM request failed — see ~/.${APP_HOME_DIR}/logs/current.log or the session current.log (model: ${opts.model}, provider: ${opts.provider})]`;

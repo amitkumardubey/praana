@@ -219,6 +219,21 @@ describe("OpenTuiSink", () => {
     expect(footer!.text).toContain("16%w");
   });
 
+  it("shows LLM errors as toasts without adding raw log lines to the transcript", () => {
+    const { sink, projection } = makeSink();
+    const toast = (sink as unknown as { toast: ToastApi }).toast;
+
+    sink.onError({
+      level: "error",
+      domain: "llm",
+      message: "Model not found",
+      code: "LLM_STREAM_ERROR",
+    });
+
+    expect(projection.entries()).toHaveLength(0);
+    expect(toast.show).toHaveBeenCalledWith("Model not found", "error");
+  });
+
   it("routes slash command output to the overlay callback", () => {
     const callback = mock((_: string[]) => {});
     const { sink } = makeSink({ onSlashCommandResult: callback });

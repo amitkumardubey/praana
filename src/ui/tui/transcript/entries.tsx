@@ -98,7 +98,7 @@ function toolBodyLines(
 function SegmentLine(props: { segments: TextSegment[] }) {
   return (
     <text>
-      <For each={props.segments}>{(s) => <span style={s.style}>{s.text}</span>}</For>
+      <For each={props.segments}>{(s) => s.style ? <span style={s.style}>{s.text}</span> : s.text}</For>
     </text>
   );
 }

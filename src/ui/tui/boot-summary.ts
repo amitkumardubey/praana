@@ -10,6 +10,10 @@ export interface TuiBootSummaryInput {
   model: string;
   cwd: string;
   isResume: boolean;
+  /** App display name, e.g. "praana" — used as the welcome identity header. */
+  appName?: string;
+  /** Version string, e.g. "0.12.0" (may include a leading `v`). */
+  version?: string;
 }
 
 function shortenPath(path: string): string {
@@ -90,4 +94,38 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
   lines.push("/help for commands · /exit to save · ctrl-c to interrupt");
 
   return lines;
+}
+
+/** Compact single-line welcome shown inside the TUI transcript (replaces the
+ *  pre-launch figlet art). Leads with the app identity so the launch still
+ *  brands itself, then a slim readiness summary. Scrolls away, never blocks. */
+export function formatTuiWelcomeLine(input: TuiBootSummaryInput): string {
+  const { session, model, isResume, appName, version } = input;
+  const name = appName ? appName : "praana";
+  const ver = version ? ` v${version.replace(/^v/, "")}` : "";
+  const identity = `${name}${ver}`;
+
+  if (isResume) {
+    const turns = session.getTurnCount();
+    const tiers = formatStateTiers(session);
+    const tierPart = tiers ? ` · ${tiers} restored` : "";
+    return `${identity} · resumed · ${turns} turn${turns === 1 ? "" : "s"}${tierPart}`;
+  }
+
+  const { provider, modelShort } = formatModelStatusLabel(model);
+  const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
+
+  const parts: string[] = [identity, `model ${modelLabel}`];
+
+  const digestEntries = session.digest
+    ? session.digest.split("\n").filter((l) => l.trim().length > 0).length
+    : 0;
+  const dbCount = session.getPersistentMemoryEntryCount();
+  if (digestEntries > 0) parts.push(`${digestEntries} recalled`);
+  if (dbCount !== null && dbCount > 0) parts.push(`${dbCount} in db`);
+  if (session.isContextEngineEnabled()) parts.push("engine on");
+  const skillCount = session.skills.length;
+  if (skillCount > 0) parts.push(`${skillCount} skills`);
+
+  return parts.join(" · ");
 }

@@ -10,7 +10,7 @@ export function IdentityBar(props: { segments: Accessor<TextSegment[]> }) {
     <box id="identity-bar" flexDirection="row" flexShrink={0}>
       <text>
         <For each={props.segments()}>
-          {(seg) => <span style={seg.style}>{seg.text}</span>}
+          {(seg) => seg.style ? <span style={seg.style}>{seg.text}</span> : seg.text}
         </For>
       </text>
     </box>
@@ -22,7 +22,7 @@ export function GlanceBar(props: { segments: Accessor<TextSegment[]> }) {
     <box id="glance-bar" flexDirection="row" flexShrink={0}>
       <text>
         <For each={props.segments()}>
-          {(seg) => <span style={seg.style}>{seg.text}</span>}
+          {(seg) => seg.style ? <span style={seg.style}>{seg.text}</span> : seg.text}
         </For>
       </text>
     </box>

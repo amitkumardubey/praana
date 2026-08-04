@@ -301,6 +301,7 @@ export function Prompt(props: PromptProps) {
     <>
       <box
         id="prompt"
+        width="100%"
         flexDirection="column"
         border={["top"]}
         borderColor="gray"
@@ -308,13 +309,14 @@ export function Prompt(props: PromptProps) {
         paddingRight={1}
         flexShrink={0}
       >
-        <box flexDirection="row" minHeight={1}>
+        <box width="100%" flexDirection="row" minHeight={1}>
           <text>❯ </text>
           <textarea
             ref={(el: TextareaRenderable) => {
               textarea = el;
               el.onPaste = handlePaste;
             }}
+            width="100%"
             flexGrow={1}
             minHeight={1}
             height={height()}

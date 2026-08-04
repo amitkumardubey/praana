@@ -2,7 +2,8 @@
  * Solid toast host — ephemeral messages above the prompt.
  */
 import { For, type Accessor } from "solid-js";
-import { TUI_STYLE, type SpanStyle } from "./theme.js";
+import { useTerminalDimensions } from "@opentui/solid";
+import { TUI_STYLE, type SpanStyle, truncatePlainText } from "./theme.js";
 import type { UiToast, ToastTone } from "./shell-ui.js";
 
 const TONE_GLYPH: Record<ToastTone, string> = {
@@ -12,6 +13,11 @@ const TONE_GLYPH: Record<ToastTone, string> = {
   error: "✕",
 };
 
+/** Reserve room for the leading glyph + indentation so the message itself fits. */
+const TOAST_PAD = 4;
+/** Cap the number of toasts painted so a burst of errors cannot overflow the chrome. */
+const MAX_TOASTS = 4;
+
 function toneStyle(tone: ToastTone): SpanStyle {
   if (tone === "error") return TUI_STYLE.error;
   if (tone === "warn") return TUI_STYLE.warning;
@@ -20,14 +26,25 @@ function toneStyle(tone: ToastTone): SpanStyle {
 }
 
 export function ToastHost(props: { toasts: Accessor<UiToast[]> }) {
+  const dimensions = useTerminalDimensions();
+  const shown = () => props.toasts().slice(-MAX_TOASTS);
+
   return (
     <box id="toast-region" flexDirection="column" flexShrink={0}>
-      <For each={props.toasts()}>
-        {(t) => (
-          <text>
-            <span style={toneStyle(t.tone)}>{`  ${TONE_GLYPH[t.tone]} ${t.message}`}</span>
-          </text>
-        )}
+      <For each={shown()}>
+        {(t) => {
+          const width = dimensions().width || 80;
+          const maxMsg = Math.max(8, width - TOAST_PAD);
+          const message =
+            t.message.length > maxMsg
+              ? `${t.message.slice(0, maxMsg - 1)}…`
+              : t.message;
+          return (
+            <text>
+              <span style={toneStyle(t.tone)}>{`  ${TONE_GLYPH[t.tone]} ${message}`}</span>
+            </text>
+          );
+        }}
       </For>
     </box>
   );

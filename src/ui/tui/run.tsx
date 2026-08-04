@@ -15,7 +15,8 @@ import {
   APP_VERSION,
   formatSessionEndEpilogue,
 } from "../../app-banner.js";
-import { formatTuiBootSummary } from "./boot-summary.js";
+import { APP_NAME } from "../../app-identity.js";
+import { formatTuiWelcomeLine } from "./boot-summary.js";
 import {
   resolveExpandedContent,
   type TranscriptIndex,
@@ -25,7 +26,6 @@ import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
 import { OpenTuiSink } from "./sink.js";
 import { listAllAvailableModels } from "../../model-listing.js";
-import { renderBootBanner } from "./banner.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
 import { createOverlayUi } from "./overlays/state.js";
@@ -63,10 +63,6 @@ function toastToneToType(
   return "info";
 }
 
-function versionNumber(): string {
-  return APP_VERSION.replace(/^v/, "");
-}
-
 export async function runTui(
   controller: AppController,
   info: StartupInfo,
@@ -76,23 +72,14 @@ export async function runTui(
   const width = process.stdout.columns ?? 80;
   const useUnicode = config.ui.tool_icons === "unicode";
 
-  const bootSummaryLines = formatTuiBootSummary({
+  const welcomeLine = formatTuiWelcomeLine({
     session,
     model: session.getActiveModelLabel(),
     cwd: info.cwd,
     isResume: info.isResume,
+    appName: APP_NAME,
+    version: APP_VERSION,
   });
-
-  const bannerLines = renderBootBanner({
-    version: versionNumber(),
-    summaryLines: bootSummaryLines,
-    width,
-    noColor: !!process.env.NO_COLOR,
-    banner: config.ui.banner,
-  });
-  for (const line of bannerLines) {
-    process.stdout.write(line + "\n");
-  }
 
   const renderer = await createCliRenderer({
     stdin: process.stdin,
@@ -459,6 +446,9 @@ export async function runTui(
               });
             },
           });
+
+          openTuiSink.onSystemLines([welcomeLine]);
+          openTuiSink.nextGroup();
 
           refreshChrome();
           prompt.focus();

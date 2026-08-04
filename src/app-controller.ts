@@ -69,6 +69,7 @@ export class AppController {
       if (resolvedId) {
         this.session = await Session.resume(resolvedId, this.cwd, this.config, {
           captureNotice,
+          suppressLoggerStderr: true,
         });
         didResume = true;
       } else {
@@ -77,6 +78,7 @@ export class AppController {
         this.session = await Session.create(this.cwd, this.config, {
           incognito: this.parsed.incognito,
           captureNotice,
+          suppressLoggerStderr: true,
         });
       }
       if (didResume) {
@@ -95,6 +97,7 @@ export class AppController {
       this.session = await Session.create(this.cwd, this.config, {
         incognito: this.parsed.incognito,
         captureNotice,
+        suppressLoggerStderr: true,
       });
       this.session.debug = debug;
     }
