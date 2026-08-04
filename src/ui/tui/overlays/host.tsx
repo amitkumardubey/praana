@@ -1,9 +1,9 @@
 /**
  * In-session overlay switchboard.
  */
-import { Show, createEffect, createMemo, onCleanup } from "solid-js";
-import type { KeyEvent } from "@opentui/core";
+import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { useRenderer } from "@opentui/solid";
+import { useBindings, useKeymap } from "@opentui/keymap/solid";
 import type { ModelListEntry } from "../../../model-listing.js";
 import type { OverlayUi } from "./state.js";
 import { SlashResultOverlay } from "./slash-result.js";
@@ -25,36 +25,38 @@ export interface OverlayHostProps {
 
 export function OverlayHost(props: OverlayHostProps) {
   const renderer = useRenderer();
+  const keymap = useKeymap();
   const kind = createMemo(() => props.overlay.kind());
+  const [slashArmed, setSlashArmed] = createSignal(false);
 
   createEffect(() => {
-    if (kind() !== "slash") return;
-    let armed = false;
-    const armTimer = setTimeout(() => {
-      armed = true;
-    }, 100);
-    const onKey = (key: KeyEvent) => {
-      if (!armed) return;
-      key.preventDefault();
-      props.onDismiss();
-    };
-    renderer.keyInput.on("keypress", onKey);
-    onCleanup(() => {
-      clearTimeout(armTimer);
-      renderer.keyInput.off("keypress", onKey);
-    });
+    if (kind() !== "slash") {
+      setSlashArmed(false);
+      return;
+    }
+    const armTimer = setTimeout(() => setSlashArmed(true), 100);
+    onCleanup(() => clearTimeout(armTimer));
   });
 
+  // The slash result overlay dismisses on ANY keypress (after the arm delay);
+  // a key intercept is the idiomatic "any key" hook.
   createEffect(() => {
-    const k = kind();
-    if (k !== "model" && k !== "login" && k !== "logout") return;
-    const onKey = (key: KeyEvent) => {
-      if (key.name === "escape") props.onDismiss();
-    };
-    renderer.keyInput.on("keypress", onKey);
-    onCleanup(() => {
-      renderer.keyInput.off("keypress", onKey);
+    if (kind() !== "slash" || !slashArmed()) return;
+    const off = keymap.intercept("key", (ctx) => {
+      ctx.consume({ preventDefault: true, stopPropagation: true });
+      props.onDismiss();
     });
+    onCleanup(off);
+  });
+
+  useBindings(() => {
+    const k = kind();
+    if (k === "model" || k === "login" || k === "logout") {
+      return {
+        bindings: [{ key: "escape", cmd: () => props.onDismiss() }],
+      };
+    }
+    return { bindings: [] };
   });
 
   createEffect(() => {

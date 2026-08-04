@@ -9,13 +9,14 @@ import { describe, expect, it } from "bun:test";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { createShellUi } from "../src/ui/tui/shell-ui.js";
 import { createTranscriptStore } from "../src/ui/tui/transcript/store.js";
+import { segmentsToPlainText } from "../src/ui/tui/theme.js";
 
 describe("runTui Solid shell primitives", () => {
   it("creates disposable shell, overlay, and transcript stores", () => {
     const ui = createShellUi();
     const overlay = createOverlayUi();
     const transcript = createTranscriptStore();
-    expect(ui.chrome.identityLine()).toContain("praana");
+    expect(segmentsToPlainText(ui.chrome.identitySegments())).toContain("praana");
     expect(overlay.kind()).toBe("none");
     expect(transcript.entries.length).toBe(0);
     transcript.dispose();

@@ -1,9 +1,8 @@
 /**
  * Solid transcript entry rows — visual parity with imperative components/*.ts.
  */
-import { Show } from "solid-js";
-import chalk from "chalk";
-import { TUI_STYLE, paintZoneLine, type ZoneKind } from "../theme.js";
+import { For, Show } from "solid-js";
+import { TUI_STYLE, truncateSegments, type SpanStyle, type TextSegment } from "../theme.js";
 import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
 import type { IndexedTranscriptEntry } from "./index.js";
@@ -11,24 +10,24 @@ import type { TranscriptRenderOpts } from "./opts.js";
 
 const BODY_PREVIEW_LINES = 24;
 
-function detectSystemIcon(text: string): { icon: string; color: (s: string) => string } {
+function detectSystemIcon(text: string): { icon: string; style: SpanStyle } {
   const t = text.toLowerCase();
   if (/^(error|\[error\]|\u2715|fail|exception|crash)/.test(t) || /\berror\b/.test(t)) {
-    return { icon: "\u2715 ", color: TUI_STYLE.error };
+    return { icon: "\u2715 ", style: TUI_STYLE.error };
   }
   if (/^(warn|\[warn\]|warning|\u25b2)/.test(t)) {
-    return { icon: "\u25b2 ", color: TUI_STYLE.warning };
+    return { icon: "\u25b2 ", style: TUI_STYLE.warning };
   }
   if (/^(\u2713|ok |done|success|saved|completed|resumed)/.test(t)) {
-    return { icon: "\u2713 ", color: TUI_STYLE.success };
+    return { icon: "\u2713 ", style: TUI_STYLE.success };
   }
   if (/^(\u26a1|aborted|interrupted)/.test(t)) {
-    return { icon: "\u26a1 ", color: TUI_STYLE.warning };
+    return { icon: "\u26a1 ", style: TUI_STYLE.warning };
   }
-  return { icon: "\xb7 ", color: TUI_STYLE.system };
+  return { icon: "\xb7 ", style: TUI_STYLE.system };
 }
 
-function paintThinking(text: string, expanded: boolean): string {
+function thinkingText(text: string, expanded: boolean): string {
   const rawLines = text.split("\n");
   const visibleLines = expanded ? rawLines : [];
   const lineCount = rawLines.filter((l) => l.trim()).length;
@@ -41,57 +40,67 @@ function paintThinking(text: string, expanded: boolean): string {
   return body ? `${header}\n${body}` : header;
 }
 
-function paintToolHeader(
+function toolHeaderSegments(
   entry: Extract<IndexedTranscriptEntry, { role: "tool" }>,
   width: number,
-): string {
-  const icon = TUI_STYLE.faint(entry.toolIcon);
-  const label = TUI_STYLE.muted(entry.toolLabel);
+): TextSegment[] {
+  const segs: TextSegment[] = [
+    { text: "  " },
+    { text: entry.toolIcon, style: TUI_STYLE.faint },
+    { text: " " },
+    { text: entry.toolLabel, style: TUI_STYLE.muted },
+    { text: " " },
+  ];
   if (entry.resultSummary === undefined) {
-    return paintZoneLine(
-      `  ${icon} ${label} ${chalk.dim(entry.toolPending)}`,
-      "raised" as ZoneKind,
-      false,
-      width,
-    );
+    segs.push({ text: entry.toolPending, style: TUI_STYLE.faint });
+  } else {
+    segs.push({
+      text: entry.resultSummary,
+      style: entry.isError ? TUI_STYLE.error : TUI_STYLE.success,
+    });
   }
-  const summaryStyle = entry.isError ? TUI_STYLE.error : TUI_STYLE.success;
-  return paintZoneLine(
-    `  ${icon} ${label} ${summaryStyle(entry.resultSummary)}`,
-    "raised" as ZoneKind,
-    false,
-    width,
-  );
+  return truncateSegments(segs, width);
 }
 
-function paintToolBody(
+function toolBodyLines(
   entry: Extract<IndexedTranscriptEntry, { role: "tool" }>,
   width: number,
-): string {
+): TextSegment[][] {
   if (!entry.resultBody || (!entry.expanded && !entry.isError && entry.toolName !== "shell")) {
-    return "";
+    return [];
   }
   const bodyWidth = Math.max(10, width - 7);
   const indent = "    ";
   const rawLines = entry.resultBody.split("\n");
   const shown = rawLines.slice(0, BODY_PREVIEW_LINES);
-  const lines: string[] = [];
+  const lines: TextSegment[][] = [];
   for (const l of shown) {
-    for (const wl of wrapContent(chalk.dim(l), bodyWidth)) {
-      lines.push(paintZoneLine(`${indent}${wl}`, "raised" as ZoneKind, false, width));
+    for (const wl of wrapContent(l, bodyWidth)) {
+      lines.push(truncateSegments([{ text: `${indent}${wl}`, style: TUI_STYLE.faint }], width));
     }
   }
   if (rawLines.length > BODY_PREVIEW_LINES) {
     lines.push(
-      paintZoneLine(
-        TUI_STYLE.faint(`${indent}… +${rawLines.length - BODY_PREVIEW_LINES} more lines`),
-        "raised" as ZoneKind,
-        false,
+      truncateSegments(
+        [
+          {
+            text: `${indent}… +${rawLines.length - BODY_PREVIEW_LINES} more lines`,
+            style: TUI_STYLE.faint,
+          },
+        ],
         width,
       ),
     );
   }
-  return lines.join("\n");
+  return lines;
+}
+
+function SegmentLine(props: { segments: TextSegment[] }) {
+  return (
+    <text>
+      <For each={props.segments}>{(s) => <span style={s.style}>{s.text}</span>}</For>
+    </text>
+  );
 }
 
 export function TranscriptEntryView(props: {
@@ -106,7 +115,7 @@ export function TranscriptEntryView(props: {
   if (e.role === "user") {
     return (
       <box id={`entry-${e.id}`} flexDirection="column">
-        <text>{TUI_STYLE.user(e.text)}</text>
+        <text>{e.text}</text>
       </box>
     );
   }
@@ -116,7 +125,7 @@ export function TranscriptEntryView(props: {
       <box id={`entry-${e.id}`} flexDirection="column" flexGrow={1}>
         <Show
           when={props.opts.markdownRendering}
-          fallback={<text>{TUI_STYLE.text(e.text)}</text>}
+          fallback={<text>{e.text}</text>}
         >
           <markdown
             content={e.text}
@@ -132,30 +141,30 @@ export function TranscriptEntryView(props: {
   if (e.role === "thinking") {
     return (
       <box id={`entry-${e.id}`} flexDirection="column">
-        <text>{TUI_STYLE.thinking(paintThinking(e.text, e.expanded ?? true))}</text>
+        <text>
+          <span style={TUI_STYLE.thinking}>{thinkingText(e.text, e.expanded ?? true)}</span>
+        </text>
       </box>
     );
   }
 
   if (e.role === "tool") {
-    const body = paintToolBody(e, props.width);
+    const bodyLines = toolBodyLines(e, props.width);
     return (
       <box id={`entry-${e.id}`} flexDirection="column">
-        <text>{paintToolHeader(e, props.width)}</text>
-        <Show when={body.length > 0}>
-          <text>{body}</text>
-        </Show>
+        <SegmentLine segments={toolHeaderSegments(e, props.width)} />
+        <For each={bodyLines}>{(line) => <SegmentLine segments={line} />}</For>
       </box>
     );
   }
 
   if (e.role === "recall") {
-    const label = TUI_STYLE.memory(`◆ recall ${e.count}`);
-    const queryPart = e.query ? TUI_STYLE.faint(` · "${e.query.slice(0, 40)}"`) : "";
-    const previewPart = e.preview ? TUI_STYLE.faint(` → "${e.preview.slice(0, 48)}"`) : "";
+    const segs: TextSegment[] = [{ text: `\u25c6 recall ${e.count}`, style: TUI_STYLE.memory }];
+    if (e.query) segs.push({ text: ` · "${e.query.slice(0, 40)}"`, style: TUI_STYLE.faint });
+    if (e.preview) segs.push({ text: ` → "${e.preview.slice(0, 48)}"`, style: TUI_STYLE.faint });
     return (
       <box id={`entry-${e.id}`} flexDirection="row">
-        <text>{label + queryPart + previewPart}</text>
+        <SegmentLine segments={segs} />
       </box>
     );
   }
@@ -163,17 +172,22 @@ export function TranscriptEntryView(props: {
   if (e.role === "turn_footer") {
     return (
       <box id={`entry-${e.id}`} flexDirection="row">
-        <text>
-          {paintZoneLine(`   ${chalk.dim(e.text)}`, "canvas" satisfies ZoneKind, false, props.width)}
-        </text>
+        <SegmentLine
+          segments={truncateSegments(
+            [{ text: `   ${e.text}`, style: TUI_STYLE.faint }],
+            props.width,
+          )}
+        />
       </box>
     );
   }
 
-  const { icon, color } = detectSystemIcon(e.text);
+  const { icon, style } = detectSystemIcon(e.text);
   return (
     <box id={`entry-${e.id}`} flexDirection="column">
-      <text>{color(icon + e.text)}</text>
+      <text>
+        <span style={style}>{icon + e.text}</span>
+      </text>
     </box>
   );
 }

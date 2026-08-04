@@ -68,10 +68,10 @@ export function LogoutOverlay(props: LogoutOverlayProps) {
 
   return (
     <OverlayFrame width={48}>
-      <text>{TUI_STYLE.info("Logout — select a provider to remove")}</text>
+      <text><span style={TUI_STYLE.info}>Logout — select a provider to remove</span></text>
       <Show
         when={options().length > 0}
-        fallback={<text>{TUI_STYLE.muted("No stored credentials.")}</text>}
+        fallback={<text><span style={TUI_STYLE.muted}>No stored credentials.</span></text>}
       >
         <select
           focused

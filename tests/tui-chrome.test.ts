@@ -1,11 +1,12 @@
 /**
- * Pure chrome formatters (Solid bars consume these strings).
+ * Pure chrome formatters (Solid bars consume these segments).
  */
 import { describe, it, expect } from "bun:test";
 import {
   formatTuiGlanceLine,
   formatTuiIdentityLine,
 } from "../src/ui/tui/chrome/glance-format.js";
+import { segmentsToPlainText } from "../src/ui/tui/theme.js";
 import type { StatusBarInput } from "../src/status-bar.js";
 
 function baseStatus(overrides: Partial<StatusBarInput> = {}): StatusBarInput {
@@ -33,7 +34,7 @@ function baseStatus(overrides: Partial<StatusBarInput> = {}): StatusBarInput {
 
 describe("formatTuiIdentityLine", () => {
   it("includes brand, model provider, and path", () => {
-    const line = formatTuiIdentityLine(baseStatus());
+    const line = segmentsToPlainText(formatTuiIdentityLine(baseStatus()));
     expect(line).toContain("praana");
     expect(line).toContain("openrouter");
     expect(line).toContain("project");
@@ -42,15 +43,17 @@ describe("formatTuiIdentityLine", () => {
 
 describe("formatTuiGlanceLine", () => {
   it("includes context and memory status", () => {
-    const line = formatTuiGlanceLine(baseStatus(), { showCost: false });
+    const line = segmentsToPlainText(formatTuiGlanceLine(baseStatus(), { showCost: false }));
     expect(line).toContain("ctx");
     expect(line).toContain("mem on");
   });
 
   it("surfaces debug and plan mode flags", () => {
-    const line = formatTuiGlanceLine(
-      baseStatus({ debug: true, planMode: true }),
-      { showCost: false },
+    const line = segmentsToPlainText(
+      formatTuiGlanceLine(
+        baseStatus({ debug: true, planMode: true }),
+        { showCost: false },
+      ),
     );
     expect(line).toContain("debug");
     expect(line).toContain("plan");

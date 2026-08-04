@@ -7,7 +7,6 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  For,
   onCleanup,
   Show,
 } from "solid-js";
@@ -15,7 +14,8 @@ import {
   useTerminalDimensions,
   useRenderer,
 } from "@opentui/solid";
-import type { KeyEvent, TextareaRenderable, PasteEvent } from "@opentui/core";
+import { useBindings } from "@opentui/keymap/solid";
+import type { TextareaRenderable, PasteEvent } from "@opentui/core";
 import { decodePasteBytes, stripAnsiSequences } from "@opentui/core";
 import { PromptHistory } from "./history.js";
 import {
@@ -84,6 +84,12 @@ export function Prompt(props: PromptProps) {
     focus() {
       setFocused(true);
       textarea?.focus();
+      // EditBufferRenderable.blur() hides the terminal cursor; focus() only
+      // re-asserts it during the next render pass, which can race Solid's
+      // deferred overlay unmount after an overlay dismiss. Re-render now and
+      // once more after the Solid flush so the cursor lands on the prompt.
+      renderer.requestRender();
+      queueMicrotask(() => renderer.requestRender());
     },
     blur() {
       setFocused(false);
@@ -165,70 +171,107 @@ export function Prompt(props: PromptProps) {
     void refreshAutocomplete();
   };
 
-  const onKeyDown = (key: KeyEvent) => {
-    if (!textarea) return;
-    const text = textarea.plainText;
+  const acOpen = () => {
     const list = ac();
-    if (list && list.items.length > 0) {
-      if (key.name === "escape") {
-        setAc(null);
-        key.preventDefault();
-        return;
-      }
-      if (key.name === "up") {
-        setAcIndex((i) => Math.max(0, i - 1));
-        key.preventDefault();
-        return;
-      }
-      if (key.name === "down") {
-        setAcIndex((i) => Math.min(list.items.length - 1, i + 1));
-        key.preventDefault();
-        return;
-      }
-      if (key.name === "tab" || key.name === "return") {
-        const item = list.items[acIndex()];
-        if (item) {
-          // If the buffer already contains the completion, let Enter submit instead.
-          if (
-            key.name === "return" &&
-            text.trimStart().startsWith(item.value) &&
-            text.trim() === item.value
-          ) {
-            setAc(null);
-            // fall through to submit via keybinding
-            return;
-          }
-          applyItem(item);
-          key.preventDefault();
-        }
-        return;
-      }
-    }
-
-    const cursor = textarea.logicalCursor;
-    const lineCount = countLines(text) || 1;
-
-    if (key.name === "up" && !key.ctrl && !key.meta && cursor.row === 0) {
-      const next = history.up(text);
-      if (next !== null) {
-        textarea.setText(next);
-        syncHeight(next);
-        key.preventDefault();
-      }
-      return;
-    }
-
-    if (key.name === "down" && !key.ctrl && !key.meta && cursor.row >= lineCount - 1) {
-      if (history.isBrowsing()) {
-        const next = history.down();
-        if (next !== null) {
-          textarea.setText(next);
-          syncHeight(next);
-        }
-        key.preventDefault();
-      }
-    }
+    return list !== null && list.items.length > 0;
   };
+
+  const textMatchesItem = () => {
+    if (!textarea) return false;
+    const list = ac();
+    if (!list) return false;
+    const item = list.items[acIndex()];
+    if (!item) return false;
+    const text = textarea.plainText;
+    return text.trimStart().startsWith(item.value) && text.trim() === item.value;
+  };
+
+  useBindings(() => ({
+    target: () => textarea,
+    targetMode: "focus",
+    bindings: [
+      // Autocomplete-open keys (gated together by `acOpen`).
+      {
+        key: "escape",
+        enabled: () => acOpen(),
+        cmd: () => setAc(null),
+      },
+      {
+        key: "up",
+        enabled: () => acOpen(),
+        cmd: () => setAcIndex((i) => Math.max(0, i - 1)),
+      },
+      {
+        key: "down",
+        enabled: () => acOpen(),
+        cmd: () => {
+          const list = ac();
+          if (!list) return;
+          setAcIndex((i) => Math.min(list.items.length - 1, i + 1));
+        },
+      },
+      {
+        key: "tab",
+        enabled: () => acOpen(),
+        cmd: () => {
+          const list = ac();
+          if (!list) return;
+          const item = list.items[acIndex()];
+          if (item) applyItem(item);
+        },
+      },
+      {
+        key: "return",
+        enabled: () => acOpen() && !textMatchesItem(),
+        cmd: () => {
+          const list = ac();
+          if (!list) return;
+          const item = list.items[acIndex()];
+          if (item) applyItem(item);
+        },
+      },
+      // When the buffer already equals the completion, close the popup and let
+      // return fall through to the textarea's submit keybinding.
+      {
+        key: "return",
+        enabled: () => acOpen() && textMatchesItem(),
+        preventDefault: false,
+        cmd: () => setAc(null),
+      },
+      // History navigation (only when autocomplete is closed).
+      {
+        key: "up",
+        enabled: () => {
+          if (acOpen() || !textarea) return false;
+          return textarea.logicalCursor.row === 0;
+        },
+        cmd: () => {
+          if (!textarea) return;
+          const next = history.up(textarea.plainText);
+          if (next !== null) {
+            textarea.setText(next);
+            syncHeight(next);
+          }
+        },
+      },
+      {
+        key: "down",
+        enabled: () => {
+          if (acOpen() || !textarea) return false;
+          const lineCount = countLines(textarea?.plainText ?? "") || 1;
+          return (textarea?.logicalCursor.row ?? 0) >= lineCount - 1 && history.isBrowsing();
+        },
+        cmd: () => {
+          if (!textarea) return;
+          const next = history.down();
+          if (next !== null) {
+            textarea.setText(next);
+            syncHeight(next);
+          }
+        },
+      },
+    ],
+  }));
 
   const onSubmit = () => {
     if (!textarea) return;
@@ -250,7 +293,7 @@ export function Prompt(props: PromptProps) {
     // Prefer anchoring just above the prompt area (bottom chrome).
     const h = dimensions().height || 24;
     const items = ac()?.items.length ?? 0;
-    const boxH = Math.min(8, Math.max(3, items + 2));
+    const boxH = Math.min(8, Math.max(1, items));
     return Math.max(0, h - height() - boxH - 4);
   });
 
@@ -289,7 +332,6 @@ export function Prompt(props: PromptProps) {
             onCursorChange={() => {
               void refreshAutocomplete();
             }}
-            onKeyDown={onKeyDown}
             onSubmit={onSubmit}
           />
         </box>
@@ -297,29 +339,26 @@ export function Prompt(props: PromptProps) {
 
       <Show when={ac()}>
         {(result) => (
-          <box
+          <select
+            id="prompt-completions"
             position="absolute"
             zIndex={1100}
             left={2}
             top={popupY()}
             width={Math.min(60, (dimensions().width || 80) - 4)}
-            height={Math.min(8, result().items.length + 2)}
-            border
-            borderStyle="rounded"
-            padding={1}
-            title="completions"
+            height={Math.min(8, result().items.length)}
+            options={result().items.map((item) => ({
+              name: item.description ? `${item.label}  ${item.description}` : item.label,
+              description: "",
+              value: item.value,
+            }))}
+            selectedIndex={acIndex()}
             backgroundColor="#1a1a1a"
-          >
-            <For each={result().items}>
-              {(item, i) => (
-                <text>
-                  {i() === acIndex() ? "› " : "  "}
-                  {item.label}
-                  {item.description ? `  ${item.description}` : ""}
-                </text>
-              )}
-            </For>
-          </box>
+            selectedBackgroundColor="#334455"
+            selectedTextColor="#ffffff"
+            showScrollIndicator
+            focused={false}
+          />
         )}
       </Show>
     </>

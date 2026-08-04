@@ -1,7 +1,7 @@
 /**
  * Solid in-session login overlay.
  */
-import { createSignal, onCleanup, onMount } from "solid-js";
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { InputRenderable } from "@opentui/core";
 import { useRenderer } from "@opentui/solid";
 import {
@@ -196,6 +196,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
   const [step, setStep] = createSignal<LoginStep>(routed?.step ?? "picker");
   const [message, setMessage] = createSignal("");
   const [oauthPrompt, setOauthPrompt] = createSignal("");
+  const [oauthPlaceholder, setOauthPlaceholder] = createSignal("");
   const [oauthContext, setOauthContext] = createSignal<string[]>([]);
   const [oauthOptions, setOauthOptions] = createSignal<
     readonly { id: string; label: string; description?: string }[]
@@ -331,7 +332,8 @@ export function LoginOverlay(props: LoginOverlayProps) {
             abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
               once: true,
             });
-            setOauthPrompt(placeholder ? `${prompt}\n${TUI_STYLE.muted(placeholder)}` : prompt);
+            setOauthPrompt(prompt);
+            setOauthPlaceholder(placeholder ?? "");
             setOauthContext(contextLines ?? []);
             setStep("oauth-text");
             const submit = (value: string) => {
@@ -345,6 +347,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
           new Promise<string | undefined>((resolve) => {
             resolveOAuthSelect = resolve;
             setOauthPrompt(prompt);
+            setOauthPlaceholder("");
             setOauthOptions(options);
             setStep("oauth-select");
           }),
@@ -352,7 +355,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
       if (!abort.signal.aborted) await finish(false, "");
     } catch (error) {
       if (!abort.signal.aborted) {
-        setMessage(TUI_STYLE.error(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`));
+        setMessage(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`);
         setStep("oauth-error");
       }
     } finally {
@@ -382,7 +385,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
     <OverlayFrame width={56}>
       {step() === "picker" && (
         <>
-          <text>{TUI_STYLE.info("Login — select a provider")}</text>
+          <text><span style={TUI_STYLE.info}>{"Login — select a provider"}</span></text>
           <select
             id="login-provider-picker"
             focused
@@ -398,7 +401,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "auth-method" && (
         <>
-          <text>{TUI_STYLE.info(`How do you want to authenticate ${provider}?`)}</text>
+          <text><span style={TUI_STYLE.info}>{`How do you want to authenticate ${provider}?`}</span></text>
           <select
             focused
             width={40}
@@ -421,7 +424,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "has-key" && (
         <>
-          <text>{TUI_STYLE.info(`You already have a key for ${provider}.`)}</text>
+          <text><span style={TUI_STYLE.info}>{`You already have a key for ${provider}.`}</span></text>
           <select
             focused
             width={40}
@@ -436,7 +439,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "has-oauth" && (
         <>
-          <text>{TUI_STYLE.info(`You already have OAuth credentials for ${provider}.`)}</text>
+          <text><span style={TUI_STYLE.info}>{`You already have OAuth credentials for ${provider}.`}</span></text>
           <select
             focused
             width={40}
@@ -455,12 +458,12 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "key" && (
         <>
-          <text>{TUI_STYLE.info(provider === "amazon-bedrock"
+          <text><span style={TUI_STYLE.info}>{provider === "amazon-bedrock"
             ? "Paste your Bedrock API key (bearer token)"
-            : `Enter API key for ${provider}`)}</text>
-          <text>{TUI_STYLE.muted(provider === "amazon-bedrock"
+            : `Enter API key for ${provider}`}</span></text>
+          <text><span style={TUI_STYLE.muted}>{provider === "amazon-bedrock"
             ? "Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK. Saved to ~/.praana/credentials.json (0o600)"
-            : "Saved to ~/.praana/credentials.json (0o600)")}</text>
+            : "Saved to ~/.praana/credentials.json (0o600)"}</span></text>
           <MaskedInput
             id="login-key-input"
             focused
@@ -471,13 +474,13 @@ export function LoginOverlay(props: LoginOverlayProps) {
               else setMessage("Key cannot be empty. Press Esc to cancel.");
             }}
           />
-          {message() && <text>{TUI_STYLE.error(message())}</text>}
+          {message() && <text><span style={TUI_STYLE.error}>{message()}</span></text>}
         </>
       )}
       {step() === "custom-id" && (
         <>
-          <text>{TUI_STYLE.info("Custom OpenAI-compatible provider")}</text>
-          <text>{TUI_STYLE.muted("Enter a provider id (lowercase, e.g. my-llama):")}</text>
+          <text><span style={TUI_STYLE.info}>{"Custom OpenAI-compatible provider"}</span></text>
+          <text><span style={TUI_STYLE.muted}>{"Enter a provider id (lowercase, e.g. my-llama):"}</span></text>
           <TextInput
             id="login-custom-id"
             focused
@@ -491,13 +494,13 @@ export function LoginOverlay(props: LoginOverlayProps) {
               }
             }}
           />
-          {message() && <text>{TUI_STYLE.error(message())}</text>}
+          {message() && <text><span style={TUI_STYLE.error}>{message()}</span></text>}
         </>
       )}
       {step() === "custom-url" && (
         <>
-          <text>{TUI_STYLE.info(`Configure ${customId}`)}</text>
-          <text>{TUI_STYLE.muted("Base URL (e.g. http://localhost:8080/v1):")}</text>
+          <text><span style={TUI_STYLE.info}>{`Configure ${customId}`}</span></text>
+          <text><span style={TUI_STYLE.muted}>{"Base URL (e.g. http://localhost:8080/v1):"}</span></text>
           <TextInput
             id="login-custom-url"
             focused
@@ -511,35 +514,38 @@ export function LoginOverlay(props: LoginOverlayProps) {
               }
             }}
           />
-          {message() && <text>{TUI_STYLE.error(message())}</text>}
+          {message() && <text><span style={TUI_STYLE.error}>{message()}</span></text>}
         </>
       )}
       {step() === "custom-key" && (
         <>
-          <text>{TUI_STYLE.info(`API key for ${customId}`)}</text>
-          <text>{TUI_STYLE.muted("Press Enter to skip for keyless local servers")}</text>
+          <text><span style={TUI_STYLE.info}>{`API key for ${customId}`}</span></text>
+          <text><span style={TUI_STYLE.muted}>{"Press Enter to skip for keyless local servers"}</span></text>
           <MaskedInput id="login-custom-key" focused onSubmit={(value) => finishCustom(value.trim())} />
         </>
       )}
-      {step() === "fetching" && <text>{TUI_STYLE.info("Fetching models…")}</text>}
+      {step() === "fetching" && <text><span style={TUI_STYLE.info}>{"Fetching models…"}</span></text>}
       {step() === "oauth-status" && (
         <>
-          <text>{TUI_STYLE.info(`OAuth: ${provider}`)}</text>
+          <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
           <text>{message()}</text>
-          <text>{TUI_STYLE.faint("Esc to cancel")}</text>
+          <text><span style={TUI_STYLE.faint}>{"Esc to cancel"}</span></text>
         </>
       )}
       {step() === "oauth-text" && (
         <>
-          <text>{TUI_STYLE.info(`OAuth: ${provider}`)}</text>
+          <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
           <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
+          <Show when={oauthPlaceholder()}>
+            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+          </Show>
           <TextInput id="login-oauth-input" focused onSubmit={(value) => oauthTextSubmit?.(value)} />
-          <text>{TUI_STYLE.faint("Paste · Enter · Esc cancel")}</text>
+          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
         </>
       )}
       {step() === "oauth-select" && (
         <>
-          <text>{TUI_STYLE.info(`OAuth: ${provider}`)}</text>
+          <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
           <text>{oauthPrompt()}</text>
           <select
             focused
@@ -558,7 +564,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "oauth-error" && (
         <>
-          <text>{message()}</text>
+          <text><span style={TUI_STYLE.error}>{message()}</span></text>
           <select
             focused
             width={40}

@@ -1,19 +1,10 @@
-/** Plain-text wrap/accent helpers for transcript components.
- * OpenTUI's renderer handles ANSI-aware width math internally; these helpers
- * exist only for components that need pre-split text lines. */
-import { TUI_STYLE } from "../theme.js";
+/** Plain-text wrap helpers for transcript components.
+ * Wrapping is style-agnostic; callers apply SpanStyle via <span> once the
+ * wrapped plain-text lines are known. */
 
-export type TextStyle = (text: string) => string;
-
-/** Split text at width boundaries, preserving embedded ANSI codes only when
- *  they span the boundary (rare here — callers pass plain or lightly-styled text).
- *  OpenTUI's own TextRenderable wraps at its own width; this is used for
- *  pre-splitting in tool-row bodies and similar. */
-export function wrapContent(
-  text: string,
-  width: number,
-  color: TextStyle = TUI_STYLE.text,
-): string[] {
+/** Split text at width boundaries (word-wrap). Used for pre-splitting in
+ *  tool-row bodies and similar. */
+export function wrapContent(text: string, width: number): string[] {
   if (width <= 0) return [text];
   const words = text.split(" ");
   const lines: string[] = [];
@@ -21,14 +12,14 @@ export function wrapContent(
   for (const word of words) {
     const candidate = current ? `${current} ${word}` : word;
     if (candidate.length > width && current) {
-      lines.push(color(current));
+      lines.push(current);
       current = word;
     } else {
       current = candidate;
     }
   }
-  if (current) lines.push(color(current));
-  return lines.length > 0 ? lines : [color(text)];
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [text];
 }
 
 /** No-op passthrough; accent bars are handled by OpenTUI layout (zones disabled). */

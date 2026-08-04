@@ -91,8 +91,8 @@ export function App(props: AppProps) {
       />
 
       <box id="chrome" flexDirection="column" flexShrink={0}>
-        <IdentityBar line={props.ui.chrome.identityLine} />
-        <GlanceBar line={props.ui.chrome.glanceLine} />
+        <IdentityBar segments={props.ui.chrome.identitySegments} />
+        <GlanceBar segments={props.ui.chrome.glanceSegments} />
       </box>
 
       <OverlayHost

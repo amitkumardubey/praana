@@ -5,9 +5,11 @@
  */
 import {
   createCliRenderer,
-  type KeyEvent,
 } from "@opentui/core";
 import { render } from "@opentui/solid";
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
+import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
+import type { JSX } from "solid-js";
 import type { AppController, StartupInfo } from "../../app-controller.js";
 import {
   APP_VERSION,
@@ -38,27 +40,27 @@ function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
 }
 
+interface GlobalKeyBindingsProps {
+  onF9: () => void;
+  onCtrlC: () => void;
+}
+
+function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
+  useBindings(() => ({
+    bindings: [
+      { key: "f9", cmd: () => props.onF9() },
+      { key: "ctrl+c", cmd: () => props.onCtrlC() },
+    ],
+  }));
+  return null as unknown as JSX.Element;
+}
+
 function toastToneToType(
   tone: SlashCommandToastTone,
 ): "error" | "success" | "info" {
   if (tone === "error") return "error";
   if (tone === "success") return "success";
   return "info";
-}
-
-function matchesKey(key: KeyEvent, combo: string): boolean {
-  const parts = combo.toLowerCase().split("+");
-  const hasCtrl = parts.includes("ctrl");
-  const hasMeta = parts.includes("meta") || parts.includes("cmd");
-  const hasShift = parts.includes("shift");
-  const name = parts.filter((p) => !["ctrl", "meta", "cmd", "shift"].includes(p))[0];
-
-  return (
-    key.ctrl === hasCtrl &&
-    key.meta === hasMeta &&
-    key.shift === hasShift &&
-    key.name === name
-  );
 }
 
 function versionNumber(): string {
@@ -98,6 +100,21 @@ export async function runTui(
     width: process.stdout.columns ?? 80,
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
+  });
+
+  const keymap = createDefaultOpenTuiKeymap(renderer);
+  // `enabled` is registered for layers/commands by default; add it for
+  // individual bindings so the prompt can gate keys (e.g. `up` only when
+  // autocomplete is open or the cursor sits on the first row).
+  keymap.registerBindingFields({
+    enabled(value, ctx) {
+      if (value === undefined || value === true) return;
+      if (value === false) {
+        ctx.activeWhen(() => false);
+        return;
+      }
+      ctx.activeWhen(value as () => boolean);
+    },
   });
 
   const ui = createShellUi();
@@ -355,26 +372,56 @@ export async function runTui(
 
   await render(
     () => (
-      <App
-        cwd={info.cwd}
-        ui={ui}
-        overlay={overlay}
-        transcript={transcript}
-        transcriptOpts={transcriptOpts}
-        currentProvider={() => session.getEffectiveProvider()}
-        currentModelId={() => session.getActiveModelId()}
-        loadModels={() => listAllAvailableModels()}
-        onModelSelect={handleModelSelect}
-        onLoginComplete={handleLoginComplete}
-        onLogoutComplete={handleLogoutComplete}
-        onOverlayDismiss={dismissOverlay}
-        onExpand={(entry) =>
-          Promise.resolve(
-            resolveExpandedContent(entry, session.eventLog.readAll()),
-          )
-        }
-        onSubmit={handleSubmit}
-        onReady={({ prompt: promptApi }) => {
+      <KeymapProvider keymap={keymap}>
+        <GlobalKeyBindings
+          onF9={() => {
+            transcript.setFocused(true);
+            // Blur the prompt so its focus-scoped keymap layer deactivates and
+            // the transcript's navigation bindings own up/down/etc.
+            prompt?.blur();
+            renderer.requestRender();
+          }}
+          onCtrlC={() => {
+            const action = controller.handleUserInterrupt(
+              (prompt?.getText().length ?? 0) === 0,
+            );
+            if (action === "abort_turn") {
+              ui.spinner.stop();
+              openTuiSink?.onFallback("⚡ turn aborted");
+              renderer.requestRender();
+              return;
+            }
+            if (action === "clear_input") {
+              prompt?.clear();
+              renderer.requestRender();
+              return;
+            }
+            if (action === "exit") {
+              void doShutdown();
+              return;
+            }
+          }}
+        />
+        <App
+          cwd={info.cwd}
+          ui={ui}
+          overlay={overlay}
+          transcript={transcript}
+          transcriptOpts={transcriptOpts}
+          currentProvider={() => session.getEffectiveProvider()}
+          currentModelId={() => session.getActiveModelId()}
+          loadModels={() => listAllAvailableModels()}
+          onModelSelect={handleModelSelect}
+          onLoginComplete={handleLoginComplete}
+          onLogoutComplete={handleLogoutComplete}
+          onOverlayDismiss={dismissOverlay}
+          onExpand={(entry) =>
+            Promise.resolve(
+              resolveExpandedContent(entry, session.eventLog.readAll()),
+            )
+          }
+          onSubmit={handleSubmit}
+          onReady={({ prompt: promptApi }) => {
           prompt = promptApi;
           ready = true;
 
@@ -417,37 +464,9 @@ export async function runTui(
           prompt.focus();
           renderer.requestRender();
         }}
-      />
+        />
+      </KeymapProvider>
     ),
     renderer,
   );
-
-  renderer.keyInput.on("keypress", (key: KeyEvent) => {
-    if (matchesKey(key, "f9")) {
-      transcript.setFocused(true);
-      renderer.requestRender();
-      return;
-    }
-
-    if (matchesKey(key, "ctrl+c")) {
-      const action = controller.handleUserInterrupt(
-        (prompt?.getText().length ?? 0) === 0,
-      );
-      if (action === "abort_turn") {
-        ui.spinner.stop();
-        openTuiSink?.onFallback("⚡ turn aborted");
-        renderer.requestRender();
-        return;
-      }
-      if (action === "clear_input") {
-        prompt?.clear();
-        renderer.requestRender();
-        return;
-      }
-      if (action === "exit") {
-        void doShutdown();
-        return;
-      }
-    }
-  });
 }

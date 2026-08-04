@@ -4,9 +4,10 @@
  * Returns `true` for Proceed, `false` for Cancel / Ctrl+C / Escape.
  * Runs before the main session TUI (`Session.create` → embedder init).
  */
-import { createEffect, onCleanup } from "solid-js";
-import { createCliRenderer, type KeyEvent } from "@opentui/core";
-import { render, useRenderer } from "@opentui/solid";
+import { createCliRenderer } from "@opentui/core";
+import { render } from "@opentui/solid";
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
+import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
 import { TUI_STYLE } from "./theme.js";
 
 const DOWNLOAD_OPTIONS = [
@@ -24,19 +25,12 @@ function DownloadConsentApp(props: {
   sizeHint: string;
   onDone: (proceed: boolean) => void;
 }) {
-  const renderer = useRenderer();
-
-  createEffect(() => {
-    const onKey = (key: KeyEvent) => {
-      if ((key.name === "c" && key.ctrl) || key.name === "escape") {
-        props.onDone(false);
-      }
-    };
-    renderer.keyInput.on("keypress", onKey);
-    onCleanup(() => {
-      renderer.keyInput.off("keypress", onKey);
-    });
-  });
+  useBindings(() => ({
+    bindings: [
+      { key: "escape", cmd: () => props.onDone(false) },
+      { key: "ctrl+c", cmd: () => props.onDone(false) },
+    ],
+  }));
 
   return (
     <box
@@ -47,21 +41,17 @@ function DownloadConsentApp(props: {
       flexDirection="column"
       width={Math.min(70, (process.stdout.columns ?? 80) - 4)}
     >
-      <text>{TUI_STYLE.heading("Download embedding model?")}</text>
+      <text><span style={TUI_STYLE.heading}>Download embedding model?</span></text>
       <text> </text>
       <text>
-        {TUI_STYLE.text(
-          "PRAANA's Cognitive Memory uses semantic search for high-quality recall.",
-        )}
+        PRAANA's Cognitive Memory uses semantic search for high-quality recall.
       </text>
       <text>
-        {TUI_STYLE.text(
-          `This requires ${props.modelId} (${props.sizeHint}), downloaded once from HuggingFace.`,
-        )}
+        {`This requires ${props.modelId} (${props.sizeHint}), downloaded once from HuggingFace.`}
       </text>
       <text> </text>
       <text>
-        {TUI_STYLE.muted("Cancel is safe — keyword-only search still works, just less precise.")}
+        <span style={TUI_STYLE.muted}>Cancel is safe — keyword-only search still works, just less precise.</span>
       </text>
       <text> </text>
       <select
@@ -88,6 +78,7 @@ export async function confirmModelDownload(modelId: string): Promise<boolean> {
   if (!process.stderr.isTTY) return true;
 
   const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  const keymap = createDefaultOpenTuiKeymap(renderer);
   const sizeHint = MODEL_SIZE_HINT[modelId] ?? "a small model";
 
   try {
@@ -101,11 +92,13 @@ export async function confirmModelDownload(modelId: string): Promise<boolean> {
 
       void render(
         () => (
-          <DownloadConsentApp
-            modelId={modelId}
-            sizeHint={sizeHint}
-            onDone={finish}
-          />
+          <KeymapProvider keymap={keymap}>
+            <DownloadConsentApp
+              modelId={modelId}
+              sizeHint={sizeHint}
+              onDone={finish}
+            />
+          </KeymapProvider>
         ),
         renderer,
       );

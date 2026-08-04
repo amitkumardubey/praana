@@ -1,11 +1,11 @@
 /* Boot banner — figlet Standard wordmark (design §5.1), OpenTUI renderable.
  * The figlet "Standard" lines are preserved verbatim for pixel-parity with the
- * pi-tui era; they are rendered via OpenTUI TextRenderable instead of being
- * returned as string[]. The legacy renderBootBanner() string-array helper is
- * kept only for the standalone consent/pre-session UIs that may prefer it. */
+ * pi-tui era; they are rendered via OpenTUI TextRenderable with native
+ * attributes instead of being returned as string[]. The legacy
+ * renderBootBanner() string-array helper is kept only for the standalone
+ * consent/pre-session UIs that may prefer it. */
 import { BoxRenderable, TextRenderable, type RenderContext } from "@opentui/core";
-import chalk from "chalk";
-import { TUI_STYLE } from "./theme.js";
+import { TUI_STYLE, textAttributesOf } from "./theme.js";
 
 /** Figlet "Standard" rendering of "praana" from the ambient design spec. */
 export const PRAANA_WORDMARK: string[] = [
@@ -32,7 +32,8 @@ export interface BootBannerOpts {
 /** Build the boot banner as a standalone OpenTUI renderable. */
 export function buildBootBanner(opts: BootBannerOpts, ctx?: RenderContext): BoxRenderable {
   const showArt = (opts.banner ?? true) && opts.width >= PRAANA_WORDMARK_WIDTH;
-  const useColor = !opts.noColor && chalk.level >= 1;
+  const wordmarkAttrs = opts.noColor ? undefined : textAttributesOf(TUI_STYLE.heading);
+  const versionAttrs = opts.noColor ? undefined : textAttributesOf(TUI_STYLE.muted);
 
   const context = ctx ?? getSharedRenderContext();
   const container = new BoxRenderable(context, {
@@ -40,18 +41,23 @@ export function buildBootBanner(opts: BootBannerOpts, ctx?: RenderContext): BoxR
     flexDirection: "column",
   });
 
-  const addLine = (text: string): void => {
-    container.add(new TextRenderable(context, { content: text }));
+  const addLine = (text: string, attributes?: number): void => {
+    container.add(
+      new TextRenderable(context, {
+        content: text,
+        ...(attributes === undefined ? {} : { attributes }),
+      }),
+    );
   };
 
   if (showArt) {
     for (const line of PRAANA_WORDMARK) {
-      addLine(useColor ? TUI_STYLE.heading(line) : line);
+      addLine(line, wordmarkAttrs);
     }
     addLine("");
   }
 
-  addLine(useColor ? chalk.dim(`  v${opts.version}`) : `  v${opts.version}`);
+  addLine(`  v${opts.version}`, versionAttrs);
   addLine("");
 
   for (const summaryLine of opts.summaryLines) {
@@ -65,18 +71,17 @@ export function buildBootBanner(opts: BootBannerOpts, ctx?: RenderContext): BoxR
 // ─── Legacy compat: string[] renderer for callers that still want plain text ─
 export function renderBootBanner(opts: BootBannerOpts): string[] {
   const showArt = (opts.banner ?? true) && opts.width >= PRAANA_WORDMARK_WIDTH;
-  const useColor = !opts.noColor && chalk.level >= 1;
 
   const lines: string[] = [""];
 
   if (showArt) {
     for (const line of PRAANA_WORDMARK) {
-      lines.push(useColor ? TUI_STYLE.heading(line) : line);
+      lines.push(line);
     }
     lines.push("");
   }
 
-  lines.push(useColor ? chalk.dim(`  v${opts.version}`) : `  v${opts.version}`);
+  lines.push(`  v${opts.version}`);
   lines.push("");
 
   for (const summaryLine of opts.summaryLines) {

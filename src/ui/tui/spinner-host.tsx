@@ -25,7 +25,7 @@ export function SpinnerHost(props: {
     <Show when={props.active()}>
       <box id="spinner" flexDirection="row" flexShrink={0}>
         <text>
-          {TUI_STYLE.muted(`${FRAMES[frame()]} ${props.message()}`)}
+          <span style={TUI_STYLE.muted}>{`${FRAMES[frame()]} ${props.message()}`}</span>
         </text>
       </box>
     </Show>

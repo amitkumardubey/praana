@@ -15,7 +15,6 @@ import {
   type KeyEvent,
 } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
-import { TUI_STYLE } from "../src/ui/tui/theme.js";
 
 const DOWNLOAD_OPTIONS = [
   { value: "proceed", name: "Proceed", description: "Download and enable semantic search" },
@@ -54,7 +53,7 @@ async function runConsentInteraction(
     flexDirection: "column",
     width: 60,
   });
-  box.add(new TextRenderable(renderer, { content: TUI_STYLE.heading("Download embedding model?") }));
+  box.add(new TextRenderable(renderer, { content: "Download embedding model?" }));
 
   const select = new SelectRenderable(renderer, {
     id: "download-consent-select",

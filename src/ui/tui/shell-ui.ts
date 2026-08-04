@@ -7,8 +7,7 @@ import { createSignal, createRoot, type Accessor } from "solid-js";
 import type { StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
 import { formatTuiGlanceLine, formatTuiIdentityLine } from "./chrome/glance-format.js";
-import { paintZoneLine, truncatePlainText } from "./theme.js";
-import chalk from "chalk";
+import { truncateSegments, TUI_STYLE, type TextSegment } from "./theme.js";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
 
@@ -39,8 +38,8 @@ export interface ChromeApi {
   }): void;
   setWidth(width: number): void;
   setBackgroundZones(enabled: boolean): void;
-  readonly identityLine: Accessor<string>;
-  readonly glanceLine: Accessor<string>;
+  readonly identitySegments: Accessor<TextSegment[]>;
+  readonly glanceSegments: Accessor<TextSegment[]>;
 }
 
 export interface ShellUi {
@@ -75,8 +74,12 @@ function statusBarFromSnapshot(
 
 export function createShellUi(): ShellUi {
   return createRoot((dispose) => {
-    const [identityLine, setIdentityLine] = createSignal(" praana");
-    const [glanceLine, setGlanceLine] = createSignal(chalk.dim(" initializing…"));
+    const [identitySegments, setIdentitySegments] = createSignal<TextSegment[]>([
+      { text: " praana" },
+    ]);
+    const [glanceSegments, setGlanceSegments] = createSignal<TextSegment[]>([
+      { text: " initializing…", style: TUI_STYLE.faint },
+    ]);
     let backgroundZones = true;
     let lastStatus: StatusBarInput | null = null;
     let lastShowCost = false;
@@ -86,16 +89,9 @@ export function createShellUi(): ShellUi {
     const repaintChrome = () => {
       const width = lastWidth;
       if (!lastStatus) {
-        setIdentityLine(
-          paintZoneLine(truncatePlainText(" praana", width), "chrome", backgroundZones, width),
-        );
-        setGlanceLine(
-          paintZoneLine(
-            truncatePlainText(" " + chalk.dim("initializing…"), width),
-            "chrome",
-            backgroundZones,
-            width,
-          ),
+        setIdentitySegments(truncateSegments([{ text: " praana" }], width));
+        setGlanceSegments(
+          truncateSegments([{ text: " initializing…", style: TUI_STYLE.faint }], width),
         );
         return;
       }
@@ -104,17 +100,13 @@ export function createShellUi(): ShellUi {
         : lastStatus;
       const identity = formatTuiIdentityLine(status);
       const glance = formatTuiGlanceLine(status, { showCost: lastShowCost });
-      setIdentityLine(
-        paintZoneLine(truncatePlainText(" " + identity, width), "chrome", backgroundZones, width),
-      );
-      setGlanceLine(
-        paintZoneLine(truncatePlainText(" " + glance, width), "chrome", backgroundZones, width),
-      );
+      setIdentitySegments(truncateSegments([{ text: " " }, ...identity], width));
+      setGlanceSegments(truncateSegments([{ text: " " }, ...glance], width));
     };
 
     const chrome: ChromeApi = {
-      identityLine,
-      glanceLine,
+      identitySegments,
+      glanceSegments,
       setBackgroundZones(enabled: boolean) {
         backgroundZones = enabled;
         repaintChrome();

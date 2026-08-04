@@ -1,9 +1,9 @@
 /**
  * Solid scrollable transcript — renders store entries with sticky-bottom scroll.
  */
-import { For, Show, createEffect, onCleanup } from "solid-js";
+import { For, Show, createEffect } from "solid-js";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
-import type { KeyEvent } from "@opentui/core";
+import { useBindings } from "@opentui/keymap/solid";
 import { needsGap } from "./gap.js";
 import { TranscriptEntryView } from "./entries.js";
 import type { TranscriptStoreApi } from "./store.js";
@@ -32,43 +32,25 @@ export function TranscriptView(props: TranscriptViewProps) {
     renderer.requestRender();
   });
 
-  createEffect(() => {
-    if (!props.store.focusMode()) return;
-
-    const onKey = (key: KeyEvent) => {
-      if (!props.store.focusMode()) return;
-
-      if (key.name === "escape") {
-        props.store.setFocused(false);
-        props.onRequestFocus?.();
-        return;
-      }
-      if (key.name === "up") {
-        props.store.selectRelative(-1);
-        return;
-      }
-      if (key.name === "down") {
-        props.store.selectRelative(1);
-        return;
-      }
-      if (key.name === "pageup") {
-        props.store.selectEdge("first");
-        return;
-      }
-      if (key.name === "pagedown") {
-        props.store.selectEdge("last");
-        return;
-      }
-      if (key.name === "return" || key.name === "space") {
-        void toggleExpand();
-      }
-    };
-
-    renderer.keyInput.on("keypress", onKey);
-    onCleanup(() => {
-      renderer.keyInput.off("keypress", onKey);
-    });
-  });
+  useBindings(() => ({
+    bindings: props.store.focusMode()
+      ? [
+          {
+            key: "escape",
+            cmd: () => {
+              props.store.setFocused(false);
+              props.onRequestFocus?.();
+            },
+          },
+          { key: "up", cmd: () => props.store.selectRelative(-1) },
+          { key: "down", cmd: () => props.store.selectRelative(1) },
+          { key: "pageup", cmd: () => props.store.selectEdge("first") },
+          { key: "pagedown", cmd: () => props.store.selectEdge("last") },
+          { key: "return", cmd: () => void toggleExpand() },
+          { key: "space", cmd: () => void toggleExpand() },
+        ]
+      : [],
+  }));
 
   async function toggleExpand() {
     const entry = props.store.toggleSelectedExpanded();

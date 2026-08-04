@@ -49,7 +49,12 @@ describe("buildBootBanner", () => {
   });
 
   it("exports the original figlet wordmark constants for parity", () => {
-    expect(Array.isArray(PRAANA_WORDMARK)).toBe(true);
-    expect(PRAANA_WORDMARK.length).toBeGreaterThan(0);
+    expect(PRAANA_WORDMARK).toEqual([
+      "  _ __  _ __ __ _  __ _ _ __   __ _",
+      " | '_ \\| '__/ _` |/ _` | '_ \\ / _` |",
+      " | |_) | | | (_| | (_| | | | | (_| |",
+      " | .__/|_|  \\__,_|\\__, |_| |_|\\__,_|",
+      " |_|            |___/",
+    ]);
   });
 });

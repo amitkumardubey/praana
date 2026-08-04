@@ -115,7 +115,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
 
   return (
     <OverlayFrame width={56}>
-      <text>{TUI_STYLE.info("Select model")}</text>
+      <text><span style={TUI_STYLE.info}>Select model</span></text>
       <input
         focused
         placeholder="Search models…"
@@ -131,10 +131,10 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
         }}
       />
       <Show when={loading()}>
-        <text>{TUI_STYLE.muted("Loading models…")}</text>
+        <text><span style={TUI_STYLE.muted}>Loading models…</span></text>
       </Show>
       <Show when={loadError()}>
-        {(err) => <text>{TUI_STYLE.error(err())}</text>}
+        {(err) => <text><span style={TUI_STYLE.error}>{err()}</span></text>}
       </Show>
       <Show when={!loading() && !loadError()}>
         <select

@@ -1,14 +1,17 @@
 /**
  * Solid OpenTUI setup wizard — provider picker, credential collection, and config creation.
  */
-import { createEffect, createSignal, onCleanup } from "solid-js";
-import { createCliRenderer, type InputRenderable, type KeyEvent } from "@opentui/core";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createCliRenderer, type InputRenderable } from "@opentui/core";
 import { render, useRenderer } from "@opentui/solid";
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
+import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
 import { existsSync } from "node:fs";
 import { Readable } from "node:stream";
 import { APP_VERSION } from "../../app-banner.js";
 import { renderBootBanner } from "./banner.js";
 import { TUI_STYLE } from "./theme.js";
+import { Lines } from "./text-lines.js";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
@@ -153,6 +156,7 @@ function SetupWizard(props: SetupWizardProps) {
     readonly { id: string; label: string; description?: string }[]
   >([]);
   const [oauthPrompt, setOauthPrompt] = createSignal("");
+  const [oauthPlaceholder, setOauthPlaceholder] = createSignal("");
   const [oauthContext, setOauthContext] = createSignal<string[]>([]);
   const state: WizardState = {
     provider: "",
@@ -244,7 +248,8 @@ function SetupWizard(props: SetupWizardProps) {
             abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
               once: true,
             });
-            setOauthPrompt(placeholder ? `${prompt}\n${TUI_STYLE.muted(placeholder)}` : prompt);
+            setOauthPrompt(prompt);
+            setOauthPlaceholder(placeholder ?? "");
             setOauthContext(contextLines ?? []);
             setStep("oauth-text");
           }),
@@ -252,6 +257,7 @@ function SetupWizard(props: SetupWizardProps) {
           new Promise<string | undefined>((resolve) => {
             resolveOAuthSelect = resolve;
             setOauthPrompt(prompt);
+            setOauthPlaceholder("");
             setOauthOptions(options);
             setStep("oauth-select");
           }),
@@ -262,9 +268,7 @@ function SetupWizard(props: SetupWizardProps) {
       }
     } catch (error) {
       if (!abort.signal.aborted) {
-        setMessage(
-          TUI_STYLE.error(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`),
-        );
+        setMessage(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`);
         setStep("oauth-error");
       }
     } finally {
@@ -322,19 +326,12 @@ function SetupWizard(props: SetupWizardProps) {
     }
   };
 
-  createEffect(() => {
-    const onKey = (key: KeyEvent) => {
-      if (key.name === "escape") {
-        key.preventDefault();
-        goBack();
-      } else if (key.name === "c" && key.ctrl) {
-        key.preventDefault();
-        finish({ success: false, message: "Setup cancelled." });
-      }
-    };
-    renderer.keyInput.on("keypress", onKey);
-    onCleanup(() => renderer.keyInput.off("keypress", onKey));
-  });
+  useBindings(() => ({
+    bindings: [
+      { key: "escape", cmd: () => goBack() },
+      { key: "ctrl+c", cmd: () => finish({ success: false, message: "Setup cancelled." }) },
+    ],
+  }));
 
   createEffect(() => {
     if (step() !== "fetch-models") return;
@@ -459,7 +456,7 @@ function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           {hasApiKey(state.provider) ? (
             <>
-              <text>{TUI_STYLE.success("✓ API key detected in credential store.")}</text>
+              <text><span style={TUI_STYLE.success}>{"✓ API key detected in credential store."}</span></text>
               <text> </text>
               <text>Replace with a new key?</text>
               <text> </text>
@@ -498,10 +495,12 @@ function SetupWizard(props: SetupWizardProps) {
             </>
           ) : (
             <>
-              <text>
-                {"Paste your API key.\n" +
-                  TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600).")}
-              </text>
+              <Lines
+                lines={[
+                  "Paste your API key.",
+                  { text: "  Stored in ~/.praana/credentials.json (0600).", style: TUI_STYLE.faint },
+                ]}
+              />
               <MaskedInput id="setup-key-input" focused onSubmit={submitKey} />
             </>
           )}
@@ -512,14 +511,14 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Selected: ${state.provider}`}</text>
           <text> </text>
-          <text>
-            {[
+          <Lines
+            lines={[
               "Paste your API key.",
-              TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
-              ...(message() ? ["", TUI_STYLE.error(`✗ ${message()}`)] : []),
+              { text: "  Stored in ~/.praana/credentials.json (0600).", style: TUI_STYLE.faint },
+              ...(message() ? ["", { text: `✗ ${message()}`, style: TUI_STYLE.error }] : []),
               "",
-            ].join("\n")}
-          </text>
+            ]}
+          />
           <MaskedInput id="setup-key-input" focused onSubmit={submitKey} />
         </>
       )}
@@ -528,15 +527,15 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>Selected: amazon-bedrock</text>
           <text> </text>
-          <text>
-            {[
+          <Lines
+            lines={[
               "Paste your Bedrock API key (bearer token).",
-              TUI_STYLE.faint("  Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK."),
-              TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600)."),
-              ...(message() ? ["", TUI_STYLE.error(`✗ ${message()}`)] : []),
+              { text: "  Or set AWS credentials / AWS_BEARER_TOKEN_BEDROCK.", style: TUI_STYLE.faint },
+              { text: "  Stored in ~/.praana/credentials.json (0600).", style: TUI_STYLE.faint },
+              ...(message() ? ["", { text: `✗ ${message()}`, style: TUI_STYLE.error }] : []),
               "",
-            ].join("\n")}
-          </text>
+            ]}
+          />
           <MaskedInput
             id="setup-bedrock-key-input"
             focused
@@ -557,14 +556,14 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>Custom OpenAI-compatible endpoint</text>
           <text> </text>
-          <text>
-            {[
+          <Lines
+            lines={[
               "Enter a provider id (lowercase, no spaces).",
-              TUI_STYLE.faint("  e.g. my-llama, vllm-local, lm-studio"),
-              ...(message() ? ["", TUI_STYLE.error(`✗ ${message()}`)] : []),
+              { text: "  e.g. my-llama, vllm-local, lm-studio", style: TUI_STYLE.faint },
+              ...(message() ? ["", { text: `✗ ${message()}`, style: TUI_STYLE.error }] : []),
               "",
-            ].join("\n")}
-          </text>
+            ]}
+          />
           <TextInput
             id="setup-custom-id"
             focused
@@ -586,14 +585,17 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Custom provider: ${state.customProviderId}`}</text>
           <text> </text>
-          <text>
-            {[
+          <Lines
+            lines={[
               "Enter the base URL.",
-              TUI_STYLE.faint("  e.g. http://localhost:8080/v1, https://api.together.xyz/v1"),
-              ...(message() ? ["", TUI_STYLE.error(`✗ ${message()}`)] : []),
+              {
+                text: "  e.g. http://localhost:8080/v1, https://api.together.xyz/v1",
+                style: TUI_STYLE.faint,
+              },
+              ...(message() ? ["", { text: `✗ ${message()}`, style: TUI_STYLE.error }] : []),
               "",
-            ].join("\n")}
-          </text>
+            ]}
+          />
           <TextInput
             id="setup-custom-url"
             focused
@@ -615,10 +617,12 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Custom provider: ${state.customProviderId}`}</text>
           <text> </text>
-          <text>
-            {"Enter API key (or press Enter to skip for keyless servers).\n" +
-              TUI_STYLE.faint("  Stored in ~/.praana/credentials.json (0600).")}
-          </text>
+          <Lines
+            lines={[
+              "Enter API key (or press Enter to skip for keyless servers).",
+              { text: "  Stored in ~/.praana/credentials.json (0600).", style: TUI_STYLE.faint },
+            ]}
+          />
           <MaskedInput
             id="setup-custom-key"
             focused
@@ -640,7 +644,7 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>Fetching models…</text>
           <text> </text>
-          <text>{TUI_STYLE.faint(`  Contacting ${providerForConfig()}…`)}</text>
+          <text><span style={TUI_STYLE.faint}>{`  Contacting ${providerForConfig()}…`}</span></text>
         </>
       )}
 
@@ -667,14 +671,17 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Enter model id for ${providerForConfig()}`}</text>
           <text> </text>
-          <text>
-            {"Enter the model id to use as default.\n" +
-              (pickDefaultModel(providerForConfig())
-                ? TUI_STYLE.faint(
-                    `  Press Enter for default: ${pickDefaultModel(providerForConfig())}`,
-                  )
-                : TUI_STYLE.faint("  e.g. llama-3.1-8b-instruct"))}
-          </text>
+          <Lines
+            lines={[
+              "Enter the model id to use as default.",
+              pickDefaultModel(providerForConfig())
+                ? {
+                    text: `  Press Enter for default: ${pickDefaultModel(providerForConfig())}`,
+                    style: TUI_STYLE.faint,
+                  }
+                : { text: "  e.g. llama-3.1-8b-instruct", style: TUI_STYLE.faint },
+            ]}
+          />
           <TextInput
             id="setup-custom-model"
             focused
@@ -691,19 +698,22 @@ function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Selected: ${providerForConfig()}`}</text>
           <text> </text>
-          <text>
-            {[
-              `Provider: ${TUI_STYLE.success(providerForConfig())}`,
+          <Lines
+            lines={[
+              [
+                "Provider: ",
+                { text: providerForConfig(), style: TUI_STYLE.success },
+              ],
               state.model ? `Model: ${state.model}` : "Model: (auto-detect)",
               state.keySaved
-                ? `Key: ${TUI_STYLE.success("saved to credential store")}`
+                ? ["Key: ", { text: "saved to credential store", style: TUI_STYLE.success }]
                 : hasApiKey(providerForConfig())
-                  ? `Key: ${TUI_STYLE.success("in credential store")}`
+                  ? ["Key: ", { text: "in credential store", style: TUI_STYLE.success }]
                   : "Key: (not set)",
               "",
               "Create ~/.praana/config.toml?",
-            ].join("\n")}
-          </text>
+            ]}
+          />
           <text> </text>
           <select
             id="setup-confirm"
@@ -744,7 +754,7 @@ function SetupWizard(props: SetupWizardProps) {
           <text>{`OAuth: ${state.provider}`}</text>
           <text> </text>
           <text>{message()}</text>
-          <text>{TUI_STYLE.faint("Esc to cancel")}</text>
+          <text><span style={TUI_STYLE.faint}>{"Esc to cancel"}</span></text>
         </>
       )}
 
@@ -753,6 +763,9 @@ function SetupWizard(props: SetupWizardProps) {
           <text>{`OAuth: ${state.provider}`}</text>
           <text> </text>
           <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
+          <Show when={oauthPlaceholder()}>
+            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+          </Show>
           <text> </text>
           <TextInput
             id="setup-oauth-input"
@@ -761,7 +774,7 @@ function SetupWizard(props: SetupWizardProps) {
               if (value.trim()) resolveOAuthText?.(value.trim());
             }}
           />
-          <text>{TUI_STYLE.faint("Paste · Enter · Esc cancel")}</text>
+          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
         </>
       )}
 
@@ -820,6 +833,7 @@ export async function runSetupWizardTui(options?: RunSetupWizardOptions): Promis
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
   });
+  const keymap = createDefaultOpenTuiKeymap(renderer);
 
   const bannerLines = renderBootBanner({
     version: versionNumber(),
@@ -832,7 +846,14 @@ export async function runSetupWizardTui(options?: RunSetupWizardOptions): Promis
 
   try {
     return await new Promise<SetupResult>((resolve) => {
-      void render(() => <SetupWizard onDone={resolve} />, renderer);
+      void render(
+        () => (
+          <KeymapProvider keymap={keymap}>
+            <SetupWizard onDone={resolve} />
+          </KeymapProvider>
+        ),
+        renderer,
+      );
     });
   } finally {
     renderer.destroy();
