@@ -6,7 +6,7 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import { useBindings } from "@opentui/keymap/solid";
-import type { InputRenderable } from "@opentui/core";
+import { RGBA, type InputRenderable } from "@opentui/core";
 import { SLASH_COMMAND_METADATA } from "../../../slash-commands.js";
 import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
@@ -21,6 +21,8 @@ const LIST_WIDTH = 22;
 const MAX_VISIBLE = 12;
 const DETAIL_MIN_COLS = 64;
 const SELECTED_BG = "#3a3e4b";
+/** Explicit transparent bg — OpenTUI won't repaint a row whose bg flips to undefined. */
+const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 
 export interface PaletteOverlayProps {
   /** Run a no-argument command through the normal slash dispatch. */
@@ -124,7 +126,7 @@ export function PaletteOverlay(props: PaletteOverlayProps) {
               return (
                 <box
                   flexDirection="row"
-                  backgroundColor={isSelected() ? SELECTED_BG : undefined}
+                  backgroundColor={isSelected() ? SELECTED_BG : TRANSPARENT}
                 >
                   <text fg={TUI_PALETTE.coral}>
                     {isSelected() ? "▌" : " "}

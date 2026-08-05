@@ -8,7 +8,7 @@
 import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import { useTerminalDimensions, useRenderer } from "@opentui/solid";
 import { useBindings } from "@opentui/keymap/solid";
-import type { InputRenderable } from "@opentui/core";
+import { RGBA, type InputRenderable } from "@opentui/core";
 import type { ModelListEntry } from "../../../model-listing.js";
 import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
@@ -25,6 +25,8 @@ const MAX_VISIBLE = 10;
 const DETAIL_MIN_COLS = 64;
 const DETAIL_WIDTH = 26;
 const SELECTED_BG = "#3a3e4b";
+/** Explicit transparent bg — OpenTUI won't repaint a row whose bg flips to undefined. */
+const TRANSPARENT = RGBA.fromInts(0, 0, 0, 0);
 
 export interface ModelSelectorOverlayProps {
   currentProvider: string;
@@ -78,8 +80,13 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       try {
         const entries = await props.loadModels();
         setAllModels(entries);
+        // Compute the initial selection against the ORDERED list (current
+        // pinned to top), not the raw entries — selectedIndex indexes into
+        // filtered()/ordered(), so an index from the unsorted list lands on
+        // the wrong row when the current model isn't in the catalog.
+        const ordered = orderModels(entries, props.currentProvider, props.currentModelId);
         setSelectedIndex(
-          initialSelectionIndex(entries, props.currentProvider, props.currentModelId),
+          initialSelectionIndex(ordered, props.currentProvider, props.currentModelId),
         );
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : String(err));
@@ -154,15 +161,17 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
           <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={10}>
             <For each={visibleItems()}>
               {(item, i) => {
-                const rowIndex = scrollStart() + i();
-                const isSel = rowIndex === selectedIndex();
+                // Function (not const) so Solid re-evaluates it reactively when
+                // selectedIndex changes — a const captures the value at render
+                // time and goes stale, leaving deselected rows highlighted.
+                const isSel = () => scrollStart() + i() === selectedIndex();
                 return (
                   <box
                     flexDirection="row"
-                    backgroundColor={isSel ? SELECTED_BG : undefined}
+                    backgroundColor={isSel() ? SELECTED_BG : TRANSPARENT}
                   >
                     <text fg={TUI_PALETTE.coral}>
-                      {isSel ? "▌" : " "}
+                      {isSel() ? "▌" : " "}
                     </text>
                     <text
                       fg={
