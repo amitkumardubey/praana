@@ -37,7 +37,11 @@ export interface AppProps {
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
+  onPaletteRun: (command: string) => void;
+  onPaletteInsert: (text: string) => void;
+  onPaletteHandoff: (text: string) => void;
   onOverlayDismiss: () => void;
+  onSlashTrigger: () => void;
   onExpand?: (
     entry: IndexedTranscriptEntry,
   ) => Promise<ExpandedContentResult> | ExpandedContentResult;
@@ -97,6 +101,7 @@ export function App(props: AppProps) {
         cwd={props.cwd}
         focused
         placeholder="message praana"
+        onSlashTrigger={props.onSlashTrigger}
         ref={(api) => {
           promptApi = api;
           tryReady();
@@ -121,6 +126,9 @@ export function App(props: AppProps) {
         onModelSelect={props.onModelSelect}
         onLoginComplete={props.onLoginComplete}
         onLogoutComplete={props.onLogoutComplete}
+        onPaletteRun={props.onPaletteRun}
+        onPaletteInsert={props.onPaletteInsert}
+        onPaletteHandoff={props.onPaletteHandoff}
         onDismiss={props.onOverlayDismiss}
       />
     </box>

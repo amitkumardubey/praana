@@ -8,6 +8,7 @@ import type { ModelListEntry } from "../../../model-listing.js";
 import type { OverlayUi } from "./state.js";
 import { SlashResultOverlay } from "./slash-result.js";
 import { ModelSelectorOverlay } from "./model-selector.js";
+import { PaletteOverlay } from "./palette.js";
 import { LogoutOverlay } from "./logout.js";
 import { LoginOverlay, type LoginWizardResult } from "./login.js";
 import type { LogoutWizardResult } from "./logout.js";
@@ -20,6 +21,9 @@ export interface OverlayHostProps {
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
+  onPaletteRun: (command: string) => void;
+  onPaletteInsert: (text: string) => void;
+  onPaletteHandoff: (text: string) => void;
   onDismiss: () => void;
 }
 
@@ -54,6 +58,14 @@ export function OverlayHost(props: OverlayHostProps) {
     if (k === "model" || k === "login" || k === "logout") {
       return {
         bindings: [{ key: "escape", cmd: () => props.onDismiss() }],
+      };
+    }
+    if (k === "palette") {
+      return {
+        bindings: [
+          { key: "escape", cmd: () => props.onDismiss() },
+          { key: "ctrl+c", cmd: () => props.onDismiss() },
+        ],
       };
     }
     return { bindings: [] };
@@ -99,6 +111,14 @@ export function OverlayHost(props: OverlayHostProps) {
           <LogoutOverlay
             currentProvider={props.currentProvider()}
             onComplete={props.onLogoutComplete}
+            onCancel={props.onDismiss}
+          />
+        </Show>
+        <Show when={kind() === "palette"}>
+          <PaletteOverlay
+            onRun={props.onPaletteRun}
+            onInsert={props.onPaletteInsert}
+            onHandoff={props.onPaletteHandoff}
             onCancel={props.onDismiss}
           />
         </Show>

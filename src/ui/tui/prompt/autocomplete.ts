@@ -1,9 +1,9 @@
 /**
- * Slash + path autocomplete suggestions for the Solid Prompt.
+ * Path autocomplete suggestions for the Solid Prompt. Slash commands are
+ * handled by the palette overlay (see overlays/palette.tsx), not here.
  */
 import { readdir } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { SLASH_COMMAND_METADATA } from "../../../slash-commands.js";
 
 export interface AutocompleteItem {
   label: string;
@@ -13,7 +13,7 @@ export interface AutocompleteItem {
 
 export interface AutocompleteResult {
   items: AutocompleteItem[];
-  /** Prefix being replaced (e.g. "/he" or "./src/fo"). */
+  /** Prefix being replaced (e.g. "./src/fo"). */
   prefix: string;
   /** Start offset of prefix in the full buffer text. */
   start: number;
@@ -31,30 +31,6 @@ export function tokenAtCaret(text: string, caret: number): { token: string; star
     start -= 1;
   }
   return { token: text.slice(start, end), start, end };
-}
-
-function filterSlash(prefix: string): AutocompleteItem[] {
-  const q = prefix.toLowerCase();
-  const items: AutocompleteItem[] = [];
-  for (const meta of SLASH_COMMAND_METADATA) {
-    const names = [meta.name, ...(meta.aliases ?? [])];
-    for (const name of names) {
-      if (name.toLowerCase().startsWith(q) || (q === "/" && name.startsWith("/"))) {
-        items.push({
-          label: name,
-          value: name,
-          description: meta.description,
-        });
-      }
-    }
-  }
-  // De-dupe by value
-  const seen = new Set<string>();
-  return items.filter((i) => {
-    if (seen.has(i.value)) return false;
-    seen.add(i.value);
-    return true;
-  }).slice(0, 12);
 }
 
 async function filterPaths(cwd: string, token: string): Promise<AutocompleteItem[]> {
@@ -112,30 +88,20 @@ export async function getAutocomplete(
   cwd: string,
 ): Promise<AutocompleteResult | null> {
   const { token, start, end } = tokenAtCaret(text, caret);
-  if (!token) return null;
-
-  if (token.startsWith("/")) {
-    // Slash commands only when token is a command (no path after first slash segment for /foo/bar files at root — still ok)
-    const items = filterSlash(token);
-    if (items.length === 0) return null;
-    return { items, prefix: token, start, end };
-  }
+  if (!token || token === "/") return null;
 
   const items = await filterPaths(cwd, token);
   if (items.length === 0) return null;
   return { items, prefix: token, start, end };
 }
 
-/** Apply a completion by replacing [start, end) with item.value (+ trailing space for slash). */
+/** Apply a completion by replacing [start, end) with item.value. */
 export function applyAutocomplete(
   text: string,
   start: number,
   end: number,
   item: AutocompleteItem,
-  opts?: { slashSpace?: boolean },
 ): { text: string; caret: number } {
-  const slash = item.value.startsWith("/");
-  const insert = slash && opts?.slashSpace !== false ? item.value + " " : item.value;
-  const next = text.slice(0, start) + insert + text.slice(end);
-  return { text: next, caret: start + insert.length };
+  const next = text.slice(0, start) + item.value + text.slice(end);
+  return { text: next, caret: start + item.value.length };
 }

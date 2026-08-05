@@ -57,19 +57,17 @@ describe("paste collapse", () => {
 });
 
 describe("autocomplete", () => {
-  it("finds slash commands", async () => {
-    const r = await getAutocomplete("/he", 3, process.cwd());
-    expect(r).not.toBeNull();
-    expect(r!.items.some((i) => i.value === "/help")).toBe(true);
+  it("applies path completion without adding a space", () => {
+    const { text, caret } = applyAutocomplete("cat ./RE", 4, 8, {
+      label: "README.md",
+      value: "./README.md",
+    });
+    expect(text).toBe("cat ./README.md");
+    expect(caret).toBe("cat ./README.md".length);
   });
 
-  it("applies slash completion with trailing space", () => {
-    const { text, caret } = applyAutocomplete("/he", 0, 3, {
-      label: "/help",
-      value: "/help",
-    });
-    expect(text).toBe("/help ");
-    expect(caret).toBe("/help ".length);
+  it("lone slash returns no autocomplete (palette owns slash)", async () => {
+    expect(await getAutocomplete("/", 1, process.cwd())).toBeNull();
   });
 
   it("tokenAtCaret extracts the active token", () => {

@@ -1,7 +1,7 @@
 /**
  * Solid Prompt — OpenCode-inspired chat input (imperative OpenTUI under the hood).
  *
- * Features: auto-grow, prompt history, large-paste collapse, slash/file autocomplete.
+ * Features: auto-grow, prompt history, large-paste collapse, path autocomplete, slash palette trigger.
  */
 import {
   createEffect,
@@ -48,6 +48,8 @@ export interface PromptProps {
   focused?: boolean;
   placeholder?: string;
   onSubmit: (text: string) => void | Promise<void>;
+  /** Fired when the buffer becomes exactly "/", opening the slash palette. */
+  onSlashTrigger?: () => void;
   /** Expose imperative helpers to the run bridge. */
   ref?: (api: PromptHandle | undefined) => void;
 }
@@ -66,6 +68,7 @@ export function Prompt(props: PromptProps) {
   let textarea: TextareaRenderable | undefined;
   const history = new PromptHistory();
   const pasteStore = new Map<string, string>();
+  let prevText = "";
 
   const [height, setHeight] = createSignal(1);
   const [ac, setAc] = createSignal<AutocompleteResult | null>(null);
@@ -101,10 +104,13 @@ export function Prompt(props: PromptProps) {
       pasteStore.clear();
       history.resetBrowse();
       setAc(null);
+      prevText = "";
       syncHeight("");
     },
     setText(text: string) {
       textarea?.setText(text);
+      if (textarea) textarea.cursorOffset = text.length;
+      prevText = text;
       syncHeight(text);
     },
     getText() {
@@ -332,6 +338,8 @@ export function Prompt(props: PromptProps) {
             keyBindings={SUBMIT_BINDINGS}
             onContentChange={() => {
               const value = textarea?.plainText ?? "";
+              if (value === "/" && prevText !== "/") props.onSlashTrigger?.();
+              prevText = value;
               prunePasteStore(value, pasteStore);
               syncHeight(value);
               void refreshAutocomplete();
@@ -360,8 +368,8 @@ export function Prompt(props: PromptProps) {
               value: item.value,
             }))}
             selectedIndex={acIndex()}
-            backgroundColor="#1a1a1a"
-            selectedBackgroundColor="#334455"
+            backgroundColor={TUI_PALETTE.inset}
+            selectedBackgroundColor="#3a3e4b"
             selectedTextColor="#ffffff"
             showScrollIndicator
             focused={false}

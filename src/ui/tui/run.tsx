@@ -166,6 +166,27 @@ export async function runTui(
     focusPrompt();
   };
 
+  const handleSlashTrigger = () => {
+    overlay.showPalette();
+    renderer.requestRender();
+  };
+
+  const handlePaletteRun = (command: string) => {
+    prompt?.clear();
+    dismissOverlay();
+    void runSlashCommand(command);
+  };
+
+  const handlePaletteInsert = (text: string) => {
+    dismissOverlay();
+    prompt?.setText(text);
+  };
+
+  const handlePaletteHandoff = (text: string) => {
+    dismissOverlay();
+    prompt?.setText(text);
+  };
+
   const handleModelSelect = (provider: string, modelId: string) => {
     void (async () => {
       dismissOverlay();
@@ -268,6 +289,88 @@ export async function runTui(
     process.exit(0);
   }
 
+  const runSlashCommand = async (input: string) => {
+    if (!openTuiSink) return;
+    ui.spinner.start("running command…");
+
+    let result: import("../../slash-commands.js").SlashCommandResult;
+    try {
+      result = await controller.executeSlashCommand(input);
+    } finally {
+      ui.spinner.stop();
+    }
+
+    if (result.display === "inline_transcript") {
+      openTuiSink.nextGroup();
+      openTuiSink.appendUser(input);
+      if (result.shellRun) {
+        openTuiSink.appendShellRun(result.shellRun);
+      } else if (result.lines.length > 0) {
+        openTuiSink.onSystemLines(result.lines);
+      }
+    } else if (result.display === "toast" && result.toastTone) {
+      ui.toast.show(
+        result.lines.join(" "),
+        toastToneToType(result.toastTone),
+      );
+    } else if (result.lines.length > 0) {
+      openTuiSink.onSlashCommandResult?.(result.lines);
+    }
+
+    if (result.action === "exit") {
+      await doShutdown();
+      return;
+    }
+    if (result.action === "clear_transcript") {
+      projection.apply({ type: "transcript_cleared" });
+      transcript.clear();
+      openTuiSink.clearContextPreview();
+      ui.launch.setMeta(formatLaunchCanvasMeta({ session, version: APP_VERSION }));
+      refreshChrome();
+    }
+    if (result.action === "new_session") {
+      await controller.startNewSession();
+      config = controller.config;
+      session = controller.session;
+
+      projection.apply({ type: "transcript_cleared" });
+      transcript.clear();
+      openTuiSink.clearContextPreview();
+
+      ui.chrome.setBackgroundZones(config.ui.background_zones);
+      transcriptOpts.markdownRendering = config.ui.markdown_rendering;
+      transcriptOpts.syntaxTheme = config.ui.syntax_theme;
+      transcriptOpts.backgroundZones = config.ui.background_zones;
+      transcriptOpts.useUnicode = config.ui.tool_icons === "unicode";
+      projection.setUseUnicode(transcriptOpts.useUnicode);
+
+      ui.launch.setMeta(
+        formatLaunchCanvasMeta({ session, version: APP_VERSION }),
+      );
+
+      refreshChrome();
+    }
+    if (result.action === "refresh_status") {
+      refreshChrome();
+    }
+    if (result.action === "open_model_selector") {
+      overlay.showModel();
+      renderer.requestRender();
+      return;
+    }
+    if (result.action === "open_login_wizard") {
+      overlay.showLogin(result.loginProviderHint);
+      renderer.requestRender();
+      return;
+    }
+    if (result.action === "open_logout_wizard") {
+      overlay.showLogout();
+      renderer.requestRender();
+      return;
+    }
+    renderer.requestRender();
+  };
+
   const handleSubmit = async (rawInput: string) => {
     if (!openTuiSink || !ready) return;
     let input = rawInput.trim();
@@ -284,84 +387,7 @@ export async function runTui(
     }
 
     if (input.startsWith("/")) {
-      ui.spinner.start("running command…");
-
-      let result: import("../../slash-commands.js").SlashCommandResult;
-      try {
-        result = await controller.executeSlashCommand(input);
-      } finally {
-        ui.spinner.stop();
-      }
-
-      if (result.display === "inline_transcript") {
-        openTuiSink.nextGroup();
-        openTuiSink.appendUser(input);
-        if (result.shellRun) {
-          openTuiSink.appendShellRun(result.shellRun);
-        } else if (result.lines.length > 0) {
-          openTuiSink.onSystemLines(result.lines);
-        }
-      } else if (result.display === "toast" && result.toastTone) {
-        ui.toast.show(
-          result.lines.join(" "),
-          toastToneToType(result.toastTone),
-        );
-      } else if (result.lines.length > 0) {
-        openTuiSink.onSlashCommandResult?.(result.lines);
-      }
-
-      if (result.action === "exit") {
-        await doShutdown();
-        return;
-      }
-      if (result.action === "clear_transcript") {
-        projection.apply({ type: "transcript_cleared" });
-        transcript.clear();
-        openTuiSink.clearContextPreview();
-        ui.launch.setMeta(formatLaunchCanvasMeta({ session, version: APP_VERSION }));
-        refreshChrome();
-      }
-      if (result.action === "new_session") {
-        await controller.startNewSession();
-        config = controller.config;
-        session = controller.session;
-
-        projection.apply({ type: "transcript_cleared" });
-        transcript.clear();
-        openTuiSink.clearContextPreview();
-
-        ui.chrome.setBackgroundZones(config.ui.background_zones);
-        transcriptOpts.markdownRendering = config.ui.markdown_rendering;
-        transcriptOpts.syntaxTheme = config.ui.syntax_theme;
-        transcriptOpts.backgroundZones = config.ui.background_zones;
-        transcriptOpts.useUnicode = config.ui.tool_icons === "unicode";
-        projection.setUseUnicode(transcriptOpts.useUnicode);
-
-        ui.launch.setMeta(
-          formatLaunchCanvasMeta({ session, version: APP_VERSION }),
-        );
-
-        refreshChrome();
-      }
-      if (result.action === "refresh_status") {
-        refreshChrome();
-      }
-      if (result.action === "open_model_selector") {
-        overlay.showModel();
-        renderer.requestRender();
-        return;
-      }
-      if (result.action === "open_login_wizard") {
-        overlay.showLogin(result.loginProviderHint);
-        renderer.requestRender();
-        return;
-      }
-      if (result.action === "open_logout_wizard") {
-        overlay.showLogout();
-        renderer.requestRender();
-        return;
-      }
-      renderer.requestRender();
+      await runSlashCommand(input);
       return;
     }
 
@@ -429,6 +455,10 @@ export async function runTui(
           onLoginComplete={handleLoginComplete}
           onLogoutComplete={handleLogoutComplete}
           onOverlayDismiss={dismissOverlay}
+          onSlashTrigger={handleSlashTrigger}
+          onPaletteRun={handlePaletteRun}
+          onPaletteInsert={handlePaletteInsert}
+          onPaletteHandoff={handlePaletteHandoff}
           onExpand={(entry) =>
             Promise.resolve(
               resolveExpandedContent(entry, session.eventLog.readAll()),
