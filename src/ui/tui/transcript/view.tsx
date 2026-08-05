@@ -97,6 +97,10 @@ export function TranscriptView(props: TranscriptViewProps) {
       id="transcript"
       flexGrow={1}
       minHeight={1}
+      paddingLeft={2}
+      paddingRight={2}
+      paddingTop={1}
+      paddingBottom={1}
       scrollY
       stickyScroll
       stickyStart="bottom"
