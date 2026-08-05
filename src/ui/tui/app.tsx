@@ -40,6 +40,7 @@ export interface AppProps {
   onPaletteRun: (command: string) => void;
   onPaletteInsert: (text: string) => void;
   onPaletteHandoff: (text: string) => void;
+  onPaletteCancel: () => void;
   onOverlayDismiss: () => void;
   onSlashTrigger: () => void;
   onExpand?: (
@@ -129,6 +130,7 @@ export function App(props: AppProps) {
         onPaletteRun={props.onPaletteRun}
         onPaletteInsert={props.onPaletteInsert}
         onPaletteHandoff={props.onPaletteHandoff}
+        onPaletteCancel={props.onPaletteCancel}
         onDismiss={props.onOverlayDismiss}
       />
     </box>

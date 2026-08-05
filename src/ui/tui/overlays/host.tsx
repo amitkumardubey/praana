@@ -24,6 +24,7 @@ export interface OverlayHostProps {
   onPaletteRun: (command: string) => void;
   onPaletteInsert: (text: string) => void;
   onPaletteHandoff: (text: string) => void;
+  onPaletteCancel: () => void;
   onDismiss: () => void;
 }
 
@@ -63,8 +64,8 @@ export function OverlayHost(props: OverlayHostProps) {
     if (k === "palette") {
       return {
         bindings: [
-          { key: "escape", cmd: () => props.onDismiss() },
-          { key: "ctrl+c", cmd: () => props.onDismiss() },
+          { key: "escape", cmd: () => props.onPaletteCancel() },
+          { key: "ctrl+c", cmd: () => props.onPaletteCancel() },
         ],
       };
     }
@@ -119,7 +120,7 @@ export function OverlayHost(props: OverlayHostProps) {
             onRun={props.onPaletteRun}
             onInsert={props.onPaletteInsert}
             onHandoff={props.onPaletteHandoff}
-            onCancel={props.onDismiss}
+            onCancel={props.onPaletteCancel}
           />
         </Show>
       </box>

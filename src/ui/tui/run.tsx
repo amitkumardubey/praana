@@ -187,6 +187,11 @@ export async function runTui(
     prompt?.setText(text);
   };
 
+  const handlePaletteCancel = () => {
+    prompt?.clear();
+    dismissOverlay();
+  };
+
   const handleModelSelect = (provider: string, modelId: string) => {
     void (async () => {
       dismissOverlay();
@@ -459,6 +464,7 @@ export async function runTui(
           onPaletteRun={handlePaletteRun}
           onPaletteInsert={handlePaletteInsert}
           onPaletteHandoff={handlePaletteHandoff}
+          onPaletteCancel={handlePaletteCancel}
           onExpand={(entry) =>
             Promise.resolve(
               resolveExpandedContent(entry, session.eventLog.readAll()),
