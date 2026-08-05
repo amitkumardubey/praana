@@ -23,6 +23,15 @@ const EMPTY: SpanStyle = {};
  * Semantic TUI styles that defer the main palette to the user's terminal.
  * Only exceptional states use standard colors.
  */
+/** Locked launch-screen palette (design-proto/LAUNCH-LOCK.md). */
+export const TUI_PALETTE = {
+  coral: "#c4887a",
+  steelMuted: "#7a8294",
+  brand: "#d8dce4",
+  onFlag: "#7aaf8a",
+  inset: "#262830",
+} as const;
+
 export const TUI_STYLE = {
   text: EMPTY,
   user: EMPTY,
@@ -30,6 +39,8 @@ export const TUI_STYLE = {
   system: { dim: true },
   muted: { dim: true },
   faint: { dim: true },
+  /** Explicit steel muted for identity / ambient glance (not terminal-dim). */
+  chromeMuted: { fg: TUI_PALETTE.steelMuted },
   heading: { bold: true },
   thinking: { dim: true, italic: true },
   tool: { fg: "#e5c07b" },
@@ -38,6 +49,12 @@ export const TUI_STYLE = {
   warning: { fg: "#e5c07b" },
   error: { fg: "#e06c75" },
   success: { fg: "#98c379" },
+  /** Coral accent — prompt glyph + launch pulse only. */
+  accent: { fg: TUI_PALETTE.coral },
+  /** Brand light — ASCII wordmark. */
+  brand: { fg: TUI_PALETTE.brand },
+  /** Green “systems on” flags (engine / mem). */
+  onFlag: { fg: TUI_PALETTE.onFlag },
   border: { dim: true },
 } as const satisfies Record<string, SpanStyle>;
 

@@ -16,7 +16,7 @@ import {
   formatSessionEndEpilogue,
 } from "../../app-banner.js";
 import { APP_NAME } from "../../app-identity.js";
-import { formatTuiWelcomeLine } from "./boot-summary.js";
+import { formatLaunchCanvasMeta, formatTuiWelcomeLine } from "./boot-summary.js";
 import {
   resolveExpandedContent,
   type TranscriptIndex,
@@ -69,7 +69,6 @@ export async function runTui(
 ): Promise<void> {
   let config = controller.config;
   let session = controller.session;
-  const width = process.stdout.columns ?? 80;
   const useUnicode = config.ui.tool_icons === "unicode";
 
   const welcomeLine = formatTuiWelcomeLine({
@@ -78,6 +77,10 @@ export async function runTui(
     cwd: info.cwd,
     isResume: info.isResume,
     appName: APP_NAME,
+    version: APP_VERSION,
+  });
+  const launchMeta = formatLaunchCanvasMeta({
+    session,
     version: APP_VERSION,
   });
 
@@ -107,6 +110,7 @@ export async function runTui(
   const ui = createShellUi();
   const overlay = createOverlayUi();
   ui.chrome.setBackgroundZones(config.ui.background_zones);
+  ui.launch.setMeta(launchMeta);
 
   const transcriptOpts = {
     markdownRendering: config.ui.markdown_rendering,
@@ -297,10 +301,11 @@ export async function runTui(
         projection.apply({ type: "transcript_cleared" });
         transcript.clear();
         openTuiSink.clearContextPreview();
+        ui.launch.setMeta(formatLaunchCanvasMeta({ session, version: APP_VERSION }));
         refreshChrome();
       }
       if (result.action === "new_session") {
-        const newInfo = await controller.startNewSession();
+        await controller.startNewSession();
         config = controller.config;
         session = controller.session;
 
@@ -315,8 +320,9 @@ export async function runTui(
         transcriptOpts.useUnicode = config.ui.tool_icons === "unicode";
         projection.setUseUnicode(transcriptOpts.useUnicode);
 
-        openTuiSink.onSystemLines(newInfo.bannerLines);
-        openTuiSink.nextGroup();
+        ui.launch.setMeta(
+          formatLaunchCanvasMeta({ session, version: APP_VERSION }),
+        );
 
         refreshChrome();
       }
@@ -447,8 +453,11 @@ export async function runTui(
             },
           });
 
-          openTuiSink.onSystemLines([welcomeLine]);
-          openTuiSink.nextGroup();
+          // Resume-only transcript notice; fresh idle uses LaunchCanvas.
+          if (welcomeLine) {
+            openTuiSink.onSystemLines([welcomeLine]);
+            openTuiSink.nextGroup();
+          }
 
           refreshChrome();
           prompt.focus();

@@ -1,4 +1,4 @@
-/** Boot welcome panel for the pi-tui TUI (design §5.1). */
+/** Boot welcome + launch-canvas meta for the OpenTUI Solid TUI. */
 import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { Session } from "../../session.js";
@@ -30,6 +30,23 @@ function formatStateTiers(session: Session): string {
   if (mem.soft > 0) tiers.push(`${mem.soft}S`);
   if (mem.hard > 0) tiers.push(`${mem.hard}H`);
   return tiers.join("·");
+}
+
+function normalizeVersionLabel(version?: string): string {
+  if (!version) return "v0.0.0";
+  return `v${version.replace(/^v/, "")}`;
+}
+
+/** Version + skills lines for the idle launch canvas (LAUNCH-LOCK). */
+export function formatLaunchCanvasMeta(input: {
+  session: Pick<Session, "skills">;
+  version?: string;
+}): { versionLabel: string; skillsLabel: string } {
+  const skillCount = input.session.skills?.length ?? 0;
+  return {
+    versionLabel: normalizeVersionLabel(input.version),
+    skillsLabel: `${skillCount} skills discovered`,
+  };
 }
 
 /** Multi-line boot summary block (indented, label-aligned). */
@@ -96,36 +113,22 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
   return lines;
 }
 
-/** Compact single-line welcome shown inside the TUI transcript (replaces the
- *  pre-launch figlet art). Leads with the app identity so the launch still
- *  brands itself, then a slim readiness summary. Scrolls away, never blocks. */
+/**
+ * Resume notice for the transcript. Fresh sessions use the launch canvas
+ * instead of dumping a dense welcome into the transcript.
+ */
 export function formatTuiWelcomeLine(input: TuiBootSummaryInput): string {
-  const { session, model, isResume, appName, version } = input;
+  const { session, isResume, appName, version } = input;
   const name = appName ? appName : "praana";
   const ver = version ? ` v${version.replace(/^v/, "")}` : "";
   const identity = `${name}${ver}`;
 
-  if (isResume) {
-    const turns = session.getTurnCount();
-    const tiers = formatStateTiers(session);
-    const tierPart = tiers ? ` · ${tiers} restored` : "";
-    return `${identity} · resumed · ${turns} turn${turns === 1 ? "" : "s"}${tierPart}`;
+  if (!isResume) {
+    return "";
   }
 
-  const { provider, modelShort } = formatModelStatusLabel(model);
-  const modelLabel = provider ? `${provider} · ${modelShort}` : modelShort;
-
-  const parts: string[] = [identity, `model ${modelLabel}`];
-
-  const digestEntries = session.digest
-    ? session.digest.split("\n").filter((l) => l.trim().length > 0).length
-    : 0;
-  const dbCount = session.getPersistentMemoryEntryCount();
-  if (digestEntries > 0) parts.push(`${digestEntries} recalled`);
-  if (dbCount !== null && dbCount > 0) parts.push(`${dbCount} in db`);
-  if (session.isContextEngineEnabled()) parts.push("engine on");
-  const skillCount = session.skills.length;
-  if (skillCount > 0) parts.push(`${skillCount} skills`);
-
-  return parts.join(" · ");
+  const turns = session.getTurnCount();
+  const tiers = formatStateTiers(session);
+  const tierPart = tiers ? ` · ${tiers} restored` : "";
+  return `${identity} · resumed · ${turns} turn${turns === 1 ? "" : "s"}${tierPart}`;
 }

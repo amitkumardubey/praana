@@ -37,6 +37,8 @@ export interface StatusBarInput {
   contextWeightedPct?: number;
   contextRawPct?: number;
   contextPressureMode?: PressureMode;
+  /** True when the adaptive context engine is enabled for this session. */
+  contextEngineEnabled?: boolean;
   memoryStats: { active: number; soft: number; hard: number };
   skills: string[];
   loadedSkills: string[] | null;
@@ -172,6 +174,7 @@ export function buildStatusBarInput(
     contextWeightedPct: snapshot.weightedPct,
     contextRawPct: snapshot.rawPct,
     contextPressureMode: snapshot.pressureMode,
+    contextEngineEnabled: engineMode,
     memoryStats: { active: mem.active, soft: mem.soft, hard: mem.hard },
     skills: (session.skills ?? []).map((s) => s.name),
     loadedSkills: loadedSkillNames,

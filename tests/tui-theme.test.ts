@@ -36,6 +36,13 @@ describe("TUI_STYLE", () => {
     expect(TUI_STYLE.info.fg).toMatch(/^#/);
     expect(TUI_STYLE.memory.fg).toMatch(/^#/);
   });
+
+  it("exposes launch-lock palette tokens", () => {
+    expect(TUI_STYLE.accent.fg).toBe("#c4887a");
+    expect(TUI_STYLE.chromeMuted.fg).toBe("#7a8294");
+    expect(TUI_STYLE.brand.fg).toBe("#d8dce4");
+    expect(TUI_STYLE.onFlag.fg).toBe("#7aaf8a");
+  });
 });
 
 describe("textAttributesOf", () => {

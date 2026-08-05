@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test";
-import { formatTuiWelcomeLine } from "../src/ui/tui/boot-summary.js";
+import {
+  formatLaunchCanvasMeta,
+  formatTuiWelcomeLine,
+} from "../src/ui/tui/boot-summary.js";
 import type { Session } from "../src/session.js";
 
 // Minimal Session-shaped stub — only the members the welcome formatter touches.
@@ -27,8 +30,28 @@ function stubSession(overrides: Partial<{
   } as unknown as Session;
 }
 
+describe("formatLaunchCanvasMeta", () => {
+  it("formats version and skills for the idle canvas", () => {
+    const meta = formatLaunchCanvasMeta({
+      session: stubSession({ skillsCount: 104 }),
+      version: "v0.12.0",
+    });
+    expect(meta.versionLabel).toBe("v0.12.0");
+    expect(meta.skillsLabel).toBe("104 skills discovered");
+  });
+
+  it("normalizes version without a leading v", () => {
+    const meta = formatLaunchCanvasMeta({
+      session: stubSession({ skillsCount: 0 }),
+      version: "0.12.0",
+    });
+    expect(meta.versionLabel).toBe("v0.12.0");
+    expect(meta.skillsLabel).toBe("0 skills discovered");
+  });
+});
+
 describe("formatTuiWelcomeLine", () => {
-  it("leads a fresh session with the app identity and readiness summary", () => {
+  it("returns empty for a fresh session (launch canvas owns idle branding)", () => {
     const session = stubSession({
       digest: "one\n\ntwo\n",
       persistentCount: 142,
@@ -43,12 +66,7 @@ describe("formatTuiWelcomeLine", () => {
       appName: "PRAANA",
       version: "v0.12.0",
     });
-    expect(line).toContain("PRAANA v0.12.0");
-    expect(line).toContain("model umans-glm-5.2");
-    expect(line).toContain("2 recalled");
-    expect(line).toContain("142 in db");
-    expect(line).toContain("engine on");
-    expect(line).toContain("104 skills");
+    expect(line).toBe("");
   });
 
   it("marks a resumed session with turn + tier count", () => {
@@ -64,17 +82,5 @@ describe("formatTuiWelcomeLine", () => {
     expect(line).toContain("PRAANA v0.12.0");
     expect(line).toContain("resumed · 3 turns");
     expect(line).toContain("2A·1S restored");
-  });
-
-  it("uses praana and no version when not provided", () => {
-    const session = stubSession();
-    const line = formatTuiWelcomeLine({
-      session,
-      model: "m",
-      cwd: "/tmp",
-      isResume: false,
-    });
-    expect(line).toContain("praana");
-    expect(line).not.toContain(" v");
   });
 });

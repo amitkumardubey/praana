@@ -33,6 +33,7 @@ import {
   type AutocompleteItem,
   type AutocompleteResult,
 } from "./autocomplete.js";
+import { TUI_PALETTE, TUI_STYLE } from "../theme.js";
 
 const SUBMIT_BINDINGS = [
   { name: "return", action: "submit" as const },
@@ -304,13 +305,17 @@ export function Prompt(props: PromptProps) {
         width="100%"
         flexDirection="column"
         border={["top"]}
-        borderColor="gray"
+        borderColor={TUI_PALETTE.steelMuted}
+        backgroundColor={TUI_PALETTE.inset}
         paddingLeft={1}
         paddingRight={1}
         flexShrink={0}
       >
         <box width="100%" flexDirection="row" minHeight={1}>
-          <text>❯ </text>
+          <text>
+            <span style={TUI_STYLE.accent}>❯</span>
+          </text>
+          <box width={1} flexShrink={0} />
           <textarea
             ref={(el: TextareaRenderable) => {
               textarea = el;
@@ -321,7 +326,7 @@ export function Prompt(props: PromptProps) {
             minHeight={1}
             height={height()}
             focused={focused()}
-            placeholder={props.placeholder ?? ""}
+            placeholder={props.placeholder ?? "message praana"}
             textColor="white"
             cursorColor="white"
             keyBindings={SUBMIT_BINDINGS}

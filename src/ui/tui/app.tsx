@@ -3,12 +3,13 @@
  *
  * Solid owns Prompt, chrome, toast, spinner, transcript, and overlays.
  */
-import { createEffect, onMount } from "solid-js";
+import { Show, createEffect, createMemo, onMount } from "solid-js";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { Prompt, type PromptHandle } from "./prompt/index.js";
 import { IdentityBar, GlanceBar } from "./chrome/bars.js";
 import { ToastHost } from "./toast-host.js";
 import { SpinnerHost } from "./spinner-host.js";
+import { LaunchCanvas } from "./launch-canvas.js";
 import { TranscriptView } from "./transcript/view.js";
 import { OverlayHost } from "./overlays/host.js";
 import type { OverlayUi } from "./overlays/state.js";
@@ -66,15 +67,27 @@ export function App(props: AppProps) {
     props.ui.chrome.setWidth(dimensions().width || 80);
   });
 
+  const showLaunch = createMemo(() => props.transcript.entries.length === 0);
+
   return (
     <box id="tui-root" flexDirection="column" width="100%" height="100%">
       <box id="body" flexGrow={1} flexDirection="column" minHeight={1}>
-        <TranscriptView
-          store={props.transcript}
-          opts={props.transcriptOpts}
-          onExpand={props.onExpand}
-          onRequestFocus={() => promptApi?.focus()}
-        />
+        <Show
+          when={showLaunch()}
+          fallback={
+            <TranscriptView
+              store={props.transcript}
+              opts={props.transcriptOpts}
+              onExpand={props.onExpand}
+              onRequestFocus={() => promptApi?.focus()}
+            />
+          }
+        >
+          <LaunchCanvas
+            version={props.ui.launch.version}
+            skillsLabel={props.ui.launch.skillsLabel}
+          />
+        </Show>
       </box>
 
       <ToastHost toasts={props.ui.toasts} />
@@ -83,6 +96,7 @@ export function App(props: AppProps) {
       <Prompt
         cwd={props.cwd}
         focused
+        placeholder="message praana"
         ref={(api) => {
           promptApi = api;
           tryReady();
@@ -92,7 +106,10 @@ export function App(props: AppProps) {
 
       <box id="chrome" flexDirection="column" flexShrink={0}>
         <IdentityBar segments={props.ui.chrome.identitySegments} />
-        <GlanceBar segments={props.ui.chrome.glanceSegments} />
+        <GlanceBar
+          metrics={props.ui.chrome.glanceMetrics}
+          flags={props.ui.chrome.glanceFlags}
+        />
       </box>
 
       <OverlayHost

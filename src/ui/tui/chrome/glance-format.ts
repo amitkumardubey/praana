@@ -1,11 +1,8 @@
 /**
- * Bottom glance bar formatter — design §5 ambient chrome.
+ * Bottom glance + identity chrome formatters — launch-screen lock.
  *
- * Returns styled text segments (native OpenTUI styling, no ANSI) instead of
- * a pre-composed string. Consumers render each segment as
- * `<span style={seg.style}>{seg.text}</span>` inside a single `<text>`.
- *
- * Example segments: [ctx 18.4k/128k 14%] · [wm 3A·1S] · [skills 1] · [in 12k] · [out 3k] · [mem on]
+ * Identity: muted `praana · provider/model · cwd · branch`
+ * Glance: split metrics (left) + green on-flags (right)
  */
 import type { StatusBarInput } from "../../../status-bar.js";
 import {
@@ -20,36 +17,44 @@ export interface GlanceFormatOpts {
   showCost: boolean;
 }
 
-const SEPARATOR: TextSegment = { text: " · ", style: TUI_STYLE.faint };
+/** Spaced mid-dot separator (launch lock). */
+const SEPARATOR: TextSegment = { text: "  ·  ", style: TUI_STYLE.chromeMuted };
 
 function seg(text: string, style?: SpanStyle): TextSegment {
   return style ? { text, style } : { text };
 }
 
-export function formatTuiGlanceLine(
-  input: StatusBarInput,
-  opts: GlanceFormatOpts,
-): TextSegment[] {
-  const engineMode = input.contextDisplayMode === "engine";
-  const pct = engineMode
-    ? (input.contextWeightedPct ??
-        (input.contextUsedTokens > 0 && input.contextWindowTokens > 0
-          ? Math.min(
-              100,
-              Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
-            )
-          : 0))
-    : input.contextWindowTokens > 0
-      ? Math.min(
-          100,
-          Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
-        )
-      : 0;
+export interface GlanceParts {
+  metrics: TextSegment[];
+  flags: TextSegment[];
+}
 
-  let ctxLabel: string;
+function ctxPercent(input: StatusBarInput): number {
+  const engineMode = input.contextDisplayMode === "engine";
+  if (engineMode) {
+    return (
+      input.contextWeightedPct ??
+      (input.contextUsedTokens > 0 && input.contextWindowTokens > 0
+        ? Math.min(
+            100,
+            Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
+          )
+        : 0)
+    );
+  }
+  return input.contextWindowTokens > 0
+    ? Math.min(
+        100,
+        Math.round((input.contextUsedTokens / input.contextWindowTokens) * 100),
+      )
+    : 0;
+}
+
+function formatCtxLabel(input: StatusBarInput, pct: number): string {
+  const engineMode = input.contextDisplayMode === "engine";
   if (input.contextWindowTokens > 0) {
     const pctSuffix = engineMode ? `${pct}%w` : `${pct}%`;
-    ctxLabel = `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pctSuffix}`;
+    let ctxLabel = `ctx ${formatTokenCount(input.contextUsedTokens)}/${formatTokenCount(input.contextWindowTokens)} ${pctSuffix}`;
     if (
       engineMode &&
       input.contextRawPct !== undefined &&
@@ -64,20 +69,25 @@ export function formatTuiGlanceLine(
     ) {
       ctxLabel += ` · ${input.contextPressureMode}`;
     }
-  } else {
-    ctxLabel = engineMode ? `ctx ${pct}%w` : `ctx ${pct}%`;
+    return ctxLabel;
   }
+  return engineMode ? `ctx ${pct}%w` : `ctx ${pct}%`;
+}
 
-  const ctxStyle: SpanStyle =
-    pct >= 90
-      ? TUI_STYLE.error
-      : pct >= 70
-        ? TUI_STYLE.warning
-        : pct >= 50
-          ? TUI_STYLE.faint
-          : TUI_STYLE.success;
+function ctxStyleFor(pct: number): SpanStyle {
+  // Escalate only under pressure; otherwise stay ambient muted.
+  if (pct >= 90) return TUI_STYLE.error;
+  if (pct >= 70) return TUI_STYLE.warning;
+  return TUI_STYLE.chromeMuted;
+}
 
-  const parts: TextSegment[] = [seg(ctxLabel, ctxStyle)];
+/** Split glance parts for the locked chrome layout. */
+export function formatTuiGlanceParts(
+  input: StatusBarInput,
+  opts: GlanceFormatOpts,
+): GlanceParts {
+  const pct = ctxPercent(input);
+  const metrics: TextSegment[] = [seg(formatCtxLabel(input, pct), ctxStyleFor(pct))];
 
   const { active, soft, hard } = input.memoryStats;
   if (active > 0 || soft > 0 || hard > 0) {
@@ -85,14 +95,17 @@ export function formatTuiGlanceLine(
     if (active > 0) tiers.push(`${active}A`);
     if (soft > 0) tiers.push(`${soft}S`);
     if (hard > 0) tiers.push(`${hard}H`);
-    parts.push(seg(`wm ${tiers.join("·")}`, TUI_STYLE.info));
+    metrics.push(seg(`wm ${tiers.join("·")}`, TUI_STYLE.chromeMuted));
   }
 
   const loadedCount = input.loadedSkills?.length ?? 0;
   const skillsCount = input.skills.length;
   if (skillsCount > 0) {
-    parts.push(
-      seg(loadedCount > 0 ? `skills ${loadedCount}` : `skills ${skillsCount}`, TUI_STYLE.faint),
+    metrics.push(
+      seg(
+        loadedCount > 0 ? `skills ${loadedCount}` : `skills ${skillsCount}`,
+        TUI_STYLE.chromeMuted,
+      ),
     );
   }
 
@@ -101,40 +114,68 @@ export function formatTuiGlanceLine(
       input.sessionInputTokens,
       input.sessionOutputTokens,
     );
-    if (breakdown) parts.push(seg(breakdown, TUI_STYLE.faint));
+    if (breakdown) metrics.push(seg(breakdown, TUI_STYLE.chromeMuted));
   }
 
-  if (input.thinking) parts.push(seg("think", TUI_STYLE.faint));
-  if (input.reasoningEffort) {
-    parts.push(seg(`effort ${input.reasoningEffort}`, TUI_STYLE.faint));
+  if (input.thinking || input.reasoningEffort) {
+    const effort = input.reasoningEffort?.trim();
+    if (input.thinking && effort) {
+      metrics.push(seg(`think ${effort}`, TUI_STYLE.chromeMuted));
+    } else if (input.thinking) {
+      metrics.push(seg("think", TUI_STYLE.chromeMuted));
+    } else if (effort) {
+      metrics.push(seg(`think ${effort}`, TUI_STYLE.chromeMuted));
+    }
   }
 
+  if (input.debug) metrics.push(seg("debug", TUI_STYLE.chromeMuted));
+  if (input.planMode) metrics.push(seg("plan", TUI_STYLE.warning));
+
+  const flags: TextSegment[] = [];
+  if (input.contextEngineEnabled) {
+    flags.push(seg("engine on", TUI_STYLE.onFlag));
+  }
   if (input.incognito) {
-    parts.push(seg("incognito", TUI_STYLE.memory));
+    flags.push(seg("incognito", TUI_STYLE.memory));
   } else if (input.memoryEnabled) {
-    parts.push(seg("mem on", TUI_STYLE.success));
+    flags.push(seg("mem on", TUI_STYLE.onFlag));
   } else {
-    parts.push(seg("mem off", TUI_STYLE.faint));
+    flags.push(seg("mem off", TUI_STYLE.chromeMuted));
   }
 
-  if (input.debug) parts.push(seg("debug", TUI_STYLE.faint));
-  if (input.planMode) parts.push(seg("plan", TUI_STYLE.warning));
-
-  return interleave(parts, SEPARATOR);
+  return {
+    metrics: interleave(metrics, SEPARATOR),
+    flags: interleave(flags, SEPARATOR),
+  };
 }
 
-/** Identity line for the top chrome bar (design §5). */
+/** Flat glance line (metrics then flags) for tests and non-split consumers. */
+export function formatTuiGlanceLine(
+  input: StatusBarInput,
+  opts: GlanceFormatOpts,
+): TextSegment[] {
+  const { metrics, flags } = formatTuiGlanceParts(input, opts);
+  if (flags.length === 0) return metrics;
+  if (metrics.length === 0) return flags;
+  return [...metrics, SEPARATOR, ...flags];
+}
+
+/** Identity line — muted slash-model row (launch lock). */
 export function formatTuiIdentityLine(input: StatusBarInput): TextSegment[] {
   const { provider, modelShort } = formatModelStatusLabel(input.model);
-  const modelPart = provider ? `${provider} · ${modelShort}` : modelShort;
-
+  const modelPart = provider ? `${provider}/${modelShort}` : modelShort;
   const repo = shortenHome(input.cwd);
-  const repoPart = input.branch ? `${repo} · ${input.branch}` : repo;
 
-  return interleave(
-    [seg("praana", TUI_STYLE.heading), seg(modelPart), seg(repoPart, TUI_STYLE.faint)],
-    SEPARATOR,
-  );
+  const parts: TextSegment[] = [
+    seg("praana", TUI_STYLE.chromeMuted),
+    seg(modelPart, TUI_STYLE.chromeMuted),
+    seg(repo, TUI_STYLE.chromeMuted),
+  ];
+  if (input.branch) {
+    parts.push(seg(input.branch, TUI_STYLE.chromeMuted));
+  }
+
+  return interleave(parts, SEPARATOR);
 }
 
 function interleave(parts: TextSegment[], separator: TextSegment): TextSegment[] {

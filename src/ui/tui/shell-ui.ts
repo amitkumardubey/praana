@@ -6,7 +6,10 @@
 import { createSignal, createRoot, type Accessor } from "solid-js";
 import type { StatusBarInput } from "../../status-bar.js";
 import type { ContextDisplaySnapshot } from "../../context-display.js";
-import { formatTuiGlanceLine, formatTuiIdentityLine } from "./chrome/glance-format.js";
+import {
+  formatTuiGlanceParts,
+  formatTuiIdentityLine,
+} from "./chrome/glance-format.js";
 import { truncateSegments, TUI_STYLE, type TextSegment } from "./theme.js";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
@@ -39,11 +42,21 @@ export interface ChromeApi {
   setWidth(width: number): void;
   setBackgroundZones(enabled: boolean): void;
   readonly identitySegments: Accessor<TextSegment[]>;
+  readonly glanceMetrics: Accessor<TextSegment[]>;
+  readonly glanceFlags: Accessor<TextSegment[]>;
+  /** Flat join of metrics + flags for legacy callers / tests. */
   readonly glanceSegments: Accessor<TextSegment[]>;
+}
+
+export interface LaunchApi {
+  readonly version: Accessor<string>;
+  readonly skillsLabel: Accessor<string>;
+  setMeta(meta: { versionLabel: string; skillsLabel: string }): void;
 }
 
 export interface ShellUi {
   chrome: ChromeApi;
+  launch: LaunchApi;
   toast: ToastApi;
   toasts: Accessor<UiToast[]>;
   spinner: SpinnerApi;
@@ -75,37 +88,64 @@ function statusBarFromSnapshot(
 export function createShellUi(): ShellUi {
   return createRoot((dispose) => {
     const [identitySegments, setIdentitySegments] = createSignal<TextSegment[]>([
-      { text: " praana" },
+      { text: " praana", style: TUI_STYLE.chromeMuted },
     ]);
-    const [glanceSegments, setGlanceSegments] = createSignal<TextSegment[]>([
-      { text: " initializing…", style: TUI_STYLE.faint },
+    const [glanceMetrics, setGlanceMetrics] = createSignal<TextSegment[]>([
+      { text: " initializing…", style: TUI_STYLE.chromeMuted },
     ]);
+    const [glanceFlags, setGlanceFlags] = createSignal<TextSegment[]>([]);
+    const [launchVersion, setLaunchVersion] = createSignal("v0.0.0");
+    const [launchSkills, setLaunchSkills] = createSignal("0 skills discovered");
     let backgroundZones = true;
     let lastStatus: StatusBarInput | null = null;
     let lastShowCost = false;
     let lastPreview: ContextDisplaySnapshot | null = null;
     let lastWidth = 80;
 
+    const glanceSegments = (): TextSegment[] => {
+      const m = glanceMetrics();
+      const f = glanceFlags();
+      if (f.length === 0) return m;
+      if (m.length === 0) return f;
+      return [...m, { text: "  ·  ", style: TUI_STYLE.chromeMuted }, ...f];
+    };
+
     const repaintChrome = () => {
       const width = lastWidth;
       if (!lastStatus) {
-        setIdentitySegments(truncateSegments([{ text: " praana" }], width));
-        setGlanceSegments(
-          truncateSegments([{ text: " initializing…", style: TUI_STYLE.faint }], width),
+        setIdentitySegments(
+          truncateSegments([{ text: " praana", style: TUI_STYLE.chromeMuted }], width),
         );
+        setGlanceMetrics(
+          truncateSegments(
+            [{ text: " initializing…", style: TUI_STYLE.chromeMuted }],
+            width,
+          ),
+        );
+        setGlanceFlags([]);
         return;
       }
       const status = lastPreview
         ? statusBarFromSnapshot(lastStatus, lastPreview)
         : lastStatus;
       const identity = formatTuiIdentityLine(status);
-      const glance = formatTuiGlanceLine(status, { showCost: lastShowCost });
+      const parts = formatTuiGlanceParts(status, { showCost: lastShowCost });
+
+      // Budget: leave room for flags on the right (~24 cols) when wide enough.
+      const flagBudget = Math.min(28, Math.max(12, Math.floor(width * 0.28)));
+      const metricsBudget = Math.max(8, width - flagBudget - 2);
+
       setIdentitySegments(truncateSegments([{ text: " " }, ...identity], width));
-      setGlanceSegments(truncateSegments([{ text: " " }, ...glance], width));
+      setGlanceMetrics(
+        truncateSegments([{ text: " " }, ...parts.metrics], metricsBudget),
+      );
+      setGlanceFlags(truncateSegments(parts.flags, flagBudget));
     };
 
     const chrome: ChromeApi = {
       identitySegments,
+      glanceMetrics,
+      glanceFlags,
       glanceSegments,
       setBackgroundZones(enabled: boolean) {
         backgroundZones = enabled;
@@ -122,6 +162,15 @@ export function createShellUi(): ShellUi {
         lastPreview = opts.preview ?? null;
         backgroundZones = opts.backgroundZones;
         repaintChrome();
+      },
+    };
+
+    const launch: LaunchApi = {
+      version: launchVersion,
+      skillsLabel: launchSkills,
+      setMeta(meta) {
+        setLaunchVersion(meta.versionLabel);
+        setLaunchSkills(meta.skillsLabel);
       },
     };
 
@@ -164,6 +213,6 @@ export function createShellUi(): ShellUi {
       },
     };
 
-    return { chrome, toast, toasts, spinner, dispose };
+    return { chrome, launch, toast, toasts, spinner, dispose };
   });
 }

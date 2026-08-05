@@ -17,6 +17,8 @@ describe("runTui Solid shell primitives", () => {
     const overlay = createOverlayUi();
     const transcript = createTranscriptStore();
     expect(segmentsToPlainText(ui.chrome.identitySegments())).toContain("praana");
+    expect(ui.launch.version()).toBe("v0.0.0");
+    expect(ui.launch.skillsLabel()).toContain("skills discovered");
     expect(overlay.kind()).toBe("none");
     expect(transcript.entries.length).toBe(0);
     transcript.dispose();

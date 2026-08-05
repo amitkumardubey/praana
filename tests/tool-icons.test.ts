@@ -349,10 +349,25 @@ describe("formatTuiGlanceLine", () => {
     const line = segmentsToPlainText(formatTuiGlanceLine({ ...base, planMode: true }, { showCost: false }));
     expect(line).toContain("plan");
   });
+
+  it("combines think + effort and shows green engine on flag", () => {
+    const line = segmentsToPlainText(formatTuiGlanceLine(
+      {
+        ...base,
+        thinking: true,
+        reasoningEffort: "medium",
+        contextEngineEnabled: true,
+      },
+      { showCost: false },
+    ));
+    expect(line).toContain("think medium");
+    expect(line).toContain("engine on");
+    expect(line).not.toContain("effort medium");
+  });
 });
 
 describe("formatTuiIdentityLine", () => {
-  it("includes brand and model", () => {
+  it("includes brand and slash model", () => {
     const line = segmentsToPlainText(formatTuiIdentityLine({
       model: "openrouter/claude-opus-4.8",
       repoPath: "/x",
@@ -373,8 +388,9 @@ describe("formatTuiIdentityLine", () => {
       sessionOutputTokens: 0,
     }));
     expect(line).toContain("praana");
-    expect(line).toContain("openrouter");
+    expect(line).toContain("openrouter/claude-opus-4.8");
     expect(line).toContain("main");
+    expect(line).toContain("  ·  ");
   });
 });
 
