@@ -10,6 +10,8 @@ export function OverlayFrame(props: {
   children: JSX.Element;
   width?: number;
   maxHeight?: number;
+  backgroundColor?: string;
+  borderColor?: string;
 }) {
   const dimensions = useTerminalDimensions();
   const boxWidth = () =>
@@ -31,8 +33,8 @@ export function OverlayFrame(props: {
       maxHeight={boxMaxHeight()}
       border
       borderStyle="rounded"
-      borderColor="#888888"
-      backgroundColor="#1a1a1a"
+      borderColor={props.borderColor ?? "#888888"}
+      backgroundColor={props.backgroundColor ?? "#1a1a1a"}
       padding={1}
       flexDirection="column"
     >
