@@ -122,7 +122,7 @@ export function TranscriptEntryView(props: {
 
   if (e.role === "assistant") {
     return (
-      <box id={`entry-${e.id}`} flexDirection="column" flexGrow={1}>
+      <box id={`entry-${e.id}`} flexDirection="column">
         <Show
           when={props.opts.markdownRendering}
           fallback={<text>{e.text}</text>}
@@ -131,7 +131,6 @@ export function TranscriptEntryView(props: {
             content={e.text}
             streaming={props.streaming}
             syntaxStyle={buildMarkdownSyntaxStyle(props.opts.syntaxTheme)}
-            flexGrow={1}
           />
         </Show>
       </box>

@@ -87,10 +87,15 @@ export function TranscriptView(props: TranscriptViewProps) {
   }
 
   return (
+    // NOTE: no flexDirection prop here. OpenTUI's ScrollBox root must stay at
+    // its default flexDirection="row" (content wrapper + vertical scrollbar
+    // side-by-side) with alignItems="stretch", so the vertical scrollbar
+    // stretches to the full viewport height. Passing flexDirection="column"
+    // overrides the root to stack the scrollbar under the content, collapsing
+    // the scrollbar track to ~6 rows (thumb becomes a tiny stub).
     <scrollbox
       id="transcript"
       flexGrow={1}
-      flexDirection="column"
       minHeight={1}
       scrollY
       stickyScroll
