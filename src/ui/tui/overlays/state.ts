@@ -3,7 +3,7 @@
  */
 import { createRoot, createSignal, type Accessor } from "solid-js";
 
-export type OverlayKind = "none" | "slash" | "model" | "login" | "logout";
+export type OverlayKind = "none" | "slash" | "model" | "login" | "logout" | "palette";
 
 export interface OverlayUi {
   readonly kind: Accessor<OverlayKind>;
@@ -13,6 +13,7 @@ export interface OverlayUi {
   showModel(): void;
   showLogin(providerHint?: string): void;
   showLogout(): void;
+  showPalette(): void;
   dismiss(): void;
   dispose(): void;
 }
@@ -40,6 +41,9 @@ export function createOverlayUi(): OverlayUi {
       },
       showLogout() {
         setKind("logout");
+      },
+      showPalette() {
+        setKind("palette");
       },
       dismiss() {
         setKind("none");

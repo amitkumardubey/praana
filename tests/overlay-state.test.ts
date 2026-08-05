@@ -23,6 +23,9 @@ describe("createOverlayUi", () => {
     ui.showLogout();
     expect(ui.kind()).toBe("logout");
 
+    ui.showPalette();
+    expect(ui.kind()).toBe("palette");
+
     ui.dismiss();
     expect(ui.kind()).toBe("none");
     expect(ui.slashLines()).toEqual([]);
