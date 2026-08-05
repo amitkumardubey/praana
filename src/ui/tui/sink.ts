@@ -2,7 +2,7 @@
  * TurnUiSink → transcript mount routing (design §4 ambient signals).
  */
 import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
-import { friendlyLlmError, type LogEntry } from "../../logger.js";
+import type { LogEntry } from "../../logger.js";
 import {
   type TranscriptEntry,
   type ToolEntry,
@@ -326,13 +326,9 @@ export class OpenTuiSink implements TurnUiSink {
   onError(entry: LogEntry): void {
     if (entry.level !== "error" && entry.level !== "warn") return;
 
-    // LLM errors already have a user-facing fallback from the turn layer.
-    // Keep the raw diagnostic in logs, but do not leak logger-formatted
-    // messages into the transcript near the prompt.
+    // LLM errors already land in the transcript via onFallback from the turn
+    // layer — do not also toast/console them (avoids the sticky duplicate).
     if (entry.domain === "llm") {
-      // Collapse raw provider JSON into one short human line for the toast.
-      const friendly = friendlyLlmError(entry.message) ?? entry.message;
-      this.toast.show(friendly, "error");
       return;
     }
 
@@ -343,7 +339,6 @@ export class OpenTuiSink implements TurnUiSink {
       group: this.group,
       text: msg,
     });
-    this.toast.show(msg, "error");
   }
 
   flushText(): void {}

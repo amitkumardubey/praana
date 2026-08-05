@@ -104,8 +104,9 @@ export function App(props: AppProps) {
         onSubmit={props.onSubmit}
       />
 
-      <box id="chrome" flexDirection="column" flexShrink={0}>
+      <box id="chrome" flexDirection="column" flexShrink={0} marginTop={1}>
         <IdentityBar segments={props.ui.chrome.identitySegments} />
+        <box height={1} flexShrink={0} />
         <GlanceBar
           metrics={props.ui.chrome.glanceMetrics}
           flags={props.ui.chrome.glanceFlags}

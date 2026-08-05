@@ -390,7 +390,7 @@ describe("formatTuiIdentityLine", () => {
     expect(line).toContain("praana");
     expect(line).toContain("openrouter/claude-opus-4.8");
     expect(line).toContain("main");
-    expect(line).toContain("  ·  ");
+    expect(line).toContain(" · ");
   });
 });
 

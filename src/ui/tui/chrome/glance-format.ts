@@ -17,8 +17,8 @@ export interface GlanceFormatOpts {
   showCost: boolean;
 }
 
-/** Spaced mid-dot separator (launch lock). */
-const SEPARATOR: TextSegment = { text: "  ·  ", style: TUI_STYLE.chromeMuted };
+/** Mid-dot separator between chrome sections. */
+const SEPARATOR: TextSegment = { text: " · ", style: TUI_STYLE.chromeMuted };
 
 function seg(text: string, style?: SpanStyle): TextSegment {
   return style ? { text, style } : { text };

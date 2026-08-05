@@ -304,9 +304,9 @@ export function Prompt(props: PromptProps) {
         id="prompt"
         width="100%"
         flexDirection="column"
-        border={["top"]}
-        borderColor={TUI_PALETTE.steelMuted}
         backgroundColor={TUI_PALETTE.inset}
+        paddingTop={1}
+        paddingBottom={1}
         paddingLeft={1}
         paddingRight={1}
         flexShrink={0}
@@ -315,7 +315,7 @@ export function Prompt(props: PromptProps) {
           <text>
             <span style={TUI_STYLE.accent}>❯</span>
           </text>
-          <box width={1} flexShrink={0} />
+          <box width={2} flexShrink={0} />
           <textarea
             ref={(el: TextareaRenderable) => {
               textarea = el;

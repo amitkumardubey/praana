@@ -20,9 +20,16 @@ export interface UiToast {
   tone: ToastTone;
 }
 
+/** Minimal console surface used for error/warn diagnostics (OpenTUI TerminalConsole). */
+export interface DiagnosticConsole {
+  show(): void;
+}
+
 export interface ToastApi {
   show(message: string, tone?: ToastTone): void;
   clearErrors(): void;
+  /** Route error/warn through OpenTUI console instead of the toast strip. */
+  attachConsole(console: DiagnosticConsole): void;
 }
 
 export interface SpinnerApi {
@@ -63,12 +70,14 @@ export interface ShellUi {
   dispose: () => void;
 }
 
-const TOAST_DURATION: Record<ToastTone, number | null> = {
+const TOAST_DURATION: Record<ToastTone, number> = {
   info: 3000,
   success: 3000,
   warn: 5000,
-  error: null,
+  error: 5000,
 };
+
+const SECTION_SEP: TextSegment = { text: " · ", style: TUI_STYLE.chromeMuted };
 
 function statusBarFromSnapshot(
   base: StatusBarInput,
@@ -101,13 +110,14 @@ export function createShellUi(): ShellUi {
     let lastShowCost = false;
     let lastPreview: ContextDisplaySnapshot | null = null;
     let lastWidth = 80;
+    let diagnosticConsole: DiagnosticConsole | null = null;
 
     const glanceSegments = (): TextSegment[] => {
       const m = glanceMetrics();
       const f = glanceFlags();
       if (f.length === 0) return m;
       if (m.length === 0) return f;
-      return [...m, { text: "  ·  ", style: TUI_STYLE.chromeMuted }, ...f];
+      return [...m, SECTION_SEP, ...f];
     };
 
     const repaintChrome = () => {
@@ -149,6 +159,7 @@ export function createShellUi(): ShellUi {
       glanceSegments,
       setBackgroundZones(enabled: boolean) {
         backgroundZones = enabled;
+        void backgroundZones;
         repaintChrome();
       },
       setWidth(width: number) {
@@ -161,6 +172,7 @@ export function createShellUi(): ShellUi {
         lastShowCost = opts.showCost;
         lastPreview = opts.preview ?? null;
         backgroundZones = opts.backgroundZones;
+        void backgroundZones;
         repaintChrome();
       },
     };
@@ -178,18 +190,24 @@ export function createShellUi(): ShellUi {
     let nextToastId = 1;
 
     const toast: ToastApi = {
+      attachConsole(consoleHost) {
+        // Console stays available via ` toggle; we no longer auto-open it for
+        // user-facing errors (those belong in the transcript).
+        diagnosticConsole = consoleHost;
+        void diagnosticConsole;
+      },
       show(message: string, tone: ToastTone = "info") {
         const id = nextToastId++;
         setToasts((prev) => [...prev, { id, message, tone }]);
         const duration = TOAST_DURATION[tone];
-        if (duration !== null) {
-          setTimeout(() => {
-            setToasts((prev) => prev.filter((t) => t.id !== id));
-          }, duration);
-        }
+        setTimeout(() => {
+          setToasts((prev) => prev.filter((t) => t.id !== id));
+        }, duration);
       },
       clearErrors() {
-        setToasts((prev) => prev.filter((t) => t.tone !== "error"));
+        setToasts((prev) =>
+          prev.filter((t) => t.tone !== "error" && t.tone !== "warn"),
+        );
       },
     };
 

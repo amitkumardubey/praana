@@ -5,6 +5,7 @@
  */
 import {
   createCliRenderer,
+  ConsolePosition,
 } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
@@ -43,6 +44,7 @@ function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
 interface GlobalKeyBindingsProps {
   onF9: () => void;
   onCtrlC: () => void;
+  onToggleConsole: () => void;
 }
 
 function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
@@ -50,6 +52,7 @@ function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
     bindings: [
       { key: "f9", cmd: () => props.onF9() },
       { key: "ctrl+c", cmd: () => props.onCtrlC() },
+      { key: "`", cmd: () => props.onToggleConsole() },
     ],
   }));
   return null as unknown as JSX.Element;
@@ -90,6 +93,14 @@ export async function runTui(
     width: process.stdout.columns ?? 80,
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
+    consoleOptions: {
+      position: ConsolePosition.BOTTOM,
+      sizePercent: 25,
+      colorError: "#e06c75",
+      colorWarn: "#e5c07b",
+      colorInfo: "#56b6c2",
+      title: "console",
+    },
   });
 
   const keymap = createDefaultOpenTuiKeymap(renderer);
@@ -108,6 +119,12 @@ export async function runTui(
   });
 
   const ui = createShellUi();
+  ui.toast.attachConsole({
+    show() {
+      renderer.console.show();
+      renderer.requestRender();
+    },
+  });
   const overlay = createOverlayUi();
   ui.chrome.setBackgroundZones(config.ui.background_zones);
   ui.launch.setMeta(launchMeta);
@@ -372,6 +389,10 @@ export async function runTui(
             // Blur the prompt so its focus-scoped keymap layer deactivates and
             // the transcript's navigation bindings own up/down/etc.
             prompt?.blur();
+            renderer.requestRender();
+          }}
+          onToggleConsole={() => {
+            renderer.console.toggle();
             renderer.requestRender();
           }}
           onCtrlC={() => {

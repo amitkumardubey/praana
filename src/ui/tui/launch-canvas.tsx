@@ -33,6 +33,7 @@ export function LaunchCanvas(props: {
       minHeight={1}
     >
       <ascii_font text="praana" font="tiny" color={TUI_PALETTE.brand} />
+      <box height={1} flexShrink={0} />
       <text>
         <span style={TUI_STYLE.chromeMuted}>{props.version()}</span>
       </text>

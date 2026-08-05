@@ -25,4 +25,22 @@ describe("runTui Solid shell primitives", () => {
     overlay.dispose();
     ui.dispose();
   });
+
+  it("keeps error/warn as ephemeral toasts and does not auto-open the console", () => {
+    const ui = createShellUi();
+    let shown = 0;
+    ui.toast.attachConsole({
+      show() {
+        shown += 1;
+      },
+    });
+    ui.toast.show("billing denied", "error");
+    ui.toast.show("pressure rising", "warn");
+    ui.toast.show("model switched", "success");
+    expect(shown).toBe(0);
+    expect(ui.toasts().some((t) => t.message === "billing denied")).toBe(true);
+    expect(ui.toasts().some((t) => t.message === "pressure rising")).toBe(true);
+    expect(ui.toasts().some((t) => t.message === "model switched")).toBe(true);
+    ui.dispose();
+  });
 });

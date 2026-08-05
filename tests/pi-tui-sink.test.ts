@@ -219,7 +219,7 @@ describe("OpenTuiSink", () => {
     expect(footer!.text).toContain("16%w");
   });
 
-  it("shows LLM errors as toasts without adding raw log lines to the transcript", () => {
+  it("does not toast LLM errors (transcript onFallback owns the user-facing line)", () => {
     const { sink, projection } = makeSink();
     const toast = (sink as unknown as { toast: ToastApi }).toast;
 
@@ -231,7 +231,23 @@ describe("OpenTuiSink", () => {
     });
 
     expect(projection.entries()).toHaveLength(0);
-    expect(toast.show).toHaveBeenCalledWith("Model not found", "error");
+    expect(toast.show).not.toHaveBeenCalled();
+  });
+
+  it("puts non-LLM errors in the transcript without a toast", () => {
+    const { sink, projection } = makeSink();
+    const toast = (sink as unknown as { toast: ToastApi }).toast;
+
+    sink.onError({
+      level: "error",
+      domain: "memory",
+      message: "db locked",
+      code: "MEM_ERROR",
+    });
+
+    expect(projection.entries()).toHaveLength(1);
+    expect(projection.entries()[0]?.text).toContain("[memory] db locked");
+    expect(toast.show).not.toHaveBeenCalled();
   });
 
   it("routes slash command output to the overlay callback", () => {

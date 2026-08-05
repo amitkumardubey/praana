@@ -1,5 +1,6 @@
 /**
  * Solid toast host — ephemeral messages above the prompt.
+ * LLM failures belong in the transcript; this strip is for short slash/UI feedback.
  */
 import { For, type Accessor } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
@@ -15,7 +16,7 @@ const TONE_GLYPH: Record<ToastTone, string> = {
 
 /** Reserve room for the leading glyph + indentation so the message itself fits. */
 const TOAST_PAD = 4;
-/** Cap the number of toasts painted so a burst of errors cannot overflow the chrome. */
+/** Cap the number of toasts painted so a burst cannot overflow the chrome. */
 const MAX_TOASTS = 4;
 
 function toneStyle(tone: ToastTone): SpanStyle {
@@ -35,10 +36,7 @@ export function ToastHost(props: { toasts: Accessor<UiToast[]> }) {
         {(t) => {
           const width = dimensions().width || 80;
           const maxMsg = Math.max(8, width - TOAST_PAD);
-          const message =
-            t.message.length > maxMsg
-              ? `${t.message.slice(0, maxMsg - 1)}…`
-              : t.message;
+          const message = truncatePlainText(t.message, maxMsg);
           return (
             <text>
               <span style={toneStyle(t.tone)}>{`  ${TONE_GLYPH[t.tone]} ${message}`}</span>
