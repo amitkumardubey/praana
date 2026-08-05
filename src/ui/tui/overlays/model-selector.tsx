@@ -1,17 +1,30 @@
 /**
- * Solid searchable model selector (replaces imperative ModelSelector).
+ * Palette-styled model selector — replaces the imperative <select> version
+ * whose selection never advanced (only the first item was selectable).
+ * Manual For-rendered list; selectedIndex is a parent-owned signal advanced
+ * by useBindings targeting the focused search input (same pattern as the
+ * slash palette).
  */
-import { createEffect, createSignal, onMount, Show } from "solid-js";
-import { useRenderer } from "@opentui/solid";
-import { fuzzyFilter, type ModelListEntry } from "../../../model-listing.js";
-import { TUI_STYLE } from "../theme.js";
+import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { useTerminalDimensions, useRenderer } from "@opentui/solid";
+import { useBindings } from "@opentui/keymap/solid";
+import type { InputRenderable } from "@opentui/core";
+import type { ModelListEntry } from "../../../model-listing.js";
+import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
+import {
+  filterModelItems,
+  formatModelRow,
+  initialSelectionIndex,
+  moveSelection,
+  orderModels,
+  scrollStartOf,
+} from "./model-selector-items.js";
 
-interface FlatModel {
-  provider: string;
-  modelId: string;
-  contextWindow: number | null;
-}
+const MAX_VISIBLE = 10;
+const DETAIL_MIN_COLS = 64;
+const DETAIL_WIDTH = 26;
+const SELECTED_BG = "#3a3e4b";
 
 export interface ModelSelectorOverlayProps {
   currentProvider: string;
@@ -22,50 +35,41 @@ export interface ModelSelectorOverlayProps {
   onCancel: () => void;
 }
 
-function formatCtx(window: number | null): string {
-  if (window == null) return "";
-  if (window >= 1_000_000) return ` ${(window / 1_000_000).toFixed(1)}M`;
-  if (window >= 1000) return ` ${Math.round(window / 1000)}k`;
-  return ` ${window}`;
-}
-
 export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   const renderer = useRenderer();
+  const dimensions = useTerminalDimensions();
+  let input: InputRenderable | undefined;
   const [query, setQuery] = createSignal("");
-  const [allModels, setAllModels] = createSignal<FlatModel[]>([]);
+  const [allModels, setAllModels] = createSignal<ModelListEntry[]>([]);
   const [loading, setLoading] = createSignal(true);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [selectedIndex, setSelectedIndex] = createSignal(0);
-  const maxVisible = () => props.maxVisible ?? 10;
+  const maxVisible = () => props.maxVisible ?? MAX_VISIBLE;
 
-  const indexOfCurrent = (list: FlatModel[]) => {
-    const idx = list.findIndex(
-      (m) => m.provider === props.currentProvider && m.modelId === props.currentModelId,
-    );
-    return idx >= 0 ? idx : 0;
-  };
+  const ordered = createMemo(() =>
+    orderModels(allModels(), props.currentProvider, props.currentModelId),
+  );
+  const filtered = createMemo(() => filterModelItems(ordered(), query()));
+  const selected = createMemo(() => filtered()[selectedIndex()]);
 
-  const filtered = () => {
-    const q = query().trim();
-    const all = allModels();
-    if (!q) return all;
-    return fuzzyFilter(
-      all,
-      q,
-      (m) => `${m.provider} ${m.modelId} ${m.provider}/${m.modelId}`,
-    );
-  };
+  const showDetail = createMemo(
+    () => (dimensions().width || 80) >= DETAIL_MIN_COLS,
+  );
+  const frameWidth = createMemo(() =>
+    Math.min(showDetail() ? 72 : 48, (dimensions().width || 80) - 8),
+  );
+  const listWidth = createMemo(() =>
+    Math.max(10, frameWidth() - (showDetail() ? DETAIL_WIDTH : 0) - 6),
+  );
 
-  const options = () =>
-    filtered().map((item) => {
-      const isCurrent =
-        item.provider === props.currentProvider && item.modelId === props.currentModelId;
-      return {
-        name: `${item.modelId} [${item.provider}]${formatCtx(item.contextWindow)}${isCurrent ? " ✓" : ""}`,
-        description: "",
-        value: `${item.provider}/${item.modelId}`,
-      };
-    });
+  const scrollStart = createMemo(() =>
+    scrollStartOf(selectedIndex(), filtered().length, maxVisible()),
+  );
+  const visibleItems = createMemo(() =>
+    filtered().slice(scrollStart(), scrollStart() + maxVisible()),
+  );
+  const isCurrent = (m: ModelListEntry) =>
+    m.provider === props.currentProvider && m.modelId === props.currentModelId;
 
   onMount(() => {
     void (async () => {
@@ -73,24 +77,10 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       setLoadError(null);
       try {
         const entries = await props.loadModels();
-        const flat = entries.map((e) => ({
-          provider: e.provider,
-          modelId: e.modelId,
-          contextWindow: e.contextWindow,
-        }));
-        flat.sort((a, b) => {
-          const aCurrent =
-            a.provider === props.currentProvider && a.modelId === props.currentModelId;
-          const bCurrent =
-            b.provider === props.currentProvider && b.modelId === props.currentModelId;
-          if (aCurrent && !bCurrent) return -1;
-          if (!aCurrent && bCurrent) return 1;
-          const byProvider = a.provider.localeCompare(b.provider);
-          if (byProvider !== 0) return byProvider;
-          return a.modelId.localeCompare(b.modelId);
-        });
-        setAllModels(flat);
-        setSelectedIndex(indexOfCurrent(flat));
+        setAllModels(entries);
+        setSelectedIndex(
+          initialSelectionIndex(entries, props.currentProvider, props.currentModelId),
+        );
       } catch (err) {
         setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -101,52 +91,138 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   });
 
   createEffect(() => {
-    const list = filtered();
-    const idx = selectedIndex();
-    if (idx >= list.length) setSelectedIndex(Math.max(0, list.length - 1));
+    const n = filtered().length;
+    if (selectedIndex() >= n) setSelectedIndex(Math.max(0, n - 1));
   });
 
-  const commit = (value: string) => {
-    const idx = value.indexOf("/");
-    if (idx > 0) {
-      props.onSelect(value.slice(0, idx), value.slice(idx + 1));
-    }
+  const commitCurrent = () => {
+    const item = selected();
+    if (item && item.available) props.onSelect(item.provider, item.modelId);
   };
 
+  useBindings(() => ({
+    target: () => input,
+    targetMode: "focus",
+    bindings: [
+      {
+        key: "up",
+        cmd: () => setSelectedIndex((i) => moveSelection(filtered(), i, -1)),
+      },
+      {
+        key: "down",
+        cmd: () => setSelectedIndex((i) => moveSelection(filtered(), i, 1)),
+      },
+      { key: "tab", cmd: () => commitCurrent() },
+    ],
+  }));
+
   return (
-    <OverlayFrame width={56}>
-      <text><span style={TUI_STYLE.info}>Select model</span></text>
+    <OverlayFrame
+      width={frameWidth()}
+      backgroundColor="#2a2d37"
+      borderColor="#3d414d"
+    >
+      <text>
+        <span style={TUI_STYLE.info}>Select model</span>
+      </text>
       <input
+        ref={(el: InputRenderable) => {
+          input = el;
+        }}
         focused
-        placeholder="Search models…"
+        placeholder="search models…"
         onInput={(v: string) => {
           setQuery(v);
-          const q = v.trim();
-          if (!q) setSelectedIndex(indexOfCurrent(allModels()));
-          else setSelectedIndex(0);
+          setSelectedIndex(0);
         }}
-        onSubmit={() => {
-          const item = filtered()[selectedIndex()];
-          if (item) commit(`${item.provider}/${item.modelId}`);
-        }}
+        onSubmit={() => commitCurrent()}
       />
       <Show when={loading()}>
-        <text><span style={TUI_STYLE.muted}>Loading models…</span></text>
+        <text>
+          <span style={TUI_STYLE.muted}>loading models…</span>
+        </text>
       </Show>
       <Show when={loadError()}>
-        {(err) => <text><span style={TUI_STYLE.error}>{err()}</span></text>}
+        {(err) => (
+          <text>
+            <span style={TUI_STYLE.error}>{err()}</span>
+          </text>
+        )}
       </Show>
       <Show when={!loading() && !loadError()}>
-        <select
-          focused={false}
-          height={maxVisible()}
-          showScrollIndicator
-          options={options()}
-          selectedIndex={selectedIndex()}
-          onSelect={(_index: number, option: { value?: unknown } | null) => {
-            if (option && typeof option.value === "string") commit(option.value);
-          }}
-        />
+        <box flexDirection="row" flexGrow={1} minHeight={1}>
+          <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={10}>
+            <For each={visibleItems()}>
+              {(item, i) => {
+                const rowIndex = scrollStart() + i();
+                const isSel = rowIndex === selectedIndex();
+                return (
+                  <box
+                    flexDirection="row"
+                    backgroundColor={isSel ? SELECTED_BG : undefined}
+                  >
+                    <text fg={TUI_PALETTE.coral}>
+                      {isSel ? "▌" : " "}
+                    </text>
+                    <text
+                      fg={
+                        item.available
+                          ? TUI_PALETTE.brand
+                          : TUI_PALETTE.steelMuted
+                      }
+                    >
+                      {truncatePlainText(formatModelRow(item), listWidth() - 1)}
+                    </text>
+                  </box>
+                );
+              }}
+            </For>
+            <Show when={filtered().length === 0}>
+              <text>
+                <span style={TUI_STYLE.muted}>no matching models</span>
+              </text>
+            </Show>
+          </box>
+          <Show when={showDetail() && selected()}>
+            {(item) => (
+              <box
+                flexDirection="column"
+                width={DETAIL_WIDTH}
+                flexShrink={0}
+                paddingLeft={2}
+              >
+                <text>
+                  <span style={TUI_STYLE.brand}>{item().modelId}</span>
+                </text>
+                <text>
+                  <span style={TUI_STYLE.accent}>{item().provider}</span>
+                </text>
+                <text>
+                  <span style={TUI_STYLE.chromeMuted}>
+                    {formatModelRow(item()).replace(item().modelId, "").trim()}
+                  </span>
+                </text>
+                <text>
+                  {isCurrent(item()) ? (
+                    <span style={TUI_STYLE.onFlag}>current model ✓</span>
+                  ) : item().available ? (
+                    <span style={TUI_STYLE.chromeMuted}>selectable</span>
+                  ) : (
+                    <span style={TUI_STYLE.warning}>
+                      {item().disabledReason ?? "unavailable"}
+                    </span>
+                  )}
+                </text>
+              </box>
+            )}
+          </Show>
+        </box>
+        <text>
+          <span style={TUI_STYLE.muted}>
+            ↑↓ navigate · ↵ select · tab select · esc close ·{" "}
+            {filtered().length} shown
+          </span>
+        </text>
       </Show>
     </OverlayFrame>
   );
