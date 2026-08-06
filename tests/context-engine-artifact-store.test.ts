@@ -175,6 +175,10 @@ describe("context-engine artifact store", () => {
 
     // No new artifacts were created by retrievals.
     expect(store.countArtifacts()).toBe(1);
+
+    // Each retrieval increments access_count by exactly 1 (no double-counting);
+    // 4 retrievals → access_count 4 (insert starts at 0).
+    expect(store.getArtifact(id)!.accessCount).toBe(4);
   });
 
   it("reuses artifact card for unchanged read_file but creates a new one when content changes", () => {

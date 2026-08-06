@@ -998,9 +998,12 @@ export async function runTurn(
 
         if (session.contextEngine && (skippedDisk || isRetrievalResult)) {
           // Repeat-read interceptor and artifact retrievals: never re-ingest their
-          // payloads as new source artifacts; just touch the referenced artifact.
+          // payloads as new source artifacts; just surface the referenced artifact.
+          // Touch access only for the repeat-read path — retrieve_artifact already
+          // touches internally via ArtifactStore.retrieve(), so an extra touch here
+          // would double-increment access_count (skewing promotion and eviction).
           artifactId = resultArtifactId ?? retrievalArtifactId;
-          if (artifactId) {
+          if (artifactId && skippedDisk) {
             session.contextEngine.touchAccess(artifactId, session.getTurnCount());
           }
           promptResultText =

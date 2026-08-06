@@ -1155,10 +1155,86 @@ describe("runTurn", () => {
 
     await runTurn(session, "retrieve the artifact");
 
-    expect(touchAccess).toHaveBeenCalledWith(
-      "art_abc123def456",
-      expect.any(Number),
-    );
+    // retrieve_artifact already touches access internally via ArtifactStore.retrieve();
+    // the turn-level path must not double-increment access_count.
+    expect(touchAccess).not.toHaveBeenCalled();
+    expect(ingestToolResult).not.toHaveBeenCalled();
+  });
+
+  it("touches access for repeat-read (skippedDisk) results", async () => {
+    const touchAccess = mock(() => {});
+    const ingestToolResult = mock(() => ({
+      promptText: "should not be called",
+      inlined: true,
+    }));
+
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ingestToolResult,
+        touchAccess,
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
+        store: { listFileReads: mock(() => []) },
+      },
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      read_file: {
+        description: "Read a file",
+        parameters: z.object({ path: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          content: "[artifact card]",
+          artifact_id: "art_repeat123",
+          skipped_disk: true,
+        }),
+      },
+    }));
+
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: {
+          id: "call-1",
+          name: "read_file",
+          arguments: { path: "src/foo.ts" },
+        },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolUse",
+              toolUse: {
+                id: "call-1",
+                name: "read_file",
+                arguments: { path: "src/foo.ts" },
+              },
+            },
+          ],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
+
+    await runTurn(session, "read src/foo.ts again");
+
+    // The repeat-read interceptor result does not self-touch, so the turn-level
+    // path must touch access to update last_accessed_turn / access_count.
+    expect(touchAccess).toHaveBeenCalledWith("art_repeat123", expect.any(Number));
     expect(ingestToolResult).not.toHaveBeenCalled();
   });
 
