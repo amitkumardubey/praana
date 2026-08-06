@@ -302,7 +302,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s); optional sandbox allowlist via `[shell]`
-- `read_file(path, offset?, limit?)` — reads a file with optional pagination limits
+- `read_file(path, offset?, limit?)` — reads a file with optional positive-integer pagination limits
 - `read_and_summarize(path)` — structured file overview (size, line count, head/tail preview)
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)

@@ -413,10 +413,14 @@ export function createSystemTools(ctx: SystemToolContext) {
         path: z.string().describe("File path (relative to working dir or absolute)"),
         offset: z
           .number()
+          .int()
+          .positive()
           .optional()
           .describe("Line number to start reading from (1-indexed)"),
         limit: z
           .number()
+          .int()
+          .positive()
           .optional()
           .describe("Maximum lines to read"),
       }),

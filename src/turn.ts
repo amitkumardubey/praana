@@ -386,7 +386,8 @@ export async function runTurn(
     incognito: session.isIncognito(),
     contextEngine: session.contextEngine,
     scorecard: session.scorecard,
-    onScorecardFileRead: (absPath, mtimeMs) => session.trackScorecardFileRead(absPath, mtimeMs),
+    onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
+      session.trackScorecardFileRead(absPath, mtimeMs, countAsRepeat),
     onScorecardSkillLoad: (skillId, bodyTokens) => session.scorecard.trackSkillLoad(skillId, bodyTokens),
     classicMode,
     cwd: session.cwd,

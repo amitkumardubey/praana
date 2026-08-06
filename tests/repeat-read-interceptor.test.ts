@@ -53,7 +53,8 @@ describe("repeat-read interceptor", () => {
       blockRepeatReads: opts.blockRepeatReads ?? false,
       hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
       getReadPathMtime: (absPath) => scorecard.getReadPathMtime(absPath),
-      onScorecardFileRead: (absPath, mtimeMs) => scorecard.trackReadPath(absPath, mtimeMs),
+      onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
+        scorecard.trackReadPath(absPath, mtimeMs, countAsRepeat),
       clearReadPath: (absPath) => {
         scorecard.clearReadPath(absPath);
         store.clearFileReadAllRanges(absPath);
@@ -305,6 +306,15 @@ describe("repeat-read interceptor", () => {
     expect(differentRange.ok).toBe(true);
     expect(differentRange.skipped_disk).not.toBe(true);
     expect(differentRange.content).toBe("line11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20");
+    expect(scorecard.getCounters().repeatFileReads).toBe(0);
+  });
+
+  it("rejects zero and non-integer read ranges", () => {
+    const tools = makeTools();
+
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", offset: 0 }).success).toBe(false);
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", limit: 0 }).success).toBe(false);
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", limit: 1.5 }).success).toBe(false);
   });
 
   it("range-aware: same range returns cached artifact", async () => {
