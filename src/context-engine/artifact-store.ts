@@ -105,13 +105,17 @@ export class ArtifactStore {
     this.rebuildFileReadIndex();
   }
 
-  /** Rebuild abs-path → artifact id map from persisted session artifacts (resume). */
+  /** Rebuild abs-path+range → artifact id map from persisted session artifacts (resume). */
   private rebuildFileReadIndex(): void {
     this.fileReadIndex.clear();
     for (const art of listSessionArtifacts(this.db, this.sessionId)) {
       if (art.sourceTool !== "read_file" || !art.command) continue;
-      // Later turns overwrite earlier ones for the same path.
-      this.fileReadIndex.set(art.command, art.id);
+      // Compute request key from stored source line range.
+      const start = art.sourceLineStart ?? 1;
+      const end = art.sourceLineEnd ?? start;
+      const requestKey = art.command + "#" + start + "#" + end;
+      // Later turns overwrite earlier ones for the same path+range.
+      this.fileReadIndex.set(requestKey, art.id);
     }
   }
 
@@ -199,9 +203,17 @@ export class ArtifactStore {
       }
     }
 
-    if (contentType === "error" || rawTokens <= inlineThreshold) {
+    if (contentType === "error" || (rawTokens <= inlineThreshold && input.sourceTool !== "read_file")) {
       return { promptText: input.rawText, inlined: true };
     }
+
+    // For read_file, always store as lossless with line range metadata
+    const isReadFile = input.sourceTool === "read_file";
+    const sourceLineStart: number | undefined = isReadFile ? (input.sourceLineStart ?? 1) : undefined;
+    const sourceLineCount = input.rawText === "" ? 0 : input.rawText.split("\n").length;
+    const sourceLineEnd: number | undefined = isReadFile
+      ? (input.sourceLineEnd ?? (sourceLineStart! + Math.max(0, sourceLineCount - 1)))
+      : undefined;
 
     const hash = sha256(input.rawText);
     const fileKey = this.fileReadKey(input.sourceTool, input.command);
@@ -295,11 +307,11 @@ export class ArtifactStore {
       accessCount: 0,
       // read_file results are lossless source artifacts; everything else is
       // summarizable and subject to TTL eviction.
-      fidelity: input.sourceTool === "read_file" ? "lossless" : "summarizable",
-      sourceLineStart: input.sourceLineStart,
-      sourceLineEnd: input.sourceLineEnd,
+      fidelity: isReadFile ? "lossless" : "summarizable",
+      sourceLineStart,
+      sourceLineEnd,
       promptTokens: 0,
-      retentionReason: input.sourceTool === "read_file" ? "session-source" : "ttl",
+      retentionReason: isReadFile ? "session-source" : "ttl",
     };
 
     const card = buildArtifactCard(
@@ -337,11 +349,31 @@ export class ArtifactStore {
 
     let content = artifact.rawText;
     try {
-      if (options?.jsonPath) {
-        content = extractJsonPath(content, options.jsonPath);
-      }
-      if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
+      // For lossless source artifacts with stored line range, map file-relative
+      // line requests to content-relative indices.
+      if (artifact.sourceLineStart !== undefined && artifact.sourceLineEnd !== undefined) {
+        const fileStart = artifact.sourceLineStart;
+        const fileEnd = artifact.sourceLineEnd;
+        if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
+          const reqStart = options.lineStart ?? 1;
+          const reqEnd = options.lineEnd ?? fileEnd;
+          // Validate requested range is within stored file range
+          if (reqStart < fileStart || reqEnd > fileEnd || reqStart > reqEnd) {
+            return {
+              ok: false,
+              error: `Requested lines ${reqStart}-${reqEnd} fall outside stored range ${fileStart}-${fileEnd}. Re-read the file to extend the range.`,
+            };
+          }
+          const relStart = reqStart - fileStart + 1;
+          const relEnd = reqEnd - fileStart + 1;
+          content = sliceByLines(content, relStart, relEnd);
+        }
+      } else if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
         content = sliceByLines(content, options.lineStart, options.lineEnd);
+      }
+      // jsonPath requires full content; use if no range mapping was applied
+      if (options?.jsonPath && !artifact.sourceLineStart && !artifact.sourceLineEnd) {
+        content = extractJsonPath(content, options.jsonPath);
       }
       if (options?.grep) {
         const re = new RegExp(options.grep, "m");
@@ -454,5 +486,50 @@ export class ArtifactStore {
   private fileReadKey(sourceTool: string, command?: string): string | null {
     if (sourceTool !== "read_file" || !command) return null;
     return command;
+  }
+
+  /** Compute request key for a read_file operation (path + line range). */
+  private requestKey(absPath: string, start: number, end: number): string {
+    return `${absPath}#${start}#${end}`;
+  }
+
+  /** Find an artifact for a specific read_file range; null if no matching range. */
+  findFileReadArtifactByRange(
+    absPath: string,
+    offset?: number,
+    limit?: number,
+  ): ContextArtifact | null {
+    const start = offset ?? 1;
+    if (limit !== undefined) {
+      // Bounded request: look for exact key match only.
+      const end = start + limit - 1;
+      const key = this.requestKey(absPath, start, end);
+      const id = this.fileReadIndex.get(key);
+      if (id) {
+        const art = this.getArtifact(id);
+        if (art) return art;
+      }
+      return null;
+    }
+    // Unbounded request: match artifact with same path+start using prefix scan.
+    const prefix = `${absPath}#${start}#`;
+    for (const key of this.fileReadIndex.keys()) {
+      if (key.startsWith(prefix)) {
+        const id = this.fileReadIndex.get(key)!;
+        const art = this.getArtifact(id);
+        if (art) return art;
+      }
+    }
+    // Fall back to DB path-based lookup for resume or missing index.
+    return findFileReadArtifactByCommand(this.db, this.sessionId, absPath);
+  }
+
+  /** Clear all range keys for a path (used after write operations). */
+  clearFileReadAllRanges(absPath: string): void {
+    for (const key of this.fileReadIndex.keys()) {
+      if (key.startsWith(absPath + "#")) {
+        this.fileReadIndex.delete(key);
+      }
+    }
   }
 }

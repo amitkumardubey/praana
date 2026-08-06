@@ -378,6 +378,57 @@ describe("context-engine artifact store", () => {
     store.close();
   });
 
+  it("preserves small read_file results as lossless artifacts regardless of threshold", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const small = "line1\nline2\nline3\nline4\nline5";
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/foo.ts",
+      rawText: small,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 5,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.artifactId).toBeDefined();
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art!.fidelity).toBe("lossless");
+    expect(art!.retentionReason).toBe("session-source");
+    expect(art!.sourceLineStart).toBe(1);
+    expect(art!.sourceLineEnd).toBe(5);
+    const retrieved = store.retrieve(ingested.artifactId!, 1);
+    expect(retrieved.ok).toBe(true);
+    if (retrieved.ok) {
+      expect(retrieved.content).toBe(small);
+    }
+    store.close();
+  });
+
+  it("stores partial read_file range with original line metadata", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n");
+    const partial = lines.split("\n").slice(50, 60).join("\n");
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/big.ts",
+      rawText: partial,
+      createdTurn: 1,
+      sourceLineStart: 51,
+      sourceLineEnd: 60,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.artifactId).toBeDefined();
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art!.sourceLineStart).toBe(51);
+    expect(art!.sourceLineEnd).toBe(60);
+    const retrieved = store.retrieve(ingested.artifactId!, 1, { lineStart: 51, lineEnd: 60 });
+    expect(retrieved.ok).toBe(true);
+    if (retrieved.ok) {
+      expect(retrieved.content.split("\n").length).toBe(10);
+    }
+    store.close();
+  });
+
   it("records fidelity metadata for stored artifacts", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const ingested = store.ingestToolResult({

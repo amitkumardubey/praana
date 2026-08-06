@@ -404,10 +404,24 @@ export async function runTurn(
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
       session.scorecard.clearReadPath(absPath);
-      session.contextEngine?.clearFileRead(absPath);
+      session.contextEngine?.clearFileReadAllRanges(absPath);
     },
     findFileReadArtifact: (absPath) => {
       const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
+      if (!art) return null;
+      return {
+        id: art.id,
+        createdTurn: art.createdTurn,
+        card: buildArtifactCard(
+          art.id,
+          art.sourceTool,
+          art.command,
+          art.rawTokens,
+        ),
+      };
+    },
+    findFileReadArtifactByRange: (absPath, offset, limit) => {
+      const art = session.contextEngine?.findFileReadArtifactByRange(absPath, offset, limit) ?? null;
       if (!art) return null;
       return {
         id: art.id,
@@ -1022,11 +1036,34 @@ export async function runTurn(
             tc.args as Record<string, unknown>,
             session.cwd,
           );
+          // For read_file, store the raw content and original line range for
+          // lossless retrieval. For other tools, promptResultText is the raw result.
+          let ingestContent = promptResultText;
+          let sourceLineStart: number | undefined;
+          let sourceLineEnd: number | undefined;
+          if (tc.toolName === "read_file") {
+            const resultContent = typeof result === "object" && result !== null
+              ? (result as { content?: unknown }).content
+              : undefined;
+            if (typeof resultContent === "string") {
+              ingestContent = resultContent;
+            }
+            const args = tc.args as { offset?: number; limit?: number };
+            const offset = args.offset;
+            const limit = args.limit;
+            sourceLineStart = offset ?? 1;
+            const outputLines = ingestContent.split("\n").length;
+            sourceLineEnd = limit !== undefined
+              ? sourceLineStart + Math.max(0, limit - 1)
+              : sourceLineStart + Math.max(0, outputLines - 1);
+          }
           const ingested = session.contextEngine.ingestToolResult({
             sourceTool: tc.toolName,
             command,
-            rawText: promptResultText,
+            rawText: ingestContent,
             createdTurn: session.getTurnCount(),
+            sourceLineStart,
+            sourceLineEnd,
           });
           promptResultText = ingested.promptText;
           artifactId = ingested.artifactId;
