@@ -90,6 +90,32 @@ describe("context-engine artifact store", () => {
     expect(result.promptText).toBe(raw);
   });
 
+  it("does not persist retrieve_artifact envelopes as source artifacts (idempotency/nesting guard)", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = largeText(2000);
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    const beforeCount = store.countArtifacts();
+
+    // A mis-routed retrieve_artifact result must not mint a new source artifact
+    // whose content is the JSON envelope — that would cause recursive nesting.
+    const envelope = JSON.stringify({ ok: true, id: ingested.artifactId, content: raw });
+    const result = store.ingestToolResult({
+      sourceTool: "retrieve_artifact",
+      rawText: envelope,
+      createdTurn: 2,
+    });
+
+    expect(result.inlined).toBe(true);
+    expect(result.promptText).toBe(raw);
+    expect(result.artifactId).toBeUndefined();
+    expect(store.countArtifacts()).toBe(beforeCount);
+  });
+
   it("retrieves raw artifact content with optional slicing", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = "line1\nline2\nline3\nline4";
@@ -110,6 +136,45 @@ describe("context-engine artifact store", () => {
       lineEnd: 2,
     });
     expect(sliced).toEqual({ ok: true, content: "line2" });
+  });
+
+  it("repeated retrievals return equivalent source content and do not mint nested artifacts", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const pad = "x".repeat(600);
+    const raw = [`line1${pad}`, `line2${pad}`, `line3${pad}`, `line4${pad}`, `line5${pad}`].join("\n");
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "src/foo.ts",
+      rawText: raw,
+      createdTurn: 1,
+    });
+    expect(ingested.artifactId).toBeDefined();
+    const id = ingested.artifactId!;
+
+    // Full retrieval.
+    const full1 = store.retrieve(id, 2);
+    expect(full1).toEqual({ ok: true, content: raw });
+
+    // Line-range retrieval returns exact original lines.
+    const lines2to4 = store.retrieve(id, 3, { lineStart: 2, lineEnd: 4 });
+    expect(lines2to4).toEqual({
+      ok: true,
+      content: [`line2${pad}`, `line3${pad}`, `line4${pad}`].join("\n"),
+    });
+
+    // Grep retrieval.
+    const grep = store.retrieve(id, 4, { grep: "line[135]" });
+    expect(grep).toEqual({
+      ok: true,
+      content: [`line1${pad}`, `line3${pad}`, `line5${pad}`].join("\n"),
+    });
+
+    // Second full retrieval is still equivalent to the original source.
+    const full2 = store.retrieve(id, 5);
+    expect(full2).toEqual({ ok: true, content: raw });
+
+    // No new artifacts were created by retrievals.
+    expect(store.countArtifacts()).toBe(1);
   });
 
   it("reuses artifact card for unchanged read_file but creates a new one when content changes", () => {

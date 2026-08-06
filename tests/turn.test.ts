@@ -1085,6 +1085,83 @@ describe("runTurn", () => {
     expect(toolResults.length).toBeGreaterThan(0);
   });
 
+  it("does not re-ingest retrieve_artifact results as source artifacts", async () => {
+    const touchAccess = mock(() => {});
+    const ingestToolResult = mock(() => ({
+      promptText: "should not be called",
+      inlined: true,
+    }));
+
+    const session = makeMockSession({
+      config: makeConfig({
+        context_engine: {
+          ...makeConfig().context_engine,
+          enabled: true,
+        },
+      }),
+      contextEngine: {
+        ingestToolResult,
+        touchAccess,
+        ledger: { list: mock(() => []) },
+        getRecentActivity: mock(() => []),
+        getSessionCheckpoint: mock(() => null),
+        recordCompileTelemetry: mock(),
+        captureStateSnapshot: mock(),
+        listAllWorkflowPatterns: mock(() => []),
+        store: { listFileReads: mock(() => []) },
+      },
+    });
+
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      retrieve_artifact: {
+        description: "Retrieve a stored artifact",
+        parameters: z.object({ id: z.string() }),
+        execute: mock().mockResolvedValue({
+          ok: true,
+          id: "art_abc123def456",
+          content: "original artifact content",
+        }),
+      },
+    }));
+
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: {
+          id: "call-1",
+          name: "retrieve_artifact",
+          arguments: { id: "art_abc123def456" },
+        },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolUse",
+              toolUse: {
+                id: "call-1",
+                name: "retrieve_artifact",
+                arguments: { id: "art_abc123def456" },
+              },
+            },
+          ],
+        },
+      };
+    })();
+    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
+
+    await runTurn(session, "retrieve the artifact");
+
+    expect(touchAccess).toHaveBeenCalledWith(
+      "art_abc123def456",
+      expect.any(Number),
+    );
+    expect(ingestToolResult).not.toHaveBeenCalled();
+  });
+
   it("executes multiple pending tool calls concurrently", async () => {
     let secondToolStarted = false;
     let releaseFirstTool: (() => void) | null = null;

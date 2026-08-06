@@ -179,6 +179,26 @@ export class ArtifactStore {
     const rawTokens = estimateTokens(input.rawText);
     const inlineThreshold = this.config.artifact_inline_threshold;
 
+    // Defensive guard: never persist a retrieve_artifact transport envelope as a
+    // source artifact. If a retrieval result is mis-routed here, extract the inner
+    // content and return it inline so we cannot create a nested artifact chain.
+    if (input.sourceTool === "retrieve_artifact" && input.rawText.startsWith("{")) {
+      try {
+        const parsed = JSON.parse(input.rawText) as unknown;
+        if (
+          parsed &&
+          typeof parsed === "object" &&
+          (parsed as { ok?: unknown }).ok === true &&
+          typeof (parsed as { id?: unknown }).id === "string" &&
+          typeof (parsed as { content?: unknown }).content === "string"
+        ) {
+          return { promptText: (parsed as { content: string }).content, inlined: true };
+        }
+      } catch {
+        // Not a valid envelope; fall through to normal ingestion.
+      }
+    }
+
     if (contentType === "error" || rawTokens <= inlineThreshold) {
       return { promptText: input.rawText, inlined: true };
     }
