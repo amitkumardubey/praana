@@ -62,21 +62,48 @@ describe("context-engine artifact store", () => {
     expect(result.promptText).not.toContain(raw);
   });
 
-  it("deduplicates identical content by sha256", () => {
+  it("deduplicates identical content by sha256 for non-read_file tools", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = largeText(2500);
     const first = store.ingestToolResult({
       sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 1,
+    });
+    const second = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "make build",
+      rawText: raw,
+      createdTurn: 2,
+    });
+    expect(second.artifactId).toBe(first.artifactId);
+  });
+
+  it("does not deduplicate read_file by content hash across ranges", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = "identical content\n".repeat(100);
+    const first = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/tmp/foo.txt",
+      rawText: raw,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      requestStart: 1,
+      requestEnd: 10,
     });
     const second = store.ingestToolResult({
       sourceTool: "read_file",
       command: "/tmp/foo.txt",
       rawText: raw,
       createdTurn: 2,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      requestStart: 11,
+      requestEnd: 20,
     });
-    expect(second.artifactId).toBe(first.artifactId);
+    expect(second.artifactId).not.toBe(first.artifactId);
   });
 
   it("never compresses error content", () => {
@@ -209,24 +236,24 @@ describe("context-engine artifact store", () => {
     expect(changed.artifactId).not.toBe(first.artifactId);
   });
 
-  it("reuses the original artifact when content changes back to a previous hash", () => {
+  it("reuses the original artifact when content changes back to a previous hash (non-read_file)", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = largeText(3000);
     const first = store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 1,
     });
     store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw + "changed",
       createdTurn: 2,
     });
     const reverted = store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 3,
     });
@@ -249,6 +276,26 @@ describe("context-engine artifact store", () => {
     const evicted = store.runEviction(10);
     expect(evicted).toBe(1);
     expect(store.getArtifact(ingested.artifactId!)).toBeNull();
+  });
+
+  it("does not evict lossless artifacts even past ttl", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", {
+      ...TEST_CONFIG,
+      artifact_ttl_turns: 5,
+    });
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/lossless.ts",
+      rawText: "line1\nline2\nline3\nline4\nline5",
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 5,
+    });
+    expect(store.getArtifact(ingested.artifactId!)).not.toBeNull();
+
+    const evicted = store.runEviction(10);
+    expect(evicted).toBe(0);
+    expect(store.getArtifact(ingested.artifactId!)).not.toBeNull();
   });
 
   it("classifies common content types", () => {

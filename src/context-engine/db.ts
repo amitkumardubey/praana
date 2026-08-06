@@ -195,6 +195,8 @@ const ARTIFACT_FIDELITY_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "source_line_end", ddl: "INTEGER" },
   { name: "prompt_tokens", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { name: "retention_reason", ddl: "TEXT NOT NULL DEFAULT 'ttl'" },
+  { name: "request_key", ddl: "TEXT" },
+  { name: "request_unbounded", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 function ensureScorecardResumeColumns(db: Database): void {
@@ -262,6 +264,8 @@ interface ArtifactRow {
   source_line_end: number | null;
   prompt_tokens: number | null;
   retention_reason: string | null;
+  request_key: string | null;
+  request_unbounded: number | null;
 }
 
 function rowToArtifact(row: ArtifactRow): ContextArtifact {
@@ -283,6 +287,8 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
     sourceLineEnd: row.source_line_end ?? undefined,
     promptTokens: row.prompt_tokens ?? 0,
     retentionReason: row.retention_reason ?? "ttl",
+    requestKey: row.request_key ?? undefined,
+    requestUnbounded: (row.request_unbounded ?? 0) === 1,
   };
 }
 
@@ -322,12 +328,14 @@ export function insertArtifact(
       id, sha256, session_id, source_tool, command, created_turn,
       raw_tokens, raw_text, summary, content_type,
       last_accessed_turn, access_count, created_at,
-      fidelity, source_line_start, source_line_end, prompt_tokens, retention_reason
+      fidelity, source_line_start, source_line_end, prompt_tokens, retention_reason,
+      request_key, request_unbounded
     ) VALUES (
       $id, $sha256, $sessionId, $sourceTool, $command, $createdTurn,
       $rawTokens, $rawText, $summary, $contentType,
       $lastAccessedTurn, $accessCount, $createdAt,
-      $fidelity, $sourceLineStart, $sourceLineEnd, $promptTokens, $retentionReason
+      $fidelity, $sourceLineStart, $sourceLineEnd, $promptTokens, $retentionReason,
+      $requestKey, $requestUnbounded
     )`,
   ).run({
     $id: artifact.id,
@@ -348,6 +356,8 @@ export function insertArtifact(
     $sourceLineEnd: artifact.sourceLineEnd ?? null,
     $promptTokens: artifact.promptTokens,
     $retentionReason: artifact.retentionReason,
+    $requestKey: artifact.requestKey ?? null,
+    $requestUnbounded: artifact.requestUnbounded ? 1 : 0,
   });
 }
 
@@ -410,8 +420,11 @@ export function evictStaleArtifacts(
   const result = db
     .query(
       `DELETE FROM context_artifacts
-       WHERE (access_count < 4 AND last_accessed_turn < $cutoff)
-          OR (access_count >= 4 AND last_accessed_turn < $extendedCutoff)`,
+       WHERE fidelity != 'lossless'
+         AND (
+           (access_count < 4 AND last_accessed_turn < $cutoff)
+          OR (access_count >= 4 AND last_accessed_turn < $extendedCutoff)
+         )`,
     )
     .run({ $cutoff: cutoff, $extendedCutoff: extendedCutoff });
   return result.changes;

@@ -110,12 +110,16 @@ export class ArtifactStore {
     this.fileReadIndex.clear();
     for (const art of listSessionArtifacts(this.db, this.sessionId)) {
       if (art.sourceTool !== "read_file" || !art.command) continue;
-      // Compute request key from stored source line range.
-      const start = art.sourceLineStart ?? 1;
-      const end = art.sourceLineEnd ?? start;
-      const requestKey = art.command + "#" + start + "#" + end;
-      // Later turns overwrite earlier ones for the same path+range.
-      this.fileReadIndex.set(requestKey, art.id);
+      // Use the stored request key if available (includes unbounded sentinel),
+      // otherwise fall back to computing from source line range.
+      if (art.requestKey) {
+        this.fileReadIndex.set(art.requestKey, art.id);
+      } else {
+        const start = art.sourceLineStart ?? 1;
+        const end = art.sourceLineEnd ?? start;
+        const requestKey = art.command + "#" + start + "#" + end;
+        this.fileReadIndex.set(requestKey, art.id);
+      }
     }
   }
 
@@ -216,9 +220,16 @@ export class ArtifactStore {
       : undefined;
 
     const hash = sha256(input.rawText);
-    const fileKey = this.fileReadKey(input.sourceTool, input.command);
-    if (fileKey) {
-      const existingId = this.fileReadIndex.get(fileKey);
+
+    // For read_file, each distinct request is a separate lossless artifact.
+    // Cache key uses the REQUESTED range (not actual returned range) so that
+    // repeats of the same request hit the cache even at EOF.
+    // Unbounded requests use end=0 as sentinel and never match bounded artifacts.
+    if (isReadFile && input.command) {
+      const reqStart = input.requestStart ?? sourceLineStart ?? 1;
+      const reqEnd = input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!);
+      const cacheKey = this.requestKey(input.command, reqStart, reqEnd);
+      const existingId = this.fileReadIndex.get(cacheKey);
       if (existingId) {
         const existing = getArtifactById(this.db, existingId);
         if (existing && existing.sha256 === hash) {
@@ -237,21 +248,9 @@ export class ArtifactStore {
       }
     }
 
-    const deduped = findArtifactByHash(this.db, hash, this.sessionId);
-    if (deduped) {
-      touchArtifactAccess(this.db, deduped.id, input.createdTurn);
-      if (fileKey) this.fileReadIndex.set(fileKey, deduped.id);
-      return {
-        promptText: buildArtifactCard(
-          deduped.id,
-          deduped.sourceTool,
-          deduped.command ?? input.command,
-          deduped.rawTokens,
-        ),
-        artifactId: deduped.id,
-        inlined: false,
-      };
-    }
+    // For non-read_file tools, deduplicate by content hash (and store under path key).
+    // read_file uses range-keyed storage with no content dedup (provenance matters).
+    const dedupKey = isReadFile ? null : this.fileReadKey(input.sourceTool, input.command);
 
     const intensity = this.distillers.selectIntensity(
       rawTokens,
@@ -292,8 +291,41 @@ export class ArtifactStore {
       }
     }
 
+    // For non-read_file tools only: content-hash deduplication.
+    // Different reads with same content should return the same artifact.
+    // read_file is handled separately above (range-keyed, no content dedup).
+    if (!isReadFile) {
+      const deduped = findArtifactByHash(this.db, hash, this.sessionId);
+      if (deduped) {
+        touchArtifactAccess(this.db, deduped.id, input.createdTurn);
+        if (dedupKey) this.fileReadIndex.set(dedupKey, deduped.id);
+        return {
+          promptText: buildArtifactCard(
+            deduped.id,
+            deduped.sourceTool,
+            deduped.command ?? input.command,
+            deduped.rawTokens,
+          ),
+          artifactId: deduped.id,
+          inlined: false,
+        };
+      }
+    }
+
+    // Compute the artifact ID. For read_file, include the request key to avoid
+    // ID collisions when distinct ranges happen to contain identical content.
+    const artifactId = isReadFile && input.command
+      ? this.readFileArtifactId(
+          hash,
+          input.command,
+          input.requestStart ?? sourceLineStart ?? 1,
+          input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!),
+          input.requestUnbounded ?? false,
+        )
+      : artifactIdFromHash(this.sessionId, hash);
+
     const artifact: ContextArtifact = {
-      id: artifactIdFromHash(this.sessionId, hash),
+      id: artifactId,
       sha256: hash,
       sessionId: this.sessionId,
       sourceTool: input.sourceTool,
@@ -305,14 +337,21 @@ export class ArtifactStore {
       contentType,
       lastAccessedTurn: input.createdTurn,
       accessCount: 0,
-      // read_file results are lossless source artifacts; everything else is
-      // summarizable and subject to TTL eviction.
       fidelity: isReadFile ? "lossless" : "summarizable",
       sourceLineStart,
       sourceLineEnd,
       promptTokens: 0,
       retentionReason: isReadFile ? "session-source" : "ttl",
     };
+
+    // For read_file, store the request key and unbounded flag for cache lookups.
+    if (isReadFile && input.command) {
+      const reqStart = input.requestStart ?? sourceLineStart ?? 1;
+      const reqEnd = input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!);
+      const cacheKey = this.requestKey(input.command, reqStart, reqEnd);
+      artifact.requestKey = cacheKey;
+      artifact.requestUnbounded = input.requestUnbounded ?? false;
+    }
 
     const card = buildArtifactCard(
       artifact.id,
@@ -323,7 +362,16 @@ export class ArtifactStore {
     artifact.promptTokens = estimateTokens(card);
 
     insertArtifact(this.db, artifact);
-    if (fileKey) this.fileReadIndex.set(fileKey, artifact.id);
+
+    // Index: read_file uses request key; other tools use (tool, command).
+    if (isReadFile && input.command) {
+      const reqStart = input.requestStart ?? sourceLineStart ?? 1;
+      const reqEnd = input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!);
+      const cacheKey = this.requestKey(input.command, reqStart, reqEnd);
+      this.fileReadIndex.set(cacheKey, artifact.id);
+    } else if (dedupKey) {
+      this.fileReadIndex.set(dedupKey, artifact.id);
+    }
 
     return {
       promptText: card,
@@ -357,7 +405,6 @@ export class ArtifactStore {
         if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
           const reqStart = options.lineStart ?? 1;
           const reqEnd = options.lineEnd ?? fileEnd;
-          // Validate requested range is within stored file range
           if (reqStart < fileStart || reqEnd > fileEnd || reqStart > reqEnd) {
             return {
               ok: false,
@@ -371,8 +418,10 @@ export class ArtifactStore {
       } else if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
         content = sliceByLines(content, options.lineStart, options.lineEnd);
       }
-      // jsonPath requires full content; use if no range mapping was applied
-      if (options?.jsonPath && !artifact.sourceLineStart && !artifact.sourceLineEnd) {
+      // jsonPath requires full content or post-slice content; apply after line slicing.
+      // Note: jsonPath on file reads should use retrieve_artifact with lineStart/end first,
+      // then jsonPath on the sliced result, or re-read a larger range.
+      if (options?.jsonPath) {
         content = extractJsonPath(content, options.jsonPath);
       }
       if (options?.grep) {
@@ -488,6 +537,22 @@ export class ArtifactStore {
     return command;
   }
 
+  /**
+   * Compute a unique artifact ID for a read_file operation.
+   * Includes the request key so distinct ranges with identical content
+   * get distinct rows (avoiding UNIQUE constraint collisions).
+   */
+  private readFileArtifactId(
+    contentHash: string,
+    absPath: string,
+    reqStart: number,
+    reqEnd: number,
+    unbounded: boolean,
+  ): string {
+    const bound = sha256(`${this.sessionId}:${contentHash}:${absPath}:${reqStart}:${reqEnd}:${unbounded ? 1 : 0}`);
+    return `art_${bound.slice(0, 12)}`;
+  }
+
   /** Compute request key for a read_file operation (path + line range). */
   private requestKey(absPath: string, start: number, end: number): string {
     return `${absPath}#${start}#${end}`;
@@ -500,28 +565,15 @@ export class ArtifactStore {
     limit?: number,
   ): ContextArtifact | null {
     const start = offset ?? 1;
-    if (limit !== undefined) {
-      // Bounded request: look for exact key match only.
-      const end = start + limit - 1;
-      const key = this.requestKey(absPath, start, end);
-      const id = this.fileReadIndex.get(key);
-      if (id) {
-        const art = this.getArtifact(id);
-        if (art) return art;
-      }
-      return null;
+    const unbounded = limit === undefined;
+    const end = unbounded ? 0 : start + limit - 1;
+    const key = this.requestKey(absPath, start, end);
+    const id = this.fileReadIndex.get(key);
+    if (id) {
+      const art = this.getArtifact(id);
+      if (art) return art;
     }
-    // Unbounded request: match artifact with same path+start using prefix scan.
-    const prefix = `${absPath}#${start}#`;
-    for (const key of this.fileReadIndex.keys()) {
-      if (key.startsWith(prefix)) {
-        const id = this.fileReadIndex.get(key)!;
-        const art = this.getArtifact(id);
-        if (art) return art;
-      }
-    }
-    // Fall back to DB path-based lookup for resume or missing index.
-    return findFileReadArtifactByCommand(this.db, this.sessionId, absPath);
+    return null;
   }
 
   /** Clear all range keys for a path (used after write operations). */

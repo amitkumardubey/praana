@@ -41,6 +41,10 @@ export interface ContextArtifact {
   sourceLineStart?: number;
   /** Last original-file line held by this artifact (1-based), if it is a source read. */
   sourceLineEnd?: number;
+  /** Exact request key used for cache lookups: "path#start#end" for bounded, "path#start#0" for unbounded. */
+  requestKey?: string;
+  /** Whether the original request was unbounded (read to EOF). */
+  requestUnbounded?: boolean;
   /** Token size of the prompt representation (artifact card) for this artifact. */
   promptTokens: number;
   /** Why the artifact is retained: "session-source" (lossless) or "ttl" (summarizable). */
@@ -56,6 +60,11 @@ export interface IngestToolResultInput {
   /** Original-file line range covered by the read (read_file only). */
   sourceLineStart?: number;
   sourceLineEnd?: number;
+  /** Requested line range for cache key identity (read_file only). */
+  requestStart?: number;
+  requestEnd?: number;
+  /** Whether the original request was unbounded (read to EOF). */
+  requestUnbounded?: boolean;
 }
 
 export interface IngestToolResultOutput {

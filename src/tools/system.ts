@@ -445,26 +445,53 @@ export function createSystemTools(ctx: SystemToolContext) {
           }
 
           // Range-aware lookup: find artifact for exact requested line range.
-          // Only lookup when path was read before; fresh reads get priority.
-          let prior: { card: string; id: string; createdTurn: number } | null = null;
+          // Different ranges should read from disk; exact matches are cached.
+          let cachedResult: { card: string; id: string; createdTurn: number } | null = null;
+          let shouldBlock = false;
+          let shouldWarn = false;
           if (hasReadBefore) {
-            prior = findFileReadArtifactByRange?.(absPath, offset, limit) ?? null;
-            if (!prior) {
-              prior = findFileReadArtifact?.(absPath) ?? null;
-            }
-            // Check mtime to validate artifact freshness.
-            if (prior && existsSync(absPath)) {
-              const diskMtime = statSync(absPath).mtimeMs;
-              const currentMtime = getReadPathMtime?.(absPath);
-              if (currentMtime !== undefined && diskMtime !== currentMtime) {
-                prior = null;
+            // Try exact range lookup if range-aware function is available
+            if (findFileReadArtifactByRange) {
+              cachedResult = findFileReadArtifactByRange(absPath, offset, limit);
+              if (cachedResult) {
+                // Check mtime to validate artifact freshness for range matches.
+                if (existsSync(absPath)) {
+                  const diskMtime = statSync(absPath).mtimeMs;
+                  const currentMtime = getReadPathMtime?.(absPath);
+                  if (currentMtime !== undefined && diskMtime !== currentMtime) {
+                    cachedResult = null;
+                  }
+                }
+                if (cachedResult) {
+                  shouldBlock = true;
+                }
               }
+            } else if (findFileReadArtifact) {
+              // Classic mode (no range support): use path-level lookup for warn/block
+              cachedResult = findFileReadArtifact(absPath);
+              if (cachedResult && existsSync(absPath)) {
+                const diskMtime = statSync(absPath).mtimeMs;
+                const currentMtime = getReadPathMtime?.(absPath);
+                if (currentMtime !== undefined && diskMtime !== currentMtime) {
+                  cachedResult = null;
+                }
+              }
+              if (cachedResult) {
+                shouldBlock = true;
+              } else {
+                // Path was read before but no artifact - warn in warn mode
+                shouldWarn = true;
+              }
+            } else {
+              // True classic mode: no cache functions, warn/block on any path read
+              cachedResult = null; // No artifact, but path was read
+              shouldWarn = true;
             }
           }
-          if (prior) {
-            // Artifact is valid → treat as repeat, return card.
+          if (shouldBlock && cachedResult) {
+            // Exact range or path match found → treat as repeat.
             onScorecardFileRead?.(absPath);
-            const hint = `Already read turn ${prior.createdTurn} — use retrieve_artifact("${prior.id}") or search_turn_events`;
+            const hint = `Already read turn ${cachedResult.createdTurn} — use retrieve_artifact("${cachedResult.id}") or search_turn_events`;
 
             if (blockRepeatReads) {
               return { ok: false, error: hint };
@@ -472,16 +499,16 @@ export function createSystemTools(ctx: SystemToolContext) {
 
             return {
               ok: true,
-              content: prior.card,
+              content: cachedResult.card,
               warning: hint,
-              artifact_id: prior.id,
-              original_turn: prior.createdTurn,
+              artifact_id: cachedResult.id,
+              original_turn: cachedResult.createdTurn,
               skipped_disk: true,
             };
           }
 
-          // No matching range → but path was read before, return hint (or fail if blocking).
-          if (hasReadBefore) {
+          // Warn in classic mode if path was read but no cached result
+          if (shouldWarn) {
             onScorecardFileRead?.(absPath);
             const hint = `Already read this session — use retrieve_artifact or search_turn_events instead of re-reading ${path}`;
             if (blockRepeatReads) {
@@ -495,7 +522,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             };
           }
 
-          // No matching range → fresh read from disk.
+          // Fresh read from disk.
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
           }

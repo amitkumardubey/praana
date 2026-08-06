@@ -1041,6 +1041,9 @@ export async function runTurn(
           let ingestContent = promptResultText;
           let sourceLineStart: number | undefined;
           let sourceLineEnd: number | undefined;
+          let requestStart: number | undefined;
+          let requestEnd: number | undefined;
+          let requestUnbounded: boolean | undefined;
           if (tc.toolName === "read_file") {
             const resultContent = typeof result === "object" && result !== null
               ? (result as { content?: unknown }).content
@@ -1053,9 +1056,13 @@ export async function runTurn(
             const limit = args.limit;
             sourceLineStart = offset ?? 1;
             const outputLines = ingestContent.split("\n").length;
-            sourceLineEnd = limit !== undefined
-              ? sourceLineStart + Math.max(0, limit - 1)
-              : sourceLineStart + Math.max(0, outputLines - 1);
+            // sourceLineEnd reflects what was actually read, not the requested limit.
+            sourceLineEnd = sourceLineStart + Math.max(0, outputLines - 1);
+            // requestStart/requestEnd preserve the original request for cache key identity.
+            // This ensures that a repeat of the same request (even at EOF) hits the cache.
+            requestStart = sourceLineStart;
+            requestEnd = limit !== undefined ? sourceLineStart + limit - 1 : 0;
+            requestUnbounded = limit === undefined;
           }
           const ingested = session.contextEngine.ingestToolResult({
             sourceTool: tc.toolName,
@@ -1064,6 +1071,9 @@ export async function runTurn(
             createdTurn: session.getTurnCount(),
             sourceLineStart,
             sourceLineEnd,
+            requestStart,
+            requestEnd,
+            requestUnbounded,
           });
           promptResultText = ingested.promptText;
           artifactId = ingested.artifactId;
