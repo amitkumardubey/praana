@@ -985,11 +985,25 @@ export async function runTurn(
           typeof (result as { artifact_id?: unknown }).artifact_id === "string"
             ? ((result as { artifact_id: string }).artifact_id)
             : undefined;
+        const isRetrievalResult =
+          tc.toolName === "retrieve_artifact" &&
+          !isError &&
+          result &&
+          typeof result === "object" &&
+          (result as { ok?: unknown }).ok === true &&
+          typeof (result as { id?: unknown }).id === "string";
+        const retrievalArtifactId = isRetrievalResult
+          ? (result as { id: string }).id
+          : undefined;
 
-        if (session.contextEngine && skippedDisk) {
-          // Repeat-read interceptor: never re-ingest hint/card payloads as new artifacts.
-          artifactId = resultArtifactId;
-          if (artifactId) {
+        if (session.contextEngine && (skippedDisk || isRetrievalResult)) {
+          // Repeat-read interceptor and artifact retrievals: never re-ingest their
+          // payloads as new source artifacts; just surface the referenced artifact.
+          // Touch access only for the repeat-read path — retrieve_artifact already
+          // touches internally via ArtifactStore.retrieve(), so an extra touch here
+          // would double-increment access_count (skewing promotion and eviction).
+          artifactId = resultArtifactId ?? retrievalArtifactId;
+          if (artifactId && skippedDisk) {
             session.contextEngine.touchAccess(artifactId, session.getTurnCount());
           }
           promptResultText =
