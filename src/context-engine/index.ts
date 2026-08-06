@@ -244,8 +244,20 @@ export class ContextEngine {
     return this.store.findFileReadArtifact(absPath);
   }
 
+  findFileReadArtifactByRange(
+    absPath: string,
+    offset?: number,
+    limit?: number,
+  ): ContextArtifact | null {
+    return this.store.findFileReadArtifactByRange(absPath, offset, limit);
+  }
+
   clearFileRead(absPath: string): void {
     this.store.clearFileRead(absPath);
+  }
+
+  clearFileReadAllRanges(absPath: string): void {
+    this.store.clearFileReadAllRanges(absPath);
   }
 
   async flushDeferredDistillation(): Promise<number> {

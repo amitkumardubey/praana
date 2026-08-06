@@ -799,8 +799,8 @@ export class Session {
   }
 
   /** Track read_file paths for repeat-read scorecard signal (session-scoped digests). */
-  trackScorecardFileRead(absPath: string, mtimeMs?: number): void {
-    this.scorecard.trackReadPath(absPath, mtimeMs);
+  trackScorecardFileRead(absPath: string, mtimeMs?: number, countAsRepeat = true): void {
+    this.scorecard.trackReadPath(absPath, mtimeMs, countAsRepeat);
   }
 
   /** Whether scorecard persistence is active for this session. */

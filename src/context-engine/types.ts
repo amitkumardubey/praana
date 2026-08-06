@@ -14,6 +14,14 @@ export type ContentType =
   | "prose"
   | "other";
 
+/**
+ * Fidelity class of a stored artifact (issue #293).
+ * `lossless` — raw bytes are the exact source (read_file results); retained for
+ * the session and never distilled or TTL-evicted. `summarizable` — everything
+ * else; existing storage/card/eviction behavior applies.
+ */
+export type ArtifactFidelity = "lossless" | "summarizable";
+
 export interface ContextArtifact {
   id: string;
   sha256: string;
@@ -27,6 +35,20 @@ export interface ContextArtifact {
   contentType: ContentType;
   lastAccessedTurn: number;
   accessCount: number;
+  /** Fidelity class (issue #293); defaults to "summarizable" for legacy rows. */
+  fidelity: ArtifactFidelity;
+  /** First original-file line held by this artifact (1-based), if it is a source read. */
+  sourceLineStart?: number;
+  /** Last original-file line held by this artifact (1-based), if it is a source read. */
+  sourceLineEnd?: number;
+  /** Exact request key used for cache lookups: "path#start#end" for bounded, "path#start#0" for unbounded. */
+  requestKey?: string;
+  /** Whether the original request was unbounded (read to EOF). */
+  requestUnbounded?: boolean;
+  /** Token size of the prompt representation (artifact card) for this artifact. */
+  promptTokens: number;
+  /** Why the artifact is retained: "session-source" (lossless) or "ttl" (summarizable). */
+  retentionReason: string;
 }
 
 export interface IngestToolResultInput {
@@ -35,6 +57,14 @@ export interface IngestToolResultInput {
   rawText: string;
   contentType?: ContentType;
   createdTurn: number;
+  /** Original-file line range covered by the read (read_file only). */
+  sourceLineStart?: number;
+  sourceLineEnd?: number;
+  /** Requested line range for cache key identity (read_file only). */
+  requestStart?: number;
+  requestEnd?: number;
+  /** Whether the original request was unbounded (read to EOF). */
+  requestUnbounded?: boolean;
 }
 
 export interface IngestToolResultOutput {

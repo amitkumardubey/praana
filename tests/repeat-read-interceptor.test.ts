@@ -53,13 +53,28 @@ describe("repeat-read interceptor", () => {
       blockRepeatReads: opts.blockRepeatReads ?? false,
       hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
       getReadPathMtime: (absPath) => scorecard.getReadPathMtime(absPath),
-      onScorecardFileRead: (absPath, mtimeMs) => scorecard.trackReadPath(absPath, mtimeMs),
+      onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
+        scorecard.trackReadPath(absPath, mtimeMs, countAsRepeat),
       clearReadPath: (absPath) => {
         scorecard.clearReadPath(absPath);
-        store.clearFileRead(absPath);
+        store.clearFileReadAllRanges(absPath);
       },
       findFileReadArtifact: (absPath) => {
         const art = store.findFileReadArtifact(absPath);
+        if (!art) return null;
+        return {
+          id: art.id,
+          createdTurn: art.createdTurn,
+          card: buildArtifactCard(
+            art.id,
+            art.sourceTool,
+            art.command,
+            art.rawTokens,
+          ),
+        };
+      },
+      findFileReadArtifactByRange: (absPath, offset, limit) => {
+        const art = store.findFileReadArtifactByRange(absPath, offset, limit);
         if (!art) return null;
         return {
           id: art.id,
@@ -92,6 +107,9 @@ describe("repeat-read interceptor", () => {
       command: abs,
       rawText: big,
       createdTurn: 3,
+      sourceLineStart: 1,
+      sourceLineEnd: 1,
+      requestUnbounded: true,
     });
     expect(ingested.inlined).toBe(false);
     expect(ingested.artifactId).toBeDefined();
@@ -107,12 +125,23 @@ describe("repeat-read interceptor", () => {
     expect(scorecard.getCounters().repeatFileReads).toBe(1);
   });
 
-  it("block mode: second read returns ok:false", async () => {
+  it("block mode: second read returns ok:false for exact same file and range", async () => {
     writeFileSync(join(testDir, "a.txt"), "hello");
     const tools = makeTools({ blockRepeatReads: true });
 
     const first = await tools.read_file.execute({ path: "a.txt" });
     expect(first.ok).toBe(true);
+
+    // Ingest to simulate engine processing, which stores the artifact
+    store.ingestToolResult({
+      sourceTool: "read_file",
+      command: join(testDir, "a.txt"),
+      rawText: "hello",
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 1,
+      requestUnbounded: true,
+    });
 
     const second = await tools.read_file.execute({ path: "a.txt" });
     expect(second.ok).toBe(false);
@@ -131,6 +160,9 @@ describe("repeat-read interceptor", () => {
       command: abs,
       rawText: "v1",
       createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 1,
+      requestUnbounded: true,
     });
 
     const blocked = await tools.read_file.execute({ path: "mut.txt" });
@@ -193,6 +225,9 @@ describe("repeat-read interceptor", () => {
       command: abs,
       rawText: big,
       createdTurn: 2,
+      sourceLineStart: 1,
+      sourceLineEnd: 1,
+      requestUnbounded: true,
     });
     expect(ingested.artifactId).toBeDefined();
     expect(store.findFileReadArtifact(abs)?.id).toBe(ingested.artifactId);
@@ -244,6 +279,70 @@ describe("repeat-read interceptor", () => {
   it("read_file description mentions retrieve_artifact", () => {
     const tools = makeTools();
     expect(tools.read_file.description).toMatch(/retrieve_artifact/i);
+  });
+
+  it("range-aware: different range is a fresh read, not a repeat", async () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n");
+    writeFileSync(join(testDir, "range.txt"), lines);
+    const tools = makeTools();
+
+    // First read: lines 1-10
+    const first = await tools.read_file.execute({ path: "range.txt", offset: 1, limit: 10 });
+    expect(first.ok).toBe(true);
+    expect(first.content).toBe("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10");
+
+    // Ingest the artifact so it's stored
+    store.ingestToolResult({
+      sourceTool: "read_file",
+      command: join(testDir, "range.txt"),
+      rawText: first.content!,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+    });
+
+    // Different range should be a fresh read (not returned as repeat/cached)
+    const differentRange = await tools.read_file.execute({ path: "range.txt", offset: 11, limit: 10 });
+    expect(differentRange.ok).toBe(true);
+    expect(differentRange.skipped_disk).not.toBe(true);
+    expect(differentRange.content).toBe("line11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20");
+    expect(scorecard.getCounters().repeatFileReads).toBe(0);
+  });
+
+  it("rejects zero and non-integer read ranges", () => {
+    const tools = makeTools();
+
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", offset: 0 }).success).toBe(false);
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", limit: 0 }).success).toBe(false);
+    expect(tools.read_file.parameters.safeParse({ path: "range.txt", limit: 1.5 }).success).toBe(false);
+  });
+
+  it("range-aware: same range returns cached artifact", async () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n");
+    writeFileSync(join(testDir, "same-range.txt"), lines);
+    const tools = makeTools();
+
+    // First read: lines 1-10
+    const first = await tools.read_file.execute({ path: "same-range.txt", offset: 1, limit: 10 });
+    expect(first.ok).toBe(true);
+
+    // Ingest the artifact
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: join(testDir, "same-range.txt"),
+      rawText: first.content!,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+    });
+
+    // Same range again should return cached artifact (skip disk)
+    const sameRange = await tools.read_file.execute({ path: "same-range.txt", offset: 1, limit: 10 });
+    expect(sameRange.ok).toBe(true);
+    expect(sameRange.skipped_disk).toBe(true);
+    expect(sameRange.artifact_id).toBe(ingested.artifactId);
+    expect(sameRange.content).toContain(`[artifact: ${ingested.artifactId}`);
+    expect(scorecard.getCounters().repeatFileReads).toBe(1);
   });
 });
 

@@ -50,7 +50,7 @@ export interface SystemToolContext {
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
   skillScorecard?: ScorecardInc;
-  onScorecardFileRead?: (absPath: string, mtimeMs?: number) => void;
+  onScorecardFileRead?: (absPath: string, mtimeMs?: number, countAsRepeat?: boolean) => void;
   onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
   /** When true, second+ read_file of same abs path hard-fails. */
@@ -59,7 +59,20 @@ export interface SystemToolContext {
   /** mtime from last successful read; used to detect external edits. */
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
-  findFileReadArtifact?: (absPath: string) => {
+  /** Legacy path-only lookup (deprecated, prefer findFileReadArtifactByRange). */
+  findFileReadArtifact?: (
+    absPath: string,
+  ) => {
+    id: string;
+    createdTurn: number;
+    card: string;
+  } | null;
+  /** Find an artifact for a specific read_file line range. */
+  findFileReadArtifactByRange?: (
+    absPath: string,
+    offset?: number,
+    limit?: number,
+  ) => {
     id: string;
     createdTurn: number;
     card: string;
@@ -323,6 +336,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     getReadPathMtime,
     clearReadPath,
     findFileReadArtifact,
+    findFileReadArtifactByRange,
   } = ctx;
 
   const resolvePath = (p: string): string => {
@@ -399,10 +413,14 @@ export function createSystemTools(ctx: SystemToolContext) {
         path: z.string().describe("File path (relative to working dir or absolute)"),
         offset: z
           .number()
+          .int()
+          .positive()
           .optional()
           .describe("Line number to start reading from (1-indexed)"),
         limit: z
           .number()
+          .int()
+          .positive()
           .optional()
           .describe("Maximum lines to read"),
       }),
@@ -418,41 +436,88 @@ export function createSystemTools(ctx: SystemToolContext) {
           };
         }
         try {
-          let wasRepeat = hasReadPath?.(absPath) ?? false;
+          let hasReadBefore = hasReadPath?.(absPath) ?? false;
 
           // External edits (outside write_file/edit_file) bump mtime — allow a fresh read.
-          if (wasRepeat && existsSync(absPath)) {
+          if (hasReadBefore && existsSync(absPath)) {
             const diskMtime = statSync(absPath).mtimeMs;
             const priorMtime = getReadPathMtime?.(absPath);
             if (priorMtime !== undefined && diskMtime !== priorMtime) {
               clearReadPath?.(absPath);
-              wasRepeat = false;
+              hasReadBefore = false;
             }
           }
 
-          if (wasRepeat) {
-            // Count the repeat attempt for scorecard; do not re-read disk.
+          // Range-aware lookup: find artifact for exact requested line range.
+          // Different ranges should read from disk; exact matches are cached.
+          let cachedResult: { card: string; id: string; createdTurn: number } | null = null;
+          let shouldBlock = false;
+          let shouldWarn = false;
+          if (hasReadBefore) {
+            // Try exact range lookup if range-aware function is available
+            if (findFileReadArtifactByRange) {
+              cachedResult = findFileReadArtifactByRange(absPath, offset, limit);
+              if (cachedResult) {
+                // Check mtime to validate artifact freshness for range matches.
+                if (existsSync(absPath)) {
+                  const diskMtime = statSync(absPath).mtimeMs;
+                  const currentMtime = getReadPathMtime?.(absPath);
+                  if (currentMtime !== undefined && diskMtime !== currentMtime) {
+                    cachedResult = null;
+                  }
+                }
+                if (cachedResult) {
+                  shouldBlock = true;
+                }
+              }
+            } else if (findFileReadArtifact) {
+              // Classic mode (no range support): use path-level lookup for warn/block
+              cachedResult = findFileReadArtifact(absPath);
+              if (cachedResult && existsSync(absPath)) {
+                const diskMtime = statSync(absPath).mtimeMs;
+                const currentMtime = getReadPathMtime?.(absPath);
+                if (currentMtime !== undefined && diskMtime !== currentMtime) {
+                  cachedResult = null;
+                }
+              }
+              if (cachedResult) {
+                shouldBlock = true;
+              } else {
+                // Path was read before but no artifact - warn in warn mode
+                shouldWarn = true;
+              }
+            } else {
+              // True classic mode: no cache functions, warn/block on any path read
+              cachedResult = null; // No artifact, but path was read
+              shouldWarn = true;
+            }
+          }
+          if (shouldBlock && cachedResult) {
+            // Exact range or path match found → treat as repeat.
             onScorecardFileRead?.(absPath);
-            const prior = findFileReadArtifact?.(absPath) ?? null;
-            const hint = prior
-              ? `Already read turn ${prior.createdTurn} — use retrieve_artifact("${prior.id}") or search_turn_events`
-              : `Already read this session — use retrieve_artifact or search_turn_events instead of re-reading ${path}`;
+            const hint = `Already read turn ${cachedResult.createdTurn} — use retrieve_artifact("${cachedResult.id}") or search_turn_events`;
 
             if (blockRepeatReads) {
               return { ok: false, error: hint };
             }
 
-            if (prior) {
-              return {
-                ok: true,
-                content: prior.card,
-                warning: hint,
-                artifact_id: prior.id,
-                original_turn: prior.createdTurn,
-                skipped_disk: true,
-              };
-            }
+            return {
+              ok: true,
+              content: cachedResult.card,
+              warning: hint,
+              artifact_id: cachedResult.id,
+              original_turn: cachedResult.createdTurn,
+              skipped_disk: true,
+            };
+          }
 
+          // Warn in classic mode if path was read but no cached result
+          if (shouldWarn) {
+            onScorecardFileRead?.(absPath);
+            const hint = `Already read this session — use retrieve_artifact or search_turn_events instead of re-reading ${path}`;
+            if (blockRepeatReads) {
+              return { ok: false, error: hint };
+            }
             return {
               ok: true,
               content: hint,
@@ -461,6 +526,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             };
           }
 
+          // Fresh read from disk.
           if (!existsSync(absPath)) {
             return { ok: false, error: `File not found: ${path}` };
           }
@@ -476,8 +542,7 @@ export function createSystemTools(ctx: SystemToolContext) {
             lines = lines.slice(0, limit);
           }
 
-          // Only register successful first reads — failed/missing paths stay retryable.
-          onScorecardFileRead?.(absPath, mtimeMs);
+          onScorecardFileRead?.(absPath, mtimeMs, false);
           return { ok: true, content: lines.join("\n") };
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to read file" };

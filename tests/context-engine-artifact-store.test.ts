@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { openContextEngineDb } from "../src/context-engine/db.js";
+import { openDatabase } from "../src/sqlite.js";
 import { classifyContentType } from "../src/context-engine/classify.js";
 import type { ContextEngineConfig } from "../src/types.js";
 
@@ -60,21 +62,48 @@ describe("context-engine artifact store", () => {
     expect(result.promptText).not.toContain(raw);
   });
 
-  it("deduplicates identical content by sha256", () => {
+  it("deduplicates identical content by sha256 for non-read_file tools", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = largeText(2500);
     const first = store.ingestToolResult({
       sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 1,
+    });
+    const second = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "make build",
+      rawText: raw,
+      createdTurn: 2,
+    });
+    expect(second.artifactId).toBe(first.artifactId);
+  });
+
+  it("does not deduplicate read_file by content hash across ranges", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = "identical content\n".repeat(100);
+    const first = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/tmp/foo.txt",
+      rawText: raw,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      requestStart: 1,
+      requestEnd: 10,
     });
     const second = store.ingestToolResult({
       sourceTool: "read_file",
       command: "/tmp/foo.txt",
       rawText: raw,
       createdTurn: 2,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      requestStart: 11,
+      requestEnd: 20,
     });
-    expect(second.artifactId).toBe(first.artifactId);
+    expect(second.artifactId).not.toBe(first.artifactId);
   });
 
   it("never compresses error content", () => {
@@ -207,24 +236,24 @@ describe("context-engine artifact store", () => {
     expect(changed.artifactId).not.toBe(first.artifactId);
   });
 
-  it("reuses the original artifact when content changes back to a previous hash", () => {
+  it("reuses the original artifact when content changes back to a previous hash (non-read_file)", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = largeText(3000);
     const first = store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 1,
     });
     store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw + "changed",
       createdTurn: 2,
     });
     const reverted = store.ingestToolResult({
-      sourceTool: "read_file",
-      command: "src/foo.ts",
+      sourceTool: "shell",
+      command: "make build",
       rawText: raw,
       createdTurn: 3,
     });
@@ -247,6 +276,26 @@ describe("context-engine artifact store", () => {
     const evicted = store.runEviction(10);
     expect(evicted).toBe(1);
     expect(store.getArtifact(ingested.artifactId!)).toBeNull();
+  });
+
+  it("does not evict lossless artifacts even past ttl", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", {
+      ...TEST_CONFIG,
+      artifact_ttl_turns: 5,
+    });
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/lossless.ts",
+      rawText: "line1\nline2\nline3\nline4\nline5",
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 5,
+    });
+    expect(store.getArtifact(ingested.artifactId!)).not.toBeNull();
+
+    const evicted = store.runEviction(10);
+    expect(evicted).toBe(0);
+    expect(store.getArtifact(ingested.artifactId!)).not.toBeNull();
   });
 
   it("classifies common content types", () => {
@@ -374,5 +423,111 @@ describe("context-engine artifact store", () => {
     expect(result.ok).toBe(false);
     expect((result as { error?: string }).error).toMatch(/lineStart.*exceeds/);
     store.close();
+  });
+
+  it("preserves small read_file results as lossless artifacts regardless of threshold", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const small = "line1\nline2\nline3\nline4\nline5";
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/foo.ts",
+      rawText: small,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 5,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.artifactId).toBeDefined();
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art!.fidelity).toBe("lossless");
+    expect(art!.retentionReason).toBe("session-source");
+    expect(art!.sourceLineStart).toBe(1);
+    expect(art!.sourceLineEnd).toBe(5);
+    const retrieved = store.retrieve(ingested.artifactId!, 1);
+    expect(retrieved.ok).toBe(true);
+    if (retrieved.ok) {
+      expect(retrieved.content).toBe(small);
+    }
+    store.close();
+  });
+
+  it("stores partial read_file range with original line metadata", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const lines = Array.from({ length: 100 }, (_, i) => `line${i + 1}`).join("\n");
+    const partial = lines.split("\n").slice(50, 60).join("\n");
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/big.ts",
+      rawText: partial,
+      createdTurn: 1,
+      sourceLineStart: 51,
+      sourceLineEnd: 60,
+    });
+    expect(ingested.inlined).toBe(false);
+    expect(ingested.artifactId).toBeDefined();
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art!.sourceLineStart).toBe(51);
+    expect(art!.sourceLineEnd).toBe(60);
+    const retrieved = store.retrieve(ingested.artifactId!, 1, { lineStart: 51, lineEnd: 60 });
+    expect(retrieved.ok).toBe(true);
+    if (retrieved.ok) {
+      expect(retrieved.content.split("\n").length).toBe(10);
+    }
+    store.close();
+  });
+
+  it("records fidelity metadata for stored artifacts", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const ingested = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "make all",
+      rawText: largeText(2000),
+      createdTurn: 1,
+    });
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art).not.toBeNull();
+    expect(art!.fidelity).toBe("summarizable");
+    expect(art!.retentionReason).toBe("ttl");
+    expect(art!.promptTokens).toBeGreaterThan(0);
+    expect(art!.promptTokens).toBeLessThan(art!.rawTokens);
+  });
+
+  it("migrates legacy artifact tables with fidelity columns", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-migrate-"));
+    const dbPath = join(dir, "memory.db");
+    try {
+      const legacy = openDatabase(dbPath);
+      legacy.exec(`
+        CREATE TABLE context_artifacts (
+          id                  TEXT PRIMARY KEY,
+          sha256              TEXT NOT NULL,
+          session_id          TEXT NOT NULL,
+          source_tool         TEXT NOT NULL,
+          command             TEXT,
+          created_turn        INTEGER NOT NULL,
+          raw_tokens          INTEGER NOT NULL,
+          raw_text            TEXT NOT NULL,
+          summary             TEXT NOT NULL,
+          content_type        TEXT NOT NULL,
+          last_accessed_turn  INTEGER NOT NULL,
+          access_count        INTEGER NOT NULL DEFAULT 0,
+          created_at          INTEGER NOT NULL
+        );
+      `);
+      legacy.close();
+
+      const migrated = openContextEngineDb(dbPath);
+      const cols = (
+        migrated.query("PRAGMA table_info(context_artifacts)").all() as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(cols).toContain("fidelity");
+      expect(cols).toContain("source_line_start");
+      expect(cols).toContain("source_line_end");
+      expect(cols).toContain("prompt_tokens");
+      expect(cols).toContain("retention_reason");
+      migrated.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

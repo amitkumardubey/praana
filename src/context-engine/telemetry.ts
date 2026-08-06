@@ -233,10 +233,10 @@ export class ScorecardTracker {
   }
 
   /** Track read_file paths for repeat-read scorecard signal (stores digests only). */
-  trackReadPath(absPath: string, mtimeMs?: number): void {
+  trackReadPath(absPath: string, mtimeMs?: number, countAsRepeat = true): void {
     if (!this.db) return;
     const digest = createHash("sha256").update(absPath).digest("hex");
-    if (this.readPathDigests.has(digest)) {
+    if (countAsRepeat && this.readPathDigests.has(digest)) {
       this.inc("repeatFileReads");
     }
     this.readPathDigests.add(digest);
