@@ -25,7 +25,12 @@ CREATE TABLE IF NOT EXISTS context_artifacts (
   content_type        TEXT NOT NULL,
   last_accessed_turn  INTEGER NOT NULL,
   access_count        INTEGER NOT NULL DEFAULT 0,
-  created_at          INTEGER NOT NULL
+  created_at          INTEGER NOT NULL,
+  fidelity            TEXT NOT NULL DEFAULT 'summarizable',
+  source_line_start   INTEGER,
+  source_line_end     INTEGER,
+  prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+  retention_reason    TEXT NOT NULL DEFAULT 'ttl'
 );
 
 CREATE INDEX IF NOT EXISTS idx_context_artifacts_session
@@ -183,6 +188,15 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
 ];
 
+/** Fidelity columns added to context_artifacts (issue #293) for existing DBs. */
+const ARTIFACT_FIDELITY_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: "fidelity", ddl: "TEXT NOT NULL DEFAULT 'summarizable'" },
+  { name: "source_line_start", ddl: "INTEGER" },
+  { name: "source_line_end", ddl: "INTEGER" },
+  { name: "prompt_tokens", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "retention_reason", ddl: "TEXT NOT NULL DEFAULT 'ttl'" },
+];
+
 function ensureScorecardResumeColumns(db: Database): void {
   const existing = new Set(
     (db.query("PRAGMA table_info(scorecard)").all() as Array<{ name: string }>).map(
@@ -192,6 +206,19 @@ function ensureScorecardResumeColumns(db: Database): void {
   for (const col of SCORECARD_RESUME_COLUMNS) {
     if (!existing.has(col.name)) {
       db.exec(`ALTER TABLE scorecard ADD COLUMN ${col.name} ${col.ddl}`);
+    }
+  }
+}
+
+function ensureArtifactFidelityColumns(db: Database): void {
+  const existing = new Set(
+    (db.query("PRAGMA table_info(context_artifacts)").all() as Array<{ name: string }>).map(
+      (col) => col.name,
+    ),
+  );
+  for (const col of ARTIFACT_FIDELITY_COLUMNS) {
+    if (!existing.has(col.name)) {
+      db.exec(`ALTER TABLE context_artifacts ADD COLUMN ${col.name} ${col.ddl}`);
     }
   }
 }
@@ -212,6 +239,7 @@ export function openContextEngineDb(dbPath: string): Database {
   const db = openDatabase(dbPath);
   applyConcurrencyPragmas(db);
   db.exec(ARTIFACT_SCHEMA);
+  ensureArtifactFidelityColumns(db);
   ensureScorecardResumeColumns(db);
   return db;
 }
@@ -229,6 +257,11 @@ interface ArtifactRow {
   content_type: string;
   last_accessed_turn: number;
   access_count: number;
+  fidelity: string | null;
+  source_line_start: number | null;
+  source_line_end: number | null;
+  prompt_tokens: number | null;
+  retention_reason: string | null;
 }
 
 function rowToArtifact(row: ArtifactRow): ContextArtifact {
@@ -245,6 +278,11 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
     contentType: row.content_type as ContentType,
     lastAccessedTurn: row.last_accessed_turn,
     accessCount: row.access_count,
+    fidelity: row.fidelity === "lossless" ? "lossless" : "summarizable",
+    sourceLineStart: row.source_line_start ?? undefined,
+    sourceLineEnd: row.source_line_end ?? undefined,
+    promptTokens: row.prompt_tokens ?? 0,
+    retentionReason: row.retention_reason ?? "ttl",
   };
 }
 
@@ -283,11 +321,13 @@ export function insertArtifact(
     `INSERT INTO context_artifacts (
       id, sha256, session_id, source_tool, command, created_turn,
       raw_tokens, raw_text, summary, content_type,
-      last_accessed_turn, access_count, created_at
+      last_accessed_turn, access_count, created_at,
+      fidelity, source_line_start, source_line_end, prompt_tokens, retention_reason
     ) VALUES (
       $id, $sha256, $sessionId, $sourceTool, $command, $createdTurn,
       $rawTokens, $rawText, $summary, $contentType,
-      $lastAccessedTurn, $accessCount, $createdAt
+      $lastAccessedTurn, $accessCount, $createdAt,
+      $fidelity, $sourceLineStart, $sourceLineEnd, $promptTokens, $retentionReason
     )`,
   ).run({
     $id: artifact.id,
@@ -303,6 +343,11 @@ export function insertArtifact(
     $lastAccessedTurn: artifact.lastAccessedTurn,
     $accessCount: artifact.accessCount,
     $createdAt: Date.now(),
+    $fidelity: artifact.fidelity,
+    $sourceLineStart: artifact.sourceLineStart ?? null,
+    $sourceLineEnd: artifact.sourceLineEnd ?? null,
+    $promptTokens: artifact.promptTokens,
+    $retentionReason: artifact.retentionReason,
   });
 }
 

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { openContextEngineDb } from "../src/context-engine/db.js";
+import { openDatabase } from "../src/sqlite.js";
 import { classifyContentType } from "../src/context-engine/classify.js";
 import type { ContextEngineConfig } from "../src/types.js";
 
@@ -374,5 +376,60 @@ describe("context-engine artifact store", () => {
     expect(result.ok).toBe(false);
     expect((result as { error?: string }).error).toMatch(/lineStart.*exceeds/);
     store.close();
+  });
+
+  it("records fidelity metadata for stored artifacts", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const ingested = store.ingestToolResult({
+      sourceTool: "shell",
+      command: "make all",
+      rawText: largeText(2000),
+      createdTurn: 1,
+    });
+    const art = store.getArtifact(ingested.artifactId!);
+    expect(art).not.toBeNull();
+    expect(art!.fidelity).toBe("summarizable");
+    expect(art!.retentionReason).toBe("ttl");
+    expect(art!.promptTokens).toBeGreaterThan(0);
+    expect(art!.promptTokens).toBeLessThan(art!.rawTokens);
+  });
+
+  it("migrates legacy artifact tables with fidelity columns", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-migrate-"));
+    const dbPath = join(dir, "memory.db");
+    try {
+      const legacy = openDatabase(dbPath);
+      legacy.exec(`
+        CREATE TABLE context_artifacts (
+          id                  TEXT PRIMARY KEY,
+          sha256              TEXT NOT NULL,
+          session_id          TEXT NOT NULL,
+          source_tool         TEXT NOT NULL,
+          command             TEXT,
+          created_turn        INTEGER NOT NULL,
+          raw_tokens          INTEGER NOT NULL,
+          raw_text            TEXT NOT NULL,
+          summary             TEXT NOT NULL,
+          content_type        TEXT NOT NULL,
+          last_accessed_turn  INTEGER NOT NULL,
+          access_count        INTEGER NOT NULL DEFAULT 0,
+          created_at          INTEGER NOT NULL
+        );
+      `);
+      legacy.close();
+
+      const migrated = openContextEngineDb(dbPath);
+      const cols = (
+        migrated.query("PRAGMA table_info(context_artifacts)").all() as Array<{ name: string }>
+      ).map((c) => c.name);
+      expect(cols).toContain("fidelity");
+      expect(cols).toContain("source_line_start");
+      expect(cols).toContain("source_line_end");
+      expect(cols).toContain("prompt_tokens");
+      expect(cols).toContain("retention_reason");
+      migrated.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

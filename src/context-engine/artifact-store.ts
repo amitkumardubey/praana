@@ -293,18 +293,28 @@ export class ArtifactStore {
       contentType,
       lastAccessedTurn: input.createdTurn,
       accessCount: 0,
+      // read_file results are lossless source artifacts; everything else is
+      // summarizable and subject to TTL eviction.
+      fidelity: input.sourceTool === "read_file" ? "lossless" : "summarizable",
+      sourceLineStart: input.sourceLineStart,
+      sourceLineEnd: input.sourceLineEnd,
+      promptTokens: 0,
+      retentionReason: input.sourceTool === "read_file" ? "session-source" : "ttl",
     };
+
+    const card = buildArtifactCard(
+      artifact.id,
+      artifact.sourceTool,
+      artifact.command,
+      artifact.rawTokens,
+    );
+    artifact.promptTokens = estimateTokens(card);
 
     insertArtifact(this.db, artifact);
     if (fileKey) this.fileReadIndex.set(fileKey, artifact.id);
 
     return {
-      promptText: buildArtifactCard(
-        artifact.id,
-        artifact.sourceTool,
-        artifact.command,
-        artifact.rawTokens,
-      ),
+      promptText: card,
       artifactId: artifact.id,
       inlined: false,
     };
