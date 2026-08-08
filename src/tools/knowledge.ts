@@ -1,5 +1,7 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
+import { buildArtifactCard } from "../context-engine/summarize.js";
+import { buildRetrieveChurnHint } from "./read-churn.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
 import type { ContextEngine } from "../context-engine/index.js";
@@ -95,17 +97,71 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             jsonPath: z.string().optional().describe("Extract a value from JSON content (dot-separated path)"),
           }),
           execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
-            const retrieved = contextEngine.retrieveArtifact(id, getCurrentTurn(), {
-              grep,
-              lineStart,
-              lineEnd,
-              jsonPath,
-            });
+            const params = { grep, lineStart, lineEnd, jsonPath };
+            const track = ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
+            const isRetry = track?.isRetry === true;
+
+            // Identical retry (same id + filters) → deterministic card, not full
+            // payload. Honors the scorecard counter but short-circuits the body
+            // so runaway retrieve loops stop inflating context (issue #294).
+            if (isRetry) {
+              const art = contextEngine.getArtifact(id);
+              if (art) {
+                const card = buildArtifactCard(
+                  art.id,
+                  art.sourceTool,
+                  art.command,
+                  art.rawTokens,
+                );
+                ctx.skillScorecard?.inc("artifactRetrieveCalls");
+                eventLog.append({
+                  kind: "system_note",
+                  actor: "kernel",
+                  payload: {
+                    type: "artifact_retrieve_retry",
+                    id,
+                    grep: grep ?? null,
+                    lineStart: lineStart ?? null,
+                    lineEnd: lineEnd ?? null,
+                    jsonPath: jsonPath ?? null,
+                    count: track?.count ?? 0,
+                  },
+                });
+                return {
+                  ok: true,
+                  id,
+                  content: card,
+                  warning: buildRetrieveChurnHint(id, track?.count ?? 0),
+                  skipped_payload: true,
+                  original_turn: art.createdTurn,
+                };
+              }
+              // Artifact missing — fall through to normal retrieve (clean error).
+            }
+
+            const retrieved = contextEngine.retrieveArtifact(
+              id,
+              getCurrentTurn(),
+              params,
+            );
             if (!retrieved.ok) {
               return { ok: false, error: retrieved.error };
             }
 
             ctx.skillScorecard?.inc("artifactRetrieveCalls");
+
+            // Path-level tracking for file-read artifacts (first successful
+            // retrieve and onward). Feeds the cross-channel churn detector so
+            // retrieve + read_file + shell reads of the same path count toward
+            // a single intervention.
+            const art = contextEngine.getArtifact(id);
+            if (
+              art?.sourceTool === "read_file"
+              && art.command
+              && ctx.skillScorecard?.trackFileAccess
+            ) {
+              ctx.skillScorecard.trackFileAccess(art.command, "retrieve");
+            }
 
             eventLog.append({
               kind: "system_note",

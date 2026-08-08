@@ -441,6 +441,11 @@ export class ContextEngine {
     return result;
   }
 
+  /** Look up a stored artifact by id (session-scoped). */
+  getArtifact(id: string): ContextArtifact | null {
+    return this.store.getArtifact(id);
+  }
+
   close(): void {
     this.store.close();
   }
