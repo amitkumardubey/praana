@@ -19,6 +19,20 @@ function isCompound(command: string): boolean {
   return /(?: \| |&&|\|\||;)/.test(command);
 }
 
+/**
+ * True if the command contains shell redirection operators that we refuse to
+ * parse — such commands mix reads and writes and tokens like `>` or paths
+ * following them should never be treated as read targets (issue #294).
+ */
+function hasRedirection(command: string): boolean {
+  // Strip quoted spans so redirection operators inside quotes are ignored.
+  const withoutQuotes = command
+    .replace(/(?:^|\s)"[^"]*"(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)'[^']*'(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)`[^`]*`(?:\s|$)/g, " ");
+  return /\s(?:>>|>|<|2>&1|&>|&>>)\s/.test(` ${withoutQuotes} `);
+}
+
 function tokenize(command: string): string[] {
   // Simple whitespace split that keeps single/double-quoted spans intact.
   const tokens: string[] = [];
@@ -77,7 +91,7 @@ const SED_PRINT_RE = /^\d+(?:,\d+)?p$/;
  */
 export function detectShellReads(command: string): ShellReadDetection | null {
   const trimmed = command.trim();
-  if (!trimmed || isCompound(trimmed)) return null;
+  if (!trimmed || isCompound(trimmed) || hasRedirection(trimmed)) return null;
 
   const tokens = tokenize(trimmed);
   if (tokens.length === 0) return null;

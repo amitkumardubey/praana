@@ -96,14 +96,28 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             lineEnd: z.number().int().positive().optional().describe("Last line to return (1-based)"),
             jsonPath: z.string().optional().describe("Extract a value from JSON content (dot-separated path)"),
           }),
-          execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
+           execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
             const params = { grep, lineStart, lineEnd, jsonPath };
+
+            // Validate the retrieval first so invalid requests always surface
+            // their real error. The retry/short-circuit path below only applies
+            // to requests that previously completed successfully (issue #294).
+            const retrieved = contextEngine.retrieveArtifact(
+              id,
+              getCurrentTurn(),
+              params,
+            );
+            if (!retrieved.ok) {
+              return { ok: false, error: retrieved.error };
+            }
+
             const track = ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
             const isRetry = track?.isRetry === true;
 
-            // Identical retry (same id + filters) → deterministic card, not full
-            // payload. Honors the scorecard counter but short-circuits the body
-            // so runaway retrieve loops stop inflating context (issue #294).
+            // Identical successful retry (same id + filters) → deterministic
+            // card, not the full payload. Honors the scorecard counter but
+            // short-circuits the body so runaway retrieve loops stop inflating
+            // context (issue #294).
             if (isRetry) {
               const art = contextEngine.getArtifact(id);
               if (art) {
@@ -136,16 +150,6 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
                   original_turn: art.createdTurn,
                 };
               }
-              // Artifact missing — fall through to normal retrieve (clean error).
-            }
-
-            const retrieved = contextEngine.retrieveArtifact(
-              id,
-              getCurrentTurn(),
-              params,
-            );
-            if (!retrieved.ok) {
-              return { ok: false, error: retrieved.error };
             }
 
             ctx.skillScorecard?.inc("artifactRetrieveCalls");

@@ -7,7 +7,7 @@ export interface ArtifactRetrieveParams {
   grep?: string;
   lineStart?: number;
   lineEnd?: number;
-  jsonPath?: number;
+   jsonPath?: string;
 }
 
 /** Stable key for identical-retrieve detection. Field order is normalized. */
