@@ -295,6 +295,7 @@ export function buildArtifactFirstReadsPolicy(): string[] {
 
 export interface AgentHintCounters {
   repeatFileReads: number;
+  churnInterventions?: number;
 }
 
 /**
@@ -311,6 +312,11 @@ export function buildAgentHints(counters: AgentHintCounters): string {
   if (counters.repeatFileReads > AGENT_HINT_REPEAT_READS_THRESHOLD) {
     parts.push(
       `- repeat_file_reads: ${counters.repeatFileReads} — before re-reading a path, use retrieve_artifact or search_turn_events.`,
+    );
+  }
+  if ((counters.churnInterventions ?? 0) > 0) {
+    parts.push(
+      `- churn_interventions: ${counters.churnInterventions} — stop re-reading the same files; use one narrow retrieve_artifact(id, lineStart, lineEnd) or state a preliminary conclusion.`,
     );
   }
   if (parts.length === 0) {

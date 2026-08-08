@@ -326,10 +326,12 @@ export interface TurnFooterInput {
   ctxAfterPct: number;
   engineMode?: boolean;
   distillerSavingsTurn?: number;
-  /** Active model label for this turn (e.g. "opencode/big-pickle"). */
+  /** Active model label for this session (e.g. "opencode/big-pickle"). */
   model?: string;
   /** Session repeat_file_reads; shown when > threshold. */
   repeatFileReads?: number;
+  /** Session churn_interventions (issue #294); shown when > 0. */
+  churnInterventions?: number;
 }
 
 /** Dim one-line turn digest (design §5). */
@@ -360,6 +362,11 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
   const repeatReads = input.repeatFileReads ?? input.stats?.repeatFileReads ?? 0;
   if (repeatReads > REPEAT_FILE_READS_THRESHOLD) {
     parts.push(`repeat_reads:${repeatReads}`);
+  }
+
+  const churn = input.churnInterventions ?? 0;
+  if (churn > 0) {
+    parts.push(`churn:${churn}`);
   }
 
   if (input.stats) {
