@@ -178,7 +178,12 @@ CREATE TABLE IF NOT EXISTS scorecard (
 
   -- resume state (digests / catalog ids — no file paths)
   read_path_digests         TEXT NOT NULL DEFAULT '',
-  skills_ever_loaded        TEXT NOT NULL DEFAULT ''
+  skills_ever_loaded        TEXT NOT NULL DEFAULT '',
+
+  -- read-churn detection (issue #294)
+  duplicate_file_access     INTEGER DEFAULT 0,
+  artifact_retrieval_retries INTEGER DEFAULT 0,
+  churn_interventions       INTEGER DEFAULT 0
 );
 `;
 
@@ -186,6 +191,9 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "skill_load_events", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { name: "read_path_digests", ddl: "TEXT NOT NULL DEFAULT ''" },
   { name: "skills_ever_loaded", ddl: "TEXT NOT NULL DEFAULT ''" },
+  { name: "duplicate_file_access", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "artifact_retrieval_retries", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "churn_interventions", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 /** Fidelity columns added to context_artifacts (issue #293) for existing DBs. */

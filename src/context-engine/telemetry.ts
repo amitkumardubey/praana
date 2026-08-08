@@ -11,6 +11,13 @@ import {
   type DistillerCostRow,
   type SessionStatsRow,
 } from "./db.js";
+import {
+  ARTIFACT_RETRIEVE_RETRY_THRESHOLD,
+  CHURN_PATH_THRESHOLD,
+  buildArtifactRetrievalKey,
+  type ArtifactRetrieveParams,
+  type FileAccessChannel,
+} from "../tools/read-churn.js";
 
 
 export interface CompileTelemetryInput {
@@ -130,6 +137,12 @@ export interface ScorecardCounters {
   skillUnderloadEvents: number;
   skillReloadCount: number;
   skillTokensConsumed: number;
+  /** Path re-accessed via any channel after already seen this session. */
+  duplicateFileAccess: number;
+  /** Identical retrieve_artifact (same id + params key) beyond the first. */
+  artifactRetrievalRetries: number;
+  /** Times a recovery hint was emitted (once per path per session). */
+  churnInterventions: number;
 }
 
 export interface ScorecardMemorySnapshot {
@@ -165,9 +178,20 @@ interface ScorecardDbRow {
   skill_load_events?: number;
   read_path_digests?: string;
   skills_ever_loaded?: string;
+  duplicate_file_access?: number;
+  artifact_retrieval_retries?: number;
+  churn_interventions?: number;
 }
 
-export type ScorecardInc = Pick<ScorecardTracker, "inc" | "trackReadPath" | "trackSkillLoad">;
+export type ScorecardInc = Pick<
+  ScorecardTracker,
+  | "inc"
+  | "trackReadPath"
+  | "trackSkillLoad"
+  | "trackFileAccess"
+  | "trackArtifactRetrieve"
+  | "getFileAccessChannels"
+>;
 
 function encodeCsv(values: Iterable<string>): string {
   return [...values].join(",");
@@ -201,6 +225,9 @@ export class ScorecardTracker {
     skillUnderloadEvents: 0,
     skillReloadCount: 0,
     skillTokensConsumed: 0,
+    duplicateFileAccess: 0,
+    artifactRetrievalRetries: 0,
+    churnInterventions: 0,
   };
   private validityAvgStart = 0;
   private usefulnessAvgStart = 0;
@@ -214,6 +241,13 @@ export class ScorecardTracker {
   private startSnapshotCaptured = false;
   /** Memory DB path used to refresh mid-session end-averages. */
   private memoryDbPath?: string;
+  /** Session-local per-path access state (not persisted — like readPathMtimes). */
+  private fileAccess = new Map<
+    string,
+    { count: number; channels: Set<string>; intervened: boolean }
+  >();
+  /** Session-local identical-retrieve counts keyed by buildArtifactRetrievalKey. */
+  private artifactRetrievalKeys = new Map<string, number>();
 
   constructor(
     private readonly db: Database | null,
@@ -243,6 +277,63 @@ export class ScorecardTracker {
     if (mtimeMs !== undefined) {
       this.readPathMtimes.set(digest, mtimeMs);
     }
+    // Feed the cross-channel churn detector so shell/retrieve reads of the
+    // same path count toward a single intervention (issue #294).
+    this.trackFileAccess(absPath, "read_file");
+  }
+
+  /**
+   * Track a file access via any channel for cross-channel churn detection.
+   * Returns per-path state including whether a recovery hint should fire.
+   */
+  trackFileAccess(
+    absPath: string,
+    channel: FileAccessChannel,
+  ): { count: number; isDuplicate: boolean; shouldIntervene: boolean } {
+    if (!this.db) return { count: 0, isDuplicate: false, shouldIntervene: false };
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    let state = this.fileAccess.get(digest);
+    if (!state) {
+      state = { count: 0, channels: new Set(), intervened: false };
+      this.fileAccess.set(digest, state);
+    }
+    state.count += 1;
+    state.channels.add(channel);
+    const isDuplicate = state.count > 1;
+    if (isDuplicate) this.inc("duplicateFileAccess");
+
+    let shouldIntervene = false;
+    if (state.count >= CHURN_PATH_THRESHOLD && !state.intervened) {
+      state.intervened = true;
+      shouldIntervene = true;
+      this.inc("churnInterventions");
+    }
+    return { count: state.count, isDuplicate, shouldIntervene };
+  }
+
+  /**
+   * Track a retrieve_artifact call. Returns whether this is an identical
+   * retry (same id + filter params) that should yield a deterministic card.
+   */
+  trackArtifactRetrieve(
+    id: string,
+    params: ArtifactRetrieveParams = {},
+  ): { count: number; isRetry: boolean } {
+    if (!this.db) return { count: 0, isRetry: false };
+    const key = buildArtifactRetrievalKey(id, params);
+    const next = (this.artifactRetrievalKeys.get(key) ?? 0) + 1;
+    this.artifactRetrievalKeys.set(key, next);
+    const isRetry = next >= ARTIFACT_RETRIEVE_RETRY_THRESHOLD;
+    if (isRetry) this.inc("artifactRetrievalRetries");
+    return { count: next, isRetry };
+  }
+
+  /** Channels recorded for a path (for hint text). Empty if unknown. */
+  getFileAccessChannels(absPath: string): string[] {
+    if (!this.db) return [];
+    const digest = createHash("sha256").update(absPath).digest("hex");
+    const state = this.fileAccess.get(digest);
+    return state ? [...state.channels] : [];
   }
 
   /** Whether this absolute path was already tracked as read this session. */
@@ -365,6 +456,9 @@ export class ScorecardTracker {
       skillUnderloadEvents: row.skill_underload_events ?? 0,
       skillReloadCount: row.skill_reload_count ?? 0,
       skillTokensConsumed: row.skill_tokens_consumed ?? 0,
+      duplicateFileAccess: row.duplicate_file_access ?? 0,
+      artifactRetrievalRetries: row.artifact_retrieval_retries ?? 0,
+      churnInterventions: row.churn_interventions ?? 0,
     };
     this.recallUsedCount = row.recall_used_count ?? 0;
     this.validityAvgStart = row.validity_avg_start ?? 0;
@@ -439,7 +533,8 @@ export class ScorecardTracker {
         usefulness_avg_start, usefulness_avg_end,
         skills_loaded, skills_used, skill_underload_events,
         skill_reload_count, skill_tokens_consumed, skill_load_events,
-        read_path_digests, skills_ever_loaded
+        read_path_digests, skills_ever_loaded,
+        duplicate_file_access, artifact_retrieval_retries, churn_interventions
       ) VALUES (
         $sessionId, $engineOn, $createdAt,
         $artifactRetrieveCalls, $artifactCardsProduced, $repeatFileReads,
@@ -450,7 +545,8 @@ export class ScorecardTracker {
         $usefulnessAvgStart, $usefulnessAvgEnd,
         $skillsLoaded, $skillsUsed, $skillUnderloadEvents,
         $skillReloadCount, $skillTokensConsumed, $skillLoadEvents,
-        $readPathDigests, $skillsEverLoaded
+        $readPathDigests, $skillsEverLoaded,
+        $duplicateFileAccess, $artifactRetrievalRetries, $churnInterventions
       )`,
     ).run({
       $sessionId: this.sessionId,
@@ -478,6 +574,9 @@ export class ScorecardTracker {
       $skillLoadEvents: this.counters.skillLoadEvents,
       $readPathDigests: encodeCsv(this.readPathDigests),
       $skillsEverLoaded: encodeCsv(this.skillsEverLoaded),
+      $duplicateFileAccess: this.counters.duplicateFileAccess,
+      $artifactRetrievalRetries: this.counters.artifactRetrievalRetries,
+      $churnInterventions: this.counters.churnInterventions,
     });
   }
 
@@ -516,6 +615,7 @@ export function formatScorecardLines(input: FormatScorecardLinesInput): string[]
     "Scorecard (this session):",
     `  Engine     ${engineOn === undefined ? "n/a" : engineOn ? "on" : "off (measurement)"}`,
     `  Context    retrieve_artifact: ${counters.artifactRetrieveCalls}  artifact_cards: ${counters.artifactCardsProduced}  repeat_reads: ${counters.repeatFileReads}  searches: ${counters.turnEventSearches}`,
+    `  Context    dup_access: ${counters.duplicateFileAccess}  retrieve_retries: ${counters.artifactRetrievalRetries}  churn: ${counters.churnInterventions}`,
     `  Context    pressure: ${counters.pressureEvents}  compaction: ${counters.compactionTriggers}  contradictions: ${counters.decisionContradictions}`,
   ];
 
