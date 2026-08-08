@@ -236,7 +236,7 @@ Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceilin
 **Local-only numeric signals** for comparing engine vs classic and before/after changes. Rows live in the context-engine SQLite `scorecard` table (one row per session). No prompts, file contents, or paths are stored — only counts, averages, path digests, and skill catalog ids for resume deduplication.
 
 - **Active when:** `context_engine.enabled=true` (always persists) **or** `measurement_mode=true` (classic/debug — scorecard-only DB, no full engine).
-- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost).
+- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost), churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions — issue #294).
 - **Resume:** counters + memory start averages + read-path digests + skill ids restored from DB; `persistProgress()` after each turn.
 - **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#17).
 
@@ -264,6 +264,10 @@ block_repeat_reads = false   # false = warn and return artifact card (default); 
 ```
 
 The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
+
+### Read / retrieve churn detection (issue #294)
+
+Cross-channel path access (read_file, read-equivalent shell commands, retrieve_artifact of file-read artifacts) is counted in the scorecard. At `CHURN_PATH_THRESHOLD` (3) accesses of the same path, a soft recovery `warning` is attached to the tool result and `churnInterventions` increments once per path. Identical `retrieve_artifact` calls (same id + filters) return a deterministic artifact card instead of re-emitting the full payload (`artifactRetrievalRetries`). Read-equivalent shell commands (`cat`/`head`/`tail`/`sed -n`/`rg`/`grep`) are instrumented for telemetry only — never blocked. Parser: `src/tools/shell-read-detect.ts`. Helpers: `src/tools/read-churn.ts`.
 
 ### Resume hardening (issues #185, #220)
 
