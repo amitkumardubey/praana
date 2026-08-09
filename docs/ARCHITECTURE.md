@@ -316,7 +316,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### Git Tools (`src/tools/git.ts`, issue #26)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)
-- `git_diff(staged?, path?, context?) — structured diff (files, hunks, insertion/deletion stats); large output becomes a `"diff"` artifact with a stub card
+- `git_diff(staged?, path?, context?)` — structured diff (files, hunks, insertion/deletion stats); large output becomes a `"diff"` artifact with a stub card
 - `git_commit(message, paths?, all?)` — commit with guardrails (blocked in plan mode; optional TTY confirm via `edit.confirm`; does not push)
 
 Shared helpers live in `src/git-context.ts`. These are the first ship of the deterministic tools harness (#195); see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
