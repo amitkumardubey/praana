@@ -114,7 +114,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 2. **Tiered working memory with auto-hydration.** State objects (tasks, decisions, constraints, notes) demote from `active` to `soft` to `hard` based on idle turns. Two-pass hydration before each turn — substring keyword match, then BM25 — promotes them back when the current turn references them.
 
-3. **Tool-output artifact store with stub cards.** Git diffs, npm test output, TypeScript errors, ripgrep results are stored in a content-addressed artifact store. The model sees a tiny stub card (`[artifact: id | tool: command | N tokens raw]` + `Retrieve: retrieve_artifact("id")`). Full bytes are retrievable on demand via `retrieve_artifact`. Specialist truncators (npm-test, git-diff) may still collapse output at the tool edge.
+3. **Tool-output artifact store with stub cards.** Git diffs, npm test output, TypeScript errors, ripgrep results are stored in a content-addressed artifact store. The model sees a tiny stub card (`[artifact: id | tool: command | N tokens raw]` + `Retrieve: retrieve_artifact("id")`). Full bytes are retrievable on demand via `retrieve_artifact`. Specialist truncators may still fill a stored `summary` for stats / memory promotion; they are not embedded in the prompt.
 
 4. **Session resume by O(1) checkpoint + event replay.** A deterministic checkpoint is written every turn — active request, rolling narrative, decisions with rationale, constraints. Resume restores the checkpoint and replays only post-checkpoint events.
 
@@ -141,6 +141,8 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 **Skills:** discovers `SKILL.md` files in project and user paths. Compact catalog injected every turn, sorted by usefulness score. `load_skill(id)` fetches the full body on demand. Engine mode tracks whether each skill was used and updates its score in `memory.db`.
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
+
+**Tools:** structured `search_code` (ripgrep) and git tools (`git_status`, `git_diff`, `git_commit`) plus shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
 
 **Session safety:** plan mode gates mutating tools behind your approval; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
 

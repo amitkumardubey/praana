@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { execSync } from "node:child_process";
 import yaml from "js-yaml";
 import { getAppLogger } from "../logger.js";
 import type {
@@ -14,22 +13,11 @@ import type {
   SkillEffect,
 } from "./types.js";
 import { hashString } from "../hash.js";
+import { findGitRoot } from "../git-context.js";
 
 // ========================================================================
 // Helpers
 // ========================================================================
-
-function findGitRoot(cwd: string): string {
-  try {
-    return execSync("git rev-parse --show-toplevel", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return cwd;
-  }
-}
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;

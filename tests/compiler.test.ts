@@ -285,7 +285,7 @@ describe('Compiler', () => {
 
     expect(prompt).toContain('## Plan-Before-Execute Rule');
     expect(prompt).toContain('first response must be a plan only');
-    expect(prompt).toContain('Do not call batch_edit, batch_write, edit_file, write_file');
+    expect(prompt).toContain('Do not call batch_edit, batch_write, edit_file, git_commit, write_file');
     expect(prompt).toContain("'go', 'execute', 'proceed', or 'continue'");
   });
 

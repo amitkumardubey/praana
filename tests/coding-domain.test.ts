@@ -185,6 +185,8 @@ describe("inferContentTypeFromTool", () => {
 
   it("search_code tool → search_results", () => {
     expect(inferContentTypeFromTool("search_code", "src/")).toBe("search_results");
+    expect(inferContentTypeFromTool("git_diff", "staged")).toBe("diff");
+    expect(inferContentTypeFromTool("git_diff", undefined)).toBe("diff");
   });
 
   it("search_code inference ignores command content — query may mention tests", () => {

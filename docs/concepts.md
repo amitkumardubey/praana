@@ -179,6 +179,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Category | Tools | Mode |
 |---|---|---|
 | Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep-backed, JSON output). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
+| Git | `git_status`, `git_diff`, `git_commit` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail) | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group) | Both |
 | Session search | `search_session_log` (in-session events) | Both |
@@ -186,11 +187,13 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
 | Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |
 
-`search_code` (#105) is the newest addition. It wraps `rg --json` and returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. Ripgrep is resolved from `$PATH` by default; the `[search_code] rg_path` config overrides the binary. Large outputs flow through the ripgrep distiller automatically.
+`search_code` (#105) wraps `rg --json` and returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. Ripgrep is resolved from `$PATH` by default; the `[search_code] rg_path` config overrides the binary.
+
+Structured git tools (#26) are the first ship of the deterministic tools harness (#195). They return verified JSON instead of porcelain text. Large `git_diff` output is stored losslessly and shown as a stub card in the prompt; `DiffDistiller` may still fill the stored `summary` for stats / memory promotion, but it is not the prompt size-control path.
 
 ## Plan Mode
 
-Plan mode (#221) is a safety gate between the agent's reasoning and any state-mutating tool. When armed (via `/plan on`, or auto-detected intent), **mutating tools are blocked** — `write_file`, `edit_file`, and shell commands that create branches or write files — until you approve (`/plan execute`). Read-only tools (`read_file`, `search_code`, `recall`, state reads) stay available so the agent can keep investigating. The gate is enforced by a `pre_tool_call` hook using `Session.planMode` state from `src/plan-mode.ts`, and a matching **Plan-Before-Execute** rule is injected into the engine system frame by `compiler.ts`, so the model is told to plan before acting. Plan mode persists across resume via a `system_note` event. Headless `praana run` / Harbor sets `Session.headless = true`, which omits that prompt rule and skips plan-mode auto-enter (no interactive approver).
+Plan mode (#221) is a safety gate between the agent's reasoning and any state-mutating tool. When armed (via `/plan on`, or auto-detected intent), **mutating tools are blocked** — `write_file`, `edit_file`, `git_commit`, and shell commands that create branches or write files — until you approve (`/plan execute`). Read-only tools (`read_file`, `search_code`, `git_status`, `git_diff`, `recall`, state reads) stay available so the agent can keep investigating. The gate is enforced by a `pre_tool_call` hook using `Session.planMode` state from `src/plan-mode.ts`, and a matching **Plan-Before-Execute** rule is injected into the engine system frame by `compiler.ts`, so the model is told to plan before acting. Plan mode persists across resume via a `system_note` event. Headless `praana run` / Harbor sets `Session.headless = true`, which omits that prompt rule and skips plan-mode auto-enter (no interactive approver).
 
 ---
 

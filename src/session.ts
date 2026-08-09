@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { execSync } from "node:child_process";
 import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
@@ -11,6 +10,7 @@ import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { SkillStatsStore } from "./skills/skill-stats-store.js";
 import { hashString } from "./hash.js";
+import { findGitBranch, findGitRoot } from "./git-context.js";
 import {
   EventLog,
   writeSessionMeta,
@@ -1503,34 +1503,6 @@ async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): 
   });
   const done = promise.then(() => true);
   return Promise.race([done, timeout]);
-}
-
-/** Find git root of the given directory, or return the directory itself. */
-function findGitRoot(cwd: string): string {
-  try {
-    return execSync("git rev-parse --show-toplevel", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return cwd;
-  }
-}
-
-/** Current git branch, or null when detached HEAD or not in a git repo. */
-function findGitBranch(cwd: string): string | null {
-  try {
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", {
-      cwd,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    if (!branch || branch === "HEAD") return null;
-    return branch;
-  } catch {
-    return null;
-  }
 }
 
 /**

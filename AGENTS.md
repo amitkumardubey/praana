@@ -201,6 +201,8 @@ src/
     knowledge.ts — Cognitive Memory tools (recall, remember)
     system.ts    — System tools (shell, read_file, write_file, edit_file)
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
+    git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
+  git-context.ts — shared getGitContext / findGitRoot helpers
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables
@@ -250,7 +252,7 @@ At session end, the context engine records which tools were called and which art
 A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
 
 - `/plan <on|off|execute>` toggles the gate. `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
-- While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
+- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, git_status, git_diff, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
 - PRAANA auto-detects plan/approval intent from the user's message and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate, and "plan the execution" does **not** arm it.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - **Headless gate:** `praana run` / Harbor sets `Session.headless = true`. That omits the engine **Plan-Before-Execute** system-frame rule and skips plan-mode auto-enter — there is no interactive user to say "proceed". Explicit `/plan on` is still available in TTY sessions only.

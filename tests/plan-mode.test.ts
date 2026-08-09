@@ -89,6 +89,7 @@ describe("isPlanModeMutatingTool", () => {
     expect(isPlanModeMutatingTool("write_file", {})).toBe(true);
     expect(isPlanModeMutatingTool("batch_edit", {})).toBe(true);
     expect(isPlanModeMutatingTool("batch_write", {})).toBe(true);
+    expect(isPlanModeMutatingTool("git_commit", { message: "feat: x" })).toBe(true);
   });
 
   it("blocks shell branch-creation commands", () => {
@@ -104,6 +105,8 @@ describe("isPlanModeMutatingTool", () => {
     expect(isPlanModeMutatingTool("read_file", { path: "a.txt" })).toBe(false);
     expect(isPlanModeMutatingTool("search_code", { query: "foo" })).toBe(false);
     expect(isPlanModeMutatingTool("recall", { query: "foo" })).toBe(false);
+    expect(isPlanModeMutatingTool("git_status", {})).toBe(false);
+    expect(isPlanModeMutatingTool("git_diff", { staged: true })).toBe(false);
   });
 
   it("allows non-branch shell commands", () => {

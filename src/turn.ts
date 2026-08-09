@@ -1548,6 +1548,16 @@ function toolCommandFromArgs(
   toolName: string,
   args: Record<string, unknown>,
 ): string | undefined {
+  if (toolName === "git_diff") {
+    const parts: string[] = [];
+    if (args.staged === true) parts.push("staged");
+    if (typeof args.path === "string" && args.path.length > 0) parts.push(args.path);
+    return parts.length > 0 ? parts.join(" ") : "unstaged";
+  }
+  if (toolName === "git_status") return "status";
+  if (toolName === "git_commit") {
+    return typeof args.message === "string" ? args.message.slice(0, 80) : "commit";
+  }
   if (typeof args.command === "string") return args.command;
   if (typeof args.path === "string") return args.path;
   if (typeof args.query === "string") return args.query;

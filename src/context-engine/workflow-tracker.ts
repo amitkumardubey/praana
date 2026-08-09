@@ -184,6 +184,7 @@ const MUTATING_TOOLS = new Set([
   "write_file",
   "batch_edit",
   "batch_write",
+  "git_commit",
   "shell",
 ]);
 
