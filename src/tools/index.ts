@@ -112,6 +112,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const gitTools = createGitTools({
     cwd: ctx.cwd,
     editConfirm: ctx.editConfirm,
+    sandbox: ctx.sandbox,
     getAbortSignal: ctx.getAbortSignal,
   });
 

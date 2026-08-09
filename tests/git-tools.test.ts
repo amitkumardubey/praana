@@ -2,13 +2,17 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import {
   createGitTools,
   parsePorcelainV2,
   parseUnifiedDiff,
+  resolveRepoPath,
+  runGitAsync,
   runGitCommit,
   runGitDiff,
   runGitStatus,
+  setGitExecutableForTests,
 } from "../src/tools/git.js";
 import { getGitContext, isGitRepo } from "../src/git-context.js";
 
@@ -201,5 +205,114 @@ describe.skipIf(!hasGit)("git tools integration", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/Nothing staged/i);
+  });
+
+  it("git_commit with paths does not include unrelated pre-staged files", async () => {
+    writeFileSync(join(testDir, "a.txt"), "a\n");
+    writeFileSync(join(testDir, "b.txt"), "b\n");
+    git(testDir, ["add", "a.txt", "b.txt"]);
+    git(testDir, ["commit", "-m", "chore: add a and b"]);
+
+    writeFileSync(join(testDir, "a.txt"), "a2\n");
+    writeFileSync(join(testDir, "b.txt"), "b2\n");
+    git(testDir, ["add", "a.txt"]); // pre-staged unrelated file
+
+    const result = await runGitCommit(testDir, {
+      message: "fix: only b",
+      paths: ["b.txt"],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.filesCommitted).toEqual(["b.txt"]);
+    expect(result.filesCommitted).not.toContain("a.txt");
+
+    // a.txt remains staged for a later commit
+    const status = await runGitStatus(testDir);
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.staged.some((e) => e.path === "a.txt")).toBe(true);
+  });
+
+  it("resolves path args relative to session cwd, not repo root", async () => {
+    const sub = join(testDir, "packages", "foo");
+    mkdirSync(join(sub, "src"), { recursive: true });
+    writeFileSync(join(sub, "src", "a.ts"), "export const a = 1;\n");
+    git(testDir, ["add", "packages/foo/src/a.ts"]);
+    git(testDir, ["commit", "-m", "chore: add package file"]);
+
+    writeFileSync(join(sub, "src", "a.ts"), "export const a = 2;\n");
+    const diff = await runGitDiff(sub, { path: "src/a.ts" });
+    expect(diff.ok).toBe(true);
+    if (!diff.ok) return;
+    expect(diff.files.some((f) => f.path === "packages/foo/src/a.ts")).toBe(true);
+    expect(diff.stats.insertions + diff.stats.deletions).toBeGreaterThan(0);
+  });
+
+  it("cancel after confirm does not leave newly staged paths", async () => {
+    writeFileSync(join(testDir, "readme.md"), "hello\ncancel-me\n");
+    const originalStdin = process.stdin;
+    Object.defineProperty(process, "stdin", {
+      value: Readable.from(["n\n"]),
+      configurable: true,
+    });
+    try {
+      const result = await runGitCommit(
+        testDir,
+        { message: "feat: should cancel", paths: ["readme.md"] },
+        { editConfirm: true },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toMatch(/cancelled/i);
+    } finally {
+      Object.defineProperty(process, "stdin", {
+        value: originalStdin,
+        configurable: true,
+      });
+    }
+
+    const status = await runGitStatus(testDir);
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.staged.some((e) => e.path === "readme.md")).toBe(false);
+    expect(status.unstaged.some((e) => e.path === "readme.md")).toBe(true);
+  });
+
+  it("blocks git tools when sandbox allowlist excludes the repo", async () => {
+    const tools = createGitTools({
+      cwd: testDir,
+      sandbox: { enabled: true, allowed_paths: ["/tmp/praana-sandbox-elsewhere"] },
+    });
+    const status = await tools.git_status.execute({});
+    expect(status.ok).toBe(false);
+    if (status.ok) return;
+    expect(status.error).toMatch(/sandbox/i);
+  });
+
+  it("runGitAsync returns structured error when git binary is missing", async () => {
+    setGitExecutableForTests("/nonexistent/praana-missing-git");
+    try {
+      const result = await runGitAsync(testDir, ["status"]);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/git executable not found/i);
+    } finally {
+      setGitExecutableForTests("git");
+    }
+  });
+});
+
+describe("resolveRepoPath", () => {
+  it("rewrites cwd-relative paths against repo root", () => {
+    const repoRoot = "/repo";
+    const sessionCwd = "/repo/packages/foo";
+    expect(resolveRepoPath(sessionCwd, repoRoot, "src/a.ts")).toEqual({
+      ok: true,
+      path: "packages/foo/src/a.ts",
+    });
+  });
+
+  it("rejects paths outside the repository", () => {
+    const result = resolveRepoPath("/repo/packages/foo", "/repo", "../../../outside");
+    expect(result.ok).toBe(false);
   });
 });

@@ -66,7 +66,8 @@ a tool needs distinct UX.
 
 - Subprocess `git` only (no new git library dependency).
 - Structured JSON responses documented in tool descriptions.
-- `git_commit` blocked in plan mode; optional confirm via `edit.confirm`.
+- `git_commit` blocked in plan mode; optional TTY confirm via `edit.confirm`
+  (default `false` = auto-commit; set `true` for the #26 confirmation AC).
 - Large diffs become `"diff"` artifacts with stub cards — **not** a prompt-side
   git-diff distiller path.
 
