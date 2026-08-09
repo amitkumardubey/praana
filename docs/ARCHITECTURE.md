@@ -18,6 +18,7 @@ src/
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
+  hooks/         — Internal turn-loop hook registry + builtin plan-mode / write-path handlers
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
@@ -72,7 +73,7 @@ src/
   tools/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
-    system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit; write-path concurrency guards
+    system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
@@ -421,7 +422,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 
 ### Plan mode (issue #221)
 
-A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the runtime gate in `turn.ts` and the system-frame rule injected by `compiler.ts`.
+A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
 
 - `/plan <on|off|execute>` toggles the gate: `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
 - While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch listing/renaming/deleting and read-only shell stay allowed.
@@ -454,7 +455,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` executes the pending batch concurrently. `write_file` / `edit_file` / `batch_write` / `batch_edit` take a per-path lock in `system.ts`; a second concurrent mutator (or a concurrent `read_file` of a path mid-write) fails fast with a clear error. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Plan-mode and write-path guards are builtin hook handlers: mutating tools in plan mode are denied, and `write_file` / `edit_file` / `batch_write` / `batch_edit` take a per-path lock so a second concurrent mutator (or a concurrent `read_file` of a path mid-write) fails fast. Independent reads, searches, and recall calls are safe to batch.
 
 ### Onboarding, credentials, and settings
 

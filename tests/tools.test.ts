@@ -4,6 +4,7 @@ import { createMemoryTools, mirrorToCognitiveMemory } from '../src/tools/memory.
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
 import { ContextEngine } from '../src/context-engine/index.js';
 import { createSystemTools } from '../src/tools/system.js';
+import { createBuiltinHookRegistry } from '../src/hooks/index.js';
 import type { EventLog } from '../src/event-log.js';
 import type { StateGraph } from '../src/state-graph.js';
 import type { MemoryStore } from '../src/memory/index.js';
@@ -905,6 +906,8 @@ describe('System Tools (createSystemTools)', () => {
     it('read_file fails when a write to the same path is in progress', async () => {
       writeFileSync(join(testDir, 'race.txt'), 'old content');
       const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+      const hooks = createBuiltinHookRegistry(testDir);
+      const session = { cwd: testDir, isPlanMode: () => false };
       const { PassThrough } = await import('node:stream');
       const mockStdin = new PassThrough();
       const originalStdin = process.stdin;
@@ -914,25 +917,46 @@ describe('System Tools (createSystemTools)', () => {
       setUiWriters({ stderr: () => {} });
 
       try {
-        // Start edit_file — it acquires the write lock, then blocks on the
-        // readline confirmation prompt, leaving the lock held.
-        const editPromise = confirmTools.edit_file.execute({
+        const editArgs = {
           path: 'race.txt',
           oldText: 'old content',
           newText: 'new content',
+        };
+        const preEdit = await hooks.runPreToolCall({
+          toolName: 'edit_file',
+          args: editArgs,
+          session,
         });
+        expect(preEdit.action).toBe('continue');
+
+        // Start edit_file — lock is already held by pre_tool_call; execute
+        // then blocks on the readline confirmation prompt.
+        const editPromise = confirmTools.edit_file.execute(editArgs);
 
         // Let the event loop run so edit_file reaches the await point.
         await new Promise((r) => setTimeout(r, 50));
 
         // read_file should fail — a write to this path is in progress.
-        const readResult = await confirmTools.read_file.execute({ path: 'race.txt' });
-        expect(readResult.ok).toBe(false);
-        expect((readResult as any).error).toContain('in progress');
+        const preRead = await hooks.runPreToolCall({
+          toolName: 'read_file',
+          args: { path: 'race.txt' },
+          session,
+        });
+        expect(preRead.action).toBe('block');
+        if (preRead.action === 'block') {
+          expect(preRead.error).toContain('in progress');
+        }
 
         // Unblock the edit by providing stdin input.
         mockStdin.write('n\n');
-        await editPromise;
+        const editResult = await editPromise;
+        await hooks.runPostToolCall({
+          toolName: 'edit_file',
+          args: editArgs,
+          result: editResult,
+          isError: false,
+          session,
+        });
       } finally {
         Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
         setUiWriters();

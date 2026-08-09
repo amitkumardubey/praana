@@ -184,7 +184,8 @@ src/
   provider-catalog.ts — Live model catalogs (HTTP `/models` + Bedrock control plane); 6h disk cache
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
-  plan-mode.ts   — Plan-mode gate (enter/exit/is + intent/approval detection); shared by turn.ts and compiler.ts
+  plan-mode.ts   — Plan-mode detection helpers; runtime gate is a pre_tool_call hook
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
@@ -198,7 +199,7 @@ src/
     index.ts     — Tool registry
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
-    system.ts    — System tools (shell, read_file, write_file, edit_file); write-path concurrency guards
+    system.ts    — System tools (shell, read_file, write_file, edit_file)
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
@@ -246,7 +247,7 @@ At session end, the context engine records which tools were called and which art
 
 ### Plan mode (issue #221)
 
-A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the runtime gate in `turn.ts` and the system-frame rule injected by `compiler.ts`.
+A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
 
 - `/plan <on|off|execute>` toggles the gate. `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
 - While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
@@ -298,15 +299,16 @@ Compile mode is selected in `turn.ts`: engine when `context_engine.enabled=true`
 User input
   → auto-hydrate matching peripheral state (two-pass: substring keyword + BM25 relevance)
   → fetch all workflow patterns; classify task type
+  → pre_compile hooks
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
-  → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response with tool calls
-  → execute pending tool calls concurrently (write-path guards reject parallel mutators on the same path)
+  → pre_tool_call hooks (plan-mode + write-path) then concurrent execute, then post_tool_call
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
   → markResidentSkillsUsed() if non-load-skill tools ran
   → persist scorecard progress
+  → post_turn hooks
   → print memory banner
 ```
 
@@ -314,12 +316,13 @@ User input
 
 ```
 User input
+  → pre_compile hooks
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
-  → enforce plan-mode gate (block mutating tools unless approved)
   → stream LLM response (shared + system + memory tools only)
-  → execute pending tool calls concurrently (same write-path guards)
+  → pre_tool_call hooks (plan-mode + write-path) then concurrent execute, then post_tool_call
   → log all events
   → increment turn count (no tier management, no skill tracking)
+  → post_turn hooks
   → print memory banner
 ```
 
@@ -362,7 +365,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 ## Common Gotchas
 
 - `edit_file` requires exact unique text match — whitespace-sensitive. Will fail on duplicate code blocks or trailing whitespace differences.
-- Parallel tool calls are allowed, but concurrent `write_file` / `edit_file` / `batch_*` targeting the **same path** fail with a write-path guard error — serialize dependent mutations.
+- Parallel tool calls are allowed, but concurrent `write_file` / `edit_file` / `batch_*` targeting the **same path** fail with a write-path `pre_tool_call` hook error — serialize dependent mutations.
 - Event log `fsyncSync` on every write — intentional for durability, affects throughput on fast tool loops.
 - Session log path is `events.jsonl` under `~/.praana/sessions/<session_id>/`. Legacy `events.log` files are migrated automatically on session open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.

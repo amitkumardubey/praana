@@ -85,6 +85,7 @@ import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
 import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
+import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Event } from "../src/types.js";
 
 afterAll(() => {
@@ -157,6 +158,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
   const session: any = {
     id: `test-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     cwd: "/home/test/project",
+    hooks: createBuiltinHookRegistry("/home/test/project"),
     config,
     eventLog,
     stateGraph,

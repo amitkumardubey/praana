@@ -172,6 +172,7 @@ import {
 } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
+import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { PraanaConfig, Event } from "../src/types.js";
 // ── Restore real modules after this file to prevent cross-test pollution ──
 afterAll(() => {
@@ -272,6 +273,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
   const session: any = {
     id: `test-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     cwd: "/home/test/project",
+    hooks: createBuiltinHookRegistry("/home/test/project"),
     config,
     eventLog,
     stateGraph,
