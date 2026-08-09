@@ -277,13 +277,35 @@ function countNoOpTools(toolName: string, result: unknown): number {
   return 0;
 }
 
-function buildScorecardNudge(
-  start: { repeatFileReads: number; noOpTools: number } | null | undefined,
-  end: { repeatFileReads: number; noOpTools: number } | null | undefined,
+export interface ScorecardNudgeSnapshot {
+  repeatFileReads: number;
+  noOpTools: number;
+  churnInterventions: number;
+}
+
+function snapshotScorecardNudge(
+  session: Session,
+  noOpTools = 0,
+): ScorecardNudgeSnapshot {
+  const c = session.scorecard?.getCounters?.();
+  return {
+    repeatFileReads: c?.repeatFileReads ?? 0,
+    noOpTools,
+    churnInterventions: c?.churnInterventions ?? 0,
+  };
+}
+
+export function buildScorecardNudge(
+  start: ScorecardNudgeSnapshot | null | undefined,
+  end: ScorecardNudgeSnapshot | null | undefined,
   turnRecallCalls: number,
   turnRecallHits: number,
 ): string | undefined {
   if (!start || !end) return undefined;
+  const churnDelta = end.churnInterventions - start.churnInterventions;
+  if (churnDelta > 0) {
+    return `Tip: read/retrieve churn detected; use one narrow retrieve_artifact or conclude.`;
+  }
   const repeatReadsDelta = end.repeatFileReads - start.repeatFileReads;
   const noOpToolsDelta = end.noOpTools - start.noOpTools;
   const recallHitRate = turnRecallCalls > 0 ? turnRecallHits / turnRecallCalls : 1;
@@ -514,6 +536,7 @@ export async function runTurn(
       workflowPatterns,
       agentHints: buildAgentHints({
         repeatFileReads: session.scorecard.getCounters().repeatFileReads,
+        churnInterventions: session.scorecard.getCounters().churnInterventions,
       }),
       filesReadIndex,
       artifactTokens: (id) =>
@@ -675,6 +698,8 @@ export async function runTurn(
   let interrupted = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
+  const nudgeStart = snapshotScorecardNudge(session);
+  let noOpToolsThisTurn = 0;
   // Tracks memory entries already reinforced this turn so a recalled entry is
   // boosted at most once even if it appears in multiple parallel batches.
   const reinforcedEntryIdsThisTurn = new Set<string>();
@@ -987,6 +1012,7 @@ export async function runTurn(
       // Process results in original order to keep history/event log deterministic.
       for (const { tc, result, isError } of executedResults) {
         toolResults.push({ toolCallId: tc.toolCallId, toolName: tc.toolName, result });
+        if (!isError) noOpToolsThisTurn += countNoOpTools(tc.toolName, result);
 
         let promptResultText = toolResultRawText(result);
         let artifactId: string | undefined;
@@ -1283,6 +1309,12 @@ export async function runTurn(
     distillerSavingsTurn: turnDistillerSavings,
   });
   const stats = computeMemoryStats(session, autoHydrated.length, turnInputTokens, turnOutputTokens);
+  stats.nudge = buildScorecardNudge(
+    nudgeStart,
+    snapshotScorecardNudge(session, noOpToolsThisTurn),
+    stats.recallCalls,
+    stats.recallHits,
+  );
   s.onMemoryBanner?.(stats);
 
   return fullResponse;
@@ -1432,6 +1464,10 @@ export interface MemoryBannerStats {
   outputTokens: number;
   /** Session-scoped scorecard repeat_file_reads (for footer nudge). */
   repeatFileReads?: number;
+  /** Session-scoped churn interventions (issue #294, for footer nudge). */
+  churnInterventions?: number;
+  /** Per-turn tip when scorecard signals fire this turn (issue #223 / #294). */
+  nudge?: string;
 }
 
 function commitTurnContextDisplay(
@@ -1484,6 +1520,7 @@ export function computeMemoryStats(
     promptTokens: promptTokens ?? 0,
     outputTokens: outputTokens ?? 0,
     repeatFileReads: session.scorecard?.getCounters?.().repeatFileReads ?? 0,
+    churnInterventions: session.scorecard?.getCounters?.().churnInterventions ?? 0,
   };
 }
 

@@ -10,7 +10,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { dirname, resolve, isAbsolute, extname, normalize } from "node:path";
+import { dirname, resolve, isAbsolute, extname, normalize, relative } from "node:path";
 import { homedir } from "node:os";
 import * as toml from "toml";
 import type { SandboxConfig } from "../types.js";
@@ -21,6 +21,8 @@ import { estimateTokens } from "../token-estimate.js";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
+import { detectShellReads } from "./shell-read-detect.js";
+import { buildPathChurnHint } from "./read-churn.js";
 
 /**
  * Validate content for known structured formats.
@@ -388,7 +390,7 @@ export function createSystemTools(ctx: SystemToolContext) {
           return { ok: false, stdout: "", stderr: "Interrupted", exitCode: 130 };
         }
 
-        return executeShellCommand({
+        const result = await executeShellCommand({
           command,
           cwd,
           sandbox,
@@ -401,6 +403,31 @@ export function createSystemTools(ctx: SystemToolContext) {
             ? (chunk) => process.stderr.write(chunk)
             : undefined,
         });
+
+        // Telemetry only — never block, never alter stdout/stderr/exitCode.
+        // Detect read-equivalent commands and attach a soft recovery warning
+        // when the same path has been accessed repeatedly (issue #294).
+        if (result.ok && skillScorecard?.trackFileAccess) {
+          const detected = detectShellReads(command);
+          if (detected) {
+            let warning: string | undefined;
+            for (const p of detected.paths) {
+              const absPath = resolvePath(p);
+              const outcome = skillScorecard.trackFileAccess(absPath, "shell");
+              if (outcome.shouldIntervene) {
+                const channels = skillScorecard.getFileAccessChannels?.(absPath)
+                  ?? ["shell"];
+                const display = absPath.startsWith(cwd)
+                  ? relative(cwd, absPath) || p
+                  : p;
+                warning = buildPathChurnHint(display, outcome.count, channels);
+              }
+            }
+            if (warning) return { ...result, warning };
+          }
+        }
+
+        return result;
       },
     }),
 

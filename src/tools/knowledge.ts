@@ -1,5 +1,7 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
+import { buildArtifactCard } from "../context-engine/summarize.js";
+import { buildPathChurnHint, buildRetrieveChurnHint } from "./read-churn.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
 import type { ContextEngine } from "../context-engine/index.js";
@@ -14,6 +16,19 @@ export interface KnowledgeToolContext {
   skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
   getLastResetBoundaryTurn?: () => number;
+}
+
+function trackRetrievePathAccess(
+  art: { sourceTool: string; command?: string },
+  scorecard?: ScorecardInc,
+): string | undefined {
+  if (art.sourceTool !== "read_file" || !art.command || !scorecard?.trackFileAccess) {
+    return undefined;
+  }
+  const outcome = scorecard.trackFileAccess(art.command, "retrieve");
+  if (!outcome.shouldIntervene) return undefined;
+  const channels = scorecard.getFileAccessChannels?.(art.command) ?? ["retrieve"];
+  return buildPathChurnHint(art.command, outcome.count, channels);
 }
 
 export function createKnowledgeTools(ctx: KnowledgeToolContext) {
@@ -95,17 +110,69 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             jsonPath: z.string().optional().describe("Extract a value from JSON content (dot-separated path)"),
           }),
           execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
-            const retrieved = contextEngine.retrieveArtifact(id, getCurrentTurn(), {
-              grep,
-              lineStart,
-              lineEnd,
-              jsonPath,
-            });
+            const params = { grep, lineStart, lineEnd, jsonPath };
+            const priorCount =
+              ctx.skillScorecard?.getArtifactRetrieveCount?.(id, params) ?? 0;
+
+            // Identical successful retry (same id + filters) → deterministic
+            // card without retrieveArtifact side effects (access_count /
+            // lastAccessedTurn / recordArtifactAccess). Failed keys are never
+            // recorded, so this path only runs after a prior success (#294).
+            if (priorCount >= 1) {
+              const art = contextEngine.getArtifact(id);
+              if (art) {
+                const track = ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
+                ctx.skillScorecard?.inc("artifactRetrieveCalls");
+                const pathWarning = trackRetrievePathAccess(art, ctx.skillScorecard);
+                const warning = [
+                  buildRetrieveChurnHint(id, track?.count ?? priorCount + 1),
+                  pathWarning,
+                ].filter(Boolean).join("\n") || undefined;
+                eventLog.append({
+                  kind: "system_note",
+                  actor: "kernel",
+                  payload: {
+                    type: "artifact_retrieve_retry",
+                    id,
+                    grep: grep ?? null,
+                    lineStart: lineStart ?? null,
+                    lineEnd: lineEnd ?? null,
+                    jsonPath: jsonPath ?? null,
+                    count: track?.count ?? 0,
+                  },
+                });
+                return {
+                  ok: true,
+                  id,
+                  content: buildArtifactCard(
+                    art.id,
+                    art.sourceTool,
+                    art.command,
+                    art.rawTokens,
+                  ),
+                  warning,
+                  skipped_payload: true,
+                  original_turn: art.createdTurn,
+                };
+              }
+            }
+
+            const retrieved = contextEngine.retrieveArtifact(
+              id,
+              getCurrentTurn(),
+              params,
+            );
             if (!retrieved.ok) {
               return { ok: false, error: retrieved.error };
             }
 
+            ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
             ctx.skillScorecard?.inc("artifactRetrieveCalls");
+
+            const art = contextEngine.getArtifact(id);
+            const pathWarning = art
+              ? trackRetrievePathAccess(art, ctx.skillScorecard)
+              : undefined;
 
             eventLog.append({
               kind: "system_note",
@@ -120,7 +187,12 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               },
             });
 
-            return { ok: true, id, content: retrieved.content };
+            return {
+              ok: true,
+              id,
+              content: retrieved.content,
+              ...(pathWarning ? { warning: pathWarning } : {}),
+            };
           },
         }),
       }

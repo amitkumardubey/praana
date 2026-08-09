@@ -98,6 +98,30 @@ describe("PiTuiSink", () => {
     expect(persistEntry).toHaveBeenCalled();
   });
 
+  it("emits a system_line for scorecard nudge and passes churn to the footer", () => {
+    const { sink, projection } = makeSink({ ambient: "quiet" });
+    sink.nextGroup();
+    sink.onMemoryBanner({
+      activeState: 0,
+      totalState: 0,
+      digestLen: 0,
+      recallCalls: 0,
+      recallHits: 0,
+      autoHydrated: 0,
+      promptTokens: 0,
+      outputTokens: 0,
+      churnInterventions: 2,
+      nudge: "Tip: read/retrieve churn detected; use one narrow retrieve_artifact or conclude.",
+    });
+    sink.appendTurnFooter(10);
+
+    const entries = projection.entries();
+    const tip = entries.find((e) => e.role === "system");
+    expect(tip?.text).toContain("churn detected");
+    const footer = entries.find((e) => e.role === "turn_footer");
+    expect(footer?.text).toContain("churn:2");
+  });
+
   it("projects multiple parallel tool calls as distinct rows", () => {
     const { sink, projection } = makeSink();
     sink.nextGroup();

@@ -489,6 +489,13 @@ describe('Compiler', () => {
     expect(hint).toContain('retrieve_artifact');
   });
 
+  it('builds agent hints for churn interventions', () => {
+    expect(buildAgentHints({ repeatFileReads: 0, churnInterventions: 0 })).toBe('');
+    const text = buildAgentHints({ repeatFileReads: 0, churnInterventions: 2 });
+    expect(text).toContain('churn_interventions: 2');
+    expect(text).toContain('retrieve_artifact');
+  });
+
   describe('buildFilesReadIndexSection', () => {
     it('returns empty string when no files have been read', () => {
       const section = buildFilesReadIndexSection([], '/proj');

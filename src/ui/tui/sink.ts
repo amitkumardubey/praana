@@ -240,6 +240,15 @@ export class PiTuiSink implements TurnUiSink {
   onMemoryBanner(stats: MemoryBannerStats): void {
     this.bufferedStats = stats;
 
+    if (stats.nudge) {
+      this.applyTranscriptEvent({
+        type: "system_line",
+        id: this.nextId("nudge"),
+        group: this.group,
+        text: stats.nudge,
+      });
+    }
+
     if (this.opts.ambient === "inline" && stats.recallCalls > 0) {
       const preview =
         this.recallPreview ??
@@ -356,6 +365,7 @@ export class PiTuiSink implements TurnUiSink {
       distillerSavingsTurn: this.turnDistillerSavings,
       model,
       repeatFileReads: stats?.repeatFileReads,
+      churnInterventions: stats?.churnInterventions,
     });
     this.finalizeStreams();
     this.applyTranscriptEvent({

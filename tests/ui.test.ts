@@ -248,5 +248,18 @@ describe('UI', () => {
       expect(stderrOutput).toContain('auto+1');
       expect(stderrOutput).toContain('1500t');
     });
+
+    it('should print a scorecard nudge even when other stats are zero', () => {
+      printMemoryBanner({
+        activeState: 0,
+        totalState: 0,
+        digestLen: 0,
+        recallCalls: 0,
+        recallHits: 0,
+        autoHydrated: 0,
+        nudge: 'Tip: read/retrieve churn detected; use one narrow retrieve_artifact or conclude.',
+      });
+      expect(stderrOutput).toContain('Tip: read/retrieve churn detected');
+    });
   });
 });

@@ -196,14 +196,17 @@ export function printMemoryBanner(stats: {
   autoHydrated: number;
   promptTokens: number;
   outputTokens: number;
+  nudge?: string;
 }): void {
+  const hasNudge = Boolean(stats.nudge);
   if (
     stats.activeState === 0 &&
     stats.recallCalls === 0 &&
     stats.autoHydrated === 0 &&
     stats.digestLen === 0 &&
     !stats.promptTokens &&
-    !stats.outputTokens
+    !stats.outputTokens &&
+    !hasNudge
   ) return;
   const parts: string[] = [];
   if (stats.activeState > 0 || stats.totalState > 0) parts.push(`${stats.activeState}/${stats.totalState} state`);
@@ -212,6 +215,10 @@ export function printMemoryBanner(stats: {
   if (stats.autoHydrated > 0) parts.push(`auto+${stats.autoHydrated}`);
   if (stats.promptTokens && stats.promptTokens > 0) parts.push(`prompt ~${stats.promptTokens}t`);
   if (stats.outputTokens && stats.outputTokens > 0) parts.push(`out ~${stats.outputTokens}t`);
-  if (parts.length === 0) return;
-  stderr(`\n${chalk.dim(`[state] ${parts.join(" | ")}`)}\n`);
+  if (parts.length > 0) {
+    stderr(`\n${chalk.dim(`[state] ${parts.join(" | ")}`)}\n`);
+  }
+  if (hasNudge) {
+    stderr(`\n${chalk.dim(stats.nudge)}\n`);
+  }
 }
