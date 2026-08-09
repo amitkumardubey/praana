@@ -202,7 +202,7 @@ src/
     system.ts    — System tools (shell, read_file, write_file, edit_file)
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
-    ../git-context.ts — shared getGitContext / findGitRoot helpers
+  git-context.ts — shared getGitContext / findGitRoot helpers
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables

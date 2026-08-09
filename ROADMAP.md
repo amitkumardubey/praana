@@ -20,7 +20,7 @@ These exist and work — we're not claiming they're solved problems, just that t
 - **Terminal UI** — markdown rendering, syntax highlighting, themes, status bar, searchable `/model` selector, slash-command/file autocomplete
 - **Many providers** — Anthropic, OpenAI, DeepSeek, Groq, Google, Mistral, xAI, Fireworks, Together, OpenCode, OpenRouter, Amazon Bedrock (live catalog + IAM or API key), Ollama (local), umans
 - **Headless / eval** — `praana run` one-shot for CI; Harbor / Terminal-Bench installed-agent adapter (`harbor_eval/`)
-- **Tools** — code search, multi-file edits, concurrent independent tool calls (write-path guards), optional shell sandbox
+- **Tools** — code search, structured git (`git_status` / `git_diff` / `git_commit`), multi-file edits, concurrent independent tool calls (write-path guards), optional shell sandbox
 - **Two context modes** — default *engine* mode (tiered working memory, tool-output distillation, session checkpoint, skills) and a *classic* fallback/disable mode (full transcript, like most agents)
 - **Cognitive Memory** (optional) — extracts concise key-point learnings at session end (skips AGENTS.md/README content; classifies project vs global); ranked digest at next start
 - **Plan mode** — `/plan` gates mutating tools behind your approval so the agent plans before it changes files

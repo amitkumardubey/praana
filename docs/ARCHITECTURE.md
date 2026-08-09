@@ -75,8 +75,10 @@ src/
     tool-def.ts  — Type helper for defining tools
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
+    git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
+  git-context.ts — shared getGitContext / findGitRoot / findGitBranch helpers
   memory/
     index.ts     — Memory store exports
     store.ts     — High-level MemoryStore API (remember, recall, session start/end); isSessionGood export; project/global learning scope
@@ -312,6 +314,13 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
 
+### Git Tools (`src/tools/git.ts`, issue #26)
+- `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)
+- `git_diff(staged?, path?, context?) — structured diff (files, hunks, insertion/deletion stats); large output becomes a `"diff"` artifact with a stub card
+- `git_commit(message, paths?, all?)` — commit with guardrails (blocked in plan mode; optional TTY confirm via `edit.confirm`; does not push)
+
+Shared helpers live in `src/git-context.ts`. These are the first ship of the deterministic tools harness (#195); see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
+
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note
 - `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to Cognitive Memory
@@ -425,7 +434,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
 
 - `/plan <on|off|execute>` toggles the gate: `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
-- While armed, **mutating tools are blocked** (write_file, edit_file, shell commands that create branches or write files); read-only tools (read_file, search_code, recall, state reads) stay allowed. Branch listing/renaming/deleting and read-only shell stay allowed.
+- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, shell commands that create branches or write files); read-only tools (read_file, search_code, git_status, git_diff, recall, state reads) stay allowed. Branch listing/renaming/deleting and read-only shell stay allowed.
 - PRAANA auto-detects plan/approval intent and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate; "plan the execution" does **not** arm it.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - **Headless gate:** `praana run` (Harbor / CI) sets `Session.headless = true`. Compile then passes `planBeforeExecute: false` so the engine system frame omits **Plan-Before-Execute**, and `turn.ts` skips plan-mode auto-enter. Interactive TTY sessions keep both behaviours.
