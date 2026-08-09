@@ -10,6 +10,7 @@ import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
 import { createSearchCodeTool } from "./search-code.js";
+import { createGitTools } from "./git.js";
 
 export interface ToolRegistryContext {
   eventLog: EventLog;
@@ -108,12 +109,18 @@ export function createAllTools(ctx: ToolRegistryContext) {
     sandbox: ctx.sandbox,
     rgPath: ctx.searchCode?.rg_path,
   });
+  const gitTools = createGitTools({
+    cwd: ctx.cwd,
+    editConfirm: ctx.editConfirm,
+    getAbortSignal: ctx.getAbortSignal,
+  });
 
   return {
     ...memoryTools,
     ...knowledgeTools,
     ...systemTools,
     ...searchCodeTools,
+    ...gitTools,
   };
 }
 
@@ -149,6 +156,9 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "batch_write(files) — Write multiple files atomically",
   "batch_edit(edits) — Edit multiple files atomically",
   "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, include_hidden?, no_ignore?, multiline?, timeout?) — Structured ripgrep-backed code search (file:line:column matches with context and stats)",
+  "git_status() — Structured git working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)",
+  "git_diff(staged?, path?, context?) — Structured git diff with files, hunks, and stats",
+  "git_commit(message, paths?, all?) — Create a git commit with guardrails (blocked in plan mode; does not push)",
   "load_skill(skill_id) — Load a skill's full instructions from the catalog",
 ];
 

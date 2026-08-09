@@ -44,7 +44,7 @@ The honest gap today is that PRAANA *stores and recalls*, but we want it to genu
 
 Smaller, concrete improvements:
 
-- Git tools (`git_status`, `git_diff`, `git_commit`)
+- ~~Git tools (`git_status`, `git_diff`, `git_commit`)~~ — shipped (#26); first child of deterministic tools harness (#195)
 - Quality-of-life: searchable command picker, named sessions, session cost in the status bar
 
 ---

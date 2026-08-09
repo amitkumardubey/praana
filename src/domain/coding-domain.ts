@@ -89,13 +89,18 @@ export function inferContentTypeFromTool(
   sourceTool: string,
   command: string | undefined,
 ): ContentType | null {
+  // Dedicated structured tools classify by tool name (command is only a card label).
+  if (sourceTool === "search_code") {
+    return "search_results";
+  }
+  if (sourceTool === "git_diff") {
+    return "diff";
+  }
+
   if (!command) return null;
   const normalized = command.trim();
   if (!normalized) return null;
 
-  if (sourceTool === "search_code") {
-    return "search_results";
-  }
   if (
     sourceTool === "shell" &&
     /(^|\s)(rg|grep|ag|ack)(\s|$)/.test(normalized)

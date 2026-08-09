@@ -12,6 +12,7 @@ export const PLAN_MODE_BLOCKED_TOOLS = new Set([
   "write_file",
   "batch_edit",
   "batch_write",
+  "git_commit",
 ]);
 
 const PLAN_APPROVAL_WORDS = new Set(["go", "execute", "proceed", "continue"]);
