@@ -59,6 +59,7 @@ mock.module("../src/llm.js", () => ({
 
 import { stream as piStream } from "@earendil-works/pi-ai/compat";
 import { runTurn } from "../src/turn.js";
+import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Session } from "../src/session.js";
 
 function mockSession(): Session {
@@ -96,6 +97,7 @@ function mockSession(): Session {
       skills: { max_token_budget_ratio: 0.2 },
     },
     cwd: "/tmp",
+    hooks: createBuiltinHookRegistry("/tmp"),
     id: "test",
     debug: false,
     digest: null,

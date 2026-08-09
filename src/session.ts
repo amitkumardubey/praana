@@ -54,6 +54,7 @@ import {
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
+import { createBuiltinHookRegistry, type HookRegistry } from "./hooks/index.js";
 import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
@@ -135,6 +136,8 @@ export class Session {
   headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */
   planMode = false;
+  /** Internal turn-loop hook dispatcher (issue #297). */
+  hooks: HookRegistry;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */
   private lastKnownTaskType: string | null = null;
   private ended = false;
@@ -175,6 +178,7 @@ export class Session {
 
     this.stateGraph = new StateGraph();
     this.memoryEnabled = config.memory.enabled;
+    this.hooks = createBuiltinHookRegistry(cwd);
   }
 
   static createNew(id: string, cwd: string, config: PraanaConfig): Session {
@@ -284,6 +288,7 @@ export class Session {
       }
     }
 
+    await session.hooks.runSessionStart({ session, reason: "create" });
     return session;
   }
 
@@ -427,6 +432,7 @@ export class Session {
     }
 
     session.resumed = true;
+    await session.hooks.runSessionStart({ session, reason: "resume" });
     return session;
   }
 
@@ -1046,6 +1052,7 @@ export class Session {
 
     if (this.ended) return emptyStatus("skipped");
     this.ended = true;
+    await this.hooks.runSessionEnd({ session: this, reason });
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
     const recallUsedCount = this.getRecallUsedCount();

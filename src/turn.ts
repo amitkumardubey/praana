@@ -47,7 +47,6 @@ import { printDebug, printMemoryBanner } from "./ui.js";
 import {
   detectPlanApproval,
   detectPlanModeIntent,
-  isPlanModeMutatingTool,
 } from "./plan-mode.js";
 
 type ProviderUsage = { input: number; output: number; totalTokens: number };
@@ -502,6 +501,11 @@ export async function runTurn(
     resumeNote,
     planBeforeExecute: !session.headless,
   };
+
+  await session.hooks.runPreCompile({
+    session,
+    input: compileInput as unknown as Record<string, unknown>,
+  });
 
   let compiledPrompt: string;
   let promptMetrics: CompileMetrics;
@@ -970,22 +974,31 @@ export async function runTurn(
           if (!toolDef || typeof toolDef.execute !== "function") {
             isError = true;
             result = { ok: false, error: `Unknown tool: ${tc.toolName}` };
-          } else if (
-            session.isPlanMode() &&
-            isPlanModeMutatingTool(tc.toolName, tc.args as Record<string, unknown>)
-          ) {
-            isError = true;
-            result = {
-              ok: false,
-              error:
-                "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
-            };
           } else {
-            try {
-              result = await toolDef.execute(tc.args);
-            } catch (err: any) {
-              isError = true;
-              result = { ok: false, error: err?.message ?? "Tool execution failed" };
+            const pre = await session.hooks.runPreToolCall({
+              toolName: tc.toolName,
+              args: (tc.args ?? {}) as Record<string, unknown>,
+              session,
+            });
+            if (pre.action === "block") {
+              isError = pre.isError;
+              result = { ok: false, error: pre.error };
+            } else {
+              try {
+                result = await toolDef.execute(pre.args);
+              } catch (err: any) {
+                isError = true;
+                result = { ok: false, error: err?.message ?? "Tool execution failed" };
+              }
+              const post = await session.hooks.runPostToolCall({
+                toolName: tc.toolName,
+                args: pre.args,
+                result,
+                isError,
+                session,
+              });
+              result = post.result;
+              isError = post.isError;
             }
           }
 
@@ -1201,7 +1214,7 @@ export async function runTurn(
       historyTokens: turnHistoryTokens,
       distillerSavingsTurn: turnDistillerSavings,
     });
-    return finalizeInterruptedTurn(
+    return await finalizeInterruptedTurn(
       session,
       fullResponse,
       autoHydrated.length,
@@ -1300,6 +1313,7 @@ export async function runTurn(
     flushSkillTelemetry(session);
   }
   session.persistStateGraphCheckpoint();
+  await session.hooks.runPostTurn({ session, turn: session.getTurnCount() });
 
   // 8. Memory banner — count recall calls & hits from this turn's events
   commitTurnContextDisplay(session, s, {
@@ -1320,7 +1334,7 @@ export async function runTurn(
   return fullResponse;
 }
 
-function finalizeInterruptedTurn(
+async function finalizeInterruptedTurn(
   session: Session,
   partialResponse: string,
   autoHydrated: number,
@@ -1332,7 +1346,7 @@ function finalizeInterruptedTurn(
   sink?: TurnUiSink,
   providerUsage: ProviderUsage | null = null,
   recordedProviderUsage = false,
-): never {
+): Promise<never> {
   const trimmed = partialResponse.trim();
   const messageText = trimmed
     ? `${trimmed}\n\n[interrupted]`
@@ -1383,6 +1397,7 @@ function finalizeInterruptedTurn(
     flushSkillTelemetry(session);
   }
   session.persistStateGraphCheckpoint();
+  await session.hooks.runPostTurn({ session, turn: session.getTurnCount() });
 
   const stats = computeMemoryStats(session, autoHydrated, turnInputTokens, turnOutputTokens);
   if (sink) sink.onMemoryBanner?.(stats);

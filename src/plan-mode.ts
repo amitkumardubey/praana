@@ -3,8 +3,8 @@
  *
  * Centralises the logic for detecting when the user wants to enter/exit plan
  * mode and for deciding whether a tool call is mutating while plan mode is
- * active. Keeping this in one module lets the runtime gate (turn.ts) and the
- * system-frame prompt (compiler.ts) stay in sync.
+ * active. Keeping this in one module lets the pre_tool_call hook handler and
+ * the system-frame prompt (compiler.ts) stay in sync.
  */
 
 export const PLAN_MODE_BLOCKED_TOOLS = new Set([
