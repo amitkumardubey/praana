@@ -441,7 +441,7 @@ A guard that forces planning before any state-mutating action. `Session.planMode
 ### Scorecard nudges and agent hints (issues #223, #224)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
-- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low.
+- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
 - **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
 
 ### End-of-session epilogue (issue #181)

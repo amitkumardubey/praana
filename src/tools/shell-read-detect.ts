@@ -13,10 +13,19 @@ const SIMPLE_READERS = new Set([
 ]);
 const SEARCH_READERS = new Set(["rg", "grep"]);
 
+/** Strip quoted spans so operators inside quotes are not treated as shell syntax. */
+function stripQuotedSpans(command: string): string {
+  return command
+    .replace(/(?:^|\s)"[^"]*"(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)'[^']*'(?:\s|$)/g, " ")
+    .replace(/(?:^|\s)`[^`]*`(?:\s|$)/g, " ");
+}
+
 /** True if the command is a compound / piped shell expression we refuse to parse. */
 function isCompound(command: string): boolean {
-  // Any unquoted pipe, &&, ||, or ; means we bail (under-count > false positive).
-  return /(?: \| |&&|\|\||;)/.test(command);
+  // Unquoted pipe, &&, ||, or ; — whitespace-insensitive so `cat a.ts|head`
+  // is not mistaken for a read of `|head`. Under-count > false positive.
+  return /(?:\||&&|;)/.test(stripQuotedSpans(command));
 }
 
 /**
@@ -25,12 +34,8 @@ function isCompound(command: string): boolean {
  * following them should never be treated as read targets (issue #294).
  */
 function hasRedirection(command: string): boolean {
-  // Strip quoted spans so redirection operators inside quotes are ignored.
-  const withoutQuotes = command
-    .replace(/(?:^|\s)"[^"]*"(?:\s|$)/g, " ")
-    .replace(/(?:^|\s)'[^']*'(?:\s|$)/g, " ")
-    .replace(/(?:^|\s)`[^`]*`(?:\s|$)/g, " ");
-  return /\s(?:>>|>|<|2>&1|&>|&>>)\s/.test(` ${withoutQuotes} `);
+  const withoutQuotes = stripQuotedSpans(command);
+  return /(?:>>|>|<|2>&1|&>|&>>)/.test(withoutQuotes);
 }
 
 function tokenize(command: string): string[] {

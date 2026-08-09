@@ -110,6 +110,12 @@ describe("ScorecardTracker file-access churn", () => {
     });
     expect(c.isRetry).toBe(false); // different key
     expect(tracker.getCounters().artifactRetrievalRetries).toBe(1);
+    expect(tracker.getArtifactRetrieveCount("art_1", opts)).toBe(2);
+    expect(tracker.getArtifactRetrieveCount("art_1", {
+      lineStart: 21,
+      lineEnd: 40,
+    })).toBe(1);
+    expect(tracker.getArtifactRetrieveCount("art_missing")).toBe(0);
   });
 
   it("persists and restores new churn counters", () => {

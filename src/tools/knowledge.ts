@@ -1,7 +1,7 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import { buildArtifactCard } from "../context-engine/summarize.js";
-import { buildRetrieveChurnHint } from "./read-churn.js";
+import { buildPathChurnHint, buildRetrieveChurnHint } from "./read-churn.js";
 import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
 import type { ContextEngine } from "../context-engine/index.js";
@@ -16,6 +16,19 @@ export interface KnowledgeToolContext {
   skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
   getLastResetBoundaryTurn?: () => number;
+}
+
+function trackRetrievePathAccess(
+  art: { sourceTool: string; command?: string },
+  scorecard?: ScorecardInc,
+): string | undefined {
+  if (art.sourceTool !== "read_file" || !art.command || !scorecard?.trackFileAccess) {
+    return undefined;
+  }
+  const outcome = scorecard.trackFileAccess(art.command, "retrieve");
+  if (!outcome.shouldIntervene) return undefined;
+  const channels = scorecard.getFileAccessChannels?.(art.command) ?? ["retrieve"];
+  return buildPathChurnHint(art.command, outcome.count, channels);
 }
 
 export function createKnowledgeTools(ctx: KnowledgeToolContext) {
@@ -96,38 +109,25 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             lineEnd: z.number().int().positive().optional().describe("Last line to return (1-based)"),
             jsonPath: z.string().optional().describe("Extract a value from JSON content (dot-separated path)"),
           }),
-           execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
+          execute: async ({ id, grep, lineStart, lineEnd, jsonPath }) => {
             const params = { grep, lineStart, lineEnd, jsonPath };
-
-            // Validate the retrieval first so invalid requests always surface
-            // their real error. The retry/short-circuit path below only applies
-            // to requests that previously completed successfully (issue #294).
-            const retrieved = contextEngine.retrieveArtifact(
-              id,
-              getCurrentTurn(),
-              params,
-            );
-            if (!retrieved.ok) {
-              return { ok: false, error: retrieved.error };
-            }
-
-            const track = ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
-            const isRetry = track?.isRetry === true;
+            const priorCount =
+              ctx.skillScorecard?.getArtifactRetrieveCount?.(id, params) ?? 0;
 
             // Identical successful retry (same id + filters) → deterministic
-            // card, not the full payload. Honors the scorecard counter but
-            // short-circuits the body so runaway retrieve loops stop inflating
-            // context (issue #294).
-            if (isRetry) {
+            // card without retrieveArtifact side effects (access_count /
+            // lastAccessedTurn / recordArtifactAccess). Failed keys are never
+            // recorded, so this path only runs after a prior success (#294).
+            if (priorCount >= 1) {
               const art = contextEngine.getArtifact(id);
               if (art) {
-                const card = buildArtifactCard(
-                  art.id,
-                  art.sourceTool,
-                  art.command,
-                  art.rawTokens,
-                );
+                const track = ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
                 ctx.skillScorecard?.inc("artifactRetrieveCalls");
+                const pathWarning = trackRetrievePathAccess(art, ctx.skillScorecard);
+                const warning = [
+                  buildRetrieveChurnHint(id, track?.count ?? priorCount + 1),
+                  pathWarning,
+                ].filter(Boolean).join("\n") || undefined;
                 eventLog.append({
                   kind: "system_note",
                   actor: "kernel",
@@ -144,28 +144,35 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
                 return {
                   ok: true,
                   id,
-                  content: card,
-                  warning: buildRetrieveChurnHint(id, track?.count ?? 0),
+                  content: buildArtifactCard(
+                    art.id,
+                    art.sourceTool,
+                    art.command,
+                    art.rawTokens,
+                  ),
+                  warning,
                   skipped_payload: true,
                   original_turn: art.createdTurn,
                 };
               }
             }
 
+            const retrieved = contextEngine.retrieveArtifact(
+              id,
+              getCurrentTurn(),
+              params,
+            );
+            if (!retrieved.ok) {
+              return { ok: false, error: retrieved.error };
+            }
+
+            ctx.skillScorecard?.trackArtifactRetrieve?.(id, params);
             ctx.skillScorecard?.inc("artifactRetrieveCalls");
 
-            // Path-level tracking for file-read artifacts (first successful
-            // retrieve and onward). Feeds the cross-channel churn detector so
-            // retrieve + read_file + shell reads of the same path count toward
-            // a single intervention.
             const art = contextEngine.getArtifact(id);
-            if (
-              art?.sourceTool === "read_file"
-              && art.command
-              && ctx.skillScorecard?.trackFileAccess
-            ) {
-              ctx.skillScorecard.trackFileAccess(art.command, "retrieve");
-            }
+            const pathWarning = art
+              ? trackRetrievePathAccess(art, ctx.skillScorecard)
+              : undefined;
 
             eventLog.append({
               kind: "system_note",
@@ -180,7 +187,12 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               },
             });
 
-            return { ok: true, id, content: retrieved.content };
+            return {
+              ok: true,
+              id,
+              content: retrieved.content,
+              ...(pathWarning ? { warning: pathWarning } : {}),
+            };
           },
         }),
       }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ContextEngine } from "../src/context-engine/index.js";
+import { ContextEngine, ScorecardTracker } from "../src/context-engine/index.js";
 import { createKnowledgeTools } from "../src/tools/knowledge.js";
 import { buildArtifactCard } from "../src/context-engine/summarize.js";
 import type { EventLog } from "../src/event-log.js";
@@ -92,6 +92,9 @@ describe("retrieve_artifact identical-retry churn (#294)", () => {
 
     // Total retrieve calls still counts retries honestly.
     expect(scorecard.getCounters().artifactRetrieveCalls).toBe(2);
+
+    // Retry must not bump artifact access telemetry (promotion / TTL signals).
+    expect(engine.getArtifact(artifactId)!.accessCount).toBe(1);
   });
 
   it("different filters do not count as retries against each other", async () => {
@@ -125,5 +128,20 @@ describe("retrieve_artifact identical-retry churn (#294)", () => {
       lineEnd: 50,
     });
     expect(scorecard.getCounters().duplicateFileAccess).toBe(1);
+  });
+
+  it("tracks path access on identical retries and does not cache failed keys", async () => {
+    await tools.retrieve_artifact.execute({ id: artifactId });
+    expect(scorecard.getCounters().duplicateFileAccess).toBe(0);
+
+    const retry = await tools.retrieve_artifact.execute({ id: artifactId });
+    expect(retry.skipped_payload).toBe(true);
+    expect(scorecard.getCounters().duplicateFileAccess).toBe(1);
+    expect(scorecard.getArtifactRetrieveCount(artifactId)).toBe(2);
+
+    const missing = await tools.retrieve_artifact.execute({ id: "art_missing000" });
+    expect(missing.ok).toBe(false);
+    expect(scorecard.getArtifactRetrieveCount("art_missing000")).toBe(0);
+    expect(scorecard.getCounters().artifactRetrievalRetries).toBe(1);
   });
 });

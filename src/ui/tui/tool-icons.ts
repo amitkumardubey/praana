@@ -364,7 +364,7 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
     parts.push(`repeat_reads:${repeatReads}`);
   }
 
-  const churn = input.churnInterventions ?? 0;
+  const churn = input.churnInterventions ?? input.stats?.churnInterventions ?? 0;
   if (churn > 0) {
     parts.push(`churn:${churn}`);
   }

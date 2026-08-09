@@ -267,7 +267,7 @@ The read index is rebuilt on resume and invalidated on any write/edit, so post-e
 
 ### Read / retrieve churn detection (issue #294)
 
-Cross-channel path access (read_file, read-equivalent shell commands, retrieve_artifact of file-read artifacts) is counted in the scorecard. At `CHURN_PATH_THRESHOLD` (3) accesses of the same path, a soft recovery `warning` is attached to the tool result and `churnInterventions` increments once per path. Identical `retrieve_artifact` calls (same id + filters) return a deterministic artifact card instead of re-emitting the full payload (`artifactRetrievalRetries`). Read-equivalent shell commands (`cat`/`head`/`tail`/`sed -n`/`rg`/`grep`) are instrumented for telemetry only — never blocked. Parser: `src/tools/shell-read-detect.ts`. Helpers: `src/tools/read-churn.ts`.
+Cross-channel path access (read_file, read-equivalent shell commands, retrieve_artifact of file-read artifacts) is counted in the scorecard. At `CHURN_PATH_THRESHOLD` (3) accesses of the same path, a soft recovery `warning` is attached to the tool result and `churnInterventions` increments once per path. Identical `retrieve_artifact` calls (same id + filters) return a deterministic artifact card instead of re-emitting the full payload (`artifactRetrievalRetries`). Read-equivalent shell commands (`cat`/`head`/`tail`/`less`/`more`/`bat`/`sed -n`/`rg`/`grep`) are instrumented for telemetry only — never blocked. Parser: `src/tools/shell-read-detect.ts`. Helpers: `src/tools/read-churn.ts`. Post-edit `clearReadPath` resets the repeat-read index only; session churn counts still accumulate.
 
 ### Resume hardening (issues #185, #220)
 
@@ -277,7 +277,7 @@ Cross-channel path access (read_file, read-equivalent shell commands, retrieve_a
 ### Scorecard nudges and agent hints (issues #223, #224)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
-- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, or recall hit-rate is low — prompting adjustment.
+- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires — prompting adjustment.
 - **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses its threshold or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The repeat-read threshold is a single exported constant (`REPEAT_FILE_READS_THRESHOLD` in `compiler.ts`) shared by the engine hint and the TUI footer nudge.
 
 ### End-of-session epilogue (issue #181)

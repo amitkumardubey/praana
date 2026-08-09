@@ -190,6 +190,7 @@ export type ScorecardInc = Pick<
   | "trackSkillLoad"
   | "trackFileAccess"
   | "trackArtifactRetrieve"
+  | "getArtifactRetrieveCount"
   | "getFileAccessChannels"
 >;
 
@@ -328,6 +329,15 @@ export class ScorecardTracker {
     return { count: next, isRetry };
   }
 
+  /** Prior successful retrieve count for this id + filter key (0 if unseen). */
+  getArtifactRetrieveCount(
+    id: string,
+    params: ArtifactRetrieveParams = {},
+  ): number {
+    if (!this.db) return 0;
+    return this.artifactRetrievalKeys.get(buildArtifactRetrievalKey(id, params)) ?? 0;
+  }
+
   /** Channels recorded for a path (for hint text). Empty if unknown. */
   getFileAccessChannels(absPath: string): string[] {
     if (!this.db) return [];
@@ -350,7 +360,11 @@ export class ScorecardTracker {
     return this.readPathMtimes.get(digest);
   }
 
-  /** Forget a path after write/edit so a subsequent read_file is treated as fresh. */
+  /**
+   * Forget a path after write/edit so a subsequent read_file is treated as fresh.
+   * Does not reset `fileAccess` — session churn still accumulates across edits
+   * (repeat-read interceptor freshness is independent of cross-channel churn).
+   */
   clearReadPath(absPath: string): void {
     if (!this.db) return;
     const digest = createHash("sha256").update(absPath).digest("hex");

@@ -185,6 +185,29 @@ describe("formatTurnFooterDigest", () => {
     expect(line).toContain("churn:2");
   });
 
+  it("falls back to stats.churnInterventions when input field is omitted", () => {
+    const line = formatTurnFooterDigest({
+      durationMs: 10,
+      ambient: "quiet",
+      editCount: 0,
+      writeCount: 0,
+      ctxBeforePct: 0,
+      ctxAfterPct: 0,
+      stats: {
+        activeState: 0,
+        totalState: 0,
+        digestLen: 0,
+        recallCalls: 0,
+        recallHits: 0,
+        autoHydrated: 0,
+        promptTokens: 0,
+        outputTokens: 0,
+        churnInterventions: 3,
+      },
+    });
+    expect(line).toContain("churn:3");
+  });
+
   it("omits churn when interventions is 0", () => {
     const line = formatTurnFooterDigest({
       durationMs: 10,

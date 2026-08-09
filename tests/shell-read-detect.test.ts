@@ -38,6 +38,32 @@ describe("detectShellReads", () => {
     expect(detectShellReads("")).toBeNull();
   });
 
+  it("returns null for pipes without surrounding whitespace", () => {
+    expect(detectShellReads("cat a.ts|head")).toBeNull();
+    expect(detectShellReads("cat a.ts| head")).toBeNull();
+    expect(detectShellReads("cat a.ts |head")).toBeNull();
+  });
+
+  it("returns null for redirections, including without surrounding whitespace", () => {
+    expect(detectShellReads("cat a.ts > out.txt")).toBeNull();
+    expect(detectShellReads("cat a.ts>out.txt")).toBeNull();
+    expect(detectShellReads("cat a.ts >> out.txt")).toBeNull();
+    expect(detectShellReads("cat a.ts 2>&1")).toBeNull();
+    expect(detectShellReads("cat a.ts &> out.txt")).toBeNull();
+    expect(detectShellReads("head -n 20 < a.ts")).toBeNull();
+  });
+
+  it("still detects reads when > is only inside quotes", () => {
+    expect(detectShellReads('cat "a > b.ts"')).toEqual({
+      kind: "cat",
+      paths: ["a > b.ts"],
+    });
+    expect(detectShellReads("cat 'a > b.ts'")).toEqual({
+      kind: "cat",
+      paths: ["a > b.ts"],
+    });
+  });
+
   it("skips flags and treats -- as end of flags", () => {
     expect(detectShellReads("cat -n -- src/a.ts")?.paths).toEqual(["src/a.ts"]);
     expect(detectShellReads("head -n 10 -- foo.ts")?.paths).toEqual(["foo.ts"]);
