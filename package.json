@@ -16,6 +16,9 @@
     "llm"
   ],
   "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "bin": {
     "praana": "bin/praana.js",
     "pran": "bin/pran.js"
@@ -35,10 +38,15 @@
     "test": "bun test tests/",
     "test:watch": "bun test --watch tests/",
     "test:coverage": "bun test --coverage tests/",
+    "natives:build": "bun run --filter @praana/natives build",
+    "natives:build:debug": "bun run --filter @praana/natives build:debug",
+    "natives:smoke": "bun run --filter @praana/natives test:smoke",
+    "natives:test": "cargo test -p praana-natives && bun test tests/native-loader.test.ts",
     "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts",
     "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts"
   },
   "dependencies": {
+    "@praana/natives": "workspace:*",
     "@aws-sdk/client-bedrock": "^3.1093.0",
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",

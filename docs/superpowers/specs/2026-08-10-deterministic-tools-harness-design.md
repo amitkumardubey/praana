@@ -73,9 +73,13 @@ a tool needs distinct UX.
 
 ## Next consumers
 
-1. **#11 Phase 1** — tree-sitter / code intelligence tools using this contract.
-2. Hook consumers (#299, #300, #302, #303) that act on structured tool facts.
-3. Later native components: build-system integration, static analysis, runtime tools.
+1. **#313** — Rust/napi-rs native capability runtime (OMP-style). Prerequisite for
+   shipping tree-sitter in-process; design in
+   `2026-08-11-rust-native-runtime-design.md`.
+2. **#11 Phase 1** — tree-sitter / code intelligence tools using this contract
+   (first production consumer of #313).
+3. Hook consumers (#299, #300, #302, #303) that act on structured tool facts.
+4. Later native components: build-system integration, static analysis, runtime tools.
 
 ## Explicit non-goals
 

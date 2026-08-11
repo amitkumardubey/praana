@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/praana-natives"]
+
+[profile.release]
+lto = true
+strip = "symbols"
