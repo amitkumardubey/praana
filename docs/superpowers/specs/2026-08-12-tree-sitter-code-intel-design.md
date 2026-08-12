@@ -1,10 +1,11 @@
 # Tree-Sitter Code Intel Design (Issue #11 Phase 1)
 
 **Date:** 2026-08-12
-**Status:** Merged via #315; Rust grammar follow-up on `feat/issue-11-phase1-rust`
+**Status:** Merged via #315; Rust grammar follow-up in #316
 **Depends on:** Issue #313 / `2026-08-11-rust-native-runtime-design.md` (skeleton shipped)
 **Related epic:** Issue #195 (deterministic tools harness)
 **Related:** Issue #299 (post-edit verification — shared parse/import API)
+**Follow-on:** Issue #11 Phase 2 — `2026-08-12-lsp-phase2-design.md`
 
 ## Purpose
 

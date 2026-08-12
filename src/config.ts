@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as toml from "toml";
-import type { PraanaConfig, UserProviderConfig } from "./types.js";
+import type { LspConfig, PraanaConfig, UserProviderConfig } from "./types.js";
 import { getAppLogger, type ErrorCode } from "./logger.js";
 import {
   APP_HOME_DIR,
@@ -97,6 +97,14 @@ const DEFAULT_CONFIG: PraanaConfig = {
   native: {
     enabled: true,
     require: false,
+  },
+  lsp: {
+    enabled: false,
+    diagnostics: true,
+    format_on_edit: false,
+    timeout_ms: 5000,
+    max_file_lines: 10_000,
+    servers: {},
   },
   skills: {
     enabled: true,
@@ -597,6 +605,74 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.native.require !== "boolean") {
       configWarn("native.require must be boolean, defaulting to false");
       out.native.require = false;
+    }
+  }
+
+  // lsp config validation (issue #11 Phase 2)
+  const lspDefaults: LspConfig = {
+    enabled: false,
+    diagnostics: true,
+    format_on_edit: false,
+    timeout_ms: 5000,
+    max_file_lines: 10_000,
+    servers: {},
+  };
+  if (!out.lsp) {
+    out.lsp = { ...lspDefaults };
+  } else {
+    if (typeof out.lsp.enabled !== "boolean") {
+      configWarn("lsp.enabled must be boolean, defaulting to false");
+      out.lsp.enabled = lspDefaults.enabled;
+    }
+    if (typeof out.lsp.diagnostics !== "boolean") {
+      configWarn("lsp.diagnostics must be boolean, defaulting to true");
+      out.lsp.diagnostics = lspDefaults.diagnostics;
+    }
+    if (typeof out.lsp.format_on_edit !== "boolean") {
+      configWarn("lsp.format_on_edit must be boolean, defaulting to false");
+      out.lsp.format_on_edit = lspDefaults.format_on_edit;
+    }
+    if (
+      !Number.isFinite(out.lsp.timeout_ms) ||
+      !Number.isInteger(out.lsp.timeout_ms) ||
+      out.lsp.timeout_ms <= 0
+    ) {
+      configWarn("lsp.timeout_ms must be a positive integer, defaulting to 5000");
+      out.lsp.timeout_ms = lspDefaults.timeout_ms;
+    }
+    if (
+      !Number.isFinite(out.lsp.max_file_lines) ||
+      !Number.isInteger(out.lsp.max_file_lines) ||
+      out.lsp.max_file_lines <= 0
+    ) {
+      configWarn(
+        "lsp.max_file_lines must be a positive integer, defaulting to 10000",
+      );
+      out.lsp.max_file_lines = lspDefaults.max_file_lines;
+    }
+    if (
+      !out.lsp.servers ||
+      typeof out.lsp.servers !== "object" ||
+      Array.isArray(out.lsp.servers)
+    ) {
+      configWarn("lsp.servers must be a table of language → argv arrays");
+      out.lsp.servers = {};
+    } else {
+      const cleaned: Record<string, string[]> = {};
+      for (const [lang, argv] of Object.entries(out.lsp.servers)) {
+        if (
+          !Array.isArray(argv) ||
+          argv.length === 0 ||
+          !argv.every((a) => typeof a === "string" && a.length > 0)
+        ) {
+          configWarn(
+            `lsp.servers.${lang} must be a non-empty string array, ignoring`,
+          );
+          continue;
+        }
+        cleaned[lang] = argv;
+      }
+      out.lsp.servers = cleaned;
     }
   }
 

@@ -12,6 +12,8 @@ import { createSystemTools } from "./system.js";
 import { createSearchCodeTool } from "./search-code.js";
 import { createGitTools } from "./git.js";
 import { createCodeIntelTools } from "./code-intel.js";
+import { createLspTools } from "./lsp.js";
+import type { LspManager } from "../lsp/manager.js";
 
 export interface ToolRegistryContext {
   eventLog: EventLog;
@@ -52,6 +54,7 @@ export interface ToolRegistryContext {
     createdTurn: number;
     card: string;
   } | null;
+  lspManager?: LspManager | null;
 }
 
 export function createAllTools(ctx: ToolRegistryContext) {
@@ -120,6 +123,12 @@ export function createAllTools(ctx: ToolRegistryContext) {
     cwd: ctx.cwd,
     sandbox: ctx.sandbox,
   });
+  const lspTools = createLspTools({
+    cwd: ctx.cwd,
+    sandbox: ctx.sandbox,
+    getLsp: () => ctx.lspManager ?? null,
+    clearReadPath: ctx.clearReadPath,
+  });
 
   return {
     ...memoryTools,
@@ -128,6 +137,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     ...searchCodeTools,
     ...gitTools,
     ...codeIntelTools,
+    ...lspTools,
   };
 }
 
@@ -171,6 +181,8 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "code_symbols(path, language?) — Top-level / exported symbols for a source file",
   "code_definition(symbol, root?, language?, max_files?, max_hits?) — Name-based definition hits under a project root",
   "code_references(symbol, root?, language?, max_files?, max_hits?) — Name-based reference hits under a project root",
+  "lsp_diagnostics(path) — LSP diagnostics for a file (requires [lsp] enabled + configured server)",
+  "lsp_format(path) — Format a file via LSP (mutating; requires [lsp] enabled + configured server)",
   "load_skill(skill_id) — Load a skill's full instructions from the catalog",
 ];
 
