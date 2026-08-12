@@ -9,6 +9,7 @@ pub enum LangId {
   Jsx,
   Python,
   Go,
+  Rust,
 }
 
 impl LangId {
@@ -20,6 +21,7 @@ impl LangId {
       Self::Jsx => "jsx",
       Self::Python => "python",
       Self::Go => "go",
+      Self::Rust => "rust",
     }
   }
 
@@ -31,6 +33,7 @@ impl LangId {
       "jsx" => Some(Self::Jsx),
       "python" | "py" => Some(Self::Python),
       "go" | "golang" => Some(Self::Go),
+      "rust" | "rs" => Some(Self::Rust),
       _ => None,
     }
   }
@@ -44,6 +47,7 @@ impl LangId {
       "jsx" => Some(Self::Jsx),
       "py" => Some(Self::Python),
       "go" => Some(Self::Go),
+      "rs" => Some(Self::Rust),
       _ => None,
     }
   }
@@ -55,6 +59,7 @@ impl LangId {
       Self::JavaScript | Self::Jsx => tree_sitter_javascript::LANGUAGE.into(),
       Self::Python => tree_sitter_python::LANGUAGE.into(),
       Self::Go => tree_sitter_go::LANGUAGE.into(),
+      Self::Rust => tree_sitter_rust::LANGUAGE.into(),
     }
   }
 
@@ -97,13 +102,14 @@ mod tests {
     );
     assert_eq!(LangId::from_path(Path::new("a.py")), Some(LangId::Python));
     assert_eq!(LangId::from_path(Path::new("a.go")), Some(LangId::Go));
-    assert_eq!(LangId::from_path(Path::new("a.rs")), None);
+    assert_eq!(LangId::from_path(Path::new("a.rs")), Some(LangId::Rust));
   }
 
   #[test]
   fn parse_aliases() {
     assert_eq!(LangId::parse("TS"), Some(LangId::TypeScript));
     assert_eq!(LangId::parse("golang"), Some(LangId::Go));
+    assert_eq!(LangId::parse("rs"), Some(LangId::Rust));
   }
 
   #[test]

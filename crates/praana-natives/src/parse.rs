@@ -116,4 +116,13 @@ mod tests {
     assert_eq!(parsed.lang, LangId::Python);
     assert!(collect_diagnostics(&parsed.tree, &parsed.source).is_empty());
   }
+
+  #[test]
+  fn parses_clean_rust() {
+    let mut f = NamedTempFile::with_suffix(".rs").unwrap();
+    write!(f, "pub fn hello() -> i32 {{ 1 }}\n").unwrap();
+    let parsed = read_and_parse(f.path(), None).unwrap();
+    assert_eq!(parsed.lang, LangId::Rust);
+    assert!(collect_diagnostics(&parsed.tree, &parsed.source).is_empty());
+  }
 }

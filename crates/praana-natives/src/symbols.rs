@@ -48,6 +48,18 @@ fn symbols_query(lang: LangId) -> &'static str {
 (const_declaration (const_spec name: (identifier) @name) @def)
 (var_declaration (var_spec name: (identifier) @name) @def)
 "#,
+    LangId::Rust => r#"
+(function_item name: (identifier) @name) @def
+(function_signature_item name: (identifier) @name) @def
+(struct_item name: (type_identifier) @name) @def
+(enum_item name: (type_identifier) @name) @def
+(trait_item name: (type_identifier) @name) @def
+(type_item name: (type_identifier) @name) @def
+(union_item name: (type_identifier) @name) @def
+(const_item name: (identifier) @name) @def
+(static_item name: (identifier) @name) @def
+(mod_item name: (identifier) @name) @def
+"#,
   }
 }
 
@@ -68,6 +80,9 @@ fn imports_query(lang: LangId) -> &'static str {
     LangId::Go => r#"
 (import_declaration (import_spec path: (interpreted_string_literal) @source) @import)
 (import_declaration (import_spec_list (import_spec path: (interpreted_string_literal) @source) @import))
+"#,
+    LangId::Rust => r#"
+(use_declaration argument: (_) @source) @import
 "#,
   }
 }
@@ -91,19 +106,30 @@ fn refs_query(lang: LangId) -> &'static str {
 (type_identifier) @ref
 (field_identifier) @ref
 "#,
+    LangId::Rust => r#"
+(identifier) @ref
+(type_identifier) @ref
+(field_identifier) @ref
+"#,
   }
 }
 
 fn kind_for_def_node(node_kind: &str, lang: LangId) -> &'static str {
   match (lang, node_kind) {
-    (_, "function_declaration" | "function_definition") => "function",
+    (_, "function_declaration" | "function_definition" | "function_item" | "function_signature_item") => {
+      "function"
+    }
     (_, "method_definition" | "method_declaration") => "method",
     (_, "class_declaration" | "class_definition") => "class",
-    (_, "interface_declaration") => "interface",
-    (_, "type_alias_declaration" | "type_spec" | "type_declaration") => "type",
-    (_, "enum_declaration") => "enum",
+    (_, "interface_declaration" | "trait_item") => "interface",
+    (_, "type_alias_declaration" | "type_spec" | "type_declaration" | "type_item") => "type",
+    (_, "enum_declaration" | "enum_item") => "enum",
+    (_, "struct_item" | "union_item") => "struct",
     (LangId::Go, "const_spec" | "const_declaration") => "constant",
     (LangId::Go, "var_spec" | "var_declaration") => "variable",
+    (LangId::Rust, "const_item") => "constant",
+    (LangId::Rust, "static_item") => "variable",
+    (LangId::Rust, "mod_item") => "other",
     (_, "lexical_declaration" | "variable_declaration" | "variable_declarator" | "assignment") => {
       "variable"
     }
@@ -116,6 +142,24 @@ fn is_exported_ancestor(node: tree_sitter::Node, source: &str, lang: LangId) -> 
     LangId::Go => {
       // Exported if name starts with uppercase.
       true // refined per-name below
+    }
+    LangId::Rust => {
+      // `pub` / `pub(...)` visibility on the item or an ancestor.
+      let mut n = Some(node);
+      while let Some(cur) = n {
+        let mut cursor = cur.walk();
+        for child in cur.children(&mut cursor) {
+          if child.kind() == "visibility_modifier" {
+            if let Ok(t) = child.utf8_text(source.as_bytes()) {
+              if t.starts_with("pub") {
+                return true;
+              }
+            }
+          }
+        }
+        n = cur.parent();
+      }
+      false
     }
     LangId::Python => {
       // Treat module-level as "exported" for agent usefulness.
@@ -329,6 +373,10 @@ fn extract_import_names(node: tree_sitter::Node, source: &str, lang: LangId) -> 
         }
       }
     }
+    LangId::Rust => {
+      // Coarse: collect identifiers from the use path / use list.
+      collect_identifiers(node, source, &mut names);
+    }
   }
   names.sort();
   names.dedup();
@@ -479,5 +527,35 @@ const local = 1;
     assert!(!hidden.exported);
     let imports = extract_imports(&parsed, f.path()).unwrap();
     assert!(imports.iter().any(|i| i.source == "fmt"), "{imports:?}");
+  }
+
+  #[test]
+  fn rust_symbols_and_imports() {
+    let mut f = NamedTempFile::with_suffix(".rs").unwrap();
+    write!(
+      f,
+      r#"
+use crate::foo::Bar;
+pub fn alpha() {{}}
+fn beta() {{}}
+pub struct Gamma;
+"#
+    )
+    .unwrap();
+    let parsed = read_and_parse(f.path(), None).unwrap();
+    assert_eq!(parsed.lang, LangId::Rust);
+    let symbols = extract_symbols(&parsed, f.path()).unwrap();
+    let alpha = symbols.iter().find(|s| s.name == "alpha").unwrap();
+    assert!(alpha.exported, "{symbols:?}");
+    let beta = symbols.iter().find(|s| s.name == "beta").unwrap();
+    assert!(!beta.exported, "{symbols:?}");
+    let gamma = symbols.iter().find(|s| s.name == "Gamma").unwrap();
+    assert!(gamma.exported, "{symbols:?}");
+    assert_eq!(gamma.kind, "struct");
+    let imports = extract_imports(&parsed, f.path()).unwrap();
+    assert!(
+      imports.iter().any(|i| i.source.contains("Bar") || i.source.contains("foo")),
+      "{imports:?}"
+    );
   }
 }

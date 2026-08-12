@@ -19,7 +19,7 @@ bun dev          # Run without build step
 bun test         # 83 files, 997 tests, ~11s
 ```
 
-Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config below).
+Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config and Native Addon below).
 
 ---
 
@@ -88,6 +88,16 @@ Strategies:
 When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
 
 When adding embedder support, implement the `Embedder` interface in `src/memory/types.ts`. The interface has two fields: `dim: number` and `embed(text: string): Promise<Float32Array>`.
+
+### Native Addon (`@praana/natives`)
+
+Tree-sitter code intel (`code_*` tools) loads the optional napi addon. Configure in `[native]`:
+
+```toml
+[native]
+enabled = true   # false = never load addon; code_* tools return unavailable
+require = false  # reserved; Phase 1 never aborts session start on missing addon
+```
 
 ### Project Context (AGENTS.md)
 
@@ -202,7 +212,7 @@ src/
     system.ts    — System tools (shell, read_file, write_file, edit_file)
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
-    code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; issue #11 Phase 1)
+    code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
     git-context.ts — shared getGitContext / findGitRoot helpers
     native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
   memory/

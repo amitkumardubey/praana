@@ -182,7 +182,7 @@ export function createCodeIntelTools(ctx: CodeIntelToolsContext) {
   return {
     code_parse: defineTool({
       description:
-        "Parse a source file with tree-sitter and return syntax diagnostics (TS/JS/Python/Go). Soft-fails if native addon unavailable.",
+        "Parse a source file with tree-sitter and return syntax diagnostics (TS/JS/Python/Go/Rust). Soft-fails if native addon unavailable.",
       parameters: z.object({
         path: pathSchema,
         language: languageSchema,
@@ -212,7 +212,7 @@ export function createCodeIntelTools(ctx: CodeIntelToolsContext) {
 
     code_imports: defineTool({
       description:
-        "List structured imports for a source file (tree-sitter; TS/JS/Python/Go). Soft-fails if native addon unavailable.",
+        "List structured imports for a source file (tree-sitter; TS/JS/Python/Go/Rust). Soft-fails if native addon unavailable.",
       parameters: z.object({
         path: pathSchema,
         language: languageSchema,
@@ -242,7 +242,7 @@ export function createCodeIntelTools(ctx: CodeIntelToolsContext) {
 
     code_symbols: defineTool({
       description:
-        "List top-level / exported symbols in a source file (tree-sitter; TS/JS/Python/Go). Soft-fails if native addon unavailable.",
+        "List top-level / exported symbols in a source file (tree-sitter; TS/JS/Python/Go/Rust). Soft-fails if native addon unavailable.",
       parameters: z.object({
         path: pathSchema,
         language: languageSchema,

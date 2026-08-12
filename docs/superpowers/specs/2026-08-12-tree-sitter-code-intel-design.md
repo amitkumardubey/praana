@@ -1,7 +1,7 @@
 # Tree-Sitter Code Intel Design (Issue #11 Phase 1)
 
 **Date:** 2026-08-12
-**Status:** Approved (implemented on `feat/issue-11-tree-sitter-phase1`)
+**Status:** Merged via #315; Rust grammar follow-up on `feat/issue-11-phase1-rust`
 **Depends on:** Issue #313 / `2026-08-11-rust-native-runtime-design.md` (skeleton shipped)
 **Related epic:** Issue #195 (deterministic tools harness)
 **Related:** Issue #299 (post-edit verification — shared parse/import API)
@@ -9,7 +9,7 @@
 ## Purpose
 
 Ship the first **production** consumer of `@praana/natives`: in-process tree-sitter
-parsing for TypeScript/TSX, JavaScript/JSX, Python, and Go, exposed as read-only
+parsing for TypeScript/TSX, JavaScript/JSX, Python, Go, and Rust, exposed as read-only
 harness tools. This is #11 Phase 1 only — no LSP servers.
 
 ## Agent-facing tools
@@ -105,6 +105,7 @@ sandbox policy.
 | `jsx` | `.jsx` | `tree-sitter-javascript` (JSX enabled) |
 | `python` | `.py` | `tree-sitter-python` |
 | `go` | `.go` | `tree-sitter-go` |
+| `rust` | `.rs` | `tree-sitter-rust` |
 
 Detection: explicit `language` override if provided, else extension. Unsupported
 extension → `unsupported_language`.
@@ -161,8 +162,6 @@ require = false  # reserved; Phase 1 never aborts session start on missing addon
 
 - LSP servers or language-server diagnostics/formatting
 - Type-aware / cross-package resolution
-- Rust grammar in Phase 1 (issue #11 lists Rust among future grammars; #313
-  Phase 1 languages are TS/JS/Python/Go)
 - Multi-target npm leaf publish beyond existing Linux x64 CI smoke
 - Native shell / free-form FS escape hatches
 

@@ -105,11 +105,18 @@ describe("code-intel tools", () => {
   it("lists symbols via real native addon when available", async () => {
     const loaded = await loadNative({ forceReload: true });
     if (!loaded.available || !loaded.bindings) {
-      return; // skip when addon not built in this environment
+      if (process.env.PRAANA_REQUIRE_NATIVE === "1") {
+        expect(loaded.available).toBe(true);
+      }
+      return; // soft-skip when addon not built in this environment
     }
     writeFileSync(
       join(fixtureDir, "sample.ts"),
       "export function alpha() { return 1; }\nexport class Beta {}\n",
+    );
+    writeFileSync(
+      join(fixtureDir, "sample.rs"),
+      "pub fn rust_alpha() {}\nfn rust_beta() {}\n",
     );
     const tools = createCodeIntelTools({ cwd: fixtureDir });
     const symbols = await tools.code_symbols.execute({ path: "sample.ts" });
@@ -122,6 +129,12 @@ describe("code-intel tools", () => {
     const imports = await tools.code_imports.execute({ path: "sample.ts" });
     expect(imports.ok).toBe(true);
 
+    const parsed = await tools.code_parse.execute({ path: "sample.ts" });
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.language).toBe("typescript");
+    }
+
     const defs = await tools.code_definition.execute({
       symbol: "alpha",
       root: ".",
@@ -131,5 +144,26 @@ describe("code-intel tools", () => {
     expect(defs.hits.some((h: { name: string }) => h.name === "alpha")).toBe(
       true,
     );
+
+    const refs = await tools.code_references.execute({
+      symbol: "alpha",
+      root: ".",
+    });
+    expect(refs.ok).toBe(true);
+    if (refs.ok) {
+      expect(refs.hits.some((h: { name: string }) => h.name === "alpha")).toBe(
+        true,
+      );
+    }
+
+    const rustSymbols = await tools.code_symbols.execute({ path: "sample.rs" });
+    expect(rustSymbols.ok).toBe(true);
+    if (!rustSymbols.ok) return;
+    const rustNames = rustSymbols.symbols.map((s: { name: string }) => s.name);
+    expect(rustNames).toContain("rust_alpha");
+    const rustAlpha = rustSymbols.symbols.find(
+      (s: { name: string }) => s.name === "rust_alpha",
+    );
+    expect(rustAlpha?.exported).toBe(true);
   });
 });
