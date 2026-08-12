@@ -26,21 +26,35 @@ if (pong !== "pong") {
 }
 
 const dir = mkdtempSync(join(tmpdir(), "praana-natives-smoke-"));
-const fixture = join(dir, "smoke.ts");
+const fixtureTs = join(dir, "smoke.ts");
+const fixtureRs = join(dir, "smoke.rs");
 try {
   writeFileSync(
-    fixture,
+    fixtureTs,
     "export function smokeTarget() { return 1; }\n",
     "utf8",
   );
-  const parsed = parseFile(fixture);
+  writeFileSync(fixtureRs, "pub fn smoke_rs() {}\n", "utf8");
+
+  const parsed = parseFile(fixtureTs);
   if (!parsed.ok) {
     console.error(`smoke fail: parseFile => ${JSON.stringify(parsed)}`);
     process.exit(1);
   }
-  const symbols = listSymbols(fixture);
+  const symbols = listSymbols(fixtureTs);
   if (!symbols.ok || !symbols.symbols.some((s) => s.name === "smokeTarget")) {
     console.error(`smoke fail: listSymbols => ${JSON.stringify(symbols)}`);
+    process.exit(1);
+  }
+
+  const parsedRs = parseFile(fixtureRs);
+  if (!parsedRs.ok || parsedRs.language !== "rust") {
+    console.error(`smoke fail: parseFile(.rs) => ${JSON.stringify(parsedRs)}`);
+    process.exit(1);
+  }
+  const symbolsRs = listSymbols(fixtureRs);
+  if (!symbolsRs.ok || !symbolsRs.symbols.some((s) => s.name === "smoke_rs")) {
+    console.error(`smoke fail: listSymbols(.rs) => ${JSON.stringify(symbolsRs)}`);
     process.exit(1);
   }
 } finally {
@@ -48,5 +62,5 @@ try {
 }
 
 console.log(
-  `@praana/natives smoke ok version=${version} ping=${pong} listSymbols=ok`,
+  `@praana/natives smoke ok version=${version} ping=${pong} listSymbols=ok rust=ok`,
 );
