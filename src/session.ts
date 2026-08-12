@@ -65,6 +65,7 @@ import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.j
 import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
+import { setNativeEnabled } from "./native/index.js";
 
 /**
  * Return the checkpoint visible to the compiler after applying a reset_boundary.
@@ -179,6 +180,7 @@ export class Session {
     this.stateGraph = new StateGraph();
     this.memoryEnabled = config.memory.enabled;
     this.hooks = createBuiltinHookRegistry(cwd);
+    setNativeEnabled(config.native?.enabled ?? true);
   }
 
   static createNew(id: string, cwd: string, config: PraanaConfig): Session {

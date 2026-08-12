@@ -6,8 +6,31 @@ import {
   EXPECTED_NATIVE_API_MAJOR,
   loadNative,
   resetNativeLoadCache,
+  setNativeEnabled,
   NativeUnavailableError,
 } from "../src/native/index.js";
+
+function stubNativeModule(version: string): string {
+  return `
+export function nativeVersion() { return ${JSON.stringify(version)}; }
+export function ping() { return "pong"; }
+export function parseFile() {
+  return { ok: true, language: "typescript", diagnostics: [] };
+}
+export function listSymbols() {
+  return { ok: true, language: "typescript", symbols: [] };
+}
+export function listImports() {
+  return { ok: true, language: "typescript", imports: [] };
+}
+export function findDefinition() {
+  return { ok: true, hits: [], truncated: false, filesScanned: 0 };
+}
+export function findReferences() {
+  return { ok: true, hits: [], truncated: false, filesScanned: 0 };
+}
+`;
+}
 
 describe("native loader", () => {
   let fixtureDir: string;
@@ -46,15 +69,12 @@ describe("native loader", () => {
     });
     expect(result.available).toBe(false);
     expect(result.error?.code).toBe("unavailable");
-    expect(result.error?.message).toContain("required exports");
+    expect(result.error?.message).toContain("required export");
   });
 
   it("rejects incompatible major versions", async () => {
     const path = join(fixtureDir, "bad-major.mjs");
-    writeFileSync(
-      path,
-      `export function nativeVersion() { return "99.0.0"; }\nexport function ping() { return "pong"; }\n`,
-    );
+    writeFileSync(path, stubNativeModule("99.0.0"));
     const result = await loadNative({
       forceReload: true,
       importSpecifier: path,
@@ -67,10 +87,7 @@ describe("native loader", () => {
 
   it("loads a compatible stub module", async () => {
     const path = join(fixtureDir, "good-native.mjs");
-    writeFileSync(
-      path,
-      `export function nativeVersion() { return "${EXPECTED_NATIVE_API_MAJOR}.1.0"; }\nexport function ping() { return "pong"; }\n`,
-    );
+    writeFileSync(path, stubNativeModule(`${EXPECTED_NATIVE_API_MAJOR}.2.0`));
     const result = await loadNative({
       forceReload: true,
       importSpecifier: path,
@@ -78,19 +95,25 @@ describe("native loader", () => {
     expect(result.available).toBe(true);
     expect(result.error).toBeNull();
     expect(result.bindings?.ping()).toBe("pong");
-    expect(result.bindings?.nativeVersion()).toBe(`${EXPECTED_NATIVE_API_MAJOR}.1.0`);
+    expect(result.bindings?.nativeVersion()).toBe(`${EXPECTED_NATIVE_API_MAJOR}.2.0`);
+    expect(result.bindings?.listSymbols("/x.ts").ok).toBe(true);
   });
 
   it("caches the first load result", async () => {
     const path = join(fixtureDir, "cache-native.mjs");
-    writeFileSync(
-      path,
-      `export function nativeVersion() { return "0.1.0"; }\nexport function ping() { return "pong"; }\n`,
-    );
+    writeFileSync(path, stubNativeModule("0.2.0"));
     const first = await loadNative({ forceReload: true, importSpecifier: path });
     expect(first.available).toBe(true);
     const second = await loadNative({ importSpecifier: join(fixtureDir, "other.mjs") });
     expect(second).toBe(first);
+  });
+
+  it("respects native.enabled=false via setNativeEnabled", async () => {
+    setNativeEnabled(false);
+    const result = await loadNative({ forceReload: true });
+    expect(result.available).toBe(false);
+    expect(result.error?.code).toBe("unavailable");
+    expect(result.error?.message).toContain("disabled");
   });
 });
 
@@ -99,11 +122,12 @@ describe("native addon integration (optional)", () => {
     resetNativeLoadCache();
     const result = await loadNative({ forceReload: true });
     if (!result.available) {
-      // Skeleton PRs may run without a local cargo build; loader contract still holds.
       expect(result.error).toBeInstanceOf(NativeUnavailableError);
       return;
     }
     expect(result.bindings!.ping()).toBe("pong");
     expect(result.bindings!.nativeVersion()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(typeof result.bindings!.listSymbols).toBe("function");
+    expect(typeof result.bindings!.parseFile).toBe("function");
   });
 });

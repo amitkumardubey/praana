@@ -1,6 +1,7 @@
 /**
- * Native capability boundary types (issue #313).
+ * Native capability boundary types (issues #313, #11 Phase 1).
  * See docs/superpowers/specs/2026-08-11-rust-native-runtime-design.md
+ * and docs/superpowers/specs/2026-08-12-tree-sitter-code-intel-design.md
  */
 
 /** Major-compatible API version expected by this PRAANA tree. */
@@ -28,10 +29,91 @@ export class NativeUnavailableError extends Error {
   }
 }
 
-/** Minimal bindings for skeleton (#313). Expanded by #11. */
+export interface ParseDiagnostic {
+  message: string;
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface SymbolHit {
+  path: string;
+  name: string;
+  kind: string;
+  exported: boolean;
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface ImportHit {
+  path: string;
+  source: string;
+  names: string[];
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface ProjectQueryOpts {
+  language?: string;
+  maxFiles?: number;
+  maxHits?: number;
+}
+
+export interface ParseFileResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  language?: string | null;
+  diagnostics: ParseDiagnostic[];
+}
+
+export interface ListSymbolsResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  language?: string | null;
+  symbols: SymbolHit[];
+}
+
+export interface ListImportsResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  language?: string | null;
+  imports: ImportHit[];
+}
+
+export interface ProjectHitsResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  hits: SymbolHit[];
+  truncated: boolean;
+  filesScanned: number;
+}
+
+/** Bindings for native API 0.2+ (tree-sitter code intel). */
 export interface NativeBindings {
   nativeVersion(): string;
   ping(): string;
+  parseFile(path: string, language?: string | null): ParseFileResult;
+  listSymbols(path: string, language?: string | null): ListSymbolsResult;
+  listImports(path: string, language?: string | null): ListImportsResult;
+  findDefinition(
+    root: string,
+    symbol: string,
+    opts?: ProjectQueryOpts | null,
+  ): ProjectHitsResult;
+  findReferences(
+    root: string,
+    symbol: string,
+    opts?: ProjectQueryOpts | null,
+  ): ProjectHitsResult;
 }
 
 export interface NativeLoadResult {

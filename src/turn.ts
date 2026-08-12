@@ -1558,6 +1558,21 @@ function toolCommandFromArgs(
   if (toolName === "git_commit") {
     return typeof args.message === "string" ? args.message.slice(0, 80) : "commit";
   }
+  if (
+    toolName === "code_definition" ||
+    toolName === "code_references"
+  ) {
+    const symbol = typeof args.symbol === "string" ? args.symbol : "";
+    const root = typeof args.root === "string" ? args.root : ".";
+    return symbol ? `${symbol} @ ${root}` : root;
+  }
+  if (
+    toolName === "code_parse" ||
+    toolName === "code_imports" ||
+    toolName === "code_symbols"
+  ) {
+    return typeof args.path === "string" ? args.path : undefined;
+  }
   if (typeof args.command === "string") return args.command;
   if (typeof args.path === "string") return args.path;
   if (typeof args.query === "string") return args.query;

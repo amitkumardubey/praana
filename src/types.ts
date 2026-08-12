@@ -285,6 +285,17 @@ export interface SearchCodeConfig {
   rg_path?: string;
 }
 
+/** Native capability layer (@praana/natives) — issue #313 / #11. */
+export interface NativeConfig {
+  /** When false, never load the addon; code_* tools return unavailable. Default: true. */
+  enabled: boolean;
+  /**
+   * Reserved for hard-fail at session start when addon missing.
+   * Phase 1 always soft-fails in tools regardless of this flag.
+   */
+  require: boolean;
+}
+
 export interface UiConfig {
   markdown_rendering: boolean;
   syntax_highlighting: boolean;
@@ -367,6 +378,8 @@ export interface PraanaConfig {
   /** Optional; defaults to { block_repeat_reads: false } when omitted. */
   tools?: ToolsConfig;
   search_code?: SearchCodeConfig;
+  /** Optional; defaults to { enabled: true, require: false } when omitted. */
+  native?: NativeConfig;
   skills: SkillsConfig;
   ui: UiConfig;
   context_engine: ContextEngineConfig;

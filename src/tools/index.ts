@@ -11,6 +11,7 @@ import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
 import { createSearchCodeTool } from "./search-code.js";
 import { createGitTools } from "./git.js";
+import { createCodeIntelTools } from "./code-intel.js";
 
 export interface ToolRegistryContext {
   eventLog: EventLog;
@@ -115,6 +116,10 @@ export function createAllTools(ctx: ToolRegistryContext) {
     sandbox: ctx.sandbox,
     getAbortSignal: ctx.getAbortSignal,
   });
+  const codeIntelTools = createCodeIntelTools({
+    cwd: ctx.cwd,
+    sandbox: ctx.sandbox,
+  });
 
   return {
     ...memoryTools,
@@ -122,6 +127,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     ...systemTools,
     ...searchCodeTools,
     ...gitTools,
+    ...codeIntelTools,
   };
 }
 
@@ -160,6 +166,11 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "git_status() — Structured git working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)",
   "git_diff(staged?, path?, context?) — Structured git diff with files, hunks, and stats",
   "git_commit(message, paths?, all?) — Create a git commit with guardrails (blocked in plan mode; does not push)",
+  "code_parse(path, language?) — Tree-sitter syntax diagnostics (TS/JS/Python/Go)",
+  "code_imports(path, language?) — Structured imports for a source file",
+  "code_symbols(path, language?) — Top-level / exported symbols for a source file",
+  "code_definition(symbol, root?, language?, max_files?, max_hits?) — Name-based definition hits under a project root",
+  "code_references(symbol, root?, language?, max_files?, max_hits?) — Name-based reference hits under a project root",
   "load_skill(skill_id) — Load a skill's full instructions from the catalog",
 ];
 

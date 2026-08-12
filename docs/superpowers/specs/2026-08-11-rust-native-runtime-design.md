@@ -1,7 +1,7 @@
 # Rust Native Capability Runtime Design (Issue #313)
 
 **Date:** 2026-08-11
-**Status:** Approved (implementation in progress)
+**Status:** Skeleton shipped (#314); Phase 1 consumer in `2026-08-12-tree-sitter-code-intel-design.md`
 **Prerequisite for:** Issue #11 Phase 1 (tree-sitter code intel)
 **Related epic:** Issue #195 (deterministic tools harness)
 

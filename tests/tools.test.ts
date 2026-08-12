@@ -1894,4 +1894,26 @@ describe('Tool registry (mode-aware)', () => {
     expect(classic.some((t) => t.startsWith('search_code'))).toBe(true);
     expect(engine.some((t) => t.startsWith('search_code'))).toBe(true);
   });
+
+  it('createAllTools registers code_* tools in both modes', () => {
+    const classicTools = createAllTools({ ...baseCtx, classicMode: true });
+    const engineTools = createAllTools({ ...baseCtx, classicMode: false });
+    for (const name of [
+      'code_parse',
+      'code_imports',
+      'code_symbols',
+      'code_definition',
+      'code_references',
+    ]) {
+      expect(name in classicTools).toBe(true);
+      expect(name in engineTools).toBe(true);
+    }
+  });
+
+  it('describeTools advertises code_symbols in both classic and engine modes', () => {
+    const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
+    const engine = describeTools({ contextEngineEnabled: true });
+    expect(classic.some((t) => t.startsWith('code_symbols'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('code_symbols'))).toBe(true);
+  });
 });
