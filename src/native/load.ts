@@ -7,11 +7,18 @@
 import {
   EXPECTED_NATIVE_API_MAJOR,
   NativeUnavailableError,
+  type ListImportsResult,
+  type ListSymbolsResult,
   type NativeBindings,
   type NativeLoadResult,
+  type ParseFileResult,
+  type ProjectHitsResult,
+  type ProjectQueryOpts,
 } from "./types.js";
 
 let cached: NativeLoadResult | null = null;
+/** When false, loadNative short-circuits as unavailable (from [native] enabled). */
+let nativeEnabled = true;
 
 function parseMajor(version: string): number | null {
   const match = /^(\d+)\./.exec(version.trim());
@@ -19,19 +26,67 @@ function parseMajor(version: string): number | null {
   return Number.parseInt(match[1]!, 10);
 }
 
-function asBindings(mod: Record<string, unknown>): NativeBindings {
-  const nativeVersion = mod.nativeVersion;
-  const ping = mod.ping;
-  if (typeof nativeVersion !== "function" || typeof ping !== "function") {
+function asFn<T extends (...args: never[]) => unknown>(
+  value: unknown,
+  name: string,
+): T {
+  if (typeof value !== "function") {
     throw new NativeUnavailableError(
       "unavailable",
-      "native addon missing required exports (nativeVersion, ping)",
+      `native addon missing required export (${name})`,
     );
   }
+  return value as T;
+}
+
+function asBindings(mod: Record<string, unknown>): NativeBindings {
+  const nativeVersion = asFn<() => unknown>(mod.nativeVersion, "nativeVersion");
+  const ping = asFn<() => unknown>(mod.ping, "ping");
+  const parseFile = asFn<(path: string, language?: string | null) => unknown>(
+    mod.parseFile,
+    "parseFile",
+  );
+  const listSymbols = asFn<(path: string, language?: string | null) => unknown>(
+    mod.listSymbols,
+    "listSymbols",
+  );
+  const listImports = asFn<(path: string, language?: string | null) => unknown>(
+    mod.listImports,
+    "listImports",
+  );
+  const findDefinition = asFn<
+    (root: string, symbol: string, opts?: ProjectQueryOpts | null) => unknown
+  >(mod.findDefinition, "findDefinition");
+  const findReferences = asFn<
+    (root: string, symbol: string, opts?: ProjectQueryOpts | null) => unknown
+  >(mod.findReferences, "findReferences");
+
   return {
-    nativeVersion: () => String((nativeVersion as () => unknown)()),
-    ping: () => String((ping as () => unknown)()),
+    nativeVersion: () => String(nativeVersion()),
+    ping: () => String(ping()),
+    parseFile: (path, language) => parseFile(path, language) as ParseFileResult,
+    listSymbols: (path, language) =>
+      listSymbols(path, language) as ListSymbolsResult,
+    listImports: (path, language) =>
+      listImports(path, language) as ListImportsResult,
+    findDefinition: (root, symbol, opts) =>
+      findDefinition(root, symbol, opts) as ProjectHitsResult,
+    findReferences: (root, symbol, opts) =>
+      findReferences(root, symbol, opts) as ProjectHitsResult,
   };
+}
+
+/**
+ * Configure whether the loader may attempt to dlopen the addon.
+ * Called from session/config wiring; tests may reset via resetNativeLoadCache.
+ */
+export function setNativeEnabled(enabled: boolean): void {
+  nativeEnabled = enabled;
+  cached = null;
+}
+
+export function isNativeEnabled(): boolean {
+  return nativeEnabled;
 }
 
 /**
@@ -44,6 +99,15 @@ export async function loadNative(options?: {
   importSpecifier?: string;
 }): Promise<NativeLoadResult> {
   if (cached && !options?.forceReload) {
+    return cached;
+  }
+
+  if (!nativeEnabled) {
+    const err = new NativeUnavailableError(
+      "unavailable",
+      "native addon disabled via config (native.enabled=false)",
+    );
+    cached = { available: false, bindings: null, error: err };
     return cached;
   }
 
@@ -91,6 +155,7 @@ export async function loadNative(options?: {
 /** Reset cache — tests only. */
 export function resetNativeLoadCache(): void {
   cached = null;
+  nativeEnabled = true;
 }
 
 /** Convenience: return bindings or null. */

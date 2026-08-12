@@ -94,6 +94,10 @@ const DEFAULT_CONFIG: PraanaConfig = {
   tools: {
     block_repeat_reads: false,
   },
+  native: {
+    enabled: true,
+    require: false,
+  },
   skills: {
     enabled: true,
     max_token_budget_ratio: 0.2,
@@ -581,6 +585,21 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
       out.search_code.rg_path = expandHome(out.search_code.rg_path);
     }
   }
+
+  // native config validation
+  if (!out.native) {
+    out.native = { enabled: true, require: false };
+  } else {
+    if (typeof out.native.enabled !== "boolean") {
+      configWarn("native.enabled must be boolean, defaulting to true");
+      out.native.enabled = true;
+    }
+    if (typeof out.native.require !== "boolean") {
+      configWarn("native.require must be boolean, defaulting to false");
+      out.native.require = false;
+    }
+  }
+
   // UI config validation
   if (out.ui) {
     if (typeof out.ui.markdown_rendering !== 'boolean') {

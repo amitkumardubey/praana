@@ -93,6 +93,15 @@ export function inferContentTypeFromTool(
   if (sourceTool === "search_code") {
     return "search_results";
   }
+  if (
+    sourceTool === "code_parse" ||
+    sourceTool === "code_imports" ||
+    sourceTool === "code_symbols" ||
+    sourceTool === "code_definition" ||
+    sourceTool === "code_references"
+  ) {
+    return "search_results";
+  }
   if (sourceTool === "git_diff") {
     return "diff";
   }

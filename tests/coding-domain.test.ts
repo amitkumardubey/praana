@@ -189,6 +189,12 @@ describe("inferContentTypeFromTool", () => {
     expect(inferContentTypeFromTool("git_diff", undefined)).toBe("diff");
   });
 
+  it("code_* tools → search_results", () => {
+    expect(inferContentTypeFromTool("code_symbols", "src/a.ts")).toBe("search_results");
+    expect(inferContentTypeFromTool("code_definition", "Foo @ .")).toBe("search_results");
+    expect(inferContentTypeFromTool("code_parse", "a.ts")).toBe("search_results");
+  });
+
   it("search_code inference ignores command content — query may mention tests", () => {
     // Regression (#275): search_code results fell through to content-based
     // classification and were mislabeled test_output when the output
