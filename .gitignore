@@ -5,6 +5,13 @@ dist/
 .env
 refer/
 
+# Rust / napi-rs native addon
+/target/
+**/*.node
+packages/praana-natives/index.js
+packages/praana-natives/index.d.ts
+packages/praana-natives/npm/
+
 # SQLite :memory: spill files from in-memory db tests
 :memory:
 :memory:-*

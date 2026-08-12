@@ -1,0 +1,17 @@
+[package]
+name = "praana-natives"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native capability layer for PRAANA (napi-rs)"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi8"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"
