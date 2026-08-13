@@ -1,7 +1,7 @@
 # LSP Code Intelligence Tools Design (Issue #11 Phase 3)
 
 **Date:** 2026-08-14
-**Status:** Approved design (not yet implemented)
+**Status:** Implemented on `feat/ad/issue-11-lsp-phase3`
 **Depends on:** Issue #11 Phase 2 / `2026-08-12-lsp-phase2-design.md` (merged via #317)
 **Related epic:** Issue #195 (deterministic tools harness)
 **Follow-on:** Issue #11 Phase 4 — crash restart, backoff, multi-root (no spec yet)

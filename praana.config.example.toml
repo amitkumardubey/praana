@@ -182,9 +182,11 @@ log_dir = "~/.praana/sessions"
 # Useful when ripgrep is installed outside PATH (e.g. a vendored copy).
 # rg_path = "/opt/homebrew/bin/rg"
 
-# Language Server Protocol client (issue #11 Phase 2).
+# Language Server Protocol client (issue #11 Phases 2–3).
 # Disabled by default — enable and point at servers you install yourself.
 # PRAANA does not bundle language servers.
+# Phase 3 tools (hover, completions, definition, references, code actions)
+# share this [lsp] block — no extra keys.
 [lsp]
 enabled = false
 diagnostics = true
