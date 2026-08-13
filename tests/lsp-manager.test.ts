@@ -1,13 +1,15 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LspManager, diffIntroduced } from "../src/lsp/manager.js";
+import { LspClient } from "../src/lsp/client.js";
 import { applyTextEdits } from "../src/lsp/edits.js";
 import {
   languageFromPath,
   resolveServerArgv,
 } from "../src/lsp/language.js";
+import { pathToFileUri } from "../src/lsp/types.js";
 import type { LspConfig } from "../src/types.js";
 import type { LspDiagnostic } from "../src/lsp/types.js";
 
@@ -243,6 +245,196 @@ describe("LspManager", () => {
       if (a.ok) {
         expect(a.value.some((d) => d.message === "async error")).toBe(true);
       }
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+});
+
+describe("Phase 3 queries", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = join(
+      tmpdir(),
+      `praana-lsp-p3-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    mkdirSync(dir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("returns hover via fake server", async () => {
+    writeFileSync(join(dir, "a.ts"), "const n = 1;\n");
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_HOVER: JSON.stringify({
+              contents: { kind: "plaintext", value: "n: number" },
+            }),
+          },
+        }),
+    });
+    try {
+      const result = await mgr.hover(join(dir, "a.ts"), 1, 7);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.skipped).toBeUndefined();
+        expect(result.value.hover).toEqual({
+          contents: "n: number",
+          kind: "plaintext",
+        });
+      }
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("skips hover when capability is off", async () => {
+    writeFileSync(join(dir, "a.ts"), "x\n");
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({ ...opts, env: { FAKE_LSP_NO_HOVER: "1" } }),
+    });
+    try {
+      const result = await mgr.hover(join(dir, "a.ts"), 1, 1);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.skipped).toBe("unsupported");
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("lists applicable actions with opaque ids and applies text edits", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "x\n");
+    const uri = pathToFileUri(path);
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_CODE_ACTIONS: JSON.stringify([
+              {
+                title: "Add comment",
+                kind: "quickfix",
+                edit: {
+                  changes: {
+                    [uri]: [
+                      {
+                        range: {
+                          start: { line: 0, character: 0 },
+                          end: { line: 0, character: 0 },
+                        },
+                        newText: "// ok\n",
+                      },
+                    ],
+                  },
+                },
+              },
+              { title: "Command only", command: "do.it" },
+            ]),
+          },
+        }),
+    });
+    try {
+      const listed = await mgr.codeActions(path, 1, 1, 1, 1);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      expect(listed.value.actions).toHaveLength(1);
+      expect(listed.value.actions[0]?.title).toBe("Add comment");
+      expect(listed.value.actions[0]?.id).toMatch(/^ca_\d+$/);
+
+      const applied = await mgr.applyCodeAction(listed.value.actions[0]!.id);
+      expect(applied.ok).toBe(true);
+      if (applied.ok) expect(applied.value.changed).toBe(true);
+      expect(readFileSync(path, "utf-8")).toBe("// ok\nx\n");
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("rejects stale ids after the file changes", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "x\n");
+    const uri = pathToFileUri(path);
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_CODE_ACTIONS: JSON.stringify([
+              {
+                title: "noop",
+                edit: { changes: { [uri]: [] } },
+              },
+            ]),
+          },
+        }),
+    });
+    try {
+      const listed = await mgr.codeActions(path, 1, 1, 1, 1);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      writeFileSync(path, "changed\n");
+      const applied = await mgr.applyCodeAction(listed.value.actions[0]!.id);
+      expect(applied.ok).toBe(false);
+      if (!applied.ok) expect(applied.code).toBe("invalid_argument");
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("rejects resource-op workspace edits without writing", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "x\n");
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_RESOLVE: "1",
+            FAKE_LSP_CODE_ACTIONS: JSON.stringify([
+              { title: "Extract file", data: { id: 1 } },
+            ]),
+            FAKE_LSP_RESOLVED_EDIT: JSON.stringify({
+              documentChanges: [
+                { kind: "create", uri: pathToFileUri(join(dir, "b.ts")) },
+              ],
+            }),
+          },
+        }),
+    });
+    try {
+      const listed = await mgr.codeActions(path, 1, 1, 1, 1);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      const applied = await mgr.applyCodeAction(listed.value.actions[0]!.id);
+      expect(applied.ok).toBe(true);
+      if (applied.ok) {
+        expect(applied.value.skipped).toBe("unsupported");
+        expect(applied.value.changed).toBe(false);
+      }
+      expect(existsSync(join(dir, "b.ts"))).toBe(false);
     } finally {
       await mgr.shutdown();
     }
