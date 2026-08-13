@@ -66,6 +66,7 @@ import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
 import { setNativeEnabled } from "./native/index.js";
+import { LspManager } from "./lsp/manager.js";
 
 /**
  * Return the checkpoint visible to the compiler after applying a reset_boundary.
@@ -139,6 +140,8 @@ export class Session {
   planMode = false;
   /** Internal turn-loop hook dispatcher (issue #297). */
   hooks: HookRegistry;
+  /** Session-scoped LSP client manager (issue #11 Phase 2). */
+  lspManager: LspManager;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */
   private lastKnownTaskType: string | null = null;
   private ended = false;
@@ -179,7 +182,25 @@ export class Session {
 
     this.stateGraph = new StateGraph();
     this.memoryEnabled = config.memory.enabled;
-    this.hooks = createBuiltinHookRegistry(cwd);
+    this.lspManager = new LspManager({
+      config: config.lsp ?? {
+        enabled: false,
+        diagnostics: true,
+        format_on_edit: false,
+        timeout_ms: 5000,
+        max_file_lines: 10_000,
+        servers: {},
+      },
+      cwd,
+      workspaceRoot: findGitRoot(cwd),
+    });
+    this.hooks = createBuiltinHookRegistry(cwd, {
+      lspManager: this.lspManager,
+      onFormattedPath: (absPath) => {
+        this.scorecard.clearReadPath(absPath);
+        this.contextEngine?.clearFileReadAllRanges(absPath);
+      },
+    });
     setNativeEnabled(config.native?.enabled ?? true);
   }
 
@@ -1055,6 +1076,13 @@ export class Session {
     if (this.ended) return emptyStatus("skipped");
     this.ended = true;
     await this.hooks.runSessionEnd({ session: this, reason });
+    try {
+      await this.lspManager.shutdown();
+    } catch (err) {
+      this.getLogger().child("tool").warn("LSP shutdown failed", {
+        cause: err as Error,
+      });
+    }
 
     let memoryStatus: SessionEndStatus["memory"] = "skipped";
     const recallUsedCount = this.getRecallUsedCount();

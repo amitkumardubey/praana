@@ -98,7 +98,8 @@ export function inferContentTypeFromTool(
     sourceTool === "code_imports" ||
     sourceTool === "code_symbols" ||
     sourceTool === "code_definition" ||
-    sourceTool === "code_references"
+    sourceTool === "code_references" ||
+    sourceTool === "lsp_diagnostics"
   ) {
     return "search_results";
   }

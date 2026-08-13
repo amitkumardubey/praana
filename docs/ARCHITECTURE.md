@@ -75,6 +75,8 @@ src/
     tool-def.ts  — Type helper for defining tools
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
+    code-intel.ts — code_* tree-sitter tools (issue #11 Phase 1)
+    lsp.ts + lsp/ — lsp_diagnostics / lsp_format via external language servers (issue #11 Phase 2)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
@@ -313,6 +315,8 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
+- `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon)
+- `lsp_diagnostics` / `lsp_format` — opt-in LSP client against configured external servers (Phase 2 of #11; `[lsp]` config)
 
 ### Git Tools (`src/tools/git.ts`, issue #26)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)

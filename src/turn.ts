@@ -428,6 +428,7 @@ export async function runTurn(
       session.scorecard.clearReadPath(absPath);
       session.contextEngine?.clearFileReadAllRanges(absPath);
     },
+    lspManager: session.lspManager,
     findFileReadArtifact: (absPath) => {
       const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
       if (!art) return null;
@@ -1569,7 +1570,9 @@ function toolCommandFromArgs(
   if (
     toolName === "code_parse" ||
     toolName === "code_imports" ||
-    toolName === "code_symbols"
+    toolName === "code_symbols" ||
+    toolName === "lsp_diagnostics" ||
+    toolName === "lsp_format"
   ) {
     return typeof args.path === "string" ? args.path : undefined;
   }

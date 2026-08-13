@@ -15,6 +15,9 @@ import stripAnsi from "strip-ansi";
 const UNICODE_ICONS: Record<string, string> = {
   read_file: "◇",
   search_code: "⌕",
+  code_symbols: "⌘",
+  lsp_diagnostics: "⚡",
+  lsp_format: "☰",
   edit_file: "✎",
   write_file: "✚",
   shell: "❯",
@@ -37,6 +40,9 @@ const UNICODE_ICONS: Record<string, string> = {
 const ASCII_ICONS: Record<string, string> = {
   read_file: "r·",
   search_code: "s·",
+  code_symbols: "sy",
+  lsp_diagnostics: "ld",
+  lsp_format: "lf",
   edit_file: "e·",
   write_file: "w·",
   shell: "$",
@@ -58,6 +64,9 @@ const ASCII_ICONS: Record<string, string> = {
 const TOOL_SHORT: Record<string, string> = {
   read_file: "read",
   search_code: "search",
+  code_symbols: "symbols",
+  lsp_diagnostics: "lsp-diag",
+  lsp_format: "lsp-fmt",
   edit_file: "edit",
   write_file: "write",
   shell: "shell",

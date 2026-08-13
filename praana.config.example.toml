@@ -182,6 +182,22 @@ log_dir = "~/.praana/sessions"
 # Useful when ripgrep is installed outside PATH (e.g. a vendored copy).
 # rg_path = "/opt/homebrew/bin/rg"
 
+# Language Server Protocol client (issue #11 Phase 2).
+# Disabled by default — enable and point at servers you install yourself.
+# PRAANA does not bundle language servers.
+[lsp]
+enabled = false
+diagnostics = true
+# Opt-in: format files after successful edit_file / batch_edit
+format_on_edit = false
+timeout_ms = 5000
+max_file_lines = 10000
+
+# Language id → argv. Example TypeScript/JavaScript:
+# [lsp.servers]
+# typescript = ["typescript-language-server", "--stdio"]
+# javascript falls back to the typescript entry when omitted.
+
 [context_engine]
 # Context engine: structured checkpoint, distillation, and scored compilation.
 # Enabled by default. When disabled (false), PRAANA runs in classic mode — full

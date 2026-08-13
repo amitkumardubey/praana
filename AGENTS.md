@@ -99,6 +99,28 @@ enabled = true   # false = never load addon; code_* tools return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
+### LSP (`[lsp]`, issue #11 Phase 2)
+
+Opt-in Language Server Protocol client for diagnostics and formatting. Uses
+**external** servers you install (e.g. `typescript-language-server`); PRAANA only
+speaks JSON-RPC over stdio. Disabled by default.
+
+```toml
+[lsp]
+enabled = false
+diagnostics = true
+format_on_edit = false # opt-in post-edit formatting for edit_file / batch_edit
+timeout_ms = 5000
+max_file_lines = 10000
+
+[lsp.servers]
+typescript = ["typescript-language-server", "--stdio"]
+# javascript falls back to the typescript entry when omitted
+```
+
+Tools: `lsp_diagnostics(path)`, `lsp_format(path)`. Soft-fail when disabled or
+the server is missing. Tree-sitter `code_*` tools are unchanged.
+
 ### Project Context (AGENTS.md)
 
 On session start, PRAANA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
@@ -213,8 +235,10 @@ src/
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
+    lsp.ts — lsp_diagnostics / lsp_format (session-scoped LSP client; issue #11 Phase 2)
     git-context.ts — shared getGitContext / findGitRoot helpers
     native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
+    lsp/ — JSON-RPC LSP client + manager (stdio language servers; soft-fail when disabled)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables

@@ -6,6 +6,7 @@ const WRITE_TOOLS = new Set([
   "edit_file",
   "batch_write",
   "batch_edit",
+  "lsp_format",
 ]);
 
 export class WritePathGuard {
@@ -47,7 +48,8 @@ function relPathsFromArgs(
   if (
     toolName === "write_file" ||
     toolName === "edit_file" ||
-    toolName === "read_file"
+    toolName === "read_file" ||
+    toolName === "lsp_format"
   ) {
     return typeof args.path === "string" ? [args.path] : [];
   }

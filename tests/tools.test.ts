@@ -1904,6 +1904,8 @@ describe('Tool registry (mode-aware)', () => {
       'code_symbols',
       'code_definition',
       'code_references',
+      'lsp_diagnostics',
+      'lsp_format',
     ]) {
       expect(name in classicTools).toBe(true);
       expect(name in engineTools).toBe(true);
@@ -1915,5 +1917,12 @@ describe('Tool registry (mode-aware)', () => {
     const engine = describeTools({ contextEngineEnabled: true });
     expect(classic.some((t) => t.startsWith('code_symbols'))).toBe(true);
     expect(engine.some((t) => t.startsWith('code_symbols'))).toBe(true);
+  });
+
+  it('describeTools advertises lsp_diagnostics in both classic and engine modes', () => {
+    const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
+    const engine = describeTools({ contextEngineEnabled: true });
+    expect(classic.some((t) => t.startsWith('lsp_diagnostics'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('lsp_diagnostics'))).toBe(true);
   });
 });

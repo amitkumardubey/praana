@@ -296,6 +296,22 @@ export interface NativeConfig {
   require: boolean;
 }
 
+/** LSP client layer (issue #11 Phase 2) — external language servers via stdio. */
+export interface LspConfig {
+  /** When false, never spawn servers; lsp_* tools return disabled. Default: false. */
+  enabled: boolean;
+  /** Collect / attach diagnostics on tools and post-edit. Default: true. */
+  diagnostics: boolean;
+  /** After successful edit_file/batch_edit, request LSP formatting. Default: false. */
+  format_on_edit: boolean;
+  /** Per-request timeout in milliseconds. Default: 5000. */
+  timeout_ms: number;
+  /** Skip diagnostics/format when file exceeds this many lines. Default: 10000. */
+  max_file_lines: number;
+  /** Language id → argv (executable + args). Empty = no server for that language. */
+  servers: Record<string, string[]>;
+}
+
 export interface UiConfig {
   markdown_rendering: boolean;
   syntax_highlighting: boolean;
@@ -380,6 +396,8 @@ export interface PraanaConfig {
   search_code?: SearchCodeConfig;
   /** Optional; defaults to { enabled: true, require: false } when omitted. */
   native?: NativeConfig;
+  /** Optional; defaults to disabled LSP client when omitted. */
+  lsp?: LspConfig;
   skills: SkillsConfig;
   ui: UiConfig;
   context_engine: ContextEngineConfig;
