@@ -1,10 +1,11 @@
 # LSP Diagnostics + Formatting Design (Issue #11 Phase 2)
 
 **Date:** 2026-08-12
-**Status:** Implemented on `feat/ad/issue-11-lsp-phase2` (pending PR)
+**Status:** Merged via #317
 **Depends on:** Issue #11 Phase 1 / `2026-08-12-tree-sitter-code-intel-design.md`
 **Related epic:** Issue #195 (deterministic tools harness)
 **Related:** Issue #299 (post-edit verification — can consume LSP diagnostics later)
+**Follow-on:** Issue #11 Phase 3 — `2026-08-14-lsp-phase3-design.md`
 
 ## Purpose
 
@@ -244,8 +245,8 @@ concurrent `read_file` / second writer cannot race the formatter write.
 
 ## Explicit non-goals (Phase 2)
 
-- Hover, completions, signature help, code actions (Phase 3)
-- Semantic `lsp_definition` / `lsp_references` (Phase 3+)
+- Hover, completions, code actions, semantic definition/references (Phase 3 — see `2026-08-14-lsp-phase3-design.md`)
+- Signature help (deferred past Phase 3)
 - Crash restart with exponential backoff (Phase 4)
 - Multi-root / per-package workspace folders (Phase 4)
 - Bundling or auto-installing language servers
