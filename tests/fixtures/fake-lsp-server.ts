@@ -13,6 +13,7 @@ import { encodeMessage, FrameParser } from "../../src/lsp/framing.js";
 
 const delayMs = Number(process.env.FAKE_LSP_DELAY_MS ?? "0") || 0;
 const noFormat = process.env.FAKE_LSP_NO_FORMAT === "1";
+const publishDelayMs = Number(process.env.FAKE_LSP_PUBLISH_DELAY_MS ?? "0") || 0;
 
 function parseJsonEnv<T>(name: string, fallback: T): T {
   const raw = process.env[name];
@@ -41,12 +42,13 @@ async function maybeDelay(): Promise<void> {
   }
 }
 
-function publishDiagnostics(uri: string): void {
+function publishDiagnostics(uri: string, version?: number): void {
   write({
     jsonrpc: "2.0",
     method: "textDocument/publishDiagnostics",
     params: {
       uri,
+      version,
       diagnostics: scriptedDiagnostics,
     },
   });
@@ -77,9 +79,17 @@ async function handleMessage(msg: Record<string, unknown>): Promise<void> {
   }
 
   if (method === "textDocument/didOpen" || method === "textDocument/didChange") {
-    const params = msg.params as { textDocument?: { uri?: string } } | undefined;
+    const params = msg.params as {
+      textDocument?: { uri?: string; version?: number };
+    } | undefined;
     const uri = params?.textDocument?.uri;
-    if (uri) publishDiagnostics(uri);
+    const version = params?.textDocument?.version;
+    if (uri) {
+      if (publishDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, publishDelayMs));
+      }
+      publishDiagnostics(uri, version);
+    }
     return;
   }
 

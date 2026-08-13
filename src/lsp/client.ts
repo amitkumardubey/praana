@@ -43,6 +43,9 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export class LspClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly parser = new FrameParser();
@@ -52,6 +55,10 @@ export class LspClient {
     Set<(params: unknown) => void>
   >();
   private readonly diagnosticsByUri = new Map<string, LspDiagnostic[]>();
+  private readonly sentVersion = new Map<string, number>();
+  private readonly publishedVersion = new Map<string, number>();
+  private readonly publishCount = new Map<string, number>();
+  private readonly syncCount = new Map<string, number>();
   private nextId = 1;
   private closed = false;
   private documentFormattingProvider = false;
@@ -190,6 +197,38 @@ export class LspClient {
     return this.diagnosticsByUri.get(uri) ?? [];
   }
 
+  /**
+   * Wait until the server has published diagnostics for `uri` after our most
+   * recent didOpen/didChange, then return them. Servers such as
+   * typescript-language-server compute diagnostics asynchronously after a
+   * document is opened or changed, so a fixed sleep is unreliable. We poll
+   * until either the server echoes a document `version` >= the one we sent, or
+   * (for servers that omit `version`) until a new publish arrives since our
+   * sync. Falls back to returning whatever is available after `timeoutMs`.
+   */
+  async waitForDiagnostics(
+    uri: string,
+    opts?: { timeoutMs?: number; intervalMs?: number },
+  ): Promise<LspDiagnostic[]> {
+    const timeoutMs = opts?.timeoutMs ?? this.timeoutMs;
+    const intervalMs = opts?.intervalMs ?? 20;
+    const targetVersion = this.sentVersion.get(uri) ?? 0;
+    const sinceCount = this.syncCount.get(uri) ?? 0;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const publishedVersion = this.publishedVersion.get(uri);
+      const count = this.publishCount.get(uri) ?? 0;
+      if (publishedVersion !== undefined && publishedVersion >= targetVersion) {
+        return this.getDiagnostics(uri);
+      }
+      if (publishedVersion === undefined && count > sinceCount) {
+        return this.getDiagnostics(uri);
+      }
+      await sleep(intervalMs);
+    }
+    return this.getDiagnostics(uri);
+  }
+
   onNotification(method: string, handler: (params: unknown) => void): void {
     let set = this.notificationHandlers.get(method);
     if (!set) {
@@ -269,6 +308,8 @@ export class LspClient {
 
   async didOpen(absPath: string, languageId: string, text: string): Promise<void> {
     const uri = pathToFileUri(absPath);
+    this.syncCount.set(uri, this.publishCount.get(uri) ?? 0);
+    this.sentVersion.set(uri, 1);
     await this.notify("textDocument/didOpen", {
       textDocument: {
         uri,
@@ -281,6 +322,8 @@ export class LspClient {
 
   async didChange(absPath: string, text: string, version = 2): Promise<void> {
     const uri = pathToFileUri(absPath);
+    this.syncCount.set(uri, this.publishCount.get(uri) ?? 0);
+    this.sentVersion.set(uri, version);
     await this.notify("textDocument/didChange", {
       textDocument: { uri, version },
       contentChanges: [{ text }],
@@ -409,7 +452,13 @@ export class LspClient {
       }>;
     };
     if (typeof p.uri !== "string" || !Array.isArray(p.diagnostics)) return;
-    const path = fileUriToPath(p.uri) ?? p.uri;
+    const uri = p.uri;
+    this.publishCount.set(uri, (this.publishCount.get(uri) ?? 0) + 1);
+    const version = (params as { version?: number }).version;
+    if (typeof version === "number") {
+      this.publishedVersion.set(uri, version);
+    }
+    const path = fileUriToPath(uri) ?? uri;
     const diags: LspDiagnostic[] = p.diagnostics.map((d) => {
       const startLine = (d.range?.start?.line ?? 0) + 1;
       const startCol = (d.range?.start?.character ?? 0) + 1;

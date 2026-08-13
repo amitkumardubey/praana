@@ -96,10 +96,12 @@ export class LspManager {
     const prep = await this.prepareDocument(absPath);
     if (!prep.ok) return prep;
 
-    // Give the server a brief moment to publish diagnostics after didOpen/Change
-    await new Promise((r) => setTimeout(r, 30));
     const uri = pathToFileUri(absPath);
-    const diags = prep.client.getDiagnostics(uri);
+    // Wait for the server to publish diagnostics for this document version
+    // instead of a fixed sleep — real LSP servers compute them asynchronously.
+    const diags = await prep.client.waitForDiagnostics(uri, {
+      timeoutMs: this.config.timeout_ms,
+    });
     return {
       ok: true,
       value: diags.slice(0, 50),

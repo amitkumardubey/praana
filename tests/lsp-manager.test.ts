@@ -209,4 +209,42 @@ describe("LspManager", () => {
       await mgr.shutdown();
     }
   });
+
+  it("waits for asynchronously published diagnostics", async () => {
+    writeFileSync(join(dir, "a.ts"), "const x = 1;\n");
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        import("../src/lsp/client.js").then(({ LspClient }) =>
+          LspClient.start({
+            ...opts,
+            env: {
+              FAKE_LSP_PUBLISH_DELAY_MS: "150",
+              FAKE_LSP_DIAGNOSTICS: JSON.stringify([
+                {
+                  message: "async error",
+                  severity: 1,
+                  range: {
+                    start: { line: 0, character: 0 },
+                    end: { line: 0, character: 1 },
+                  },
+                },
+              ]),
+            },
+          }),
+        ),
+    });
+
+    try {
+      const a = await mgr.diagnostics(join(dir, "a.ts"));
+      expect(a.ok).toBe(true);
+      if (a.ok) {
+        expect(a.value.some((d) => d.message === "async error")).toBe(true);
+      }
+    } finally {
+      await mgr.shutdown();
+    }
+  });
 });
