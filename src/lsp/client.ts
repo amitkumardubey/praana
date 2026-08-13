@@ -13,6 +13,8 @@ import {
   type JsonRpcMessage,
   type LspDiagnostic,
   type LspErrorCode,
+  type LspPosition,
+  type LspRange,
   type LspTextEdit,
 } from "./types.js";
 
@@ -62,6 +64,12 @@ export class LspClient {
   private nextId = 1;
   private closed = false;
   private documentFormattingProvider = false;
+  private hoverProvider = false;
+  private completionProvider = false;
+  private definitionProvider = false;
+  private referencesProvider = false;
+  private codeActionProvider = false;
+  private resolveProvider = false;
   readonly timeoutMs: number;
   readonly rootUri: string;
 
@@ -163,6 +171,11 @@ export class LspClient {
           textDocument: {
             publishDiagnostics: {},
             formatting: {},
+            hover: { contentFormat: ["markdown", "plaintext"] },
+            completion: { completionItem: { snippetSupport: false } },
+            definition: { linkSupport: true },
+            references: {},
+            codeAction: { resolveSupport: { properties: ["edit"] } },
           },
           workspace: {
             workspaceFolders: true,
@@ -175,12 +188,28 @@ export class LspClient {
           },
         ],
       })) as {
-        capabilities?: { documentFormattingProvider?: boolean | object };
+        capabilities?: {
+          documentFormattingProvider?: boolean | object;
+          hoverProvider?: boolean | object;
+          completionProvider?: boolean | object;
+          definitionProvider?: boolean | object;
+          referencesProvider?: boolean | object;
+          codeActionProvider?: boolean | { resolveProvider?: boolean };
+        };
       };
 
+      const caps = result?.capabilities;
       client.documentFormattingProvider = Boolean(
-        result?.capabilities?.documentFormattingProvider,
+        caps?.documentFormattingProvider,
       );
+      client.hoverProvider = Boolean(caps?.hoverProvider);
+      client.completionProvider = Boolean(caps?.completionProvider);
+      client.definitionProvider = Boolean(caps?.definitionProvider);
+      client.referencesProvider = Boolean(caps?.referencesProvider);
+      const ca = caps?.codeActionProvider;
+      client.codeActionProvider = Boolean(ca);
+      client.resolveProvider =
+        typeof ca === "object" && ca !== null && Boolean(ca.resolveProvider);
       await client.notify("initialized", {});
       return client;
     } catch (err) {
@@ -191,6 +220,30 @@ export class LspClient {
 
   get supportsFormatting(): boolean {
     return this.documentFormattingProvider;
+  }
+
+  get supportsHover(): boolean {
+    return this.hoverProvider;
+  }
+
+  get supportsCompletion(): boolean {
+    return this.completionProvider;
+  }
+
+  get supportsDefinition(): boolean {
+    return this.definitionProvider;
+  }
+
+  get supportsReferences(): boolean {
+    return this.referencesProvider;
+  }
+
+  get supportsCodeAction(): boolean {
+    return this.codeActionProvider;
+  }
+
+  get supportsResolve(): boolean {
+    return this.resolveProvider;
   }
 
   getDiagnostics(uri: string): LspDiagnostic[] {
@@ -328,6 +381,47 @@ export class LspClient {
       textDocument: { uri, version },
       contentChanges: [{ text }],
     });
+  }
+
+  async hover(absPath: string, position: LspPosition): Promise<unknown> {
+    return this.request("textDocument/hover", {
+      textDocument: { uri: pathToFileUri(absPath) },
+      position,
+    });
+  }
+
+  async completion(absPath: string, position: LspPosition): Promise<unknown> {
+    return this.request("textDocument/completion", {
+      textDocument: { uri: pathToFileUri(absPath) },
+      position,
+    });
+  }
+
+  async definition(absPath: string, position: LspPosition): Promise<unknown> {
+    return this.request("textDocument/definition", {
+      textDocument: { uri: pathToFileUri(absPath) },
+      position,
+    });
+  }
+
+  async references(absPath: string, position: LspPosition): Promise<unknown> {
+    return this.request("textDocument/references", {
+      textDocument: { uri: pathToFileUri(absPath) },
+      position,
+      context: { includeDeclaration: true },
+    });
+  }
+
+  async codeAction(absPath: string, range: LspRange): Promise<unknown> {
+    return this.request("textDocument/codeAction", {
+      textDocument: { uri: pathToFileUri(absPath) },
+      range,
+      context: { diagnostics: [] },
+    });
+  }
+
+  async resolveCodeAction(action: unknown): Promise<unknown> {
+    return this.request("codeAction/resolve", action);
   }
 
   async formatDocument(

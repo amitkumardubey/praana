@@ -123,4 +123,45 @@ describe("LspClient", () => {
       }),
     ).rejects.toBeInstanceOf(LspClientError);
   });
+
+  it("reports hover/definition capabilities and returns hover", async () => {
+    const client = await LspClient.start({
+      command: fakeArgv,
+      cwd: root,
+      rootUri: pathToFileUri(root),
+      timeoutMs: 3000,
+      env: {
+        FAKE_LSP_HOVER: JSON.stringify({
+          contents: { kind: "plaintext", value: "number" },
+        }),
+      },
+    });
+    try {
+      expect(client.supportsHover).toBe(true);
+      expect(client.supportsDefinition).toBe(true);
+      const file = join(root, "h.ts");
+      await client.didOpen(file, "typescript", "const n = 1;\n");
+      const hover = await client.hover(file, { line: 0, character: 6 });
+      expect(hover).toEqual({
+        contents: { kind: "plaintext", value: "number" },
+      });
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it("skips hover when server omits the capability", async () => {
+    const client = await LspClient.start({
+      command: fakeArgv,
+      cwd: root,
+      rootUri: pathToFileUri(root),
+      timeoutMs: 3000,
+      env: { FAKE_LSP_NO_HOVER: "1" },
+    });
+    try {
+      expect(client.supportsHover).toBe(false);
+    } finally {
+      await client.shutdown();
+    }
+  });
 });
