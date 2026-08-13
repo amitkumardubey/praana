@@ -21,6 +21,8 @@ describe("toolIcon", () => {
     expect(toolIcon("shell", true)).toBe("❯");
     expect(toolIcon("recall", true)).toBe("◆");
     expect(toolIcon("load_skill", true)).toBe("✦");
+    expect(toolIcon("lsp_hover", true)).toBe("◎");
+    expect(toolIcon("lsp_apply_code_action", true)).toBe("✎");
   });
 
   it("returns ascii fallbacks when useUnicode=false", () => {

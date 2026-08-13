@@ -1906,6 +1906,12 @@ describe('Tool registry (mode-aware)', () => {
       'code_references',
       'lsp_diagnostics',
       'lsp_format',
+      'lsp_hover',
+      'lsp_completions',
+      'lsp_definition',
+      'lsp_references',
+      'lsp_code_actions',
+      'lsp_apply_code_action',
     ]) {
       expect(name in classicTools).toBe(true);
       expect(name in engineTools).toBe(true);
@@ -1924,5 +1930,14 @@ describe('Tool registry (mode-aware)', () => {
     const engine = describeTools({ contextEngineEnabled: true });
     expect(classic.some((t) => t.startsWith('lsp_diagnostics'))).toBe(true);
     expect(engine.some((t) => t.startsWith('lsp_diagnostics'))).toBe(true);
+  });
+
+  it('describeTools advertises lsp_hover and code_* vs lsp_* split', () => {
+    const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
+    const engine = describeTools({ contextEngineEnabled: true });
+    expect(classic.some((t) => t.startsWith('lsp_hover'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('lsp_hover'))).toBe(true);
+    expect(classic.some((t) => t.includes('code_definition is name-based'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('lsp_apply_code_action'))).toBe(true);
   });
 });

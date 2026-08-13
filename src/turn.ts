@@ -1568,6 +1568,26 @@ function toolCommandFromArgs(
     return symbol ? `${symbol} @ ${root}` : root;
   }
   if (
+    toolName === "lsp_hover" ||
+    toolName === "lsp_completions" ||
+    toolName === "lsp_definition" ||
+    toolName === "lsp_references"
+  ) {
+    const path = typeof args.path === "string" ? args.path : "";
+    const line = args.line;
+    const col = args.col;
+    return path ? `${path}:${line}:${col}` : undefined;
+  }
+  if (toolName === "lsp_code_actions") {
+    const path = typeof args.path === "string" ? args.path : "";
+    return path
+      ? `${path}:${args.startLine}:${args.startCol}-${args.endLine}:${args.endCol}`
+      : undefined;
+  }
+  if (toolName === "lsp_apply_code_action") {
+    return typeof args.id === "string" ? args.id : undefined;
+  }
+  if (
     toolName === "code_parse" ||
     toolName === "code_imports" ||
     toolName === "code_symbols" ||
