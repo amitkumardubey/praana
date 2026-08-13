@@ -49,9 +49,18 @@ export function registerBuiltinHooks(
 ): void {
   const writePath = new WritePathGuard(cwd);
   registry.onPreToolCall(createPlanModePreToolCallHandler());
-  registry.onPreToolCall(createWritePathPreToolCallHandler(writePath));
+  registry.onPreToolCall(
+    createWritePathPreToolCallHandler(writePath, {
+      originatingPathForApply: (id) =>
+        opts?.lspManager?.originatingPathForAction(id) ?? null,
+    }),
+  );
 
   if (opts?.lspManager) {
+    opts.lspManager.setApplyLock({
+      tryAcquireExtra: (id, absPath) =>
+        writePath.tryAcquireExtra(id, absPath, absPath),
+    });
     const lspHandlers = createLspEditHandlers({
       cwd,
       getLsp: () => opts.lspManager ?? null,

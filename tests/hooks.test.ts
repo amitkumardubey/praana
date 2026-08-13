@@ -383,3 +383,86 @@ describe("builtin hook handlers", () => {
     expect(after.action).toBe("continue");
   });
 });
+
+describe("lsp_apply_code_action write-path", () => {
+  it("locks the originating path for lsp_apply_code_action", async () => {
+    const { mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { LspManager } = await import("../src/lsp/manager.js");
+    const { LspClient } = await import("../src/lsp/client.js");
+    const { pathToFileUri } = await import("../src/lsp/types.js");
+
+    const dir = join(
+      tmpdir(),
+      `praana-hooks-lsp-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "x\n");
+    const uri = pathToFileUri(path);
+    const mgr = new LspManager({
+      config: {
+        enabled: true,
+        diagnostics: true,
+        format_on_edit: false,
+        timeout_ms: 3000,
+        max_file_lines: 10_000,
+        servers: {
+          typescript: [
+            process.execPath,
+            "run",
+            join(import.meta.dirname, "fixtures", "fake-lsp-server.ts"),
+          ],
+        },
+      },
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_CODE_ACTIONS: JSON.stringify([
+              {
+                title: "noop",
+                edit: { changes: { [uri]: [] } },
+              },
+            ]),
+          },
+        }),
+    });
+    const registry = new HookRegistry();
+    registerBuiltinHooks(registry, dir, { lspManager: mgr });
+    const session = fakeSession({ cwd: dir });
+    try {
+      const listed = await mgr.codeActions(path, 1, 1, 1, 1);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      const id = listed.value.actions[0]!.id;
+
+      const first = await registry.runPreToolCall({
+        toolName: "lsp_apply_code_action",
+        args: { id },
+        session,
+      });
+      expect(first.action).toBe("continue");
+
+      const second = await registry.runPreToolCall({
+        toolName: "edit_file",
+        args: { path: "a.ts", oldText: "x", newText: "y" },
+        session,
+      });
+      expect(second.action).toBe("block");
+
+      const unknown = await registry.runPreToolCall({
+        toolName: "lsp_apply_code_action",
+        args: { id: "ca_missing" },
+        session,
+      });
+      expect(unknown.action).toBe("continue");
+    } finally {
+      await mgr.shutdown();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

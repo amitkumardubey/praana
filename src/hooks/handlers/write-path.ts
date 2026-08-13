@@ -7,10 +7,12 @@ const WRITE_TOOLS = new Set([
   "batch_write",
   "batch_edit",
   "lsp_format",
+  "lsp_apply_code_action",
 ]);
 
 export class WritePathGuard {
   private readonly pending = new Set<string>();
+  private readonly applyLocks = new Map<string, string[]>();
 
   constructor(private readonly cwd: string) {}
 
@@ -38,6 +40,30 @@ export class WritePathGuard {
 
   release(absPath: string): void {
     this.pending.delete(absPath);
+  }
+
+  rememberApply(id: string, paths: string[]): void {
+    const prev = this.applyLocks.get(id) ?? [];
+    const next = [...prev];
+    for (const p of paths) {
+      if (!next.includes(p)) next.push(p);
+    }
+    this.applyLocks.set(id, next);
+  }
+
+  tryAcquireExtra(
+    id: string,
+    absPath: string,
+    relPath: string,
+  ): { ok: true } | { ok: false; error: string } {
+    const result = this.tryAcquire(absPath, relPath);
+    if (result.ok) this.rememberApply(id, [absPath]);
+    return result;
+  }
+
+  releaseApply(id: string): void {
+    for (const p of this.applyLocks.get(id) ?? []) this.release(p);
+    this.applyLocks.delete(id);
   }
 }
 
@@ -72,6 +98,7 @@ function relPathsFromArgs(
 
 export function createWritePathPreToolCallHandler(
   guard: WritePathGuard,
+  opts?: { originatingPathForApply?: (id: string) => string | null },
 ): PreToolCallHandler {
   return (ctx) => {
     if (ctx.toolName === "read_file") {
@@ -88,6 +115,18 @@ export function createWritePathPreToolCallHandler(
     }
 
     if (!WRITE_TOOLS.has(ctx.toolName)) return;
+
+    if (ctx.toolName === "lsp_apply_code_action") {
+      const id = typeof ctx.args.id === "string" ? ctx.args.id : "";
+      const abs = id ? opts?.originatingPathForApply?.(id) ?? null : null;
+      if (!abs) return;
+      const result = guard.tryAcquire(abs, abs);
+      if (!result.ok) {
+        return { action: "block", isError: false, error: result.error };
+      }
+      guard.rememberApply(id, [abs]);
+      return;
+    }
 
     const acquired: string[] = [];
     for (const relPath of relPathsFromArgs(ctx.toolName, ctx.args)) {
@@ -108,6 +147,11 @@ export function createWritePathPostToolCallHandler(
 ): PostToolCallHandler {
   return (ctx) => {
     if (!WRITE_TOOLS.has(ctx.toolName)) return;
+    if (ctx.toolName === "lsp_apply_code_action") {
+      const id = typeof ctx.args.id === "string" ? ctx.args.id : "";
+      if (id) guard.releaseApply(id);
+      return;
+    }
     const seen = new Set<string>();
     for (const relPath of relPathsFromArgs(ctx.toolName, ctx.args)) {
       const absPath = guard.resolvePath(relPath);
