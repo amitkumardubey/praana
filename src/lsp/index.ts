@@ -10,7 +10,7 @@ export {
   lspLanguageId,
   resolveServerArgv,
 } from "./language.js";
-export { LspManager, diffIntroduced, type LspManagerOptions } from "./manager.js";
+export { LspManager, diffIntroduced, type ApplyLock, type LspManagerOptions } from "./manager.js";
 export {
   fileUriToPath,
   pathToFileUri,

@@ -14,6 +14,7 @@ export const PLAN_MODE_BLOCKED_TOOLS = new Set([
   "batch_write",
   "git_commit",
   "lsp_format",
+  "lsp_apply_code_action",
 ]);
 
 const PLAN_APPROVAL_WORDS = new Set(["go", "execute", "proceed", "continue"]);

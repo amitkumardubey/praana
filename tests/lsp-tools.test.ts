@@ -116,6 +116,69 @@ describe("lsp tools", () => {
     expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_format")).toBe(true);
     expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_diagnostics")).toBe(false);
   });
+
+  it("lsp_hover is 1-based and returns mapped hover", async () => {
+    writeFileSync(join(dir, "a.ts"), "const n = 1;\n");
+    const mgr = new LspManager({
+      config: cfg(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) =>
+        import("../src/lsp/client.js").then(({ LspClient }) =>
+          LspClient.start({
+            ...opts,
+            env: {
+              FAKE_LSP_HOVER: JSON.stringify({
+                contents: { kind: "plaintext", value: "number" },
+              }),
+            },
+          }),
+        ),
+    });
+    try {
+      const tools = createLspTools({ cwd: dir, getLsp: () => mgr });
+      const result = await tools.lsp_hover.execute({
+        path: "a.ts",
+        line: 1,
+        col: 7,
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.hover).toEqual({ contents: "number", kind: "plaintext" });
+        expect(result.line).toBe(1);
+      }
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("rejects non-positive coordinates", async () => {
+    writeFileSync(join(dir, "a.ts"), "x\n");
+    const mgr = new LspManager({
+      config: cfg(),
+      cwd: dir,
+      workspaceRoot: dir,
+    });
+    try {
+      const tools = createLspTools({ cwd: dir, getLsp: () => mgr });
+      const result = await tools.lsp_hover.execute({
+        path: "a.ts",
+        line: 0,
+        col: 1,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe("invalid_argument");
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("blocks lsp_apply_code_action in the plan-mode set, not query tools", () => {
+    expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_apply_code_action")).toBe(true);
+    expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_hover")).toBe(false);
+    expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_code_actions")).toBe(false);
+    expect(PLAN_MODE_BLOCKED_TOOLS.has("lsp_definition")).toBe(false);
+  });
 });
 
 describe("lsp post-edit hooks", () => {
