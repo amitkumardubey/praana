@@ -54,6 +54,55 @@ export interface LspTextEdit {
   newText: string;
 }
 
+export interface LspHover {
+  contents: string;
+  kind: "markdown" | "plaintext";
+}
+
+export type CompletionKind =
+  | "text"
+  | "method"
+  | "function"
+  | "constructor"
+  | "field"
+  | "variable"
+  | "class"
+  | "interface"
+  | "module"
+  | "property"
+  | "enum"
+  | "keyword"
+  | "snippet"
+  | "file"
+  | "folder"
+  | "enumMember"
+  | "constant"
+  | "struct"
+  | "operator"
+  | "typeParameter"
+  | "other";
+
+export interface LspCompletionItem {
+  label: string;
+  kind?: CompletionKind;
+  detail?: string;
+}
+
+export interface LspLocation {
+  path: string;
+  startLine: number;
+  startCol: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface LspCodeActionRow {
+  id: string;
+  title: string;
+  kind?: string;
+  preferred?: boolean;
+}
+
 export type JsonRpcId = number | string;
 
 export interface JsonRpcRequest {

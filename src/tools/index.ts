@@ -183,6 +183,12 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "code_references(symbol, root?, language?, max_files?, max_hits?) — Name-based reference hits under a project root",
   "lsp_diagnostics(path) — LSP diagnostics for a file (requires [lsp] enabled + configured server)",
   "lsp_format(path) — Format a file via LSP (mutating; requires [lsp] enabled + configured server)",
+  "lsp_hover(path, line, col) — LSP type/docs at a 1-based position (requires [lsp]; use code_* for fast name queries)",
+  "lsp_completions(path, line, col) — Up to 20 LSP completion labels at a position (no insert)",
+  "lsp_definition(path, line, col) — Semantic LSP definition at a position (stdlib/deps); code_definition is name-based in-project",
+  "lsp_references(path, line, col) — Semantic LSP references at a position; code_references is name-based in-project",
+  "lsp_code_actions(path, startLine, startCol, endLine, endCol) — List applicable LSP quick fixes (opaque ids)",
+  "lsp_apply_code_action(id) — Apply a listed code action (text edits only; mutating)",
   "load_skill(skill_id) — Load a skill's full instructions from the catalog",
 ];
 

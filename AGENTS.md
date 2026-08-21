@@ -99,7 +99,7 @@ enabled = true   # false = never load addon; code_* tools return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
-### LSP (`[lsp]`, issue #11 Phase 2)
+### LSP (`[lsp]`, issue #11 Phase 2–3)
 
 Opt-in Language Server Protocol client for diagnostics and formatting. Uses
 **external** servers you install (e.g. `typescript-language-server`); PRAANA only
@@ -118,8 +118,14 @@ typescript = ["typescript-language-server", "--stdio"]
 # javascript falls back to the typescript entry when omitted
 ```
 
-Tools: `lsp_diagnostics(path)`, `lsp_format(path)`. Soft-fail when disabled or
-the server is missing. Tree-sitter `code_*` tools are unchanged.
+Tools: `lsp_diagnostics(path)`, `lsp_format(path)`, `lsp_hover(path, line, col)`,
+`lsp_completions(path, line, col)`, `lsp_definition(path, line, col)`,
+`lsp_references(path, line, col)`, `lsp_code_actions(path, range)`,
+`lsp_apply_code_action(id)`. Soft-fail when disabled or the server is missing.
+
+Tree-sitter `code_*` stays the fast in-project name path. Use `lsp_definition` /
+`lsp_references` when you need types, stdlib, or node_modules. Completions are
+labels only (cap 20) — insert via `edit_file`. Apply is text edits only.
 
 ### Project Context (AGENTS.md)
 
@@ -235,7 +241,7 @@ src/
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
-    lsp.ts — lsp_diagnostics / lsp_format (session-scoped LSP client; issue #11 Phase 2)
+    lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phase 3)
     git-context.ts — shared getGitContext / findGitRoot helpers
     native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
     lsp/ — JSON-RPC LSP client + manager (stdio language servers; soft-fail when disabled)
@@ -288,7 +294,7 @@ At session end, the context engine records which tools were called and which art
 A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
 
 - `/plan <on|off|execute>` toggles the gate. `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
-- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, git_status, git_diff, recall, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
+- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, lsp_format, lsp_apply_code_action, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, git_status, git_diff, recall, lsp_diagnostics / lsp_hover / lsp_definition, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
 - PRAANA auto-detects plan/approval intent from the user's message and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate, and "plan the execution" does **not** arm it.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - **Headless gate:** `praana run` / Harbor sets `Session.headless = true`. That omits the engine **Plan-Before-Execute** system-frame rule and skips plan-mode auto-enter — there is no interactive user to say "proceed". Explicit `/plan on` is still available in TTY sessions only.

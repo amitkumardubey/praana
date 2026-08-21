@@ -99,7 +99,12 @@ export function inferContentTypeFromTool(
     sourceTool === "code_symbols" ||
     sourceTool === "code_definition" ||
     sourceTool === "code_references" ||
-    sourceTool === "lsp_diagnostics"
+    sourceTool === "lsp_diagnostics" ||
+    sourceTool === "lsp_hover" ||
+    sourceTool === "lsp_completions" ||
+    sourceTool === "lsp_definition" ||
+    sourceTool === "lsp_references" ||
+    sourceTool === "lsp_code_actions"
   ) {
     return "search_results";
   }
