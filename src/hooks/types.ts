@@ -16,6 +16,10 @@ export interface HookSessionLike {
   isPlanMode(): boolean;
   /** Runtime logger; typed loosely so Session is assignable without circular imports. */
   getLogger?(): unknown;
+  /** `null` means the read index is inactive — skip unread edit_file checks. */
+  hasReadPath?(absPath: string): boolean | null;
+  listReadPaths?(): string[];
+  recentWritesForPath?(absPath: string): Array<{ path: string; turn?: number }>;
 }
 
 export type HookPoint =
@@ -35,7 +39,12 @@ export interface PreToolCallContext {
 export type PreToolCallHandlerResult =
   | void
   | { action?: "continue"; args?: Record<string, unknown> }
-  | { action: "block"; error: string; isError?: boolean };
+  | {
+      action: "block";
+      error: string;
+      isError?: boolean;
+      suggestions?: string[];
+    };
 
 export type PreToolCallHandler = (
   ctx: PreToolCallContext,
@@ -43,7 +52,12 @@ export type PreToolCallHandler = (
 
 export type PreToolCallDispatchResult =
   | { action: "continue"; args: Record<string, unknown> }
-  | { action: "block"; error: string; isError: boolean };
+  | {
+      action: "block";
+      error: string;
+      isError: boolean;
+      suggestions?: string[];
+    };
 
 export interface PostToolCallContext {
   toolName: string;

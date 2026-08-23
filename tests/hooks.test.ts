@@ -85,6 +85,27 @@ describe("HookRegistry", () => {
     });
   });
 
+  it("forwards suggestions on a pre_tool_call block", async () => {
+    const registry = new HookRegistry();
+    registry.onPreToolCall(() => ({
+      action: "block" as const,
+      error: "missing",
+      isError: true,
+      suggestions: ["src/a.ts"],
+    }));
+    const result = await registry.runPreToolCall({
+      toolName: "read_file",
+      args: { path: "b.ts" },
+      session: fakeSession(),
+    });
+    expect(result).toEqual({
+      action: "block",
+      error: "missing",
+      isError: true,
+      suggestions: ["src/a.ts"],
+    });
+  });
+
   it("runs post_tool_call handlers in order and applies result patches", async () => {
     const registry = new HookRegistry();
     const order: string[] = [];
