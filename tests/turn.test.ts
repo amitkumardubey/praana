@@ -273,7 +273,10 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
   const session: any = {
     id: `test-session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     cwd: "/home/test/project",
-    hooks: createBuiltinHookRegistry("/home/test/project"),
+    hooks: createBuiltinHookRegistry("/home/test/project", {
+      validate: { pathExists: () => true, commandOnPath: () => true },
+    }),
+    confirmRisk: async () => ({ allowed: true }),
     config,
     eventLog,
     stateGraph,
@@ -1965,7 +1968,7 @@ describe("runTurn", () => {
     expect(readResult?.payload.result.ok).toBe(true);
   });
 
-  it("auto-enters plan mode for pick-issue phrasing", async () => {
+  it("does not auto-enter plan mode for pick-issue phrasing", async () => {
     const generator = (async function* () {
       yield {
         type: "done",
@@ -1976,7 +1979,7 @@ describe("runTurn", () => {
     (piStream as ReturnType<typeof mock>).mockReturnValue(generator as any);
     const session = makeMockSession();
     await runTurn(session, "pick a github issue to work on");
-    expect(session.isPlanMode()).toBe(true);
+    expect(session.isPlanMode()).toBe(false);
   });
 
   it("does not auto-enter plan mode in headless sessions", async () => {
