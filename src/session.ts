@@ -32,6 +32,15 @@ import { createConfirmLock } from "./risk/confirm-lock.js";
 import { promptYesNo } from "./risk/prompt.js";
 import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
 import { SessionNotFoundError } from "./session-errors.js";
+
+export function formatNativeStatus(result: { available: boolean; bindings: { nativeVersion(): string } | null; error: { message: string; causeMessage?: string } | null }): string {
+  if (result.available && result.bindings) {
+    return `available (${result.bindings.nativeVersion()})`;
+  }
+  const err = result.error;
+  if (err && err.message.includes("disabled via config")) return "disabled via config";
+  return `unavailable: ${err?.causeMessage ?? err?.message ?? "unknown"}`;
+}
 export { SessionNotFoundError } from "./session-errors.js";
 import {
   MemoryStore,
@@ -69,7 +78,7 @@ import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.j
 import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
-import { setNativeEnabled } from "./native/index.js";
+import { loadNative, setNativeEnabled } from "./native/index.js";
 import { LspManager } from "./lsp/manager.js";
 
 /**
@@ -123,6 +132,8 @@ export class Session {
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
   memoryInitError: string | null = null;
+  /** Human-readable native addon status probed at session start (issue #319). */
+  nativeStatus: string | null = null;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -264,6 +275,11 @@ export class Session {
       session.memoryStore = null;
       session.digest = null;
       session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
+      try {
+        session.nativeStatus = formatNativeStatus(await loadNative());
+      } catch {
+        session.nativeStatus = "unavailable: probe failed";
+      }
       return session;
     }
 
@@ -330,6 +346,11 @@ export class Session {
       }
     }
 
+    try {
+      session.nativeStatus = formatNativeStatus(await loadNative());
+    } catch {
+      session.nativeStatus = "unavailable: probe failed";
+    }
     await session.hooks.runSessionStart({ session, reason: "create" });
     return session;
   }
@@ -485,6 +506,11 @@ export class Session {
     }
 
     session.resumed = true;
+    try {
+      session.nativeStatus = formatNativeStatus(await loadNative());
+    } catch {
+      session.nativeStatus = "unavailable: probe failed";
+    }
     await session.hooks.runSessionStart({ session, reason: "resume" });
     return session;
   }

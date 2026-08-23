@@ -403,6 +403,8 @@ export async function executeSlashCommand(
         lines.push(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
       }
 
+      lines.push("", `Native addon: ${session.nativeStatus ?? "unknown"}`);
+
       if (session.isContextEngineEnabled() && session.contextEngine) {
         const telemetry = session.contextEngine.finalizeTelemetry(session.getTurnCount());
         lines.push("", "Context engine telemetry:");

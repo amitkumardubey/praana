@@ -26,6 +26,8 @@ export interface CompileInput {
    * post-resume turn when the user's message may diverge from a stale task.
    */
   resumeNote?: string;
+  /** Native addon status probed at session start (issue #319). */
+  nativeStatus?: string | null;
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
@@ -78,6 +80,7 @@ export function compile(input: CompileInput): string {
     input.agentsContext,
     false,
     input.resumeNote,
+    input.nativeStatus,
   );
   sections.push(frame);
 
@@ -150,6 +153,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     agentsContext,
     false,
     input.resumeNote,
+    input.nativeStatus,
   );
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
@@ -365,6 +369,7 @@ export function buildSystemFrame(
   agentsContext?: string | null,
   engineMode = false,
   resumeNote?: string,
+  nativeStatus?: string | null,
 ): string {
   const lines = [
     "# System",
@@ -385,6 +390,15 @@ export function buildSystemFrame(
 
   if (resumeNote) {
     lines.push("", "## Resume Scope", "", resumeNote);
+  }
+
+  if (nativeStatus && !nativeStatus.startsWith("available")) {
+    lines.push(
+      "",
+      "## Native Addon",
+      "",
+      `Tree-sitter code-intel addon ${nativeStatus} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or \`shell rg\` for code exploration.`,
+    );
   }
 
   lines.push("", ...buildSharedAgentPolicy());

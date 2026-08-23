@@ -82,6 +82,8 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
     `skills   ${skillCount > 0 ? `${skillCount} available` : "none found"}`,
   );
 
+  lines.push(`native   ${session.nativeStatus ?? "unknown"}`);
+
   lines.push("─".repeat(Math.min(termWidth - 2, 56)));
   lines.push("/help for commands · /exit to save · ctrl-c to interrupt");
 

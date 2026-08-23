@@ -45,6 +45,7 @@ export function formatSessionBannerLines(
       : session.isIncognito()
         ? "memory: incognito (disabled)"
         : "memory: disabled",
+    session.nativeStatus ? `native: ${session.nativeStatus}` : `native: unknown`,
   ];
 }
 

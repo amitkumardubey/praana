@@ -496,6 +496,7 @@ export async function runTurn(
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
     resumeNote,
+    nativeStatus: session.nativeStatus,
   };
 
   await session.hooks.runPreCompile({
@@ -585,6 +586,7 @@ export async function runTurn(
       userInput,
       resumeNote,
       circuitNotes: session.circuitNotes?.() ?? [],
+      nativeStatus: session.nativeStatus,
     });
     compiledPrompt = classicResult.prompt;
     promptMetrics = classicResult.metrics;
@@ -612,6 +614,7 @@ export async function runTurn(
         userInput,
         resumeNote,
         circuitNotes: session.circuitNotes?.() ?? [],
+        nativeStatus: session.nativeStatus,
       });
       compiledPrompt = classicResult.prompt;
       promptMetrics = classicResult.metrics;
