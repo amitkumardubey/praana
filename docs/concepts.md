@@ -201,6 +201,8 @@ Plan mode (#221) is an opt-in safety gate. When armed via `/plan on`, **mutating
 
 Always-on **secret redaction** (#302) walks tool results and a copy of logged tool-call args before they enter the compiled prompt, `events.jsonl`, or the TUI. Known key prefixes, PEM blocks, and high-entropy `KEY=value` assignments become `[REDACTED:<kind>]`. User and agent chat text are not redacted; tools still execute the original args.
 
+Always-on **circuit breakers** (#301) hard-gate a mutating tool that repeats the same arguments or the same path/command error three times, and inject a constraint into the next compile. Reads and test commands are not gated. Headless runs can also wrap up (one final no-tool reply) when `[circuit] max_tokens` or `max_wall_ms` is hit.
+
 ---
 
 ## How the Two Systems Relate
