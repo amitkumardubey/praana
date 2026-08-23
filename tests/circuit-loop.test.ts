@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isLoopExempt, LoopGate, CIRCUIT_LOOP_PREFIX } from "../src/circuit/loop-gate.js";
+import { isLoopExempt, LoopGate, CIRCUIT_LOOP_PREFIX, renderCircuitNotes } from "../src/circuit/loop-gate.js";
 
 describe("isLoopExempt", () => {
   it("exempts reads and tests", () => {
@@ -50,6 +50,10 @@ describe("LoopGate", () => {
     expect(gate.observePre("edit_file", { path: "a.ts", oldText: "a", newText: "b" })).toBeUndefined();
     expect(gate.observePre("edit_file", { path: "a.ts", oldText: "b", newText: "c" })).toBeUndefined();
     expect(gate.observePre("edit_file", { path: "a.ts", oldText: "c", newText: "d" })).toBeUndefined();
+  });
+
+  it("renders a circuit section", () => {
+    expect(renderCircuitNotes(["Circuit breaker: shell …"])).toContain("## Circuit Breakers");
   });
 
   it("does not count exempt calls", () => {

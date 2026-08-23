@@ -173,6 +173,7 @@ import {
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
+import { LoopGate } from "../src/circuit/loop-gate.js";
 import type { PraanaConfig, Event } from "../src/types.js";
 // ── Restore real modules after this file to prevent cross-test pollution ──
 afterAll(() => {
@@ -247,6 +248,7 @@ function makeConfig(overrides?: Partial<PraanaConfig>): PraanaConfig {
 function makeMockSession(overrides?: Partial<Record<string, any>>) {
   const config = makeConfig();
   const stateGraph = new StateGraph();
+  const loopGate = new LoopGate({ threshold: 3 });
 
   // Mock event log that stores events in memory instead of writing to disk
   const events: Event[] = [];
@@ -277,6 +279,13 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
       validate: { pathExists: () => true, commandOnPath: () => true },
     }),
     confirmRisk: async () => ({ allowed: true }),
+    loopGate,
+    observeCircuitPre: (tool: string, args: Record<string, unknown>) =>
+      loopGate.observePre(tool, args),
+    observeCircuitPost: (tool: string, args: Record<string, unknown>, isError: boolean) =>
+      loopGate.observePost(tool, args, isError),
+    circuitNotes: () => loopGate.notes(),
+    getStartedAt: () => Date.now() - 1_000,
     config,
     eventLog,
     stateGraph,
@@ -2160,5 +2169,63 @@ describe("runTurn", () => {
     expect((callsLogged[0] as any).payload.args.command).toBe(
       "echo [REDACTED:aws-access-key]",
     );
+  });
+
+  it("blocks the third identical mutating shell call and injects a circuit note", async () => {
+    const cmd = "rm -rf /tmp/praana-circuit-test";
+    let executeCount = 0;
+    (createAllTools as ReturnType<typeof mock>).mockReturnValue({
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock(async () => {
+          executeCount++;
+          return { ok: true, stdout: "ok" };
+        }),
+      },
+    });
+
+    const toolUse = (id: string) => (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id, name: "shell", arguments: { command: cmd } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id, name: "shell", arguments: { command: cmd } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      if (calls === 1) return toolUse("c1") as any;
+      if (calls === 2) return toolUse("c2") as any;
+      if (calls === 3) return toolUse("c3") as any;
+      return finalGenerator as any;
+    });
+
+    const session = makeMockSession();
+    await runTurn(session, "delete that dir");
+
+    expect(executeCount).toBe(2);
+    const results = session.eventLog.readLast(80).filter((e: Event) => e.kind === "tool_result");
+    const last = results[results.length - 1] as any;
+    expect(last.payload.result.ok).toBe(false);
+    expect(String(last.payload.result.error)).toContain("Circuit breaker:");
+    expect(session.circuitNotes()).toHaveLength(1);
   });
 });

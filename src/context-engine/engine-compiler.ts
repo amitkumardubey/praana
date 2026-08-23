@@ -49,6 +49,7 @@ import { classifyTask, getDefaultDomainClassifier } from "../domain/task-classif
 import { validateBudgetAllocation } from "../domain/types.js";
 import type { BudgetAllocation, DomainClassifier, TaskClassificationResult } from "../domain/types.js";
 import { renderWorkflowContext } from "./workflow-tracker.js";
+import { renderCircuitNotes } from "../circuit/loop-gate.js";
 
 const BAND_VERBATIM_TOKENS = 3000;
 const BAND_SCORED_RECENT_TOKENS = 3000;
@@ -82,6 +83,8 @@ export interface EngineCompileInput extends CompileInput {
    * Injected after the skills catalog when non-empty.
    */
   agentHints?: string;
+  /** Loop-breaker notes (issue #301). Injected after agent hints when non-empty. */
+  circuitNotes?: string[];
   /**
    * Optional "Files read this session" index section (issue #251).
    * Injected after the checkpoint when non-empty.
@@ -508,6 +511,9 @@ async function compileEnginePass(
     sections.push(precomputed.agentHints);
     metrics.agentHintsTokens = precomputed.agentHintsTokens;
   }
+
+  const circuitSection = renderCircuitNotes(input.circuitNotes ?? []);
+  if (circuitSection) sections.push(circuitSection);
 
   // Workflow context (issue #92): inject matching patterns before the checkpoint.
   metrics.workflowContextTokens = 0;

@@ -537,6 +537,7 @@ export async function runTurn(
         repeatFileReads: session.scorecard.getCounters().repeatFileReads,
         churnInterventions: session.scorecard.getCounters().churnInterventions,
       }),
+      circuitNotes: session.circuitNotes?.() ?? [],
       filesReadIndex,
       artifactTokens: (id) =>
         session.contextEngine?.store.getArtifact(id)?.rawTokens,
@@ -582,6 +583,7 @@ export async function runTurn(
       events: session.eventLog.readAllUncompressed(),
       userInput,
       resumeNote,
+      circuitNotes: session.circuitNotes?.() ?? [],
     });
     compiledPrompt = classicResult.prompt;
     promptMetrics = classicResult.metrics;
@@ -608,6 +610,7 @@ export async function runTurn(
         events: session.eventLog.readAllUncompressed(),
         userInput,
         resumeNote,
+        circuitNotes: session.circuitNotes?.() ?? [],
       });
       compiledPrompt = classicResult.prompt;
       promptMetrics = classicResult.metrics;
