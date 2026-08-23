@@ -30,6 +30,19 @@ describe("deepMerge array strategies", () => {
     expect(merged.shell.allowed_paths).toEqual(["/a", "/b"]);
   });
 
+  it("appends and dedupes risk.allow (global + local)", () => {
+    const global = { risk: { allow: ["rm", "package_install"] } };
+    const local = { risk: { allow: ["git_reset", "rm"] } };
+    const merged = deepMerge(global, local);
+    expect(merged.risk.allow).toEqual(["rm", "package_install", "git_reset"]);
+  });
+
+  it("keeps base risk.allow when override is empty", () => {
+    const base = { risk: { allow: ["rm"] } };
+    const merged = deepMerge(base, { risk: { allow: [] as string[] } });
+    expect(merged.risk.allow).toEqual(["rm"]);
+  });
+
   it("does not alias base array when append override is empty", () => {
     const basePaths = ["/a", "/b"];
     const base = { shell: { enabled: true, allowed_paths: basePaths } };
@@ -136,6 +149,23 @@ describe("loadConfig multi-source array merge", () => {
     const sources = getLoadedConfigSources();
     expect(sources.some((s) => s.endsWith("config.toml"))).toBe(true);
     expect(sources.some((s) => s.endsWith("praana.config.toml"))).toBe(true);
+  });
+
+  it("filters unknown risk.allow ids and appends known ones", () => {
+    writeFileSync(
+      join(praanaHome, APP_HOME_DIR, "config.toml"),
+      '[risk]\nallow = ["package_install", "not_a_class"]\n',
+      "utf-8",
+    );
+    writeFileSync(
+      join(projectDir, "praana.config.toml"),
+      '[risk]\nallow = ["rm", "package_install"]\n',
+      "utf-8",
+    );
+
+    const config = loadConfig();
+    expect(config.risk?.allow).toEqual(["package_install", "rm"]);
+    expect(getConfigWarnings().some((w) => w.includes("not_a_class"))).toBe(true);
   });
 });
 
