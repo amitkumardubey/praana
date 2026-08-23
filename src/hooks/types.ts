@@ -4,6 +4,8 @@
  * These are infrastructure only — no external plugin loading.
  */
 
+import type { RiskClass, RiskConfirmResult } from "../risk/classes.js";
+
 export interface HookLogger {
   child(domain: string): {
     warn(message: string, opts?: Record<string, unknown>): void;
@@ -20,6 +22,7 @@ export interface HookSessionLike {
   hasReadPath?(absPath: string): boolean | null;
   listReadPaths?(): string[];
   recentWritesForPath?(absPath: string): Array<{ path: string; turn?: number }>;
+  confirmRisk?(classId: RiskClass, prompt: string): Promise<RiskConfirmResult>;
 }
 
 export type HookPoint =
