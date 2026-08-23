@@ -45,10 +45,7 @@ import {
   type LogEntry,
 } from "./logger.js";
 import { printDebug, printMemoryBanner } from "./ui.js";
-import {
-  detectPlanApproval,
-  detectPlanModeIntent,
-} from "./plan-mode.js";
+import { detectPlanApproval } from "./plan-mode.js";
 
 type ProviderUsage = { input: number; output: number; totalTokens: number };
 
@@ -353,13 +350,9 @@ export async function runTurn(
   });
   session.setLastUserInput(userInput);
 
-  // Plan-mode gating: entering is automatic for plan-then-execute phrasing;
-  // exiting requires an explicit approval word or /plan execute.
-  // Headless one-shots have no interactive approver — skip auto-enter.
+  // Leaving plan mode requires an explicit approval word or /plan execute.
   if (session.isPlanMode() && detectPlanApproval(userInput)) {
     session.exitPlanMode();
-  } else if (!session.headless && detectPlanModeIntent(userInput)) {
-    session.enterPlanMode();
   }
 
   // 1b. Auto-hydrate peripheral objects matching user query keywords (engine mode only)
@@ -501,7 +494,6 @@ export async function runTurn(
     skillsSectionBudgetRatio: session.config.skills.max_token_budget_ratio,
     reservedOutputTokens: session.config.compiler.reserved_output_tokens,
     resumeNote,
-    planBeforeExecute: !session.headless,
   };
 
   await session.hooks.runPreCompile({

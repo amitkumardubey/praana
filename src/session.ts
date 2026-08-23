@@ -135,8 +135,8 @@ export class Session {
   scorecard: ScorecardTracker = createNullScorecard();
   debug = false;
   /**
-   * True for `praana run` / Harbor one-shots. No interactive user is available
-   * to approve plans, so Plan-Before-Execute and plan-mode auto-enter are gated off.
+   * True for `praana run` / Harbor one-shots. Risk confirm fail-closes
+   * without a TTY unless the class is in `[risk].allow`.
    */
   headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */

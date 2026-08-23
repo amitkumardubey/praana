@@ -66,21 +66,6 @@ export function detectPlanApproval(userInput: string): boolean {
 }
 
 /**
- * Detect whether the user's message indicates they want to enter plan mode.
- *
- * Triggers on pick-an-issue phrasing or explicit planning-of-work phrasing.
- * Avoids triggering on general discussion of execution (e.g. "plan the
- * execution" should not arm the gate).
- */
-export function detectPlanModeIntent(userInput: string): boolean {
-  const lower = userInput.toLowerCase();
-  const pickIssue = /\bpick\b/.test(lower) && /\b(issue|ticket)\b/.test(lower);
-  const planWork =
-    /\bplan\b/.test(lower) && /\b(branch|implement|work on)\b/.test(lower);
-  return pickIssue || planWork;
-}
-
-/**
  * Return true for shell commands that create a new git branch.
  *
  * Covers `git checkout -b`, `git switch -c`, `git branch <name>`, and
