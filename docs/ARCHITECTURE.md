@@ -324,12 +324,14 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
 - Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
 
-### Git Tools (`src/tools/git.ts`, issue #26)
+### Git Tools (`src/tools/git.ts`, issues #26 + #318)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)
 - `git_diff(staged?, path?, context?)` — structured diff (files, hunks, insertion/deletion stats); large output becomes a `"diff"` artifact with a stub card
 - `git_commit(message, paths?, all?)` — commit with guardrails (blocked in plan mode; optional TTY confirm via `edit.confirm`; does not push)
+- `git_branches(base?, include_remote?, limit?)` — branch list with last commit + ahead/behind vs base (read-only; allowed in plan mode)
+- `git_log(branch?, path?, max_count?, since?)` — recent history with structured commits (read-only; allowed in plan mode)
 
-Shared helpers live in `src/git-context.ts`. These are the first ship of the deterministic tools harness (#195); see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
+Shared helpers live in `src/git-context.ts`. Structured git tools (`#26` + `#318`) are the harness's git surface under epic #195; see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
 
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note

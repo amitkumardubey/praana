@@ -88,6 +88,39 @@ export type GitStatusResult = GitStatusSuccess | GitToolError;
 export type GitDiffResult = GitDiffSuccess | GitToolError;
 export type GitCommitResult = GitCommitSuccess | GitToolError;
 
+export interface GitBranchEntry {
+  name: string;
+  current: boolean;
+  remote: boolean;
+  upstream: string | null;
+  last_commit: { sha: string; date: string; subject: string };
+  ahead: number;
+  behind: number;
+}
+
+export interface GitBranchesSuccess {
+  ok: true;
+  base: string;
+  current: string | null;
+  branches: GitBranchEntry[];
+}
+
+export interface GitLogCommit {
+  sha: string;
+  author: string;
+  date: string;
+  subject: string;
+  files_changed: number;
+}
+
+export interface GitLogSuccess {
+  ok: true;
+  commits: GitLogCommit[];
+}
+
+export type GitBranchesResult = GitBranchesSuccess | GitToolError;
+export type GitLogResult = GitLogSuccess | GitToolError;
+
 export interface GitToolsContext {
   cwd: string;
   editConfirm?: boolean;
@@ -126,6 +159,28 @@ const gitCommitSchema = z.object({
     .boolean()
     .optional()
     .describe("Stage all tracked modifications before committing (git commit -a)"),
+});
+
+const gitBranchesSchema = z.object({
+  base: z.string().optional().describe("Base branch for ahead/behind (default: upstream, else main, else master)"),
+  include_remote: z
+    .boolean()
+    .optional()
+    .describe("Include remote-tracking branches (default: false)"),
+  limit: z.number().int().min(1).max(100).optional().describe("Cap branch count (default: 50)"),
+});
+
+const gitLogSchema = z.object({
+  branch: z.string().optional().describe("Branch or revision to show (default: HEAD)"),
+  path: z.string().optional().describe("Limit history to a single path"),
+  max_count: z
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe("Max commits to return (default: 20, hard cap 50)"),
+  since: z.string().optional().describe("Show commits since date (e.g. '2 weeks ago' or ISO date)"),
 });
 
 const CONVENTIONAL_PREFIX =
@@ -479,6 +534,267 @@ export function parseUnifiedDiff(text: string): {
 }
 
 // ---------------------------------------------------------------------------
+// Branches parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the base branch for divergence calculations.
+ * Priority: explicit arg → upstream of current → main → master → current branch.
+ */
+async function resolveBaseBranch(
+  repoRoot: string,
+  explicitBase: string | undefined,
+  getAbortSignal?: () => AbortSignal | undefined,
+): Promise<{ ok: true; base: string } | GitToolError> {
+  if (explicitBase) {
+    const trimmed = explicitBase.trim();
+    if (!trimmed) return { ok: false, error: "base must not be empty" };
+    // Verify the ref exists.
+    const check = await runGitAsync(repoRoot, ["rev-parse", "--verify", trimmed], getAbortSignal);
+    const spawnErr = mapGitSpawnError(check);
+    if (spawnErr) return spawnErr;
+    if (check.code !== 0) {
+      return { ok: false, error: `Base branch not found: ${trimmed}` };
+    }
+    return { ok: true, base: trimmed };
+  }
+
+  // Try upstream of current branch.
+  const upstream = await runGitAsync(
+    repoRoot,
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    getAbortSignal,
+  );
+  if (upstream.code === 0) {
+    const name = upstream.stdout.trim();
+    if (name && name !== "@{u}") return { ok: true, base: name };
+  }
+
+  // Try main, then master.
+  for (const candidate of ["main", "master"]) {
+    const check = await runGitAsync(
+      repoRoot,
+      ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`],
+      getAbortSignal,
+    );
+    if (check.code === 0) return { ok: true, base: candidate };
+  }
+
+  // Fallback: current branch itself (so current shows 0/0).
+  const current = await runGitAsync(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], getAbortSignal);
+  if (current.code === 0) {
+    const name = current.stdout.trim();
+    if (name && name !== "HEAD") return { ok: true, base: name };
+  }
+
+  // Last resort: any local branch.
+  const anyBranch = await runGitAsync(
+    repoRoot,
+    ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    getAbortSignal,
+  );
+  if (anyBranch.code === 0) {
+    const first = anyBranch.stdout.split("\n").map((l) => l.trim()).find(Boolean);
+    if (first) return { ok: true, base: first };
+  }
+
+  return { ok: false, error: "Cannot determine base branch (no upstream, main, or master found)" };
+}
+
+export async function runGitBranches(
+  cwd: string,
+  args: { base?: string; include_remote?: boolean; limit?: number },
+  getAbortSignal?: () => AbortSignal | undefined,
+  sandbox?: SandboxConfig,
+): Promise<GitBranchesResult> {
+  const repo = await ensureRepo(cwd, sandbox);
+  if (!repo.ok) return repo;
+  const repoRoot = repo.repoRoot;
+
+  const limit = args.limit ?? 50;
+  const includeRemote = args.include_remote ?? false;
+
+  const baseResolved = await resolveBaseBranch(repoRoot, args.base, getAbortSignal);
+  if (!baseResolved.ok) return baseResolved;
+  const base = baseResolved.base;
+
+  // Determine current branch (null when detached).
+  const currentRes = await runGitAsync(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], getAbortSignal);
+  const spawnCurrentErr = mapGitSpawnError(currentRes);
+  if (spawnCurrentErr) return spawnCurrentErr;
+  const rawCurrent = currentRes.stdout.trim();
+  const current: string | null = rawCurrent === "HEAD" || !rawCurrent ? null : rawCurrent;
+
+  // List branches via for-each-ref.
+  const refs = includeRemote ? ["refs/heads/", "refs/remotes/"] : ["refs/heads/"];
+  const format = "%(refname)%00%(refname:short)%00%(upstream:short)%00%(objectname:short)%00%(committerdate:short)%00%(subject)%00%(HEAD)";
+  const forEachArgs = ["for-each-ref", "--sort=-committerdate", `--format=${format}`, ...refs];
+  const forEachRes = await runGitAsync(repoRoot, forEachArgs, getAbortSignal);
+  const spawnForEachErr = mapGitSpawnError(forEachRes);
+  if (spawnForEachErr) return spawnForEachErr;
+  if (forEachRes.code !== 0) {
+    return { ok: false, error: forEachRes.stderr.trim() || `git for-each-ref failed (exit ${forEachRes.code})` };
+  }
+
+  const lines = forEachRes.stdout.split("\n").filter((l) => l.length > 0);
+  const branches: GitBranchEntry[] = [];
+
+  for (const line of lines) {
+    const parts = line.split("\x00");
+    if (parts.length < 7) continue;
+    const [refname, shortName, upstreamShort, shortSha, date, subject, headMarker] = parts;
+    const isCurrent = headMarker === "*";
+    const isRemote = refname.startsWith("refs/remotes/");
+    const upstream = upstreamShort || null;
+
+    // Compute ahead/behind vs base.
+    let ahead = 0;
+    let behind = 0;
+    const refForRevList = shortName;
+    if (refForRevList !== base) {
+      const rev = await runGitAsync(
+        repoRoot,
+        ["rev-list", "--left-right", "--count", `${base}...${refForRevList}`],
+        getAbortSignal,
+      );
+      if (rev.code === 0) {
+        const m = rev.stdout.trim().match(/(\d+)\s+(\d+)/);
+        if (m) {
+          behind = Number(m[1]);
+          ahead = Number(m[2]);
+        } else {
+          // Fallback: tab-separated.
+          const tabParts = rev.stdout.trim().split(/\s+/);
+          if (tabParts.length >= 2) {
+            behind = Number(tabParts[0]) || 0;
+            ahead = Number(tabParts[1]) || 0;
+          }
+        }
+      }
+      // On rev-list failure (e.g. base is remote ref not fetched), keep 0/0.
+    }
+
+    branches.push({
+      name: shortName,
+      current: isCurrent,
+      remote: isRemote,
+      upstream,
+      last_commit: { sha: shortSha, date, subject },
+      ahead,
+      behind,
+    });
+
+    if (branches.length >= limit) break;
+  }
+
+  return { ok: true, base, current, branches };
+}
+
+// ---------------------------------------------------------------------------
+// Log parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse `git log --pretty=format:'%H%x1f%an%x1f%aI%x1f%s' --name-only` output.
+ * Exported for unit tests.
+ */
+export function parseGitLog(
+  text: string,
+): { sha: string; author: string; date: string; subject: string; files_changed: number }[] {
+  const commits: { sha: string; author: string; date: string; subject: string; files_changed: number }[] = [];
+  const lines = text.split("\n");
+  let current: { sha: string; author: string; date: string; subject: string; files_changed: number } | null = null;
+
+  const flush = () => {
+    if (current) {
+      commits.push(current);
+      current = null;
+    }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.includes("\x1f")) {
+      flush();
+      const fields = line.split("\x1f");
+      if (fields.length < 4) continue;
+      const [sha, author, date, subject] = fields;
+      if (!sha) continue;
+      current = { sha, author, date, subject, files_changed: 0 };
+    } else if (line.trim() === "") {
+      continue;
+    } else if (current) {
+      current.files_changed += 1;
+    }
+  }
+  flush();
+  return commits;
+}
+
+export async function runGitLog(
+  cwd: string,
+  args: { branch?: string; path?: string; max_count?: number; since?: string },
+  getAbortSignal?: () => AbortSignal | undefined,
+  sandbox?: SandboxConfig,
+): Promise<GitLogResult> {
+  const repo = await ensureRepo(cwd, sandbox);
+  if (!repo.ok) return repo;
+  const repoRoot = repo.repoRoot;
+
+  const maxCount = args.max_count ?? 20;
+  const format = "%H%x1f%an%x1f%aI%x1f%s";
+  const gitArgs = ["log", `--pretty=format:${format}`, "--name-only", `--max-count=${maxCount}`];
+
+  if (args.since) {
+    const trimmed = args.since.trim();
+    if (!trimmed) return { ok: false, error: "since must not be empty" };
+    gitArgs.push(`--since=${trimmed}`);
+  }
+
+  let revision: string | undefined;
+  if (args.branch) {
+    const trimmed = args.branch.trim();
+    if (!trimmed) return { ok: false, error: "branch must not be empty" };
+    // Verify branch exists.
+    const check = await runGitAsync(repoRoot, ["rev-parse", "--verify", trimmed], getAbortSignal);
+    const spawnErr = mapGitSpawnError(check);
+    if (spawnErr) return spawnErr;
+    if (check.code !== 0) {
+      return { ok: false, error: `Branch or revision not found: ${trimmed}` };
+    }
+    revision = trimmed;
+  }
+
+  if (args.path) {
+    const resolved = resolveRepoPath(cwd, repoRoot, args.path);
+    if (!resolved.ok) return resolved;
+    const pathBlocked = sandboxBlockReason(resolve(repoRoot, resolved.path), sandbox);
+    if (pathBlocked) return { ok: false, error: pathBlocked };
+    if (revision) gitArgs.push(revision);
+    gitArgs.push("--", resolved.path);
+  } else if (revision) {
+    gitArgs.push(revision);
+  }
+
+  const result = await runGitAsync(repoRoot, gitArgs, getAbortSignal);
+  const spawnErr = mapGitSpawnError(result);
+  if (spawnErr) return spawnErr;
+  if (result.code !== 0) {
+    return { ok: false, error: result.stderr.trim() || `git log failed (exit ${result.code})` };
+  }
+
+  const commits = parseGitLog(result.stdout).map((c) => ({
+    sha: c.sha.slice(0, 7),
+    author: c.author,
+    date: c.date,
+    subject: c.subject,
+    files_changed: c.files_changed,
+  }));
+
+  return { ok: true, commits };
+}
+
+// ---------------------------------------------------------------------------
 // Tool factories
 // ---------------------------------------------------------------------------
 
@@ -792,6 +1108,42 @@ export function createGitTools(ctx: GitToolsContext) {
           sandbox: ctx.sandbox,
           getAbortSignal: ctx.getAbortSignal,
         });
+      },
+    }),
+
+    git_branches: defineTool({
+      description:
+        "List local branches (and optionally remote-tracking branches) with last commit and ahead/behind vs a base branch. Read-only, allowed in plan mode. Prefer this over shell git branch loops.",
+      parameters: gitBranchesSchema,
+      execute: async (raw: unknown) => {
+        const parsed = gitBranchesSchema.safeParse(raw ?? {});
+        if (!parsed.success) {
+          return {
+            ok: false,
+            error: `Invalid arguments: ${parsed.error.issues
+              .map((i) => `${i.path.join(".")}: ${i.message}`)
+              .join("; ")}`,
+          } satisfies GitToolError;
+        }
+        return runGitBranches(ctx.cwd, parsed.data, ctx.getAbortSignal, ctx.sandbox);
+      },
+    }),
+
+    git_log: defineTool({
+      description:
+        "Return recent commit history with structured fields (sha, author, date, subject, files_changed). Supports branch/revision, path, max_count, and since filters. Read-only, allowed in plan mode. Prefer this over shell git log parsing.",
+      parameters: gitLogSchema,
+      execute: async (raw: unknown) => {
+        const parsed = gitLogSchema.safeParse(raw ?? {});
+        if (!parsed.success) {
+          return {
+            ok: false,
+            error: `Invalid arguments: ${parsed.error.issues
+              .map((i) => `${i.path.join(".")}: ${i.message}`)
+              .join("; ")}`,
+          } satisfies GitToolError;
+        }
+        return runGitLog(ctx.cwd, parsed.data, ctx.getAbortSignal, ctx.sandbox);
       },
     }),
   };

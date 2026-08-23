@@ -5,12 +5,15 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import {
   createGitTools,
+  parseGitLog,
   parsePorcelainV2,
   parseUnifiedDiff,
   resolveRepoPath,
   runGitAsync,
+  runGitBranches,
   runGitCommit,
   runGitDiff,
+  runGitLog,
   runGitStatus,
   setGitExecutableForTests,
 } from "../src/tools/git.js";
@@ -298,6 +301,232 @@ describe.skipIf(!hasGit)("git tools integration", () => {
     } finally {
       setGitExecutableForTests("git");
     }
+  });
+});
+
+describe("parseGitLog", () => {
+  it("parses header lines and counts files", () => {
+    const text = [
+      "abc123def456\x1fAlice\x1f2026-08-13T10:00:00+05:30\x1ffeat: first",
+      "src/a.ts",
+      "src/b.ts",
+      "",
+      "def789abc123\x1fBob\x1f2026-08-13T11:00:00+05:30\x1ffix: second",
+      "",
+      "789abc123def\x1fCarol\x1f2026-08-13T12:00:00+05:30\x1fchore: third",
+      "only.txt",
+    ].join("\n");
+    const commits = parseGitLog(text);
+    expect(commits).toHaveLength(3);
+    expect(commits[0]).toEqual({
+      sha: "abc123def456",
+      author: "Alice",
+      date: "2026-08-13T10:00:00+05:30",
+      subject: "feat: first",
+      files_changed: 2,
+    });
+    expect(commits[1]?.files_changed).toBe(0);
+    expect(commits[2]?.files_changed).toBe(1);
+  });
+
+  it("returns empty for empty input", () => {
+    expect(parseGitLog("")).toEqual([]);
+  });
+});
+
+describe.skipIf(!hasGit)("git_branches integration", () => {
+  beforeEach(() => {
+    setupRepo();
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("returns branches with current flag and ahead/behind", async () => {
+    // Create a diverged branch: feat/foo from main, then advance main.
+    git(testDir, ["checkout", "-b", "feat/foo"]);
+    writeFileSync(join(testDir, "feat.txt"), "foo\n");
+    git(testDir, ["add", "feat.txt"]);
+    git(testDir, ["commit", "-m", "feat: foo branch"]);
+
+    git(testDir, ["checkout", "main"]);
+    writeFileSync(join(testDir, "main.txt"), "main\n");
+    git(testDir, ["add", "main.txt"]);
+    git(testDir, ["commit", "-m", "fix: main advance"]);
+
+    const result = await runGitBranches(testDir, {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.base).toBe("main");
+    expect(result.current).toBe("main");
+    expect(result.branches.length).toBe(2);
+
+    const feat = result.branches.find((b) => b.name === "feat/foo");
+    expect(feat).toBeDefined();
+    expect(feat?.current).toBe(false);
+    expect(feat?.remote).toBe(false);
+    expect(feat?.ahead).toBe(1);
+    expect(feat?.behind).toBe(1);
+
+    const main = result.branches.find((b) => b.name === "main");
+    expect(main?.current).toBe(true);
+    expect(main?.ahead).toBe(0);
+    expect(main?.behind).toBe(0);
+  });
+
+  it("respects limit", async () => {
+    git(testDir, ["checkout", "-b", "feat/a"]);
+    writeFileSync(join(testDir, "a.txt"), "a\n");
+    git(testDir, ["add", "a.txt"]);
+    git(testDir, ["commit", "-m", "feat: a"]);
+    git(testDir, ["checkout", "main"]);
+    git(testDir, ["checkout", "-b", "feat/b"]);
+    writeFileSync(join(testDir, "b.txt"), "b\n");
+    git(testDir, ["add", "b.txt"]);
+    git(testDir, ["commit", "-m", "feat: b"]);
+    git(testDir, ["checkout", "main"]);
+
+    const result = await runGitBranches(testDir, { limit: 1 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.branches).toHaveLength(1);
+  });
+
+  it("returns error for unknown base", async () => {
+    const result = await runGitBranches(testDir, { base: "nope-branch" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/not found/i);
+  });
+
+  it("supports explicit base and include_remote=false by default", async () => {
+    git(testDir, ["checkout", "-b", "feat/explicit"]);
+    writeFileSync(join(testDir, "explicit.txt"), "x\n");
+    git(testDir, ["add", "explicit.txt"]);
+    git(testDir, ["commit", "-m", "feat: explicit"]);
+    git(testDir, ["checkout", "main"]);
+
+    const result = await runGitBranches(testDir, { base: "feat/explicit" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.base).toBe("feat/explicit");
+    expect(result.branches.every((b) => !b.remote)).toBe(true);
+  });
+
+  it("returns not a git repository outside a repo", async () => {
+    const empty = "/tmp/praana-test-git-tools-norepo-branches";
+    if (existsSync(empty)) rmSync(empty, { recursive: true, force: true });
+    mkdirSync(empty, { recursive: true });
+    const result = await runGitBranches(empty, {});
+    expect(result).toEqual({ ok: false, error: "not a git repository" });
+    rmSync(empty, { recursive: true, force: true });
+  });
+
+  it("createGitTools git_branches is read-only under plan mode semantics", async () => {
+    // git_branches is not in PLAN_MODE_BLOCKED_TOOLS, so it should succeed via tool execute.
+    const tools = createGitTools({ cwd: testDir });
+    const result = await tools.git_branches.execute({});
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe.skipIf(!hasGit)("git_log integration", () => {
+  beforeEach(() => {
+    setupRepo();
+  });
+
+  afterEach(() => {
+    if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("returns recent commits with files_changed", async () => {
+    writeFileSync(join(testDir, "readme.md"), "hello\nv2\n");
+    git(testDir, ["commit", "-am", "fix: second commit"]);
+
+    const result = await runGitLog(testDir, { max_count: 5 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commits.length).toBeGreaterThanOrEqual(2);
+    expect(result.commits[0]?.subject).toBe("fix: second commit");
+    expect(result.commits[0]?.files_changed).toBeGreaterThanOrEqual(1);
+    expect(result.commits[0]?.sha).toMatch(/^[0-9a-f]{7}$/);
+  });
+
+  it("respects max_count and branch filter", async () => {
+    git(testDir, ["checkout", "-b", "feat/log"]);
+    writeFileSync(join(testDir, "log.txt"), "log\n");
+    git(testDir, ["add", "log.txt"]);
+    git(testDir, ["commit", "-m", "feat: log branch"]);
+    git(testDir, ["checkout", "main"]);
+
+    const all = await runGitLog(testDir, { max_count: 1 });
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.commits).toHaveLength(1);
+
+    const branchLog = await runGitLog(testDir, { branch: "feat/log", max_count: 5 });
+    expect(branchLog.ok).toBe(true);
+    if (!branchLog.ok) return;
+    expect(branchLog.commits.some((c) => c.subject === "feat: log branch")).toBe(true);
+  });
+
+  it("filters by path", async () => {
+    mkdirSync(join(testDir, "src"), { recursive: true });
+    writeFileSync(join(testDir, "src", "a.ts"), "a\n");
+    git(testDir, ["add", "src/a.ts"]);
+    git(testDir, ["commit", "-m", "feat: add a.ts"]);
+
+    writeFileSync(join(testDir, "readme.md"), "hello\nv2\n");
+    git(testDir, ["commit", "-am", "fix: update readme"]);
+
+    const filtered = await runGitLog(testDir, { path: "src/a.ts", max_count: 10 });
+    expect(filtered.ok).toBe(true);
+    if (!filtered.ok) return;
+    expect(filtered.commits.some((c) => c.subject === "feat: add a.ts")).toBe(true);
+    // The readme-only commit should not appear when filtered by src/a.ts
+    expect(filtered.commits.every((c) => c.subject !== "fix: update readme")).toBe(true);
+  });
+
+  it("resolves path relative to session cwd, not repo root", async () => {
+    const sub = join(testDir, "packages", "foo");
+    mkdirSync(join(sub, "src"), { recursive: true });
+    writeFileSync(join(sub, "src", "a.ts"), "export const a = 1;\n");
+    git(testDir, ["add", "packages/foo/src/a.ts"]);
+    git(testDir, ["commit", "-m", "chore: add package file"]);
+
+    const log = await runGitLog(sub, { path: "src/a.ts", max_count: 10 });
+    expect(log.ok).toBe(true);
+    if (!log.ok) return;
+    expect(log.commits.some((c) => c.subject === "chore: add package file")).toBe(true);
+  });
+
+  it("returns error for unknown branch", async () => {
+    const result = await runGitLog(testDir, { branch: "does-not-exist" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/not found/i);
+  });
+
+  it("returns not a git repository outside a repo", async () => {
+    const empty = "/tmp/praana-test-git-tools-norepo-log";
+    if (existsSync(empty)) rmSync(empty, { recursive: true, force: true });
+    mkdirSync(empty, { recursive: true });
+    const result = await runGitLog(empty, {});
+    expect(result).toEqual({ ok: false, error: "not a git repository" });
+    rmSync(empty, { recursive: true, force: true });
+  });
+
+  it("handles since filter", async () => {
+    const result = await runGitLog(testDir, { since: "1970-01-01", max_count: 5 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.commits.length).toBeGreaterThan(0);
+
+    const future = await runGitLog(testDir, { since: "2099-01-01", max_count: 5 });
+    expect(future.ok).toBe(true);
+    if (!future.ok) return;
+    expect(future.commits).toHaveLength(0);
   });
 });
 
