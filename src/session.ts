@@ -572,7 +572,11 @@ export class Session {
   }
 
   observeCircuitPre(toolName: string, args: Record<string, unknown>) {
-    return this.loopGate.observePre(toolName, args);
+    const result = this.loopGate.observePre(toolName, args);
+    if (result?.action === "block") {
+      this.scorecard.inc("circuitLoopBlocks");
+    }
+    return result;
   }
 
   observeCircuitPost(toolName: string, args: Record<string, unknown>, isError: boolean): void {
@@ -581,10 +585,6 @@ export class Session {
 
   circuitNotes(): string[] {
     return this.loopGate.notes();
-  }
-
-  getStartedAt(): number {
-    return this.startedAt;
   }
 
   private setPlanMode(value: boolean): void {

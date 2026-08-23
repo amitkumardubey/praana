@@ -2228,4 +2228,57 @@ describe("runTurn", () => {
     expect(String(last.payload.result.error)).toContain("Circuit breaker:");
     expect(session.circuitNotes()).toHaveLength(1);
   });
+
+  it("wraps up a headless turn when the token budget is exceeded", async () => {
+    const cmd = "echo hi";
+    let executeCount = 0;
+    (createAllTools as ReturnType<typeof mock>).mockReturnValue({
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock(async () => {
+          executeCount++;
+          return { ok: true, stdout: "hi" };
+        }),
+      },
+    });
+
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "c1", name: "shell", arguments: { command: cmd } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "c1", name: "shell", arguments: { command: cmd } } },
+          ],
+          usage: { input: 10, output: 10, totalTokens: 20 },
+        },
+      };
+    })();
+    const wrapGenerator = (async function* () {
+      yield { type: "text_delta", delta: "budget wrap-up" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "budget wrap-up" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : wrapGenerator as any;
+    });
+
+    const session = makeMockSession({ headless: true });
+    session.config.circuit = { loop_threshold: 3, max_tokens: 1, max_wall_ms: 0 };
+    const response = await runTurn(session, "say hi");
+
+    expect(executeCount).toBe(0);
+    expect(response).toContain("budget wrap-up");
+  });
 });

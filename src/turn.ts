@@ -39,6 +39,7 @@ import {
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
+import { checkCircuitBudget, circuitWrapUpInstruction } from "./circuit/budget.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -910,6 +911,31 @@ export async function runTurn(
     const pendingToolCalls = streamResult.pendingToolCalls;
     if (!pendingToolCalls.length || streamResult.finalReason !== "toolUse") {
       break;
+    }
+
+    if (session.headless) {
+      const tokens = (providerUsage?.input ?? 0) + (providerUsage?.output ?? 0);
+      const reason = checkCircuitBudget({
+        maxTokens: session.config.circuit?.max_tokens ?? 0,
+        maxWallMs: session.config.circuit?.max_wall_ms ?? 0,
+        tokens,
+        elapsedMs: Date.now() - session.getStartedAt(),
+      });
+      if (reason) {
+        session.scorecard.inc("circuitBudgetWrapups");
+        history.push({
+          role: "user",
+          content: circuitWrapUpInstruction(reason),
+          timestamp: Date.now(),
+        });
+        const wrap = await attemptStream();
+        fullResponse += wrap.fullResponse;
+        providerUsage = wrap.providerUsage ?? providerUsage;
+        if (wrap.finalMessage) {
+          history.push(wrap.finalMessage);
+        }
+        break;
+      }
     }
 
     // Check if we've reached the step limit
