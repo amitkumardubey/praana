@@ -1,7 +1,7 @@
 # Tool-Call Pre-Validation and Error Enrichment Design (Issue #300)
 
 **Date:** 2026-08-23
-**Status:** Spec on `feat/ad/issue-300-tool-prevalidation`
+**Status:** Implemented on `feat/ad/issue-300-tool-prevalidation`
 **Depends on:** #297 turn-loop hooks (`pre_tool_call` / `post_tool_call`)
 **Related epic:** #195 (deterministic tools harness)
 **Related:** #299 (post-edit verify — different hook, after a successful write)
