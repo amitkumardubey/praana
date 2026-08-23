@@ -76,7 +76,7 @@ src/
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
     code-intel.ts — code_* tree-sitter tools (issue #11 Phase 1)
-    lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phase 3)
+    lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #11 Phases 2–4)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
@@ -316,7 +316,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
 - `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon)
-- `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–3 of #11; `[lsp]` config). `code_*` remains the fast name-based path.
+- `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
 
 ### Git Tools (`src/tools/git.ts`, issue #26)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)

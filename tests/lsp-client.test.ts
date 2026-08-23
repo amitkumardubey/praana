@@ -164,4 +164,36 @@ describe("LspClient", () => {
       await client.shutdown();
     }
   });
+
+  it("exposes isClosed after a clean shutdown", async () => {
+    const client = await LspClient.start({
+      command: fakeArgv,
+      cwd: root,
+      rootUri: pathToFileUri(root),
+      timeoutMs: 3000,
+    });
+    expect(client.isClosed).toBe(false);
+    await client.shutdown();
+    expect(client.isClosed).toBe(true);
+  });
+
+  it("marks isClosed and fails in-flight request when the process exits mid-call", async () => {
+    const client = await LspClient.start({
+      command: fakeArgv,
+      cwd: root,
+      rootUri: pathToFileUri(root),
+      timeoutMs: 3000,
+      env: { FAKE_LSP_EXIT_ON: "textDocument/hover" },
+    });
+    try {
+      const file = join(root, "crash.ts");
+      await client.didOpen(file, "typescript", "const n = 1;\n");
+      await expect(
+        client.hover(file, { line: 0, character: 6 }),
+      ).rejects.toMatchObject({ code: "unavailable" });
+      expect(client.isClosed).toBe(true);
+    } finally {
+      await client.shutdown().catch(() => {});
+    }
+  });
 });

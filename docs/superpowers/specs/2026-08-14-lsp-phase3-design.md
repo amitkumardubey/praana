@@ -4,7 +4,7 @@
 **Status:** Implemented on `feat/ad/issue-11-lsp-phase3`
 **Depends on:** Issue #11 Phase 2 / `2026-08-12-lsp-phase2-design.md` (merged via #317)
 **Related epic:** Issue #195 (deterministic tools harness)
-**Follow-on:** Issue #11 Phase 4 — crash restart, backoff, multi-root (no spec yet)
+**Follow-on:** Issue #11 Phase 4 — `2026-08-21-lsp-phase4-design.md`
 
 ## Purpose
 
@@ -344,7 +344,7 @@ Same codes as Phase 2. Mapping:
 Apply never flips a *previous* successful `edit_file` in the session. It only
 guarantees all-or-nothing **within that apply** for validation errors.
 
-Crash restart remains Phase 4: dead process → `unavailable`.
+Crash restart shipped in Phase 4 (`2026-08-21-lsp-phase4-design.md`).
 
 ## Testing strategy
 
@@ -384,7 +384,7 @@ clears cache.
 - Language mapping beyond TS/JS
 - Completions insert/apply (`insertText` / snippets / additionalTextEdits)
 - `code_intelligence` config flag
-- Phase 4: crash restart, exponential backoff, multi-root
+- Phase 4: crash restart, exponential backoff, multi-root — see `2026-08-21-lsp-phase4-design.md`
 - Bundling or auto-installing language servers
 - CLI fallback formatters
 - Auto post-edit pipeline for `write_file` / `batch_write`

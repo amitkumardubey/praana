@@ -10,8 +10,11 @@
  *   FAKE_LSP_NO_HOVER / NO_COMPLETION / NO_DEFINITION / NO_REFERENCES / NO_CODE_ACTION
  *   FAKE_LSP_RESOLVE — if "1", advertise codeAction resolveProvider
  *   FAKE_LSP_HOVER / COMPLETIONS / DEFINITION / REFERENCES / CODE_ACTIONS / RESOLVED_EDIT
+ *   FAKE_LSP_EXIT_ON — LSP method name; process.exit(1) after reading that request
+ *   FAKE_LSP_EVENT_LOG — append JSONL {method, uri?} for didOpen / requests
  */
 
+import { appendFileSync } from "node:fs";
 import { encodeMessage, FrameParser } from "../../src/lsp/framing.js";
 
 const delayMs = Number(process.env.FAKE_LSP_DELAY_MS ?? "0") || 0;
@@ -23,6 +26,8 @@ const noDefinition = process.env.FAKE_LSP_NO_DEFINITION === "1";
 const noReferences = process.env.FAKE_LSP_NO_REFERENCES === "1";
 const noCodeAction = process.env.FAKE_LSP_NO_CODE_ACTION === "1";
 const resolveProvider = process.env.FAKE_LSP_RESOLVE === "1";
+const exitOn = process.env.FAKE_LSP_EXIT_ON ?? "";
+const eventLogPath = process.env.FAKE_LSP_EVENT_LOG ?? "";
 
 function parseJsonEnv<T>(name: string, fallback: T): T {
   const raw = process.env[name];
@@ -74,6 +79,24 @@ function publishDiagnostics(uri: string, version?: number): void {
 async function handleMessage(msg: Record<string, unknown>): Promise<void> {
   const method = typeof msg.method === "string" ? msg.method : null;
   const id = msg.id;
+
+  if (method && eventLogPath) {
+    const params = msg.params as { textDocument?: { uri?: string } } | undefined;
+    const uri = params?.textDocument?.uri;
+    try {
+      appendFileSync(
+        eventLogPath,
+        JSON.stringify({ method, uri }) + "\n",
+        "utf-8",
+      );
+    } catch {
+      // ignore log errors
+    }
+  }
+
+  if (method && exitOn && method === exitOn) {
+    process.exit(1);
+  }
 
   if (method === "initialize") {
     // Never delay initialize — clients need a warm server for timeout tests.

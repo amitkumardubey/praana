@@ -29,11 +29,25 @@ export function resolveServerArgv(
   language: string,
   servers: Record<string, string[]>,
 ): string[] | null {
+  const key = resolveServerKey(language, servers);
+  if (!key) return null;
+  const argv = servers[key];
+  return argv && argv.length > 0 ? argv : null;
+}
+
+/**
+ * Config key for the process that serves `language`.
+ * `javascript` shares the `typescript` server when it has no own entry.
+ */
+export function resolveServerKey(
+  language: string,
+  servers: Record<string, string[]>,
+): string | null {
   const direct = servers[language];
-  if (direct && direct.length > 0) return direct;
+  if (direct && direct.length > 0) return language;
   if (language === "javascript") {
     const ts = servers.typescript;
-    if (ts && ts.length > 0) return ts;
+    if (ts && ts.length > 0) return "typescript";
   }
   return null;
 }

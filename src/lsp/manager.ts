@@ -1,5 +1,5 @@
 /**
- * Session-scoped LSP manager (issue #11 Phase 2).
+ * Session-scoped LSP manager (issue #11 Phases 2–4).
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -10,7 +10,9 @@ import {
   languageFromPath,
   lspLanguageId,
   resolveServerArgv,
+  resolveServerKey,
 } from "./language.js";
+import { normalizeRoot, resolveLspRoot } from "./workspace-roots.js";
 import {
   CODE_ACTIONS_MAX,
   DEFINITION_MAX,
@@ -34,12 +36,21 @@ import {
   type LspResult,
 } from "./types.js";
 
+export const LSP_MAX_RESTARTS = 3;
+export const LSP_BACKOFF_MS = [1000, 2000, 4000] as const;
+export const LSP_DEFAULT_MAX_CLIENTS = 8;
+
 export interface LspManagerOptions {
   config: LspConfig;
   cwd: string;
   workspaceRoot: string;
   /** Test injection. */
   startClient?: typeof LspClient.start;
+  /** Test injection — default 8. */
+  maxClients?: number;
+  /** Test injection — skip real backoff. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 export interface ApplyLock {
@@ -62,6 +73,16 @@ interface CachedAction {
   action: unknown;
 }
 
+interface ClientSlot {
+  client: LspClient;
+  root: string;
+  serverKey: string;
+  restartCount: number;
+  lastUsedAt: number;
+  inflight: number;
+  exhausted: boolean;
+}
+
 function fail(code: LspErrorCode, error: string): {
   ok: false;
   error: string;
@@ -72,6 +93,10 @@ function fail(code: LspErrorCode, error: string): {
 
 function err<T = never>(code: LspErrorCode, error: string): LspResult<T> {
   return { ok: false, code, error };
+}
+
+function clientKey(root: string, serverKey: string): string {
+  return `${normalizeRoot(root)}::${serverKey}`;
 }
 
 function diagnosticKey(d: LspDiagnostic): string {
@@ -97,7 +122,7 @@ export function diffIntroduced(
 }
 
 export class LspManager {
-  private readonly clients = new Map<string, LspClient>();
+  private readonly slots = new Map<string, ClientSlot>();
   private readonly starting = new Map<string, Promise<LspClient>>();
   private readonly openDocs = new Set<string>();
   private readonly docVersion = new Map<string, number>();
@@ -107,12 +132,18 @@ export class LspManager {
   private readonly config: LspConfig;
   private readonly workspaceRoot: string;
   private readonly startClient: typeof LspClient.start;
+  private readonly maxClients: number;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly now: () => number;
   private shutDown = false;
 
   constructor(opts: LspManagerOptions) {
     this.config = opts.config;
     this.workspaceRoot = opts.workspaceRoot;
     this.startClient = opts.startClient ?? LspClient.start.bind(LspClient);
+    this.maxClients = opts.maxClients ?? LSP_DEFAULT_MAX_CLIENTS;
+    this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.now = opts.now ?? Date.now;
   }
 
   get enabled(): boolean {
@@ -143,20 +174,16 @@ export class LspManager {
     const pos = this.validatePosition(line, col);
     if (pos) return pos;
     if (!this.config.enabled) return err("disabled", "LSP is disabled");
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-    if (!prep.client.supportsHover) {
-      return { ok: true, value: { hover: null, skipped: "unsupported" } };
-    }
-    try {
-      const raw = await prep.client.hover(
+    return this.withPreparedDocument(absPath, async ({ client }) => {
+      if (!client.supportsHover) {
+        return { hover: null, skipped: "unsupported" as const };
+      }
+      const raw = await client.hover(
         absPath,
         agentToLspPosition(line, col),
       );
-      return { ok: true, value: { hover: normalizeHover(raw) } };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      return { hover: normalizeHover(raw) };
+    });
   }
 
   async completions(
@@ -173,24 +200,17 @@ export class LspManager {
     const pos = this.validatePosition(line, col);
     if (pos) return pos;
     if (!this.config.enabled) return err("disabled", "LSP is disabled");
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-    if (!prep.client.supportsCompletion) {
-      return { ok: true, value: { completions: [], skipped: "unsupported" } };
-    }
-    try {
-      const raw = await prep.client.completion(
+    return this.withPreparedDocument(absPath, async ({ client }) => {
+      if (!client.supportsCompletion) {
+        return { completions: [], skipped: "unsupported" as const };
+      }
+      const raw = await client.completion(
         absPath,
         agentToLspPosition(line, col),
       );
       const { completions, truncated } = truncateCompletions(raw);
-      return {
-        ok: true,
-        value: truncated ? { completions, truncated } : { completions },
-      };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      return truncated ? { completions, truncated } : { completions };
+    });
   }
 
   async definition(
@@ -251,19 +271,17 @@ export class LspManager {
     const rangeErr = this.validateRange(startLine, startCol, endLine, endCol);
     if (rangeErr) return rangeErr;
     if (!this.config.enabled) return err("disabled", "LSP is disabled");
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-    if (!prep.client.supportsCodeAction) {
-      return { ok: true, value: { actions: [], skipped: "unsupported" } };
-    }
-    try {
-      const raw = await prep.client.codeAction(
+    return this.withPreparedDocument(absPath, async ({ client, language }) => {
+      if (!client.supportsCodeAction) {
+        return { actions: [], skipped: "unsupported" as const };
+      }
+      const raw = await client.codeAction(
         absPath,
         agentToLspRange(startLine, startCol, endLine, endCol),
       );
       const items = Array.isArray(raw) ? raw : [];
       const applicable = items.filter((item) =>
-        isApplicableCodeAction(item, prep.client.supportsResolve),
+        isApplicableCodeAction(item, client.supportsResolve),
       );
       this.dropActionsForPaths([absPath]);
       const truncated = applicable.length > CODE_ACTIONS_MAX;
@@ -275,7 +293,7 @@ export class LspManager {
         const id = `ca_${this.nextActionId++}`;
         this.actions.set(id, {
           id,
-          language: prep.language,
+          language,
           path: absPath,
           mtimeMs,
           version,
@@ -294,13 +312,8 @@ export class LspManager {
         if (a.isPreferred === true) row.preferred = true;
         actions.push(row);
       }
-      return {
-        ok: true,
-        value: truncated ? { actions, truncated } : { actions },
-      };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      return truncated ? { actions, truncated } : { actions };
+    });
   }
 
   async applyCodeAction(
@@ -329,32 +342,23 @@ export class LspManager {
       );
     }
 
-    const prep = await this.prepareDocument(entry.path);
-    if (!prep.ok) return prep;
-
-    try {
+    return this.withPreparedDocument(entry.path, async ({ client, language }) => {
       let action = entry.action as { edit?: unknown };
       if (
         (action.edit === undefined || action.edit === null) &&
-        prep.client.supportsResolve
+        client.supportsResolve
       ) {
-        const resolved = await prep.client.resolveCodeAction(action);
+        const resolved = await client.resolveCodeAction(action);
         if (resolved && typeof resolved === "object") {
           action = resolved as { edit?: unknown };
         }
       }
       if (action.edit === undefined || action.edit === null) {
-        return {
-          ok: true,
-          value: { id, changed: false, files: [], skipped: "unsupported" },
-        };
+        return { id, changed: false, files: [], skipped: "unsupported" as const };
       }
       const flat = flattenWorkspaceEdit(action.edit);
       if (!flat.ok) {
-        return {
-          ok: true,
-          value: { id, changed: false, files: [], skipped: "unsupported" },
-        };
+        return { id, changed: false, files: [], skipped: "unsupported" as const };
       }
 
       const planned: Array<{
@@ -364,23 +368,25 @@ export class LspManager {
       }> = [];
       for (const [target, edits] of flat.files) {
         if (!this.inWorkspace(target)) {
-          return err(
+          throw new LspClientError(
             "invalid_argument",
             `Code action target outside workspace: ${target}`,
           );
         }
         if (opts?.allowPath && !opts.allowPath(target)) {
-          return err(
+          throw new LspClientError(
             "invalid_argument",
             `Blocked by sandbox: path not in allowed list: ${target}`,
           );
         }
         if (!existsSync(target) || !statSync(target).isFile()) {
-          return err("io_error", `File not found: ${target}`);
+          throw new LspClientError("io_error", `File not found: ${target}`);
         }
         const original = readFileSync(target, "utf-8");
         const applied = applyTextEdits(original, edits);
-        if (!applied.ok) return err("protocol_error", applied.error);
+        if (!applied.ok) {
+          throw new LspClientError("protocol_error", applied.error);
+        }
         planned.push({ path: target, original, content: applied.content });
       }
 
@@ -388,7 +394,7 @@ export class LspManager {
         if (file.path === entry.path) continue;
         const lock = this.applyLock?.tryAcquireExtra(id, file.path);
         if (lock && !lock.ok) {
-          return err("invalid_argument", lock.error);
+          throw new LspClientError("invalid_argument", lock.error);
         }
       }
 
@@ -397,25 +403,19 @@ export class LspManager {
         changed: f.content !== f.original,
       }));
       if (!files.some((f) => f.changed)) {
-        return {
-          ok: true,
-          value: { id, changed: false, files, skipped: "no_edits" },
-        };
+        return { id, changed: false, files, skipped: "no_edits" as const };
       }
 
       for (const file of planned) {
         if (file.content === file.original) continue;
         writeFileSync(file.path, file.content, "utf-8");
         this.openDocs.delete(file.path);
-        const language = languageFromPath(file.path) ?? prep.language;
-        const client = await this.getClient(language);
-        await this.syncDocument(client, file.path, language, file.content);
+        const fileLang = languageFromPath(file.path) ?? language;
+        await this.syncPath(file.path, fileLang, file.content);
       }
       this.dropActionsForPaths(planned.map((f) => f.path));
-      return { ok: true, value: { id, changed: true, files } };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      return { id, changed: true, files };
+    });
   }
 
   async diagnostics(absPath: string): Promise<LspResult<LspDiagnostic[]>> {
@@ -424,19 +424,13 @@ export class LspManager {
       return err("disabled", "LSP diagnostics are disabled");
     }
 
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-
-    const uri = pathToFileUri(absPath);
-    // Wait for the server to publish diagnostics for this document version
-    // instead of a fixed sleep — real LSP servers compute them asynchronously.
-    const diags = await prep.client.waitForDiagnostics(uri, {
-      timeoutMs: this.config.timeout_ms,
+    return this.withPreparedDocument(absPath, async ({ client }) => {
+      const uri = pathToFileUri(absPath);
+      const diags = await client.waitForDiagnostics(uri, {
+        timeoutMs: this.config.timeout_ms,
+      });
+      return diags.slice(0, 50);
     });
-    return {
-      ok: true,
-      value: diags.slice(0, 50),
-    };
   }
 
   async snapshotDiagnostics(absPath: string): Promise<LspDiagnostic[]> {
@@ -451,41 +445,35 @@ export class LspManager {
   > {
     if (!this.config.enabled) return err("disabled", "LSP is disabled");
 
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-
-    if (!prep.client.supportsFormatting) {
-      return { ok: true, value: { changed: false, skipped: "unsupported" } };
-    }
-
-    try {
-      const edits = await prep.client.formatDocument(absPath);
+    return this.withPreparedDocument(absPath, async ({ client, text }) => {
+      if (!client.supportsFormatting) {
+        return { changed: false, skipped: "unsupported" };
+      }
+      const edits = await client.formatDocument(absPath);
       if (edits.length === 0) {
-        return { ok: true, value: { changed: false, skipped: "no_edits" } };
+        return { changed: false, skipped: "no_edits" };
       }
-      const applied = applyTextEdits(prep.text, edits);
+      const applied = applyTextEdits(text, edits);
       if (!applied.ok) {
-        return err("protocol_error", applied.error);
+        throw new LspClientError("protocol_error", applied.error);
       }
-      if (applied.content === prep.text) {
-        return { ok: true, value: { changed: false, skipped: "no_edits" } };
+      if (applied.content === text) {
+        return { changed: false, skipped: "no_edits" };
       }
       writeFileSync(absPath, applied.content, "utf-8");
       this.openDocs.delete(absPath);
-      await this.syncDocument(prep.client, absPath, prep.language, applied.content);
-      return {
-        ok: true,
-        value: { changed: true, content: applied.content },
-      };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      const language = languageFromPath(absPath);
+      if (language) {
+        await this.syncDocument(client, absPath, language, applied.content);
+      }
+      return { changed: true, content: applied.content };
+    });
   }
 
   async shutdown(): Promise<void> {
     this.shutDown = true;
-    const clients = [...this.clients.values()];
-    this.clients.clear();
+    const clients = [...this.slots.values()].map((s) => s.client);
+    this.slots.clear();
     this.starting.clear();
     this.openDocs.clear();
     this.docVersion.clear();
@@ -494,17 +482,11 @@ export class LspManager {
     await Promise.all(clients.map((c) => c.shutdown().catch(() => {})));
   }
 
-  private async prepareDocument(
+  private inspectDocument(
     absPath: string,
-  ): Promise<
-    | {
-        ok: true;
-        client: LspClient;
-        language: string;
-        text: string;
-      }
-    | { ok: false; error: string; code: LspErrorCode }
-  > {
+  ):
+    | { ok: true; language: string; text: string }
+    | { ok: false; error: string; code: LspErrorCode } {
     if (this.shutDown) return fail("unavailable", "LSP manager shut down");
 
     const language = languageFromPath(absPath);
@@ -537,20 +519,263 @@ export class LspManager {
         `File exceeds lsp.max_file_lines (${this.config.max_file_lines})`,
       );
     }
+    return { ok: true, language, text };
+  }
 
+  private async withPreparedDocument<T>(
+    absPath: string,
+    fn: (ctx: {
+      client: LspClient;
+      language: string;
+      text: string;
+    }) => Promise<T>,
+  ): Promise<LspResult<T>> {
+    const inspected = this.inspectDocument(absPath);
+    if (!inspected.ok) return inspected;
     try {
-      const client = await this.getClient(language);
-      await this.syncDocument(client, absPath, language, text);
-      return { ok: true, client, language, text };
+      const value = await this.withClient(
+        absPath,
+        inspected.language,
+        async (client) => {
+          await this.syncDocument(
+            client,
+            absPath,
+            inspected.language,
+            inspected.text,
+          );
+          return fn({
+            client,
+            language: inspected.language,
+            text: inspected.text,
+          });
+        },
+      );
+      return { ok: true, value };
     } catch (e) {
-      if (e instanceof LspClientError) {
-        return fail(e.code, e.message);
-      }
-      return fail(
-        "internal",
-        e instanceof Error ? e.message : String(e),
+      return this.mapError(e);
+    }
+  }
+
+  private async syncPath(
+    absPath: string,
+    language: string,
+    text: string,
+  ): Promise<void> {
+    await this.withClient(absPath, language, async (client) => {
+      await this.syncDocument(client, absPath, language, text);
+    });
+  }
+
+  private async withClient<T>(
+    absPath: string,
+    language: string,
+    fn: (client: LspClient) => Promise<T>,
+  ): Promise<T> {
+    const root = resolveLspRoot(absPath, this.workspaceRoot);
+    const serverKey = resolveServerKey(language, this.config.servers);
+    if (!serverKey) {
+      throw new LspClientError(
+        "unavailable",
+        `No LSP server configured for language '${language}'`,
       );
     }
+    const key = clientKey(root, serverKey);
+
+    const run = async (retried: boolean): Promise<T> => {
+      if (this.shutDown) {
+        throw new LspClientError("unavailable", "LSP manager shut down");
+      }
+      const client = await this.ensureClient(key, root, serverKey);
+      const slot = this.slots.get(key);
+      if (slot) {
+        slot.lastUsedAt = this.now();
+        slot.inflight++;
+      }
+      try {
+        return await fn(client);
+      } catch (e) {
+        if (
+          !retried &&
+          slot &&
+          this.isCrash(e, client) &&
+          !this.shutDown &&
+          !slot.exhausted &&
+          slot.restartCount < LSP_MAX_RESTARTS
+        ) {
+          await this.restartSlot(key, root, serverKey);
+          return run(true);
+        }
+        throw e;
+      } finally {
+        const s = this.slots.get(key);
+        if (s && s.inflight > 0) s.inflight--;
+      }
+    };
+    return run(false);
+  }
+
+  private isCrash(e: unknown, client: LspClient): boolean {
+    if (!(e instanceof LspClientError)) return false;
+    if (e.code !== "unavailable") return false;
+    if (client.isClosed) return true;
+    return /exited|process error/i.test(e.message);
+  }
+
+  private async ensureClient(
+    key: string,
+    root: string,
+    serverKey: string,
+  ): Promise<LspClient> {
+    const existing = this.slots.get(key);
+    if (existing?.exhausted && existing.client.isClosed) {
+      throw new LspClientError(
+        "unavailable",
+        "LSP server restart budget exhausted",
+      );
+    }
+    if (existing && !existing.client.isClosed) return existing.client;
+    if (existing?.client.isClosed) {
+      if (existing.exhausted || existing.restartCount >= LSP_MAX_RESTARTS) {
+        existing.exhausted = true;
+        throw new LspClientError(
+          "unavailable",
+          "LSP server restart budget exhausted",
+        );
+      }
+      await this.restartSlot(key, root, serverKey);
+      const slot = this.slots.get(key);
+      if (!slot || slot.client.isClosed) {
+        throw new LspClientError("unavailable", "LSP process exited");
+      }
+      return slot.client;
+    }
+    return this.spawnSlot(key, root, serverKey, 0);
+  }
+
+  private async restartSlot(
+    key: string,
+    root: string,
+    serverKey: string,
+  ): Promise<void> {
+    const slot = this.slots.get(key);
+    if (!slot || slot.exhausted || slot.restartCount >= LSP_MAX_RESTARTS) {
+      if (slot) slot.exhausted = true;
+      throw new LspClientError(
+        "unavailable",
+        "LSP server restart budget exhausted",
+      );
+    }
+    const delay = LSP_BACKOFF_MS[slot.restartCount] ?? 4000;
+    await this.sleep(delay);
+    slot.restartCount++;
+    await slot.client.shutdown().catch(() => {});
+    this.dropActionsForRoot(root);
+    const client = await this.spawnProcess(root, serverKey);
+    slot.client = client;
+    slot.lastUsedAt = this.now();
+    await this.restoreDocs(root, client);
+    await this.evictLru(key);
+  }
+
+  private async spawnSlot(
+    key: string,
+    root: string,
+    serverKey: string,
+    restartCount: number,
+  ): Promise<LspClient> {
+    const inflight = this.starting.get(key);
+    if (inflight) return inflight;
+
+    const promise = this.spawnProcess(root, serverKey)
+      .then((client) => {
+        this.slots.set(key, {
+          client,
+          root,
+          serverKey,
+          restartCount,
+          lastUsedAt: this.now(),
+          inflight: 0,
+          exhausted: false,
+        });
+        this.starting.delete(key);
+        return client;
+      })
+      .catch((e) => {
+        this.starting.delete(key);
+        throw e;
+      });
+
+    this.starting.set(key, promise);
+    const client = await promise;
+    await this.evictLru(key);
+    return client;
+  }
+
+  private async spawnProcess(
+    root: string,
+    serverKey: string,
+  ): Promise<LspClient> {
+    const argv = resolveServerArgv(serverKey, this.config.servers);
+    if (!argv) {
+      throw new LspClientError(
+        "unavailable",
+        `No LSP server configured for language '${serverKey}'`,
+      );
+    }
+    return this.startClient({
+      command: argv,
+      cwd: root,
+      rootUri: pathToFileUri(root),
+      timeoutMs: this.config.timeout_ms,
+    });
+  }
+
+  private async restoreDocs(root: string, client: LspClient): Promise<void> {
+    for (const absPath of [...this.openDocs]) {
+      if (resolveLspRoot(absPath, this.workspaceRoot) !== root) continue;
+      if (!existsSync(absPath)) {
+        this.openDocs.delete(absPath);
+        this.docVersion.delete(absPath);
+        continue;
+      }
+      const language = languageFromPath(absPath);
+      if (!language) continue;
+      let text: string;
+      try {
+        text = readFileSync(absPath, "utf-8");
+      } catch {
+        continue;
+      }
+      this.docVersion.set(absPath, 1);
+      await client.didOpen(absPath, lspLanguageId(language), text);
+    }
+  }
+
+  private dropActionsForRoot(root: string): void {
+    for (const [id, entry] of this.actions) {
+      if (resolveLspRoot(entry.path, this.workspaceRoot) === root) {
+        this.actions.delete(id);
+      }
+    }
+  }
+
+  private async evictLru(keepKey: string): Promise<void> {
+    if (this.slots.size <= this.maxClients) return;
+    let victimKey: string | null = null;
+    let oldest = Infinity;
+    for (const [key, slot] of this.slots) {
+      if (key === keepKey) continue;
+      if (slot.inflight > 0) continue;
+      if (slot.lastUsedAt < oldest) {
+        oldest = slot.lastUsedAt;
+        victimKey = key;
+      }
+    }
+    if (!victimKey) return;
+    const victim = this.slots.get(victimKey);
+    if (!victim) return;
+    this.slots.delete(victimKey);
+    await victim.client.shutdown().catch(() => {});
   }
 
   private async syncDocument(
@@ -587,23 +812,16 @@ export class LspManager {
     const pos = this.validatePosition(line, col);
     if (pos) return pos;
     if (!this.config.enabled) return err("disabled", "LSP is disabled");
-    const prep = await this.prepareDocument(absPath);
-    if (!prep.ok) return prep;
-    if (!prep.client[capability]) {
-      return { ok: true, value: { locations: [], skipped: "unsupported" } };
-    }
-    try {
-      const raw = await request(prep.client);
+    return this.withPreparedDocument(absPath, async ({ client }) => {
+      if (!client[capability]) {
+        return { locations: [], skipped: "unsupported" as const };
+      }
+      const raw = await request(client);
       const mapped = mapLocations(raw, this.workspaceRoot);
       const truncated = mapped.length > cap;
       const locations = mapped.slice(0, cap);
-      return {
-        ok: true,
-        value: truncated ? { locations, truncated } : { locations },
-      };
-    } catch (e) {
-      return this.mapError(e);
-    }
+      return truncated ? { locations, truncated } : { locations };
+    });
   }
 
   private validatePosition(
@@ -653,39 +871,6 @@ export class LspManager {
     for (const [id, entry] of this.actions) {
       if (set.has(entry.path)) this.actions.delete(id);
     }
-  }
-
-  private async getClient(language: string): Promise<LspClient> {
-    const existing = this.clients.get(language);
-    if (existing) return existing;
-
-    const inflight = this.starting.get(language);
-    if (inflight) return inflight;
-
-    const argv = resolveServerArgv(language, this.config.servers);
-    if (!argv) {
-      throw new LspClientError(
-        "unavailable",
-        `No LSP server configured for language '${language}'`,
-      );
-    }
-
-    const promise = this.startClient({
-      command: argv,
-      cwd: this.workspaceRoot,
-      rootUri: pathToFileUri(this.workspaceRoot),
-      timeoutMs: this.config.timeout_ms,
-    }).then((client) => {
-      this.clients.set(language, client);
-      this.starting.delete(language);
-      return client;
-    }).catch((e) => {
-      this.starting.delete(language);
-      throw e;
-    });
-
-    this.starting.set(language, promise);
-    return promise;
   }
 
   private mapError(e: unknown): LspResult<never> {

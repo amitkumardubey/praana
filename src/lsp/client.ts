@@ -218,6 +218,10 @@ export class LspClient {
     }
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   get supportsFormatting(): boolean {
     return this.documentFormattingProvider;
   }
