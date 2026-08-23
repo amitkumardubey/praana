@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, resolve } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
@@ -831,6 +831,66 @@ export class Session {
   /** Track read_file paths for repeat-read scorecard signal (session-scoped digests). */
   trackScorecardFileRead(absPath: string, mtimeMs?: number, countAsRepeat = true): void {
     this.scorecard.trackReadPath(absPath, mtimeMs, countAsRepeat);
+  }
+
+  /** `null` when the scorecard read index is inactive — skip unread edit checks. */
+  hasReadPath(absPath: string): boolean | null {
+    if (!this.scorecard.isActive()) return null;
+    return this.scorecard.hasReadPath(absPath);
+  }
+
+  listReadPaths(): string[] {
+    return [];
+  }
+
+  recentWritesForPath(absPath: string): Array<{ path: string; turn?: number }> {
+    const out: Array<{ path: string; turn?: number }> = [];
+    const WRITE_TOOLS = new Set([
+      "write_file",
+      "edit_file",
+      "batch_write",
+      "batch_edit",
+    ]);
+    try {
+      for (const ev of this.eventLog.readAll()) {
+        if (ev.kind !== "tool_call") continue;
+        const tool = ev.payload.tool ?? ev.payload.toolName;
+        if (typeof tool !== "string" || !WRITE_TOOLS.has(tool)) continue;
+        const args = ev.payload.args as Record<string, unknown> | undefined;
+        if (!args) continue;
+        const paths: string[] = [];
+        if (typeof args.path === "string") paths.push(args.path);
+        if (Array.isArray(args.files)) {
+          for (const f of args.files) {
+            if (
+              f &&
+              typeof f === "object" &&
+              typeof (f as { path?: unknown }).path === "string"
+            ) {
+              paths.push((f as { path: string }).path);
+            }
+          }
+        }
+        if (Array.isArray(args.edits)) {
+          for (const e of args.edits) {
+            if (
+              e &&
+              typeof e === "object" &&
+              typeof (e as { path?: unknown }).path === "string"
+            ) {
+              paths.push((e as { path: string }).path);
+            }
+          }
+        }
+        for (const p of paths) {
+          const resolved = isAbsolute(p) ? p : resolve(this.cwd, p);
+          if (resolved === absPath) out.push({ path: resolved });
+        }
+      }
+    } catch {
+      return [];
+    }
+    return out.slice(-5);
   }
 
   /** Whether scorecard persistence is active for this session. */

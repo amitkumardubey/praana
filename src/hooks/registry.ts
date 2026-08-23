@@ -78,6 +78,9 @@ export class HookRegistry {
             action: "block",
             error: result.error,
             isError: result.isError ?? true,
+            ...(result.suggestions?.length
+              ? { suggestions: result.suggestions }
+              : {}),
           };
         }
         if (result?.args) {

@@ -85,6 +85,27 @@ describe("HookRegistry", () => {
     });
   });
 
+  it("forwards suggestions on a pre_tool_call block", async () => {
+    const registry = new HookRegistry();
+    registry.onPreToolCall(() => ({
+      action: "block" as const,
+      error: "missing",
+      isError: true,
+      suggestions: ["src/a.ts"],
+    }));
+    const result = await registry.runPreToolCall({
+      toolName: "read_file",
+      args: { path: "b.ts" },
+      session: fakeSession(),
+    });
+    expect(result).toEqual({
+      action: "block",
+      error: "missing",
+      isError: true,
+      suggestions: ["src/a.ts"],
+    });
+  });
+
   it("runs post_tool_call handlers in order and applies result patches", async () => {
     const registry = new HookRegistry();
     const order: string[] = [];
@@ -237,7 +258,9 @@ describe("builtin hook handlers", () => {
   });
 
   it("allows read-only tools in plan mode", async () => {
-    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test");
+    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const result = await registry.runPreToolCall({
       toolName: "read_file",
       args: { path: "a.ts" },
@@ -251,7 +274,9 @@ describe("builtin hook handlers", () => {
 
   it("blocks a second concurrent write without marking isError", async () => {
     const registry = new HookRegistry();
-    registerBuiltinHooks(registry, "/tmp/praana-hooks-test");
+    registerBuiltinHooks(registry, "/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const session = fakeSession();
 
     const first = await registry.runPreToolCall({
@@ -274,7 +299,9 @@ describe("builtin hook handlers", () => {
   });
 
   it("blocks read_file while a write lock is held", async () => {
-    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test");
+    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const session = fakeSession();
 
     await registry.runPreToolCall({

@@ -155,6 +155,16 @@ toward the session root) → reverse-import affected `*.test.*` / `*.spec.*` via
 `bun test`. Unchanged file hash → `verify.cached = true`. More than
 `max_test_files` → `tests.skipped = "too_many"` (lists the first N paths).
 
+### Tool pre-validation (issue #300)
+
+Always-on `pre_tool_call` / `post_tool_call` hooks. No config key, no new tools,
+never rewrite args. Missing `read_file` / `edit_file` paths block with up to 5
+fuzzy `suggestions` (`git ls-files` + session reads). `edit_file` of an existing
+file that was not read this session hard-blocks (`Read the file first`). `shell`
+blocks a missing `cwd` or a first token that is not a builtin and not on PATH.
+Failed path-bearing tools may get `suggestions` and `recent_writes`. Validate
+runs after plan-mode and before write-path acquire so a block cannot leak a lock.
+
 ### Project Context (AGENTS.md)
 
 On session start, PRAANA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
@@ -251,7 +261,8 @@ src/
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode detection helpers; runtime gate is a pre_tool_call hook
-  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; LSP post-edit → verify → write-path release)
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → write-path; LSP post-edit → verify → enrich → write-path release)
+  validate/      — Always-on pre-validation + error enrichment (issue #300; fuzzy path suggestions, unread edit_file, shell PATH)
   verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
@@ -375,7 +386,7 @@ User input
   → pre_compile hooks
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → stream LLM response with tool calls
-  → pre_tool_call hooks (plan-mode + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + write-path) then concurrent execute, then post_tool_call
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
@@ -392,7 +403,7 @@ User input
   → pre_compile hooks
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
   → stream LLM response (shared + system + memory tools only)
-  → pre_tool_call hooks (plan-mode + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + write-path) then concurrent execute, then post_tool_call
   → log all events
   → increment turn count (no tier management, no skill tracking)
   → post_turn hooks

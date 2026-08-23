@@ -6,6 +6,7 @@ import {
 } from "./handlers/write-path.js";
 import { createLspEditHandlers } from "./handlers/lsp.js";
 import { createVerifyPostToolCallHandler } from "./handlers/verify.js";
+import { createValidateHandlers } from "./handlers/validate.js";
 import { HookRegistry } from "./registry.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { VerifyConfig } from "../types.js";
@@ -38,6 +39,8 @@ export type {
 export { PLAN_MODE_BLOCK_ERROR } from "./handlers/plan-mode.js";
 export { WritePathGuard } from "./handlers/write-path.js";
 export { createVerifyPostToolCallHandler } from "./handlers/verify.js";
+export { createValidateHandlers } from "./handlers/validate.js";
+export { toolResultFromPreBlock } from "./block-result.js";
 
 export interface VerifyHookDeps {
   parseFile?: ParseFileFn | null;
@@ -46,17 +49,24 @@ export interface VerifyHookDeps {
   runTests?: RunTestsFn;
 }
 
+export interface ValidateHookDeps {
+  pathExists?: (absPath: string) => boolean;
+  listRepoFiles?: () => string[];
+  commandOnPath?: (name: string) => boolean;
+}
+
 export interface BuiltinHookOptions {
   lspManager?: LspManager | null;
   onFormattedPath?: (absPath: string) => void;
   verify?: VerifyConfig;
   verifyDeps?: VerifyHookDeps;
+  validate?: ValidateHookDeps;
 }
 
 /**
- * Register plan-mode, write-path, then LSP post-edit, then verify (before lock release).
- * Order: pre = plan → write-path acquire → lsp snapshot
- *        post = lsp post-edit → verify → write-path release
+ * Register plan-mode, validate, write-path, then LSP / verify (before lock release).
+ * Order: pre = plan → validate → write-path acquire → lsp snapshot
+ *        post = lsp post-edit → verify → enrich → write-path release
  */
 export function registerBuiltinHooks(
   registry: HookRegistry,
@@ -65,6 +75,13 @@ export function registerBuiltinHooks(
 ): void {
   const writePath = new WritePathGuard(cwd);
   registry.onPreToolCall(createPlanModePreToolCallHandler());
+  const validate = createValidateHandlers({
+    cwd,
+    pathExists: opts?.validate?.pathExists,
+    listRepoFiles: opts?.validate?.listRepoFiles,
+    commandOnPath: opts?.validate?.commandOnPath,
+  });
+  registry.onPreToolCall(validate.pre);
   registry.onPreToolCall(
     createWritePathPreToolCallHandler(writePath, {
       originatingPathForApply: (id) =>
@@ -97,6 +114,7 @@ export function registerBuiltinHooks(
     }),
   );
 
+  registry.onPostToolCall(validate.post);
   registry.onPostToolCall(createWritePathPostToolCallHandler(writePath));
 }
 

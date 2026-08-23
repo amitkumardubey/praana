@@ -180,8 +180,8 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 |---|---|---|
 | Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep), `code_*` (tree-sitter), `lsp_diagnostics` (opt-in LSP). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
 | Git | `git_status`, `git_diff`, `git_commit` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
-| File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Opt-in `[verify]` (issue #299) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
-| Shell | `shell` (with optional sandbox allowlist; timeout kills the process group) | Both |
+| File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#300). Opt-in `[verify]` (issue #299) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
+| Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#300) | Both |
 | Session search | `search_session_log` (in-session events) | Both |
 | Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |

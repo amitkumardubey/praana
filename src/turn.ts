@@ -28,6 +28,7 @@ import {
 import type { ContextEngine } from "./context-engine/index.js";
 import { TurnRecorder } from "./context-engine/turn-recorder.js";
 import { TurnAbortedError } from "./turn-control.js";
+import { toolResultFromPreBlock } from "./hooks/block-result.js";
 import type { TurnUiSink } from "./ui-events.js";
 import { createDefaultTurnSink } from "./ui-events.js";
 import {
@@ -983,7 +984,7 @@ export async function runTurn(
             });
             if (pre.action === "block") {
               isError = pre.isError;
-              result = { ok: false, error: pre.error };
+              result = toolResultFromPreBlock(pre);
             } else {
               try {
                 result = await toolDef.execute(pre.args);
