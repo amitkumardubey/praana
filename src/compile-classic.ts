@@ -3,6 +3,7 @@ import type { CompileMetrics } from "./compiler.js";
 import { buildCrossSessionMemory } from "./compiler.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
+import type { NativeAddonStatus } from "./native/index.js";
 import { buildSharedAgentPolicy } from "./compiler.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
 import { renderCircuitNotes } from "./circuit/loop-gate.js";
@@ -19,7 +20,7 @@ export interface ClassicCompileInput {
   userInput?: string;
   resumeNote?: string;
   circuitNotes?: string[];
-  nativeStatus?: string | null;
+   nativeStatus?: NativeAddonStatus | null;
 }
 
 
@@ -31,7 +32,7 @@ export function buildClassicSystemFrame(
   agentsContext?: string | null,
   projectContext?: string | null,
   resumeNote?: string,
-  nativeStatus?: string | null,
+   nativeStatus?: NativeAddonStatus | null,
 ): string {
   const lines = [
     "# System",
@@ -54,12 +55,16 @@ export function buildClassicSystemFrame(
     lines.push("", "## Resume Scope", "", resumeNote);
   }
 
-  if (nativeStatus && !nativeStatus.startsWith("available")) {
+  if (nativeStatus && nativeStatus.kind !== "available") {
+    const detail =
+      nativeStatus.kind === "disabled"
+        ? "disabled via config"
+        : `unavailable: ${nativeStatus.reason}`;
     lines.push(
       "",
       "## Native Addon",
       "",
-      `Tree-sitter code-intel addon ${nativeStatus} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or \`shell rg\` for code exploration.`,
+      `Tree-sitter code-intel addon ${detail} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or \`shell rg\` for code exploration.`,
     );
   }
 

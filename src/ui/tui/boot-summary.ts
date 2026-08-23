@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import type { Session } from "../../session.js";
 import { formatModelStatusLabel } from "../../status-bar.js";
+import { nativeStatusToString } from "../../native/index.js";
 
 export interface TuiBootSummaryInput {
   session: Session;
@@ -82,7 +83,7 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
     `skills   ${skillCount > 0 ? `${skillCount} available` : "none found"}`,
   );
 
-  lines.push(`native   ${session.nativeStatus ?? "unknown"}`);
+  lines.push(`native   ${session.nativeStatus ? nativeStatusToString(session.nativeStatus) : "unknown"}`);
 
   lines.push("─".repeat(Math.min(termWidth - 2, 56)));
   lines.push("/help for commands · /exit to save · ctrl-c to interrupt");

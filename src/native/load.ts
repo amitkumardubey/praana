@@ -104,7 +104,7 @@ export async function loadNative(options?: {
 
   if (!nativeEnabled) {
     const err = new NativeUnavailableError(
-      "unavailable",
+      "disabled",
       "native addon disabled via config (native.enabled=false)",
     );
     cached = { available: false, bindings: null, error: err };

@@ -9,6 +9,7 @@ import {
   CLI_SHORT,
 } from "./app-identity.js";
 import type { Session } from "./session.js";
+import { nativeStatusToString } from "./native/index.js";
 
 export const APP_VERSION = readAppVersion();
 
@@ -45,7 +46,7 @@ export function formatSessionBannerLines(
       : session.isIncognito()
         ? "memory: incognito (disabled)"
         : "memory: disabled",
-    session.nativeStatus ? `native: ${session.nativeStatus}` : `native: unknown`,
+    session.nativeStatus ? `native: ${nativeStatusToString(session.nativeStatus)}` : `native: unknown`,
   ];
 }
 
