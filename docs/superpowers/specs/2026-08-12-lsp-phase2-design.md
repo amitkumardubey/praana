@@ -5,7 +5,7 @@
 **Depends on:** Issue #11 Phase 1 / `2026-08-12-tree-sitter-code-intel-design.md`
 **Related epic:** Issue #195 (deterministic tools harness)
 **Related:** Issue #299 (post-edit verification — can consume LSP diagnostics later)
-**Follow-on:** Issue #11 Phase 3 — `2026-08-14-lsp-phase3-design.md`
+**Follow-on:** Issue #11 Phase 3 — `2026-08-14-lsp-phase3-design.md`; Phase 4 — `2026-08-21-lsp-phase4-design.md`
 
 ## Purpose
 
@@ -247,8 +247,8 @@ concurrent `read_file` / second writer cannot race the formatter write.
 
 - Hover, completions, code actions, semantic definition/references (Phase 3 — see `2026-08-14-lsp-phase3-design.md`)
 - Signature help (deferred past Phase 3)
-- Crash restart with exponential backoff (Phase 4)
-- Multi-root / per-package workspace folders (Phase 4)
+- Crash restart with exponential backoff (Phase 4 — see `2026-08-21-lsp-phase4-design.md`)
+- Multi-root / per-package workspace folders (Phase 4 — see `2026-08-21-lsp-phase4-design.md`)
 - Bundling or auto-installing language servers
 - CLI fallback formatters (`prettier`, `rustfmt`, …)
 - Changing Tree-sitter `code_*` semantics or native API version

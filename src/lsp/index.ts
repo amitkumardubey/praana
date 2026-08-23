@@ -9,8 +9,23 @@ export {
   languageFromPath,
   lspLanguageId,
   resolveServerArgv,
+  resolveServerKey,
 } from "./language.js";
-export { LspManager, diffIntroduced, type ApplyLock, type LspManagerOptions } from "./manager.js";
+export {
+  LspManager,
+  diffIntroduced,
+  LSP_BACKOFF_MS,
+  LSP_DEFAULT_MAX_CLIENTS,
+  LSP_MAX_RESTARTS,
+  type ApplyLock,
+  type LspManagerOptions,
+} from "./manager.js";
+export {
+  discoverWorkspaceMembers,
+  normalizeRoot,
+  pathInRoot,
+  resolveLspRoot,
+} from "./workspace-roots.js";
 export {
   fileUriToPath,
   pathToFileUri,

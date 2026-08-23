@@ -99,7 +99,7 @@ enabled = true   # false = never load addon; code_* tools return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
-### LSP (`[lsp]`, issue #11 Phase 2–3)
+### LSP (`[lsp]`, issue #11 Phases 2–4)
 
 Opt-in Language Server Protocol client for diagnostics and formatting. Uses
 **external** servers you install (e.g. `typescript-language-server`); PRAANA only
@@ -122,6 +122,10 @@ Tools: `lsp_diagnostics(path)`, `lsp_format(path)`, `lsp_hover(path, line, col)`
 `lsp_completions(path, line, col)`, `lsp_definition(path, line, col)`,
 `lsp_references(path, line, col)`, `lsp_code_actions(path, range)`,
 `lsp_apply_code_action(id)`. Soft-fail when disabled or the server is missing.
+A dead language-server process is respawned (max 3 restarts per root, backoff
+1s/2s/4s). Files in JS workspace packages or nested git repos get their own
+server instance (cap 8, LRU). `javascript` shares the `typescript` server when
+no `javascript` entry is set.
 
 Tree-sitter `code_*` stays the fast in-project name path. Use `lsp_definition` /
 `lsp_references` when you need types, stdlib, or node_modules. Completions are
@@ -241,10 +245,10 @@ src/
     search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
-    lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phase 3)
+    lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phases 2–4)
     git-context.ts — shared getGitContext / findGitRoot helpers
     native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
-    lsp/ — JSON-RPC LSP client + manager (stdio language servers; soft-fail when disabled)
+    lsp/ — JSON-RPC LSP client + manager (stdio; crash restart + multi-root; soft-fail when disabled)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables

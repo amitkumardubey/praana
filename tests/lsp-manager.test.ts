@@ -8,6 +8,7 @@ import { applyTextEdits } from "../src/lsp/edits.js";
 import {
   languageFromPath,
   resolveServerArgv,
+  resolveServerKey,
 } from "../src/lsp/language.js";
 import { pathToFileUri } from "../src/lsp/types.js";
 import type { LspConfig } from "../src/types.js";
@@ -43,6 +44,17 @@ describe("language helpers", () => {
         typescript: ["typescript-language-server", "--stdio"],
       }),
     ).toEqual(["typescript-language-server", "--stdio"]);
+    expect(
+      resolveServerKey("javascript", {
+        typescript: ["typescript-language-server", "--stdio"],
+      }),
+    ).toBe("typescript");
+    expect(
+      resolveServerKey("javascript", {
+        javascript: ["js-server"],
+        typescript: ["ts-server"],
+      }),
+    ).toBe("javascript");
   });
 });
 
@@ -438,5 +450,305 @@ describe("Phase 3 queries", () => {
     } finally {
       await mgr.shutdown();
     }
+  });
+});
+
+describe("LspManager Phase 4 restart + multi-root", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = join(
+      tmpdir(),
+      `praana-lsp-p4-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    );
+    mkdirSync(dir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const skipBackoff = { sleep: async () => {} };
+
+  it("retries a crashed hover on the same call", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "const n = 1;\n");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start({
+          ...opts,
+          env: starts === 1 ? { FAKE_LSP_EXIT_ON: "textDocument/hover" } : {},
+        });
+      },
+    });
+    try {
+      const result = await mgr.hover(path, 1, 1);
+      expect(result.ok).toBe(true);
+      expect(starts).toBe(2);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("returns unavailable after 3 restarts", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "const n = 1;\n");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start({
+          ...opts,
+          env: { FAKE_LSP_EXIT_ON: "textDocument/hover" },
+        });
+      },
+    });
+    try {
+      for (let i = 0; i < 6; i++) {
+        await mgr.hover(path, 1, 1);
+      }
+      const last = await mgr.hover(path, 1, 1);
+      expect(last.ok).toBe(false);
+      if (!last.ok) expect(last.code).toBe("unavailable");
+      expect(starts).toBeLessThanOrEqual(4);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("does not count a timeout as a restart", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "const n = 1;\n");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig({ timeout_ms: 80 }),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start({
+          ...opts,
+          timeoutMs: 80,
+          env: { FAKE_LSP_DELAY_MS: "400" },
+        });
+      },
+    });
+    try {
+      const timedOut = await mgr.hover(path, 1, 1);
+      expect(timedOut.ok).toBe(false);
+      if (!timedOut.ok) expect(timedOut.code).toBe("timeout");
+      expect(starts).toBe(1);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("spawns a client per workspace package rootUri", async () => {
+    mkdirSync(join(dir, "packages", "core"), { recursive: true });
+    mkdirSync(join(dir, "packages", "cli"), { recursive: true });
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ workspaces: ["packages/*"] }),
+    );
+    writeFileSync(join(dir, "packages", "core", "package.json"), "{}");
+    writeFileSync(join(dir, "packages", "cli", "package.json"), "{}");
+    const coreFile = join(dir, "packages", "core", "a.ts");
+    const cliFile = join(dir, "packages", "cli", "b.ts");
+    writeFileSync(coreFile, "export {};\n");
+    writeFileSync(cliFile, "export {};\n");
+
+    const rootUris: string[] = [];
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) => {
+        rootUris.push(opts.rootUri);
+        return LspClient.start(opts);
+      },
+    });
+    try {
+      expect((await mgr.hover(coreFile, 1, 1)).ok).toBe(true);
+      expect((await mgr.hover(cliFile, 1, 1)).ok).toBe(true);
+      expect(new Set(rootUris).size).toBe(2);
+      expect(rootUris.some((u) => u.includes("packages/core"))).toBe(true);
+      expect(rootUris.some((u) => u.includes("packages/cli"))).toBe(true);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("re-opens known docs after restart", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "const n = 1;\n");
+    const log = join(dir, "events.jsonl");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_EVENT_LOG: log,
+            ...(starts === 1 ? { FAKE_LSP_EXIT_ON: "textDocument/hover" } : {}),
+          },
+        });
+      },
+    });
+    try {
+      const result = await mgr.hover(path, 1, 1);
+      expect(result.ok).toBe(true);
+      const lines = readFileSync(log, "utf-8")
+        .trim()
+        .split("\n")
+        .map((l) => JSON.parse(l) as { method: string });
+      const opens = lines.filter((l) => l.method === "textDocument/didOpen");
+      expect(opens.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("invalidates cached code actions after a crash restart", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "x\n");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start({
+          ...opts,
+          env: {
+            FAKE_LSP_CODE_ACTIONS: JSON.stringify([
+              {
+                title: "Fix",
+                edit: {
+                  changes: {
+                    [pathToFileUri(path)]: [
+                      {
+                        range: {
+                          start: { line: 0, character: 0 },
+                          end: { line: 0, character: 1 },
+                        },
+                        newText: "y",
+                      },
+                    ],
+                  },
+                },
+              },
+            ]),
+            ...(starts === 1 ? { FAKE_LSP_EXIT_ON: "textDocument/hover" } : {}),
+          },
+        });
+      },
+    });
+    try {
+      const listed = await mgr.codeActions(path, 1, 1, 1, 1);
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      const id = listed.value.actions[0]!.id;
+      const hover = await mgr.hover(path, 1, 1);
+      expect(hover.ok).toBe(true);
+      const applied = await mgr.applyCodeAction(id);
+      expect(applied.ok).toBe(false);
+      if (!applied.ok) expect(applied.code).toBe("invalid_argument");
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("shares one process for JS when it falls back to the typescript server", async () => {
+    const ts = join(dir, "a.ts");
+    const js = join(dir, "a.js");
+    writeFileSync(ts, "export {};\n");
+    writeFileSync(js, "export {};\n");
+    let starts = 0;
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      startClient: (opts) => {
+        starts++;
+        return LspClient.start(opts);
+      },
+    });
+    try {
+      expect((await mgr.hover(ts, 1, 1)).ok).toBe(true);
+      expect((await mgr.hover(js, 1, 1)).ok).toBe(true);
+      expect(starts).toBe(1);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("evicts the least-recently-used idle client when over maxClients", async () => {
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ workspaces: ["packages/*"] }),
+    );
+    const files: string[] = [];
+    for (const name of ["one", "two", "three"]) {
+      const pkg = join(dir, "packages", name);
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(join(pkg, "package.json"), "{}");
+      const file = join(pkg, "a.ts");
+      writeFileSync(file, "export {};\n");
+      files.push(file);
+    }
+    const started: LspClient[] = [];
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      maxClients: 2,
+      startClient: async (opts) => {
+        const client = await LspClient.start(opts);
+        started.push(client);
+        return client;
+      },
+    });
+    try {
+      for (const file of files) {
+        expect((await mgr.hover(file, 1, 1)).ok).toBe(true);
+      }
+      expect(started.length).toBe(3);
+      expect(started.filter((c) => c.isClosed).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await mgr.shutdown();
+    }
+  });
+
+  it("does not restart after shutdown", async () => {
+    const path = join(dir, "a.ts");
+    writeFileSync(path, "const n = 1;\n");
+    const mgr = new LspManager({
+      config: baseConfig(),
+      cwd: dir,
+      workspaceRoot: dir,
+      ...skipBackoff,
+    });
+    await mgr.shutdown();
+    const result = await mgr.hover(path, 1, 1);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("unavailable");
   });
 });
