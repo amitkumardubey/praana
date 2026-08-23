@@ -320,7 +320,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
-- `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon)
+- `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon; availability probed at session start and shown in banner/`/stats`/system frame — see Native Addon)
 - `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
 - Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
 

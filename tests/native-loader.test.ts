@@ -112,7 +112,7 @@ describe("native loader", () => {
     setNativeEnabled(false);
     const result = await loadNative({ forceReload: true });
     expect(result.available).toBe(false);
-    expect(result.error?.code).toBe("unavailable");
+    expect(result.error?.code).toBe("disabled");
     expect(result.error?.message).toContain("disabled");
   });
 });

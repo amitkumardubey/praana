@@ -69,7 +69,7 @@ import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.j
 import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
-import { setNativeEnabled } from "./native/index.js";
+import { probeNativeStatus, setNativeEnabled, type NativeAddonStatus } from "./native/index.js";
 import { LspManager } from "./lsp/manager.js";
 
 /**
@@ -123,6 +123,8 @@ export class Session {
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
   memoryInitError: string | null = null;
+  /** Native addon status probed at session start (issue #319). */
+  nativeStatus: NativeAddonStatus | null = null;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -264,6 +266,7 @@ export class Session {
       session.memoryStore = null;
       session.digest = null;
       session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
+      session.nativeStatus = await probeNativeStatus();
       return session;
     }
 
@@ -330,6 +333,7 @@ export class Session {
       }
     }
 
+    session.nativeStatus = await probeNativeStatus();
     await session.hooks.runSessionStart({ session, reason: "create" });
     return session;
   }
@@ -485,6 +489,7 @@ export class Session {
     }
 
     session.resumed = true;
+    session.nativeStatus = await probeNativeStatus();
     await session.hooks.runSessionStart({ session, reason: "resume" });
     return session;
   }

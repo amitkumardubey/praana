@@ -99,6 +99,8 @@ enabled = true   # false = never load addon; code_* tools return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
+Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor`, and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code`).
+
 ### LSP (`[lsp]`, issue #11 Phases 2–4)
 
 Opt-in Language Server Protocol client for diagnostics and formatting. Uses

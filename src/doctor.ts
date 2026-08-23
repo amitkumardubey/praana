@@ -3,6 +3,7 @@ import { getMissingKeyMessage } from "./llm.js";
 import { getConfigWarnings } from "./config.js";
 import { appHomePath, APP_NAME } from "./app-identity.js";
 import { isTransformersAvailable } from "./memory/transformers-embedder.js";
+import { loadNative, formatNativeStatus } from "./native/index.js";
 import type { PraanaConfig } from "./types.js";
 
 export async function handleDoctor(
@@ -46,6 +47,19 @@ export async function handleDoctor(
     lines.push("✓ embedder: transformers available");
   } else {
     lines.push("⚠ embedder: transformers not installed (keyword-only mode)");
+  }
+
+  // Native addon availability
+  try {
+    const status = formatNativeStatus(await loadNative());
+    if (status.kind === "available") {
+      lines.push(`✓ native: available (${status.version})`);
+    } else {
+      const prefix = status.kind === "disabled" ? "disabled" : "unavailable";
+      lines.push(`⚠ native: ${prefix}: ${status.reason}`);
+    }
+  } catch (err) {
+    lines.push(`⚠ native: unavailable: ${(err as Error).message}`);
   }
 
   // Config warnings

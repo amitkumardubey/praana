@@ -8,7 +8,8 @@
 export const EXPECTED_NATIVE_API_MAJOR = 0;
 
 export type NativeErrorCode =
-  | "unavailable"
+   | "unavailable"
+   | "disabled"
   | "version_mismatch"
   | "invalid_argument"
   | "io_error"

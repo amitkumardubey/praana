@@ -6,6 +6,7 @@ import {
   sessionActivityAt,
 } from "./event-log.js";
 import type { Session } from "./session.js";
+import { nativeStatusToString } from "./native/index.js";
 import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig, resolveContextDbPath } from "./context-engine/index.js";
@@ -402,6 +403,8 @@ export async function executeSlashCommand(
         lines.push(`  Total memories: ${persistentCount ?? "(unavailable)"}`);
         lines.push(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
       }
+
+      lines.push("", `Native addon: ${session.nativeStatus ? nativeStatusToString(session.nativeStatus) : "unknown"}`);
 
       if (session.isContextEngineEnabled() && session.contextEngine) {
         const telemetry = session.contextEngine.finalizeTelemetry(session.getTurnCount());

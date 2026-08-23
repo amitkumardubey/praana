@@ -20,3 +20,9 @@ export {
   setNativeEnabled,
   tryGetNative,
 } from "./load.js";
+export {
+  formatNativeStatus,
+  probeNativeStatus,
+  nativeStatusToString,
+  type NativeAddonStatus,
+} from "./status.js";

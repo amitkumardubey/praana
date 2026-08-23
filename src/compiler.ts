@@ -3,6 +3,7 @@ import { estimateTokens as estTokens } from "./token-estimate.js";
 import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
 import { APP_VERSION } from "./app-banner.js";
+import type { NativeAddonStatus } from "./native/index.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -26,6 +27,8 @@ export interface CompileInput {
    * post-resume turn when the user's message may diverge from a stale task.
    */
   resumeNote?: string;
+  /** Native addon status probed at session start (issue #319). */
+  nativeStatus?: NativeAddonStatus | null;
 }
 
 /** Token-estimate metrics per section, emitted for eval / observability. */
@@ -78,6 +81,7 @@ export function compile(input: CompileInput): string {
     input.agentsContext,
     false,
     input.resumeNote,
+    input.nativeStatus,
   );
   sections.push(frame);
 
@@ -150,6 +154,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     agentsContext,
     false,
     input.resumeNote,
+    input.nativeStatus,
   );
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
@@ -365,6 +370,7 @@ export function buildSystemFrame(
   agentsContext?: string | null,
   engineMode = false,
   resumeNote?: string,
+  nativeStatus?: NativeAddonStatus | null,
 ): string {
   const lines = [
     "# System",
@@ -385,6 +391,19 @@ export function buildSystemFrame(
 
   if (resumeNote) {
     lines.push("", "## Resume Scope", "", resumeNote);
+  }
+
+  if (nativeStatus && nativeStatus.kind !== "available") {
+    const detail =
+      nativeStatus.kind === "disabled"
+        ? "disabled via config"
+        : `unavailable: ${nativeStatus.reason}`;
+    lines.push(
+      "",
+      "## Native Addon",
+      "",
+      `Tree-sitter code-intel addon ${detail} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or \`shell rg\` for code exploration.`,
+    );
   }
 
   lines.push("", ...buildSharedAgentPolicy());
