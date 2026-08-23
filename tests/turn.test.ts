@@ -2106,4 +2106,59 @@ describe("runTurn", () => {
     expect(shellResult).toBeDefined();
     expect(shellResult?.payload.result.ok).toBe(true);
   });
+
+  it("redacts tool_call args in the event log but executes the raw command", async () => {
+    const secretCmd = "echo AKIAIOSFODNN7EXAMPLE";
+    let executedCommand: string | undefined;
+    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
+      shell: {
+        description: "Execute a shell command",
+        parameters: z.object({ command: z.string() }),
+        execute: mock(async (args: { command: string }) => {
+          executedCommand = args.command;
+          return { ok: true, stdout: "ok" };
+        }),
+      },
+    });
+
+    const toolCallGenerator = (async function* () {
+      yield {
+        type: "toolcall_end",
+        toolCall: { id: "call-1", name: "shell", arguments: { command: secretCmd } },
+      };
+      yield {
+        type: "done",
+        reason: "toolUse",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "toolUse", toolUse: { id: "call-1", name: "shell", arguments: { command: secretCmd } } },
+          ],
+        },
+      };
+    })();
+    const finalGenerator = (async function* () {
+      yield { type: "text_delta", delta: "done" };
+      yield {
+        type: "done",
+        reason: "stop",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+      };
+    })();
+    let calls = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation(() => {
+      calls++;
+      return calls === 1 ? toolCallGenerator as any : finalGenerator as any;
+    });
+
+    const session = makeMockSession();
+    await runTurn(session, "echo a key");
+
+    expect(executedCommand).toBe(secretCmd);
+    const events = session.eventLog.readLast(50);
+    const callsLogged = events.filter((e: Event) => e.kind === "tool_call");
+    expect((callsLogged[0] as any).payload.args.command).toBe(
+      "echo [REDACTED:aws-access-key]",
+    );
+  });
 });

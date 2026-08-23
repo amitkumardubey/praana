@@ -38,6 +38,7 @@ import {
   maxContextSnapshot,
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
+import { redactSecrets } from "./redact/secrets.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -925,12 +926,13 @@ export async function runTurn(
     // Phase 1: notify UI and log all incoming tool calls so parallel batches are visible
     // as pending rows in the TUI before any execution begins.
     for (const tc of pendingToolCalls) {
+      const loggedArgs = redactSecrets(tc.args ?? {}) as Record<string, unknown>;
       session.eventLog.append({
         kind: "tool_call",
         actor: "tool",
-        payload: { toolCallId: tc.toolCallId, tool: tc.toolName, args: tc.args },
+        payload: { toolCallId: tc.toolCallId, tool: tc.toolName, args: loggedArgs },
       });
-      s.onToolCall?.(tc.toolCallId, tc.toolName, tc.args);
+      s.onToolCall?.(tc.toolCallId, tc.toolName, loggedArgs);
       if (tc.toolName !== "load_skill") hadNonLoadSkillTool = true;
     }
 
@@ -1135,7 +1137,7 @@ export async function runTurn(
 
         turnRecorder.recordToolCall({
           tool: tc.toolName,
-          args: tc.args as Record<string, unknown>,
+          args: redactSecrets(tc.args ?? {}) as Record<string, unknown>,
           result,
           isError,
           artifactId,
