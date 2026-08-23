@@ -4,7 +4,6 @@ import { createTestLogger, setAppLogger } from '../src/logger.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 
 let dir = '';
 let configPath = '';
@@ -23,16 +22,10 @@ function writeCfg(body: string) {
 }
 
 describe('loadConfig: [search_code]', () => {
-  it('parses a valid rg_path string into search_code.rg_path', () => {
-    writeCfg(`[search_code]\nrg_path = "/opt/homebrew/bin/rg"\n`);
+  it('parses a valid scan_timeout_ms into search_code.scan_timeout_ms', () => {
+    writeCfg(`[search_code]\nscan_timeout_ms = 10000\n`);
     const cfg = loadConfig(configPath);
-    expect(cfg.search_code?.rg_path).toBe('/opt/homebrew/bin/rg');
-  });
-
-  it('expands ~ in rg_path to the user home directory', () => {
-    writeCfg(`[search_code]\nrg_path = "~/bin/rg"\n`);
-    const cfg = loadConfig(configPath);
-    expect(cfg.search_code?.rg_path).toBe(join(homedir(), 'bin', 'rg'));
+    expect(cfg.search_code?.scan_timeout_ms).toBe(10000);
   });
 
   it('leaves search_code undefined when the section is omitted', () => {
@@ -41,14 +34,27 @@ describe('loadConfig: [search_code]', () => {
     expect(cfg.search_code).toBeUndefined();
   });
 
-  it('warns and ignores rg_path when it is the wrong type', () => {
+  it('warns and ignores scan_timeout_ms when it is the wrong type', () => {
     const captured: string[] = [];
     setAppLogger(createTestLogger((line) => captured.push(line)));
     try {
-      writeCfg(`[search_code]\nrg_path = 12345\n`);
+      writeCfg(`[search_code]\nscan_timeout_ms = "not-a-number"\n`);
       const cfg = loadConfig(configPath);
-      expect(cfg.search_code?.rg_path).toBeUndefined();
-      expect(captured.some((l) => l.includes('search_code.rg_path'))).toBe(true);
+      expect(cfg.search_code?.scan_timeout_ms).toBeUndefined();
+      expect(captured.some((l) => l.includes('search_code.scan_timeout_ms'))).toBe(true);
+    } finally {
+      setAppLogger(createTestLogger(() => {}));
+    }
+  });
+
+  it('warns and ignores scan_timeout_ms when non-positive', () => {
+    const captured: string[] = [];
+    setAppLogger(createTestLogger((line) => captured.push(line)));
+    try {
+      writeCfg(`[search_code]\nscan_timeout_ms = -5\n`);
+      const cfg = loadConfig(configPath);
+      expect(cfg.search_code?.scan_timeout_ms).toBeUndefined();
+      expect(captured.some((l) => l.includes('search_code.scan_timeout_ms'))).toBe(true);
     } finally {
       setAppLogger(createTestLogger(() => {}));
     }

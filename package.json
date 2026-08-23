@@ -49,6 +49,7 @@
     "@aws-sdk/client-bedrock": "^3.1093.0",
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-tui": "^0.83.0",
+    "@ff-labs/fff-bun": "^0.10.5",
     "@huggingface/transformers": "^4.2.0",
     "ansi-styles": "^4.3.0",
     "boxen": "^8.0.1",

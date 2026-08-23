@@ -99,7 +99,15 @@ enabled = true   # false = never load addon; code_* tools return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
-Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor`, and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code`).
+Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor`, and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code` or `find_files`).
+
+### fff — In-Process File Search (`@ff-labs/fff-bun`)
+
+`search_code` and `find_files` are powered by fff, an in-process file search index (native library ships with the `@ff-labs/fff-bun` npm package). The `FileFinder` is created lazily per `cwd` and shared between both tools. The initial scan runs in the background; the first search waits up to `[search_code] scan_timeout_ms` (default 5000).
+
+fff availability is probed at session start and surfaced in the boot banner (`search: available` / `search: unavailable`), `/stats`, and `praana doctor`.
+
+**Known tradeoff:** fff's `grep()` is synchronous — it blocks the event loop while searching. An `AbortSignal` cannot interrupt a running grep. For very large codebases, this may cause brief TUI freezes. Use `shell rg` for searching outside the project root or when interactive abort is needed.</think>
 
 ### LSP (`[lsp]`, issue #11 Phases 2–4)
 
@@ -328,7 +336,8 @@ src/
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
     system.ts    — System tools (shell, read_file, write_file, edit_file)
-    search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context, globs, max_results)
+    search-code.ts — search_code: fff-backed structured code search (in-process grep → file:line:column matches with context, globs, max_results)
+    find-files.ts — find_files: fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode; returns file paths with git status)
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
     lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phases 2–4)

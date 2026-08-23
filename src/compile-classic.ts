@@ -64,7 +64,7 @@ export function buildClassicSystemFrame(
       "",
       "## Native Addon",
       "",
-      `Tree-sitter code-intel addon ${detail} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or \`shell rg\` for code exploration.`,
+      `Tree-sitter code-intel addon ${detail} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or find_files for code exploration.`,
     );
   }
 

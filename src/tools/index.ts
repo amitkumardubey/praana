@@ -10,6 +10,7 @@ import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
 import { createSearchCodeTool } from "./search-code.js";
+import { createFindFilesTool } from "./find-files.js";
 import { createGitTools } from "./git.js";
 import { createCodeIntelTools } from "./code-intel.js";
 import { createLspTools } from "./lsp.js";
@@ -29,10 +30,10 @@ export interface ToolRegistryContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
+  scanTimeoutMs?: number;
   editConfirm?: boolean;
   getCurrentTurn?: () => number;
   getLastResetBoundaryTurn?: () => number;
-  searchCode?: { rg_path?: string };
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
@@ -111,7 +112,13 @@ export function createAllTools(ctx: ToolRegistryContext) {
     cwd: ctx.cwd,
     getAbortSignal: ctx.getAbortSignal,
     sandbox: ctx.sandbox,
-    rgPath: ctx.searchCode?.rg_path,
+    scanTimeoutMs: ctx.scanTimeoutMs,
+  });
+  const findFilesTools = createFindFilesTool({
+    cwd: ctx.cwd,
+    getAbortSignal: ctx.getAbortSignal,
+    sandbox: ctx.sandbox,
+    scanTimeoutMs: ctx.scanTimeoutMs,
   });
   const gitTools = createGitTools({
     cwd: ctx.cwd,
@@ -135,6 +142,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     ...knowledgeTools,
     ...systemTools,
     ...searchCodeTools,
+    ...findFilesTools,
     ...gitTools,
     ...codeIntelTools,
     ...lspTools,
@@ -172,7 +180,8 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "edit_file(path, oldText, newText) — Replace text in a file",
   "batch_write(files) — Write multiple files atomically",
   "batch_edit(edits) — Edit multiple files atomically",
-  "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, include_hidden?, no_ignore?, multiline?, timeout?) — Structured ripgrep-backed code search (file:line:column matches with context and stats)",
+  "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, timeout?) — Structured fff-backed code search (file:line:column matches with context and stats)",
+  "find_files(pattern, mode?, path?, max_results?, timeout?) — Fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode; returns file paths with git status)",
   "git_status() — Structured git working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)",
   "git_diff(staged?, path?, context?) — Structured git diff with files, hunks, and stats",
   "git_commit(message, paths?, all?) — Create a git commit with guardrails (blocked in plan mode; does not push)",

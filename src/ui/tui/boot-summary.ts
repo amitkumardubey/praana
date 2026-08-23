@@ -84,6 +84,7 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
   );
 
   lines.push(`native   ${session.nativeStatus ? nativeStatusToString(session.nativeStatus) : "unknown"}`);
+  lines.push(`search   ${session.fffStatus ?? "unknown"}`);
 
   lines.push("─".repeat(Math.min(termWidth - 2, 56)));
   lines.push("/help for commands · /exit to save · ctrl-c to interrupt");

@@ -70,6 +70,7 @@ import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
 import { probeNativeStatus, setNativeEnabled, type NativeAddonStatus } from "./native/index.js";
+import { isFffAvailable } from "./fff.js";
 import { LspManager } from "./lsp/manager.js";
 
 /**
@@ -125,6 +126,8 @@ export class Session {
   memoryInitError: string | null = null;
   /** Native addon status probed at session start (issue #319). */
   nativeStatus: NativeAddonStatus | null = null;
+  /** Whether fff (in-process file search) is available, probed at session start. */
+  fffStatus: string | null = null;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -267,6 +270,11 @@ export class Session {
       session.digest = null;
       session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
       session.nativeStatus = await probeNativeStatus();
+      try {
+        session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+      } catch {
+        session.fffStatus = "unavailable: probe failed";
+      }
       return session;
     }
 
@@ -334,6 +342,11 @@ export class Session {
     }
 
     session.nativeStatus = await probeNativeStatus();
+    try {
+      session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+    } catch {
+      session.fffStatus = "unavailable: probe failed";
+    }
     await session.hooks.runSessionStart({ session, reason: "create" });
     return session;
   }
@@ -490,6 +503,11 @@ export class Session {
 
     session.resumed = true;
     session.nativeStatus = await probeNativeStatus();
+    try {
+      session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+    } catch {
+      session.fffStatus = "unavailable: probe failed";
+    }
     await session.hooks.runSessionStart({ session, reason: "resume" });
     return session;
   }

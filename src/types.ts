@@ -286,8 +286,11 @@ export interface ToolsConfig {
 }
 
 export interface SearchCodeConfig {
-  /** Absolute path to the ripgrep binary. Omit to use system "rg" via PATH. */
-  rg_path?: string;
+  /**
+   * Max ms to wait for the fff index scan on the first search_code / find_files
+   * call. Default: 5000.
+   */
+  scan_timeout_ms?: number;
 }
 
 /** Native capability layer (@praana/natives) — issue #313 / #11. */
