@@ -14,6 +14,13 @@ import type { PostToolCallHandler, PreToolCallHandler } from "../types.js";
 
 const SUGGEST_CAP = 5;
 
+const ENRICH_TOOLS = new Set([
+  "read_file",
+  "edit_file",
+  "write_file",
+  "search_code",
+]);
+
 export interface ValidateHookOptions {
   cwd: string;
   pathExists?: (absPath: string) => boolean;
@@ -145,7 +152,76 @@ export function createValidateHandlers(opts: ValidateHookOptions): {
     }
   };
 
-  const post: PostToolCallHandler = () => undefined;
+  const post: PostToolCallHandler = (ctx) => {
+    if (!ctx.isError || !ctx.result || typeof ctx.result !== "object") return;
+    const result = ctx.result as Record<string, unknown>;
+    if (result.ok !== false) return;
+
+    const enrich =
+      ENRICH_TOOLS.has(ctx.toolName) || ctx.toolName.startsWith("lsp_");
+    if (!enrich) return;
+
+    const rel = pathFromArgs(ctx.args);
+    if (!rel) return;
+    const abs = resolvePath(opts.cwd, rel);
+
+    let suggestions: string[] | undefined;
+    try {
+      const found = suggestPaths(
+        rel,
+        collectCandidates(opts, ctx.session.listReadPaths),
+        SUGGEST_CAP,
+        opts.cwd,
+      );
+      if (found.length > 0) suggestions = found;
+    } catch {
+      suggestions = undefined;
+    }
+
+    let recent_writes: Array<{ path: string; turn?: number }> | undefined;
+    try {
+      const writes = ctx.session.recentWritesForPath?.(abs) ?? [];
+      if (writes.length > 0) recent_writes = writes;
+    } catch {
+      recent_writes = undefined;
+    }
+
+    if (!suggestions && !recent_writes) return;
+    return {
+      result: {
+        ...result,
+        ...(suggestions ? { suggestions } : {}),
+        ...(recent_writes ? { recent_writes } : {}),
+      },
+    };
+  };
 
   return { pre, post };
+}
+
+function pathFromArgs(args: Record<string, unknown>): string | null {
+  if (typeof args.path === "string") return args.path;
+  if (Array.isArray(args.files)) {
+    for (const file of args.files) {
+      if (
+        file &&
+        typeof file === "object" &&
+        typeof (file as { path?: unknown }).path === "string"
+      ) {
+        return (file as { path: string }).path;
+      }
+    }
+  }
+  if (Array.isArray(args.edits)) {
+    for (const edit of args.edits) {
+      if (
+        edit &&
+        typeof edit === "object" &&
+        typeof (edit as { path?: unknown }).path === "string"
+      ) {
+        return (edit as { path: string }).path;
+      }
+    }
+  }
+  return null;
 }

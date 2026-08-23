@@ -113,3 +113,42 @@ describe("validate pre_tool_call", () => {
     expect(out).toBeUndefined();
   });
 });
+
+describe("validate post_tool_call", () => {
+  it("attaches suggestions and recent_writes on a failed write_file", async () => {
+    const { post } = createValidateHandlers({
+      cwd: "/proj",
+      pathExists: () => false,
+      listRepoFiles: () => ["/proj/src/a.ts"],
+    });
+    const patch = await post({
+      toolName: "write_file",
+      args: { path: "b.ts" },
+      result: { ok: false, error: "sandbox" },
+      isError: true,
+      session: session("/proj", {
+        recentWritesForPath: () => [{ path: "/proj/src/a.ts", turn: 2 }],
+      }),
+    });
+    const result = patch?.result as {
+      ok: boolean;
+      suggestions?: string[];
+      recent_writes?: Array<{ path: string }>;
+    };
+    expect(result.ok).toBe(false);
+    expect(result.suggestions?.length).toBeGreaterThan(0);
+    expect(result.recent_writes?.[0]?.path).toBe("/proj/src/a.ts");
+  });
+
+  it("does not enrich a successful result", async () => {
+    const { post } = createValidateHandlers({ cwd: "/proj" });
+    const patch = await post({
+      toolName: "write_file",
+      args: { path: "a.ts" },
+      result: { ok: true },
+      isError: false,
+      session: session("/proj"),
+    });
+    expect(patch).toBeUndefined();
+  });
+});
