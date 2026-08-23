@@ -5,6 +5,7 @@ import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
 import { buildSharedAgentPolicy } from "./compiler.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
+import { renderCircuitNotes } from "./circuit/loop-gate.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -17,6 +18,7 @@ export interface ClassicCompileInput {
   events: Event[];
   userInput?: string;
   resumeNote?: string;
+  circuitNotes?: string[];
 }
 
 
@@ -142,6 +144,9 @@ export function compileClassicWithMetrics(
     input.resumeNote,
   );
   sections.push(frame);
+
+  const circuitSection = renderCircuitNotes(input.circuitNotes ?? []);
+  if (circuitSection) sections.push(circuitSection);
 
   let skillsSection = "";
   if (input.skillsCatalog?.trim()) {

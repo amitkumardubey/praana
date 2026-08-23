@@ -250,4 +250,18 @@ describe("compile-classic", () => {
 
     expect(prompt).not.toContain("## Resume Scope");
   });
+
+  it("injects circuit notes when provided", () => {
+    const { prompt } = compileClassicWithMetrics({
+      cwd: "/proj",
+      sessionId: "sess-1",
+      toolSchemas: ["shell(command)"],
+      events: [],
+      circuitNotes: [
+        "Circuit breaker: shell with the same arguments repeated or failed 3 times; required: different approach or ask the user.",
+      ],
+    });
+    expect(prompt).toContain("## Circuit Breakers");
+    expect(prompt).toContain("Circuit breaker: shell");
+  });
 });

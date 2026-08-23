@@ -23,6 +23,12 @@ export interface HookSessionLike {
   listReadPaths?(): string[];
   recentWritesForPath?(absPath: string): Array<{ path: string; turn?: number }>;
   confirmRisk?(classId: RiskClass, prompt: string): Promise<RiskConfirmResult>;
+  observeCircuitPre?(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): { action: "block"; error: string; isError: true } | void;
+  observeCircuitPost?(toolName: string, args: Record<string, unknown>, isError: boolean): void;
+  circuitNotes?(): string[];
 }
 
 export type HookPoint =

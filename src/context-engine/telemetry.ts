@@ -143,6 +143,10 @@ export interface ScorecardCounters {
   artifactRetrievalRetries: number;
   /** Times a recovery hint was emitted (once per path per session). */
   churnInterventions: number;
+  /** Mutating tool calls blocked by the loop gate (issue #301). */
+  circuitLoopBlocks: number;
+  /** Headless budget wrap-up streams (issue #301). */
+  circuitBudgetWrapups: number;
 }
 
 export interface ScorecardMemorySnapshot {
@@ -181,6 +185,8 @@ interface ScorecardDbRow {
   duplicate_file_access?: number;
   artifact_retrieval_retries?: number;
   churn_interventions?: number;
+  circuit_loop_blocks?: number;
+  circuit_budget_wrapups?: number;
 }
 
 export type ScorecardInc = Pick<
@@ -229,6 +235,8 @@ export class ScorecardTracker {
     duplicateFileAccess: 0,
     artifactRetrievalRetries: 0,
     churnInterventions: 0,
+    circuitLoopBlocks: 0,
+    circuitBudgetWrapups: 0,
   };
   private validityAvgStart = 0;
   private usefulnessAvgStart = 0;
@@ -473,6 +481,8 @@ export class ScorecardTracker {
       duplicateFileAccess: row.duplicate_file_access ?? 0,
       artifactRetrievalRetries: row.artifact_retrieval_retries ?? 0,
       churnInterventions: row.churn_interventions ?? 0,
+      circuitLoopBlocks: row.circuit_loop_blocks ?? 0,
+      circuitBudgetWrapups: row.circuit_budget_wrapups ?? 0,
     };
     this.recallUsedCount = row.recall_used_count ?? 0;
     this.validityAvgStart = row.validity_avg_start ?? 0;
@@ -548,7 +558,8 @@ export class ScorecardTracker {
         skills_loaded, skills_used, skill_underload_events,
         skill_reload_count, skill_tokens_consumed, skill_load_events,
         read_path_digests, skills_ever_loaded,
-        duplicate_file_access, artifact_retrieval_retries, churn_interventions
+        duplicate_file_access, artifact_retrieval_retries, churn_interventions,
+        circuit_loop_blocks, circuit_budget_wrapups
       ) VALUES (
         $sessionId, $engineOn, $createdAt,
         $artifactRetrieveCalls, $artifactCardsProduced, $repeatFileReads,
@@ -560,7 +571,8 @@ export class ScorecardTracker {
         $skillsLoaded, $skillsUsed, $skillUnderloadEvents,
         $skillReloadCount, $skillTokensConsumed, $skillLoadEvents,
         $readPathDigests, $skillsEverLoaded,
-        $duplicateFileAccess, $artifactRetrievalRetries, $churnInterventions
+        $duplicateFileAccess, $artifactRetrievalRetries, $churnInterventions,
+        $circuitLoopBlocks, $circuitBudgetWrapups
       )`,
     ).run({
       $sessionId: this.sessionId,
@@ -591,6 +603,8 @@ export class ScorecardTracker {
       $duplicateFileAccess: this.counters.duplicateFileAccess,
       $artifactRetrievalRetries: this.counters.artifactRetrievalRetries,
       $churnInterventions: this.counters.churnInterventions,
+      $circuitLoopBlocks: this.counters.circuitLoopBlocks,
+      $circuitBudgetWrapups: this.counters.circuitBudgetWrapups,
     });
   }
 
@@ -630,6 +644,7 @@ export function formatScorecardLines(input: FormatScorecardLinesInput): string[]
     `  Engine     ${engineOn === undefined ? "n/a" : engineOn ? "on" : "off (measurement)"}`,
     `  Context    retrieve_artifact: ${counters.artifactRetrieveCalls}  artifact_cards: ${counters.artifactCardsProduced}  repeat_reads: ${counters.repeatFileReads}  searches: ${counters.turnEventSearches}`,
     `  Context    dup_access: ${counters.duplicateFileAccess}  retrieve_retries: ${counters.artifactRetrievalRetries}  churn: ${counters.churnInterventions}`,
+    `  Circuit    loop_blocks: ${counters.circuitLoopBlocks ?? 0}  budget_wrapups: ${counters.circuitBudgetWrapups ?? 0}`,
     `  Context    pressure: ${counters.pressureEvents}  compaction: ${counters.compactionTriggers}  contradictions: ${counters.decisionContradictions}`,
   ];
 

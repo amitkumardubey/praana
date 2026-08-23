@@ -183,7 +183,9 @@ CREATE TABLE IF NOT EXISTS scorecard (
   -- read-churn detection (issue #294)
   duplicate_file_access     INTEGER DEFAULT 0,
   artifact_retrieval_retries INTEGER DEFAULT 0,
-  churn_interventions       INTEGER DEFAULT 0
+  churn_interventions       INTEGER DEFAULT 0,
+  circuit_loop_blocks       INTEGER DEFAULT 0,
+  circuit_budget_wrapups    INTEGER DEFAULT 0
 );
 `;
 
@@ -194,6 +196,8 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "duplicate_file_access", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { name: "artifact_retrieval_retries", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { name: "churn_interventions", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "circuit_loop_blocks", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "circuit_budget_wrapups", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 /** Fidelity columns added to context_artifacts (issue #293) for existing DBs. */

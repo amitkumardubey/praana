@@ -190,7 +190,25 @@ turn recorder. `execute` / `pre.args` stay original. Kinds: `aws-access-key`,
 `github-token`, `gitlab-token`, `openai-key`, `anthropic-key`, `private-key`,
 `key-assignment` (hex SHA 40/64 and Crockford ULID 26 skipped). User/agent chat
 is not redacted. Hook order (post): LSP → verify → enrich → **redact** →
-write-path release.
+circuit → write-path release.
+
+### Circuit breakers (issue #301)
+
+Always-on loop gate for **mutating** tools. Allow 2, block the 3rd identical
+tool+args, or the 3rd attempt after two errors on the same path/command.
+Reads, read-equivalent `shell`, and test commands (`isTestCommand`, including
+`bun test`) are never gated. First block writes a constraint plus
+`circuitNotes` (classic and engine). Headless `[circuit] max_tokens` /
+`max_wall_ms` (`0` = off) skip the pending batch and run one no-tool wrap-up.
+TTY ignores token/time caps. `--max-steps` is unchanged. No cheaper-model hop.
+Hook order (pre): plan → validate → risk → **circuit** → write-path.
+
+```toml
+[circuit]
+loop_threshold = 3
+max_tokens = 0
+max_wall_ms = 0
+```
 
 ### Project Context (AGENTS.md)
 
@@ -288,9 +306,10 @@ src/
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode helpers (`/plan on` gate); runtime gate is a pre_tool_call hook
-  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → write-path; LSP post-edit → verify → enrich → redact → write-path release)
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → circuit → write-path; LSP post-edit → verify → enrich → redact → circuit → write-path release)
   validate/      — Always-on pre-validation + error enrichment (issue #300; fuzzy path suggestions, unread edit_file, shell PATH)
   risk/          — #303 classify + confirm lock (pre_tool_call after validate)
+  circuit/       — #301 loop gate + headless token/time wrap-up
   redact/        — #302 secret detectors (post_tool_call results + logged tool_call args)
   verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
@@ -350,7 +369,7 @@ Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceilin
 **Local-only numeric signals** for comparing engine vs classic and before/after changes. Rows live in the context-engine SQLite `scorecard` table (one row per session). No prompts, file contents, or paths are stored — only counts, averages, path digests, and skill catalog ids for resume deduplication.
 
 - **Active when:** `context_engine.enabled=true` (always persists) **or** `measurement_mode=true` (classic/debug — scorecard-only DB, no full engine).
-- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost), churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions — issue #294).
+- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost), churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions — issue #294), circuit (`circuitLoopBlocks`, `circuitBudgetWrapups` — issue #301).
 - **Resume:** counters + memory start averages + read-path digests + skill ids restored from DB; `persistProgress()` after each turn.
 - **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#17).
 
@@ -425,7 +444,7 @@ User input
   → pre_compile hooks
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → stream LLM response with tool calls
-  → pre_tool_call hooks (plan-mode + validate + risk + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + risk + circuit + write-path) then concurrent execute, then post_tool_call
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
@@ -442,7 +461,7 @@ User input
   → pre_compile hooks
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
   → stream LLM response (shared + system + memory tools only)
-  → pre_tool_call hooks (plan-mode + validate + risk + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + risk + circuit + write-path) then concurrent execute, then post_tool_call
   → log all events
   → increment turn count (no tier management, no skill tracking)
   → post_turn hooks

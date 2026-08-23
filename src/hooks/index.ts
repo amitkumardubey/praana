@@ -9,6 +9,7 @@ import { createVerifyPostToolCallHandler } from "./handlers/verify.js";
 import { createValidateHandlers } from "./handlers/validate.js";
 import { createRedactPostToolCallHandler } from "./handlers/redact.js";
 import { createRiskPreToolCallHandler } from "./handlers/risk.js";
+import { createCircuitHandlers } from "./handlers/circuit.js";
 import { HookRegistry } from "./registry.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { VerifyConfig } from "../types.js";
@@ -67,8 +68,8 @@ export interface BuiltinHookOptions {
 
 /**
  * Register plan-mode, validate, risk, write-path, then LSP / verify (before lock release).
- * Order: pre = plan → validate → risk → write-path acquire → lsp snapshot
- *        post = lsp post-edit → verify → enrich → redact → write-path release
+ * Order: pre = plan → validate → risk → circuit → write-path acquire → lsp snapshot
+ *        post = lsp post-edit → verify → enrich → redact → circuit → write-path release
  */
 export function registerBuiltinHooks(
   registry: HookRegistry,
@@ -85,6 +86,8 @@ export function registerBuiltinHooks(
   });
   registry.onPreToolCall(validate.pre);
   registry.onPreToolCall(createRiskPreToolCallHandler(cwd));
+  const circuit = createCircuitHandlers();
+  registry.onPreToolCall(circuit.pre);
   registry.onPreToolCall(
     createWritePathPreToolCallHandler(writePath, {
       originatingPathForApply: (id) =>
@@ -119,6 +122,7 @@ export function registerBuiltinHooks(
 
   registry.onPostToolCall(validate.post);
   registry.onPostToolCall(createRedactPostToolCallHandler());
+  registry.onPostToolCall(circuit.post);
   registry.onPostToolCall(createWritePathPostToolCallHandler(writePath));
 }
 

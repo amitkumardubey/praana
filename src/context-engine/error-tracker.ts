@@ -16,7 +16,7 @@ export function toolErrorKey(
   return message ? `${base}:${message}` : base;
 }
 
-function toolErrorBaseKey(tool: string, args: Record<string, unknown>): string {
+export function toolErrorBaseKey(tool: string, args: Record<string, unknown>): string {
   const command =
     typeof args.command === "string"
       ? args.command

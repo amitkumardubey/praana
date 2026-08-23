@@ -100,6 +100,11 @@ const DEFAULT_CONFIG: PraanaConfig = {
   risk: {
     allow: [],
   },
+  circuit: {
+    loop_threshold: 3,
+    max_tokens: 0,
+    max_wall_ms: 0,
+  },
   tools: {
     block_repeat_reads: false,
   },
