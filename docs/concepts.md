@@ -199,6 +199,8 @@ Structured git tools (#26) are the first ship of the deterministic tools harness
 
 Plan mode (#221) is an opt-in safety gate. When armed via `/plan on`, **mutating tools are blocked** — `write_file`, `edit_file`, `batch_*`, `git_commit`, `lsp_format`, `lsp_apply_code_action`, and branch-creating shell — until you approve (`/plan execute` or an approval word). Read-only tools stay available. There is no forced Plan-Before-Execute system-frame rule and no intent auto-detection. The gate is a `pre_tool_call` hook on `Session.planMode` (`src/plan-mode.ts`). A separate always-on **risk confirm** hook (#303) prompts on TTY (or fail-closes in headless unless `[risk].allow`) for destructive/outward actions plan mode does not cover (`rm`, force-push, `gh` close/merge, package installs, writes outside cwd). Plan mode persists across resume via a `system_note` event.
 
+Always-on **secret redaction** (#302) walks tool results and a copy of logged tool-call args before they enter the compiled prompt, `events.jsonl`, or the TUI. Known key prefixes, PEM blocks, and high-entropy `KEY=value` assignments become `[REDACTED:<kind>]`. User and agent chat text are not redacted; tools still execute the original args.
+
 ---
 
 ## How the Two Systems Relate

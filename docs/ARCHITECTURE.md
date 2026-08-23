@@ -18,9 +18,10 @@ src/
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
-  hooks/         — Internal turn-loop hook registry + builtin plan-mode / validate / risk / write-path / LSP / verify handlers
+  hooks/         — Internal turn-loop hook registry + builtin plan-mode / validate / risk / write-path / LSP / verify / redact handlers
   validate/      — Always-on pre-validation + error enrichment (issue #300)
   risk/          — Risk-tier classify + confirm lock (issue #303)
+  redact/        — Always-on secret detectors for tool results and logged tool-call args (issue #302)
   verify/        — Post-edit syntax, scoped tsc, reverse-import test-impact (issue #299; `[verify]`)
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
@@ -472,7 +473,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#300: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#303), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); same-path concurrent writes fail fast. After a successful write/edit, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, then write-path release. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#300: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#303), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); same-path concurrent writes fail fast. After execute, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, then always-on secret redaction (#302), then write-path release. Tool results and a copy of tool-call args are redacted for the prompt, `events.jsonl`, and the TUI; `execute` still receives original args. Independent reads, searches, and recall calls are safe to batch.
 
 ### Onboarding, credentials, and settings
 

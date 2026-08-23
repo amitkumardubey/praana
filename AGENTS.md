@@ -180,6 +180,18 @@ append-merge). Hook order: plan → validate → **risk** → write-path acquire
 allow = []  # headless-only; does not skip TTY confirm
 ```
 
+### Secret redaction (issue #302)
+
+Always-on. No `[redact]` config, no new tools, never flips `ok` / `isError`.
+A `post_tool_call` handler walks tool results after enrich and replaces known
+secret patterns with `[REDACTED:<kind>]`. The same walker runs on a **copy** of
+tool-call args for `events.jsonl` `tool_call`, the TUI pending row, and the
+turn recorder. `execute` / `pre.args` stay original. Kinds: `aws-access-key`,
+`github-token`, `gitlab-token`, `openai-key`, `anthropic-key`, `private-key`,
+`key-assignment` (hex SHA 40/64 and Crockford ULID 26 skipped). User/agent chat
+is not redacted. Hook order (post): LSP → verify → enrich → **redact** →
+write-path release.
+
 ### Project Context (AGENTS.md)
 
 On session start, PRAANA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
@@ -276,9 +288,10 @@ src/
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode helpers (`/plan on` gate); runtime gate is a pre_tool_call hook
-  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → write-path; LSP post-edit → verify → enrich → write-path release)
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → write-path; LSP post-edit → verify → enrich → redact → write-path release)
   validate/      — Always-on pre-validation + error enrichment (issue #300; fuzzy path suggestions, unread edit_file, shell PATH)
   risk/          — #303 classify + confirm lock (pre_tool_call after validate)
+  redact/        — #302 secret detectors (post_tool_call results + logged tool_call args)
   verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
@@ -465,7 +478,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 ## Security
 
 - **Shell tool:** Runs arbitrary commands with the user's permissions. Optional sandbox allowlist via `[shell]` in config (`enabled`, `allowed_paths`); off by default.
-- **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Contains all tool calls and results in plaintext. Do not log API keys or secrets through tools.
+- **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Tool results and logged tool-call args run through always-on secret redaction (#302); user/agent chat is not. Do not log API keys or secrets through tools.
 - **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
 - **Memory DB:** `~/.praana/memory.db` — plaintext SQLite. No encryption at rest.
 - **Provider keys:** Credential store (`~/.praana/credentials.json`) preferred; env vars as fallback. Never hardcode or log.
