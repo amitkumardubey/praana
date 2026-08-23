@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -98,6 +98,16 @@ describe("walkSourceFiles", () => {
     const { files, truncated } = walkSourceFiles(dir, 1);
     expect(truncated).toBe(true);
     expect(files).toHaveLength(1);
+  });
+
+  it("does not follow directory symlink cycles", () => {
+    writeFileSync(join(dir, "src", "a.ts"), "export {};\n");
+    symlinkSync(dir, join(dir, "src", "loop"));
+    const started = Date.now();
+    const { files, truncated } = walkSourceFiles(dir, 2000);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(truncated).toBe(false);
+    expect(files).toEqual([join(dir, "src", "a.ts")]);
   });
 });
 

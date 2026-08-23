@@ -2,8 +2,9 @@
  * Reverse import graph for post-edit test-impact (#299).
  */
 
-import { readdirSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
+import { pathInRoot } from "../lsp/workspace-roots.js";
 import type { ListImportsResult } from "../native/types.js";
 import { hashFileBytes } from "./cache.js";
 import { VERIFY_MAX_GRAPH_FILES } from "./types.js";
@@ -45,11 +46,23 @@ export function walkSourceFiles(
   cap = VERIFY_MAX_GRAPH_FILES,
 ): { files: string[]; truncated: boolean } {
   const files: string[] = [];
-  const stack = [resolve(root)];
+  const rootAbs = resolve(root);
+  const stack = [rootAbs];
+  const visited = new Set<string>();
   let truncated = false;
 
   while (stack.length > 0) {
     const dir = stack.pop()!;
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      continue;
+    }
+    if (visited.has(real)) continue;
+    if (!pathInRoot(real, rootAbs) && real !== rootAbs) continue;
+    visited.add(real);
+
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -59,17 +72,31 @@ export function walkSourceFiles(
     for (const name of entries) {
       if (SKIP_DIRS.has(name)) continue;
       const full = join(dir, name);
-      let st;
+      let lst;
       try {
-        st = statSync(full);
+        lst = lstatSync(full);
       } catch {
         continue;
       }
-      if (st.isDirectory()) {
+      if (lst.isSymbolicLink()) {
+        let st;
+        try {
+          st = statSync(full);
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) continue;
+        if (!st.isFile()) continue;
+        if (!SOURCE_EXTS.has(extname(name).toLowerCase())) continue;
+        files.push(full);
+        if (files.length >= cap) return { files, truncated: true };
+        continue;
+      }
+      if (lst.isDirectory()) {
         stack.push(full);
         continue;
       }
-      if (!st.isFile()) continue;
+      if (!lst.isFile()) continue;
       if (!SOURCE_EXTS.has(extname(name).toLowerCase())) continue;
       files.push(full);
       if (files.length >= cap) {

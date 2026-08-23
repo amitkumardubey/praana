@@ -84,6 +84,9 @@ export async function checkTypecheck(
   try {
     const spawned = await run(projectDir, opts.timeoutMs ?? 30_000);
     const errors = parseTscOutput(`${spawned.stderr}\n${spawned.stdout}`);
+    if (errors.length === 0 && spawned.code !== 0 && spawned.code !== null) {
+      return { errors: [], skipped: "unparsed" };
+    }
     return { errors };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -103,13 +106,13 @@ export async function defaultRunTypecheck(
   timeoutMs: number,
 ): Promise<TypecheckSpawnResult> {
   if (commandOnPath("bun")) {
-    return spawnTimed("bun", ["x", "tsc", "--noEmit", "-p", projectDir], {
+    return spawnTimed("bun", ["x", "tsc", "--noEmit", "--pretty", "false", "-p", projectDir], {
       timeoutMs,
       cwd: projectDir,
     });
   }
   if (commandOnPath("npx")) {
-    return spawnTimed("npx", ["tsc", "--noEmit", "-p", projectDir], {
+    return spawnTimed("npx", ["tsc", "--noEmit", "--pretty", "false", "-p", projectDir], {
       timeoutMs,
       cwd: projectDir,
     });

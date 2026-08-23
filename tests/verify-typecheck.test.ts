@@ -103,4 +103,19 @@ describe("checkTypecheck", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.message).toContain("TS2304");
   });
+
+  it("skips as unparsed when tsc exits non-zero with no error lines", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    const file = join(dir, "a.ts");
+    writeFileSync(file, "export {};\n");
+    const result = await checkTypecheck(file, dir, {
+      runTypecheck: async () => ({
+        stdout: "",
+        stderr: "error TS18003: No inputs were found in config file.\n",
+        code: 1,
+      }),
+    });
+    expect(result.skipped).toBe("unparsed");
+    expect(result.errors).toEqual([]);
+  });
 });

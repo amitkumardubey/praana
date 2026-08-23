@@ -4,7 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { HookSessionLike } from "../src/hooks/types.js";
-import { createVerifyPostToolCallHandler } from "../src/hooks/handlers/verify.js";
+import {
+  createVerifyPostToolCallHandler,
+  shouldRemember,
+} from "../src/hooks/handlers/verify.js";
 import type { VerifyConfig } from "../src/types.js";
 import type { ParseFileResult } from "../src/native/types.js";
 import type { VerifyPayload } from "../src/verify/types.js";
@@ -171,6 +174,62 @@ describe("createVerifyPostToolCallHandler", () => {
     expect((second?.result as { verify: VerifyPayload }).verify).toEqual({
       cached: true,
     });
+  });
+
+  it("does not cache after a typecheck timeout", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    const handler = createVerifyPostToolCallHandler({
+      cwd: dir,
+      getConfig: () => enabledConfig({ syntax: false }),
+      runTypecheck: async () => {
+        throw new Error("timed out after 5000ms");
+      },
+      runTests: async () => {
+        throw new Error("tests should not run");
+      },
+    });
+    const ctx = {
+      toolName: "write_file" as const,
+      args: { path: file },
+      result: { ok: true },
+      isError: false,
+      session: fakeSession(dir),
+    };
+    const first = await handler(ctx);
+    const verify = (first?.result as { verify: VerifyPayload }).verify;
+    expect(verify.typecheck?.skipped).toBe("timeout");
+    expect(verify.tests?.skipped).toBe("timeout");
+    expect(shouldRemember(verify)).toBe(false);
+
+    const second = await handler(ctx);
+    expect((second?.result as { verify: VerifyPayload }).verify.cached).toBeUndefined();
+  });
+
+  it("runs scoped tsc once per tsconfig for batch writes", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), "{}");
+    writeFileSync(join(dir, "b.ts"), "export {};\n");
+    let calls = 0;
+    const handler = createVerifyPostToolCallHandler({
+      cwd: dir,
+      getConfig: () => enabledConfig({ syntax: false, tests: false }),
+      runTypecheck: async () => {
+        calls += 1;
+        return { stdout: "", stderr: "", code: 0 };
+      },
+    });
+    await handler({
+      toolName: "batch_write",
+      args: {
+        files: [
+          { path: "a.ts", content: "x" },
+          { path: "b.ts", content: "y" },
+        ],
+      },
+      result: { ok: true },
+      isError: false,
+      session: fakeSession(dir),
+    });
+    expect(calls).toBe(1);
   });
 
   it("does not flip ok when verification finds failures", async () => {

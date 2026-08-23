@@ -172,6 +172,24 @@ export async function defaultRunTests(
     timeoutMs,
   });
   const parsed = parseBunTestOutput(`${spawned.stdout}\n${spawned.stderr}`);
+  if (
+    parsed.failed === 0 &&
+    spawned.code !== 0 &&
+    spawned.code !== null
+  ) {
+    return {
+      passed: parsed.passed,
+      failed: 1,
+      files,
+      failures: [
+        {
+          name: "bun test",
+          file: files[0] ?? "",
+          message: "runner exited non-zero",
+        },
+      ],
+    };
+  }
   return {
     passed: parsed.passed,
     failed: parsed.failed,

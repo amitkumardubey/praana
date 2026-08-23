@@ -4,7 +4,7 @@
  * Registered after LSP post-edit and before write-path lock release.
  */
 
-import { isAbsolute, resolve } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { tryGetNative } from "../../native/index.js";
 import type { VerifyConfig } from "../../types.js";
 import { VerifyHashCache } from "../../verify/cache.js";
@@ -14,6 +14,7 @@ import { runAffectedTestsForPaths, type RunTestsFn } from "../../verify/test-imp
 import {
   checkTypecheck,
   defaultRunTypecheck,
+  findTsconfigDir,
   type RunTypecheckFn,
 } from "../../verify/typecheck.js";
 import { VERIFY_DIAG_CAP, VERIFY_TSC_CAP, type VerifyPayload } from "../../verify/types.js";
@@ -25,6 +26,8 @@ const VERIFY_TOOLS = new Set([
   "batch_write",
   "batch_edit",
 ]);
+
+const TS_EXT = new Set([".ts", ".tsx", ".mts", ".cts"]);
 
 function resolvePath(cwd: string, relPath: string): string {
   return isAbsolute(relPath) ? relPath : resolve(cwd, relPath);
@@ -71,13 +74,30 @@ export function pathsFromVerifyArgs(
   return out;
 }
 
-function shouldRemember(payload: VerifyPayload): boolean {
+const CLEAN_TYPECHECK_SKIP = new Set(["no_tsconfig", "unsupported"]);
+const CLEAN_TEST_SKIP = new Set(["none_affected"]);
+const INCOMPLETE_SKIP = new Set([
+  "timeout",
+  "spawn_error",
+  "no_runner",
+  "unparsed",
+  "parse_error",
+]);
+
+/** Remember only a complete verify: no errors, and skips that are expected absences. */
+export function shouldRemember(payload: VerifyPayload): boolean {
   if ((payload.syntax?.diagnostics.length ?? 0) > 0) return false;
+  if (payload.syntax?.skipped) return false;
   if ((payload.typecheck?.errors.length ?? 0) > 0) return false;
+  if (
+    payload.typecheck?.skipped &&
+    !CLEAN_TYPECHECK_SKIP.has(payload.typecheck.skipped)
+  ) {
+    return false;
+  }
   const tests = payload.tests;
   if (!tests) return true;
-  if (tests.skipped === "none_affected") return true;
-  if (tests.skipped) return false;
+  if (tests.skipped) return CLEAN_TEST_SKIP.has(tests.skipped);
   return (tests.failed ?? 0) === 0;
 }
 
@@ -185,7 +205,15 @@ async function runVerify(
   if (cfg.typecheck) {
     const errors = [];
     let skipped: string | undefined;
+    const seenProjects = new Set<string>();
     for (const path of paths) {
+      if (TS_EXT.has(extname(path).toLowerCase())) {
+        const projectDir = findTsconfigDir(path, sessionRoot);
+        if (projectDir) {
+          if (seenProjects.has(projectDir)) continue;
+          seenProjects.add(projectDir);
+        }
+      }
       const tsc = await checkTypecheck(path, sessionRoot, {
         runTypecheck: deps.runTypecheck ?? defaultRunTypecheck,
         timeoutMs: cfg.timeout_ms,
@@ -201,8 +229,18 @@ async function runVerify(
   }
 
   if (cfg.tests) {
+    const incomplete =
+      (payload.syntax?.skipped && INCOMPLETE_SKIP.has(payload.syntax.skipped)
+        ? payload.syntax.skipped
+        : undefined) ??
+      (payload.typecheck?.skipped &&
+      INCOMPLETE_SKIP.has(payload.typecheck.skipped)
+        ? payload.typecheck.skipped
+        : undefined);
     if (hasErrors) {
       payload.tests = { skipped: "errors_present" };
+    } else if (incomplete) {
+      payload.tests = { skipped: incomplete };
     } else {
       payload.tests = await runAffectedTestsForPaths(paths, sessionRoot, {
         listImports: await resolveListImports(deps.listImports),

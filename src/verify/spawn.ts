@@ -29,24 +29,59 @@ export function spawnTimed(
     const child = spawn(command, args, {
       cwd: opts.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     });
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (result: SpawnTimedResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
       resolve(result);
     };
 
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      reject(err);
+    };
+
+    const killTree = (signal: NodeJS.Signals) => {
+      if (child.pid == null) return;
+      if (process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Process group may already be gone.
+        }
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // already dead
+      }
+    };
+
     const timer = setTimeout(() => {
-      if (!child.killed) child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
-      }, 500).unref();
-      reject(new Error(`timed out after ${opts.timeoutMs}ms`));
+      killTree("SIGTERM");
+      killTimer = setTimeout(() => {
+        killTree("SIGKILL");
+        try {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        } catch {
+          // ignore
+        }
+      }, 1000);
+      killTimer.unref();
+      fail(new Error(`timed out after ${opts.timeoutMs}ms`));
     }, opts.timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -56,10 +91,7 @@ export function spawnTimed(
       stderr += chunk.toString("utf-8");
     });
     child.on("error", (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
+      fail(err instanceof Error ? err : new Error(String(err)));
     });
     child.on("close", (code) => {
       finish({ stdout, stderr, code });
