@@ -1,10 +1,8 @@
 /**
  * Plan-mode helpers and constants.
  *
- * Centralises the logic for detecting when the user wants to enter/exit plan
- * mode and for deciding whether a tool call is mutating while plan mode is
- * active. Keeping this in one module lets the pre_tool_call hook handler and
- * the system-frame prompt (compiler.ts) stay in sync.
+ * Centralises approval-word detection and whether a tool call is mutating
+ * while `/plan on` is active. The pre_tool_call hook is the runtime gate.
  */
 
 export const PLAN_MODE_BLOCKED_TOOLS = new Set([

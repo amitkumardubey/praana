@@ -1,7 +1,7 @@
 # Risk-Tiered Action Gating Design (Issue #303)
 
 **Date:** 2026-08-23
-**Status:** Approved
+**Status:** Implemented on `feat/ad/issue-303-risk-tiered-gating`
 **Depends on:** #297 turn-loop hooks (`pre_tool_call`); evolves plan mode (#221)
 **Related epic:** #195 (deterministic tools harness)
 **Related:** #300 (validate hook — different checks, same `pre_tool_call` chain)

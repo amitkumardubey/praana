@@ -163,7 +163,22 @@ fuzzy `suggestions` (`git ls-files` + session reads). `edit_file` of an existing
 file that was not read this session hard-blocks (`Read the file first`). `shell`
 blocks a missing `cwd` or a first token that is not a builtin and not on PATH.
 Failed path-bearing tools may get `suggestions` and `recent_writes`. Validate
-runs after plan-mode and before write-path acquire so a block cannot leak a lock.
+runs after plan-mode and before risk confirm and write-path acquire so a block
+cannot leak a lock.
+
+### Risk-tiered action gating (issue #303)
+
+Always-on `pre_tool_call` confirm for destructive / outward actions. Never
+rewrites args. Workspace writes inside cwd are free. Confirm-tier classes:
+`rm`, `git_reset`, `git_force_push`, `git_clean`, `gh_issue_close`,
+`gh_pr_merge`, `package_install`, `write_outside_cwd`. TTY: inline `[y/N]`.
+Headless: deny unless the class is in `[risk].allow` (default `[]`,
+append-merge). Hook order: plan → validate → **risk** → write-path acquire.
+
+```toml
+[risk]
+allow = []  # headless-only; does not skip TTY confirm
+```
 
 ### Project Context (AGENTS.md)
 
@@ -260,9 +275,10 @@ src/
   provider-catalog.ts — Live model catalogs (HTTP `/models` + Bedrock control plane); 6h disk cache
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
-  plan-mode.ts   — Plan-mode detection helpers; runtime gate is a pre_tool_call hook
-  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → write-path; LSP post-edit → verify → enrich → write-path release)
+  plan-mode.ts   — Plan-mode helpers (`/plan on` gate); runtime gate is a pre_tool_call hook
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → write-path; LSP post-edit → verify → enrich → write-path release)
   validate/      — Always-on pre-validation + error enrichment (issue #300; fuzzy path suggestions, unread edit_file, shell PATH)
+  risk/          — #303 classify + confirm lock (pre_tool_call after validate)
   verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
@@ -329,15 +345,25 @@ Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceilin
 
 At session end, the context engine records which tools were called and which artifact types were produced for the session's classified task type. These patterns survive to `workflow_patterns(task_type, tool_sequence, artifact_types, hit_count, last_seen_at)` in the context-engine DB (30-day expiry pruned on shutdown). At compile time, `renderWorkflowContext()` selects matching patterns by task type and injects a compact **Workflow Context** section just before the session checkpoint — giving the engine a prior over what context items will be needed before the session starts. Patterns are filtered by the current task type classification, so a coding session does not pollute a debugging session's prompt.
 
-### Plan mode (issue #221)
+### Plan mode (issue #221) and risk gating (issue #303)
 
-A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
+`/plan on` is **user-armed only** — there is no Plan-Before-Execute system-frame
+rule and no intent auto-detection. `Session.planMode` is the source of truth
+(`src/plan-mode.ts`); a `pre_tool_call` hook blocks the existing mutation set
+until `/plan execute` or an approval word (`go` / `execute` / `proceed` /
+`continue`, with the same deferral-phrase exceptions).
 
-- `/plan <on|off|execute>` toggles the gate. `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
-- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, lsp_format, lsp_apply_code_action, shell commands that create branches or write files, etc.); read-only tools (read_file, search_code, git_status, git_diff, recall, lsp_diagnostics / lsp_hover / lsp_definition, state reads) stay allowed. Branch-listing/renaming/deleting and read-only shell stay allowed.
-- PRAANA auto-detects plan/approval intent from the user's message and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate, and "plan the execution" does **not** arm it.
+- `/plan <on|off|execute>` toggles the gate. Bare `/plan` prints current state.
+- While armed, **mutating tools are blocked** (`write_file`, `edit_file`,
+  `batch_*`, `git_commit`, `lsp_format`, `lsp_apply_code_action`, branch-creating
+  shell). Read-only tools stay allowed.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
-- **Headless gate:** `praana run` / Harbor sets `Session.headless = true`. That omits the engine **Plan-Before-Execute** system-frame rule and skips plan-mode auto-enter — there is no interactive user to say "proceed". Explicit `/plan on` is still available in TTY sessions only.
+- Destructive actions plan mode does **not** cover (`rm`, force-push,
+  `gh issue close` / `gh pr merge`, package installs, writes outside cwd) still
+  hit the always-on risk confirm hook.
+- **Headless:** `praana run` / Harbor sets `Session.headless = true`. Confirm-tier
+  actions fail closed unless the class is in `[risk].allow`. Explicit `/plan on`
+  is TTY-only.
 
 ### Repeat-read interceptor (issue #219)
 
@@ -386,7 +412,7 @@ User input
   → pre_compile hooks
   → compileEngineWithMetrics: system frame | skills catalog (usefulness-ranked) | workflow context (task-type-filtered) | checkpoint | verbatim turns | scored context (BM25 + semantic embeddings) | active state | memory digest
   → stream LLM response with tool calls
-  → pre_tool_call hooks (plan-mode + validate + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + risk + write-path) then concurrent execute, then post_tool_call
   → log all events (tool_call, tool_result, agent_message)
   → extract TurnDigest (deterministic) + reconcile SessionCheckpoint
   → increment turn count, run applyTierManagement() + cleanupStaleSkills()
@@ -403,7 +429,7 @@ User input
   → pre_compile hooks
   → compileClassicWithMetrics: system frame | skills catalog | memory digest | full verbatim history
   → stream LLM response (shared + system + memory tools only)
-  → pre_tool_call hooks (plan-mode + validate + write-path) then concurrent execute, then post_tool_call
+  → pre_tool_call hooks (plan-mode + validate + risk + write-path) then concurrent execute, then post_tool_call
   → log all events
   → increment turn count (no tier management, no skill tracking)
   → post_turn hooks

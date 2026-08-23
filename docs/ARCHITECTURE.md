@@ -18,8 +18,9 @@ src/
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
-  hooks/         — Internal turn-loop hook registry + builtin plan-mode / validate / write-path / LSP / verify handlers
+  hooks/         — Internal turn-loop hook registry + builtin plan-mode / validate / risk / write-path / LSP / verify handlers
   validate/      — Always-on pre-validation + error enrichment (issue #300)
+  risk/          — Risk-tier classify + confirm lock (issue #303)
   verify/        — Post-edit syntax, scoped tsc, reverse-import test-impact (issue #299; `[verify]`)
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
@@ -438,13 +439,13 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 
 ### Plan mode (issue #221)
 
-A guard that forces planning before any state-mutating action. `Session.planMode` holds the state; the single source of truth is `src/plan-mode.ts`, shared by the `pre_tool_call` hook handler and the system-frame rule injected by `compiler.ts`.
+`/plan on` is user-armed only (no auto-detect, no Plan-Before-Execute system-frame rule). `Session.planMode` holds the state; `src/plan-mode.ts` is the source of truth for the mutation set and approval-word detection.
 
-- `/plan <on|off|execute>` toggles the gate: `on` arms it, `off` disarms, `execute` approves the pending plan and runs it. Bare `/plan` prints current state and usage. The armed state surfaces in the status/glance bars and the one-line status.
-- While armed, **mutating tools are blocked** (write_file, edit_file, git_commit, shell commands that create branches or write files); read-only tools (read_file, search_code, git_status, git_diff, recall, state reads) stay allowed. Branch listing/renaming/deleting and read-only shell stay allowed.
-- PRAANA auto-detects plan/approval intent and prompts for confirmation. Deferral phrases ("continue reading", "go back", "execute a search") do **not** disarm the gate; "plan the execution" does **not** arm it.
+- `/plan <on|off|execute>` toggles the gate. Bare `/plan` prints current state. The armed state surfaces in the status/glance bars.
+- While armed, **mutating tools are blocked** (`write_file`, `edit_file`, `git_commit`, `lsp_format`, `lsp_apply_code_action`, branch-creating shell); read-only tools stay allowed.
+- Approval words (`go` / `execute` / `proceed` / `continue`) leave an armed plan; deferral phrases ("continue reading") do not.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
-- **Headless gate:** `praana run` (Harbor / CI) sets `Session.headless = true`. Compile then passes `planBeforeExecute: false` so the engine system frame omits **Plan-Before-Execute**, and `turn.ts` skips plan-mode auto-enter. Interactive TTY sessions keep both behaviours.
+- Always-on **risk confirm** (#303) runs after validate and before write-path: TTY `[y/N]` for `rm`, `git reset`, force-push, `git clean -f`, `gh issue close` / `gh pr merge`, package installs, and writes outside cwd. Headless fail-closes those classes unless listed in `[risk].allow`. Concurrent confirms are serialized so stdin does not interleave.
 
 ### Repeat-read interceptor (issue #219)
 
@@ -471,7 +472,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#300: missing paths, unread `edit_file`, shell cwd/PATH), then write-path acquire. Mutating tools in plan mode are denied; same-path concurrent writes fail fast. After a successful write/edit, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, then write-path release. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#300: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#303), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); same-path concurrent writes fail fast. After a successful write/edit, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, then write-path release. Independent reads, searches, and recall calls are safe to batch.
 
 ### Onboarding, credentials, and settings
 

@@ -7,8 +7,9 @@ task container and runs a headless one-shot:
 praana run --incognito --max-steps N "<instruction>"
 ```
 
-Headless runs set `Session.headless = true`, which omits the engine
-**Plan-Before-Execute** prompt rule (no interactive user to approve a plan).
+Headless runs set `Session.headless = true`. Confirm-tier actions
+(`rm`, force-push, package installs, …) fail closed unless listed in
+`[risk].allow` — there is no TTY to confirm.
 
 ## Prerequisites
 
