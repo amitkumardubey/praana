@@ -58,6 +58,7 @@ import {
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
 import { createBuiltinHookRegistry, type HookRegistry } from "./hooks/index.js";
+import { LoopGate } from "./circuit/loop-gate.js";
 import {
   fetchAndCacheContextWindow,
   resolveContextWindowSync,
@@ -143,6 +144,8 @@ export class Session {
   planMode = false;
   /** Internal turn-loop hook dispatcher (issue #297). */
   hooks: HookRegistry;
+  /** Mutating-tool loop breaker (issue #301). */
+  loopGate: LoopGate;
   /** Session-scoped LSP client manager (issue #11 Phase 2). */
   lspManager: LspManager;
   /** Last task type classified during compilation (issue #92 — workflow tracking). */
@@ -185,6 +188,17 @@ export class Session {
     this.eventLog = new EventLog(id, logDir);
 
     this.stateGraph = new StateGraph();
+    this.loopGate = new LoopGate({
+      threshold: config.circuit?.loop_threshold ?? 3,
+      onFirstBlock: (text) => {
+        this.stateGraph.create("constraint", { text });
+        this.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: { type: "circuit_note", text },
+        });
+      },
+    });
     this.memoryEnabled = config.memory.enabled;
     this.lspManager = new LspManager({
       config: config.lsp ?? {
@@ -544,6 +558,22 @@ export class Session {
         return { allowed: false, reason: "declined" };
       }
     });
+  }
+
+  observeCircuitPre(toolName: string, args: Record<string, unknown>) {
+    return this.loopGate.observePre(toolName, args);
+  }
+
+  observeCircuitPost(toolName: string, args: Record<string, unknown>, isError: boolean): void {
+    this.loopGate.observePost(toolName, args, isError);
+  }
+
+  circuitNotes(): string[] {
+    return this.loopGate.notes();
+  }
+
+  getStartedAt(): number {
+    return this.startedAt;
   }
 
   private setPlanMode(value: boolean): void {

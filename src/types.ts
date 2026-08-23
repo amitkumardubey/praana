@@ -403,6 +403,15 @@ export interface TurnConfig {
   max_steps: number;
 }
 
+export interface CircuitConfig {
+  /** Allow this many identical mutating calls / errors before blocking. */
+  loop_threshold: number;
+  /** Headless-only; 0 = off. Input+output tokens accumulated this run. */
+  max_tokens: number;
+  /** Headless-only; 0 = off. Wall clock from session start. */
+  max_wall_ms: number;
+}
+
 export interface PraanaConfig {
   llm: LlmConfig;
   memory: MemoryConfig;
@@ -428,6 +437,8 @@ export interface PraanaConfig {
   context_engine: ContextEngineConfig;
   project_detection: ProjectDetectionConfig;
   turn: TurnConfig;
+  /** Optional; defaults to threshold 3 and no headless token/time caps. */
+  circuit?: CircuitConfig;
   /**
    * User-declared providers, keyed by provider id. Each entry defines an
    * OpenAI-compatible (or other API) endpoint that is NOT in PRAANA's
