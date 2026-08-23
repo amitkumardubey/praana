@@ -56,6 +56,19 @@ describe("LoopGate", () => {
     expect(renderCircuitNotes(["Circuit breaker: shell …"])).toContain("## Circuit Breakers");
   });
 
+  it("replays tool_call / tool_result events", () => {
+    const events = [
+      { kind: "tool_call", payload: { tool: "shell", args: { command: "rm -rf /tmp/x" } } },
+      { kind: "tool_result", payload: { tool: "shell", result: { ok: true } } },
+      { kind: "tool_call", payload: { tool: "shell", args: { command: "rm -rf /tmp/x" } } },
+      { kind: "tool_result", payload: { tool: "shell", result: { ok: true } } },
+      { kind: "system_note", payload: { type: "circuit_note", text: "Circuit breaker: shell …" } },
+    ];
+    const gate = LoopGate.fromEvents(events as any, { threshold: 3 });
+    expect(gate.observePre("shell", { command: "rm -rf /tmp/x" })?.action).toBe("block");
+    expect(gate.notes()[0]).toContain("Circuit breaker:");
+  });
+
   it("does not count exempt calls", () => {
     const gate = new LoopGate({ threshold: 3 });
     for (let i = 0; i < 5; i++) {

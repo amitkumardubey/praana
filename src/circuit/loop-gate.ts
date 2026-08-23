@@ -70,7 +70,7 @@ export class LoopGate {
   private readonly noted = new Set<string>();
   private readonly noteList: string[] = [];
   private readonly threshold: number;
-  private readonly onFirstBlock?: (text: string) => void;
+  private onFirstBlock?: (text: string) => void;
 
   constructor(opts?: { threshold?: number; onFirstBlock?: (text: string) => void }) {
     this.threshold = opts?.threshold ?? DEFAULT_LOOP_THRESHOLD;
@@ -79,6 +79,50 @@ export class LoopGate {
 
   notes(): string[] {
     return [...this.noteList];
+  }
+
+  static fromEvents(
+    events: Array<{ kind: string; payload: Record<string, unknown> }>,
+    opts?: { threshold?: number; onFirstBlock?: (text: string) => void },
+  ): LoopGate {
+    const gate = new LoopGate({ threshold: opts?.threshold });
+    let lastCall: { tool: string; args: Record<string, unknown> } | null = null;
+    for (const ev of events) {
+      if (ev.kind === "tool_call") {
+        const tool = typeof ev.payload.tool === "string" ? ev.payload.tool : "";
+        const args = (ev.payload.args && typeof ev.payload.args === "object"
+          ? ev.payload.args
+          : {}) as Record<string, unknown>;
+        lastCall = { tool, args };
+        gate.observePreSilent(tool, args);
+        continue;
+      }
+      if (ev.kind === "tool_result" && lastCall) {
+        const result = ev.payload.result;
+        const ok = result && typeof result === "object" && (result as { ok?: unknown }).ok;
+        const isError = ok === false;
+        gate.observePost(lastCall.tool, lastCall.args, isError);
+        continue;
+      }
+      if (ev.kind === "system_note" && ev.payload.type === "circuit_note") {
+        const text = typeof ev.payload.text === "string" ? ev.payload.text : "";
+        if (text) gate.adoptNote(text);
+      }
+    }
+    gate.onFirstBlock = opts?.onFirstBlock;
+    return gate;
+  }
+
+  private observePreSilent(toolName: string, args: Record<string, unknown>): void {
+    if (isLoopExempt(toolName, args)) return;
+    const argsKey = `${toolName}:${JSON.stringify(args)}`;
+    this.argHits.set(argsKey, (this.argHits.get(argsKey) ?? 0) + 1);
+  }
+
+  private adoptNote(text: string): void {
+    if (this.noteList.includes(text)) return;
+    this.noteList.push(text);
+    this.noted.add(text);
   }
 
   observePre(toolName: string, args: Record<string, unknown>): LoopPreResult {

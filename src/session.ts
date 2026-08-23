@@ -359,6 +359,17 @@ export class Session {
     await initSkills(session, cfg, cwd);
 
     const allEvents = session.eventLog.readAll();
+    session.loopGate = LoopGate.fromEvents(allEvents, {
+      threshold: cfg.circuit?.loop_threshold ?? 3,
+      onFirstBlock: (text) => {
+        session.stateGraph.create("constraint", { text });
+        session.eventLog.append({
+          kind: "system_note",
+          actor: "kernel",
+          payload: { type: "circuit_note", text },
+        });
+      },
+    });
     session.restoreWorkingMemory(allEvents);
 
     loadProjectContextField(session, cwd);
