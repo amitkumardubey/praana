@@ -1,7 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as toml from "toml";
-import type { LspConfig, PraanaConfig, UserProviderConfig } from "./types.js";
+import type {
+  LspConfig,
+  PraanaConfig,
+  UserProviderConfig,
+  VerifyConfig,
+} from "./types.js";
 import { getAppLogger, type ErrorCode } from "./logger.js";
 import {
   APP_HOME_DIR,
@@ -105,6 +110,14 @@ const DEFAULT_CONFIG: PraanaConfig = {
     timeout_ms: 5000,
     max_file_lines: 10_000,
     servers: {},
+  },
+  verify: {
+    enabled: false,
+    syntax: true,
+    typecheck: true,
+    tests: true,
+    timeout_ms: 30_000,
+    max_test_files: 20,
   },
   skills: {
     enabled: true,
@@ -673,6 +686,56 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
         cleaned[lang] = argv;
       }
       out.lsp.servers = cleaned;
+    }
+  }
+
+  // verify config validation (issue #299)
+  const verifyDefaults: VerifyConfig = {
+    enabled: false,
+    syntax: true,
+    typecheck: true,
+    tests: true,
+    timeout_ms: 30_000,
+    max_test_files: 20,
+  };
+  if (!out.verify) {
+    out.verify = { ...verifyDefaults };
+  } else {
+    if (typeof out.verify.enabled !== "boolean") {
+      configWarn("verify.enabled must be boolean, defaulting to false");
+      out.verify.enabled = verifyDefaults.enabled;
+    }
+    if (typeof out.verify.syntax !== "boolean") {
+      configWarn("verify.syntax must be boolean, defaulting to true");
+      out.verify.syntax = verifyDefaults.syntax;
+    }
+    if (typeof out.verify.typecheck !== "boolean") {
+      configWarn("verify.typecheck must be boolean, defaulting to true");
+      out.verify.typecheck = verifyDefaults.typecheck;
+    }
+    if (typeof out.verify.tests !== "boolean") {
+      configWarn("verify.tests must be boolean, defaulting to true");
+      out.verify.tests = verifyDefaults.tests;
+    }
+    if (
+      !Number.isFinite(out.verify.timeout_ms) ||
+      !Number.isInteger(out.verify.timeout_ms) ||
+      out.verify.timeout_ms <= 0
+    ) {
+      configWarn(
+        "verify.timeout_ms must be a positive integer, defaulting to 30000",
+      );
+      out.verify.timeout_ms = verifyDefaults.timeout_ms;
+    }
+    if (
+      !Number.isFinite(out.verify.max_test_files) ||
+      !Number.isInteger(out.verify.max_test_files) ||
+      out.verify.max_test_files <= 0
+    ) {
+      configWarn(
+        "verify.max_test_files must be a positive integer, defaulting to 20",
+      );
+      out.verify.max_test_files = verifyDefaults.max_test_files;
     }
   }
 

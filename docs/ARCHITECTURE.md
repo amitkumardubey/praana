@@ -18,7 +18,8 @@ src/
   headless-usage.ts — Export turn usage into Harbor AgentContext
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
-  hooks/         — Internal turn-loop hook registry + builtin plan-mode / write-path handlers
+  hooks/         — Internal turn-loop hook registry + builtin plan-mode / write-path / LSP / verify handlers
+  verify/        — Post-edit syntax, scoped tsc, reverse-import test-impact (issue #299; `[verify]`)
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
@@ -317,6 +318,7 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
 - `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon)
 - `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
+- Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
 
 ### Git Tools (`src/tools/git.ts`, issue #26)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)
@@ -468,7 +470,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Plan-mode and write-path guards are builtin hook handlers: mutating tools in plan mode are denied, and `write_file` / `edit_file` / `batch_write` / `batch_edit` take a per-path lock so a second concurrent mutator (or a concurrent `read_file` of a path mid-write) fails fast. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Plan-mode and write-path guards are builtin hook handlers: mutating tools in plan mode are denied, and `write_file` / `edit_file` / `batch_write` / `batch_edit` take a per-path lock so a second concurrent mutator (or a concurrent `read_file` of a path mid-write) fails fast. Independent reads, searches, and recall calls are safe to batch. After a successful write/edit, `post_tool_call` runs LSP post-edit, then optional `[verify]` (syntax / scoped tsc / affected tests), then write-path release.
 
 ### Onboarding, credentials, and settings
 

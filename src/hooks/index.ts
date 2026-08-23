@@ -5,8 +5,14 @@ import {
   createWritePathPreToolCallHandler,
 } from "./handlers/write-path.js";
 import { createLspEditHandlers } from "./handlers/lsp.js";
+import { createVerifyPostToolCallHandler } from "./handlers/verify.js";
 import { HookRegistry } from "./registry.js";
 import type { LspManager } from "../lsp/manager.js";
+import type { VerifyConfig } from "../types.js";
+import type { ListImportsFn } from "../verify/import-graph.js";
+import type { ParseFileFn } from "../verify/syntax.js";
+import type { RunTestsFn } from "../verify/test-impact.js";
+import type { RunTypecheckFn } from "../verify/typecheck.js";
 
 export { HookRegistry } from "./registry.js";
 export type {
@@ -31,16 +37,26 @@ export type {
 } from "./types.js";
 export { PLAN_MODE_BLOCK_ERROR } from "./handlers/plan-mode.js";
 export { WritePathGuard } from "./handlers/write-path.js";
+export { createVerifyPostToolCallHandler } from "./handlers/verify.js";
+
+export interface VerifyHookDeps {
+  parseFile?: ParseFileFn | null;
+  listImports?: ListImportsFn | null;
+  runTypecheck?: RunTypecheckFn;
+  runTests?: RunTestsFn;
+}
 
 export interface BuiltinHookOptions {
   lspManager?: LspManager | null;
   onFormattedPath?: (absPath: string) => void;
+  verify?: VerifyConfig;
+  verifyDeps?: VerifyHookDeps;
 }
 
 /**
- * Register plan-mode, write-path, then LSP post-edit (before lock release).
+ * Register plan-mode, write-path, then LSP post-edit, then verify (before lock release).
  * Order: pre = plan → write-path acquire → lsp snapshot
- *        post = lsp post-edit → write-path release
+ *        post = lsp post-edit → verify → write-path release
  */
 export function registerBuiltinHooks(
   registry: HookRegistry,
@@ -69,6 +85,17 @@ export function registerBuiltinHooks(
     registry.onPreToolCall(lspHandlers.pre);
     registry.onPostToolCall(lspHandlers.post);
   }
+
+  registry.onPostToolCall(
+    createVerifyPostToolCallHandler({
+      cwd,
+      getConfig: () => opts?.verify,
+      parseFile: opts?.verifyDeps?.parseFile,
+      listImports: opts?.verifyDeps?.listImports,
+      runTypecheck: opts?.verifyDeps?.runTypecheck,
+      runTests: opts?.verifyDeps?.runTests,
+    }),
+  );
 
   registry.onPostToolCall(createWritePathPostToolCallHandler(writePath));
 }

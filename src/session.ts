@@ -200,6 +200,7 @@ export class Session {
         this.scorecard.clearReadPath(absPath);
         this.contextEngine?.clearFileReadAllRanges(absPath);
       },
+      verify: config.verify,
     });
     setNativeEnabled(config.native?.enabled ?? true);
   }
