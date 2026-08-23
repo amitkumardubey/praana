@@ -60,6 +60,8 @@ describe("isTestCommand", () => {
     "cargo test",
     "yarn test",
     "go test",
+    "bun test",
+    "bun test tests/foo.test.ts",
   ])("recognises %s", (cmd) => {
     expect(isTestCommand(cmd)).toBe(true);
   });

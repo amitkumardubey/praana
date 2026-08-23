@@ -49,7 +49,7 @@ export const CODING_SYNONYMS: Record<string, string[]> = {
 // ---------------------------------------------------------------------------
 
 export function isTestCommand(command: string): boolean {
-  return /\b(npm test|pnpm test|yarn test|vitest|pytest|cargo test|go test)\b/i.test(
+  return /\b(npm test|pnpm test|yarn test|bun test|vitest|pytest|cargo test|go test)\b/i.test(
     command,
   );
 }
