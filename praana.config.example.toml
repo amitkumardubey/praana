@@ -200,6 +200,19 @@ max_file_lines = 10000
 # typescript = ["typescript-language-server", "--stdio"]
 # javascript falls back to the typescript entry when omitted.
 
+# Post-edit verification (issue #299).
+# Disabled by default — enable to attach syntax / scoped tsc / affected-test
+# results on successful write_file / edit_file / batch_write / batch_edit.
+# Never runs after lsp_format / lsp_apply_code_action. Soft-fail never flips
+# the original edit's ok: true.
+[verify]
+enabled = false
+syntax = true
+typecheck = true
+tests = true
+timeout_ms = 30000
+max_test_files = 20
+
 [context_engine]
 # Context engine: structured checkpoint, distillation, and scored compilation.
 # Enabled by default. When disabled (false), PRAANA runs in classic mode — full

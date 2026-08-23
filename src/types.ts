@@ -312,6 +312,22 @@ export interface LspConfig {
   servers: Record<string, string[]>;
 }
 
+/** Post-edit verification (issue #299) — syntax / scoped tsc / test-impact. */
+export interface VerifyConfig {
+  /** When false, skip the verify hook. Default: false. */
+  enabled: boolean;
+  /** Tree-sitter parse after successful writes. Default: true. */
+  syntax: boolean;
+  /** Scoped tsc --noEmit after successful writes. Default: true. */
+  typecheck: boolean;
+  /** Reverse-import test-impact after clean syntax+tsc. Default: true. */
+  tests: boolean;
+  /** Per typecheck/test spawn timeout in milliseconds. Default: 30000. */
+  timeout_ms: number;
+  /** Run at most this many affected test files. Default: 20. */
+  max_test_files: number;
+}
+
 export interface UiConfig {
   markdown_rendering: boolean;
   syntax_highlighting: boolean;
@@ -398,6 +414,8 @@ export interface PraanaConfig {
   native?: NativeConfig;
   /** Optional; defaults to disabled LSP client when omitted. */
   lsp?: LspConfig;
+  /** Optional; defaults to disabled post-edit verification when omitted. */
+  verify?: VerifyConfig;
   skills: SkillsConfig;
   ui: UiConfig;
   context_engine: ContextEngineConfig;

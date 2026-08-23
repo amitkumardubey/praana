@@ -131,6 +131,30 @@ Tree-sitter `code_*` stays the fast in-project name path. Use `lsp_definition` /
 `lsp_references` when you need types, stdlib, or node_modules. Completions are
 labels only (cap 20) — insert via `edit_file`. Apply is text edits only.
 
+### Post-edit verification (`[verify]`, issue #299)
+
+Opt-in checks after a successful `write_file` / `edit_file` / `batch_write` /
+`batch_edit`. No new agent tools — results hang off the existing tool result as
+`verify` (alongside the optional `lsp` key). Disabled by default. Never runs
+for `lsp_format` / `lsp_apply_code_action`. Soft-fail: missing native addon,
+no `tsconfig`, no affected tests, or runner timeout never flips the edit’s
+`ok: true`. Syntax or typecheck errors skip tests (`tests.skipped = "errors_present"`).
+
+```toml
+[verify]
+enabled = false
+syntax = true
+typecheck = true
+tests = true
+timeout_ms = 30000
+max_test_files = 20
+```
+
+Pipeline: tree-sitter `parseFile` → scoped `tsc --noEmit` (nearest `tsconfig.json`
+toward the session root) → reverse-import affected `*.test.*` / `*.spec.*` via
+`bun test`. Unchanged file hash → `verify.cached = true`. More than
+`max_test_files` → `tests.skipped = "too_many"` (lists the first N paths).
+
 ### Project Context (AGENTS.md)
 
 On session start, PRAANA automatically loads and injects context from `AGENTS.md` files into the system prompt (System Frame, section 1). Load order:
@@ -227,7 +251,8 @@ src/
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode detection helpers; runtime gate is a pre_tool_call hook
-  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle)
+  hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; LSP post-edit → verify → write-path release)
+  verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY pi-tui setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
