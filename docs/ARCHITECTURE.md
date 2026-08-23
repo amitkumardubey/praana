@@ -79,7 +79,8 @@ src/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
-    search-code.ts — search_code: ripgrep-backed structured code search (rg --json → file:line:column matches with context)
+    search-code.ts — search_code: fff-backed structured code search (in-process grep → file:line:column matches with context)
+    find-files.ts — find_files: fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode)
     code-intel.ts — code_* tree-sitter tools (issue #11 Phase 1)
     lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #11 Phases 2–4)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
@@ -319,7 +320,8 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `batch_write(files[])` / `batch_edit(edits[])` — multi-file create/replace in one turn
 
 ### Code Search (`src/tools/search-code.ts`)
-- `search_code(pattern, path?, globs?, max_results?, ...)` — ripgrep-backed structured search (`rg --json` → file:line:column matches)
+- `search_code(pattern, path?, globs?, max_results?, ...)` — fff-backed structured search (in-process grep → file:line:column matches)
+- `find_files(pattern, mode?, path?, max_results?, ...)` — fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode)
 - `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon; availability probed at session start and shown in banner/`/stats`/system frame — see Native Addon)
 - `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
 - Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.

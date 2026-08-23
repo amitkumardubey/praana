@@ -19,6 +19,7 @@ const ENRICH_TOOLS = new Set([
   "edit_file",
   "write_file",
   "search_code",
+  "find_files",
 ]);
 
 export interface ValidateHookOptions {

@@ -62,6 +62,12 @@ describe("formatToolDisplay", () => {
     expect(info.icon).toBe("⌕");
     expect(info.label).toContain('"foo"');
   });
+
+  it("formats find_files", () => {
+    const info = formatToolDisplay("find_files", { pattern: "button" });
+    expect(info.icon).toBe("⌕");
+    expect(info.label).toContain('"button"');
+  });
 });
 
 describe("formatEditDiffSummary", () => {

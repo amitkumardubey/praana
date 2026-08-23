@@ -1,20 +1,24 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
-import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { resolve as resolvePath, isAbsolute, normalize } from "node:path";
+import { resolve as resolvePath, isAbsolute, normalize, join } from "node:path";
 import { homedir } from "node:os";
 import type { SandboxConfig } from "../types.js";
+import {
+  buildFffQuery,
+  fileTypeToConstraint,
+  pathToConstraint,
+} from "../fff.js";
 
 /**
- * search_code — ripgrep-backed structured code search.
+ * search_code — fff-backed structured code search.
  *
- * Wraps `rg --json` with a stable JSON contract the model can consume:
+ * Wraps fff's grep with a stable JSON contract:
  *   { matches: [{ file, line, column, text, context_before, context_after }],
  *     stats:   { totalMatches, filesWithMatches, truncated } }
  *
- * rg is resolved from the inherited PATH by default; an override is accepted
- * for tests and packaged-binary scenarios.
+ * The FileFinder is created lazily per cwd and kept alive for the process;
+ * the initial scan runs in the background and the first search waits for it.
  */
 
 export interface SearchCodeMatch {
@@ -30,7 +34,6 @@ export interface SearchCodeStats {
   totalMatches: number;
   filesWithMatches: number;
   truncated: boolean;
-  /** Minimum number of matches dropped due to `max_results`. 0 when not truncated. */
   dropped: number;
 }
 
@@ -54,15 +57,13 @@ export interface SearchCodeToolContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
-  /** Override ripgrep binary path (default: "rg" via PATH lookup). */
-  rgPath?: string;
 }
 
 const searchCodeSchema = z.object({
   pattern: z
     .string()
     .min(1)
-    .describe("Regex pattern to search for (ripgrep regex syntax)"),
+    .describe("Regex pattern to search for (regex syntax, fff-backed)"),
   path: z
     .string()
     .optional()
@@ -78,14 +79,14 @@ const searchCodeSchema = z.object({
   case_insensitive: z
     .boolean()
     .optional()
-    .describe("Case-insensitive search (-i)"),
+    .describe("Case-insensitive search"),
   context: z
     .number()
     .int()
     .min(0)
     .max(50)
     .optional()
-    .describe("Lines of context before and after each match (-C). Default 0."),
+    .describe("Lines of context before and after each match. Default 0."),
   max_results: z
     .number()
     .int()
@@ -95,70 +96,17 @@ const searchCodeSchema = z.object({
   file_type: z
     .string()
     .optional()
-    .describe("ripgrep file type filter (e.g. 'ts', 'rust', 'py')"),
-  include_hidden: z
-    .boolean()
-    .optional()
-    .describe("Search hidden files and directories (--hidden)"),
-  no_ignore: z
-    .boolean()
-    .optional()
-    .describe("Don't respect .gitignore/.ignore (--no-ignore)"),
-  multiline: z
-    .boolean()
-    .optional()
-    .describe("Allow patterns to match across multiple lines (-U)"),
+    .describe("File type filter (e.g. 'ts', 'rust', 'py') — mapped to extension glob"),
   timeout: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe("Timeout in milliseconds (default 30000)"),
+    .describe("Timeout in milliseconds (default 30000, mapped to timeBudgetMs)"),
 });
 
 export type SearchCodeArgs = z.infer<typeof searchCodeSchema>;
 
-/**
- * Build the ripgrep argv for the given arguments.
- *
- * Pattern is passed as `--` then `pattern` so it can't be misinterpreted as
- * a flag even if it starts with `-`.
- */
-export function buildRipgrepArgs(args: SearchCodeArgs, searchPath: string): string[] {
-  const argv: string[] = [
-    "--json",
-    "--no-heading",
-    "--no-messages",
-    // --no-config: ignore the user's ~/.ripgreprc / RIPGREP_CONFIG_PATH so the
-    // tool's behavior is deterministic across machines. Custom ripgrep configs
-    // (e.g. --type-add) are NOT honored by this tool.
-    "--no-config",
-  ];
-
-  if (args.case_insensitive) argv.push("-i");
-  if (args.multiline) argv.push("-U");
-  if (args.include_hidden) argv.push("--hidden");
-  if (args.no_ignore) argv.push("--no-ignore");
-  if (args.file_type) argv.push("--type", args.file_type);
-  const ctx = args.context ?? 0;
-  if (ctx > 0) argv.push("-C", String(ctx));
-
-  for (const g of args.glob ? (Array.isArray(args.glob) ? args.glob : [args.glob]) : []) {
-    argv.push("--glob", g);
-  }
-  for (const g of args.glob_exclude
-    ? Array.isArray(args.glob_exclude)
-      ? args.glob_exclude
-      : [args.glob_exclude]
-    : []) {
-    argv.push("--glob", "!" + g);
-  }
-
-  argv.push("--", args.pattern, searchPath);
-  return argv;
-}
-
-/** Return null if the path is allowed by the sandbox, else a human-readable error. */
 function sandboxBlockReason(
   path: string,
   sandbox: SandboxConfig | undefined,
@@ -187,200 +135,78 @@ function sandboxBlockReason(
     : `Blocked by sandbox: path not in allowed list: ${path}`;
 }
 
-// ---- JSON event types from rg --json ----
+// Map cwd -> FffManager (created lazily, scan runs in background).
+const fffCache = new Map<string, Promise<import("../fff.js").FffManager>>();
 
-interface RgSubmatch {
-  match: { text: string };
-  start: number;
-  end: number;
+async function getFffManager(cwd: string): Promise<import("../fff.js").FffManager> {
+  let cached = fffCache.get(cwd);
+  if (cached) return cached;
+  const promise = (async () => {
+    const { createFffManager } = await import("../fff.js");
+    return createFffManager(cwd);
+  })();
+  fffCache.set(cwd, promise);
+  return promise;
 }
 
-interface RgEventData {
-  path?: { text: string };
-  lines?: { text: string };
-  line_number?: number;
-  absolute_offset?: number;
-  submatches?: RgSubmatch[];
-  stats?: {
-    matches?: number;
-    matched_lines?: number;
-    searches_with_match?: number;
-  };
-}
-
-interface RgEvent {
-  type: "begin" | "end" | "match" | "context" | "summary";
-  data: RgEventData;
-}
-
-/**
- * Streaming ripgrep-JSON parser.
- *
- * The parser holds mutable state (matches array, per-file context map, last
- * match in file) that the caller can feed events into incrementally. This
- * lets `runRipgrep` parse as bytes arrive from rg's stdout rather than
- * buffering every event in a `string[]` until the child closes — which
- * previously grew linearly with match count and OOM'd on broad searches.
- *
- * Context events are accumulated into a per-file line map. For each match,
- * the lines with `line_number ∈ [match.line - context, match.line + context]`
- * populate `context_before` / `context_after`. The last match's "after"
- * context is back-filled on the file's `end` event so trailing context
- * lines aren't lost.
- */
-export interface ParseState {
-  matches: SearchCodeMatch[];
-  totalMatches: number;
-  truncated: boolean;
-  // Private — do not mutate from outside.
-  _currentFile: string | null;
-  _currentFileLineMap: Map<number, string>;
-  _lastMatchInFile: SearchCodeMatch | null;
-}
-
-export function createParseState(): ParseState {
-  return {
-    matches: [],
-    totalMatches: 0,
-    truncated: false,
-    _currentFile: null,
-    _currentFileLineMap: new Map(),
-    _lastMatchInFile: null,
-  };
-}
-
-function processEvent(
-  state: ParseState,
-  ev: RgEvent,
-  context: number,
-  maxResults: number | undefined,
-  onTruncate: () => void,
-): void {
-  if (ev.type === "begin") {
-    state._currentFile = ev.data.path?.text ?? null;
-    state._currentFileLineMap = new Map();
-    state._lastMatchInFile = null;
-    return;
+/** For tests: clear the fff cache. */
+export function clearFffCache(): void {
+  for (const [, p] of fffCache) {
+    void p.then((m) => {
+      try { m.destroy(); } catch { /* ignore */ }
+    });
   }
-
-  if (ev.type === "end") {
-    if (state._lastMatchInFile && context > 0 && state._currentFile) {
-      const after: string[] = [];
-      for (let i = 1; i <= context; i++) {
-        const t = state._currentFileLineMap.get(state._lastMatchInFile.line + i);
-        if (t !== undefined) after.push(t);
-      }
-      state._lastMatchInFile.context_after = after;
-    }
-    return;
-  }
-
-  if (ev.type === "context") {
-    const ln = ev.data.line_number;
-    const text = ev.data.lines?.text ?? "";
-    if (ln !== undefined) {
-      const trimmed = text.endsWith("\n") ? text.slice(0, -1) : text;
-      state._currentFileLineMap.set(ln, trimmed);
-
-      if (
-        state._lastMatchInFile &&
-        context > 0 &&
-        ln > state._lastMatchInFile.line &&
-        ln <= state._lastMatchInFile.line + context
-      ) {
-        state._lastMatchInFile.context_after.push(trimmed);
-      }
-    }
-    return;
-  }
-
-  if (ev.type === "match") {
-    if (state.truncated) return;
-    if (maxResults !== undefined && state.totalMatches >= maxResults) {
-      state.truncated = true;
-      onTruncate();
-      return;
-    }
-
-    const file = ev.data.path?.text ?? "";
-    const line = ev.data.line_number ?? 0;
-    const sub = ev.data.submatches?.[0];
-    const column = (sub?.start ?? 0) + 1;
-    const rawText = ev.data.lines?.text ?? "";
-    const text = rawText.endsWith("\n") ? rawText.slice(0, -1) : rawText;
-
-    const before: string[] = [];
-    if (context > 0) {
-      for (let i = context; i >= 1; i--) {
-        const t = state._currentFileLineMap.get(line - i);
-        if (t !== undefined) before.push(t);
-      }
-    }
-
-    const m: SearchCodeMatch = {
-      file,
-      line,
-      column,
-      text,
-      context_before: before,
-      context_after: [],
-    };
-    state.matches.push(m);
-    state._lastMatchInFile = m;
-    state.totalMatches++;
-    return;
-  }
+  fffCache.clear();
 }
 
-/** Feed raw rg --json lines into the parse state. Triggers `onTruncate` on cap. */
-export function feedParseState(
-  state: ParseState,
-  rawLines: string[],
-  context: number,
-  maxResults: number | undefined,
-  onTruncate: () => void,
-): void {
-  for (const raw of rawLines) {
-    if (state.truncated) break;
-    if (!raw) continue;
-    let ev: RgEvent;
-    try {
-      ev = JSON.parse(raw) as RgEvent;
-    } catch {
-      // Malformed line — rg should not produce these, skip defensively.
-      continue;
-    }
-    processEvent(state, ev, context, maxResults, onTruncate);
-  }
-}
-
-/** Convenience wrapper: feed a complete log at once. Used by tests. */
-export function parseRipgrepEvents(
-  rawLines: string[],
-  context: number,
-  maxResults: number | undefined,
-  onTruncate: () => void,
-): {
-  matches: SearchCodeMatch[];
-  totalMatches: number;
-  filesWithMatches: number;
-  truncated: boolean;
-} {
-  const state = createParseState();
-  feedParseState(state, rawLines, context, maxResults, onTruncate);
-  const filesWithMatches = new Set(state.matches.map((m) => m.file)).size;
-  return {
-    matches: state.matches,
-    totalMatches: state.totalMatches,
-    filesWithMatches,
-    truncated: state.truncated,
-  };
-}
-
-/** Spawn ripgrep, return structured result. */
-export async function runRipgrep(
+export function buildFffConstraints(
   args: SearchCodeArgs,
-  rgBin: string,
+  cwd: string,
+  searchPath: string,
+): string[] {
+  const constraints: string[] = [];
+
+  // path constraint
+  if (args.path) {
+    const c = pathToConstraint(cwd, searchPath);
+    if (c) constraints.push(c);
+  }
+
+  // file_type constraint
+  if (args.file_type) {
+    constraints.push(fileTypeToConstraint(args.file_type));
+  }
+
+  // include globs
+  for (const g of args.glob ? (Array.isArray(args.glob) ? args.glob : [args.glob]) : []) {
+    constraints.push(g);
+  }
+  // exclude globs
+  for (const g of args.glob_exclude
+    ? Array.isArray(args.glob_exclude)
+      ? args.glob_exclude
+      : [args.glob_exclude]
+    : []) {
+    constraints.push(g.startsWith("!") ? g : `!${g}`);
+  }
+
+  return constraints;
+}
+
+export function buildFffGrepQuery(args: SearchCodeArgs, cwd: string, searchPath: string): string {
+  const constraints = buildFffConstraints(args, cwd, searchPath);
+  let pattern = args.pattern;
+  if (args.case_insensitive) {
+    // In regex mode, use inline (?i) flag; avoid lowercasing which breaks char classes.
+    if (!pattern.startsWith("(?i)")) {
+      pattern = `(?i)${pattern}`;
+    }
+  }
+  return buildFffQuery(pattern, constraints);
+}
+
+export async function runFffSearch(
+  args: SearchCodeArgs,
   cwd: string,
   sandbox: SandboxConfig | undefined,
   getAbortSignal?: () => AbortSignal | undefined,
@@ -396,142 +222,114 @@ export async function runRipgrep(
   const blockReason = sandboxBlockReason(searchPath, sandbox);
   if (blockReason) return { ok: false, error: blockReason };
 
-  const argv = buildRipgrepArgs(args, searchPath);
+  const signal = getAbortSignal?.();
+  if (signal?.aborted) return { ok: false, error: "Interrupted" };
+
+  let manager: import("../fff.js").FffManager;
+  try {
+    manager = await getFffManager(cwd);
+  } catch (e) {
+    return { ok: false, error: `fff initialization failed: ${(e as Error).message}` };
+  }
+
+  if (!manager.isAvailable()) {
+    // Try to get detailed error
+    const { getFffLoadError } = await import("../fff.js");
+    const detail = getFffLoadError() ?? "unknown";
+    return {
+      ok: false,
+      error: `fff not available: ${detail}. Install @ff-labs/fff-bun or check platform support.`,
+    };
+  }
+
   const ctx = args.context ?? 0;
   const maxResults = args.max_results;
   const timeoutMs = args.timeout ?? 30_000;
-  const signal = getAbortSignal?.();
 
+  // Wait for scan (with timeout)
+  const ready = await manager.ensureReady(Math.min(timeoutMs, 5000));
+  if (!ready.ok) {
+    return { ok: false, error: `fff not ready: ${ready.error}` };
+  }
+
+  const fffQuery = buildFffGrepQuery(args, cwd, searchPath);
+
+  const rawFinder = manager.raw() as unknown as {
+    grep(query: string, opts: Record<string, unknown>): { ok: true; value: unknown } | { ok: false; error: string };
+  } | null;
+
+  if (!rawFinder) {
+    return { ok: false, error: "fff FileFinder not initialized" };
+  }
+
+  const grepOpts: Record<string, unknown> = {
+    mode: "regex",
+    maxFileSize: 10 * 1024 * 1024,
+    maxMatchesPerFile: 200,
+    smartCase: !args.case_insensitive,
+    beforeContext: ctx,
+    afterContext: ctx,
+    pageSize: maxResults ?? 200,
+    timeBudgetMs: timeoutMs,
+  };
+
+  // Check abort before grep (grep is sync, so we can't abort mid-search)
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  return new Promise<SearchCodeResult>((resolve) => {
-    const child = spawn(rgBin, argv, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      // Node 22 resolves a bare "rg" against PATH on POSIX.
-    });
+  let grepResult: { ok: true; value: { items: Array<Record<string, unknown>>; totalMatched: number; totalFilesSearched: number; totalFiles: number; filteredFileCount: number; nextCursor: unknown | null; regexFallbackError?: string } } | { ok: false; error: string };
+  try {
+    grepResult = rawFinder.grep(fffQuery, grepOpts) as typeof grepResult;
+  } catch (e) {
+    return { ok: false, error: `fff grep failed: ${(e as Error).message}` };
+  }
 
-    let stdoutBuf = "";
-    let resolved = false;
-    const stderrChunks: Buffer[] = [];
-    const state = createParseState();
+  if (!grepResult.ok) {
+    return { ok: false, error: `fff error: ${grepResult.error}` };
+  }
 
-    const kill = (sig: NodeJS.Signals) => {
-      if (!child.killed) child.kill(sig);
-    };
+  const raw = grepResult.value;
+  const items = raw.items as Array<{
+    relativePath: string;
+    fileName: string;
+    lineNumber: number;
+    col: number;
+    lineContent: string;
+    contextBefore?: string[];
+    contextAfter?: string[];
+  }>;
 
-    /** Stop the child and drop the stdout pipe so no more bytes enter the buffer. */
-    const truncateNow = () => {
-      child.stdout?.destroy();
-      // SIGKILL is the right signal here: we no longer care about rg's
-      // cleanup, only that it stops writing to the pipe.
-      kill("SIGKILL");
-    };
+  const matches: SearchCodeMatch[] = items.slice(0, maxResults ?? items.length).map((m) => ({
+    file: join(cwd, m.relativePath),
+    line: m.lineNumber,
+    column: m.col + 1,
+    text: m.lineContent,
+    context_before: m.contextBefore ?? [],
+    context_after: m.contextAfter ?? [],
+  }));
 
-    const finish = (result: SearchCodeResult) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-      kill("SIGTERM");
-      setTimeout(() => kill("SIGKILL"), 500).unref();
-      resolve(result);
-    };
+  const truncated = raw.nextCursor !== null && raw.nextCursor !== undefined ? true : (maxResults !== undefined && items.length >= maxResults);
+  const filesWithMatches = new Set(matches.map((m) => m.file)).size;
 
-    const onAbort = () => finish({ ok: false, error: "Interrupted" });
-    signal?.addEventListener("abort", onAbort, { once: true });
-
-    const timer = setTimeout(() => {
-      finish({ ok: false, error: `search_code timed out after ${timeoutMs}ms` });
-    }, timeoutMs);
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (state.truncated) return; // backpressure: stop buffering post-cap bytes
-      stdoutBuf += chunk.toString("utf-8");
-      let nl: number;
-      const newLines: string[] = [];
-      while ((nl = stdoutBuf.indexOf("\n")) !== -1) {
-        newLines.push(stdoutBuf.slice(0, nl));
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-      }
-      if (newLines.length > 0) {
-        feedParseState(state, newLines, ctx, maxResults, truncateNow);
-      }
-    });
-
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrChunks.push(chunk);
-      if (stderrChunks.length > 64) stderrChunks.shift();
-    });
-
-    child.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") {
-        finish({
-          ok: false,
-          error:
-            "ripgrep ('rg') not found in PATH. Install ripgrep (https://github.com/BurntSushi/ripgrep) or set search_code.rg_path in praana.config.toml to point at the binary.",
-        });
-        return;
-      }
-      finish({ ok: false, error: `Failed to run ripgrep: ${err.message}` });
-    });
-
-    child.on("close", (code) => {
-      if (resolved) {
-        // finish() already ran (abort / timeout / error). Drop any tail bytes.
-        stdoutBuf = "";
-        return;
-      }
-      if (stdoutBuf.length > 0) {
-        feedParseState(state, [stdoutBuf], ctx, maxResults, truncateNow);
-        stdoutBuf = "";
-      }
-
-      const stderrTail = Buffer.concat(stderrChunks).toString("utf-8").trim();
-      // rg exit codes: 0 = matches, 1 = no matches, 2 = error.
-      if (code === 2) {
-        finish({
-          ok: false,
-          error: stderrTail
-            ? `ripgrep error: ${stderrTail}`
-            : "ripgrep exited with code 2 (regex parse error or other failure)",
-        });
-        return;
-      }
-
-      if (code === 0 || code === 1 || state.matches.length > 0) {
-        const filesWithMatches = new Set(state.matches.map((m) => m.file)).size;
-        finish({
-          ok: true,
-          pattern: args.pattern,
-          path: searchPath,
-          matches: state.matches,
-          stats: {
-            totalMatches: state.totalMatches,
-            filesWithMatches,
-            truncated: state.truncated,
-            dropped: state.truncated ? 1 : 0, // exact count unknown; >= 1
-          },
-          duration_ms: Date.now() - started,
-        });
-        return;
-      }
-
-      finish({
-        ok: false,
-        error: stderrTail
-          ? `ripgrep failed: ${stderrTail}`
-          : `ripgrep exited with code ${code}`,
-      });
-    });
-  });
+  return {
+    ok: true,
+    pattern: args.pattern,
+    path: searchPath,
+    matches,
+    stats: {
+      totalMatches: matches.length,
+      filesWithMatches,
+      truncated,
+      dropped: truncated ? 1 : 0,
+    },
+    duration_ms: Date.now() - started,
+  };
 }
 
 export function createSearchCodeTool(ctx: SearchCodeToolContext) {
   return {
     search_code: defineTool({
       description:
-        "Fast structured code search powered by ripgrep. Returns file:line:column matches with optional context lines. Use instead of `shell grep` for codebase exploration.",
+        "Fast structured code search powered by fff. Returns file:line:column matches with optional context lines. Use instead of `shell grep` for codebase exploration.",
       parameters: searchCodeSchema,
       execute: async (raw: unknown) => {
         const parsed = searchCodeSchema.safeParse(raw);
@@ -543,9 +341,8 @@ export function createSearchCodeTool(ctx: SearchCodeToolContext) {
               .join("; ")}`,
           } satisfies SearchCodeError;
         }
-        return runRipgrep(
+        return runFffSearch(
           parsed.data,
-          ctx.rgPath ?? "rg",
           ctx.cwd,
           ctx.sandbox,
           ctx.getAbortSignal,

@@ -9,6 +9,7 @@ const READ_TOOLS = new Set<string>([
   "read_file",
   "read_and_summarize",
   "search_code",
+  "find_files",
   "retrieve_artifact",
   "recall",
   "search_session_log",

@@ -624,13 +624,18 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   // search_code config validation
   if (out.search_code) {
     if (
-      typeof out.search_code.rg_path !== "string" &&
-      out.search_code.rg_path !== undefined
+      typeof out.search_code.scan_timeout_ms !== "number" &&
+      out.search_code.scan_timeout_ms !== undefined
     ) {
-      configWarn("search_code.rg_path must be a string, ignoring");
-      out.search_code.rg_path = undefined;
-    } else if (typeof out.search_code.rg_path === "string") {
-      out.search_code.rg_path = expandHome(out.search_code.rg_path);
+      configWarn("search_code.scan_timeout_ms must be a number, ignoring");
+      out.search_code.scan_timeout_ms = undefined;
+    } else if (
+      typeof out.search_code.scan_timeout_ms === "number" &&
+      (!Number.isFinite(out.search_code.scan_timeout_ms) ||
+        out.search_code.scan_timeout_ms <= 0)
+    ) {
+      configWarn("search_code.scan_timeout_ms must be a positive number, ignoring");
+      out.search_code.scan_timeout_ms = undefined;
     }
   }
 

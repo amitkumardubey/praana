@@ -15,6 +15,7 @@ import stripAnsi from "strip-ansi";
 const UNICODE_ICONS: Record<string, string> = {
   read_file: "◇",
   search_code: "⌕",
+  find_files: "⌕",
   code_symbols: "⌘",
   lsp_diagnostics: "⚡",
   lsp_format: "☰",
@@ -46,6 +47,7 @@ const UNICODE_ICONS: Record<string, string> = {
 const ASCII_ICONS: Record<string, string> = {
   read_file: "r·",
   search_code: "s·",
+  find_files: "f·",
   code_symbols: "sy",
   lsp_diagnostics: "ld",
   lsp_format: "lf",
@@ -76,6 +78,7 @@ const ASCII_ICONS: Record<string, string> = {
 const TOOL_SHORT: Record<string, string> = {
   read_file: "read",
   search_code: "search",
+  find_files: "find",
   code_symbols: "symbols",
   lsp_diagnostics: "lsp-diag",
   lsp_format: "lsp-fmt",
@@ -173,6 +176,14 @@ export function formatToolDisplay(
         icon,
         label: pattern ? `${short}  "${pattern}"` : short,
         pending: "searching…",
+      };
+    }
+    case "find_files": {
+      const pattern = String(args.pattern ?? "").slice(0, 40);
+      return {
+        icon,
+        label: pattern ? `${short}  "${pattern}"` : short,
+        pending: "finding…",
       };
     }
     case "recall": {

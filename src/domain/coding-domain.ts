@@ -90,7 +90,7 @@ export function inferContentTypeFromTool(
   command: string | undefined,
 ): ContentType | null {
   // Dedicated structured tools classify by tool name (command is only a card label).
-  if (sourceTool === "search_code") {
+  if (sourceTool === "search_code" || sourceTool === "find_files") {
     return "search_results";
   }
   if (
@@ -338,6 +338,9 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
         readFileCount += 1;
       }
       if (tc.tool === "search_code" && !tc.isError) {
+        searchCodeCount += 1;
+      }
+      if (tc.tool === "find_files" && !tc.isError) {
         searchCodeCount += 1;
       }
     }

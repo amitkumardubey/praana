@@ -1888,11 +1888,20 @@ describe('Tool registry (mode-aware)', () => {
     expect('search_code' in engineTools).toBe(true);
   });
 
-  it('describeTools advertises search_code in both classic and engine modes', () => {
+  it('createAllTools registers the find_files tool in both modes', () => {
+    const classicTools = createAllTools({ ...baseCtx, classicMode: true });
+    const engineTools = createAllTools({ ...baseCtx, classicMode: false });
+    expect('find_files' in classicTools).toBe(true);
+    expect('find_files' in engineTools).toBe(true);
+  });
+
+  it('describeTools advertises search_code and find_files in both classic and engine modes', () => {
     const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
     const engine = describeTools({ contextEngineEnabled: true });
     expect(classic.some((t) => t.startsWith('search_code'))).toBe(true);
     expect(engine.some((t) => t.startsWith('search_code'))).toBe(true);
+    expect(classic.some((t) => t.startsWith('find_files'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('find_files'))).toBe(true);
   });
 
   it('createAllTools registers code_* tools in both modes', () => {

@@ -412,7 +412,6 @@ export async function runTurn(
     editConfirm: session.config.edit?.confirm,
     getCurrentTurn: () => session.getTurnCount(),
     getLastResetBoundaryTurn: () => boundaryTurn,
-    searchCode: session.config.search_code,
     getAbortSignal: () => options?.signal,
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],

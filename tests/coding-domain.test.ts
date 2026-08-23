@@ -191,6 +191,10 @@ describe("inferContentTypeFromTool", () => {
     expect(inferContentTypeFromTool("git_diff", undefined)).toBe("diff");
   });
 
+  it("find_files tool → search_results", () => {
+    expect(inferContentTypeFromTool("find_files", "src/")).toBe("search_results");
+  });
+
   it("code_* tools → search_results", () => {
     expect(inferContentTypeFromTool("code_symbols", "src/a.ts")).toBe("search_results");
     expect(inferContentTypeFromTool("code_definition", "Foo @ .")).toBe("search_results");
