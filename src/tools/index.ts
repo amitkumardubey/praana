@@ -30,6 +30,7 @@ export interface ToolRegistryContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
+  scanTimeoutMs?: number;
   editConfirm?: boolean;
   getCurrentTurn?: () => number;
   getLastResetBoundaryTurn?: () => number;
@@ -111,11 +112,13 @@ export function createAllTools(ctx: ToolRegistryContext) {
     cwd: ctx.cwd,
     getAbortSignal: ctx.getAbortSignal,
     sandbox: ctx.sandbox,
+    scanTimeoutMs: ctx.scanTimeoutMs,
   });
   const findFilesTools = createFindFilesTool({
     cwd: ctx.cwd,
     getAbortSignal: ctx.getAbortSignal,
     sandbox: ctx.sandbox,
+    scanTimeoutMs: ctx.scanTimeoutMs,
   });
   const gitTools = createGitTools({
     cwd: ctx.cwd,

@@ -405,6 +405,7 @@ export async function executeSlashCommand(
       }
 
       lines.push("", `Native addon: ${session.nativeStatus ? nativeStatusToString(session.nativeStatus) : "unknown"}`);
+      lines.push(`Search (fff): ${session.fffStatus ?? "unknown"}`);
 
       if (session.isContextEngineEnabled() && session.contextEngine) {
         const telemetry = session.contextEngine.finalizeTelemetry(session.getTurnCount());

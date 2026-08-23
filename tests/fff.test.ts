@@ -3,6 +3,10 @@ import {
   pathToConstraint,
   fileTypeToConstraint,
   buildFffQuery,
+  getFffLoadError,
+  resetFffCache,
+  clearFffCache,
+  sandboxBlockReason,
 } from "../src/fff.js";
 
 describe("pathToConstraint", () => {
@@ -52,5 +56,36 @@ describe("buildFffQuery", () => {
   it("returns pattern unchanged with no constraints", () => {
     expect(buildFffQuery("foo", [])).toBe("foo");
     expect(buildFffQuery("foo", ["", null as unknown as string])).toBe("foo");
+  });
+});
+
+describe("getFffLoadError and resetFffCache", () => {
+  it("getFffLoadError returns null initially", () => {
+    resetFffCache();
+    expect(getFffLoadError()).toBeNull();
+  });
+
+  it("clearFffCache does not throw", () => {
+    expect(() => clearFffCache()).not.toThrow();
+  });
+});
+
+describe("sandboxBlockReason", () => {
+  it("returns null when sandbox is undefined", () => {
+    expect(sandboxBlockReason("/any/path", undefined)).toBeNull();
+  });
+
+  it("returns null when sandbox is disabled", () => {
+    expect(sandboxBlockReason("/any/path", { enabled: false, allowed_paths: [] })).toBeNull();
+  });
+
+  it("returns null when sandbox has no allowed_paths", () => {
+    expect(sandboxBlockReason("/any/path", { enabled: true, allowed_paths: [] })).toBeNull();
+  });
+
+  it("blocks paths outside the allowlist", () => {
+    const sb = { enabled: true, allowed_paths: ["/repo/src"] };
+    expect(sandboxBlockReason("/repo/other", sb)).toMatch(/sandbox/i);
+    expect(sandboxBlockReason("/repo/src", sb)).toBeNull();
   });
 });

@@ -138,13 +138,15 @@ describe("Session nativeStatus probing", () => {
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("sets disabled via config when native.enabled=false", async () => {
+   it("sets disabled via config when native.enabled=false", async () => {
     const config = loadConfig();
     config.native = { enabled: false, require: false };
     config.session.log_dir = join(tmpDir, "sessions");
     const session = await Session.create(tmpDir, config);
     expect(session.nativeStatus).not.toBeNull();
     expect(session.nativeStatus!.kind).toBe("disabled");
+    expect(session.fffStatus).toBeTruthy();
+    expect(typeof session.fffStatus).toBe("string");
     await session.end("clean", []);
   });
 
@@ -156,6 +158,12 @@ describe("Session nativeStatus probing", () => {
     expect(session.nativeStatus).toBeTruthy();
     const kind = session.nativeStatus!.kind;
     expect(kind === "available" || kind === "unavailable" || kind === "disabled").toBe(true);
+    // fff should also be probed
+    expect(session.fffStatus).toBeTruthy();
+    expect(
+      session.fffStatus!.startsWith("available") ||
+        session.fffStatus!.startsWith("unavailable"),
+    ).toBe(true);
     await session.end("clean", []);
   });
 });

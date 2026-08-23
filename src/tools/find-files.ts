@@ -1,10 +1,14 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
-import { existsSync, realpathSync } from "node:fs";
-import { resolve as resolvePath, isAbsolute, normalize, join } from "node:path";
-import { homedir } from "node:os";
+import { resolve as resolvePath, isAbsolute, join } from "node:path";
 import type { SandboxConfig } from "../types.js";
-import { buildFffQuery, pathToConstraint } from "../fff.js";
+import {
+  buildFffQuery,
+  pathToConstraint,
+  sandboxBlockReason,
+  getFffManager,
+  clearFffCache,
+} from "../fff.js";
 
 export interface FindFilesMatch {
   file: string;
@@ -41,6 +45,7 @@ export interface FindFilesToolContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
+  scanTimeoutMs?: number;
 }
 
 const findFilesSchema = z.object({
@@ -72,51 +77,6 @@ const findFilesSchema = z.object({
 
 export type FindFilesArgs = z.infer<typeof findFilesSchema>;
 
-function sandboxBlockReason(
-  path: string,
-  sandbox: SandboxConfig | undefined,
-): string | null {
-  if (!sandbox?.enabled || sandbox.allowed_paths.length === 0) return null;
-  const resolve = (p: string): string => {
-    const expanded = p.replace(/^~/, homedir());
-    const normalized = normalize(expanded);
-    if (!existsSync(normalized)) return normalized;
-    try {
-      return realpathSync(normalized);
-    } catch {
-      return normalized;
-    }
-  };
-  const resolved = resolve(path);
-  const allowed = sandbox.allowed_paths.some((ap) => {
-    const apResolved = resolve(ap);
-    return resolved === apResolved || resolved.startsWith(apResolved + "/");
-  });
-  return allowed ? null : `Blocked by sandbox: path not in allowed list: ${path}`;
-}
-
-const findFilesFffCache = new Map<string, Promise<import("../fff.js").FffManager>>();
-
-async function getFffManager(cwd: string): Promise<import("../fff.js").FffManager> {
-  let cached = findFilesFffCache.get(cwd);
-  if (cached) return cached;
-  const promise = (async () => {
-    const { createFffManager } = await import("../fff.js");
-    return createFffManager(cwd);
-  })();
-  findFilesFffCache.set(cwd, promise);
-  return promise;
-}
-
-export function clearFindFilesFffCache(): void {
-  for (const [, p] of findFilesFffCache) {
-    void p.then((m) => {
-      try { m.destroy(); } catch { /* ignore */ }
-    });
-  }
-  findFilesFffCache.clear();
-}
-
 export function buildFindFilesQuery(args: FindFilesArgs, cwd: string, searchPath: string): string {
   // For find_files, path constraint is the directory scope.
   // In glob mode, pattern itself is a glob; path is extra constraint.
@@ -126,9 +86,8 @@ export function buildFindFilesQuery(args: FindFilesArgs, cwd: string, searchPath
     if (c) constraints.push(c);
   }
   if (constraints.length === 0) return args.pattern;
-  // For fileSearch, constraints are prepended to query just like grep.
-  // However fff's fileSearch query parser also supports the same constraint syntax
-  // (git:modified, globs, etc.) so this is correct.
+  // fff's fileSearch query parser supports the same constraint syntax as grep
+  // (git:modified, globs, dir constraints), so we prepend constraints.
   return buildFffQuery(args.pattern, constraints);
 }
 
@@ -136,6 +95,7 @@ export async function runFindFiles(
   args: FindFilesArgs,
   cwd: string,
   sandbox: SandboxConfig | undefined,
+  scanTimeoutMs: number | undefined,
   getAbortSignal?: () => AbortSignal | undefined,
 ): Promise<FindFilesResult> {
   const started = Date.now();
@@ -152,7 +112,7 @@ export async function runFindFiles(
   const signal = getAbortSignal?.();
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  let manager: import("../fff.js").FffManager;
+  let manager;
   try {
     manager = await getFffManager(cwd);
   } catch (e) {
@@ -170,8 +130,9 @@ export async function runFindFiles(
 
   const timeoutMs = args.timeout ?? 5000;
   const maxResults = args.max_results ?? 50;
+  const scanMs = scanTimeoutMs ?? 5000;
 
-  const ready = await manager.ensureReady(Math.min(timeoutMs, 5000));
+  const ready = await manager.ensureReady(Math.min(timeoutMs, scanMs));
   if (!ready.ok) {
     return { ok: false, error: `fff not ready: ${ready.error}` };
   }
@@ -193,21 +154,14 @@ export async function runFindFiles(
 
   try {
     if (isGlob) {
-      // In glob mode, pattern is the glob itself; path constraint already handled via query building?
-      // For glob, we pass the pattern directly to finder.glob().
-      // If there's a path constraint, we need to combine: glob pattern should be path + pattern?
-      // Simpler: use fileSearch with glob constraint — but spec says glob() is pure glob without fuzzy.
-      // So for glob mode with path, we prefix the glob: "path/*.ts"
+      // In glob mode, pattern is the glob itself. If a path constraint is
+      // provided, prepend the directory so glob() can match within it.
       let globPattern = args.pattern;
       if (args.path) {
         const c = pathToConstraint(cwd, searchPath);
         if (c) {
           const dir = c.endsWith("/") ? c : `${c}/`;
-          if (!globPattern.startsWith(dir) && !globPattern.includes("/")) {
-            globPattern = `${dir}${globPattern}`;
-          } else if (!globPattern.startsWith(dir)) {
-            // Prepend dir as constraint before glob — fileSearch style would work,
-            // but glob() doesn't support constraint syntax, so we embed dir.
+          if (!globPattern.startsWith(dir)) {
             globPattern = `${dir}${globPattern}`;
           }
         }
@@ -226,6 +180,7 @@ export async function runFindFiles(
   }
 
   const raw = result.value;
+  const totalMatched = raw.totalMatched ?? raw.items.length;
   const items = raw.items;
   const matches: FindFilesMatch[] = items.slice(0, maxResults).map((it) => ({
     file: join(cwd, it.relativePath),
@@ -233,19 +188,19 @@ export async function runFindFiles(
     name: it.fileName,
     size: it.size,
     modified: it.modified,
-    git_status: (it as unknown as { gitStatus: string }).gitStatus ?? "unknown",
+    git_status: it.gitStatus ?? "unknown",
   }));
 
-  const truncated = raw.totalMatched > matches.length;
+  const truncated = totalMatched > matches.length;
   return {
     ok: true,
     pattern: args.pattern,
     path: searchPath,
     matches,
     stats: {
-      totalMatches: raw.totalMatched,
+      totalMatches: totalMatched,
       truncated,
-      dropped: truncated ? raw.totalMatched - matches.length : 0,
+      dropped: truncated ? totalMatched - matches.length : 0,
     },
     duration_ms: Date.now() - started,
   };
@@ -267,7 +222,7 @@ export function createFindFilesTool(ctx: FindFilesToolContext) {
               .join("; ")}`,
           } satisfies FindFilesError;
         }
-        return runFindFiles(parsed.data, ctx.cwd, ctx.sandbox, ctx.getAbortSignal);
+        return runFindFiles(parsed.data, ctx.cwd, ctx.sandbox, ctx.scanTimeoutMs, ctx.getAbortSignal);
       },
     }),
   };

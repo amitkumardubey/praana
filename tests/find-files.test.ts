@@ -1,21 +1,21 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   createFindFilesTool,
   runFindFiles,
-  clearFindFilesFffCache,
   buildFindFilesQuery,
 } from '../src/tools/find-files.js';
+import { clearFffCache } from '../src/fff.js';
 
-const hasFff = (() => {
+async function canUseFff(): Promise<boolean> {
   try {
-    const { FileFinder } = require('@ff-labs/fff-bun');
+    const { FileFinder } = await import('@ff-labs/fff-bun');
     return FileFinder.isAvailable();
   } catch {
     return false;
   }
-})();
+}
 
 const testDir = '/tmp/praana-test-find-files';
 
@@ -46,18 +46,24 @@ describe('buildFindFilesQuery', () => {
   });
 });
 
-(hasFff ? describe : describe.skip)('runFindFiles (live fff)', () => {
+describe('runFindFiles (live fff)', async () => {
+  let fffAvailable = false;
+  beforeAll(async () => {
+    fffAvailable = await canUseFff();
+  });
+
   beforeEach(() => {
     setupFixture();
-    clearFindFilesFffCache();
+    clearFffCache();
   });
   afterEach(() => {
-    clearFindFilesFffCache();
+    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
   it('finds files by fuzzy name', async () => {
-    const r = await runFindFiles({ pattern: 'button' }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: 'button' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.matches.length).toBeGreaterThanOrEqual(1);
@@ -65,7 +71,8 @@ describe('buildFindFilesQuery', () => {
   });
 
   it('returns metadata for matches', async () => {
-    const r = await runFindFiles({ pattern: 'button' }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: 'button' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const m = r.matches[0];
@@ -77,7 +84,8 @@ describe('buildFindFilesQuery', () => {
   });
 
   it('supports glob mode', async () => {
-    const r = await runFindFiles({ pattern: '**/*.tsx', mode: 'glob' }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: '**/*.tsx', mode: 'glob' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.matches.length).toBeGreaterThanOrEqual(2);
@@ -87,7 +95,8 @@ describe('buildFindFilesQuery', () => {
   });
 
   it('scopes to a path constraint', async () => {
-    const r = await runFindFiles({ pattern: 'button', path: 'src/components' }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: 'button', path: 'src/components' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     for (const m of r.matches) {
@@ -96,27 +105,34 @@ describe('buildFindFilesQuery', () => {
   });
 
   it('honors max_results', async () => {
-    const r = await runFindFiles({ pattern: 'tsx', max_results: 1 }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: 'tsx', max_results: 1 }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.matches.length).toBeLessThanOrEqual(1);
   });
 
   it('returns empty for no matches', async () => {
-    const r = await runFindFiles({ pattern: 'zzzznothing' }, testDir, undefined);
+    if (!fffAvailable) throw new Error('fff not available');
+    const r = await runFindFiles({ pattern: 'zzzznothing' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.matches).toHaveLength(0);
   });
 });
 
-(hasFff ? describe : describe.skip)('createFindFilesTool', () => {
+describe('createFindFilesTool', async () => {
+  let fffAvailable = false;
+  beforeAll(async () => {
+    fffAvailable = await canUseFff();
+  });
+
   beforeEach(() => {
     setupFixture();
-    clearFindFilesFffCache();
+    clearFffCache();
   });
   afterEach(() => {
-    clearFindFilesFffCache();
+    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
@@ -128,6 +144,7 @@ describe('buildFindFilesQuery', () => {
   });
 
   it('runs end-to-end through the tool', async () => {
+    if (!fffAvailable) throw new Error('fff not available');
     const tools = createFindFilesTool({ cwd: testDir });
     const r = (await tools.find_files.execute({
       pattern: 'button',

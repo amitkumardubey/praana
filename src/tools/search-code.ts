@@ -1,13 +1,14 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
-import { existsSync, realpathSync } from "node:fs";
-import { resolve as resolvePath, isAbsolute, normalize, join } from "node:path";
-import { homedir } from "node:os";
+import { resolve as resolvePath, isAbsolute, join } from "node:path";
 import type { SandboxConfig } from "../types.js";
 import {
   buildFffQuery,
   fileTypeToConstraint,
   pathToConstraint,
+  sandboxBlockReason,
+  getFffManager,
+  clearFffCache,
 } from "../fff.js";
 
 /**
@@ -19,6 +20,12 @@ import {
  *
  * The FileFinder is created lazily per cwd and kept alive for the process;
  * the initial scan runs in the background and the first search waits for it.
+ *
+ * Note: fff's `grep()` is synchronous (not Promise-returning). This means the
+ * search blocks the event loop while running. The `timeBudgetMs` option limits
+ * search duration but does not make the call abortable — an AbortSignal cannot
+ * interrupt a running grep. This is a known tradeoff of the in-process native
+ * index vs. a child-process approach like the old `rg --json` streaming.
  */
 
 export interface SearchCodeMatch {
@@ -44,6 +51,7 @@ export interface SearchCodeSuccess {
   matches: SearchCodeMatch[];
   stats: SearchCodeStats;
   duration_ms: number;
+  regex_fallback?: string | null;
 }
 
 export interface SearchCodeError {
@@ -57,6 +65,7 @@ export interface SearchCodeToolContext {
   cwd: string;
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
+  scanTimeoutMs?: number;
 }
 
 const searchCodeSchema = z.object({
@@ -106,58 +115,6 @@ const searchCodeSchema = z.object({
 });
 
 export type SearchCodeArgs = z.infer<typeof searchCodeSchema>;
-
-function sandboxBlockReason(
-  path: string,
-  sandbox: SandboxConfig | undefined,
-): string | null {
-  if (!sandbox?.enabled || sandbox.allowed_paths.length === 0) return null;
-
-  const resolve = (p: string): string => {
-    const expanded = p.replace(/^~/, homedir());
-    const normalized = normalize(expanded);
-    if (!existsSync(normalized)) return normalized;
-    try {
-      return realpathSync(normalized);
-    } catch {
-      return normalized;
-    }
-  };
-
-  const resolved = resolve(path);
-  const allowed = sandbox.allowed_paths.some((ap) => {
-    const apResolved = resolve(ap);
-    return resolved === apResolved || resolved.startsWith(apResolved + "/");
-  });
-
-  return allowed
-    ? null
-    : `Blocked by sandbox: path not in allowed list: ${path}`;
-}
-
-// Map cwd -> FffManager (created lazily, scan runs in background).
-const fffCache = new Map<string, Promise<import("../fff.js").FffManager>>();
-
-async function getFffManager(cwd: string): Promise<import("../fff.js").FffManager> {
-  let cached = fffCache.get(cwd);
-  if (cached) return cached;
-  const promise = (async () => {
-    const { createFffManager } = await import("../fff.js");
-    return createFffManager(cwd);
-  })();
-  fffCache.set(cwd, promise);
-  return promise;
-}
-
-/** For tests: clear the fff cache. */
-export function clearFffCache(): void {
-  for (const [, p] of fffCache) {
-    void p.then((m) => {
-      try { m.destroy(); } catch { /* ignore */ }
-    });
-  }
-  fffCache.clear();
-}
 
 export function buildFffConstraints(
   args: SearchCodeArgs,
@@ -209,6 +166,7 @@ export async function runFffSearch(
   args: SearchCodeArgs,
   cwd: string,
   sandbox: SandboxConfig | undefined,
+  scanTimeoutMs: number | undefined,
   getAbortSignal?: () => AbortSignal | undefined,
 ): Promise<SearchCodeResult> {
   const started = Date.now();
@@ -225,7 +183,7 @@ export async function runFffSearch(
   const signal = getAbortSignal?.();
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  let manager: import("../fff.js").FffManager;
+  let manager;
   try {
     manager = await getFffManager(cwd);
   } catch (e) {
@@ -233,7 +191,6 @@ export async function runFffSearch(
   }
 
   if (!manager.isAvailable()) {
-    // Try to get detailed error
     const { getFffLoadError } = await import("../fff.js");
     const detail = getFffLoadError() ?? "unknown";
     return {
@@ -245,9 +202,10 @@ export async function runFffSearch(
   const ctx = args.context ?? 0;
   const maxResults = args.max_results;
   const timeoutMs = args.timeout ?? 30_000;
+  const scanMs = scanTimeoutMs ?? 5000;
 
   // Wait for scan (with timeout)
-  const ready = await manager.ensureReady(Math.min(timeoutMs, 5000));
+  const ready = await manager.ensureReady(Math.min(timeoutMs, scanMs));
   if (!ready.ok) {
     return { ok: false, error: `fff not ready: ${ready.error}` };
   }
@@ -255,7 +213,7 @@ export async function runFffSearch(
   const fffQuery = buildFffGrepQuery(args, cwd, searchPath);
 
   const rawFinder = manager.raw() as unknown as {
-    grep(query: string, opts: Record<string, unknown>): { ok: true; value: unknown } | { ok: false; error: string };
+    grep(query: string, opts: Record<string, unknown>): { ok: true; value: { items: Array<{ relativePath: string; lineNumber: number; col: number; lineContent: string; contextBefore?: string[]; contextAfter?: string[] }>; totalMatched: number; totalFilesSearched: number; totalFiles: number; filteredFileCount: number; nextCursor: unknown | null; regexFallbackError?: string } } | { ok: false; error: string };
   } | null;
 
   if (!rawFinder) {
@@ -288,9 +246,9 @@ export async function runFffSearch(
   }
 
   const raw = grepResult.value;
+  const totalMatched = raw.totalMatched ?? raw.items.length;
   const items = raw.items as Array<{
     relativePath: string;
-    fileName: string;
     lineNumber: number;
     col: number;
     lineContent: string;
@@ -307,7 +265,10 @@ export async function runFffSearch(
     context_after: m.contextAfter ?? [],
   }));
 
-  const truncated = raw.nextCursor !== null && raw.nextCursor !== undefined ? true : (maxResults !== undefined && items.length >= maxResults);
+  const truncated =
+    raw.nextCursor !== null && raw.nextCursor !== undefined
+      ? true
+      : maxResults !== undefined && items.length >= maxResults;
   const filesWithMatches = new Set(matches.map((m) => m.file)).size;
 
   return {
@@ -319,9 +280,10 @@ export async function runFffSearch(
       totalMatches: matches.length,
       filesWithMatches,
       truncated,
-      dropped: truncated ? 1 : 0,
+      dropped: truncated ? Math.max(totalMatched - matches.length, 1) : 0,
     },
     duration_ms: Date.now() - started,
+    regex_fallback: raw.regexFallbackError ?? null,
   };
 }
 
@@ -345,6 +307,7 @@ export function createSearchCodeTool(ctx: SearchCodeToolContext) {
           parsed.data,
           ctx.cwd,
           ctx.sandbox,
+          ctx.scanTimeoutMs,
           ctx.getAbortSignal,
         );
       },

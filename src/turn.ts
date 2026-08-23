@@ -409,6 +409,7 @@ export async function runTurn(
     classicMode,
     cwd: session.cwd,
     sandbox: session.config.shell,
+    scanTimeoutMs: session.config.search_code?.scan_timeout_ms,
     editConfirm: session.config.edit?.confirm,
     getCurrentTurn: () => session.getTurnCount(),
     getLastResetBoundaryTurn: () => boundaryTurn,

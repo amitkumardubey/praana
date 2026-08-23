@@ -1,4 +1,7 @@
-import { join, relative, isAbsolute } from "node:path";
+import { join, relative, isAbsolute, normalize } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import type { SandboxConfig } from "./types.js";
 
 /**
  * fff lifecycle manager — wraps @ff-labs/fff-bun's FileFinder.
@@ -6,9 +9,11 @@ import { join, relative, isAbsolute } from "node:path";
  * The FileFinder is created at session start; the initial scan runs in the
  * background. The first search_code / find_files call awaits scan completion
  * (with timeout) if needed. Resources are freed at session end via destroy().
+ *
+ * A single shared cache (scoped by cwd) ensures only one FileFinder instance
+ * and one background scan per project directory.
  */
 
-// Types mirrored from fff without hard-importing at top-level ( keeps soft-fail ).
 export interface FffManager {
   ensureReady(timeoutMs?: number): Promise<{ ok: true; value: boolean } | { ok: false; error: string }>;
   isAvailable(): boolean;
@@ -31,18 +36,11 @@ async function tryImportFff(): Promise<typeof import("@ff-labs/fff-bun") | null>
   }
 }
 
-// Sync probe for isFffAvailable — uses cached import if already loaded.
-let _syncMod: typeof import("@ff-labs/fff-bun") | null = null;
-
-export function isFffAvailableSync(): boolean | null {
-  return _cachedAvailable;
-}
-
 export function getFffLoadError(): string | null {
   return _fffLoadError;
 }
 
-/** Async probe — actually tries to import. */
+/** Async probe — actually tries to import. Caches the result. */
 export async function isFffAvailable(): Promise<boolean> {
   if (_cachedAvailable !== null) return _cachedAvailable;
   const mod = await tryImportFff();
@@ -50,7 +48,6 @@ export async function isFffAvailable(): Promise<boolean> {
     _cachedAvailable = false;
     return false;
   }
-  _syncMod = mod;
   try {
     _cachedAvailable = mod.FileFinder.isAvailable();
   } catch {
@@ -72,7 +69,6 @@ export async function createFffManager(basePath: string): Promise<FffManager> {
   if (!result.ok) {
     return createFailedManager(basePath, result.error);
   }
-  _syncMod = mod;
   _cachedAvailable = true;
   const finder = result.value;
   let destroyed = false;
@@ -134,11 +130,66 @@ function createFailedManager(basePath: string, error: string): FffManager {
   };
 }
 
-/** Reset cached state — tests only. */
+/** Reset cached availability state — tests only. */
 export function resetFffCache(): void {
   _fffLoadError = null;
   _cachedAvailable = null;
-  _syncMod = null;
+}
+
+// ---- Shared FileFinder cache (single instance per cwd) ----
+
+const fffCache = new Map<string, Promise<FffManager>>();
+
+export async function getFffManager(cwd: string): Promise<FffManager> {
+  const cached = fffCache.get(cwd);
+  if (cached) return cached;
+  const promise = createFffManager(cwd);
+  fffCache.set(cwd, promise);
+  return promise;
+}
+
+export function clearFffCache(): void {
+  for (const [, p] of fffCache) {
+    void p.then((m) => {
+      try {
+        m.destroy();
+      } catch {
+        /* ignore */
+      }
+    });
+  }
+  fffCache.clear();
+  resetFffCache();
+}
+
+// ---- Shared sandbox path validation ----
+
+export function sandboxBlockReason(
+  path: string,
+  sandbox: SandboxConfig | undefined,
+): string | null {
+  if (!sandbox?.enabled || sandbox.allowed_paths.length === 0) return null;
+
+  const resolve = (p: string): string => {
+    const expanded = p.replace(/^~/, homedir());
+    const normalized = normalize(expanded);
+    if (!existsSync(normalized)) return normalized;
+    try {
+      return realpathSync(normalized);
+    } catch {
+      return normalized;
+    }
+  };
+
+  const resolved = resolve(path);
+  const allowed = sandbox.allowed_paths.some((ap) => {
+    const apResolved = resolve(ap);
+    return resolved === apResolved || resolved.startsWith(apResolved + "/");
+  });
+
+  return allowed
+    ? null
+    : `Blocked by sandbox: path not in allowed list: ${path}`;
 }
 
 /**
