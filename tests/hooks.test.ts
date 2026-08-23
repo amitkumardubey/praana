@@ -258,7 +258,9 @@ describe("builtin hook handlers", () => {
   });
 
   it("allows read-only tools in plan mode", async () => {
-    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test");
+    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const result = await registry.runPreToolCall({
       toolName: "read_file",
       args: { path: "a.ts" },
@@ -272,7 +274,9 @@ describe("builtin hook handlers", () => {
 
   it("blocks a second concurrent write without marking isError", async () => {
     const registry = new HookRegistry();
-    registerBuiltinHooks(registry, "/tmp/praana-hooks-test");
+    registerBuiltinHooks(registry, "/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const session = fakeSession();
 
     const first = await registry.runPreToolCall({
@@ -295,7 +299,9 @@ describe("builtin hook handlers", () => {
   });
 
   it("blocks read_file while a write lock is held", async () => {
-    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test");
+    const registry = createBuiltinHookRegistry("/tmp/praana-hooks-test", {
+      validate: { pathExists: () => true },
+    });
     const session = fakeSession();
 
     await registry.runPreToolCall({

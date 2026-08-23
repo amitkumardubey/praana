@@ -1,4 +1,9 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createBuiltinHookRegistry } from "../src/hooks/index.js";
+import { toolResultFromPreBlock } from "../src/hooks/block-result.js";
 import { createValidateHandlers } from "../src/hooks/handlers/validate.js";
 import type { HookSessionLike } from "../src/hooks/types.js";
 
@@ -150,5 +155,44 @@ describe("validate post_tool_call", () => {
       session: session("/proj"),
     });
     expect(patch).toBeUndefined();
+  });
+});
+
+describe("toolResultFromPreBlock", () => {
+  it("copies suggestions", () => {
+    expect(
+      toolResultFromPreBlock({
+        action: "block",
+        error: "missing",
+        isError: true,
+        suggestions: ["a.ts"],
+      }),
+    ).toEqual({ ok: false, error: "missing", suggestions: ["a.ts"] });
+  });
+});
+
+describe("builtin validate order", () => {
+  it("validate runs before write-path so a missing read does not hold a lock", async () => {
+    const dir = join(tmpdir(), `praana-val-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      const registry = createBuiltinHookRegistry(dir);
+      const sess = session(dir);
+      const blocked = await registry.runPreToolCall({
+        toolName: "read_file",
+        args: { path: "missing.ts" },
+        session: sess,
+      });
+      expect(blocked.action).toBe("block");
+      writeFileSync(join(dir, "missing.ts"), "x\n");
+      const again = await registry.runPreToolCall({
+        toolName: "write_file",
+        args: { path: "missing.ts", content: "y" },
+        session: sess,
+      });
+      expect(again.action).toBe("continue");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
