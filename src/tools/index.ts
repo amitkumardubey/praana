@@ -176,6 +176,8 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "git_status() — Structured git working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)",
   "git_diff(staged?, path?, context?) — Structured git diff with files, hunks, and stats",
   "git_commit(message, paths?, all?) — Create a git commit with guardrails (blocked in plan mode; does not push)",
+  "git_branches(base?, include_remote?, limit?) — List branches with last commit + ahead/behind vs base (read-only; allowed in plan mode)",
+  "git_log(branch?, path?, max_count?, since?) — Recent commit history with structured fields (read-only; allowed in plan mode)",
   "code_parse(path, language?) — Tree-sitter syntax diagnostics (TS/JS/Python/Go)",
   "code_imports(path, language?) — Structured imports for a source file",
   "code_symbols(path, language?) — Top-level / exported symbols for a source file",

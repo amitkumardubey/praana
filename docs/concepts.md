@@ -179,7 +179,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Category | Tools | Mode |
 |---|---|---|
 | Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (ripgrep), `code_*` (tree-sitter), `lsp_diagnostics` (opt-in LSP). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
-| Git | `git_status`, `git_diff`, `git_commit` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
+| Git | `git_status`, `git_diff`, `git_commit`, `git_branches`, `git_log` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#300). Opt-in `[verify]` (issue #299) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#300) | Both |
 | Session search | `search_session_log` (in-session events) | Both |
@@ -193,7 +193,7 @@ Tree-sitter `code_*` tools (#11 Phase 1) provide syntax diagnostics and name-bas
 
 Opt-in post-edit verification (#299, `[verify] enabled = false`) runs after a successful write/edit: tree-sitter parse, scoped `tsc --noEmit` from the nearest `tsconfig.json`, then reverse-import selection of `*.test.*` / `*.spec.*` (runner v1: `bun test`). Results attach as `result.verify`. Syntax or type errors skip tests. Missing native / no tsconfig / no affected tests / timeout never flip the edit’s `ok`. `lsp_format` and `lsp_apply_code_action` do not trigger verify. No new agent-facing tools.
 
-Structured git tools (#26) are the first ship of the deterministic tools harness (#195). They return verified JSON instead of porcelain text. Large `git_diff` output is stored losslessly and shown as a stub card in the prompt; `DiffDistiller` may still fill the stored `summary` for stats / memory promotion, but it is not the prompt size-control path.
+Structured git tools (#26 + #318) are the harness's git surface under epic #195. They return verified JSON instead of porcelain text. Large `git_diff` output is stored losslessly and shown as a stub card in the prompt; `DiffDistiller` may still fill the stored `summary` for stats / memory promotion, but it is not the prompt size-control path.
 
 ## Plan Mode
 
