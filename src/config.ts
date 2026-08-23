@@ -19,6 +19,7 @@ import {
 import { setUserProviders } from "./provider-registry.js";
 import { parseReasoningEffort } from "./llm.js";
 import { setBedrockConfigRegion } from "./bedrock/region.js";
+import { RISK_CLASS_SET } from "./risk/classes.js";
 
 function configWarn(
   message: string,
@@ -95,6 +96,9 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   edit: {
     confirm: false,
+  },
+  risk: {
+    allow: [],
   },
   tools: {
     block_repeat_reads: false,
@@ -180,6 +184,7 @@ export type ArrayMergeStrategy = "replace" | "append" | "prepend";
  */
 const ARRAY_MERGE_STRATEGIES: Record<string, ArrayMergeStrategy> = {
   "shell.allowed_paths": "append",
+  "risk.allow": "append",
 };
 
 function dedupePreserveOrder(items: unknown[]): unknown[] {
@@ -584,6 +589,23 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
       configWarn("shell.allowed_paths must be string array, defaulting to []");
       (out.shell as { allowed_paths: readonly string[] }).allowed_paths = [];
     }
+  }
+
+  if (!out.risk || !Array.isArray(out.risk.allow)) {
+    if (out.risk && !Array.isArray(out.risk.allow)) {
+      configWarn("risk.allow must be string array, defaulting to []");
+    }
+    out.risk = { allow: [] };
+  } else {
+    const kept: string[] = [];
+    for (const id of out.risk.allow) {
+      if (typeof id !== "string" || !RISK_CLASS_SET.has(id)) {
+        configWarn(`unknown risk.allow id ${JSON.stringify(id)}, ignoring`);
+        continue;
+      }
+      kept.push(id);
+    }
+    out.risk = { allow: kept };
   }
 
   // Tools config validation

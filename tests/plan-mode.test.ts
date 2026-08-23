@@ -1,7 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import {
   detectPlanApproval,
-  detectPlanModeIntent,
   isBranchCreatingShellCommand,
   isPlanModeMutatingTool,
 } from "../src/plan-mode.js";
@@ -33,26 +32,6 @@ describe("detectPlanApproval", () => {
     expect(detectPlanApproval("continue later")).toBe(false);
     expect(detectPlanApproval("go to the file")).toBe(false);
     expect(detectPlanApproval("execute after reviewing")).toBe(false);
-  });
-});
-
-describe("detectPlanModeIntent", () => {
-  it("enters plan mode for pick-issue phrasing", () => {
-    expect(detectPlanModeIntent("pick a github issue to work on")).toBe(true);
-    expect(detectPlanModeIntent("pick an issue")).toBe(true);
-    expect(detectPlanModeIntent("pick a ticket")).toBe(true);
-  });
-
-  it("enters plan mode for plan-work phrasing", () => {
-    expect(detectPlanModeIntent("plan a change on a new branch")).toBe(true);
-    expect(detectPlanModeIntent("plan how to implement the feature")).toBe(true);
-    expect(detectPlanModeIntent("plan work on the parser")).toBe(true);
-  });
-
-  it("does not enter plan mode for execution discussion", () => {
-    expect(detectPlanModeIntent("plan the execution")).toBe(false);
-    expect(detectPlanModeIntent("plan to execute the tests")).toBe(false);
-    expect(detectPlanModeIntent("we should execute the plan")).toBe(false);
   });
 });
 

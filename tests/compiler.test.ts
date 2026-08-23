@@ -268,7 +268,7 @@ describe('Compiler', () => {
     expect(prompt).toContain('If unsure, ask first.');
   });
 
-  it('should include plan-before-execute rule in system frame', () => {
+  it('does not inject a Plan-Before-Execute rule', () => {
     const prompt = compile({
       stateGraph: {
         list: () => [],
@@ -281,48 +281,10 @@ describe('Compiler', () => {
       cwd: '/test',
       sessionId: 'test-1',
       tokenBudget: 4000,
-    });
-
-    expect(prompt).toContain('## Plan-Before-Execute Rule');
-    expect(prompt).toContain('first response must be a plan only');
-    expect(prompt).toContain('Do not call batch_edit, batch_write, edit_file, git_commit, lsp_apply_code_action, lsp_format, write_file');
-    expect(prompt).toContain("'go', 'execute', 'proceed', or 'continue'");
-  });
-
-  it('omits plan-before-execute when planBeforeExecute is false (headless)', () => {
-    const frame = buildSystemFrame(
-      '/test',
-      'test-1',
-      [],
-      undefined,
-      null,
-      true,
-      undefined,
-      false,
-    );
-    expect(frame).not.toContain('## Plan-Before-Execute Rule');
-    expect(frame).not.toContain('first response must be a plan only');
-    // Adaptive Context memory guidance remains for engine mode.
-    expect(frame).toContain('## Memory Management');
-  });
-
-  it('compile omits plan-before-execute when planBeforeExecute is false', () => {
-    const prompt = compile({
-      stateGraph: {
-        list: () => [],
-        getActive: () => [],
-        getPeripheral: () => [],
-      } as any,
-      memoryDigest: null,
-      recentEvents: [],
-      toolSchemas: [],
-      cwd: '/test',
-      sessionId: 'test-1',
-      tokenBudget: 4000,
-      planBeforeExecute: false,
     });
 
     expect(prompt).not.toContain('## Plan-Before-Execute Rule');
+    expect(prompt).not.toContain('first response must be a plan only');
     expect(prompt).toContain('## Memory Management');
   });
 

@@ -1,10 +1,8 @@
 /**
  * Plan-mode helpers and constants.
  *
- * Centralises the logic for detecting when the user wants to enter/exit plan
- * mode and for deciding whether a tool call is mutating while plan mode is
- * active. Keeping this in one module lets the pre_tool_call hook handler and
- * the system-frame prompt (compiler.ts) stay in sync.
+ * Centralises approval-word detection and whether a tool call is mutating
+ * while `/plan on` is active. The pre_tool_call hook is the runtime gate.
  */
 
 export const PLAN_MODE_BLOCKED_TOOLS = new Set([
@@ -63,21 +61,6 @@ export function detectPlanApproval(userInput: string): boolean {
     if (afterNext && PLAN_APPROVAL_DEFERRAL_WORDS.has(afterNext)) return false;
     return true;
   });
-}
-
-/**
- * Detect whether the user's message indicates they want to enter plan mode.
- *
- * Triggers on pick-an-issue phrasing or explicit planning-of-work phrasing.
- * Avoids triggering on general discussion of execution (e.g. "plan the
- * execution" should not arm the gate).
- */
-export function detectPlanModeIntent(userInput: string): boolean {
-  const lower = userInput.toLowerCase();
-  const pickIssue = /\bpick\b/.test(lower) && /\b(issue|ticket)\b/.test(lower);
-  const planWork =
-    /\bplan\b/.test(lower) && /\b(branch|implement|work on)\b/.test(lower);
-  return pickIssue || planWork;
 }
 
 /**
