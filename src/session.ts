@@ -28,6 +28,9 @@ import {
   saveStateGraphCheckpoint,
 } from "./state-graph-checkpoint.js";
 import { loadConfig } from "./config.js";
+import { createConfirmLock } from "./risk/confirm-lock.js";
+import { promptYesNo } from "./risk/prompt.js";
+import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
 import {
@@ -170,6 +173,7 @@ export class Session {
   private noticeCapture?: (line: string) => void;
   /** True if this session was just resumed and no new user turn has been processed yet. */
   private resumed = false;
+  private readonly confirmLock = createConfirmLock();
 
   private constructor(id: string, cwd: string, config: PraanaConfig, startedAt: number) {
     this.id = id;
@@ -523,6 +527,23 @@ export class Session {
   /** Whether the session is currently in plan mode. */
   isPlanMode(): boolean {
     return this.planMode;
+  }
+
+  async confirmRisk(classId: RiskClass, prompt: string): Promise<RiskConfirmResult> {
+    const allow = this.config.risk?.allow ?? [];
+    if (this.headless) {
+      return allow.includes(classId)
+        ? { allowed: true }
+        : { allowed: false, reason: "headless" };
+    }
+    return this.confirmLock(async () => {
+      try {
+        const yes = await promptYesNo(prompt);
+        return yes ? { allowed: true } : { allowed: false, reason: "declined" };
+      } catch {
+        return { allowed: false, reason: "declined" };
+      }
+    });
   }
 
   private setPlanMode(value: boolean): void {

@@ -7,6 +7,7 @@ import {
 import { createLspEditHandlers } from "./handlers/lsp.js";
 import { createVerifyPostToolCallHandler } from "./handlers/verify.js";
 import { createValidateHandlers } from "./handlers/validate.js";
+import { createRiskPreToolCallHandler } from "./handlers/risk.js";
 import { HookRegistry } from "./registry.js";
 import type { LspManager } from "../lsp/manager.js";
 import type { VerifyConfig } from "../types.js";
@@ -64,8 +65,8 @@ export interface BuiltinHookOptions {
 }
 
 /**
- * Register plan-mode, validate, write-path, then LSP / verify (before lock release).
- * Order: pre = plan → validate → write-path acquire → lsp snapshot
+ * Register plan-mode, validate, risk, write-path, then LSP / verify (before lock release).
+ * Order: pre = plan → validate → risk → write-path acquire → lsp snapshot
  *        post = lsp post-edit → verify → enrich → write-path release
  */
 export function registerBuiltinHooks(
@@ -82,6 +83,7 @@ export function registerBuiltinHooks(
     commandOnPath: opts?.validate?.commandOnPath,
   });
   registry.onPreToolCall(validate.pre);
+  registry.onPreToolCall(createRiskPreToolCallHandler(cwd));
   registry.onPreToolCall(
     createWritePathPreToolCallHandler(writePath, {
       originatingPathForApply: (id) =>

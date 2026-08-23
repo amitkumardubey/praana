@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { createRiskPreToolCallHandler } from "../src/hooks/handlers/risk.js";
 import type { HookSessionLike } from "../src/hooks/types.js";
 
@@ -90,5 +91,50 @@ describe("risk pre_tool_call", () => {
     });
     expect(out).toBeUndefined();
     expect(called).toBe(0);
+  });
+});
+
+describe("risk hook registration", () => {
+  it("runs after plan-mode so write_file is blocked by plan first", async () => {
+    let confirmCalls = 0;
+    const registry = createBuiltinHookRegistry("/proj", {
+      validate: { pathExists: () => true },
+    });
+    const out = await registry.runPreToolCall({
+      toolName: "write_file",
+      args: { path: "src/a.ts" },
+      session: {
+        cwd: "/proj",
+        isPlanMode: () => true,
+        confirmRisk: async () => {
+          confirmCalls++;
+          return { allowed: true };
+        },
+      },
+    });
+    expect(out.action).toBe("block");
+    expect(confirmCalls).toBe(0);
+  });
+
+  it("reaches risk confirm for rm while plan mode is on", async () => {
+    let confirmCalls = 0;
+    const registry = createBuiltinHookRegistry("/proj");
+    const out = await registry.runPreToolCall({
+      toolName: "shell",
+      args: { command: "rm -rf tmp" },
+      session: {
+        cwd: "/proj",
+        isPlanMode: () => true,
+        confirmRisk: async () => {
+          confirmCalls++;
+          return { allowed: false, reason: "declined" };
+        },
+      },
+    });
+    expect(out.action).toBe("block");
+    expect(confirmCalls).toBe(1);
+    if (out.action === "block") {
+      expect(out.error).toContain("User declined rm");
+    }
   });
 });
