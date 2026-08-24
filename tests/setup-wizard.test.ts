@@ -43,6 +43,7 @@ import {
 } from "../src/provider-catalog.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import { DEFAULT_MODELS } from "../src/llm.js";
+import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
 
 describe("setup wizard", () => {
   let praanaHome: string;
@@ -240,22 +241,9 @@ describe("setup wizard", () => {
   // ── logic: tryAutoSelectProvider ──
 
   describe("tryAutoSelectProvider", () => {
-    // Known provider env keys that might leak from the dev environment.
-    const PROVIDER_ENV_KEYS = [
-      "OPENROUTER_API_KEY",
-      "OPENAI_API_KEY",
-      "ANTHROPIC_API_KEY",
-      "DEEPSEEK_API_KEY",
-      "GROQ_API_KEY",
-      "XAI_API_KEY",
-      "FIREWORKS_API_KEY",
-      "OPENCODE_API_KEY",
-      "TOGETHER_API_KEY",
-      "UMANS_AI_CODING_PLAN_API_KEY",
-      "NVIDIA_API_KEY",
-      "GOOGLE_GENERATIVE_AI_API_KEY",
-      "MISTRAL_API_KEY",
-    ];
+    // Every provider env key that might leak from the dev environment,
+    // derived from both registries so new providers are covered too.
+    const PROVIDER_ENV_KEYS = providerEnvKeyNames();
     const savedEnv: Record<string, string | undefined> = {};
 
     beforeEach(() => {

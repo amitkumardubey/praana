@@ -3,22 +3,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
 
-const PROVIDER_ENV_KEYS = [
-  "OPENROUTER_API_KEY",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "GROQ_API_KEY",
-  "GOOGLE_GENERATIVE_AI_API_KEY",
-  "MISTRAL_API_KEY",
-  "XAI_API_KEY",
-  "FIREWORKS_API_KEY",
-  "TOGETHER_API_KEY",
-  "OPENCODE_API_KEY",
-  "UMANS_AI_CODING_PLAN_API_KEY",
-  "NVIDIA_API_KEY",
-] as const;
+const PROVIDER_ENV_KEYS = providerEnvKeyNames();
 
 describe("main entrypoint guards", () => {
   let root: string;

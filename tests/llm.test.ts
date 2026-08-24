@@ -26,6 +26,28 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 describe("llm provider registry", () => {
+  // Isolate the credential store so keys stored in the developer's real
+  // ~/.praana/credentials.json cannot make providers look "available".
+  let praanaHome: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    praanaHome = mkdtempSync(join(tmpdir(), "praana-llm-registry-"));
+    prevHome = process.env.PRAANA_HOME;
+    process.env.PRAANA_HOME = praanaHome;
+    setAppLogger(new PraanaLogger({ domain: "llm", writeLine: () => {} }));
+    resetUserProvidersForTests();
+    resetCredentialStoreForTests();
+  });
+
+  afterEach(() => {
+    resetUserProvidersForTests();
+    resetCredentialStoreForTests();
+    rmSync(praanaHome, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = prevHome;
+  });
+
   it("includes opencode with OpenCode Zen endpoint", () => {
     const pc = getProviderConfig("opencode");
     expect(pc.provider).toBe("opencode");
