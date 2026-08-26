@@ -111,6 +111,9 @@ export function inferContentTypeFromTool(
   if (sourceTool === "git_diff") {
     return "diff";
   }
+  if (sourceTool === "run_tests") {
+    return "test_output";
+  }
 
   if (!command) return null;
   const normalized = command.trim();

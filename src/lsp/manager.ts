@@ -11,7 +11,9 @@ import {
   lspLanguageId,
   resolveServerArgv,
   resolveServerKey,
+  type DefaultLspServerSpec,
 } from "./language.js";
+import { resolveOrInstallServer } from "./installer.js";
 import { normalizeRoot, resolveLspRoot } from "./workspace-roots.js";
 import {
   CODE_ACTIONS_MAX,
@@ -51,6 +53,22 @@ export interface LspManagerOptions {
   /** Test injection — skip real backoff. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  resolveServer?: (
+    key: string,
+    opts: {
+      config: LspConfig;
+      lspCacheDir?: string;
+      installFn?: (
+        spec: DefaultLspServerSpec,
+        cacheDir: string,
+      ) => Promise<string | null>;
+    },
+  ) => Promise<string[] | null>;
+  lspCacheDir?: string;
+  installFn?: (
+    spec: DefaultLspServerSpec,
+    cacheDir: string,
+  ) => Promise<string | null>;
 }
 
 export interface ApplyLock {
@@ -135,6 +153,9 @@ export class LspManager {
   private readonly maxClients: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
+  private readonly resolveServer?: LspManagerOptions["resolveServer"];
+  private readonly lspCacheDir?: string;
+  private readonly installFn?: LspManagerOptions["installFn"];
   private shutDown = false;
 
   constructor(opts: LspManagerOptions) {
@@ -144,6 +165,9 @@ export class LspManager {
     this.maxClients = opts.maxClients ?? LSP_DEFAULT_MAX_CLIENTS;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = opts.now ?? Date.now;
+    this.resolveServer = opts.resolveServer;
+    this.lspCacheDir = opts.lspCacheDir;
+    this.installFn = opts.installFn;
   }
 
   get enabled(): boolean {
@@ -715,11 +739,16 @@ export class LspManager {
     root: string,
     serverKey: string,
   ): Promise<LspClient> {
-    const argv = resolveServerArgv(serverKey, this.config.servers);
-    if (!argv) {
+    const resolver = this.resolveServer ?? resolveOrInstallServer;
+    const argv = await resolver(serverKey, {
+      config: this.config,
+      lspCacheDir: this.lspCacheDir,
+      installFn: this.installFn,
+    });
+    if (!argv || argv.length === 0) {
       throw new LspClientError(
         "unavailable",
-        `No LSP server configured for language '${serverKey}'`,
+        `No LSP server available for language '${serverKey}'`,
       );
     }
     return this.startClient({

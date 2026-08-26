@@ -318,6 +318,8 @@ export interface LspConfig {
   max_file_lines: number;
   /** Language id → argv (executable + args). Empty = no server for that language. */
   servers: Record<string, string[]>;
+  /** Automatically download/install missing default language servers into ~/.praana/lsp. Default: true. */
+  auto_install?: boolean;
 }
 
 /** Post-edit verification (issue #299) — syntax / scoped tsc / test-impact. */

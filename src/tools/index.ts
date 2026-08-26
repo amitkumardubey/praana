@@ -14,6 +14,7 @@ import { createFindFilesTool } from "./find-files.js";
 import { createGitTools } from "./git.js";
 import { createCodeIntelTools } from "./code-intel.js";
 import { createLspTools } from "./lsp.js";
+import { createRunTestsTool } from "./run-tests.js";
 import type { LspManager } from "../lsp/manager.js";
 
 export interface ToolRegistryContext {
@@ -136,6 +137,11 @@ export function createAllTools(ctx: ToolRegistryContext) {
     getLsp: () => ctx.lspManager ?? null,
     clearReadPath: ctx.clearReadPath,
   });
+  const testTools = createRunTestsTool({
+    cwd: ctx.cwd,
+    sandbox: ctx.sandbox,
+    getAbortSignal: ctx.getAbortSignal,
+  });
 
   return {
     ...memoryTools,
@@ -146,6 +152,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     ...gitTools,
     ...codeIntelTools,
     ...lspTools,
+    ...testTools,
   };
 }
 
@@ -182,6 +189,7 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "batch_edit(edits) — Edit multiple files atomically",
   "search_code(pattern, path?, glob?, glob_exclude?, case_insensitive?, context?, max_results?, file_type?, timeout?) — Structured fff-backed code search (file:line:column matches with context and stats)",
   "find_files(pattern, mode?, path?, max_results?, timeout?) — Fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode; returns file paths with git status)",
+  "run_tests(command?, files?, timeout_ms?, runner?) — Run project tests with structured results (pass/fail/skipped counts, failures, duration)",
   "git_status() — Structured git working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)",
   "git_diff(staged?, path?, context?) — Structured git diff with files, hunks, and stats",
   "git_commit(message, paths?, all?) — Create a git commit with guardrails (blocked in plan mode; does not push)",

@@ -31,6 +31,12 @@ const UNICODE_ICONS: Record<string, string> = {
   recall: "◆",
   remember: "◆",
   load_skill: "✦",
+  git_status: "⎇",
+  git_diff: "±",
+  git_commit: "✓",
+  git_branches: "⎇",
+  git_log: "☲",
+  run_tests: "✓",
   // state/memory tools — distinct per action
   create_task: "▸",
   complete_task: "↩",
@@ -63,6 +69,13 @@ const ASCII_ICONS: Record<string, string> = {
   recall: "m·",
   remember: "m·",
   load_skill: "sk",
+  git_status: "gs",
+  git_diff: "gd",
+  git_commit: "gc",
+  git_branches: "gb",
+  git_log: "gl",
+  run_tests: "t·",
+  // state/memory tools — distinct per action
   create_task: "t>",
   complete_task: "t<",
   decide: "d·",
@@ -94,6 +107,12 @@ const TOOL_SHORT: Record<string, string> = {
   recall: "recall",
   remember: "remember",
   load_skill: "skill",
+  git_status: "git-status",
+  git_diff: "git-diff",
+  git_commit: "git-commit",
+  git_branches: "git-branches",
+  git_log: "git-log",
+  run_tests: "test",
   create_task: "task",
   complete_task: "done",
   decide: "decide",
@@ -205,6 +224,17 @@ export function formatToolDisplay(
     case "load_skill": {
       const id = String(args.skill_id ?? args.name ?? "").slice(0, 40);
       return { icon, label: id ? `${short}  ${id}` : short, pending: "loading…" };
+    }
+    case "run_tests": {
+      const target = typeof args.command === "string" && args.command
+        ? args.command
+        : Array.isArray(args.files) && args.files.length > 0
+          ? args.files.join(" ")
+          : typeof args.runner === "string"
+            ? args.runner
+            : "";
+      const label = target ? `${short}  ${target.slice(0, 48)}` : short;
+      return { icon, label, pending: "testing…" };
     }
     default: {
       const summary = summarizeArgs(toolName, args);

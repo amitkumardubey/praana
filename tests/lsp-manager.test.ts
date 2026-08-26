@@ -31,11 +31,12 @@ function baseConfig(over: Partial<LspConfig> = {}): LspConfig {
 }
 
 describe("language helpers", () => {
-  it("maps TS/JS extensions", () => {
+  it("maps TS/JS extensions and other supported languages", () => {
     expect(languageFromPath("a.ts")).toBe("typescript");
     expect(languageFromPath("a.tsx")).toBe("typescript");
     expect(languageFromPath("a.js")).toBe("javascript");
-    expect(languageFromPath("a.py")).toBeNull();
+    expect(languageFromPath("a.py")).toBe("python");
+    expect(languageFromPath("a.xyz")).toBeNull();
   });
 
   it("falls back javascript → typescript server", () => {

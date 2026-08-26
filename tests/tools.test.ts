@@ -1949,4 +1949,16 @@ describe('Tool registry (mode-aware)', () => {
     expect(classic.some((t) => t.includes('code_definition is name-based'))).toBe(true);
     expect(engine.some((t) => t.startsWith('lsp_apply_code_action'))).toBe(true);
   });
+
+  it('createAllTools and describeTools include run_tests in both modes', () => {
+    const classicTools = createAllTools({ ...baseCtx, classicMode: true });
+    const engineTools = createAllTools({ ...baseCtx, classicMode: false });
+    expect('run_tests' in classicTools).toBe(true);
+    expect('run_tests' in engineTools).toBe(true);
+
+    const classic = describeTools({ contextEngineEnabled: false, classicMode: true });
+    const engine = describeTools({ contextEngineEnabled: true });
+    expect(classic.some((t) => t.startsWith('run_tests'))).toBe(true);
+    expect(engine.some((t) => t.startsWith('run_tests'))).toBe(true);
+  });
 });

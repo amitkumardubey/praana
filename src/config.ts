@@ -661,6 +661,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     timeout_ms: 5000,
     max_file_lines: 10_000,
     servers: {},
+    auto_install: true,
   };
   if (!out.lsp) {
     out.lsp = { ...lspDefaults };
@@ -676,6 +677,12 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.lsp.format_on_edit !== "boolean") {
       configWarn("lsp.format_on_edit must be boolean, defaulting to false");
       out.lsp.format_on_edit = lspDefaults.format_on_edit;
+    }
+    if (typeof out.lsp.auto_install !== "boolean") {
+      if (out.lsp.auto_install !== undefined) {
+        configWarn("lsp.auto_install must be boolean, defaulting to true");
+      }
+      out.lsp.auto_install = lspDefaults.auto_install;
     }
     if (
       !Number.isFinite(out.lsp.timeout_ms) ||
