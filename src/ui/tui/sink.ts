@@ -1,16 +1,15 @@
 /**
- * TurnUiSink → TranscriptContainer routing (design §4 ambient signals).
+ * TurnUiSink → transcript mount routing (design §4 ambient signals).
  */
-import type { TUI } from "@earendil-works/pi-tui";
 import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
 import type { LogEntry } from "../../logger.js";
-import type { TranscriptContainer } from "./transcript/container.js";
 import {
   type TranscriptEntry,
   type ToolEntry,
 } from "./transcript/model.js";
+import type { TranscriptMount } from "./transcript/mount.js";
 import type { TranscriptProjection } from "./transcript/projection.js";
-import type { ToastRegion } from "./toast-region.js";
+import type { ToastApi } from "./shell-ui.js";
 import { formatTurnFooterDigest } from "./tool-icons.js";
 import {
   type ContextDisplaySnapshot,
@@ -35,13 +34,12 @@ export interface SinkOpts {
   onSlashCommandResult?: (lines: string[]) => void;
 }
 
-export class PiTuiSink implements TurnUiSink {
-  /** Buffer shell output into tool rows — raw stdout corrupts pi-tui redraws. */
+export class OpenTuiSink implements TurnUiSink {
+  /** Buffer shell output into tool rows — raw stdout corrupts OpenTUI redraws. */
   readonly shellLiveStream = false;
 
-  private readonly tui: TUI;
-  private readonly transcript: TranscriptContainer;
-  private readonly toast: ToastRegion;
+  private readonly transcript: TranscriptMount;
+  private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
 
   private group = 1;
@@ -62,12 +60,10 @@ export class PiTuiSink implements TurnUiSink {
   private nextLocalId = 1;
 
   constructor(
-    tui: TUI,
-    transcript: TranscriptContainer,
-    toast: ToastRegion,
+    transcript: TranscriptMount,
+    toast: ToastApi,
     opts: SinkOpts,
   ) {
-    this.tui = tui;
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
@@ -328,17 +324,21 @@ export class PiTuiSink implements TurnUiSink {
   }
 
   onError(entry: LogEntry): void {
-    if (entry.level === "error" || entry.level === "warn") {
-      const msg = `[${entry.domain}] ${entry.message}`;
-      this.applyTranscriptEvent({
-        type: "system_line",
-        id: this.nextId("system"),
-        group: this.group,
-        text: msg,
-      });
-      this.toast.show(msg, "error");
-      this.tui.requestRender();
+    if (entry.level !== "error" && entry.level !== "warn") return;
+
+    // LLM errors already land in the transcript via onFallback from the turn
+    // layer — do not also toast/console them (avoids the sticky duplicate).
+    if (entry.domain === "llm") {
+      return;
     }
+
+    const msg = `[${entry.domain}] ${entry.message}`;
+    this.applyTranscriptEvent({
+      type: "system_line",
+      id: this.nextId("system"),
+      group: this.group,
+      text: msg,
+    });
   }
 
   flushText(): void {}
@@ -434,6 +434,7 @@ export class PiTuiSink implements TurnUiSink {
     const thinking = entries.find((entry) => entry.id === this.thinkingStreamId);
     if (assistant) this.persist(assistant);
     if (thinking) this.persist(thinking);
+    this.transcript.finalizeStreams?.([this.assistantStreamId, this.thinkingStreamId]);
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
   }

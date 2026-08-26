@@ -19,6 +19,8 @@ import {
   createTestLogger,
   extractLlmErrorMessage,
   formatUserFacingLlmError,
+  friendlyLlmError,
+  parseLlmError,
   getAppLogger,
   getSessionSystemLogPath,
   LOG_RETENTION_DAYS,
@@ -158,6 +160,19 @@ describe("logger", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("captures log output without writing it to stderr when a TUI sink is active", () => {
+    const lines: string[] = [];
+    const logger = new PraanaLogger({
+      domain: "llm",
+      writeLine: (line) => lines.push(line),
+    });
+
+    logger.error("LLM stream error", { code: "LLM_STREAM_ERROR" });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("LLM stream error");
+  });
+
   it("extracts pi-ai error messages", () => {
     expect(
       extractLlmErrorMessage({ errorMessage: "401 Unauthorized" }),
@@ -189,10 +204,47 @@ describe("logger", () => {
     ).toContain("no response from model");
   });
 
+  it("parseLlmError extracts status and human message from provider JSON", () => {
+    expect(
+      parseLlmError('403: {"type":"account_suspended","message":"Your account has been cancelled.","reason":"cancellation_effective"}'),
+    ).toEqual({
+      status: 403,
+      message: "Your account has been cancelled.",
+      type: "account_suspended",
+    });
+    expect(parseLlmError("401 Unauthorized")).toEqual({});
+    expect(parseLlmError("")).toEqual({});
+    expect(parseLlmError(undefined)).toEqual({});
+  });
+
+  it("friendlyLlmError collapses raw JSON into a short actionable line", () => {
+    const friendly = friendlyLlmError(
+      '403: {"type":"account_suspended","message":"Your account has been cancelled. Visit https://umans.ai/billing to reactivate.","reason":"cancellation_effective"}',
+    );
+    expect(friendly).toContain("Your account has been cancelled");
+    expect(friendly).toContain("reactivate");
+    expect(friendly!.length).toBeLessThan(200);
+    // Plain text passes through unchanged.
+    expect(friendlyLlmError("401 Unauthorized")).toBe("401 Unauthorized");
+    expect(friendlyLlmError(undefined)).toBeUndefined();
+  });
+
+  it("formatUserFacingLlmError uses friendly text for JSON payloads", () => {
+    const out = formatUserFacingLlmError({
+      reason: "error",
+      llmMessage:
+        '403: {"type":"account_suspended","message":"Your account has been cancelled.","reason":"cancellation_effective"}',
+      model: "m",
+      provider: "openrouter",
+    });
+    expect(out).toContain("Your account has been cancelled");
+    expect(out).not.toContain('"type"');
+    expect(out).not.toContain("account_suspended");
+  });
+
   it("exposes a shared app logger", () => {
     expect(getAppLogger()).toBeInstanceOf(PraanaLogger);
   });
-
   it("keeps 15 days of daily rotated logs", () => {
     expect(LOG_RETENTION_DAYS).toBe(15);
     expect(LOG_RETENTION_COUNT).toBe(14);

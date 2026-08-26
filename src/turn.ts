@@ -682,6 +682,7 @@ export async function runTurn(
     sessionId: session.id,
     sessionLogDir: session.config.session?.log_dir ?? resolveDefaultSessionLogDir(),
     debug: session.debug,
+    suppressStderr: (session as Session).shouldSuppressLoggerStderr?.() ?? false,
   });
   const llmLogger = logger.child("llm");
   const providerName = effectiveLlm.provider;

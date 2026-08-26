@@ -24,3 +24,6 @@ TODO.md
 jobs/
 __pycache__/
 *.pyc
+
+# Brainstorm visual-companion mockups
+.superpowers/

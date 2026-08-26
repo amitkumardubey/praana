@@ -1,8 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
-import { PiTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
+import { OpenTuiSink, type SinkOpts } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
-import type { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
-import type { ToastRegion } from "../src/ui/tui/toast-region.js";
+import type { TranscriptMount } from "../src/ui/tui/transcript/mount.js";
+import type { ToastApi } from "../src/ui/tui/shell-ui.js";
 import type { ContextDisplaySnapshot } from "../src/context-display.js";
 
 function baseline(overrides: Partial<ContextDisplaySnapshot> = {}): ContextDisplaySnapshot {
@@ -30,16 +30,15 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
   const patchToolResult = mock(() => true);
   const persistEntry = mock(() => {});
   const onContextPreview = mock((_: ContextDisplaySnapshot) => {});
-  const sink = new PiTuiSink(
-    { requestRender: mock() } as never,
+  const sink = new OpenTuiSink(
     {
       renderEntries,
       appendEntry,
       appendAssistantDelta,
       appendThinkingDelta,
       patchToolResult,
-    } as unknown as TranscriptContainer,
-    { show: mock() } as unknown as ToastRegion,
+    } as unknown as TranscriptMount,
+    { show: mock(), clearErrors: mock() } as unknown as ToastApi,
     {
       ambient: "inline",
       showThinking: () => true,
@@ -64,7 +63,7 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
   };
 }
 
-describe("PiTuiSink", () => {
+describe("OpenTuiSink", () => {
   it("disables shell live streaming so output stays in the transcript", () => {
     const { sink } = makeSink();
     expect(sink.shellLiveStream).toBe(false);
@@ -218,6 +217,37 @@ describe("PiTuiSink", () => {
     expect(footer?.text).toBeDefined();
     expect(footer!.text).not.toContain("18%w→");
     expect(footer!.text).toContain("16%w");
+  });
+
+  it("does not toast LLM errors (transcript onFallback owns the user-facing line)", () => {
+    const { sink, projection } = makeSink();
+    const toast = (sink as unknown as { toast: ToastApi }).toast;
+
+    sink.onError({
+      level: "error",
+      domain: "llm",
+      message: "Model not found",
+      code: "LLM_STREAM_ERROR",
+    });
+
+    expect(projection.entries()).toHaveLength(0);
+    expect(toast.show).not.toHaveBeenCalled();
+  });
+
+  it("puts non-LLM errors in the transcript without a toast", () => {
+    const { sink, projection } = makeSink();
+    const toast = (sink as unknown as { toast: ToastApi }).toast;
+
+    sink.onError({
+      level: "error",
+      domain: "memory",
+      message: "db locked",
+      code: "MEM_ERROR",
+    });
+
+    expect(projection.entries()).toHaveLength(1);
+    expect(projection.entries()[0]?.text).toContain("[memory] db locked");
+    expect(toast.show).not.toHaveBeenCalled();
   });
 
   it("routes slash command output to the overlay callback", () => {

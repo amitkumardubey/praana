@@ -1,5 +1,5 @@
 /**
- * Virtual transcript performance harness for issue #269.
+ * Transcript store performance harness (Solid path).
  *
  * Run with:
  *   bun run scripts/benchmark-virtual-transcript.ts
@@ -7,7 +7,7 @@
 import os from "node:os";
 import { performance } from "node:perf_hooks";
 import { buildTranscriptIndex } from "../src/ui/tui/transcript/index.js";
-import { TranscriptContainer } from "../src/ui/tui/transcript/container.js";
+import { createTranscriptStore } from "../src/ui/tui/transcript/store.js";
 import { generateLargeTranscriptEvents } from "../tests/fixtures/large-transcript.js";
 
 interface BenchmarkSample {
@@ -30,15 +30,10 @@ interface BenchmarkResult {
     turns: number;
     totalEvents: number;
     totalEntries: number;
-    mountedGroups: number;
     totalGroups: number;
     approximateBodyBytes: number;
   };
   samples: BenchmarkSample[];
-}
-
-function fakeTui() {
-  return { requestRender: () => {} } as never;
 }
 
 function measure<T>(fn: () => T): { result: T; ms: number } {
@@ -54,8 +49,7 @@ async function main() {
   const toolChars = 50_000;
 
   const events = generateLargeTranscriptEvents({ turns, thinkingChars, toolChars });
-  const approximateBodyBytes =
-    turns * (thinkingChars + toolChars) * 2; // rough UTF-8 byte count
+  const approximateBodyBytes = turns * (thinkingChars + toolChars) * 2;
 
   const build = measure(() => buildTranscriptIndex(events, { useUnicode: true }));
   const index = build.result;
@@ -65,48 +59,26 @@ async function main() {
   );
 
   const mount = measure(() => {
-    const container = new TranscriptContainer(fakeTui(), {
-      markdownRendering: false,
-      syntaxTheme: "nord",
-      backgroundZones: false,
-      useUnicode: true,
-    });
-    container.loadIndex(index);
-    return container;
+    const store = createTranscriptStore();
+    store.loadIndex(index);
+    return store;
   });
-  const container = mount.result;
+  const store = mount.result;
 
-  const render = measure(() => container.render(120));
+  const tail = store.entries[store.entries.length - 1];
+  const streamId =
+    store.entries.find((e) => e.role === "assistant")?.id ??
+    (tail && tail.role === "assistant" ? tail.id : null);
 
-  // Simulate streaming an assistant delta at the tail.
-  const tailGroup = container.getTotalGroups();
-  const stream = measure(() =>
-    container.appendAssistantDelta(`assistant-${tailGroup}`, " extra word"),
-  );
-
-  // Page to the oldest group and measure prepend cost.
-  const prependSamples: number[] = [];
-  while (container.getMountedGroupRange().start > 0) {
-    const s = measure(() => container.onScrollUp());
-    prependSamples.push(s.ms);
-  }
-  const prependP95 = prependSamples.sort((a, b) => a - b)[
-    Math.floor(prependSamples.length * 0.95)
-  ] ?? 0;
-
-  // Focus and expand the largest (newest) tool row.
-  container.setFocused(true);
-  const expandStart = performance.now();
-  container.handleInput("\r"); // expand selected tail entry
-  // Allow the async resolver to complete.
-  while (container.pendingExpansions.size > 0) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  const expandMs = performance.now() - expandStart;
-
-  const collapse = measure(() => {
-    container.handleInput("\r"); // collapse
+  const stream = measure(() => {
+    if (streamId) store.mount.appendAssistantDelta(streamId, " extra word");
   });
+
+  const clear = measure(() => {
+    store.clear();
+  });
+
+  store.dispose();
 
   const result: BenchmarkResult = {
     metadata: {
@@ -122,22 +94,14 @@ async function main() {
       turns,
       totalEvents: events.length,
       totalEntries,
-      mountedGroups: container.getMountedGroupRange().end - container.getMountedGroupRange().start,
-      totalGroups: container.getTotalGroups(),
+      totalGroups: index.groups.length,
       approximateBodyBytes,
     },
     samples: [
       { name: "build_index", ms: build.ms },
-      { name: "resume_mount", ms: mount.ms },
-      { name: "render_mounted_range", ms: render.ms },
+      { name: "resume_load_store", ms: mount.ms },
       { name: "tail_streaming_patch", ms: stream.ms },
-      {
-        name: "upward_page_prepend_p95",
-        ms: prependP95,
-        details: { prependCalls: prependSamples.length },
-      },
-      { name: "expand_large_tool_body", ms: expandMs },
-      { name: "collapse_large_tool_body", ms: collapse.ms },
+      { name: "clear_store", ms: clear.ms },
     ],
   };
 

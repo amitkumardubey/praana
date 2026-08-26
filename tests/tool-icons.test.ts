@@ -10,6 +10,7 @@ import {
 } from "../src/ui/tui/tool-icons.js";
 import { formatTuiBootSummary } from "../src/ui/tui/boot-summary.js";
 import { formatTuiGlanceLine, formatTuiIdentityLine } from "../src/ui/tui/chrome/glance-format.js";
+import { segmentsToPlainText } from "../src/ui/tui/theme.js";
 import type { StatusBarInput } from "../src/status-bar.js";
 
 describe("toolIcon", () => {
@@ -291,7 +292,7 @@ describe("formatTuiGlanceLine", () => {
   };
 
   it("shows ctx usage as tokens, window, and percent", () => {
-    const line = formatTuiGlanceLine(base, { showCost: false });
+    const line = segmentsToPlainText(formatTuiGlanceLine(base, { showCost: false }));
     expect(line).toContain("ctx");
     expect(line).toContain("43k/100k");
     expect(line).toContain("43%");
@@ -300,16 +301,16 @@ describe("formatTuiGlanceLine", () => {
   });
 
   it("shows separate input and output session tokens when showCost is on", () => {
-    const line = formatTuiGlanceLine(
+    const line = segmentsToPlainText(formatTuiGlanceLine(
       { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
       { showCost: true },
-    );
+    ));
     expect(line).toContain("in 12k");
     expect(line).toContain("out 3.4k");
   });
 
   it("shows weighted ctx suffix and pressure mode in engine mode", () => {
-    const line = formatTuiGlanceLine(
+    const line = segmentsToPlainText(formatTuiGlanceLine(
       {
         ...base,
         contextDisplayMode: "engine",
@@ -319,40 +320,55 @@ describe("formatTuiGlanceLine", () => {
         contextUsedTokens: 14_000,
       },
       { showCost: false },
-    );
+    ));
     expect(line).toContain("14%w");
     expect(line).toContain("(41% raw)");
     expect(line).toContain("compact");
   });
 
   it("omits session token breakdown when showCost is false even with non-zero totals", () => {
-    const line = formatTuiGlanceLine(
+    const line = segmentsToPlainText(formatTuiGlanceLine(
       { ...base, sessionInputTokens: 12_000, sessionOutputTokens: 3_400 },
       { showCost: false },
-    );
+    ));
     expect(line).not.toContain("in 12k");
     expect(line).not.toContain("out 3.4k");
     expect(line).toContain("ctx");
   });
 
   it("formats ctx percent without a window denominator when contextWindowTokens is zero", () => {
-    const line = formatTuiGlanceLine(
+    const line = segmentsToPlainText(formatTuiGlanceLine(
       { ...base, contextUsedTokens: 12_000, contextWindowTokens: 0 },
       { showCost: false },
-    );
+    ));
     expect(line).toContain("ctx 0%");
     expect(line).not.toContain("/");
   });
 
   it("shows plan mode in glance line", () => {
-    const line = formatTuiGlanceLine({ ...base, planMode: true }, { showCost: false });
+    const line = segmentsToPlainText(formatTuiGlanceLine({ ...base, planMode: true }, { showCost: false }));
     expect(line).toContain("plan");
+  });
+
+  it("combines think + effort and shows green engine on flag", () => {
+    const line = segmentsToPlainText(formatTuiGlanceLine(
+      {
+        ...base,
+        thinking: true,
+        reasoningEffort: "medium",
+        contextEngineEnabled: true,
+      },
+      { showCost: false },
+    ));
+    expect(line).toContain("think medium");
+    expect(line).toContain("engine on");
+    expect(line).not.toContain("effort medium");
   });
 });
 
 describe("formatTuiIdentityLine", () => {
-  it("includes brand and model", () => {
-    const line = formatTuiIdentityLine({
+  it("includes brand and slash model", () => {
+    const line = segmentsToPlainText(formatTuiIdentityLine({
       model: "openrouter/claude-opus-4.8",
       repoPath: "/x",
       cwd: "/x/praana",
@@ -370,10 +386,11 @@ describe("formatTuiIdentityLine", () => {
       agentsContextLoaded: false,
       sessionInputTokens: 0,
       sessionOutputTokens: 0,
-    });
+    }));
     expect(line).toContain("praana");
-    expect(line).toContain("openrouter");
+    expect(line).toContain("openrouter/claude-opus-4.8");
     expect(line).toContain("main");
+    expect(line).toContain(" · ");
   });
 });
 

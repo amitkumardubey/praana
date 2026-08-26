@@ -69,6 +69,7 @@ export class AppController {
       if (resolvedId) {
         this.session = await Session.resume(resolvedId, this.cwd, this.config, {
           captureNotice,
+          suppressLoggerStderr: true,
         });
         didResume = true;
       } else {
@@ -77,6 +78,7 @@ export class AppController {
         this.session = await Session.create(this.cwd, this.config, {
           incognito: this.parsed.incognito,
           captureNotice,
+          suppressLoggerStderr: true,
         });
       }
       if (didResume) {
@@ -95,6 +97,7 @@ export class AppController {
       this.session = await Session.create(this.cwd, this.config, {
         incognito: this.parsed.incognito,
         captureNotice,
+        suppressLoggerStderr: true,
       });
       this.session.debug = debug;
     }
@@ -255,7 +258,7 @@ export class AppController {
       spinnerStopped = true;
     };
 
-    // Do NOT use `{ ...uiSink }` — uiSink may be a class instance (PiTuiSink)
+    // Do NOT use `{ ...uiSink }` — uiSink may be a class instance (OpenTuiSink)
     // whose methods live on the prototype, not as own properties, so spread
     // silently drops onToolCall, onToolResult, onMemoryBanner, onError, etc.
     // Build an explicit delegate that forwards every TurnUiSink member.

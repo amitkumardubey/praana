@@ -63,38 +63,46 @@ export type SlashCommandToastTone = "info" | "success" | "error";
  * also appear here so the dropdown never drifts from the real command set.
  * Keep the two in sync — tests/slash-commands.test.ts guards against drift.
  */
+export type SlashCommandCategory =
+  | "Session"
+  | "Memory"
+  | "Model & Config"
+  | "Tools"
+  | "Insight";
+
 export interface SlashCommandMeta {
   name: string;
   description: string;
   argumentHint?: string;
   aliases?: string[];
+  category: SlashCommandCategory;
 }
 
 export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
-  { name: "/exit", description: "End session", aliases: ["/quit"] },
-  { name: "/state", description: "List working-memory state objects" },
-  { name: "/stats", description: "Session metadata + memory stats" },
-  { name: "/scorecard", description: "Per-session telemetry scorecard" },
-  { name: "/digest", description: "Show Cognitive Memory digest" },
-  { name: "/events", description: "Show recent event-log entries" },
-  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>" },
-  { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>" },
-  { name: "/sessions", description: "List past sessions" },
-  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>" },
-  { name: "/debug", description: "Toggle debug mode" },
-  { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off" },
-  { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh" },
-  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off" },
-  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]" },
-  { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go" },
-  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>" },
-  { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe" },
-  { name: "/login", description: "Add or update a provider", argumentHint: "[provider]" },
-  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]" },
-  { name: "/setup", description: "Run provider/config setup wizard" },
-  { name: "/clear", description: "Reset in-session context" },
-  { name: "/new", description: "Start a new session" },
-  { name: "/help", description: "Show all commands" },
+  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session" },
+  { name: "/state", description: "List working-memory state objects", category: "Insight" },
+  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
+  { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
+  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
+  { name: "/events", description: "Show recent event-log entries", category: "Insight" },
+  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>", category: "Model & Config" },
+  { name: "/sessions", description: "List past sessions", category: "Session" },
+  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
+  { name: "/debug", description: "Toggle debug mode", category: "Tools" },
+  { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off", category: "Model & Config" },
+  { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh", category: "Model & Config" },
+  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
+  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
+  { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go", category: "Tools" },
+  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
+  { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
+  { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
+  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
+  { name: "/setup", description: "Run provider/config setup wizard", category: "Model & Config" },
+  { name: "/clear", description: "Reset in-session context", category: "Session" },
+  { name: "/new", description: "Start a new session", category: "Session" },
+  { name: "/help", description: "Show all commands", category: "Insight" },
 ];
 
 export interface SlashCommandResult {

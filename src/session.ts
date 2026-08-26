@@ -179,6 +179,7 @@ export class Session {
   private compactionArmed = false;
   private sessionLogger: PraanaLogger | null = null;
   private noticeCapture?: (line: string) => void;
+  private suppressLoggerStderr = false;
   /** True if this session was just resumed and no new user turn has been processed yet. */
   private resumed = false;
   private readonly confirmLock = createConfirmLock();
@@ -245,13 +246,18 @@ export class Session {
   static async create(
     cwd: string,
     config?: PraanaConfig,
-    opts?: { incognito?: boolean; captureNotice?: (line: string) => void }
+    opts?: {
+      incognito?: boolean;
+      captureNotice?: (line: string) => void;
+      suppressLoggerStderr?: boolean;
+    }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const id = ulid();
     const session = Session.createNew(id, cwd, cfg);
     session.incognito = opts?.incognito ?? false;
     session.noticeCapture = opts?.captureNotice;
+    session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
@@ -355,7 +361,10 @@ export class Session {
     sessionId: string,
     cwd: string,
     config?: PraanaConfig,
-    opts?: { captureNotice?: (line: string) => void }
+    opts?: {
+      captureNotice?: (line: string) => void;
+      suppressLoggerStderr?: boolean;
+    }
   ): Promise<Session> {
     const cfg = config ?? loadConfig();
     const meta = readSessionMeta(cfg.session.log_dir, sessionId);
@@ -365,6 +374,7 @@ export class Session {
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
     session.noticeCapture = opts?.captureNotice;
+    session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
     session.agentsContext = loadAgentsContext(cwd);
     if (session.agentsContext) {
@@ -740,6 +750,12 @@ export class Session {
     this.modelContextWindowFor = null;
   }
 
+  /** Interactive TUI sessions silence logger stderr so raw log lines don't
+   *  corrupt the terminal surface; details still go to the log files. */
+  shouldSuppressLoggerStderr(): boolean {
+    return this.suppressLoggerStderr;
+  }
+
   getLogger(): PraanaLogger {
     if (!this.sessionLogger) {
       return getAppLogger().child("session");
@@ -754,6 +770,7 @@ export class Session {
       sessionLogDir: this.config.session.log_dir,
       debug: this.debug,
       captureNotice: this.noticeCapture,
+      suppressStderr: this.suppressLoggerStderr,
     });
   }
 
