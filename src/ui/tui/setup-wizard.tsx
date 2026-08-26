@@ -30,6 +30,7 @@ import {
   providerRequiresApiKey,
   providerSupportsOAuth,
   saveProviderKey,
+  verifyProviderKey,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../credentials.js";
@@ -38,6 +39,11 @@ import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { CustomProviderConfig, SetupResult } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
+import { upsertUserProvider } from "../../provider-registry.js";
+import {
+  needsInteractiveEmbedderConsent,
+  setEmbedderConsent,
+} from "../../memory/embedder-consent.js";
 
 const YES_NO_OPTIONS = [
   { value: "yes", name: "Yes", description: "" },
@@ -64,9 +70,12 @@ type Step =
   | "custom-id"
   | "custom-url"
   | "custom-key"
+  | "verifying"
+  | "save-anyway"
   | "fetch-models"
   | "model-picker"
   | "manual-model"
+  | "embedder"
   | "confirm"
   | "overwrite"
   | "oauth-status"
@@ -82,6 +91,7 @@ interface WizardState {
   apiKey: string;
   keySaved: boolean;
   model: string;
+  pendingKey: string;
 }
 
 export interface RunSetupWizardOptions {
@@ -92,6 +102,8 @@ export interface RunSetupWizardOptions {
 interface SetupWizardProps {
   onDone: (result: SetupResult) => void;
 }
+
+export type { SetupWizardProps };
 
 function versionNumber(): string {
   return APP_VERSION.replace(/^v/, "");
@@ -147,7 +159,7 @@ function TextInput(props: {
   );
 }
 
-function SetupWizard(props: SetupWizardProps) {
+export function SetupWizard(props: SetupWizardProps) {
   const renderer = useRenderer();
   const [step, setStep] = createSignal<Step>("provider");
   const [message, setMessage] = createSignal("");
@@ -166,6 +178,7 @@ function SetupWizard(props: SetupWizardProps) {
     apiKey: "",
     keySaved: false,
     model: "",
+    pendingKey: "",
   };
   let settled = false;
   let oauthAbort: AbortController | undefined;
@@ -180,6 +193,9 @@ function SetupWizard(props: SetupWizardProps) {
           id: state.customProviderId,
           api: "openai-completions",
           baseUrl: state.customBaseUrl,
+          envKey: state.apiKey
+            ? `${state.customProviderId.toUpperCase().replace(/-/g, "_")}_API_KEY`
+            : undefined,
         }
       : undefined;
 
@@ -192,13 +208,58 @@ function SetupWizard(props: SetupWizardProps) {
 
   const finalize = (action: "write" | "skip" | "overwrite") => {
     const provider = providerForConfig();
+    const custom = customProvider();
+    if (custom) {
+      upsertUserProvider(custom.id, {
+        api: custom.api,
+        base_url: custom.baseUrl,
+        env_key: custom.envKey,
+      });
+    }
     finish(
       finalizeProviderSetup(provider, action, {
         model: state.model || pickDefaultModel(provider) || undefined,
-        customProvider: customProvider(),
+        customProvider: custom,
         keySaved: state.keySaved,
       }),
     );
+  };
+
+  const afterModelChosen = () => {
+    if (needsInteractiveEmbedderConsent()) setStep("embedder");
+    else setStep("confirm");
+  };
+
+  const acceptVerifiedKey = (provider: string, key: string) => {
+    saveProviderKey(provider, key);
+    state.keySaved = true;
+    state.apiKey = key;
+    setMessage("");
+    setStep("fetch-models");
+  };
+
+  const applyKey = async (provider: string, key: string, baseUrl?: string) => {
+    setStep("verifying");
+    setMessage("Verifying key…");
+    const result = await verifyProviderKey(provider, key, baseUrl ? { baseUrl } : undefined);
+    if (result.status === "unauthorized") {
+      setMessage(result.message);
+      setStep(
+        provider === "amazon-bedrock"
+          ? "bedrock-key"
+          : state.isCustom
+            ? "custom-key"
+            : "key-input",
+      );
+      return;
+    }
+    if (result.status === "unreachable") {
+      state.pendingKey = key;
+      setMessage(result.message);
+      setStep("save-anyway");
+      return;
+    }
+    acceptVerifiedKey(provider, key);
   };
 
   const enterKeyInput = () => {
@@ -289,6 +350,9 @@ function SetupWizard(props: SetupWizardProps) {
       case "key-input":
       case "bedrock-key":
       case "custom-id":
+      case "verifying":
+      case "save-anyway":
+      case "embedder":
       case "oauth-error":
         setStep("provider");
         break;
@@ -354,9 +418,7 @@ function SetupWizard(props: SetupWizardProps) {
   const submitKey = (value: string) => {
     const key = value.trim();
     if (key) {
-      saveProviderKey(state.provider, key);
-      state.keySaved = true;
-      setStep("fetch-models");
+      void applyKey(state.provider, key);
     } else if (providerRequiresApiKey(state.provider)) {
       setMessage("API key is required for this provider");
     } else {
@@ -544,9 +606,7 @@ function SetupWizard(props: SetupWizardProps) {
                 setMessage("Bedrock API key is required when AWS credentials are not detected");
                 return;
               }
-              saveProviderKey("amazon-bedrock", value);
-              state.keySaved = true;
-              setStep("fetch-models");
+              void applyKey("amazon-bedrock", value.trim());
             }}
           />
         </>
@@ -628,13 +688,11 @@ function SetupWizard(props: SetupWizardProps) {
             focused
             onSubmit={(value) => {
               if (value.trim()) {
-                state.apiKey = value.trim();
-                saveProviderKey(state.customProviderId, state.apiKey);
-                state.keySaved = true;
+                void applyKey(state.customProviderId, value.trim(), state.customBaseUrl);
               } else {
                 state.keySaved = false;
+                setStep("fetch-models");
               }
-              setStep("fetch-models");
             }}
           />
         </>
@@ -661,7 +719,7 @@ function SetupWizard(props: SetupWizardProps) {
             showScrollIndicator
             onSelect={(_index, option) => {
               state.model = typeof option?.value === "string" ? option.value : "";
-              setStep("confirm");
+              afterModelChosen();
             }}
           />
         </>
@@ -688,6 +746,66 @@ function SetupWizard(props: SetupWizardProps) {
             value={pickDefaultModel(providerForConfig())}
             onSubmit={(value) => {
               state.model = value.trim() || pickDefaultModel(providerForConfig()) || "";
+              afterModelChosen();
+            }}
+          />
+        </>
+      )}
+
+      {step() === "verifying" && (
+        <>
+          <text><span style={TUI_STYLE.info}>Verifying API key…</span></text>
+          <text> </text>
+          <text><span style={TUI_STYLE.faint}>{message() || "Contacting provider…"}</span></text>
+        </>
+      )}
+
+      {step() === "save-anyway" && (
+        <>
+          <text><span style={TUI_STYLE.error}>{message() || "Could not verify this key."}</span></text>
+          <text> </text>
+          <text>Save anyway and continue?</text>
+          <text> </text>
+          <select
+            id="setup-save-anyway"
+            focused
+            width={40}
+            height={6}
+            options={[
+              { value: "yes", name: "Yes — save anyway", description: "" },
+              { value: "no", name: "No — re-enter key", description: "" },
+            ]}
+            onSelect={(_index, option) => {
+              if (option?.value === "yes") {
+                acceptVerifiedKey(providerForConfig(), state.pendingKey);
+              } else if (option?.value === "no") {
+                setMessage("");
+                setStep(state.isCustom ? "custom-key" : state.provider === "amazon-bedrock" ? "bedrock-key" : "key-input");
+              }
+            }}
+          />
+        </>
+      )}
+
+      {step() === "embedder" && (
+        <>
+          <text><span style={TUI_STYLE.info}>Cognitive Memory search</span></text>
+          <text> </text>
+          <text>Download an ONNX embedding model for semantic recall (~38 MB), or keep keyword-only search?</text>
+          <text> </text>
+          <select
+            id="setup-embedder"
+            focused
+            width={48}
+            height={6}
+            options={[
+              { value: "proceed", name: "ONNX semantic recall", description: "Download once from HuggingFace" },
+              { value: "skip", name: "Keyword-only", description: "Skip download — still works, less precise" },
+            ]}
+            onSelect={(_index, option) => {
+              if (option?.value === "proceed" || option?.value === "skip") {
+                setEmbedderConsent(option.value);
+              }
               setStep("confirm");
             }}
           />

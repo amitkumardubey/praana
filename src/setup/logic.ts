@@ -1,5 +1,10 @@
 import { getAppLogger } from "../logger.js";
-import { getProviderEnvKey, isUserDeclaredProvider } from "../provider-registry.js";
+import {
+  getProviderEnvKey,
+  isUserDeclaredProvider,
+  PROVIDER_REGISTRY,
+  getUserProviderRegistryEntry,
+} from "../provider-registry.js";
 import {
   isProviderAvailable,
   setApiKey,
@@ -12,6 +17,7 @@ import {
 import {
   listProviderCatalogModels,
   fetchModelsFromEndpoint,
+  PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
   type ProviderCatalogModelEntry,
 } from "../provider-catalog.js";
 import { writeProviderConfig } from "./config-writer.js";
@@ -103,6 +109,168 @@ export async function fetchCustomProviderModels(
   } catch {
     return null;
   }
+}
+
+export type KeyVerifyStatus = "ok" | "unauthorized" | "unreachable" | "skipped";
+
+export interface KeyVerifyResult {
+  status: KeyVerifyStatus;
+  httpStatus?: number;
+  message: string;
+  models?: ProviderCatalogModelEntry[];
+}
+
+function classifyProbeError(err: unknown): KeyVerifyResult {
+  const message = err instanceof Error ? err.message : String(err);
+  const statusMatch = message.match(/\b(401|403)\b/);
+  if (statusMatch) {
+    const httpStatus = Number(statusMatch[1]);
+    return {
+      status: "unauthorized",
+      httpStatus,
+      message:
+        httpStatus === 401
+          ? "401 Unauthorized: Invalid API key. Please check and re-enter."
+          : "403 Forbidden: API key was rejected. Please check and re-enter.",
+    };
+  }
+  const httpMatch = message.match(/returned (\d{3})/);
+  if (httpMatch) {
+    const httpStatus = Number(httpMatch[1]);
+    if (httpStatus === 401 || httpStatus === 403) {
+      return classifyProbeError(new Error(String(httpStatus)));
+    }
+  }
+  return {
+    status: "unreachable",
+    message: message || "Could not reach the provider to verify this key.",
+  };
+}
+
+async function probeModelsUrl(
+  url: string,
+  headers: Record<string, string>,
+): Promise<KeyVerifyResult> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () =>
+      controller.abort(
+        new Error(
+          `Key verification timed out after ${PROVIDER_CATALOG_FETCH_TIMEOUT_MS}ms`,
+        ),
+      ),
+    PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch(url, { headers, signal: controller.signal });
+    if (response.status === 401 || response.status === 403) {
+      return classifyProbeError(new Error(String(response.status)));
+    }
+    if (!response.ok) {
+      return {
+        status: "unreachable",
+        httpStatus: response.status,
+        message: `Provider returned HTTP ${response.status} while verifying the key.`,
+      };
+    }
+    return { status: "ok", message: "Key verified", models: [] };
+  } catch (err) {
+    return classifyProbeError(err);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function resolveProbeBaseUrl(provider: string, baseUrl?: string): string | null {
+  if (baseUrl?.trim()) return baseUrl.replace(/\/$/, "");
+  const user = getUserProviderRegistryEntry(provider);
+  if (user?.baseUrl) return user.baseUrl.replace(/\/$/, "");
+  const entry = PROVIDER_REGISTRY[provider];
+  if (entry?.baseUrl) return entry.baseUrl.replace(/\/$/, "");
+  return null;
+}
+
+/**
+ * Probe the provider with the pasted key before saving.
+ * 401/403 → unauthorized (do not save). Timeout/network → unreachable (save-anyway).
+ * Providers without a probeable endpoint → skipped (save is allowed).
+ */
+export async function verifyProviderKey(
+  provider: string,
+  apiKey: string,
+  opts?: { baseUrl?: string },
+): Promise<KeyVerifyResult> {
+  const key = apiKey.trim();
+  if (!key) {
+    return {
+      status: "unauthorized",
+      httpStatus: 401,
+      message: "API key is required.",
+    };
+  }
+
+  const baseUrl = resolveProbeBaseUrl(provider, opts?.baseUrl);
+  if (!baseUrl) {
+    return {
+      status: "skipped",
+      message: "This provider has no live key probe; the key was not verified.",
+    };
+  }
+
+  if (provider === "anthropic") {
+    return probeModelsUrl(`${baseUrl}/v1/models`, {
+      Accept: "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+    });
+  }
+
+  try {
+    const models = await fetchModelsFromEndpoint(baseUrl, key);
+    return { status: "ok", message: "Key verified", models };
+  } catch (err) {
+    return classifyProbeError(err);
+  }
+}
+
+export async function verifyCustomProviderKey(
+  baseUrl: string,
+  apiKey: string,
+): Promise<KeyVerifyResult> {
+  if (!apiKey.trim()) {
+    return {
+      status: "skipped",
+      message: "No API key to verify (keyless endpoint).",
+    };
+  }
+  return verifyProviderKey("custom", apiKey, { baseUrl });
+}
+
+/**
+ * Pick a model for /login without clobbering an existing preference for this provider.
+ */
+export function resolvePreferredModel(
+  provider: string,
+  opts?: {
+    currentProvider?: string;
+    currentModel?: string;
+    configProvider?: string;
+    configModel?: string;
+    settingsProvider?: string;
+    settingsModel?: string;
+    liveModels?: ProviderCatalogModelEntry[] | null;
+  },
+): string {
+  if (opts?.currentProvider === provider && opts.currentModel?.trim()) {
+    return opts.currentModel.trim();
+  }
+  if (opts?.configProvider === provider && opts.configModel?.trim()) {
+    return opts.configModel.trim();
+  }
+  if (opts?.settingsProvider === provider && opts.settingsModel?.trim()) {
+    return opts.settingsModel.trim();
+  }
+  return pickDefaultModel(provider, opts?.liveModels);
 }
 
 /**

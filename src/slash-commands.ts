@@ -25,9 +25,9 @@ import {
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey, parseReasoningEffort, REASONING_EFFORT_LEVELS } from "./llm.js";
-import { removeApiKey, listStoredProviders } from "./credentials.js";
+import { listStoredProviders } from "./credentials.js";
 import { isUserDeclaredProvider } from "./provider-registry.js";
-import { removeProviderSection } from "./setup/config-writer.js";
+import { logoutProvider } from "./setup/logout.js";
 import { executeShellCommand } from "./tools/system.js";
 import {
   USER_SETTINGS_KEYS,
@@ -49,7 +49,8 @@ export type SlashCommandAction =
   | "new_session"
   | "open_model_selector"
   | "open_login_wizard"
-  | "open_logout_wizard";
+  | "open_logout_wizard"
+  | "open_setup_wizard";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -950,40 +951,35 @@ export async function executeSlashCommand(
         return result("none", "toast", "error");
       }
 
-      const removed = removeApiKey(provider);
-      let sectionRemoved = false;
-      if (isDeclared) {
-        const sectionResult = removeProviderSection(provider);
-        sectionRemoved = sectionResult.written;
-      }
-
-      if (removed || sectionRemoved) {
-        lines.push(`Logged out: ${provider}`);
-      } else {
-        lines.push(`No credentials found for "${provider}".`);
+      const outcome = logoutProvider(provider, session);
+      if (!outcome.removed && !outcome.sectionRemoved) {
+        lines.push(...outcome.lines);
         return result("none", "toast", "info");
       }
 
-      if (sectionRemoved) {
-        lines.push(`Removed [providers.${provider}] from config.toml.`);
-        lines.push("Run /new to fully deactivate the provider.");
-      }
-      if (provider === session.getEffectiveProvider()) {
-        // Prepend warning so it's visible even after toast truncation (BUG #2 fix)
-        lines.unshift("Use /login to re-add, or /model to switch.");
-        lines.unshift(`⚠ ${provider} is your active provider — the next turn may fail.`);
+      if (outcome.switchedTo) {
+        handlers.setModel(outcome.switchedTo.model || undefined);
       }
 
+      lines.push(...outcome.lines);
+      if (outcome.needsLogin) {
+        return {
+          action: "open_login_wizard",
+          lines,
+          display: "toast",
+          toastTone: "info",
+        };
+      }
       return result("refresh_status", "toast", "success");
     }
 
     case "/setup": {
-      lines.push(
-        "Provider setup runs in a dedicated wizard outside the session.",
-        "Exit PRAANA and run:  praana setup",
-        "Then restart to apply changes.",
-      );
-      return result("none", "toast", "info");
+      lines.push("Opening setup wizard…");
+      return {
+        action: "open_setup_wizard",
+        lines,
+        display: "toast",
+      };
     }
 
     case "/shell": {

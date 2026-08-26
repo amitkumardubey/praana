@@ -31,10 +31,28 @@ import {
 } from "../src/provider-registry.js";
 import type { Session } from "../src/session.js";
 import type { CustomProviderConfig } from "../src/setup/types.js";
+import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
 
-function createMockSession(effectiveProvider = "openrouter"): Session {
+const PROVIDER_ENV_KEYS = providerEnvKeyNames();
+
+function createMockSession(
+  effectiveProvider = "openrouter",
+  extras?: {
+    model?: string;
+    setProviderOverride?: ReturnType<typeof mock>;
+    setModelOverride?: ReturnType<typeof mock>;
+  },
+): Session {
+  const config = {
+    llm: { provider: effectiveProvider, model: extras?.model ?? "openai/gpt-4.1" },
+    providers: {} as Record<string, unknown>,
+  };
   return {
     getEffectiveProvider: () => effectiveProvider,
+    getActiveModelId: () => extras?.model ?? "openai/gpt-4.1",
+    setProviderOverride: extras?.setProviderOverride ?? mock(),
+    setModelOverride: extras?.setModelOverride ?? mock(),
+    config,
   } as unknown as Session;
 }
 
@@ -46,12 +64,17 @@ function ensureConfigDir(): string {
 
 describe("/login and /logout", () => {
   let tmpHome: string;
+  const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), "praana-login-test-"));
     process.env.PRAANA_HOME = tmpHome;
     resetCredentialStoreForTests();
     resetUserProvidersForTests();
+    for (const key of PROVIDER_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
@@ -59,6 +82,10 @@ describe("/login and /logout", () => {
     rmSync(tmpHome, { recursive: true, force: true });
     resetCredentialStoreForTests();
     resetUserProvidersForTests();
+    for (const key of PROVIDER_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
   });
 
   // ── /login dispatch ──
@@ -86,14 +113,15 @@ describe("/login and /logout", () => {
       expect(result.loginProviderHint).toBe("openrouter");
     });
 
-    it("lowercases the provider hint", async () => {
+    it("returns open_setup_wizard for /setup", async () => {
       const session = createMockSession();
-      const result = await executeSlashCommand("/login OpenRouter", session, {
+      const result = await executeSlashCommand("/setup", session, {
         setModel: mock(),
         setThinking: mock(),
         getThinking: () => false,
       });
-      expect(result.loginProviderHint).toBe("openrouter");
+      expect(result.action).toBe("open_setup_wizard");
+      expect(result.display).toBe("toast");
     });
   });
 
@@ -157,19 +185,27 @@ describe("/login and /logout", () => {
       expect(listStoredProviders()).toEqual(["openrouter"]);
     });
 
-    it("warns when logging out the active provider", async () => {
+    it("switches to a fallback provider when logging out the active one", async () => {
       setApiKey("openrouter", "sk-test-1");
-      const session = createMockSession("openrouter");
+      setApiKey("openai", "sk-test-2");
+      const setProviderOverride = mock();
+      const setModel = mock();
+      const session = createMockSession("openrouter", { setProviderOverride });
       const result = await executeSlashCommand("/logout openrouter", session, {
-        setModel: mock(),
+        setModel,
         setThinking: mock(),
         getThinking: () => false,
       });
-      expect(result.lines.join(" ")).toContain("active provider");
-      expect(result.lines.join(" ")).toContain("next turn may fail");
+      expect(result.action).toBe("refresh_status");
+      expect(result.lines.join(" ")).toContain("Logged out of openrouter");
+      expect(result.lines.join(" ")).toContain("Switched active provider to openai");
+      expect(result.lines.join(" ")).not.toContain("next turn may fail");
+      expect(listStoredProviders()).toEqual(["openai"]);
+      expect(setProviderOverride).toHaveBeenCalled();
+      expect(setModel).toHaveBeenCalled();
     });
 
-    it("places active-provider warning before success message in lines", async () => {
+    it("opens login when logging out the last stored provider", async () => {
       setApiKey("openrouter", "sk-test-1");
       const session = createMockSession("openrouter");
       const result = await executeSlashCommand("/logout openrouter", session, {
@@ -177,14 +213,26 @@ describe("/login and /logout", () => {
         setThinking: mock(),
         getThinking: () => false,
       });
-      const joined = result.lines.join(" ");
-      const warningIdx = joined.indexOf("active provider");
-      const loggedOutIdx = joined.indexOf("Logged out");
-      expect(warningIdx).toBeGreaterThanOrEqual(0);
-      expect(loggedOutIdx).toBeGreaterThanOrEqual(0);
-      // Warning must appear BEFORE the success message so it survives
-      // toast truncation (BUG #2 regression test)
-      expect(warningIdx).toBeLessThan(loggedOutIdx);
+      expect(result.action).toBe("open_login_wizard");
+      expect(result.lines.join(" ")).toContain("opening login");
+    });
+
+    it("warns when an env var still shadows logout", async () => {
+      setApiKey("openai", "sk-test-1");
+      const previous = process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = "sk-from-env";
+      try {
+        const session = createMockSession("openrouter");
+        const result = await executeSlashCommand("/logout openai", session, {
+          setModel: mock(),
+          setThinking: mock(),
+          getThinking: () => false,
+        });
+        expect(result.lines.join(" ")).toContain("OPENAI_API_KEY is still exported");
+      } finally {
+        if (previous === undefined) delete process.env.OPENAI_API_KEY;
+        else process.env.OPENAI_API_KEY = previous;
+      }
     });
 
     it("returns error when provider has no credentials", async () => {
@@ -231,7 +279,7 @@ describe("/login and /logout", () => {
       expect(result.toastTone).toBe("success");
       expect(result.lines.join(" ")).toContain("Logged out: my-llama");
       expect(result.lines.join(" ")).toContain("[providers.my-llama]");
-      expect(result.lines.join(" ")).toContain("/new");
+      expect(result.lines.join(" ")).not.toContain("/new");
 
       // Credential should be removed
       expect(listStoredProviders()).toEqual([]);

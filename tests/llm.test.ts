@@ -14,6 +14,7 @@ import {
 import {
   setUserProviders,
   resetUserProvidersForTests,
+  upsertUserProvider,
 } from "../src/provider-registry.js";
 import {
   setApiKey,
@@ -173,6 +174,16 @@ describe("user-declared providers", () => {
       },
     });
     expect(listKnownProviders()).toContain("my-custom");
+  });
+
+  it("upsertUserProvider hot-registers a custom provider without loadConfig", () => {
+    upsertUserProvider("hot-llama", {
+      api: "openai-completions",
+      base_url: "http://localhost:8080/v1",
+      env_key: "HOT_LLAMA_KEY",
+    });
+    expect(listKnownProviders()).toContain("hot-llama");
+    expect(getProviderEnvKey("hot-llama")).toBe("HOT_LLAMA_KEY");
   });
 
   it("isProviderAvailable returns true when key is in credential store", () => {

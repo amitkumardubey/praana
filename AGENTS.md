@@ -258,9 +258,9 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/model [provider] <id>` | Switch model (bare `/model` opens searchable selector) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); also `llm.reasoning_effort` in config |
 | `/sessions` | List past sessions for resuming |
-| `/setup` | Run interactive provider/config setup wizard in-session (replaces /init) |
+| `/setup` | Open the provider/config setup overlay in-session (also `praana setup` as a standalone wizard) |
 | `/login [provider]` | Add or update a provider credential in `~/.praana/credentials.json` |
-| `/logout [provider]` | Remove a provider's credentials |
+| `/logout [provider]` | Remove a provider's credentials; falls back to another authenticated provider or opens login |
 | `/shell <cmd>` | Run a shell command inline in the transcript (also `! <cmd>` prefix) |
 | `/plan <on\|off\|execute>` | Toggle plan mode: block mutating tools until you approve |
 | `/debug` | Toggle debug mode |

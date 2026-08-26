@@ -36,6 +36,11 @@ import type { ContextDisplaySnapshot } from "../../context-display.js";
 import type { SlashCommandToastTone } from "../../slash-commands.js";
 import type { LoginWizardResult } from "./overlays/login.js";
 import type { LogoutWizardResult } from "./overlays/logout.js";
+import type { SetupResult } from "../../setup/types.js";
+import { loadConfig } from "../../config.js";
+import { getSetupConfigPath } from "../../setup/config-writer.js";
+import { setEmbedderConsent } from "../../memory/embedder-consent.js";
+import type { Session } from "../../session.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -66,26 +71,25 @@ function toastToneToType(
   return "info";
 }
 
+export interface TuiLaunchOptions {
+  needsOnboarding?: boolean;
+  needsEmbedderConsent?: boolean;
+}
+
 export async function runTui(
   controller: AppController,
-  info: StartupInfo,
+  info: StartupInfo | undefined,
+  launch: TuiLaunchOptions = {},
 ): Promise<void> {
   let config = controller.config;
-  let session = controller.session;
+  let session: Session | undefined = info ? controller.session : undefined;
   const useUnicode = config.ui.tool_icons === "unicode";
+  let bootOnboarding = Boolean(launch.needsOnboarding);
+  let bootConsent = Boolean(launch.needsEmbedderConsent);
 
-  const welcomeLine = formatTuiWelcomeLine({
-    session,
-    model: session.getActiveModelLabel(),
-    cwd: info.cwd,
-    isResume: info.isResume,
-    appName: APP_NAME,
-    version: APP_VERSION,
-  });
-  const launchMeta = formatLaunchCanvasMeta({
-    session,
-    version: APP_VERSION,
-  });
+  const launchMeta = session
+    ? formatLaunchCanvasMeta({ session, version: APP_VERSION })
+    : { versionLabel: `v${APP_VERSION.replace(/^v/, "")}`, skillsLabel: "0 skills discovered" };
 
   const renderer = await createCliRenderer({
     stdin: process.stdin,
@@ -136,17 +140,23 @@ export async function runTui(
     useUnicode,
   };
   const projection = new TranscriptProjection({ useUnicode });
-  projection.load(indexToEntries(info.transcriptBootstrap ?? { groups: [] }));
+  projection.load(indexToEntries(info?.transcriptBootstrap ?? { groups: [] }));
 
   const transcript = createTranscriptStore();
-  transcript.loadIndex(info.transcriptBootstrap ?? { groups: [] });
+  transcript.loadIndex(info?.transcriptBootstrap ?? { groups: [] });
 
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
   let turnStartedAt = 0;
   let ready = false;
+  let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
+
+  const attachSink = (started: StartupInfo) => {
+    attachSinkImpl?.(started);
+  };
 
   const refreshChrome = () => {
+    if (!session) return;
     const base = controller.getStatusBarInput();
     const preview = openTuiSink?.getContextPreview() ?? null;
     ui.chrome.setStatus(base, {
@@ -162,7 +172,17 @@ export async function runTui(
   };
 
   const dismissOverlay = () => {
+    const kind = overlay.kind();
     overlay.dismiss();
+    if (!session && kind === "consent") {
+      setEmbedderConsent("skip");
+      void startSessionFromOverlay();
+      return;
+    }
+    if (bootOnboarding && !session && kind === "setup") {
+      void doShutdown(1);
+      return;
+    }
     focusPrompt();
   };
 
@@ -250,33 +270,115 @@ export async function runTui(
         renderer.requestRender();
       })();
     } else if (result.shouldSwitch) {
-      session.setProviderOverride(result.provider);
+      session?.setProviderOverride(result.provider);
       ui.toast.show(result.message, "success");
       refreshChrome();
       renderer.requestRender();
     } else {
-      const tone: "info" | "success" =
-        result.message.includes("Run /new") ? "info" : "success";
-      ui.toast.show(result.message, tone);
+      ui.toast.show(result.message, "success");
       refreshChrome();
       renderer.requestRender();
     }
   };
 
+  const requireSession = (): Session => {
+    if (!session) throw new Error("Session is not started");
+    return session;
+  };
+
+  const applySetupToLiveSession = async (result: SetupResult) => {
+    const live = requireSession();
+    if (result.provider && result.model) {
+      const switchResult = await controller.executeSlashCommand(
+        `/model ${result.provider} ${result.model}`,
+      );
+      if (switchResult.action === "refresh_status") refreshChrome();
+    } else if (result.provider) {
+      live.setProviderOverride(result.provider);
+      refreshChrome();
+    }
+    ui.toast.show(result.message, result.success ? "success" : "error");
+    renderer.requestRender();
+  };
+
+  const startSessionFromOverlay = async (): Promise<boolean> => {
+    try {
+      const started = await controller.start();
+      session = controller.session;
+      config = controller.config;
+      ui.launch.setMeta(formatLaunchCanvasMeta({ session, version: APP_VERSION }));
+      attachSink(started);
+      refreshChrome();
+      renderer.requestRender();
+      return true;
+    } catch (err) {
+      ui.toast.show(`Failed to start session: ${(err as Error).message}`, "error");
+      renderer.requestRender();
+      return false;
+    }
+  };
+
+  const handleSetupComplete = (result: SetupResult) => {
+    if (result.provider) {
+      // Config was written; reload so [llm] + custom providers are live.
+      try {
+        const next = loadConfig(getSetupConfigPath());
+        Object.assign(controller.config, next);
+        config = controller.config;
+      } catch {
+        // keep existing config
+      }
+    }
+    overlay.dismiss();
+    focusPrompt();
+    if (!session) {
+      if (!result.success) {
+        void doShutdown(1);
+        return;
+      }
+      void startSessionFromOverlay();
+      return;
+    }
+    void applySetupToLiveSession(result);
+  };
+
+  const handleConsentComplete = (proceed: boolean) => {
+    setEmbedderConsent(proceed ? "proceed" : "skip");
+    overlay.dismiss();
+    focusPrompt();
+    if (!session) void startSessionFromOverlay();
+  };
+
   const handleLogoutComplete = (result: LogoutWizardResult) => {
     dismissOverlay();
-    const tone: "info" | "success" =
-      result.message.includes("Run /new") ? "info" : "success";
-    ui.toast.show(result.message, tone);
+    if (result.needsLogin) {
+      overlay.showLogin();
+      renderer.requestRender();
+      return;
+    }
+    if (result.switchedTo) {
+      void (async () => {
+        await controller.executeSlashCommand(
+          `/model ${result.switchedTo!.provider} ${result.switchedTo!.model}`.trim(),
+        );
+        refreshChrome();
+        renderer.requestRender();
+      })();
+    }
+    ui.toast.show(result.message, "success");
     refreshChrome();
     renderer.requestRender();
   };
 
-  async function doShutdown(): Promise<void> {
+  async function doShutdown(exitCode = 0): Promise<void> {
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
     renderer.destroy();
+    if (!session) {
+      process.exit(exitCode);
+      return;
+    }
     process.stderr.write("\r\x1b[2K\nSaving session…\n");
     const status = await controller.shutdown();
 
@@ -291,11 +393,11 @@ export async function runTui(
     })) {
       console.log(line);
     }
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   const runSlashCommand = async (input: string) => {
-    if (!openTuiSink) return;
+    if (!openTuiSink || !session) return;
     ui.spinner.start("running command…");
 
     let result: import("../../slash-commands.js").SlashCommandResult;
@@ -373,11 +475,16 @@ export async function runTui(
       renderer.requestRender();
       return;
     }
+    if (result.action === "open_setup_wizard") {
+      overlay.showSetup();
+      renderer.requestRender();
+      return;
+    }
     renderer.requestRender();
   };
 
   const handleSubmit = async (rawInput: string) => {
-    if (!openTuiSink || !ready) return;
+    if (!openTuiSink || !ready || !session) return;
     let input = rawInput.trim();
     if (!input) return;
     ui.toast.clearErrors();
@@ -427,6 +534,10 @@ export async function runTui(
             renderer.requestRender();
           }}
           onCtrlC={() => {
+            if (!session) {
+              void doShutdown(bootOnboarding ? 1 : 0);
+              return;
+            }
             const action = controller.handleUserInterrupt(
               (prompt?.getText().length ?? 0) === 0,
             );
@@ -448,17 +559,22 @@ export async function runTui(
           }}
         />
         <App
-          cwd={info.cwd}
+          cwd={info?.cwd ?? controller.cwd}
           ui={ui}
           overlay={overlay}
           transcript={transcript}
           transcriptOpts={transcriptOpts}
-          currentProvider={() => session.getEffectiveProvider()}
-          currentModelId={() => session.getActiveModelId()}
+          currentProvider={() => session?.getEffectiveProvider() ?? config.llm.provider}
+          currentModelId={() => session?.getActiveModelId() ?? config.llm.model}
           loadModels={() => listAllAvailableModels()}
           onModelSelect={handleModelSelect}
           onLoginComplete={handleLoginComplete}
           onLogoutComplete={handleLogoutComplete}
+          onSetupComplete={handleSetupComplete}
+          onConsentComplete={handleConsentComplete}
+          logoutSession={() => requireSession()}
+          configProvider={() => session?.config.llm.provider ?? config.llm.provider}
+          configModel={() => session?.config.llm.model ?? config.llm.model}
           onOverlayDismiss={dismissOverlay}
           onSlashTrigger={handleSlashTrigger}
           onPaletteRun={handlePaletteRun}
@@ -467,7 +583,7 @@ export async function runTui(
           onPaletteCancel={handlePaletteCancel}
           onExpand={(entry) =>
             Promise.resolve(
-              resolveExpandedContent(entry, session.eventLog.readAll()),
+              resolveExpandedContent(entry, session?.eventLog.readAll() ?? []),
             )
           }
           onSubmit={handleSubmit}
@@ -475,48 +591,70 @@ export async function runTui(
           prompt = promptApi;
           ready = true;
 
-          const modelId = controller.currentModelOrDefault();
-          const ctxWindow =
-            session.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
-          const persistTranscriptEntry = (entry: TranscriptEntry) => {
-            session.eventLog.append({
-              kind: "ui_transcript",
-              actor: "kernel",
-              payload: { type: "entry", entry },
+          attachSinkImpl = (started: StartupInfo) => {
+            session = controller.session;
+            config = controller.config;
+            const live = controller.session;
+            const modelId = controller.currentModelOrDefault();
+            const ctxWindow =
+              live.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;
+            const persistTranscriptEntry = (entry: TranscriptEntry) => {
+              live.eventLog.append({
+                kind: "ui_transcript",
+                actor: "kernel",
+                payload: { type: "entry", entry },
+              });
+            };
+
+            openTuiSink = new OpenTuiSink(transcript.mount, ui.toast, {
+              ambient: config.ui.ambient,
+              showThinking: () => controller.showThinking,
+              onSpinnerMessage: (msg: string) => {
+                ui.spinner.setMessage(msg);
+              },
+              ctxWindowTokens: ctxWindow,
+              engineMode: live.isContextEngineEnabled(),
+              projection,
+              persistEntry: persistTranscriptEntry,
+              getModel: () => controller.currentModelOrDefault(),
+              onSlashCommandResult: (lines: string[]) => {
+                overlay.showSlash(lines);
+                renderer.requestRender();
+              },
+              onContextPreview: (snapshot: ContextDisplaySnapshot) => {
+                ui.chrome.setStatus(controller.getStatusBarInput(), {
+                  showCost: config.ui.show_cost,
+                  backgroundZones: config.ui.background_zones,
+                  preview: snapshot,
+                });
+              },
             });
+
+            const line = formatTuiWelcomeLine({
+              session: live,
+              model: live.getActiveModelLabel(),
+              cwd: started.cwd,
+              isResume: started.isResume,
+              appName: APP_NAME,
+              version: APP_VERSION,
+            });
+            if (line) {
+              openTuiSink.onSystemLines([line]);
+              openTuiSink.nextGroup();
+            }
+            refreshChrome();
+            prompt?.focus();
+            renderer.requestRender();
           };
 
-          openTuiSink = new OpenTuiSink(transcript.mount, ui.toast, {
-            ambient: config.ui.ambient,
-            showThinking: () => controller.showThinking,
-            onSpinnerMessage: (msg: string) => {
-              ui.spinner.setMessage(msg);
-            },
-            ctxWindowTokens: ctxWindow,
-            engineMode: session.isContextEngineEnabled(),
-            projection,
-            persistEntry: persistTranscriptEntry,
-            getModel: () => controller.currentModelOrDefault(),
-            onSlashCommandResult: (lines: string[]) => {
-              overlay.showSlash(lines);
-              renderer.requestRender();
-            },
-            onContextPreview: (snapshot: ContextDisplaySnapshot) => {
-              ui.chrome.setStatus(controller.getStatusBarInput(), {
-                showCost: config.ui.show_cost,
-                backgroundZones: config.ui.background_zones,
-                preview: snapshot,
-              });
-            },
-          });
-
-          // Resume-only transcript notice; fresh idle uses LaunchCanvas.
-          if (welcomeLine) {
-            openTuiSink.onSystemLines([welcomeLine]);
-            openTuiSink.nextGroup();
+          if (session && info) {
+            attachSink(info);
+          } else if (bootOnboarding) {
+            overlay.showSetup();
+          } else if (bootConsent) {
+            overlay.showConsent();
           }
 
-          refreshChrome();
           prompt.focus();
           renderer.requestRender();
         }}

@@ -2,9 +2,9 @@
  * Solid logout provider picker.
  */
 import { createMemo, createSignal, onMount, Show } from "solid-js";
-import { listStoredProviders, removeApiKey } from "../../../credentials.js";
+import { listStoredProviders } from "../../../credentials.js";
 import { isUserDeclaredProvider } from "../../../provider-registry.js";
-import { removeProviderSection } from "../../../setup/config-writer.js";
+import { logoutProvider } from "../../../setup/logout.js";
 import { TUI_STYLE } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
 
@@ -13,10 +13,22 @@ export interface LogoutWizardResult {
   message: string;
   sectionRemoved: boolean;
   isActiveProvider: boolean;
+  needsLogin: boolean;
+  switchedTo?: { provider: string; model: string };
 }
 
 export interface LogoutOverlayProps {
   currentProvider: string;
+  session: {
+    getEffectiveProvider(): string;
+    getActiveModelId?(): string;
+    setProviderOverride?(provider: string | null): void;
+    setModelOverride?(model: string | null): void;
+    config?: {
+      llm: { provider: string; model: string };
+      providers?: Record<string, unknown>;
+    };
+  };
   onComplete: (result: LogoutWizardResult) => void;
   onCancel: () => void;
 }
@@ -40,29 +52,14 @@ export function LogoutOverlay(props: LogoutOverlayProps) {
   });
 
   const removeProvider = (provider: string) => {
-    const isActive = provider === props.currentProvider;
-    const isCustom = isUserDeclaredProvider(provider);
-    const removed = removeApiKey(provider);
-    let sectionRemoved = false;
-    if (isCustom) {
-      sectionRemoved = removeProviderSection(provider).written;
-    }
-    const parts: string[] = [];
-    if (removed || sectionRemoved) parts.push(`Logged out: ${provider}`);
-    else parts.push(`No credentials found for "${provider}".`);
-    if (sectionRemoved) {
-      parts.push(`Removed [providers.${provider}] from config.toml.`);
-      parts.push("Run /new to fully deactivate the provider.");
-    }
-    if (isActive) {
-      parts.push(`⚠ ${provider} is your active provider — the next turn may fail.`);
-      parts.push("Use /login to re-add, or /model to switch.");
-    }
+    const outcome = logoutProvider(provider, props.session);
     props.onComplete({
       provider,
-      message: parts.join(" "),
-      sectionRemoved,
-      isActiveProvider: isActive,
+      message: outcome.lines.join(" "),
+      sectionRemoved: outcome.sectionRemoved,
+      isActiveProvider: outcome.isActiveProvider,
+      needsLogin: outcome.needsLogin,
+      switchedTo: outcome.switchedTo,
     });
   };
 
