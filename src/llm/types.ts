@@ -72,6 +72,8 @@ export type StreamEvent =
     }
   | { type: "error"; error: Error; status?: number; retryable: boolean };
 
+import type { ProviderWireCompat } from "../provider-registry.js";
+
 /** Resolved credentials passed to drivers. */
 export interface ResolvedAuth {
   apiKey?: string;
@@ -79,6 +81,10 @@ export interface ResolvedAuth {
   headers?: Record<string, string>;
   baseUrl?: string;
   isKeyless?: boolean;
+  /** Ambient AWS chain (profile / IRSA / container) — resolve at request time. */
+  awsAmbient?: boolean;
+  /** Vertex ADC via GOOGLE_APPLICATION_CREDENTIALS — mint at request time. */
+  googleAdc?: boolean;
 }
 
 /** Inbound request passed to LLM drivers. */
@@ -89,11 +95,20 @@ export interface StreamRequest {
   messages: ConversationMessage[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
-  reasoningEffort?: "off" | "low" | "medium" | "high";
+  reasoningEffort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
   headers?: Record<string, string>;
+  compat?: ProviderWireCompat;
+  region?: string;
+  api?: string;
+  query?: Record<string, string>;
+  /** Absolute URL; when set, drivers skip baseUrl+path construction. */
+  endpointUrl?: string;
+  /** Request-level credential overlay (OAuth refresh / RuntimeModel). */
+  apiKey?: string;
+  bearerToken?: string;
 }
 
 /** Aggregated result of an LLM turn stream. */

@@ -8,10 +8,15 @@ import { AnthropicDriver } from "./drivers/anthropic.js";
 import { AzureDriver } from "./drivers/azure.js";
 import { GoogleDriver } from "./drivers/google.js";
 import { BedrockDriver } from "./drivers/bedrock.js";
+import { OpenAIResponsesDriver } from "./drivers/responses.js";
 import { isProviderAuthenticated } from "./auth.js";
 import { loadUserSettings } from "../user-settings.js";
 import type { PraanaConfig } from "../types.js";
-import { getUserProviderConfig, isUserDeclaredProvider } from "../provider-registry.js";
+import {
+  PROVIDER_REGISTRY,
+  getUserProviderConfig,
+  isUserDeclaredProvider,
+} from "../provider-registry.js";
 
 export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-6",
@@ -30,40 +35,60 @@ export const DEFAULT_MODELS: Record<string, string> = {
 const DETECTION_PRECEDENCE: string[] = [
   "anthropic",
   "openai",
-  "openrouter",
   "deepseek",
-  "google",
   "groq",
-  "azure",
+  "google",
+  "mistral",
+  "xai",
+  "fireworks",
+  "together",
+  "opencode",
+  "umans",
+  "poolside",
+  "openrouter",
   "amazon-bedrock",
   "ollama",
 ];
 
-const drivers: Record<string, LlmDriver> = {
-  anthropic: new AnthropicDriver(),
-  openai: new OpenAICompatibleDriver(),
-  openrouter: new OpenAICompatibleDriver(),
-  deepseek: new OpenAICompatibleDriver(),
-  groq: new OpenAICompatibleDriver(),
-  ollama: new OpenAICompatibleDriver(),
-  azure: new AzureDriver(),
-  google: new GoogleDriver(),
-  vertex: new GoogleDriver(),
-  "amazon-bedrock": new BedrockDriver(),
-};
+const openaiCompat = new OpenAICompatibleDriver();
+const anthropic = new AnthropicDriver();
+const azure = new AzureDriver();
+const google = new GoogleDriver();
+const bedrock = new BedrockDriver();
+const responses = new OpenAIResponsesDriver();
 
 /**
  * Get the appropriate protocol driver instance for a provider.
  */
-export function getDriverForProvider(provider: string): LlmDriver {
-  if (drivers[provider]) {
-    return drivers[provider];
+export function getDriverForProvider(provider: string, api?: string): LlmDriver {
+  const resolvedApi =
+    api ||
+    getUserProviderConfig(provider)?.api ||
+    PROVIDER_REGISTRY[provider]?.api;
+
+  switch (resolvedApi) {
+    case "anthropic-messages":
+      return anthropic;
+    case "google-generative-ai":
+      return google;
+    case "bedrock-converse-stream":
+      return bedrock;
+    case "azure-openai-responses":
+      return azure;
+    case "openai-codex-responses":
+    case "openai-responses":
+      return responses;
+    default:
+      break;
   }
-  // Check user declared providers
-  if (isUserDeclaredProvider(provider)) {
-    return drivers.openai; // User-declared providers default to OpenAI-compatible
-  }
-  return drivers.openai;
+
+  if (provider === "azure") return azure;
+  if (provider === "vertex" || provider === "google") return google;
+  if (provider === "amazon-bedrock") return bedrock;
+  if (provider === "anthropic" || provider === "github-copilot") return anthropic;
+  if (provider === "openai-codex") return responses;
+  if (isUserDeclaredProvider(provider)) return openaiCompat;
+  return openaiCompat;
 }
 
 /**
@@ -78,7 +103,6 @@ export function resolveActiveModelAndProvider(config?: PraanaConfig): {
   provider: string;
   model: string;
 } {
-  // 1. Environment / CLI override
   if (process.env.PRAANA_MODEL?.trim()) {
     const raw = process.env.PRAANA_MODEL.trim();
     if (raw.includes("/")) {
@@ -88,18 +112,15 @@ export function resolveActiveModelAndProvider(config?: PraanaConfig): {
     return { provider: config?.llm?.provider || "openrouter", model: raw };
   }
 
-  // 2. Explicit Config Pin
   if (config?.llm?.provider && config?.llm?.model) {
     return { provider: config.llm.provider, model: config.llm.model };
   }
 
-  // 3. User Settings (~/.praana/settings.json)
   const { settings } = loadUserSettings();
   if (settings.provider && settings.model && isProviderAuthenticated(settings.provider)) {
     return { provider: settings.provider, model: settings.model };
   }
 
-  // 4. Auto-Detect from Authenticated Credentials
   for (const provider of DETECTION_PRECEDENCE) {
     if (isProviderAuthenticated(provider)) {
       const defaultModel = DEFAULT_MODELS[provider] || "gpt-4o";
@@ -107,7 +128,6 @@ export function resolveActiveModelAndProvider(config?: PraanaConfig): {
     }
   }
 
-  // 5. Fallback default
   return {
     provider: config?.llm?.provider || "openrouter",
     model: config?.llm?.model || "anthropic/claude-sonnet-4-6",

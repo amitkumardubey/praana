@@ -3,6 +3,7 @@ import {
   type ConversationMessage,
   type ToolDefinition,
   type AssistantMessage,
+  type StreamRequest,
 } from "./llm/index.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
@@ -177,6 +178,21 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     parameters: t.parameters,
   }));
 
+  const runtime = (input.model ?? {}) as {
+    baseUrl?: string;
+    api?: string;
+    compat?: StreamRequest["compat"];
+    maxTokens?: number;
+    __piOptions?: {
+      apiKey?: string;
+      bearerToken?: string;
+      headers?: Record<string, string>;
+      region?: string;
+      baseUrl?: string;
+    };
+  };
+  const piOpts = runtime.__piOptions ?? {};
+
   const stream = streamLlmResponse({
     model: input.modelName,
     provider: input.providerName,
@@ -184,7 +200,15 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     messages: canonicalMessages,
     tools,
     signal: input.signal,
-    reasoningEffort: input.reasoningEffort as any,
+    reasoningEffort: input.reasoningEffort as StreamRequest["reasoningEffort"],
+    baseUrl: runtime.baseUrl ?? piOpts.baseUrl,
+    headers: piOpts.headers,
+    compat: runtime.compat,
+    region: typeof piOpts.region === "string" ? piOpts.region : undefined,
+    api: runtime.api,
+    apiKey: piOpts.apiKey,
+    bearerToken: piOpts.bearerToken,
+    maxTokens: typeof runtime.maxTokens === "number" ? runtime.maxTokens : undefined,
   });
 
   let fullResponse = "";

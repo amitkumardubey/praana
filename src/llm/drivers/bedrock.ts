@@ -14,15 +14,22 @@ import type {
   AssistantMessage,
   ToolCall,
 } from "../types.js";
-import { signAwsRequest, parseAwsEventStream } from "../aws-sigv4.js";
+import { parseAwsEventStream } from "../aws-sigv4.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
+import { authorizeAwsRequest } from "../aws-credentials.js";
+import { resolveBedrockRegion } from "../../bedrock/region.js";
 
 export class BedrockDriver implements LlmDriver {
   readonly protocol = "bedrock-converse-stream";
 
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
-    const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "us-east-1";
+    const region =
+      req.region ||
+      resolveBedrockRegion() ||
+      process.env.AWS_REGION ||
+      process.env.AWS_DEFAULT_REGION ||
+      "us-east-1";
     const endpoint = `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(req.model)}/converse-stream`;
 
     const { system, messages } = this.formatMessages(req.messages, req.systemPrompt);
@@ -46,30 +53,29 @@ export class BedrockDriver implements LlmDriver {
       ...(auth.headers || {}),
     };
 
-    // If a Bedrock bearer token is provided, use Bearer auth
-    if (auth.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK) {
-      headers.Authorization = `Bearer ${auth.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK}`;
-    } else {
-      // Sign with AWS SigV4 credentials from environment
-      const accessKeyId = process.env.AWS_ACCESS_KEY_ID || "";
-      const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || "";
-      const sessionToken = process.env.AWS_SESSION_TOKEN;
+    const bearerToken =
+      auth.bearerToken ||
+      (auth.apiKey && !auth.awsAmbient ? auth.apiKey : undefined) ||
+      process.env.AWS_BEARER_TOKEN_BEDROCK;
 
-      if (accessKeyId && secretAccessKey) {
-        headers = signAwsRequest({
-          method: "POST",
-          url: endpoint,
-          headers,
-          body: bodyStr,
-          credentials: {
-            accessKeyId,
-            secretAccessKey,
-            sessionToken,
-            region,
-            service: "bedrock",
-          },
-        });
-      }
+    try {
+      headers = await authorizeAwsRequest({
+        method: "POST",
+        url: endpoint,
+        headers,
+        body: bodyStr,
+        region,
+        service: "bedrock",
+        bearerToken,
+      });
+    } catch (err) {
+      yield {
+        type: "error",
+        error: err instanceof Error ? err : new Error(String(err)),
+        status: 401,
+        retryable: false,
+      };
+      return;
     }
 
     let response: Response;

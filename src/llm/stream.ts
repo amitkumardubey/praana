@@ -9,10 +9,13 @@ import type {
   AssistantMessage,
   ToolCall,
   ProviderUsage,
+  ResolvedAuth,
 } from "./types.js";
 import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
+import { resolveProviderWireDefaults } from "./wire-config.js";
+import { resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 
 /**
  * Execute a streaming LLM response using the appropriate protocol driver.
@@ -21,9 +24,10 @@ export async function* streamLlmResponse(
   req: StreamRequest,
 ): AsyncIterable<StreamEvent> {
   const customConfig = getUserProviderConfig(req.provider);
-  const auth = resolveProviderAuth(req.provider, customConfig?.env_key);
+  const wire = resolveProviderWireDefaults(req.provider);
+  let auth = resolveProviderAuth(req.provider, customConfig?.env_key);
 
-  if (!auth) {
+  if (!auth && !req.apiKey && !req.bearerToken) {
     yield {
       type: "error",
       error: new Error(
@@ -35,15 +39,73 @@ export async function* streamLlmResponse(
     return;
   }
 
-  // Merge custom baseUrl or headers if user-declared
-  const mergedAuth = {
+  auth = auth ?? {};
+
+  // Request-level overlays from the turn loop (OAuth refresh / RuntimeModel).
+  if (req.apiKey) auth = { ...auth, apiKey: req.apiKey };
+  if (req.bearerToken) auth = { ...auth, bearerToken: req.bearerToken };
+
+  // Copilot's Anthropic-compatible host wants Bearer, never x-api-key.
+  // Exchange a GitHub OAuth token when the caller did not already pass a
+  // resolved Copilot API token.
+  if (req.provider === "github-copilot") {
+    const token = auth.bearerToken || auth.apiKey;
+    if (token) {
+      if (!req.apiKey && !req.bearerToken) {
+        try {
+          const copilot = await resolveCopilotModelAuth(token);
+          auth = {
+            ...auth,
+            bearerToken: copilot.apiKey,
+            apiKey: undefined,
+            headers: { ...auth.headers, ...copilot.headers },
+            baseUrl: copilot.baseUrl ?? auth.baseUrl,
+          };
+        } catch {
+          auth = { ...auth, bearerToken: token, apiKey: undefined };
+        }
+      } else {
+        auth = { ...auth, bearerToken: token, apiKey: undefined };
+      }
+    }
+  } else if (!req.apiKey && !req.bearerToken) {
+    try {
+      const oauth = await resolveOAuthModelAuth(req.provider);
+      if (oauth?.apiKey) {
+        auth = {
+          ...auth,
+          bearerToken: oauth.apiKey,
+          apiKey: auth.apiKey,
+          headers: { ...auth.headers, ...oauth.headers },
+          baseUrl: oauth.baseUrl ?? auth.baseUrl,
+        };
+      }
+    } catch {
+      // Fall through with stored/env credentials.
+    }
+  }
+
+  const mergedAuth: ResolvedAuth = {
     ...auth,
-    ...(customConfig?.base_url ? { baseUrl: customConfig.base_url } : {}),
-    ...(customConfig?.headers ? { headers: customConfig.headers } : {}),
+    baseUrl: req.baseUrl || auth.baseUrl || customConfig?.base_url || wire.baseUrl,
+    headers: {
+      ...wire.headers,
+      ...customConfig?.headers,
+      ...auth.headers,
+      ...req.headers,
+    },
   };
 
-  const driver = getDriverForProvider(req.provider);
-  yield* driver.stream(req, mergedAuth);
+  const mergedReq: StreamRequest = {
+    ...req,
+    baseUrl: req.baseUrl || mergedAuth.baseUrl,
+    headers: mergedAuth.headers,
+    compat: req.compat ?? wire.compat,
+    api: req.api ?? wire.api,
+  };
+
+  const driver = getDriverForProvider(req.provider, mergedReq.api);
+  yield* driver.stream(mergedReq, mergedAuth);
 }
 
 /**
@@ -75,6 +137,7 @@ export async function completeLlmResponse(
     } else if (event.type === "done") {
       finalReason = event.reason;
       finalMessage = event.message;
+      thinkingSignature = event.message.thinkingSignature ?? thinkingSignature;
       if (event.reason === "abort") {
         interrupted = true;
       }

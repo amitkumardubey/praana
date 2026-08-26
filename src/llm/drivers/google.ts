@@ -14,12 +14,13 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { withPreEmissionRetry } from "../retry.js";
+import { resolveVertexAccessToken } from "../google-adc.js";
 
 export class GoogleDriver implements LlmDriver {
   readonly protocol = "google-generative-ai";
 
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
-    const isVertex = req.provider === "vertex" || !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const isVertex = req.provider === "vertex";
     let endpoint: string;
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -31,14 +32,28 @@ export class GoogleDriver implements LlmDriver {
       const region = process.env.VERTEX_REGION || "us-central1";
       const project = process.env.VERTEX_PROJECT_ID || process.env.GCP_PROJECT || "default";
       endpoint = `https://${region}-aiplatform.googleapis.com/v1/projects/${project}/locations/${region}/publishers/google/models/${req.model}:streamGenerateContent?alt=sse`;
-      if (auth.bearerToken || auth.apiKey) {
-        headers.Authorization = `Bearer ${auth.bearerToken || auth.apiKey}`;
+      try {
+        const token = await resolveVertexAccessToken({
+          bearerToken: auth.bearerToken,
+          apiKey: auth.apiKey,
+        });
+        headers.Authorization = `Bearer ${token}`;
+      } catch (err) {
+        yield {
+          type: "error",
+          error: err instanceof Error ? err : new Error(String(err)),
+          status: 401,
+          retryable: false,
+        };
+        return;
       }
     } else {
       const baseUrl = req.baseUrl || auth.baseUrl || "https://generativelanguage.googleapis.com/v1beta";
       endpoint = `${baseUrl.replace(/\/+$/, "")}/models/${req.model}:streamGenerateContent?alt=sse`;
       if (auth.apiKey) {
         headers["x-goog-api-key"] = auth.apiKey;
+      } else if (auth.bearerToken) {
+        headers["x-goog-api-key"] = auth.bearerToken;
       }
     }
 

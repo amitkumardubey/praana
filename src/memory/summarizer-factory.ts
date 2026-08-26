@@ -10,6 +10,32 @@ import { envOverride } from "../app-identity.js";
 import { completeLlmResponse, isProviderAuthenticated } from "../llm/index.js";
 import { OllamaEmbedder } from "./embeddings.js";
 
+const SUMMARIZER_MODELS: Record<string, string> = {
+  anthropic: "claude-3-5-haiku-20241022",
+  openai: "gpt-4o-mini",
+  google: "gemini-2.0-flash",
+  openrouter: "anthropic/claude-3-5-haiku",
+  deepseek: "deepseek-chat",
+  groq: "llama-3.3-70b-versatile",
+  azure: "gpt-4o-mini",
+  ollama: "llama3",
+  "amazon-bedrock": "anthropic.claude-3-5-haiku-20241022-v1:0",
+};
+
+export function summarizerModelForProvider(provider: string): string {
+  return SUMMARIZER_MODELS[provider] || DEFAULT_FALLBACK_MODEL[provider] || "gpt-4o-mini";
+}
+
+const DEFAULT_FALLBACK_MODEL: Record<string, string> = {
+  xai: "grok-2",
+  fireworks: "accounts/fireworks/models/llama-v3p1-70b-instruct",
+  together: "meta-llama/Llama-3.1-70B-Instruct-Turbo",
+  opencode: "gpt-4o-mini",
+  umans: "umans-coder",
+  poolside: "poolside/laguna-s-2.1",
+  mistral: "mistral-small-latest",
+};
+
 class NativeSummarizer implements SummarizerLLM {
   name: string;
 
@@ -66,13 +92,7 @@ export async function createSummarizer(
     }
 
     if (isProviderAuthenticated(mode)) {
-      const model =
-        overrideModel ||
-        (mode === "anthropic"
-          ? "claude-3-5-haiku-20241022"
-          : mode === "openai"
-            ? "gpt-4o-mini"
-            : "google/gemini-2.0-flash-001");
+      const model = overrideModel || summarizerModelForProvider(mode);
       return new NativeSummarizer(mode, model);
     }
     return null;
@@ -89,17 +109,7 @@ export async function createSummarizer(
   ];
   for (const provider of preferredProviders) {
     if (isProviderAuthenticated(provider)) {
-      const model =
-        overrideModel ||
-        (provider === "anthropic"
-          ? "claude-3-5-haiku-20241022"
-          : provider === "openai"
-            ? "gpt-4o-mini"
-            : provider === "google"
-              ? "gemini-2.0-flash"
-              : provider === "deepseek"
-                ? "deepseek-chat"
-                : "anthropic/claude-3-5-haiku");
+      const model = overrideModel || summarizerModelForProvider(provider);
       return new NativeSummarizer(provider, model);
     }
   }

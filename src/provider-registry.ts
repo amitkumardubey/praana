@@ -226,6 +226,7 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     api: "google-generative-ai",
     provider: "google",
     envKey: "GOOGLE_GENERATIVE_AI_API_KEY",
+    envKeyAliases: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
   },
   mistral: {
@@ -254,6 +255,11 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     provider: "github-copilot",
     envKey: "COPILOT_GITHUB_TOKEN",
     baseUrl: "https://api.individual.githubcopilot.com",
+    headers: {
+      "Editor-Version": "Praana/0.12.0",
+      "Editor-Plugin-Version": "praana/0.12.0",
+      "Copilot-Integration-Id": "vscode-chat",
+    },
   },
 };
 

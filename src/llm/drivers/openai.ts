@@ -16,13 +16,15 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
+import { joinUrl } from "../url.js";
 
 export class OpenAICompatibleDriver implements LlmDriver {
   readonly protocol: string = "openai-compatible";
 
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const baseUrl = req.baseUrl || auth.baseUrl || "https://api.openai.com/v1";
-    const endpoint = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    const endpoint =
+      req.endpointUrl || joinUrl(baseUrl, "/chat/completions", req.query);
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -34,19 +36,35 @@ export class OpenAICompatibleDriver implements LlmDriver {
 
     const messages = this.formatMessages(req.messages, req.systemPrompt);
     const tools = this.formatTools(req.tools);
+    const compat = req.compat;
+    const maxTokensField = compat?.maxTokensField ?? "max_tokens";
 
     const body: Record<string, unknown> = {
       model: req.model,
       messages,
       stream: true,
-      stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+      ...(req.maxTokens !== undefined ? { [maxTokensField]: req.maxTokens } : {}),
     };
 
-    if (req.reasoningEffort && req.reasoningEffort !== "off") {
+    if (compat?.supportsUsageInStreaming !== false) {
+      body.stream_options = { include_usage: true };
+    }
+
+    if (
+      compat?.supportsReasoningEffort !== false &&
+      req.reasoningEffort &&
+      req.reasoningEffort !== "off"
+    ) {
       body.reasoning_effort = req.reasoningEffort;
+    }
+
+    if (compat?.thinkingFormat === "qwen-chat-template" && req.reasoningEffort && req.reasoningEffort !== "off") {
+      body.chat_template_kwargs = {
+        ...(compat.chatTemplateKwargs ?? {}),
+        enable_thinking: true,
+      };
     }
 
     // Execute HTTP request with pre-emission retry safety

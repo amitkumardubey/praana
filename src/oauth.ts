@@ -8,6 +8,7 @@ import {
   setOAuthToken,
   type StoredOAuthCredential,
 } from "./credentials.js";
+import { PROVIDER_REGISTRY } from "./provider-registry.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
@@ -83,18 +84,18 @@ export interface OAuthProviderInfo {
   oauth: OAuthAuth;
 }
 
-const mockOAuthAuth: OAuthAuth = {
-  name: "Standard OAuth",
+const pasteTokenAuth = (name: string, promptMessage: string): OAuthAuth => ({
+  name,
   async login(interaction: AuthInteraction): Promise<OAuthCredential> {
     const code = await interaction.prompt({
       type: "secret",
-      message: "Enter authorization code or API token:",
+      message: promptMessage,
     });
     return {
       type: "oauth",
       access: code,
       refresh: code,
-      expires: Date.now() + 3600 * 1000 * 24 * 30, // 30 days
+      expires: Date.now() + 3600 * 1000 * 24 * 30,
     };
   },
   async refresh(cred: OAuthCredential): Promise<OAuthCredential> {
@@ -103,12 +104,159 @@ const mockOAuthAuth: OAuthAuth = {
   async toAuth(cred: OAuthCredential): Promise<ModelAuth> {
     return { apiKey: cred.access };
   },
+});
+
+/** Public GitHub Copilot device-flow client id (same one used by Copilot.vim / copilot.lua). */
+const COPILOT_GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+
+function copilotHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Editor-Version": "Praana/0.12.0",
+    "Editor-Plugin-Version": "praana/0.12.0",
+    "Copilot-Integration-Id": "vscode-chat",
+  };
+}
+
+/**
+ * Exchange a GitHub OAuth token for a Copilot API token.
+ * If the input is already a Copilot token, GitHub rejects it and we return it as-is.
+ */
+export async function resolveCopilotModelAuth(
+  githubOrCopilotToken: string,
+  signal?: AbortSignal,
+): Promise<ModelAuth> {
+  const baseUrl = PROVIDER_REGISTRY["github-copilot"]?.baseUrl ?? "https://api.individual.githubcopilot.com";
+  try {
+    const res = await fetch("https://api.github.com/copilot_internal/v2/token", {
+      headers: {
+        Authorization: `token ${githubOrCopilotToken}`,
+        Accept: "application/json",
+        "User-Agent": "praana",
+      },
+      signal,
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { token?: string };
+      if (data.token) {
+        return {
+          apiKey: data.token,
+          headers: copilotHeaders(data.token),
+          baseUrl,
+        };
+      }
+    }
+  } catch {
+    // Fall through — caller may have pasted a Copilot API token directly.
+  }
+  return {
+    apiKey: githubOrCopilotToken,
+    headers: copilotHeaders(githubOrCopilotToken),
+    baseUrl,
+  };
+}
+
+const githubCopilotOAuth: OAuthAuth = {
+  name: "GitHub Copilot",
+  async login(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const res = await fetch("https://github.com/login/device/code", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "praana",
+      },
+      body: JSON.stringify({
+        client_id: COPILOT_GITHUB_CLIENT_ID,
+        scope: "read:user",
+      }),
+      signal: interaction.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`GitHub device login failed (${res.status}): ${text}`);
+    }
+    const data = (await res.json()) as {
+      device_code: string;
+      user_code: string;
+      verification_uri: string;
+      interval?: number;
+      expires_in?: number;
+    };
+    interaction.notify({
+      type: "device_code",
+      userCode: data.user_code,
+      verificationUri: data.verification_uri,
+      intervalSeconds: data.interval,
+      expiresInSeconds: data.expires_in,
+    });
+
+    let intervalMs = Math.max(5, data.interval ?? 5) * 1000;
+    const deadline = Date.now() + (data.expires_in ?? 900) * 1000;
+
+    while (Date.now() < deadline) {
+      if (interaction.signal?.aborted) {
+        throw new Error("OAuth login aborted");
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": "praana",
+        },
+        body: JSON.stringify({
+          client_id: COPILOT_GITHUB_CLIENT_ID,
+          device_code: data.device_code,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        }),
+        signal: interaction.signal,
+      });
+      const token = (await tokenRes.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        error?: string;
+        error_description?: string;
+      };
+      if (token.access_token) {
+        return {
+          type: "oauth",
+          access: token.access_token,
+          refresh: token.refresh_token || token.access_token,
+          expires: Date.now() + (token.expires_in ?? 3600 * 24 * 365) * 1000,
+        };
+      }
+      if (token.error === "authorization_pending") continue;
+      if (token.error === "slow_down") {
+        intervalMs += 5000;
+        continue;
+      }
+      throw new Error(token.error_description || token.error || "GitHub device login failed");
+    }
+    throw new Error("GitHub device login timed out");
+  },
+  async refresh(cred: OAuthCredential): Promise<OAuthCredential> {
+    return cred;
+  },
+  async toAuth(cred: OAuthCredential): Promise<ModelAuth> {
+    return resolveCopilotModelAuth(cred.access);
+  },
 };
 
 const providers: OAuthProviderInfo[] = [
-  { id: "anthropic", name: "Anthropic", oauth: mockOAuthAuth },
-  { id: "openai-codex", name: "OpenAI Codex", oauth: mockOAuthAuth },
-  { id: "github-copilot", name: "GitHub Copilot", oauth: mockOAuthAuth },
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    oauth: pasteTokenAuth("Anthropic", "Paste your Anthropic API key or Claude Pro OAuth token:"),
+  },
+  {
+    id: "openai-codex",
+    name: "OpenAI Codex",
+    oauth: pasteTokenAuth("OpenAI Codex", "Paste your ChatGPT / Codex access token:"),
+  },
+  { id: "github-copilot", name: "GitHub Copilot", oauth: githubCopilotOAuth },
 ];
 
 export function getOAuthAuth(provider: string): OAuthAuth | undefined {

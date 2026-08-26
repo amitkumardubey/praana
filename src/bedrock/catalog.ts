@@ -1,6 +1,6 @@
 import { getCuratedModels } from "../llm/catalog.js";
 import { resolveContextWindowSync } from "../llm/context-window.js";
-import { signAwsRequest } from "../llm/aws-sigv4.js";
+import { authorizeAwsRequest } from "../llm/aws-credentials.js";
 
 export interface FoundationModelLike {
   modelId: string;
@@ -108,27 +108,18 @@ async function defaultListFoundationModels(opts: {
   const endpoint = `https://bedrock.${opts.region}.amazonaws.com/foundation-models?byOutputModality=TEXT`;
   let headers: Record<string, string> = { "Content-Type": "application/json" };
 
-  if (opts.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK) {
-    headers.Authorization = `Bearer ${opts.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK}`;
-  } else {
-    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || "";
-    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || "";
-    const sessionToken = process.env.AWS_SESSION_TOKEN;
-    if (accessKeyId && secretAccessKey) {
-      headers = signAwsRequest({
-        method: "GET",
-        url: endpoint,
-        headers,
-        body: "",
-        credentials: {
-          accessKeyId,
-          secretAccessKey,
-          sessionToken,
-          region: opts.region,
-          service: "bedrock",
-        },
-      });
-    }
+  try {
+    headers = await authorizeAwsRequest({
+      method: "GET",
+      url: endpoint,
+      headers,
+      body: "",
+      region: opts.region,
+      service: "bedrock",
+      bearerToken: opts.bearerToken,
+    });
+  } catch {
+    return [];
   }
 
   try {
@@ -155,27 +146,18 @@ async function defaultListInferenceProfiles(opts: {
   const endpoint = `https://bedrock.${opts.region}.amazonaws.com/inference-profiles`;
   let headers: Record<string, string> = { "Content-Type": "application/json" };
 
-  if (opts.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK) {
-    headers.Authorization = `Bearer ${opts.bearerToken || process.env.AWS_BEARER_TOKEN_BEDROCK}`;
-  } else {
-    const accessKeyId = process.env.AWS_ACCESS_KEY_ID || "";
-    const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY || "";
-    const sessionToken = process.env.AWS_SESSION_TOKEN;
-    if (accessKeyId && secretAccessKey) {
-      headers = signAwsRequest({
-        method: "GET",
-        url: endpoint,
-        headers,
-        body: "",
-        credentials: {
-          accessKeyId,
-          secretAccessKey,
-          sessionToken,
-          region: opts.region,
-          service: "bedrock",
-        },
-      });
-    }
+  try {
+    headers = await authorizeAwsRequest({
+      method: "GET",
+      url: endpoint,
+      headers,
+      body: "",
+      region: opts.region,
+      service: "bedrock",
+      bearerToken: opts.bearerToken,
+    });
+  } catch {
+    return [];
   }
 
   try {
