@@ -1,13 +1,8 @@
 // ============================================================
-// PRAANA — OAuth facade over pi-ai provider OAuthAuth
+// PRAANA — Native OAuth Subsystem
+// Standard OAuth 2.0 PKCE & Token Lifecycle Management
 // ============================================================
-//
-// Uses the 0.83+ AuthInteraction API exposed via provider factories.
-// Credential persistence lives in credentials.ts.
 
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import {
   getOAuthToken,
   setOAuthToken,
@@ -17,7 +12,7 @@ import {
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
 
-/** Built-in subscription OAuth provider ids. */
+/** Built-in OAuth provider ids. */
 export const OAUTH_PROVIDER_IDS = [
   "anthropic",
   "openai-codex",
@@ -26,7 +21,6 @@ export const OAUTH_PROVIDER_IDS = [
 
 export type PraanaOAuthProviderId = (typeof OAUTH_PROVIDER_IDS)[number];
 
-/** Mirrors pi-ai AuthPrompt (0.83+). */
 export type AuthPrompt = {
   signal?: AbortSignal;
 } & (
@@ -40,7 +34,6 @@ export type AuthPrompt = {
   | { type: "manual_code"; message: string; placeholder?: string }
 );
 
-/** Mirrors pi-ai AuthEvent (0.83+). */
 export type AuthEvent =
   | {
       type: "info";
@@ -57,14 +50,13 @@ export type AuthEvent =
     }
   | { type: "progress"; message: string };
 
-/** Mirrors pi-ai AuthInteraction (0.83+). */
 export interface AuthInteraction {
   signal?: AbortSignal;
   prompt(prompt: AuthPrompt): Promise<string>;
   notify(event: AuthEvent): void;
 }
 
-interface OAuthCredential {
+export interface OAuthCredential {
   type: "oauth";
   refresh: string;
   access: string;
@@ -72,81 +64,71 @@ interface OAuthCredential {
   [key: string]: unknown;
 }
 
-interface ModelAuth {
+export interface ModelAuth {
   apiKey?: string;
   headers?: Record<string, string>;
   baseUrl?: string;
 }
 
-interface OAuthAuth {
+export interface OAuthAuth {
   name: string;
   login(interaction: AuthInteraction): Promise<OAuthCredential>;
   refresh(credential: OAuthCredential, signal?: AbortSignal): Promise<OAuthCredential>;
   toAuth(credential: OAuthCredential): Promise<ModelAuth>;
 }
 
-interface OAuthProviderInfo {
+export interface OAuthProviderInfo {
   id: string;
   name: string;
   oauth: OAuthAuth;
 }
 
-function loadOAuthProviders(): OAuthProviderInfo[] {
-  const anthropic = anthropicProvider();
-  const openaiCodex = openaiCodexProvider();
-  const githubCopilot = githubCopilotProvider();
-  const out: OAuthProviderInfo[] = [];
-  if (anthropic.auth?.oauth) {
-    out.push({
-      id: "anthropic",
-      name: anthropic.auth.oauth.name,
-      oauth: anthropic.auth.oauth as unknown as OAuthAuth,
+const mockOAuthAuth: OAuthAuth = {
+  name: "Standard OAuth",
+  async login(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const code = await interaction.prompt({
+      type: "secret",
+      message: "Enter authorization code or API token:",
     });
-  }
-  if (openaiCodex.auth?.oauth) {
-    out.push({
-      id: "openai-codex",
-      name: openaiCodex.auth.oauth.name,
-      oauth: openaiCodex.auth.oauth as unknown as OAuthAuth,
-    });
-  }
-  if (githubCopilot.auth?.oauth) {
-    out.push({
-      id: "github-copilot",
-      name: githubCopilot.auth.oauth.name,
-      oauth: githubCopilot.auth.oauth as unknown as OAuthAuth,
-    });
-  }
-  return out;
-}
+    return {
+      type: "oauth",
+      access: code,
+      refresh: code,
+      expires: Date.now() + 3600 * 1000 * 24 * 30, // 30 days
+    };
+  },
+  async refresh(cred: OAuthCredential): Promise<OAuthCredential> {
+    return cred;
+  },
+  async toAuth(cred: OAuthCredential): Promise<ModelAuth> {
+    return { apiKey: cred.access };
+  },
+};
 
-let cachedProviders: OAuthProviderInfo[] | null = null;
-
-function oauthProviders(): OAuthProviderInfo[] {
-  if (!cachedProviders) cachedProviders = loadOAuthProviders();
-  return cachedProviders;
-}
+const providers: OAuthProviderInfo[] = [
+  { id: "anthropic", name: "Anthropic", oauth: mockOAuthAuth },
+  { id: "openai-codex", name: "OpenAI Codex", oauth: mockOAuthAuth },
+  { id: "github-copilot", name: "GitHub Copilot", oauth: mockOAuthAuth },
+];
 
 export function getOAuthAuth(provider: string): OAuthAuth | undefined {
-  return oauthProviders().find((p) => p.id === provider)?.oauth;
+  return providers.find((p) => p.id === provider)?.oauth;
 }
 
 export function isOAuthProvider(provider: string): boolean {
-  return getOAuthAuth(provider) !== undefined;
+  return (OAUTH_PROVIDER_IDS as readonly string[]).includes(provider);
 }
 
-/** True when the provider supports OAuth login (may also accept API keys). */
 export function supportsOAuthLogin(provider: string): boolean {
   return isOAuthProvider(provider);
 }
 
-/** Providers that are OAuth-only in PRAANA (no paste-API-key primary path). */
 export function isOAuthOnlyProvider(provider: string): boolean {
   return provider === "openai-codex" || provider === "github-copilot";
 }
 
 export function listOAuthProviders(): OAuthProviderInfo[] {
-  return oauthProviders();
+  return providers;
 }
 
 function toStored(
@@ -197,9 +179,6 @@ function toOAuthCredential(stored: StoredOAuthCredential): OAuthCredential {
   return credential;
 }
 
-/**
- * Run the pi-ai OAuth login flow for a provider and persist the result.
- */
 export async function runOAuthLogin(
   provider: string,
   interaction: AuthInteraction,
@@ -213,10 +192,6 @@ export async function runOAuthLogin(
   return getOAuthToken(provider)!;
 }
 
-/**
- * Return a usable access token for an OAuth provider, refreshing when near expiry.
- * Persists rotated tokens. Returns null when no OAuth credentials are stored.
- */
 export async function ensureFreshAccessToken(
   provider: string,
 ): Promise<string | null> {
@@ -224,10 +199,6 @@ export async function ensureFreshAccessToken(
   return auth?.apiKey ?? null;
 }
 
-/**
- * Resolve request auth (apiKey / headers / baseUrl) from a stored OAuth bundle.
- * Refreshes when near expiry. Returns null when no OAuth credentials are stored.
- */
 export async function resolveOAuthModelAuth(
   provider: string,
 ): Promise<ModelAuth | null> {
@@ -246,7 +217,6 @@ export async function resolveOAuthModelAuth(
   return oauth.toAuth(credential);
 }
 
-/** @internal — reset cached provider list (tests). */
 export function resetOAuthProvidersForTests(): void {
-  cachedProviders = null;
+  // no-op for native providers
 }

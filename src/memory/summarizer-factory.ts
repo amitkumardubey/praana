@@ -1,93 +1,109 @@
 // ============================================================
 // PRAANA Memory — Summarizer factory
+// Powered by the native LLM engine
 // ============================================================
 
 import type { MemoryConfig } from "../types.js";
+import type { SummarizerLLM } from "./types.js";
 import { getAppLogger } from "../logger.js";
 import { envOverride } from "../app-identity.js";
+import { completeLlmResponse, isProviderAuthenticated } from "../llm/index.js";
 import { OllamaEmbedder } from "./embeddings.js";
-import {
-  OllamaSummarizer,
-  listOllamaModelNames,
-  pickDefaultChatModel,
-} from "./ollama-summarizer.js";
-import { OpenAISummarizer } from "./openai-summarizer.js";
-import type { SummarizerLLM } from "./types.js";
+
+class NativeSummarizer implements SummarizerLLM {
+  name: string;
+
+  constructor(
+    private provider: string,
+    private model: string,
+  ) {
+    this.name = `${provider}/${model}`;
+  }
+
+  async available(): Promise<boolean> {
+    return isProviderAuthenticated(this.provider);
+  }
+
+  async complete(opts: {
+    system?: string;
+    prompt: string;
+    temperature?: number;
+    maxTokens?: number;
+    json?: boolean;
+    timeoutMs?: number;
+  }): Promise<string> {
+    const result = await completeLlmResponse({
+      provider: this.provider,
+      model: this.model,
+      systemPrompt: opts.system,
+      messages: [{ role: "user", content: opts.prompt }],
+      temperature: opts.temperature ?? 0.2,
+      maxTokens: opts.maxTokens,
+    });
+    return result.fullResponse || "";
+  }
+}
 
 export async function createSummarizer(
   config: MemoryConfig,
 ): Promise<SummarizerLLM | null> {
   const log = getAppLogger().child("memory");
-  const mode = (config.summarizer ?? "openrouter").toLowerCase();
+  const mode = (config.summarizer ?? "auto").toLowerCase();
   if (mode === "disabled") return null;
 
-  if (mode === "ollama") {
-    const url = config.ollama_url ?? "http://localhost:11434";
-    const configured =
-      config.ollama_summarizer_model?.trim() ||
-      envOverride("PRAANA_SUMMARIZER_MODEL")?.trim() ||
-      "";
+  const overrideModel = envOverride("PRAANA_SUMMARIZER_MODEL")?.trim();
 
-    let model = configured;
-    if (!model) {
-      const names = await listOllamaModelNames(url);
-      model = pickDefaultChatModel(names) ?? "";
-      if (model) {
-        log.notice(`summarizer model unset — using: ${model}`);
+  // If a specific provider is configured (e.g. "anthropic", "openai", "openrouter", "google", "ollama")
+  if (mode !== "auto") {
+    if (mode === "ollama") {
+      const url = config.ollama_url ?? "http://localhost:11434";
+      const model = config.ollama_summarizer_model || overrideModel || "llama3";
+      if (!(await OllamaEmbedder.isAvailable(url, model))) {
+        log.warn(`Ollama model '${model}' is not available at ${url}`);
+        return null;
       }
+      return new NativeSummarizer("ollama", model);
     }
 
-    if (!model) {
-      log.warn(
-        "Ollama summarizer enabled but no chat model found. Set memory.ollama_summarizer_model or run: ollama pull <model>",
-      );
-      return null;
+    if (isProviderAuthenticated(mode)) {
+      const model =
+        overrideModel ||
+        (mode === "anthropic"
+          ? "claude-3-5-haiku-20241022"
+          : mode === "openai"
+            ? "gpt-4o-mini"
+            : "google/gemini-2.0-flash-001");
+      return new NativeSummarizer(mode, model);
     }
-
-    if (!(await OllamaEmbedder.isAvailable(url, model))) {
-      log.warn(
-        `Ollama model '${model}' is not available at ${url}. Run: ollama pull ${model.split(":")[0]}`,
-      );
-      return null;
-    }
-
-    log.notice(`summarizer: ${model}`);
-    return new OllamaSummarizer(url, model);
+    return null;
   }
 
-  if (mode === "openai") {
-    const apiKey = process.env.OPENAI_API_KEY ?? "";
-    const model =
-      envOverride("PRAANA_SUMMARIZER_MODEL") ?? "gpt-4o-mini";
-    if (!apiKey) {
-      log.warn("summarizer=openai but OPENAI_API_KEY is not set");
-      return null;
+  // Auto mode: check available authenticated providers
+  const preferredProviders = [
+    "anthropic",
+    "openai",
+    "google",
+    "openrouter",
+    "deepseek",
+    "groq",
+  ];
+  for (const provider of preferredProviders) {
+    if (isProviderAuthenticated(provider)) {
+      const model =
+        overrideModel ||
+        (provider === "anthropic"
+          ? "claude-3-5-haiku-20241022"
+          : provider === "openai"
+            ? "gpt-4o-mini"
+            : provider === "google"
+              ? "gemini-2.0-flash"
+              : provider === "deepseek"
+                ? "deepseek-chat"
+                : "anthropic/claude-3-5-haiku");
+      return new NativeSummarizer(provider, model);
     }
-    return new OpenAISummarizer({
-      baseUrl: "https://api.openai.com/v1",
-      apiKey,
-      model,
-    });
   }
 
-  // openrouter (default) and legacy "openrouter" spelling
-  if (mode === "openrouter" || mode === "openai-compatible") {
-    const openRouterKey = process.env.OPENROUTER_API_KEY ?? "";
-    const openAiKey = process.env.OPENAI_API_KEY ?? "";
-    const apiKey = openRouterKey || openAiKey;
-    const baseUrl = openRouterKey
-      ? "https://openrouter.ai/api/v1"
-      : "https://api.openai.com/v1";
-    const model =
-      envOverride("PRAANA_SUMMARIZER_MODEL") ??
-      "google/gemini-2.5-flash";
-    if (!apiKey) {
-      log.warn("summarizer=openrouter but OPENROUTER_API_KEY / OPENAI_API_KEY is not set");
-      return null;
-    }
-    return new OpenAISummarizer({ baseUrl, apiKey, model });
-  }
-
-  log.warn(`Unknown memory.summarizer '${config.summarizer}' — session-end summarization disabled`);
+  log.debug("No authenticated provider available for session summarization");
   return null;
 }

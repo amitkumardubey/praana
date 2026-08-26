@@ -46,8 +46,6 @@
     "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-bedrock": "^3.1093.0",
-    "@earendil-works/pi-ai": "^0.83.0",
     "@ff-labs/fff-bun": "^0.10.5",
     "@huggingface/transformers": "^4.2.0",
     "@opentui/core": "^0.5.8",

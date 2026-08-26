@@ -143,11 +143,11 @@ describe("resolveModelSpecifierSync", () => {
     });
   });
 
-  it("resolves native moonshotai when provider is explicit", () => {
-    expect(catalogHasModel("moonshotai", "kimi-k2.5")).toBe(true);
-    const result = resolveModelSpecifierSync("kimi-k2.5", "openrouter", "moonshotai");
-    expect(result.provider).toBe("moonshotai");
-    expect(result.modelId).toBe("kimi-k2.5");
+  it("resolves native deepseek when provider is explicit", () => {
+    expect(catalogHasModel("deepseek", "deepseek-chat")).toBe(true);
+    const result = resolveModelSpecifierSync("deepseek-chat", "openrouter", "deepseek");
+    expect(result.provider).toBe("deepseek");
+    expect(result.modelId).toBe("deepseek-chat");
     expect(result.source).toBe("native-catalog");
     expect(result.known).toBe(true);
   });

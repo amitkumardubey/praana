@@ -87,8 +87,8 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
       };
     }
 
-    // Show a preview of the first few changed lines in interactive mode
-    if (isInteractiveTerminal()) {
+    // Show a preview of the first few changed lines in interactive mode when not forcing
+    if (isInteractiveTerminal() && !opts.force) {
       const existing = readFileSync(configPath, "utf-8");
       const existingLines = existing.split("\n");
       const newLines = content.split("\n");

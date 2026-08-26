@@ -2,17 +2,20 @@ import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:tes
 import * as compileClassicActual from "../src/compile-classic.js";
 import * as llmActual from "../src/llm.js";
 import * as toolsActual from "../src/tools/index.js";
-import * as piAiActual from "@earendil-works/pi-ai/compat";
+import * as nativeLlmActual from "../src/llm/index.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings
 const ccReal = { ...compileClassicActual };
 const llmReal = { ...llmActual };
 const toolsReal = { ...toolsActual };
-const piAiReal = { ...piAiActual };
+const nativeLlmReal = { ...nativeLlmActual };
 
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  stream: mock(),
+const mockStream = mock();
+
+mock.module("../src/llm/index.js", () => ({
+  ...nativeLlmActual,
+  streamLlmResponse: mockStream,
 }));
 
 mock.module("../src/compiler.js", () => ({}));
@@ -57,7 +60,7 @@ mock.module("../src/llm.js", () => ({
   getReasoningEffort: mock(() => undefined),
 }));
 
-import { stream as piStream } from "@earendil-works/pi-ai/compat";
+const piStream = mockStream;
 import { runTurn } from "../src/turn.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Session } from "../src/session.js";
@@ -305,6 +308,6 @@ afterAll(() => {
   mock.module("../src/compile-classic.js", () => ccReal);
   mock.module("../src/llm.js", () => llmReal);
   mock.module("../src/tools/index.js", () => toolsReal);
-  mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
+  mock.module("../src/llm/index.js", () => nativeLlmReal);
   mock.module("../src/compiler.js", () => ({}));
 });

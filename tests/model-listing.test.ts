@@ -115,10 +115,9 @@ describe("model-listing", () => {
     expect(byBoth.every((i) => /openai|gpt/i.test(i.label))).toBe(true);
   });
 
-  it("surfaces live-catalog failures when a provider has no pi-ai models", async () => {
+  it("surfaces live-catalog failures when a provider has no curated models", async () => {
     fetchSpy.mockRejectedValue(new Error("catalog unreachable"));
-    // ollama is live-catalog and not in pi-ai, so a failed fetch leaves an empty set.
-    await expect(listModelsForProvider("ollama", { available: true })).rejects.toThrow(
+    await expect(listModelsForProvider("cerebras", { available: true })).rejects.toThrow(
       "catalog unreachable",
     );
   });

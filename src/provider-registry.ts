@@ -1,4 +1,3 @@
-import { getProviders, findEnvKeys } from "@earendil-works/pi-ai/compat";
 import type { UserProviderConfig } from "./types.js";
 
 /**
@@ -203,6 +202,12 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKey: "NVIDIA_API_KEY",
     baseUrl: "https://integrate.api.nvidia.com/v1",
   },
+  cerebras: {
+    api: "openai-completions",
+    provider: "cerebras",
+    envKey: "CEREBRAS_API_KEY",
+    baseUrl: "https://api.cerebras.ai/v1",
+  },
   ollama: {
     api: "openai-completions",
     provider: "openai",
@@ -317,6 +322,7 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "ollama",
   "umans",
   "poolside",
+  "cerebras",
   "amazon-bedrock",
 ];
 
@@ -352,16 +358,13 @@ export function getProviderEnvKey(provider: string): string | null {
 
   const registryEntry = PROVIDER_REGISTRY[provider];
   if (registryEntry) return registryEntry.envKey;
-  if ((getProviders() as string[]).includes(provider)) {
-    return findEnvKeys(provider as never)?.[0] ?? null;
-  }
   return null;
 }
 
-/** Format all known providers (PRAANA registry + pi-ai) for display in help/init text. */
+/** Format all known providers for display in help/init text. */
 export function formatProviderListForDisplay(): { name: string; envKey: string | null }[] {
   const registryIds = Object.keys(PROVIDER_REGISTRY);
-  const piAiIds = getProviders() as string[];
-  const all = Array.from(new Set([...registryIds, ...piAiIds])).sort();
+  const userIds = listUserDeclaredProviderIds();
+  const all = Array.from(new Set([...registryIds, ...userIds])).sort();
   return all.map((name) => ({ name, envKey: getProviderEnvKey(name) }));
 }

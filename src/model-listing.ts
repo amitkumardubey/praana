@@ -1,4 +1,3 @@
-import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
 import {
   listKnownProviders,
   isProviderAvailable,
@@ -9,6 +8,7 @@ import {
   listProviderCatalogModels,
   providerSupportsLiveCatalog,
 } from "./provider-catalog.js";
+import { getCuratedModels } from "./llm/catalog.js";
 
 export interface ModelListEntry {
   provider: string;
@@ -50,18 +50,12 @@ function collectPiAiModels(
   available: boolean,
   disabledReason?: string,
 ): ModelListEntry[] {
-  const piProvider = mapProviderToPiAi(provider) ?? provider;
-  if (!(getProviders() as string[]).includes(piProvider)) return [];
-
-  const models = getModels(piProvider as never) ?? [];
+  const models = getCuratedModels(provider);
   return models.map((m) => ({
     provider,
     modelId: m.id,
-    label: m.id,
-    contextWindow:
-      typeof m.contextWindow === "number" && Number.isFinite(m.contextWindow)
-        ? m.contextWindow
-        : null,
+    label: m.name || m.id,
+    contextWindow: m.contextWindow || null,
     available,
     ...(disabledReason ? { disabledReason } : {}),
   }));

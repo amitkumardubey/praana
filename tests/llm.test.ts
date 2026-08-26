@@ -11,7 +11,6 @@ import {
   parseReasoningEffort,
   REASONING_EFFORT_LEVELS,
 } from "../src/llm.js";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import {
   setUserProviders,
   resetUserProvidersForTests,
@@ -85,11 +84,11 @@ describe("llm provider registry", () => {
     expect(isProviderAvailable("ollama")).toBe(true);
   });
 
-  it("includes pi-ai providers in the known list", () => {
+  it("includes known providers in the list", () => {
     const providers = listKnownProviders();
     expect(providers).toContain("cerebras");
     expect(providers).toContain("umans");
-    expect(providers).toContain("huggingface");
+    expect(providers).toContain("anthropic");
   });
 
   it("treats amazon-bedrock as unavailable without AWS credentials", () => {
@@ -283,22 +282,14 @@ describe("reasoning effort", () => {
   });
 
   it("getReasoningEffort returns medium for OpenRouter GLM (not off)", () => {
-    const model = getModel("openrouter", "z-ai/glm-5.2" as never) as unknown as Record<
-      string,
-      unknown
-    >;
-    expect(model).toBeTruthy();
-    expect(model.thinkingLevelMap).toBeTruthy();
+    const model = { reasoning: true };
     const effort = getReasoningEffort(model, "z-ai/glm-5.2", "openrouter");
     expect(effort).toBe("medium");
     expect(effort).not.toBe("off");
   });
 
   it("getReasoningEffort honours preferred level when supported", () => {
-    const model = getModel("openrouter", "z-ai/glm-5.2" as never) as unknown as Record<
-      string,
-      unknown
-    >;
+    const model = { reasoning: true };
     expect(getReasoningEffort(model, "z-ai/glm-5.2", "openrouter", "high")).toBe(
       "high",
     );

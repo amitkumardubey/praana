@@ -1,4 +1,3 @@
-import { getModel, getModels, getEnvApiKey, getProviders, findEnvKeys, clampThinkingLevel } from "@earendil-works/pi-ai/compat";
 import type { PraanaConfig, UserProviderConfig, UserProviderModel } from "./types.js";
 import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
@@ -21,6 +20,8 @@ import {
 } from "./bedrock/credentials.js";
 import { resolveBedrockRegion } from "./bedrock/region.js";
 import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
+import { getCuratedModels, getModelCatalogEntry } from "./llm/catalog.js";
+import { DEFAULT_MODELS as NATIVE_DEFAULT_MODELS } from "./llm/resolver.js";
 
 export {
   resolveContextWindowSync,
@@ -63,67 +64,42 @@ const DETECTION_PRECEDENCE: string[] = [
   "umans",
   "poolside",
   "openrouter",
-  "amazon-bedrock",  // AWS credentials (envKey: null, special check in isProviderAvailable)
-  "ollama",          // local, no key (PRAANA-specific, not in pi-ai)
+  "amazon-bedrock",
+  "ollama",
 ];
+
 export const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: "claude-sonnet-4-6",
-  openai: "gpt-4o",
-  deepseek: "deepseek-chat",
-  groq: "llama-3.1-70b-versatile",
-  google: "gemini-2.0-flash",
+  ...NATIVE_DEFAULT_MODELS,
   mistral: "mistral-large-latest",
   xai: "grok-2",
   fireworks: "accounts/fireworks/models/llama-v3p1-70b-instruct",
   together: "meta-llama/Llama-3.1-70B-Instruct-Turbo",
   opencode: "gpt-4o",
-  ollama: "llama3",
   umans: "umans-coder",
   poolside: "poolside/laguna-s-2.1",
-  "amazon-bedrock": "anthropic.claude-sonnet-4-20250514-v1:0",
   "openai-codex": "gpt-5.4",
   "github-copilot": "gpt-4.1",
 };
 
 export function pickFirstCatalogModel(provider: string): string | undefined {
-  const piProvider = mapProviderToPiAi(provider) ?? provider;
-  if (!(getProviders() as string[]).includes(piProvider)) return undefined;
-  const models = getModels(piProvider as never);
+  const models = getCuratedModels(provider);
   return models?.[0]?.id;
 }
 
 /**
  * List providers that currently have a usable key (credential store or env).
- * Used by the setup wizard to annotate / offer keys — never to auto-select
- * a default `[llm] provider` at config load time.
  */
 export function listEnvDetectedProviders(): string[] {
   return listAvailableProviders();
 }
 
 /**
- * @deprecated Prefer {@link listEnvDetectedProviders}. Kept for tests and
- * callers that want the first available provider + default model pair.
- * Do not use this to populate config — env keys are not a provider chooser.
+ * @deprecated Prefer {@link listEnvDetectedProviders}.
  */
 export function detectProviderFromEnvironment(): { provider: string; model: string } | null {
   const logger = getAppLogger().child("llm");
 
-  // Phase 1: curated precedence (PRAANA-specific ordering + keyless providers)
   for (const provider of DETECTION_PRECEDENCE) {
-    if (isProviderAvailable(provider)) {
-      const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
-      logger.debug(`Detected available provider "${provider}"`, {
-        details: { provider, model },
-      });
-      return { provider, model };
-    }
-  }
-
-  // Phase 2: remaining pi-ai providers not already checked
-  const checked = new Set(DETECTION_PRECEDENCE);
-  for (const provider of (getProviders() as string[])) {
-    if (checked.has(provider)) continue;
     if (isProviderAvailable(provider)) {
       const model = DEFAULT_MODELS[provider] ?? pickFirstCatalogModel(provider) ?? "";
       logger.debug(`Detected available provider "${provider}"`, {
@@ -137,7 +113,7 @@ export function detectProviderFromEnvironment(): { provider: string; model: stri
   return null;
 }
 
-/** Return all available providers, curated precedence first, then remaining pi-ai providers. */
+/** Return all available providers. */
 export function listAvailableProviders(): string[] {
   const all = listKnownProviders();
   const precedence = new Set(DETECTION_PRECEDENCE);
@@ -150,102 +126,40 @@ export function listAvailableProviders(): string[] {
   return ordered;
 }
 
-// ── Exported helpers ───────────────────────────────────────────
-
-/**
- * Lookup a provider config. User-declared providers (from config.toml
- * `[providers.<id>]`) take precedence over the hardcoded registry.
- * Falls back to openrouter for unknown values.
- */
-export function getProviderConfig(provider: string): ProviderConfig {
-  // 1. User-declared provider (from config.toml [providers.<id>]).
-  const userEntry = getUserProviderRegistryEntry(provider);
-  if (userEntry) return userEntry;
-
-  // 2. Hardcoded registry.
-  const entry = PROVIDER_REGISTRY[provider];
-  if (!entry) {
-    getAppLogger().child("llm").warn(
-      `Unknown provider "${provider}", falling back to openrouter. Known providers: ${listKnownProviders().join(", ")}`,
-    );
-    return PROVIDER_REGISTRY["openrouter"];
-  }
-  return entry;
-}
-
-/** Return all known provider IDs (union of user-declared, registry, and pi-ai). */
+/** Return all known provider names. */
 export function listKnownProviders(): string[] {
   const registryIds = Object.keys(PROVIDER_REGISTRY);
-  const piAiIds = getProviders() as string[];
   const userIds = listUserDeclaredProviderIds();
-  return Array.from(new Set([...registryIds, ...piAiIds, ...userIds])).sort();
+  return Array.from(new Set([...registryIds, ...userIds])).sort();
 }
 
 /**
- * Check whether the provider's API key is available.
- *
- * Resolution order:
- *   1. Credential store (~/.praana/credentials.json)
- *   2. Environment variable (registry envKey or user-declared env_key)
- *   3. Keyless providers (e.g. ollama) → always available
- *
- * User-declared providers with no env_key and no stored key are
- * considered available if they have no env_key declared (keyless
- * local servers like Ollama/vLLM without auth).
+ * Check whether a provider is available to use.
  */
 export function isProviderAvailable(provider: string): boolean {
-  // Special-case AWS Bedrock: ambient AWS credentials or stored bearer token.
+  if (isUserDeclaredProvider(provider)) {
+    const userEntry = getUserProviderRegistryEntry(provider);
+    if (!userEntry) return false;
+    if (!userEntry.envKey) return true;
+    return hasApiKey(provider) || !!process.env[userEntry.envKey]?.trim();
+  }
+
+  if (hasCredentials(provider)) return true;
+
   if (provider === "amazon-bedrock") {
     return isBedrockAvailable();
   }
 
-  // 1. Credential store — API key or OAuth bundle.
-  if (hasCredentials(provider)) return true;
-
-  // 2. User-declared providers.
-  if (isUserDeclaredProvider(provider)) {
-    const userConfig = getUserProviderConfig(provider);
-    if (!userConfig) return false;
-    // Keyless user-declared provider (no env_key) → available.
-    if (!userConfig.env_key) return true;
-    // Check env var fallback.
-    return !!process.env[userConfig.env_key];
+  if (provider === "ollama") {
+    return true;
   }
 
-  // 3. Registry providers.
-  const registryEntry = PROVIDER_REGISTRY[provider];
-
-  // OAuth-only providers (Codex) are not keyless — require stored OAuth.
-  // Copilot also accepts common GitHub token env vars.
-  if (isOAuthOnlyProvider(provider)) {
-    if (provider === "github-copilot") {
-      return !!(
-        process.env.COPILOT_GITHUB_TOKEN ||
-        process.env.GH_TOKEN ||
-        process.env.GITHUB_TOKEN ||
-        (registryEntry?.envKey && process.env[registryEntry.envKey])
-      );
-    }
+  const keys = getProviderEnvKeys(provider);
+  if (keys.length === 0) {
     return false;
   }
 
-  // Providers explicitly marked keyless in the registry (ollama).
-  if (registryEntry && registryEntry.envKey === null) return true;
-
-  // Registry entry with an env key — check primary + aliases.
-  if (registryEntry?.envKey) {
-    return getProviderEnvKeys(provider).some((name) => !!process.env[name]?.trim());
-  }
-
-  // 4. For providers known to pi-ai but NOT in our registry, use pi-ai's
-  //    key detection.
-  const piProviders = getProviders() as string[];
-  if (piProviders.includes(provider)) {
-    return !!getEnvApiKey(provider as never);
-  }
-
-  // Unknown provider.
-  return false;
+  return keys.some((k) => !!process.env[k]?.trim());
 }
 
 /** Human-readable message explaining which env var is missing. */
@@ -272,80 +186,44 @@ export function getMissingKeyMessage(provider: string): string | null {
     return `Missing required env var: ${envKey}`;
   }
 
-  const piKeys = findEnvKeys(provider as never);
-  if (piKeys?.length) {
-    return `Missing required env var: ${piKeys.join(" or ")}`;
-  }
-
   return `Provider "${provider}" is not configured`;
 }
 
 /** Whether a model likely requires chain-of-thought enabled on the wire. */
 export function inferReasoningModel(provider: string, modelId: string): boolean {
-  // Check configurable hints first (provider-specific, then global "*").
   const providerHints = REASONING_MODEL_HINTS[provider];
   const globalHints = REASONING_MODEL_HINTS["*"];
   for (const hints of [providerHints, globalHints]) {
     if (hints?.some((h) => h.pattern.test(modelId))) return true;
   }
-  // Fall back to pi-ai catalog metadata.
-  if (isInPiAiCatalog(provider, modelId)) {
-    const piProvider = mapProviderToPiAi(provider) ?? provider;
-    const catalogModel = getModel(piProvider as never, modelId as never);
-    return !!catalogModel?.reasoning;
-  }
-  return false;
+  const entry = getModelCatalogEntry(provider, modelId);
+  return !!entry?.reasoning;
 }
 
 type RuntimeModel = Record<string, unknown> & {
   __piOptions?: Record<string, unknown>;
 };
 
-function bedrockPiOptions(config: PraanaConfig["llm"]): Record<string, unknown> {
-  const opts: Record<string, unknown> = {
-    region: resolveBedrockRegion(config),
+export function getProviderConfig(provider: string): ProviderConfig {
+  const userEntry = getUserProviderRegistryEntry(provider);
+  if (userEntry) return userEntry;
+  const entry = PROVIDER_REGISTRY[provider];
+  if (entry) return entry;
+  return {
+    api: "openai-completions",
+    provider,
+    envKey: null,
+    baseUrl: "https://api.openai.com/v1",
   };
-  const bearer = resolveBedrockBearerToken();
-  if (bearer) opts.bearerToken = bearer;
-  return opts;
 }
 
-function buildFromPiAiCatalog(
-  config: PraanaConfig["llm"],
+function getUserDeclaredModel(
+  provider: string,
   modelId: string,
-  contextWindow?: number,
-): RuntimeModel | null {
-  const piProvider = mapProviderToPiAi(config.provider) ?? config.provider;
-  if (!(getProviders() as string[]).includes(piProvider)) return null;
-
-  const catalogModel = getModel(piProvider as never, modelId as never);
-  if (!catalogModel) return null;
-
-  const model: RuntimeModel = {
-    ...catalogModel,
-    contextWindow:
-      contextWindow ??
-      resolveContextWindowSync(config.provider, modelId, config.context_window),
-  };
-
-  if (config.provider === "amazon-bedrock") {
-    model.__piOptions = bedrockPiOptions(config);
-    return model;
-  }
-
-  // Key resolution: credential store (api key or oauth access) > env var > empty.
-  const pc = getProviderConfig(config.provider);
-  const apiKey = resolveApiKey(config.provider, pc.envKey, pc.envKeyAliases);
-
-  model.__piOptions = {
-    apiKey,
-    headers: catalogModel.headers ? { ...catalogModel.headers } : undefined,
-  };
-  if (pc.compat) {
-    model.compat = { ...(model.compat as object | undefined), ...pc.compat };
-  }
-
-  return model;
+): UserProviderModel | undefined {
+  const userConfig = getUserProviderConfig(provider);
+  if (!userConfig?.models) return undefined;
+  return userConfig.models.find((m) => m.id === modelId);
 }
 
 function buildModel(
@@ -354,16 +232,9 @@ function buildModel(
   contextWindow?: number,
 ): RuntimeModel {
   const normalizedId = normalizeModelIdForProvider(config.provider, modelId);
-  const fromCatalog = buildFromPiAiCatalog(config, normalizedId, contextWindow);
-  if (fromCatalog) return fromCatalog;
-
   const pc = getProviderConfig(config.provider);
-
   const baseUrl = config.base_url ?? pc.baseUrl;
-  // Key resolution: credential store > env_key > "no-key" sentinel.
   const apiKey = resolveApiKey(config.provider, pc.envKey, pc.envKeyAliases);
-
-  // Check for user-declared model metadata overrides.
   const userModel = getUserDeclaredModel(config.provider, normalizedId);
 
   const model: RuntimeModel = {
@@ -386,12 +257,11 @@ function buildModel(
     model.compat = { ...pc.compat };
   }
 
-  if (pc.headers) {
-    model.headers = { ...pc.headers };
-  }
-
   if (config.provider === "amazon-bedrock") {
-    model.__piOptions = bedrockPiOptions(config);
+    model.__piOptions = {
+      region: resolveBedrockRegion(config),
+      ...(resolveBedrockBearerToken() ? { bearerToken: resolveBedrockBearerToken() } : {}),
+    };
   } else {
     model.__piOptions = {
       apiKey,
@@ -400,20 +270,6 @@ function buildModel(
   }
 
   return model;
-}
-
-/**
- * Look up a user-declared model metadata override for a provider + model id.
- * Returns undefined if the provider is not user-declared or the model id
- * has no declared metadata.
- */
-function getUserDeclaredModel(
-  provider: string,
-  modelId: string,
-): UserProviderModel | undefined {
-  const userConfig = getUserProviderConfig(provider);
-  if (!userConfig?.models) return undefined;
-  return userConfig.models.find((m) => m.id === modelId);
 }
 
 export function createProvider(config: PraanaConfig["llm"], contextWindow?: number) {
@@ -426,7 +282,6 @@ export function resolveModel(modelString: string) {
 
 // ── Reasoning / thinking-level helpers ────────────────────────
 
-/** User-facing / pi-ai thinking levels (slash + config). */
 export const REASONING_EFFORT_LEVELS = [
   "off",
   "minimal",
@@ -440,13 +295,7 @@ export type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
 
 const DEFAULT_REASONING_LEVEL: ReasoningEffortLevel = "medium";
 
-/**
- * Parse a user/config effort string. Accepts `none` as an alias for `off`
- * (OpenRouter's disable token). Returns null when unrecognized.
- */
-export function parseReasoningEffort(
-  raw: string,
-): ReasoningEffortLevel | null {
+export function parseReasoningEffort(raw: string): ReasoningEffortLevel | null {
   const normalized = raw.trim().toLowerCase();
   if (normalized === "none") return "off";
   if ((REASONING_EFFORT_LEVELS as readonly string[]).includes(normalized)) {
@@ -455,43 +304,6 @@ export function parseReasoningEffort(
   return null;
 }
 
-function clampEffortForModel(
-  model: Record<string, unknown>,
-  level: ReasoningEffortLevel,
-): ReasoningEffortLevel {
-  const thinkingLevelMap = model.thinkingLevelMap as
-    | Record<string, string | null>
-    | undefined;
-  // Must pass reasoning:true — clampThinkingLevel returns only ["off"] when
-  // reasoning is falsy, which previously sent OpenRouter-illegal "off".
-  try {
-    const clamped = clampThinkingLevel(
-      {
-        reasoning: true,
-        thinkingLevelMap,
-      } as Parameters<typeof clampThinkingLevel>[0],
-      level,
-    );
-    if ((REASONING_EFFORT_LEVELS as readonly string[]).includes(clamped)) {
-      return clamped as ReasoningEffortLevel;
-    }
-  } catch {
-    getAppLogger().child("llm").warn(
-      "clampThinkingLevel failed, using default reasoning",
-    );
-  }
-  return DEFAULT_REASONING_LEVEL;
-}
-
-/**
- * Determine the `reasoningEffort` value to pass to pi-ai `stream()`.
- *
- * Returns `undefined` when the model does not need chain-of-thought, or when
- * effort is explicitly off (pi-ai then maps OpenRouter disable → `none`).
- * Never returns the string `"off"` — OpenRouter rejects it.
- *
- * @param preferred Optional session/config level (already parsed or raw).
- */
 export function getReasoningEffort(
   model: Record<string, unknown>,
   modelId: string,
@@ -506,15 +318,10 @@ export function getReasoningEffort(
     preferred != null && preferred !== ""
       ? parseReasoningEffort(preferred)
       : null;
-  const requested = preferredLevel ?? DEFAULT_REASONING_LEVEL;
-  let level = clampEffortForModel(model, requested);
-
-  // Some OpenRouter models (e.g. kimi-k2) reject disabled reasoning.
-  if (level === "off" && inferReasoningModel(provider, modelId)) {
-    level = clampEffortForModel(model, "minimal");
-    if (level === "off") level = DEFAULT_REASONING_LEVEL;
+  let requested = preferredLevel ?? DEFAULT_REASONING_LEVEL;
+  if (requested === "off" && inferReasoningModel(provider, modelId)) {
+    requested = "minimal";
   }
-
-  if (level === "off") return undefined;
-  return level;
+  if (requested === "off") return undefined;
+  return requested;
 }

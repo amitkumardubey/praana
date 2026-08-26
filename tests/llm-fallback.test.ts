@@ -1,23 +1,24 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
 import { z } from "zod";
-import * as piAiActual from "@earendil-works/pi-ai/compat";
+import * as nativeLlmActual from "../src/llm/index.js";
 import * as llmActual from "../src/llm.js";
 import * as toolsActual from "../src/tools/index.js";
 import * as compileClassicActual from "../src/compile-classic.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
 
-const piAiReal = { ...piAiActual };
+const nativeLlmReal = { ...nativeLlmActual };
 const llmReal = { ...llmActual };
 const toolsReal = { ...toolsActual };
 const compileClassicReal = { ...compileClassicActual };
 const autoCompactReal = { ...autoCompactActual };
 const uiReal = { ...uiActual };
 
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  stream: mock(),
-  clampThinkingLevel: mock((_model: unknown, level: string) => level),
-  getSupportedThinkingLevels: mock(() => ["off", "low", "medium", "high"]),
+const mockStream = mock();
+
+mock.module("../src/llm/index.js", () => ({
+  ...nativeLlmActual,
+  streamLlmResponse: mockStream,
 }));
 
 mock.module("../src/llm.js", () => ({
@@ -81,7 +82,7 @@ mock.module("../src/ui.js", () => ({
   stopSpinner: mock(),
 }));
 
-import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
+const piStream = mockStream;
 import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
@@ -89,7 +90,7 @@ import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Event } from "../src/types.js";
 
 afterAll(() => {
-  mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
+  mock.module("../src/llm/index.js", () => nativeLlmReal);
   mock.module("../src/llm.js", () => llmReal);
   mock.module("../src/tools/index.js", () => toolsReal);
   mock.module("../src/compile-classic.js", () => compileClassicReal);
