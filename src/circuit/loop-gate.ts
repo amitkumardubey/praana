@@ -29,6 +29,7 @@ const READ_TOOLS = new Set<string>([
   "code_symbols",
   "code_definition",
   "code_references",
+  "run_tests",
 ]);
 
 const GIT_READ_SUBCOMMANDS = new Set(["status", "diff", "log", "show", "blame"]);

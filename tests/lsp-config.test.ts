@@ -33,6 +33,7 @@ describe("loadConfig: [lsp]", () => {
       timeout_ms: 5000,
       max_file_lines: 10_000,
       servers: {},
+      auto_install: true,
     });
   });
 

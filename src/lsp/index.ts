@@ -10,7 +10,14 @@ export {
   lspLanguageId,
   resolveServerArgv,
   resolveServerKey,
+  DEFAULT_LSP_SERVERS,
+  type DefaultLspServerSpec,
 } from "./language.js";
+export {
+  resolveOrInstallServer,
+  getLspCacheDir,
+  type ResolveLspOptions,
+} from "./installer.js";
 export {
   LspManager,
   diffIntroduced,
