@@ -1,4 +1,3 @@
-import { getProviders } from "@earendil-works/pi-ai/compat";
 import {
   findProviderCatalogModelId,
   isInProviderCatalog,
@@ -19,7 +18,7 @@ export interface ResolvedModelSpecifier {
   modelId: string;
   switchedProvider: boolean;
   source: ResolveSource;
-  /** True when the model id exists in pi-ai or the provider's live catalog. */
+  /** True when the model id exists in catalog or the provider's live catalog. */
   known: boolean;
 }
 
@@ -51,12 +50,12 @@ export function resolvedTargetLabel(
 }
 
 function isPiAiProviderName(name: string): boolean {
-  return (getProviders() as string[]).includes(name);
+  return listKnownProviders().includes(name);
 }
 
-/** PRAANA-only providers (e.g. ollama) not in pi-ai but valid for native switch. */
+/** PRAANA-only providers (e.g. ollama) valid for native switch. */
 function isPraanaOnlyProvider(name: string): boolean {
-  return listKnownProviders().includes(name) && !isPiAiProviderName(name);
+  return name === "ollama";
 }
 
 export function isKnownProviderName(name: string): boolean {

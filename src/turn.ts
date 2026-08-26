@@ -1,4 +1,10 @@
-import { stream as piStream, type Message } from "@earendil-works/pi-ai/compat";
+import {
+  streamLlmResponse,
+  type ConversationMessage,
+  type ToolDefinition,
+  type AssistantMessage,
+  type StreamRequest,
+} from "./llm/index.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -63,7 +69,7 @@ export interface LlmStreamInput {
   modelName: string;
   providerName: string;
   compiledPrompt: string;
-  history: Message[];
+  history: any[];
   piTools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
   signal?: AbortSignal;
   reasoningEffort?: string;
@@ -79,7 +85,7 @@ export interface LlmStreamResult {
     args: Record<string, unknown>;
     toolCallId: string;
   }>;
-  finalMessage: Message | null;
+  finalMessage: any | null;
   finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" | "timeout" | "rate_limit";
   errorMessage?: string;
   providerUsage: ProviderUsage | null;
@@ -113,21 +119,97 @@ export function shouldFallback(result: LlmStreamResult): boolean {
 }
 
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
-  const modelOptions: Record<string, unknown> = {
-    ...((input.model as any).__piOptions ?? {}),
-    ...(input.signal ? { signal: input.signal } : {}),
-    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
-  };
+  const canonicalMessages: ConversationMessage[] = (input.history || []).map((m: any) => {
+    if (m.role === "toolResult" || m.role === "tool_result") {
+      const text = Array.isArray(m.content)
+        ? m.content.map((c: any) => c.text || "").join("")
+        : typeof m.content === "string"
+          ? m.content
+          : JSON.stringify(m.content);
+      return {
+        role: "tool_result" as const,
+        toolCallId: m.toolCallId || "",
+        toolName: m.toolName || "",
+        result: text,
+        isError: m.isError,
+      };
+    }
+    if (m.role === "user") {
+      return {
+        role: "user" as const,
+        content: typeof m.content === "string" ? m.content : m.content || "",
+      };
+    }
+    if (m.role === "assistant") {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
+            : "";
+      const toolCalls =
+        m.toolCalls ||
+        (Array.isArray(m.content)
+          ? m.content
+              .filter((c: any) => c.type === "tool_use" || c.type === "toolUse")
+              .map((c: any) => ({
+                id: c.id,
+                name: c.name,
+                args: c.input || c.args || {},
+              }))
+          : undefined);
+      return {
+        role: "assistant" as const,
+        content: text,
+        thinking: m.thinking,
+        thinkingSignature: m.thinkingSignature,
+        toolCalls,
+      };
+    }
+    return {
+      role: "system" as const,
+      content: typeof m.content === "string" ? m.content : "",
+    };
+  });
 
-  const stream = piStream(
-    input.model,
-    {
-      systemPrompt: input.compiledPrompt,
-      messages: input.history,
-      tools: input.piTools,
-    },
-    modelOptions,
-  );
+  const tools: ToolDefinition[] = (input.piTools || []).map((t) => ({
+    name: t.name,
+    description: t.description,
+    parameters: t.parameters,
+  }));
+
+  const runtime = (input.model ?? {}) as {
+    baseUrl?: string;
+    api?: string;
+    compat?: StreamRequest["compat"];
+    maxTokens?: number;
+    __piOptions?: {
+      apiKey?: string;
+      bearerToken?: string;
+      headers?: Record<string, string>;
+      region?: string;
+      baseUrl?: string;
+    };
+  };
+  const piOpts = runtime.__piOptions ?? {};
+
+  const stream = streamLlmResponse({
+    model: input.modelName,
+    provider: input.providerName,
+    systemPrompt: input.compiledPrompt,
+    messages: canonicalMessages,
+    tools,
+    signal: input.signal,
+    reasoningEffort: input.reasoningEffort as StreamRequest["reasoningEffort"],
+    baseUrl: runtime.baseUrl ?? piOpts.baseUrl,
+    headers: piOpts.headers,
+    compat: runtime.compat,
+    region: typeof piOpts.region === "string" ? piOpts.region : undefined,
+    api: runtime.api,
+    apiKey: piOpts.apiKey,
+    bearerToken: piOpts.bearerToken,
+    maxTokens: typeof runtime.maxTokens === "number" ? runtime.maxTokens : undefined,
+  });
 
   let fullResponse = "";
   let assistantTokens = 0;
@@ -136,7 +218,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let interrupted = false;
   const pendingToolCalls: LlmStreamResult["pendingToolCalls"] = [];
   let finalReason: LlmStreamResult["finalReason"] = "stop";
-  let finalMessage: Message | null = null;
+  let finalMessage: any = null;
   let errorMessage: string | undefined;
 
   for await (const event of stream) {
@@ -144,39 +226,63 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       interrupted = true;
       break;
     }
-    if (event.type === "text_delta" && typeof event.delta === "string") {
+    if (event.type === "text_delta") {
       input.onTextDelta?.(event.delta);
       fullResponse += event.delta;
     }
-    if (event.type === "thinking_delta" && typeof event.delta === "string") {
+    if (event.type === "thinking_delta") {
       input.onThinkingDelta?.(event.delta);
     }
-    if (event.type === "toolcall_end") {
+    if (event.type === "tool_call_end" || (event as any).type === "toolcall_end") {
+      const tc = (event as any).toolCall;
       pendingToolCalls.push({
-        toolName: event.toolCall.name,
-        args: (event.toolCall.arguments ?? {}) as Record<string, unknown>,
-        toolCallId: event.toolCall.id,
+        toolName: tc.name,
+        args: tc.args ?? tc.arguments ?? {},
+        toolCallId: tc.id,
+      });
+    }
+    if (event.type === "usage") {
+      recordedProviderUsage = true;
+      providerUsage = event.usage;
+      input.onProviderUsage?.({
+        step: event.usage,
+        cumulative: event.usage,
+        latestContextTokens: event.usage.input,
       });
     }
     if (event.type === "done") {
-      finalReason = event.reason;
-      finalMessage = event.message as unknown as Message;
-      const stepUsage = parseProviderUsage(event.message);
-      if (stepUsage) {
+      finalReason = event.reason === "tool_use" ? "toolUse" : (event.reason as any);
+      finalMessage = event.message;
+      const stepUsage = (event.message as any)?.usage ?? (event as any).usage;
+      if (
+        stepUsage &&
+        Number.isFinite(stepUsage.input) &&
+        Number.isFinite(stepUsage.output) &&
+        (stepUsage.input > 0 || stepUsage.output > 0 || (stepUsage.totalTokens ?? 0) > 0)
+      ) {
         recordedProviderUsage = true;
-        providerUsage = addProviderUsage(providerUsage, stepUsage);
+        providerUsage = stepUsage;
         input.onProviderUsage?.({
           step: stepUsage,
-          cumulative: providerUsage,
+          cumulative: stepUsage,
           latestContextTokens: stepUsage.input,
         });
       }
     }
     if (event.type === "error") {
-      finalReason = event.reason as LlmStreamResult["finalReason"];
-      finalMessage = event.error as unknown as Message;
-      const extracted = extractLlmErrorMessage(finalMessage);
-      if (extracted) errorMessage = extracted;
+      finalReason = (event as any).reason ?? "error";
+      const err = (event as any).error;
+      if (err) {
+        if (typeof err === "string") {
+          errorMessage = err;
+        } else if (err.message) {
+          errorMessage = err.message;
+        } else if (err.errorMessage) {
+          errorMessage = err.errorMessage;
+        } else {
+          errorMessage = extractLlmErrorMessage(err) ?? String(err);
+        }
+      }
     }
   }
 
@@ -694,7 +800,7 @@ export async function runTurn(
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
-  const history: Message[] = [
+  const history: any[] = [
     {
       role: "user",
       content: userInput,

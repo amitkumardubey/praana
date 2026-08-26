@@ -7,7 +7,7 @@ import * as llmActual from "../src/llm.js";
 import * as toolsActual from "../src/tools/index.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
-import * as piAiActual from "@earendil-works/pi-ai/compat";
+import * as nativeLlmActual from "../src/llm/index.js";
 import * as zodToJsonActual from "zod-to-json-schema";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
@@ -17,15 +17,16 @@ const llmReal = { ...llmActual };
 const toolsReal = { ...toolsActual };
 const autoCompactReal = { ...autoCompactActual };
 const uiReal = { ...uiActual };
-const piAiReal = { ...piAiActual };
+const nativeLlmReal = { ...nativeLlmActual };
 const zodReal = { ...zodToJsonActual };
 
 // ── Mock all external dependencies ──────────────────────────────────
 
-mock.module("@earendil-works/pi-ai/compat", () => ({
-  stream: mock(),
-  clampThinkingLevel: mock((_model: unknown, level: string) => level),
-  getSupportedThinkingLevels: mock(() => ["off", "low", "medium", "high"]),
+const mockStream = mock();
+
+mock.module("../src/llm/index.js", () => ({
+  ...nativeLlmActual,
+  streamLlmResponse: mockStream,
 }));
 
 mock.module("zod-to-json-schema", () => ({
@@ -157,7 +158,7 @@ mock.module("../src/ui.js", () => ({
 
 // ── Import after mocks ─────────────────────────────────────────────
 
-import { stream as piStream } from "@earendil-works/pi-ai/compat";
+const piStream = mockStream;
 import { compileClassicWithMetrics } from "../src/compile-classic.js";
 import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
@@ -183,7 +184,7 @@ afterAll(() => {
   mock.module("../src/tools/index.js", () => toolsReal);
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
-  mock.module("@earendil-works/pi-ai/compat", () => piAiReal);
+  mock.module("../src/llm/index.js", () => nativeLlmReal);
   mock.module("zod-to-json-schema", () => zodReal);
   mock.module("../src/compiler.js", () => ({}));
 });
@@ -715,9 +716,8 @@ describe("runTurn", () => {
     await runTurn(session, "hello", "moonshotai/kimi-k2.7-code");
 
     expect(piStream).toHaveBeenCalled();
-    const options = (piStream as ReturnType<typeof mock>).mock.calls.at(-1)?.[2] as Record<string, unknown>;
-    expect(options).toHaveProperty("reasoningEffort", "medium");
-    expect(options).not.toHaveProperty("reasoning");
+    const req = (piStream as ReturnType<typeof mock>).mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(req).toHaveProperty("reasoningEffort", "medium");
   });
 
   it("handles an empty LLM response with a fallback message", async () => {

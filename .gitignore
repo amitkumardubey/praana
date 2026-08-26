@@ -27,3 +27,4 @@ __pycache__/
 
 # Brainstorm visual-companion mockups
 .superpowers/
+.tmp-*

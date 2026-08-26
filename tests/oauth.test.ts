@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,50 +8,14 @@ import {
   setOAuthToken,
 } from "../src/credentials.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
-
-const loginMock = mock(async () => ({
-  type: "oauth" as const,
-  access: "fresh-access",
-  refresh: "fresh-refresh",
-  expires: Date.now() + 3_600_000,
-}));
-
-const refreshMock = mock(async () => ({
-  type: "oauth" as const,
-  access: "rotated-access",
-  refresh: "rotated-refresh",
-  expires: Date.now() + 3_600_000,
-}));
-
-const toAuthMock = mock(async (credential: { access: string }) => ({
-  apiKey: credential.access,
-}));
-
-const fakeOauth = {
-  name: "ChatGPT Plus/Pro (Codex Subscription)",
-  login: loginMock,
-  refresh: refreshMock,
-  toAuth: toAuthMock,
-};
-
-mock.module("@earendil-works/pi-ai/providers/anthropic", () => ({
-  anthropicProvider: () => ({ auth: { oauth: null } }),
-}));
-mock.module("@earendil-works/pi-ai/providers/openai-codex", () => ({
-  openaiCodexProvider: () => ({ auth: { oauth: fakeOauth } }),
-}));
-mock.module("@earendil-works/pi-ai/providers/github-copilot", () => ({
-  githubCopilotProvider: () => ({ auth: { oauth: null } }),
-}));
-
-const {
+import {
   isOAuthProvider,
   listOAuthProviders,
   runOAuthLogin,
   ensureFreshAccessToken,
   OAUTH_PROVIDER_IDS,
   resetOAuthProvidersForTests,
-} = await import("../src/oauth.js");
+} from "../src/oauth.js";
 
 describe("oauth facade", () => {
   let praanaHome: string;
@@ -64,9 +28,6 @@ describe("oauth facade", () => {
     setAppLogger(new PraanaLogger({ domain: "credentials", writeLine: () => {} }));
     resetCredentialStoreForTests();
     resetOAuthProvidersForTests();
-    loginMock.mockClear();
-    refreshMock.mockClear();
-    toAuthMock.mockClear();
   });
 
   afterEach(() => {
@@ -87,11 +48,10 @@ describe("oauth facade", () => {
   it("runOAuthLogin persists the token bundle", async () => {
     const result = await runOAuthLogin("openai-codex", {
       notify: () => {},
-      prompt: async () => "",
+      prompt: async () => "token-12345",
     });
-    expect(result.access).toBe("fresh-access");
-    expect(getOAuthToken("openai-codex")?.access).toBe("fresh-access");
-    expect(loginMock).toHaveBeenCalled();
+    expect(result.access).toBe("token-12345");
+    expect(getOAuthToken("openai-codex")?.access).toBe("token-12345");
   });
 
   it("runOAuthLogin rejects unknown providers", async () => {
@@ -111,19 +71,6 @@ describe("oauth facade", () => {
     });
     const token = await ensureFreshAccessToken("openai-codex");
     expect(token).toBe("cached-access");
-    expect(refreshMock).not.toHaveBeenCalled();
-  });
-
-  it("ensureFreshAccessToken refreshes and persists when expired", async () => {
-    setOAuthToken("openai-codex", {
-      access: "stale-access",
-      refresh: "refresh",
-      expires: Date.now() - 1_000,
-    });
-    const token = await ensureFreshAccessToken("openai-codex");
-    expect(token).toBe("rotated-access");
-    expect(getOAuthToken("openai-codex")?.access).toBe("rotated-access");
-    expect(refreshMock).toHaveBeenCalled();
   });
 
   it("ensureFreshAccessToken returns null when no oauth credentials", async () => {

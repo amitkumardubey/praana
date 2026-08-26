@@ -1,4 +1,3 @@
-import { getModel, getProviders } from "@earendil-works/pi-ai/compat";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";
@@ -12,6 +11,8 @@ import {
   resetProviderCatalogCacheForTests,
   stripProviderRoutingPrefix,
 } from "./provider-catalog.js";
+import { getModelCatalogEntry } from "./llm/catalog.js";
+import { resolveContextWindowSync as resolveNativeContextWindow } from "./llm/context-window.js";
 
 export {
   findOpenRouterCatalogModelId,
@@ -28,21 +29,6 @@ export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 
 const CACHE_VERSION = 1;
 const CACHE_FILE = appHomePath("model-context-cache.json");
-
-/** PRAANA config provider → pi-ai MODELS registry key (when available). */
-const PI_AI_PROVIDER_MAP: Record<string, string> = {
-  openrouter: "openrouter",
-  openai: "openai",
-  anthropic: "anthropic",
-  google: "google",
-  deepseek: "deepseek",
-  groq: "groq",
-  xai: "xai",
-  fireworks: "fireworks",
-  together: "together",
-  mistral: "mistral",
-  "amazon-bedrock": "amazon-bedrock",
-};
 
 interface CacheEntry {
   contextWindow: number;
@@ -80,9 +66,6 @@ function loadDiskCache(): ModelContextCacheFile {
       openRouterCatalog?: unknown;
     };
     if (raw.version === CACHE_VERSION && raw.entries && typeof raw.entries === "object") {
-      // Drop the legacy openRouterCatalog field (moved to provider-catalog-cache.json).
-      // It will be naturally excluded on next persistDiskCache since the new schema
-      // only has version + entries.
       diskCache = { version: CACHE_VERSION, entries: raw.entries };
     }
   } catch {
@@ -106,26 +89,20 @@ function rememberContextWindow(provider: string, modelId: string, contextWindow:
 }
 
 export function mapProviderToPiAi(provider: string): string | null {
-  const mapped = PI_AI_PROVIDER_MAP[provider];
-  if (mapped) return mapped;
-  const known = getProviders() as string[];
-  return known.includes(provider) ? provider : null;
+  return provider;
 }
 
 export function isInPiAiCatalog(provider: string, modelId: string): boolean {
-  const piProvider = mapProviderToPiAi(provider);
-  if (!piProvider) return false;
-  return !!getModel(piProvider as never, modelId as never);
+  return !!getModelCatalogEntry(provider, modelId);
 }
 
 export function lookupPiAiContextWindow(
   provider: string,
   modelId: string,
 ): number | null {
-  const piProvider = mapProviderToPiAi(provider);
-  if (!piProvider) return null;
-  const model = getModel(piProvider as never, modelId as never);
-  return isValidWindow(model?.contextWindow) ? model.contextWindow : null;
+  const model = getModelCatalogEntry(provider, modelId);
+  if (model?.contextWindow) return model.contextWindow;
+  return resolveNativeContextWindow(modelId, provider);
 }
 
 export async function isInOpenRouterCatalog(modelId: string): Promise<boolean> {
@@ -170,7 +147,7 @@ async function lookupLiveProviderContextWindow(
 }
 
 /**
- * Synchronous best-effort resolution: override → cache → provider catalog cache → pi-ai → default.
+ * Synchronous best-effort resolution: override → cache → provider catalog cache → native heuristics → default.
  */
 export function resolveContextWindowSync(
   provider: string,
@@ -188,35 +165,14 @@ export function resolveContextWindowSync(
   const fromProviderCatalog = lookupProviderCatalogContextWindow(provider, normalizedId);
   if (fromProviderCatalog !== null) return fromProviderCatalog;
 
-  const fromPiAi = lookupPiAiContextWindow(provider, normalizedId);
-  if (fromPiAi !== null) return fromPiAi;
+  const fromCatalog = lookupPiAiContextWindow(provider, normalizedId);
+  if (fromCatalog !== null) return fromCatalog;
 
-  if (provider === "openrouter") {
-    for (const alt of openRouterModelIdCandidates(normalizedId)) {
-      if (alt === normalizedId) continue;
-      const fromAltPiAi = lookupPiAiContextWindow("openrouter", alt);
-      if (fromAltPiAi !== null) return fromAltPiAi;
-    }
-  }
-
-  if (providerSupportsLiveCatalog(provider)) {
-    for (const alt of providerModelIdCandidates(provider, normalizedId)) {
-      const fromAltCatalog = lookupProviderCatalogContextWindow(provider, alt);
-      if (fromAltCatalog !== null) return fromAltCatalog;
-    }
-  }
-
-  // OpenRouter-style ids may live under the openrouter provider in pi-ai.
-  if (provider !== "openrouter" && normalizedId.includes("/")) {
-    const fromOpenRouterPiAi = lookupPiAiContextWindow("openrouter", normalizedId);
-    if (fromOpenRouterPiAi !== null) return fromOpenRouterPiAi;
-  }
-
-  return DEFAULT_MODEL_CONTEXT_WINDOW;
+  return resolveNativeContextWindow(normalizedId, provider);
 }
 
 /**
- * Fetch and cache context window for a model. Never throws — falls back to sync resolution.
+ * Full resolution with async live-catalog lookup and cache persistence.
  */
 export async function fetchAndCacheContextWindow(
   provider: string,
@@ -231,40 +187,32 @@ export async function fetchAndCacheContextWindow(
   const cached = readCachedContextWindow(provider, normalizedId);
   if (cached !== null) return cached;
 
-  const sources: Array<number | null> = [];
-  for (const id of providerModelIdCandidates(provider, normalizedId)) {
-    sources.push(lookupPiAiContextWindow(provider, id));
-    if (provider !== "openrouter") {
-      sources.push(lookupPiAiContextWindow("openrouter", id));
-    }
-  }
-  sources.push(await lookupLiveProviderContextWindow(provider, normalizedId));
-
-  for (const value of sources) {
-    if (value !== null) {
-      rememberContextWindow(provider, normalizedId, value);
-      return value;
-    }
+  const fromLive = await lookupLiveProviderContextWindow(provider, normalizedId);
+  if (fromLive !== null) {
+    rememberContextWindow(provider, normalizedId, fromLive);
+    return fromLive;
   }
 
-  // Cache the default fallback so repeated calls for unknown models
-  // don't re-traverse all lookup paths every turn.
-  const fallback = resolveContextWindowSync(provider, normalizedId, override);
-  rememberContextWindow(provider, normalizedId, fallback);
-  return fallback;
+  const fromCatalog = lookupPiAiContextWindow(provider, normalizedId);
+  if (fromCatalog !== null) {
+    rememberContextWindow(provider, normalizedId, fromCatalog);
+    return fromCatalog;
+  }
+
+  const resolved = resolveNativeContextWindow(normalizedId, provider);
+  rememberContextWindow(provider, normalizedId, resolved);
+  return resolved;
 }
 
-/** @deprecated Use resolveContextWindowSync with provider, or session.getContextWindowTokens(). */
-export function resolveContextWindow(modelId: string, override?: number): number {
-  return resolveContextWindowSync("openrouter", modelId, override);
-}
-
-/** Test helper — reset in-memory/disk cache state. */
-export function resetModelContextCacheForTests(): void {
+export function resetContextWindowCacheForTests(): void {
   memoryEntries.clear();
   diskCache = null;
   resetProviderCatalogCacheForTests();
-  if (existsSync(CACHE_FILE)) {
-    unlinkSync(CACHE_FILE);
+  try {
+    if (existsSync(CACHE_FILE)) unlinkSync(CACHE_FILE);
+  } catch {
+    // best-effort unlink in tests
   }
 }
+
+export { resetContextWindowCacheForTests as resetModelContextCacheForTests };

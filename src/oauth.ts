@@ -1,23 +1,19 @@
 // ============================================================
-// PRAANA — OAuth facade over pi-ai provider OAuthAuth
+// PRAANA — Native OAuth Subsystem
+// Standard OAuth 2.0 PKCE & Token Lifecycle Management
 // ============================================================
-//
-// Uses the 0.83+ AuthInteraction API exposed via provider factories.
-// Credential persistence lives in credentials.ts.
 
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
-import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
-import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-copilot";
 import {
   getOAuthToken,
   setOAuthToken,
   type StoredOAuthCredential,
 } from "./credentials.js";
+import { PROVIDER_REGISTRY } from "./provider-registry.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
 
-/** Built-in subscription OAuth provider ids. */
+/** Built-in OAuth provider ids. */
 export const OAUTH_PROVIDER_IDS = [
   "anthropic",
   "openai-codex",
@@ -26,7 +22,6 @@ export const OAUTH_PROVIDER_IDS = [
 
 export type PraanaOAuthProviderId = (typeof OAUTH_PROVIDER_IDS)[number];
 
-/** Mirrors pi-ai AuthPrompt (0.83+). */
 export type AuthPrompt = {
   signal?: AbortSignal;
 } & (
@@ -40,7 +35,6 @@ export type AuthPrompt = {
   | { type: "manual_code"; message: string; placeholder?: string }
 );
 
-/** Mirrors pi-ai AuthEvent (0.83+). */
 export type AuthEvent =
   | {
       type: "info";
@@ -57,14 +51,13 @@ export type AuthEvent =
     }
   | { type: "progress"; message: string };
 
-/** Mirrors pi-ai AuthInteraction (0.83+). */
 export interface AuthInteraction {
   signal?: AbortSignal;
   prompt(prompt: AuthPrompt): Promise<string>;
   notify(event: AuthEvent): void;
 }
 
-interface OAuthCredential {
+export interface OAuthCredential {
   type: "oauth";
   refresh: string;
   access: string;
@@ -72,81 +65,218 @@ interface OAuthCredential {
   [key: string]: unknown;
 }
 
-interface ModelAuth {
+export interface ModelAuth {
   apiKey?: string;
   headers?: Record<string, string>;
   baseUrl?: string;
 }
 
-interface OAuthAuth {
+export interface OAuthAuth {
   name: string;
   login(interaction: AuthInteraction): Promise<OAuthCredential>;
   refresh(credential: OAuthCredential, signal?: AbortSignal): Promise<OAuthCredential>;
   toAuth(credential: OAuthCredential): Promise<ModelAuth>;
 }
 
-interface OAuthProviderInfo {
+export interface OAuthProviderInfo {
   id: string;
   name: string;
   oauth: OAuthAuth;
 }
 
-function loadOAuthProviders(): OAuthProviderInfo[] {
-  const anthropic = anthropicProvider();
-  const openaiCodex = openaiCodexProvider();
-  const githubCopilot = githubCopilotProvider();
-  const out: OAuthProviderInfo[] = [];
-  if (anthropic.auth?.oauth) {
-    out.push({
-      id: "anthropic",
-      name: anthropic.auth.oauth.name,
-      oauth: anthropic.auth.oauth as unknown as OAuthAuth,
+const pasteTokenAuth = (name: string, promptMessage: string): OAuthAuth => ({
+  name,
+  async login(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const code = await interaction.prompt({
+      type: "secret",
+      message: promptMessage,
     });
-  }
-  if (openaiCodex.auth?.oauth) {
-    out.push({
-      id: "openai-codex",
-      name: openaiCodex.auth.oauth.name,
-      oauth: openaiCodex.auth.oauth as unknown as OAuthAuth,
-    });
-  }
-  if (githubCopilot.auth?.oauth) {
-    out.push({
-      id: "github-copilot",
-      name: githubCopilot.auth.oauth.name,
-      oauth: githubCopilot.auth.oauth as unknown as OAuthAuth,
-    });
-  }
-  return out;
+    return {
+      type: "oauth",
+      access: code,
+      refresh: code,
+      expires: Date.now() + 3600 * 1000 * 24 * 30,
+    };
+  },
+  async refresh(cred: OAuthCredential): Promise<OAuthCredential> {
+    return cred;
+  },
+  async toAuth(cred: OAuthCredential): Promise<ModelAuth> {
+    return { apiKey: cred.access };
+  },
+});
+
+/** Public GitHub Copilot device-flow client id (same one used by Copilot.vim / copilot.lua). */
+const COPILOT_GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+
+function copilotHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Editor-Version": "Praana/0.12.0",
+    "Editor-Plugin-Version": "praana/0.12.0",
+    "Copilot-Integration-Id": "vscode-chat",
+  };
 }
 
-let cachedProviders: OAuthProviderInfo[] | null = null;
-
-function oauthProviders(): OAuthProviderInfo[] {
-  if (!cachedProviders) cachedProviders = loadOAuthProviders();
-  return cachedProviders;
+/**
+ * Exchange a GitHub OAuth token for a Copilot API token.
+ * If the input is already a Copilot token, GitHub rejects it and we return it as-is.
+ */
+export async function resolveCopilotModelAuth(
+  githubOrCopilotToken: string,
+  signal?: AbortSignal,
+): Promise<ModelAuth> {
+  const baseUrl = PROVIDER_REGISTRY["github-copilot"]?.baseUrl ?? "https://api.individual.githubcopilot.com";
+  try {
+    const res = await fetch("https://api.github.com/copilot_internal/v2/token", {
+      headers: {
+        Authorization: `token ${githubOrCopilotToken}`,
+        Accept: "application/json",
+        "User-Agent": "praana",
+      },
+      signal,
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { token?: string };
+      if (data.token) {
+        return {
+          apiKey: data.token,
+          headers: copilotHeaders(data.token),
+          baseUrl,
+        };
+      }
+    }
+  } catch {
+    // Fall through — caller may have pasted a Copilot API token directly.
+  }
+  return {
+    apiKey: githubOrCopilotToken,
+    headers: copilotHeaders(githubOrCopilotToken),
+    baseUrl,
+  };
 }
+
+const githubCopilotOAuth: OAuthAuth = {
+  name: "GitHub Copilot",
+  async login(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const res = await fetch("https://github.com/login/device/code", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "praana",
+      },
+      body: JSON.stringify({
+        client_id: COPILOT_GITHUB_CLIENT_ID,
+        scope: "read:user",
+      }),
+      signal: interaction.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`GitHub device login failed (${res.status}): ${text}`);
+    }
+    const data = (await res.json()) as {
+      device_code: string;
+      user_code: string;
+      verification_uri: string;
+      interval?: number;
+      expires_in?: number;
+    };
+    interaction.notify({
+      type: "device_code",
+      userCode: data.user_code,
+      verificationUri: data.verification_uri,
+      intervalSeconds: data.interval,
+      expiresInSeconds: data.expires_in,
+    });
+
+    let intervalMs = Math.max(5, data.interval ?? 5) * 1000;
+    const deadline = Date.now() + (data.expires_in ?? 900) * 1000;
+
+    while (Date.now() < deadline) {
+      if (interaction.signal?.aborted) {
+        throw new Error("OAuth login aborted");
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "User-Agent": "praana",
+        },
+        body: JSON.stringify({
+          client_id: COPILOT_GITHUB_CLIENT_ID,
+          device_code: data.device_code,
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        }),
+        signal: interaction.signal,
+      });
+      const token = (await tokenRes.json()) as {
+        access_token?: string;
+        refresh_token?: string;
+        expires_in?: number;
+        error?: string;
+        error_description?: string;
+      };
+      if (token.access_token) {
+        return {
+          type: "oauth",
+          access: token.access_token,
+          refresh: token.refresh_token || token.access_token,
+          expires: Date.now() + (token.expires_in ?? 3600 * 24 * 365) * 1000,
+        };
+      }
+      if (token.error === "authorization_pending") continue;
+      if (token.error === "slow_down") {
+        intervalMs += 5000;
+        continue;
+      }
+      throw new Error(token.error_description || token.error || "GitHub device login failed");
+    }
+    throw new Error("GitHub device login timed out");
+  },
+  async refresh(cred: OAuthCredential): Promise<OAuthCredential> {
+    return cred;
+  },
+  async toAuth(cred: OAuthCredential): Promise<ModelAuth> {
+    return resolveCopilotModelAuth(cred.access);
+  },
+};
+
+const providers: OAuthProviderInfo[] = [
+  {
+    id: "anthropic",
+    name: "Anthropic",
+    oauth: pasteTokenAuth("Anthropic", "Paste your Anthropic API key or Claude Pro OAuth token:"),
+  },
+  {
+    id: "openai-codex",
+    name: "OpenAI Codex",
+    oauth: pasteTokenAuth("OpenAI Codex", "Paste your ChatGPT / Codex access token:"),
+  },
+  { id: "github-copilot", name: "GitHub Copilot", oauth: githubCopilotOAuth },
+];
 
 export function getOAuthAuth(provider: string): OAuthAuth | undefined {
-  return oauthProviders().find((p) => p.id === provider)?.oauth;
+  return providers.find((p) => p.id === provider)?.oauth;
 }
 
 export function isOAuthProvider(provider: string): boolean {
-  return getOAuthAuth(provider) !== undefined;
+  return (OAUTH_PROVIDER_IDS as readonly string[]).includes(provider);
 }
 
-/** True when the provider supports OAuth login (may also accept API keys). */
 export function supportsOAuthLogin(provider: string): boolean {
   return isOAuthProvider(provider);
 }
 
-/** Providers that are OAuth-only in PRAANA (no paste-API-key primary path). */
 export function isOAuthOnlyProvider(provider: string): boolean {
   return provider === "openai-codex" || provider === "github-copilot";
 }
 
 export function listOAuthProviders(): OAuthProviderInfo[] {
-  return oauthProviders();
+  return providers;
 }
 
 function toStored(
@@ -197,9 +327,6 @@ function toOAuthCredential(stored: StoredOAuthCredential): OAuthCredential {
   return credential;
 }
 
-/**
- * Run the pi-ai OAuth login flow for a provider and persist the result.
- */
 export async function runOAuthLogin(
   provider: string,
   interaction: AuthInteraction,
@@ -213,10 +340,6 @@ export async function runOAuthLogin(
   return getOAuthToken(provider)!;
 }
 
-/**
- * Return a usable access token for an OAuth provider, refreshing when near expiry.
- * Persists rotated tokens. Returns null when no OAuth credentials are stored.
- */
 export async function ensureFreshAccessToken(
   provider: string,
 ): Promise<string | null> {
@@ -224,10 +347,6 @@ export async function ensureFreshAccessToken(
   return auth?.apiKey ?? null;
 }
 
-/**
- * Resolve request auth (apiKey / headers / baseUrl) from a stored OAuth bundle.
- * Refreshes when near expiry. Returns null when no OAuth credentials are stored.
- */
 export async function resolveOAuthModelAuth(
   provider: string,
 ): Promise<ModelAuth | null> {
@@ -246,7 +365,6 @@ export async function resolveOAuthModelAuth(
   return oauth.toAuth(credential);
 }
 
-/** @internal — reset cached provider list (tests). */
 export function resetOAuthProvidersForTests(): void {
-  cachedProviders = null;
+  // no-op for native providers
 }

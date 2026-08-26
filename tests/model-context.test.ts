@@ -17,12 +17,12 @@ describe("model-context", () => {
     mock.restore();
   });
 
-  it("looks up context window from pi-ai catalog", () => {
-    expect(lookupPiAiContextWindow("openrouter", "deepseek/deepseek-v4-flash")).toBe(
+  it("looks up context window from native catalog", () => {
+    expect(lookupPiAiContextWindow("google", "gemini-2.0-flash")).toBe(
       1_048_576,
     );
     expect(lookupPiAiContextWindow("anthropic", "claude-sonnet-4-6")).toBe(
-      1_000_000,
+      200_000,
     );
   });
 
