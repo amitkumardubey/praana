@@ -4,6 +4,9 @@
 
 import { spawn } from "node:child_process";
 
+/** Max chars captured per stream before truncation (512 KB). */
+export const MAX_CAPTURE_CHARS = 512 * 1024;
+
 export interface SpawnTestResult {
   stdout: string;
   stderr: string;
@@ -11,6 +14,8 @@ export interface SpawnTestResult {
   duration_ms: number;
   timedOut?: boolean;
   aborted?: boolean;
+  truncatedStdout?: boolean;
+  truncatedStderr?: boolean;
 }
 
 export function spawnTestProcess(
@@ -39,8 +44,28 @@ export function spawnTestProcess(
 
     let stdout = "";
     let stderr = "";
+    let truncatedStdout = false;
+    let truncatedStderr = false;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const appendCapped = (target: "stdout" | "stderr", chunk: Buffer): void => {
+      if (target === "stdout") {
+        if (stdout.length >= MAX_CAPTURE_CHARS) return;
+        stdout += chunk.toString("utf-8");
+        if (stdout.length > MAX_CAPTURE_CHARS) {
+          stdout = stdout.slice(0, MAX_CAPTURE_CHARS);
+          truncatedStdout = true;
+        }
+      } else {
+        if (stderr.length >= MAX_CAPTURE_CHARS) return;
+        stderr += chunk.toString("utf-8");
+        if (stderr.length > MAX_CAPTURE_CHARS) {
+          stderr = stderr.slice(0, MAX_CAPTURE_CHARS);
+          truncatedStderr = true;
+        }
+      }
+    };
 
     const finish = (code: number | null) => {
       if (settled) return;
@@ -57,6 +82,8 @@ export function spawnTestProcess(
         duration_ms: Math.round(performance.now() - start),
         timedOut: timedOut ? true : undefined,
         aborted: aborted ? true : undefined,
+        truncatedStdout: truncatedStdout ? true : undefined,
+        truncatedStderr: truncatedStderr ? true : undefined,
       });
     };
 
@@ -108,10 +135,10 @@ export function spawnTestProcess(
     }, opts.timeoutMs);
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf-8");
+      appendCapped("stdout", chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf-8");
+      appendCapped("stderr", chunk);
     });
 
     child.on("error", (err) => {

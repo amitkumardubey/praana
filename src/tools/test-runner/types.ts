@@ -19,8 +19,9 @@ export interface ParsedOutput {
   summary?: string;
 }
 
+/** Completed run with structured counts (`failed > 0` means tests ran and failed). */
 export interface RunTestsSuccess {
-  ok: boolean;
+  ok: true;
   runner: string;
   command: string;
   passed: number;
@@ -34,6 +35,11 @@ export interface RunTestsSuccess {
   stderr?: string;
 }
 
+/** Same shape as success but `ok: false` — tests ran and reported failures. */
+export interface RunTestsFailed extends Omit<RunTestsSuccess, "ok"> {
+  ok: false;
+}
+
 export interface RunTestsError {
   ok: false;
   error: string;
@@ -42,7 +48,7 @@ export interface RunTestsError {
   code?: string;
 }
 
-export type RunTestsResult = RunTestsSuccess | RunTestsError;
+export type RunTestsResult = RunTestsSuccess | RunTestsFailed | RunTestsError;
 
 export interface TestRunnerAdapter {
   readonly name: string;

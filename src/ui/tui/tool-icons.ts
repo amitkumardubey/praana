@@ -36,7 +36,7 @@ const UNICODE_ICONS: Record<string, string> = {
   git_commit: "✓",
   git_branches: "⎇",
   git_log: "☲",
-  run_tests: "✓",
+  run_tests: "⏱",
   // state/memory tools — distinct per action
   create_task: "▸",
   complete_task: "↩",

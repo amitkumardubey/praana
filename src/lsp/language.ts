@@ -45,11 +45,8 @@ export const DEFAULT_LSP_SERVERS: Record<string, DefaultLspServerSpec> = {
     args: ["--stdio"],
     npmPackages: ["typescript-language-server", "typescript"],
   },
-  javascript: {
-    binary: "typescript-language-server",
-    args: ["--stdio"],
-    npmPackages: ["typescript-language-server", "typescript"],
-  },
+  // Note: no "javascript" entry — resolveServerKey() routes javascript to the
+  // typescript server unless the user configures an explicit javascript override.
   python: {
     binary: "pyright-langserver",
     args: ["--stdio"],
@@ -126,7 +123,7 @@ export function resolveServerArgv(
 
 /**
  * Config key for the process that serves `language`.
- * `javascript` shares the `typescript` server when it has no own entry.
+ * `javascript` shares the `typescript` server unless it has an explicit entry.
  */
 export function resolveServerKey(
   language: string,
@@ -135,13 +132,10 @@ export function resolveServerKey(
   const direct = servers[language];
   if (direct && direct.length > 0) return language;
   if (language === "javascript") {
-    const ts = servers.typescript;
-    if (ts && ts.length > 0) return "typescript";
+    // No explicit javascript override — share the typescript server.
+    return "typescript";
   }
   if (DEFAULT_LSP_SERVERS[language]) {
-    if (language === "javascript" && !servers.javascript) {
-      return "typescript";
-    }
     return language;
   }
   return null;

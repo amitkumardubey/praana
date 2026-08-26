@@ -25,13 +25,21 @@ export const KNOWN_ADAPTERS: TestRunnerAdapter[] = [
   new PytestAdapter(),
 ];
 
+/** Runner-hint aliases — schema accepts these but they share adapters. */
+const HINT_ALIASES: Record<string, string> = {
+  pnpm: "npm",
+  yarn: "npm",
+};
+
 export function selectAdapter(
   cwd: string,
   hint?: string,
   command?: string,
 ): TestRunnerAdapter {
   if (hint) {
-    const matched = KNOWN_ADAPTERS.find((a) => a.name === hint);
+    if (hint === "custom") return new GenericAdapter();
+    const key = HINT_ALIASES[hint] ?? hint;
+    const matched = KNOWN_ADAPTERS.find((a) => a.name === key);
     if (matched) return matched;
   }
 
@@ -157,8 +165,14 @@ export async function executeTests(opts: {
       parsed.failed === 0 &&
       (spawned.code === 0 || spawned.code === null);
 
-    return {
-      ok: isOk,
+    const stdout = spawned.truncatedStdout
+      ? `${spawned.stdout}\n…[output truncated]`
+      : spawned.stdout;
+    const stderr = spawned.truncatedStderr
+      ? `${spawned.stderr}\n…[output truncated]`
+      : spawned.stderr;
+
+    const payload = {
       runner: adapter.name,
       command: fullCommandStr,
       passed: parsed.passed,
@@ -168,9 +182,13 @@ export async function executeTests(opts: {
       files: parsed.files.length > 0 ? parsed.files : (opts.files ?? []),
       failures: parsed.failures,
       summary: parsed.summary ?? `${parsed.passed} passed, ${parsed.failed} failed`,
-      stdout: spawned.stdout,
-      stderr: spawned.stderr,
+      stdout,
+      stderr,
     };
+
+    return isOk
+      ? { ok: true as const, ...payload }
+      : { ok: false as const, ...payload };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {

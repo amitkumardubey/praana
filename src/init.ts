@@ -9,7 +9,6 @@ import { askQuestion, isInteractiveTerminal } from "./terminal.js";
 export interface InitOptions {
   force: boolean;
   homeDir?: string;
-  interactive?: boolean;
 }
 
 export interface InitResult {
@@ -74,23 +73,22 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
   const configPath = join(appHomeDir, "config.toml");
 
   const content = generateConfigContent();
-  const isInteractive = opts.interactive ?? (opts.homeDir ? false : isInteractiveTerminal());
 
   // Check if config already exists
   if (existsSync(configPath)) {
     if (!opts.force) {
-      if (!isInteractive) {
-        const message = `Config file already exists: ${configPath}\nUse --force to overwrite.`;
-        logger.info(message);
-        return {
-          success: false,
-          path: configPath,
-          action: "skipped",
-          message,
-        };
-      }
+      const message = `Config file already exists: ${configPath}\nUse --force to overwrite.`;
+      logger.info(message);
+      return {
+        success: false,
+        path: configPath,
+        action: "skipped",
+        message,
+      };
+    }
 
-      // Show a preview of the first few changed lines in interactive mode
+    // Show a preview of the first few changed lines in interactive mode
+    if (isInteractiveTerminal()) {
       const existing = readFileSync(configPath, "utf-8");
       const existingLines = existing.split("\n");
       const newLines = content.split("\n");

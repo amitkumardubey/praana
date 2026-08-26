@@ -13,6 +13,7 @@ import { CargoAdapter } from "../src/tools/test-runner/adapters/cargo.js";
 import { PytestAdapter } from "../src/tools/test-runner/adapters/pytest.js";
 import { GenericAdapter } from "../src/tools/test-runner/adapters/generic.js";
 import { selectAdapter, executeTests } from "../src/tools/test-runner/runner.js";
+import { spawnTestProcess, MAX_CAPTURE_CHARS } from "../src/tools/test-runner/spawn.js";
 import { createRunTestsTool } from "../src/tools/run-tests.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
 import { toolIcon, formatToolDisplay } from "../src/ui/tui/tool-icons.js";
@@ -87,12 +88,17 @@ Ran 3 tests across 1 files. [12.00ms]
   describe("NpmAdapter", () => {
     const adapter = new NpmAdapter();
 
-    it("detects package.json with scripts", () => {
+    it("detects any package.json", () => {
       expect(adapter.detect(testDir)).toBe(false);
       writeFileSync(
         join(testDir, "package.json"),
         JSON.stringify({ scripts: { test: "jest" } }),
       );
+      expect(adapter.detect(testDir)).toBe(true);
+    });
+
+    it("detects package.json even without a test script", () => {
+      writeFileSync(join(testDir, "package.json"), "{}");
       expect(adapter.detect(testDir)).toBe(true);
     });
 
@@ -312,6 +318,16 @@ describe("selectAdapter", () => {
     expect(selectAdapter(testDir, "bun").name).toBe("bun");
   });
 
+  it("maps pnpm/yarn hints to the npm adapter", () => {
+    expect(selectAdapter(testDir, "pnpm").name).toBe("npm");
+    expect(selectAdapter(testDir, "yarn").name).toBe("npm");
+  });
+
+  it("selects the generic adapter for the custom hint", () => {
+    writeFileSync(join(testDir, "bun.lock"), "");
+    expect(selectAdapter(testDir, "custom").name).toBe("generic");
+  });
+
   it("selects adapter based on explicit command prefix", () => {
     expect(selectAdapter(testDir, undefined, "go test ./...").name).toBe("go");
     expect(selectAdapter(testDir, undefined, "cargo test --bin foo").name).toBe("cargo");
@@ -392,11 +408,28 @@ describe("executeTests & run_tests Tool", () => {
   });
 
   it("provides correct icons and display labels for run_tests", () => {
-    expect(toolIcon("run_tests", true)).toBe("✓");
+    expect(toolIcon("run_tests", true)).toBe("⏱");
     expect(toolIcon("run_tests", false)).toBe("t·");
 
     const display = formatToolDisplay("run_tests", { command: "bun test tests/git.test.ts" });
     expect(display.label).toContain("bun test tests/git.test.ts");
     expect(display.pending).toBe("testing…");
+  });
+
+  it("truncates oversized stdout/stderr capture", async () => {
+    const scriptPath = join(testDir, "loud.js");
+    writeFileSync(
+      scriptPath,
+      `process.stdout.write("O".repeat(${2 * 1024 * 1024}));\n` +
+        `process.stderr.write("E".repeat(${2 * 1024 * 1024}));\n`,
+    );
+    const spawned = await spawnTestProcess(process.execPath, [scriptPath], {
+      cwd: testDir,
+      timeoutMs: 30_000,
+    });
+    expect(spawned.truncatedStdout).toBe(true);
+    expect(spawned.truncatedStderr).toBe(true);
+    expect(spawned.stdout.length).toBe(MAX_CAPTURE_CHARS);
+    expect(spawned.stderr.length).toBe(MAX_CAPTURE_CHARS);
   });
 });

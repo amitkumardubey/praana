@@ -2,7 +2,7 @@
  * Node/JS test runner adapter (npm, pnpm, yarn, vitest, jest).
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ParsedOutput, TestFailure, TestRunnerAdapter } from "../types.js";
 
@@ -21,21 +21,9 @@ export class NpmAdapter implements TestRunnerAdapter {
   }
 
   detect(cwd: string): boolean {
-    if (existsSync(join(cwd, "package.json"))) {
-      try {
-        const pkg = JSON.parse(
-          readFileSync(join(cwd, "package.json"), "utf-8"),
-        );
-        if (pkg.scripts && (pkg.scripts.test || pkg.scripts["test:unit"])) {
-          return true;
-        }
-      } catch {
-        // invalid json, but package.json exists
-        return true;
-      }
-      return true;
-    }
-    return false;
+    // Any Node project (package.json) qualifies — the `test` script may be
+    // named differently or the runner may accept files directly.
+    return existsSync(join(cwd, "package.json"));
   }
 
   buildCommand(opts: {
