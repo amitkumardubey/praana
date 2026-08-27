@@ -75,10 +75,10 @@ jobs:
             target: bun-darwin-arm64
             artifact: praana-darwin-arm64
             smoke: true
-          - runner: macos-latest
+          - runner: macos-13
             target: bun-darwin-x64
             artifact: praana-darwin-x64
-            smoke: false
+            smoke: true
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout

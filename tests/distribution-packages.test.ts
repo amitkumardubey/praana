@@ -141,10 +141,12 @@ describe("natives leaf publishConfig", () => {
 });
 
 describe("release-please binary compile runners", () => {
-  it("compiles linux-arm64 natively instead of cross-compiling from ubuntu-latest", () => {
+  it("compiles each binary on a matching runner instead of Bun cross-compile", () => {
     const yaml = readFileSync(resolve(".github/workflows/release-please.yml"), "utf-8");
     expect(yaml).toContain("ubuntu-24.04-arm");
     expect(yaml).toContain("target: bun-linux-arm64");
+    expect(yaml).toContain("macos-13");
+    expect(yaml).toContain("target: bun-darwin-x64");
     expect(yaml).toContain("pattern: release-binary-*");
     expect(yaml).not.toContain("name: release-binaries");
   });
