@@ -504,6 +504,7 @@ describe("executeSlashCommand", () => {
 
     const session = {
       getEffectiveProvider: () => "openrouter",
+      getActiveModelId: () => "moonshotai/kimi-k2.7-code",
       getActiveModelLabel: mock(() => "openrouter/moonshotai/kimi-k2.7-code"),
       getContextWindowTokens: mock(() => 262_144),
       setProviderOverride: mock(),
@@ -547,6 +548,44 @@ describe("executeSlashCommand", () => {
         outcome: "already_on",
       },
     });
+  });
+
+  it("switches model when labels collide but the raw id still has a vendor prefix", async () => {
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
+      provider: "openai",
+      modelId: "gpt-4o",
+      switchedProvider: false,
+      source: "native-catalog",
+      known: true,
+    });
+
+    const setModel = mock();
+    const setModelOverride = mock();
+    const append = mock();
+    const { getLogger } = mockSessionLogger();
+
+    const session = {
+      getEffectiveProvider: () => "openai",
+      getActiveModelId: () => "openai/gpt-4o",
+      getActiveModelLabel: mock(() => "openai/gpt-4o"),
+      getContextWindowTokens: mock(() => 128_000),
+      setProviderOverride: mock(),
+      setModelOverride,
+      refreshModelContextWindow: mock(async () => 128_000),
+      eventLog: { append },
+      getLogger,
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/model openai gpt-4o", session, {
+      setModel,
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+
+    expect(result.action).toBe("refresh_status");
+    expect(result.toastTone).toBe("success");
+    expect(setModelOverride).toHaveBeenCalledWith("gpt-4o");
+    expect(setModel).toHaveBeenCalledWith("gpt-4o");
   });
 
   it("shows error toast when model resolution throws", async () => {

@@ -1,7 +1,10 @@
 import { removeApiKey, listStoredProviders } from "../credentials.js";
 import { listEnvDetectedProviders } from "../llm.js";
 import { invalidateContextWindowsForProvider } from "../model-context.js";
-import { invalidateProviderCatalog } from "../provider-catalog.js";
+import {
+  invalidateProviderCatalog,
+  stripProviderRoutingPrefix,
+} from "../provider-catalog.js";
 import {
   isUserDeclaredProvider,
   removeUserProvider,
@@ -15,6 +18,13 @@ export interface LogoutSessionLike {
   getActiveModelId?(): string;
   setProviderOverride?(provider: string | null): void;
   setModelOverride?(model: string | null): void;
+  eventLog?: {
+    append(event: {
+      kind: "system_note";
+      actor: "kernel";
+      payload: Record<string, unknown>;
+    }): void;
+  };
   config?: {
     llm: { provider: string; model: string };
     providers?: Record<string, unknown>;
@@ -39,6 +49,25 @@ function envWarningLine(provider: string): string | undefined {
 }
 
 /**
+ * Native model id for `provider`, stripping a leftover `provider/` routing
+ * prefix (OpenRouter's `openai/gpt-4o` when falling back to OpenAI).
+ *
+ * Slash-containing ids on providers whose default is a bare id are treated as
+ * gateway leftovers — use the native default instead of keeping the old id.
+ */
+function nativeFallbackModel(provider: string, model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) return pickDefaultModel(provider);
+  const stripped = stripProviderRoutingPrefix(provider, trimmed);
+  const defaultModel = pickDefaultModel(provider);
+  if (stripped !== trimmed) return stripped || defaultModel;
+  if (trimmed.includes("/") && defaultModel && !defaultModel.includes("/")) {
+    return defaultModel;
+  }
+  return trimmed;
+}
+
+/**
  * Model to use after switching to `fallback`.
  *
  * Reuse config.llm.model only when config already names this fallback
@@ -56,7 +85,9 @@ function pickFallbackModel(
   const active = session.getActiveModelId?.()?.trim() ?? "";
   // Config may still name the fallback provider while `model` is the one
   // we are leaving (a prior login patched provider but not model).
-  if (configured && configured !== active) return configured;
+  if (configured && configured !== active) {
+    return nativeFallbackModel(fallback, configured);
+  }
   return pickDefaultModel(fallback);
 }
 
@@ -85,6 +116,22 @@ function applyFallback(
     if (fallback.model) session.config.llm.model = fallback.model;
   }
   updateLlmProvider(fallback.provider, fallback.model || undefined);
+  session.eventLog?.append({
+    kind: "system_note",
+    actor: "kernel",
+    payload: { type: "provider_override", provider: fallback.provider },
+  });
+  if (fallback.model) {
+    session.eventLog?.append({
+      kind: "system_note",
+      actor: "kernel",
+      payload: {
+        type: "model_override",
+        provider: fallback.provider,
+        model: fallback.model,
+      },
+    });
+  }
 }
 
 function dropProviderModelCache(provider: string): void {

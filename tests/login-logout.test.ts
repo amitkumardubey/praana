@@ -317,6 +317,71 @@ describe("/login and /logout", () => {
       expect(session.config.llm.model).toBe("gpt-4o-mini");
     });
 
+    it("does not keep a routed leftover model id that the fallback vendor also names", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      let modelOverride: string | null = "openai/gpt-4o";
+      let providerOverride: string | null = "openrouter";
+      const append = mock();
+      const session = {
+        getEffectiveProvider: () => providerOverride ?? "openrouter",
+        getActiveModelId: () => modelOverride ?? "openai/gpt-4o",
+        setProviderOverride: (p: string | null) => {
+          providerOverride = p;
+        },
+        setModelOverride: (m: string | null) => {
+          if (m === modelOverride) return;
+          modelOverride = m;
+        },
+        eventLog: { append },
+        config: {
+          llm: { provider: "openai", model: "openai/gpt-4o" },
+          providers: {} as Record<string, unknown>,
+        },
+      } as unknown as Session;
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(providerOverride).toBe("openai");
+      expect(modelOverride).toBe(DEFAULT_MODELS.openai);
+      expect(session.config.llm.model).toBe(DEFAULT_MODELS.openai);
+      expect(append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { type: "provider_override", provider: "openai" },
+        }),
+      );
+      expect(append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            type: "model_override",
+            provider: "openai",
+            model: DEFAULT_MODELS.openai,
+          },
+        }),
+      );
+    });
+
+    it("strips a vendor prefix from a distinct configured leftover before reuse", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const setModelOverride = mock();
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+        setModelOverride,
+      });
+      session.config.llm.provider = "openai";
+      session.config.llm.model = "openai/gpt-4o-mini";
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(setModelOverride).toHaveBeenCalledWith("gpt-4o-mini");
+      expect(session.config.llm.model).toBe("gpt-4o-mini");
+    });
+
     it("clears the catalog cache even when logging out the last provider", async () => {
       setApiKey("openrouter", "sk-test-1");
       const cachePath = appHomePath("provider-catalog-cache.json");

@@ -22,6 +22,7 @@ import {
   resolveModelSpecifier,
   getProviderConfigurationError,
   resolvedTargetLabel,
+  isAlreadyOnResolvedModel,
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey, parseReasoningEffort, REASONING_EFFORT_LEVELS } from "./llm.js";
@@ -683,8 +684,9 @@ export async function executeSlashCommand(
       }
 
       const currentProvider = session.getEffectiveProvider();
+      const currentModelId = session.getActiveModelId?.() ?? "";
       const targetLabel = resolvedTargetLabel(resolved, currentProvider);
-      if (targetLabel === session.getActiveModelLabel()) {
+      if (isAlreadyOnResolvedModel(resolved, currentProvider, currentModelId)) {
         appendModelSwitchLog(session, {
           provider: targetProvider,
           model: targetModel,

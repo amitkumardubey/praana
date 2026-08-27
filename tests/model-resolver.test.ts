@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, type Mock } from "bun:test";
 import {
   formatActiveModelLabel,
+  isAlreadyOnResolvedModel,
   resolveModelSpecifier,
   resolveModelSpecifierSync,
   catalogHasModel,
@@ -26,6 +27,57 @@ describe("formatActiveModelLabel", () => {
     expect(formatActiveModelLabel("openrouter", "openai/gpt-4o")).toBe(
       "openrouter/openai/gpt-4o",
     );
+  });
+});
+
+describe("isAlreadyOnResolvedModel", () => {
+  it("is true only when provider and raw model id both match", () => {
+    expect(
+      isAlreadyOnResolvedModel(
+        {
+          provider: "openai",
+          modelId: "gpt-4o",
+          switchedProvider: false,
+          source: "native-catalog",
+          known: true,
+        },
+        "openai",
+        "gpt-4o",
+      ),
+    ).toBe(true);
+  });
+
+  it("is false when labels would collide but raw ids differ", () => {
+    // formatActiveModelLabel("openai", "openai/gpt-4o") === "openai/gpt-4o"
+    expect(
+      isAlreadyOnResolvedModel(
+        {
+          provider: "openai",
+          modelId: "gpt-4o",
+          switchedProvider: false,
+          source: "native-catalog",
+          known: true,
+        },
+        "openai",
+        "openai/gpt-4o",
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when switching providers even if the model id is identical", () => {
+    expect(
+      isAlreadyOnResolvedModel(
+        {
+          provider: "openai",
+          modelId: "gpt-4o",
+          switchedProvider: true,
+          source: "native-catalog",
+          known: true,
+        },
+        "openrouter",
+        "gpt-4o",
+      ),
+    ).toBe(false);
   });
 });
 
