@@ -1053,11 +1053,15 @@ describe("SLASH_COMMAND_METADATA", () => {
 
   it("surfaces commands previously missing from the TUI dropdown", () => {
     const names = SLASH_COMMAND_METADATA.map((c) => c.name);
-    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/setup", "/settings"]) {
+    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/settings"]) {
       expect(names).toContain(cmd);
     }
     // /quit is an alias of /exit — also expose it for discoverability.
     const exit = SLASH_COMMAND_METADATA.find((c) => c.name === "/exit");
     expect(exit?.aliases).toContain("/quit");
+  });
+
+  it("does not expose /setup (first-run and praana setup cover that)", () => {
+    expect(SLASH_COMMAND_METADATA.map((c) => c.name)).not.toContain("/setup");
   });
 });

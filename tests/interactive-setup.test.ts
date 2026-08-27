@@ -7,6 +7,7 @@ import {
   providerHintMatchesList,
   resolveProviderHint,
   resolveStoredProviderHint,
+  setupProviderIntroLines,
 } from "../src/setup/provider-options.js";
 import { generateSetupConfigContent, resolveDefaultModel } from "../src/setup/config-writer.js";
 import { finalizeProviderSetup } from "../src/setup/logic.js";
@@ -46,6 +47,42 @@ describe("providerPageLines", () => {
   it("treats an empty list as one empty page", () => {
     const lines = providerPageLines([], 0, 10);
     expect(lines).toEqual([""]);
+  });
+});
+
+describe("setupProviderIntroLines", () => {
+  it("uses first-run copy when no config and no available providers", () => {
+    expect(setupProviderIntroLines(false, [])).toEqual([
+      "No provider configured. Let's set one up.",
+      "",
+      "Choose a provider:",
+    ]);
+  });
+
+  it("does not claim nothing is configured on a later run", () => {
+    expect(
+      setupProviderIntroLines(true, ["poolside", "openrouter", "modal-muse"]),
+    ).toEqual([
+      "Update your provider.",
+      "",
+      "Already available:",
+      "  ✓ poolside",
+      "  ✓ openrouter",
+      "  ✓ modal-muse",
+      "",
+      "Choose a provider:",
+    ]);
+  });
+
+  it("lists already-available providers on first run without the empty-state heading", () => {
+    expect(setupProviderIntroLines(false, ["openrouter"])).toEqual([
+      "Let's set one up.",
+      "",
+      "Already available:",
+      "  ✓ openrouter",
+      "",
+      "Choose a provider:",
+    ]);
   });
 });
 

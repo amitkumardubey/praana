@@ -31,6 +31,6 @@ export function getBedrockMissingCredentialsMessage(): string {
   return (
     "Amazon Bedrock is not configured. Set AWS credentials (AWS_ACCESS_KEY_ID / " +
     "AWS_PROFILE / web identity / container role) or AWS_BEARER_TOKEN_BEDROCK, " +
-    "or paste a Bedrock API key via /setup or login."
+    "or paste a Bedrock API key via /login."
   );
 }

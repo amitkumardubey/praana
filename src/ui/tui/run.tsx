@@ -478,11 +478,6 @@ export async function runTui(
       renderer.requestRender();
       return;
     }
-    if (result.action === "open_setup_wizard") {
-      overlay.showSetup();
-      renderer.requestRender();
-      return;
-    }
     renderer.requestRender();
   };
 

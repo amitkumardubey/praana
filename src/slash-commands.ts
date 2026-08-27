@@ -51,8 +51,7 @@ export type SlashCommandAction =
   | "new_session"
   | "open_model_selector"
   | "open_login_wizard"
-  | "open_logout_wizard"
-  | "open_setup_wizard";
+  | "open_logout_wizard";
 
 /** toast = ephemeral feedback below input; transcript = scrollback (default). */
 export type SlashCommandDisplay = "transcript" | "toast" | "inline_transcript";
@@ -102,7 +101,6 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
   { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/setup", description: "Run provider/config setup wizard", category: "Model & Config" },
   { name: "/clear", description: "Reset in-session context", category: "Session" },
   { name: "/new", description: "Start a new session", category: "Session" },
   { name: "/help", description: "Show all commands", category: "Insight" },
@@ -989,15 +987,6 @@ export async function executeSlashCommand(
         };
       }
       return result("refresh_status", "toast", "success");
-    }
-
-    case "/setup": {
-      lines.push("Opening setup wizard…");
-      return {
-        action: "open_setup_wizard",
-        lines,
-        display: "toast",
-      };
     }
 
     case "/shell": {

@@ -97,7 +97,7 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | Together | `TOGETHER_API_KEY` |
 | OpenCode | `OPENCODE_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/setup` or `/login`. Optional `llm.region`. |
+| Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
@@ -194,7 +194,6 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
-| `/setup` | Interactive provider/config setup wizard (replaces /init) |
 | `/login [provider]` | Add or update a provider credential |
 | `/logout [provider]` | Remove a provider's credentials |
 | `/shell <cmd>` | Run a shell command inline (also `! <cmd>`) |

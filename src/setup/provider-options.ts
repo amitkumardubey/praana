@@ -185,16 +185,47 @@ export function buildProviderSelectItems(): SelectItem[] {
   ];
 }
 
-/** Lines describing providers already configured in the environment. */
-export function formatDetectedProviderLines(): string[] {
-  const available = listAvailableProviders().filter(
+/** Providers with a usable key (credential store or env), excluding setup-unsupported ones. */
+export function listSetupAvailableProviderIds(): string[] {
+  return listAvailableProviders().filter(
     (p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p),
   );
+}
+
+function formatAvailableProviderLines(available: readonly string[]): string[] {
   if (available.length === 0) return [];
   return [
-    "Detected in environment:",
+    "Already available:",
     ...available.map((p) => `  ✓ ${p}`),
   ];
+}
+
+/** Lines listing providers that already have credentials. */
+export function formatDetectedProviderLines(): string[] {
+  return formatAvailableProviderLines(listSetupAvailableProviderIds());
+}
+
+/**
+ * Intro copy for the provider picker.
+ * First run (no config.toml): "No provider configured…" unless keys are already present.
+ * Later run: "Update your provider." — never claim nothing is configured.
+ */
+export function setupProviderIntroLines(
+  configExists: boolean,
+  detectedIds: readonly string[] = listSetupAvailableProviderIds(),
+): string[] {
+  const detected = formatAvailableProviderLines(detectedIds);
+  const heading = configExists
+    ? "Update your provider."
+    : detected.length > 0
+      ? "Let's set one up."
+      : "No provider configured. Let's set one up.";
+  const lines = [heading, ""];
+  if (detected.length > 0) {
+    lines.push(...detected, "");
+  }
+  lines.push("Choose a provider:");
+  return lines;
 }
 
 /** @deprecated Readline fallback pagination — kept for CLI setup path. */

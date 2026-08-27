@@ -75,7 +75,7 @@ Config is deep-merged from (later overrides earlier):
 
 Key env vars:
 - Provider API keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.
-- Amazon Bedrock: AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role), or `AWS_BEARER_TOKEN_BEDROCK` / a Bedrock API key stored via `/setup` or login. Optional `llm.region` (else `AWS_REGION` / `AWS_DEFAULT_REGION` / `us-east-1`).
+- Amazon Bedrock: AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role), or `AWS_BEARER_TOKEN_BEDROCK` / a Bedrock API key stored via `/login`. Optional `llm.region` (else `AWS_REGION` / `AWS_DEFAULT_REGION` / `us-east-1`).
 - `PRAANA_MODEL` — override model at runtime
 - `PRAANA_SUMMARIZER_MODEL` — override summariser model
 - `PRAANA_DEBUG=true` — saves compiled prompts per turn to `prompts/`
@@ -271,7 +271,6 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/model [provider] <id>` | Switch model (bare `/model` opens searchable selector) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); also `llm.reasoning_effort` in config |
 | `/sessions` | List past sessions for resuming |
-| `/setup` | Open the provider/config setup overlay in-session (also `praana setup` as a standalone wizard) |
 | `/login [provider]` | Add or update a provider credential in `~/.praana/credentials.json` |
 | `/logout [provider]` | Remove a provider's credentials; falls back to another authenticated provider or opens login |
 | `/shell <cmd>` | Run a shell command inline in the transcript (also `! <cmd>` prefix) |

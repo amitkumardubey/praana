@@ -5,9 +5,9 @@ import { getAppLogger } from "../logger.js";
 import { askQuestion } from "../terminal.js";
 import {
   buildProviderSelectItems,
-  formatDetectedProviderLines,
   CUSTOM_PROVIDER_VALUE,
   findProviderSelectItem,
+  setupProviderIntroLines,
   type SelectItem,
 } from "./provider-options.js";
 import { getSetupConfigPath } from "./config-writer.js";
@@ -55,14 +55,9 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
     console.log("  PRAANA — Provider Setup");
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("");
-    console.log("No provider configured. Let's set one up.");
-    console.log("");
-
-    const detectedLines = formatDetectedProviderLines();
-    for (const line of detectedLines) {
+    for (const line of setupProviderIntroLines(existsSync(getSetupConfigPath()))) {
       console.log(line);
     }
-    if (detectedLines.length > 0) console.log("");
 
     // ── Provider selection ──
     const items = buildProviderSelectItems();

@@ -16,7 +16,7 @@ import { PaletteList } from "./overlays/picker.js";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
-  formatDetectedProviderLines,
+  setupProviderIntroLines,
 } from "../../setup/provider-options.js";
 import { toPaletteOptions } from "./overlays/picker-items.js";
 import {
@@ -437,13 +437,7 @@ export function SetupWizard(props: SetupWizardProps) {
       {step() === "provider" && (
         <>
           <text>
-            {[
-              "No provider configured. Let's set one up.",
-              "",
-              ...formatDetectedProviderLines(),
-              ...(formatDetectedProviderLines().length > 0 ? [""] : []),
-              "Choose a provider:",
-            ].join("\n")}
+            {setupProviderIntroLines(existsSync(getSetupConfigPath())).join("\n")}
           </text>
           <text> </text>
           <PaletteList

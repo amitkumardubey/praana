@@ -68,7 +68,7 @@ model = "deepseek/deepseek-v4-flash:free"
 #   xai           → XAI_API_KEY
 #   fireworks     → FIREWORKS_API_KEY
 #   amazon-bedrock → AWS credentials chain and/or AWS_BEARER_TOKEN_BEDROCK
-#                    (or paste a Bedrock API key via /setup / login)
+#                    (or paste a Bedrock API key via /login)
 #   together      → TOGETHER_API_KEY
 #   ollama        → (none — runs locally)
 #   opencode → OPENCODE_API_KEY (from https://opencode.ai/auth)

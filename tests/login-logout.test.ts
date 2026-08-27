@@ -117,17 +117,6 @@ describe("/login and /logout", () => {
       expect(result.action).toBe("open_login_wizard");
       expect(result.loginProviderHint).toBe("openrouter");
     });
-
-    it("returns open_setup_wizard for /setup", async () => {
-      const session = createMockSession();
-      const result = await executeSlashCommand("/setup", session, {
-        setModel: mock(),
-        setThinking: mock(),
-        getThinking: () => false,
-      });
-      expect(result.action).toBe("open_setup_wizard");
-      expect(result.display).toBe("toast");
-    });
   });
 
   // ── /logout dispatch ──
