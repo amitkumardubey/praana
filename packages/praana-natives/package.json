@@ -1,7 +1,6 @@
 {
   "name": "@praana/natives",
-  "version": "0.1.0",
-  "private": true,
+  "version": "0.12.0",
   "description": "Native capability layer for PRAANA (napi-rs / Bun Node-API)",
   "license": "MIT",
   "type": "module",
@@ -16,13 +15,13 @@
   },
   "files": [
     "index.js",
-    "index.d.ts",
-    "*.node"
+    "index.d.ts"
   ],
   "napi": {
     "binaryName": "praana-natives",
     "packageName": "@praana/natives",
     "targets": [
+      "aarch64-unknown-linux-gnu",
       "x86_64-unknown-linux-gnu",
       "x86_64-unknown-linux-musl",
       "aarch64-apple-darwin",

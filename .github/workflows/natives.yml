@@ -12,6 +12,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/natives.yml"
+      - ".github/workflows/natives-build.yml"
   push:
     branches:
       - main
@@ -25,6 +26,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/natives.yml"
+      - ".github/workflows/natives-build.yml"
   workflow_dispatch:
 
 permissions:
@@ -35,41 +37,5 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-x64-gnu:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "."
-
-      - name: Install JS dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Cargo test
-        run: cargo test -p praana-natives
-
-      - name: Build native addon
-        run: bun run natives:build
-
-      - name: Bun smoke (direct package)
-        run: bun run natives:smoke
-
-      - name: Loader + code-intel suite slice
-        run: bun test tests/native-loader.test.ts tests/code-intel-tools.test.ts
-        env:
-          PRAANA_REQUIRE_NATIVE: "1"
-
-      - name: Typecheck
-        run: bun typecheck
+  build:
+    uses: ./.github/workflows/natives-build.yml

@@ -13,6 +13,16 @@
           "type": "generic",
           "path": "README.md",
           "glob": false
+        },
+        {
+          "type": "json",
+          "path": "packages/praana-natives/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "package.json",
+          "jsonpath": "$.optionalDependencies['@praana/natives']"
         }
       ]
     }

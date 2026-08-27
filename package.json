@@ -42,9 +42,11 @@
     "natives:build:debug": "bun run --filter @praana/natives build:debug",
     "natives:smoke": "bun run --filter @praana/natives test:smoke",
     "natives:test": "cargo test -p praana-natives && bun test tests/native-loader.test.ts",
+    "natives:prepare-publish": "bun run scripts/prepare-natives-publish.ts",
     "verify:sqlite-vec": "bun run scripts/verify-sqlite-vec.ts",
     "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts",
-    "build:compile": "bun run scripts/compile.ts"
+    "build:compile": "bun run scripts/compile.ts",
+    "package:binaries": "bun run scripts/package-release-binaries.ts"
   },
   "dependencies": {
     "@ff-labs/fff-bun": "^0.10.5",
@@ -74,8 +76,10 @@
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"
   },
+  "optionalDependencies": {
+    "@praana/natives": "0.12.0"
+  },
   "devDependencies": {
-    "@praana/natives": "workspace:*",
     "@types/js-yaml": "^4.0.9",
     "bun-types": "^1.4.0",
     "typescript": "^5.9.3"
