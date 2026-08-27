@@ -16,10 +16,11 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 bun install
 bun typecheck    # TypeScript type-check (no emit)
 bun dev          # Run without build step
-bun test         # 83 files, 997 tests, ~11s
+bun test         # 177 files, 2095 tests, ~15s
+bun run test:parallel  # opt-in: bun test --parallel tests/
 ```
 
-Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config and Native Addon below).
+Requires **Bun ≥1.4**. Native dependencies are optional (see Embedder Config and Native Addon below).
 
 ---
 
@@ -294,6 +295,7 @@ Typing `/` in the TUI opens the slash command palette (centered list + detail pa
 
 ```bash
 bun test                                              # Full suite
+bun run test:parallel                                 # Same suite, files across CPU cores (opt-in)
 bun test tests/compiler.test.ts                       # Single file
 bun test --test-name-pattern "should compile prompt"  # Single test
 bun test --watch                                      # Watch mode
@@ -552,7 +554,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
 - **Concurrent DB access:** Both `openMemoryDb()` and `openContextEngineDb()` configure WAL mode plus a `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Don't open these databases with raw `new Database()` and then skip the pragmas — missing `busy_timeout` makes parallel sessions fail immediately with `SQLITE_BUSY` instead of retrying.
-- Shell timeouts kill the process **group** (not just the parent) so orphaned children like `find` cannot hang the session.
+- Shell timeouts kill the process **group** (not just the parent) so orphaned children like `find` cannot hang the session. Do not replace this with `Bun.spawn` / `Bun.Terminal` unless process-tree SIGTERM→SIGKILL is equivalent; `Bun.Terminal` is reserved for a future interactive PTY shell, not the current tool.
 
 ---
 

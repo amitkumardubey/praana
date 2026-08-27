@@ -1,13 +1,18 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { handleDoctor } from "../src/doctor.js";
+import { getConfigWarnings } from "../src/config.js";
 import type { PraanaConfig } from "../src/types.js";
 
+const testLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-doctor-"));
 const baseConfig: PraanaConfig = {
   llm: { provider: "ollama", model: "llama3" },
   memory: { enabled: false },
   compiler: { token_budget: 100000 },
   tiers: {},
-  session: { log_dir: "/tmp/praana-test-sessions" },
+  session: { log_dir: testLogDir },
   consolidation: {},
   shell: {},
   edit: { confirm: false },
@@ -19,6 +24,22 @@ const baseConfig: PraanaConfig = {
 } as unknown as PraanaConfig;
 
 describe("handleDoctor", () => {
+  let praanaHome: string;
+  let prevHome: string | undefined;
+
+  beforeEach(() => {
+    getConfigWarnings(); // drain leftover warnings from other files
+    prevHome = process.env.PRAANA_HOME;
+    praanaHome = mkdtempSync(join(tmpdir(), "praana-doctor-home-"));
+    process.env.PRAANA_HOME = praanaHome;
+  });
+
+  afterEach(() => {
+    rmSync(praanaHome, { recursive: true, force: true });
+    if (prevHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = prevHome;
+  });
+
   it("reports success when provider and model are configured", async () => {
     const result = await handleDoctor(baseConfig);
     expect(result.success).toBe(true);

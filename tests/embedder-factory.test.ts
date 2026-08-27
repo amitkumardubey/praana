@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, mock } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as downloadConsentActual from "../src/ui/tui/download-consent.js";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
 import {
   TransformersEmbedder,
@@ -16,6 +17,8 @@ import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 const HAS_TRANSFORMERS = await isTransformersAvailable();
 const TRANSFORMERS_TIMEOUT_MS = 120_000;
 
+const downloadConsentReal = { ...downloadConsentActual };
+
 // Mutable flag: when true, the mocked confirmModelDownload returns false
 // (decline), simulating a user who cancels the download prompt.
 let declineDownload = false;
@@ -24,8 +27,13 @@ let declineDownload = false;
 // The real function guards on process.stderr.isTTY, but mocking ensures
 // no ProcessTerminal is ever constructed in the test process.
 mock.module("../src/ui/tui/download-consent.js", () => ({
+  ...downloadConsentActual,
   confirmModelDownload: async (_modelId: string) => !declineDownload,
 }));
+
+afterAll(() => {
+  mock.module("../src/ui/tui/download-consent.js", () => downloadConsentReal);
+});
 
 function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
   return {

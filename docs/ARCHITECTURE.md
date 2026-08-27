@@ -319,6 +319,8 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)
 - `batch_write(files[])` / `batch_edit(edits[])` — multi-file create/replace in one turn
 
+Shell spawn uses `node:child_process` with `detached` (new process group on POSIX) and `process.kill(-pid)` plus SIGTERM→SIGKILL settle so orphaned children like `find` cannot hang the session. **Bun.Terminal** (`Bun.spawn({ terminal })`, Bun ≥1.3.5 / improved in 1.4) is a suitable future primitive for a *PTY-backed interactive* shell (vim, pagers, password prompts) without `node-pty`. It is **not** a drop-in replacement for the current spawn path: it does not provide equivalent process-tree cancellation, and it is not a UI replacement for OpenTUI. Do not switch the shell tool to `Bun.spawn`/`Bun.Terminal` until tree-kill semantics match.
+
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — fff-backed structured search (in-process grep → file:line:column matches)
 - `find_files(pattern, mode?, path?, max_results?, ...)` — fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode)

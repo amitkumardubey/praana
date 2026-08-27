@@ -1,4 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { z } from "zod";
 import * as nativeLlmActual from "../src/llm/index.js";
 import * as llmActual from "../src/llm.js";
@@ -98,6 +101,8 @@ afterAll(() => {
   mock.module("../src/ui.js", () => uiReal);
 });
 
+const fallbackLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-fallback-"));
+
 const makeConfig = () => ({
   llm: {
     provider: "umans",
@@ -119,7 +124,7 @@ const makeConfig = () => ({
     compression_watermark: 0.75,
     compression_flush_fraction: 0.30,
   },
-  session: { log_dir: "/tmp/praana-test-sessions" },
+  session: { log_dir: fallbackLogDir },
   turn: { max_steps: 25 },
   tools: { block_repeat_reads: false },
   skills: {

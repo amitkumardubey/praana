@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, type Mock } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { AppController } from "../src/app-controller.js";
@@ -447,7 +447,7 @@ describe("AppController", () => {
   });
 
   it("resumes the latest session for cwd when resume has no session id", async () => {
-    const logDir = join(tmpdir(), "praana-test-app-controller-resume");
+    const logDir = mkdtempSync(join(tmpdir(), "praana-test-app-controller-resume-"));
     const cwd = resolve("/tmp/praana-resume-test");
     const sessionId = "01LATEST00000000000000006";
     mkdirSync(join(logDir, sessionId), { recursive: true });
@@ -531,7 +531,7 @@ describe("AppController", () => {
   });
 
   it("starts a new session when bare resume finds no session for cwd", async () => {
-    const logDir = join(tmpdir(), "praana-test-app-controller-no-session");
+    const logDir = mkdtempSync(join(tmpdir(), "praana-test-app-controller-no-session-"));
     mkdirSync(logDir, { recursive: true });
     const cwd = resolve("/tmp/praana-no-session");
 
@@ -553,7 +553,7 @@ describe("AppController", () => {
   });
 
   it("adds a startup notice when resuming with stale active tasks", async () => {
-    const logDir = join(tmpdir(), "praana-test-app-controller-stale");
+    const logDir = mkdtempSync(join(tmpdir(), "praana-test-app-controller-stale-"));
     const cwd = resolve("/tmp/praana-stale-task");
     const sessionId = "01STALE00000000000000006";
     mkdirSync(join(logDir, sessionId), { recursive: true });

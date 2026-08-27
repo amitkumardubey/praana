@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, beforeAll, mock } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,7 +7,13 @@ import {
   setEmbedderConsent,
   needsInteractiveEmbedderConsent,
 } from "../src/memory/embedder-consent.js";
-import { confirmModelDownload } from "../src/ui/tui/download-consent.js";
+import * as downloadConsentActual from "../src/ui/tui/download-consent.js";
+
+beforeAll(() => {
+  // Other files (embedder-factory.test.ts) mock.module this path; restore the real
+  // implementation so recorded-consent short-circuit is what we actually test.
+  mock.module("../src/ui/tui/download-consent.js", () => ({ ...downloadConsentActual }));
+});
 
 describe("embedder consent", () => {
   let tmpHome: string;
@@ -41,6 +47,7 @@ describe("embedder consent", () => {
   it("confirmModelDownload honors recorded consent without a nested TUI", async () => {
     Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
     setEmbedderConsent("skip");
+    const { confirmModelDownload } = await import("../src/ui/tui/download-consent.js");
     await expect(confirmModelDownload("Xenova/all-MiniLM-L6-v2")).resolves.toBe(false);
     setEmbedderConsent("proceed");
     await expect(confirmModelDownload("Xenova/all-MiniLM-L6-v2")).resolves.toBe(true);

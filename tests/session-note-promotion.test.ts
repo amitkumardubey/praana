@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { rmSync, mkdirSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, afterAll } from "bun:test";
+import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
@@ -7,10 +7,11 @@ import { MemoryStore } from "../src/memory/index.js";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import type { PraanaConfig } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "praana-test-note-promotion");
+const testRoot = mkdtempSync(join(tmpdir(), "praana-test-note-promotion-"));
+const testLogDir = join(testRoot, "sessions");
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "praana-test-memory.db") },
+  memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },
@@ -22,6 +23,10 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(testLogDir, { recursive: true, force: true });
+});
+
+afterAll(() => {
+  rmSync(testRoot, { recursive: true, force: true });
 });
 
 async function createSessionWithMemory(): Promise<{ session: Session; memoryStore: MemoryStore }> {

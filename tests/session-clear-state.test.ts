@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach, mock } from "bun:test";
-import { rmSync } from "node:fs";
+import { describe, it, expect, afterEach, afterAll, mock } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session, visibleCheckpointAfterBoundary } from "../src/session.js";
@@ -9,10 +9,11 @@ import type { CheckpointDraft, TurnDigest } from "../src/context-engine/types.js
 import type { PraanaConfig } from "../src/types.js";
 import type { SessionCheckpoint } from "../src/context-engine/types.js";
 
-const testLogDir = join(tmpdir(), "praana-test-session-clear-state");
+const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-clear-"));
+const testLogDir = join(testRoot, "sessions");
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "praana-test-memory.db") },
+  memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },
@@ -22,6 +23,10 @@ const testConfig: PraanaConfig = {
 describe("Session.clearState", () => {
   afterEach(() => {
     rmSync(testLogDir, { recursive: true, force: true });
+  });
+
+  afterAll(() => {
+    rmSync(testRoot, { recursive: true, force: true });
   });
 
   it("clears working-memory state without resetting session turns", async () => {
@@ -240,7 +245,7 @@ describe("visibleCheckpointAfterBoundary", () => {
 });
 
 describe("Session.getVisibleSessionCheckpoint (integration)", () => {
-  const intDir = join(tmpdir(), "praana-test-session-clear-integration");
+  const intDir = mkdtempSync(join(tmpdir(), "praana-test-session-clear-int-"));
   let dbPath: string;
 
   function makeDigest(overrides: Partial<TurnDigest> = {}): TurnDigest {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StateGraph } from "../src/state-graph.js";
@@ -13,7 +13,7 @@ import {
 } from "../src/state-graph-checkpoint.js";
 import type { Event } from "../src/types.js";
 
-const TEST_DIR = join(tmpdir(), "praana-state-graph-checkpoint-test");
+const TEST_DIR = mkdtempSync(join(tmpdir(), "praana-state-graph-checkpoint-test-"));
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
   return {
