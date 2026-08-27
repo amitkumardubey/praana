@@ -154,30 +154,39 @@ async function main(): Promise<void> {
     `Compiling praana v${version} → ${outfile}${target ? ` (target=${target})` : ""}…`,
   );
 
-  const result = await Bun.build({
-    entrypoints: [resolve("src/main.ts")],
-    target: "bun",
-    // Match local `bun` runs: Solid transform + package "bun" export conditions
-    // (@opentui/solid resolves to index.bun.js under this condition).
-    conditions: ["bun"],
-    tsconfig: resolve("tsconfig.json"),
-    plugins: [solidPlugin],
-    minify: true,
-    sourcemap: "none",
-    define: {
-      PRAANA_BUILD_VERSION: JSON.stringify(version),
-    },
-    compile: {
-      ...(target ? { target: target as Bun.Build.CompileTarget } : {}),
-      outfile: outPath,
-      // Critical: compiled binaries must not apply cwd bunfig.toml preloads.
-      autoloadBunfig: false,
-      autoloadDotenv: false,
-      // Keep package/tsconfig resolution for workspace-relative imports if needed.
-      autoloadTsconfig: true,
-      autoloadPackageJson: true,
-    },
-  });
+  let result: Awaited<ReturnType<typeof Bun.build>>;
+  try {
+    result = await Bun.build({
+      entrypoints: [resolve("src/main.ts")],
+      target: "bun",
+      // Match local `bun` runs: Solid transform + package "bun" export conditions
+      // (@opentui/solid resolves to index.bun.js under this condition).
+      conditions: ["bun"],
+      tsconfig: resolve("tsconfig.json"),
+      plugins: [solidPlugin],
+      minify: true,
+      sourcemap: "none",
+      define: {
+        PRAANA_BUILD_VERSION: JSON.stringify(version),
+      },
+      compile: {
+        ...(target ? { target: target as Bun.Build.CompileTarget } : {}),
+        outfile: outPath,
+        // Critical: compiled binaries must not apply cwd bunfig.toml preloads.
+        autoloadBunfig: false,
+        autoloadDotenv: false,
+        // Keep package/tsconfig resolution for workspace-relative imports if needed.
+        autoloadTsconfig: true,
+        autoloadPackageJson: true,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `Bun.build threw while compiling${target ? ` target=${target}` : ""}:`,
+    );
+    console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+    process.exit(1);
+  }
 
   if (!result.success) {
     console.error("Compile failed:");

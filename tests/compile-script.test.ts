@@ -27,6 +27,10 @@ describe("compile script", () => {
     expect(source).toContain("resolveCompileVersion");
   });
 
+  it("logs a thrown Bun.build error instead of a bare Bundle failed", () => {
+    expect(source).toContain("Bun.build threw while compiling");
+  });
+
   it("is wired as build:compile in package.json", () => {
     const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf-8")) as {
       scripts?: Record<string, string>;
