@@ -25,7 +25,21 @@ Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config a
 
 ### Global CLI (`bun link`)
 
-`package.json` exposes `praana` and `pran` via `bin/praana.js`. Run `bun link` and add `$(bun pm bin -g)` to your PATH.
+`package.json` exposes `praana` via `bin/praana.js` (preloads `@opentui/solid/preload` so global installs work without a cwd `tsconfig`/`bunfig`). Run `bun link` and add `$(bun pm bin -g)` to your PATH.
+
+### Standalone binary (`bun run build:compile`)
+
+For a single-file executable (no Bun install required on the target machine beyond what the binary embeds):
+
+```bash
+bun run build:compile                 # → dist/praana (host platform)
+bun run build:compile -- --target bun-linux-x64
+bun run build:compile -- --outfile dist/praana-macos --target bun-darwin-arm64
+```
+
+Uses `@opentui/solid/bun-plugin` and sets `compile.autoloadBunfig = false` so launching from this repo (or any cwd with an OpenTUI `bunfig.toml` preload) does not fail with `preload not found`. Output lands in `dist/` (gitignored). Prefer `bin/praana.js` for `bun add -g` / npm-style installs.
+
+Baked `--version` string: exact git tag `v{package.json version}` with a clean tree → that version (e.g. `0.12.0`); otherwise `{version}-dev.<shortsha>[.dirty]` so branch builds are not mistaken for a release.
 
 ## Running
 
@@ -35,7 +49,6 @@ bun start
 
 # Global CLI (after bun link)
 praana
-pran
 praana resume <session_id>
 
 # Resume a previous session

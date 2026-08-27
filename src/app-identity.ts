@@ -11,7 +11,6 @@ export const APP_AGENT_ID = "praana";
 export const APP_HOME_DIR = ".praana";
 
 export const CLI_NAME = "praana";
-export const CLI_SHORT = "pran";
 
 export function appHomePath(...parts: string[]): string {
   const praanaHome = envOverride("PRAANA_HOME");

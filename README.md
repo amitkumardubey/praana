@@ -45,9 +45,9 @@ praana
 
 PRAANA auto-detects which provider key is set. On first run with no config file, it runs an interactive setup wizard. The interactive UI is a terminal-native `pi-tui` shell with native scrollback, slash-command autocomplete, transcript rendering, and full thinking-text display when `/thinking on` is enabled.
 
-### Global alias
+### PATH for global install
 
-Both `praana` and `pran` are on your PATH after a global install. If Bun's global bin directory isn't in your PATH:
+After `bun add -g praana`, ensure Bun's global bin directory is on your PATH:
 
 ```bash
 export PATH="$HOME/.bun/bin:$PATH"
@@ -62,6 +62,15 @@ bun install
 export ANTHROPIC_API_KEY="sk-ant-..."
 bun src/main.ts
 ```
+
+Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`):
+
+```bash
+bun run build:compile   # → dist/praana
+./dist/praana
+```
+
+Unreleased / dirty trees bake `--version` as `{package}-dev.<shortsha>[.dirty]` (exact release tag + clean tree stays the package version).
 
 ### Configuration
 

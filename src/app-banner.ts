@@ -6,14 +6,21 @@ import {
   APP_NAME,
   APP_TAGLINE,
   CLI_NAME,
-  CLI_SHORT,
 } from "./app-identity.js";
 import type { Session } from "./session.js";
 import { nativeStatusToString } from "./native/index.js";
 
 export const APP_VERSION = readAppVersion();
 
+/** Injected by `scripts/compile.ts` via Bun.build `define`; unset when running from source. */
+declare const PRAANA_BUILD_VERSION: string | undefined;
+
 function readAppVersion(): string {
+  if (typeof PRAANA_BUILD_VERSION === "string" && PRAANA_BUILD_VERSION.length > 0) {
+    return PRAANA_BUILD_VERSION.startsWith("v")
+      ? PRAANA_BUILD_VERSION
+      : `v${PRAANA_BUILD_VERSION}`;
+  }
   try {
     const pkgUrl = new URL("../package.json", import.meta.url);
     const pkg = JSON.parse(readFileSync(pkgUrl, "utf-8")) as { version?: string };
@@ -138,9 +145,7 @@ export function formatSessionEpilogue(sessionId: string): string[] {
   return [
     "",
     `  ${CLI_NAME} resume`,
-    `  ${CLI_SHORT} resume`,
     `  ${CLI_NAME} resume ${sessionId}`,
-    `  ${CLI_SHORT} resume ${sessionId}`,
     "",
   ];
 }
@@ -162,7 +167,6 @@ export function printSessionEndSummary(session: Session): void {
 function usageLines(): string[] {
   return [
     `  ${CLI_NAME}                     Start new session in current directory`,
-    `  ${CLI_SHORT}                      Short alias for ${CLI_NAME}`,
     `  ${CLI_NAME} setup               Configure provider interactively`,
     `  ${CLI_NAME} doctor              Check setup and provider configuration`,
     `  ${CLI_NAME} models [provider] [--all]  List configured models (--all includes unconfigured)`,

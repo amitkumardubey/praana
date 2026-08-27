@@ -13,8 +13,20 @@ describe("CLI binary entrypoint", () => {
     expect(binSource).toContain("await mod.main()");
   });
 
-  it("invokes exported main from the pran bin wrapper", () => {
-    const binSource = readFileSync(resolve("bin/pran.js"), "utf-8");
-    expect(binSource).toContain("await mod.main()");
+  it("preloads OpenTUI Solid before importing main (global install JSX)", () => {
+    const binSource = readFileSync(resolve("bin/praana.js"), "utf-8");
+    expect(binSource).toContain('@opentui/solid/preload');
+    const preloadIdx = binSource.indexOf('@opentui/solid/preload');
+    const mainIdx = binSource.indexOf("src/main.ts");
+    expect(preloadIdx).toBeGreaterThanOrEqual(0);
+    expect(mainIdx).toBeGreaterThan(preloadIdx);
+  });
+
+  it("does not ship a pran alias bin", () => {
+    const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf-8")) as {
+      bin?: Record<string, string>;
+    };
+    expect(pkg.bin).toEqual({ praana: "bin/praana.js" });
+    expect(pkg.bin?.pran).toBeUndefined();
   });
 });
