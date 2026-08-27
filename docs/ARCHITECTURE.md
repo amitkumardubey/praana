@@ -602,7 +602,6 @@ Slash commands are handled by `src/slash-commands.ts`:
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
-- `/setup` — runs the interactive provider/config setup wizard in-session (replaces /init)
 - `/login [provider]` — add or update a provider credential
 - `/logout [provider]` — remove a provider's credentials
 - `/settings` — view/set persistent UX prefs (`~/.praana/settings.json`)

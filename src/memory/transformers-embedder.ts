@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { appHomePath } from "../app-identity.js";
 import { startSpinner, stopSpinner } from "../ui.js";
 import { confirmModelDownload } from "../ui/tui/download-consent.js";
+import { getEmbedderConsent } from "./embedder-consent.js";
 import type { Embedder } from "./types.js";
 import {
   resolveTransformersModel,
@@ -89,7 +90,14 @@ async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExt
     mod.env.cacheDir = cacheDir;
 
     if (!isModelCached(cacheDir, preset.id)) {
-      if (!(await confirmModelDownload(preset.id))) {
+      const recorded = getEmbedderConsent();
+      const allowed =
+        recorded === "proceed"
+          ? true
+          : recorded === "skip"
+            ? false
+            : await confirmModelDownload(preset.id);
+      if (!allowed) {
         throw new Error("embedding model download cancelled by user");
       }
     }

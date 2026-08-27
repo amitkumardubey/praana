@@ -11,7 +11,7 @@ import { useBindings } from "@opentui/keymap/solid";
 import { RGBA, type InputRenderable } from "@opentui/core";
 import type { ModelListEntry } from "../../../model-listing.js";
 import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
-import { OverlayFrame } from "./frame.js";
+import { OverlayFrame, OVERLAY_BACKGROUND, OVERLAY_BORDER } from "./frame.js";
 import {
   filterModelItems,
   formatModelRow,
@@ -126,8 +126,8 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   return (
     <OverlayFrame
       width={frameWidth()}
-      backgroundColor="#2a2d37"
-      borderColor="#3d414d"
+      backgroundColor={OVERLAY_BACKGROUND}
+      borderColor={OVERLAY_BORDER}
     >
       <text>
         <span style={TUI_STYLE.info}>Select model</span>

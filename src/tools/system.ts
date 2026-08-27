@@ -23,6 +23,7 @@ import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
 import { detectShellReads } from "./shell-read-detect.js";
 import { buildPathChurnHint } from "./read-churn.js";
+import { sanitizeChildEnv } from "./sanitize-child-env.js";
 
 /**
  * Validate content for known structured formats.
@@ -189,6 +190,7 @@ export async function executeShellCommand(
       shell: "/bin/bash",
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      env: sanitizeChildEnv(),
     });
 
     let stdout = "";

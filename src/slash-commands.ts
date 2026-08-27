@@ -22,12 +22,14 @@ import {
   resolveModelSpecifier,
   getProviderConfigurationError,
   resolvedTargetLabel,
+  isAlreadyOnResolvedModel,
   parseModelCommandArgs,
 } from "./model-resolver.js";
 import { getProviderEnvKey, parseReasoningEffort, REASONING_EFFORT_LEVELS } from "./llm.js";
-import { removeApiKey, listStoredProviders } from "./credentials.js";
+import { listStoredProviders } from "./credentials.js";
 import { isUserDeclaredProvider } from "./provider-registry.js";
-import { removeProviderSection } from "./setup/config-writer.js";
+import { logoutProvider } from "./setup/logout.js";
+import { resolveStoredProviderHint } from "./setup/provider-options.js";
 import { executeShellCommand } from "./tools/system.js";
 import {
   USER_SETTINGS_KEYS,
@@ -99,7 +101,6 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
   { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/setup", description: "Run provider/config setup wizard", category: "Model & Config" },
   { name: "/clear", description: "Reset in-session context", category: "Session" },
   { name: "/new", description: "Start a new session", category: "Session" },
   { name: "/help", description: "Show all commands", category: "Insight" },
@@ -120,6 +121,8 @@ export interface SlashCommandResult {
   };
   /** Provider hint passed to the login wizard overlay (from /login <provider>). */
   loginProviderHint?: string;
+  /** Search hint passed to the logout picker (from /logout <name> when ambiguous). */
+  logoutProviderHint?: string;
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
@@ -682,14 +685,16 @@ export async function executeSlashCommand(
       }
 
       const currentProvider = session.getEffectiveProvider();
+      const currentModelId = session.getActiveModelId?.() ?? "";
       const targetLabel = resolvedTargetLabel(resolved, currentProvider);
-      if (targetLabel === session.getActiveModelLabel()) {
+      if (isAlreadyOnResolvedModel(resolved, currentProvider, currentModelId)) {
         appendModelSwitchLog(session, {
           provider: targetProvider,
           model: targetModel,
           userInput: parsed.userInput,
           outcome: "already_on",
         });
+        handlers.setModel(resolved.modelId);
         const contextWindow = session.getContextWindowTokens(resolved.modelId);
         lines.push(
           `Already on: ${targetLabel} (${contextWindow.toLocaleString()} ctx)`,
@@ -941,49 +946,47 @@ export async function executeSlashCommand(
         };
       }
 
-      // Specific provider requested
-      const hasStored = stored.includes(provider);
-      const isDeclared = isUserDeclaredProvider(provider);
+      // Specific provider requested — accept id or unique alias (claude → anthropic).
+      const lookedUp = resolveStoredProviderHint(provider, stored);
+      if (lookedUp.pickerQuery) {
+        lines.push("Opening logout wizard…");
+        return {
+          action: "open_logout_wizard",
+          lines,
+          display: "toast",
+          logoutProviderHint: lookedUp.pickerQuery,
+        };
+      }
+
+      const target = lookedUp.providerId ?? provider;
+      const hasStored = stored.includes(target);
+      const isDeclared = isUserDeclaredProvider(target);
 
       if (!hasStored && !isDeclared) {
         lines.push(`No credentials found for "${provider}".`);
         return result("none", "toast", "error");
       }
 
-      const removed = removeApiKey(provider);
-      let sectionRemoved = false;
-      if (isDeclared) {
-        const sectionResult = removeProviderSection(provider);
-        sectionRemoved = sectionResult.written;
-      }
-
-      if (removed || sectionRemoved) {
-        lines.push(`Logged out: ${provider}`);
-      } else {
-        lines.push(`No credentials found for "${provider}".`);
+      const outcome = logoutProvider(target, session);
+      if (!outcome.removed && !outcome.sectionRemoved) {
+        lines.push(...outcome.lines);
         return result("none", "toast", "info");
       }
 
-      if (sectionRemoved) {
-        lines.push(`Removed [providers.${provider}] from config.toml.`);
-        lines.push("Run /new to fully deactivate the provider.");
-      }
-      if (provider === session.getEffectiveProvider()) {
-        // Prepend warning so it's visible even after toast truncation (BUG #2 fix)
-        lines.unshift("Use /login to re-add, or /model to switch.");
-        lines.unshift(`⚠ ${provider} is your active provider — the next turn may fail.`);
+      if (outcome.switchedTo) {
+        handlers.setModel(outcome.switchedTo.model || undefined);
       }
 
+      lines.push(...outcome.lines);
+      if (outcome.needsLogin) {
+        return {
+          action: "open_login_wizard",
+          lines,
+          display: "toast",
+          toastTone: "info",
+        };
+      }
       return result("refresh_status", "toast", "success");
-    }
-
-    case "/setup": {
-      lines.push(
-        "Provider setup runs in a dedicated wizard outside the session.",
-        "Exit PRAANA and run:  praana setup",
-        "Then restart to apply changes.",
-      );
-      return result("none", "toast", "info");
     }
 
     case "/shell": {

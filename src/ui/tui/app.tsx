@@ -20,6 +20,8 @@ import type { ShellUi } from "./shell-ui.js";
 import type { ModelListEntry } from "../../model-listing.js";
 import type { LoginWizardResult } from "./overlays/login.js";
 import type { LogoutWizardResult } from "./overlays/logout.js";
+import type { SetupResult } from "../../setup/types.js";
+import type { Session } from "../../session.js";
 
 export interface AppReady {
   prompt: PromptHandle;
@@ -37,6 +39,11 @@ export interface AppProps {
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
+  onSetupComplete: (result: SetupResult) => void;
+  onConsentComplete: (proceed: boolean) => void;
+  logoutSession: () => Session;
+  configProvider: () => string;
+  configModel: () => string;
   onPaletteRun: (command: string) => void;
   onPaletteInsert: (text: string) => void;
   onPaletteHandoff: (text: string) => void;
@@ -127,6 +134,11 @@ export function App(props: AppProps) {
         onModelSelect={props.onModelSelect}
         onLoginComplete={props.onLoginComplete}
         onLogoutComplete={props.onLogoutComplete}
+        onSetupComplete={props.onSetupComplete}
+        onConsentComplete={props.onConsentComplete}
+        logoutSession={props.logoutSession}
+        configProvider={props.configProvider}
+        configModel={props.configModel}
         onPaletteRun={props.onPaletteRun}
         onPaletteInsert={props.onPaletteInsert}
         onPaletteHandoff={props.onPaletteHandoff}

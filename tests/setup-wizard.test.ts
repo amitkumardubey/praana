@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   rmSync,
   readFileSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import {
   fetchCustomProviderModels,
   pickDefaultModel,
   finalizeProviderSetup,
+  setupConfigConfirmPrompt,
   isValidCustomProviderId,
   isValidBaseUrl,
   providerRequiresApiKey,
@@ -406,6 +408,34 @@ describe("setup wizard", () => {
       const configContent = readFileSync(getSetupConfigPath(), "utf-8");
       expect(configContent).toContain("[providers.my-llama]");
       expect(configContent).toContain('base_url = "http://localhost:8080/v1"');
+    });
+
+    it("patches [llm] on an existing config instead of overwriting the file", () => {
+      writeProviderConfig("openrouter", { model: "old-model" });
+      writeFileSync(
+        getSetupConfigPath(),
+        `${readFileSync(getSetupConfigPath(), "utf-8")}\n[memory]\nembedder = "auto"\n`,
+        "utf-8",
+      );
+      const result = finalizeProviderSetup("openai", "overwrite", {
+        model: "gpt-4o",
+        keySaved: true,
+      });
+      expect(result.success).toBe(true);
+      expect(result.message).toContain("updated");
+      expect(result.message.toLowerCase()).not.toContain("overwrite");
+      const content = readFileSync(getSetupConfigPath(), "utf-8");
+      expect(content).toContain('provider = "openai"');
+      expect(content).toContain('model = "gpt-4o"');
+      expect(content).toContain("[memory]");
+      expect(content).toContain('embedder = "auto"');
+    });
+  });
+
+  describe("setupConfigConfirmPrompt", () => {
+    it("asks to create on first run and update afterwards", () => {
+      expect(setupConfigConfirmPrompt(false)).toBe("Create ~/.praana/config.toml?");
+      expect(setupConfigConfirmPrompt(true)).toBe("Update ~/.praana/config.toml?");
     });
   });
 

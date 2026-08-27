@@ -29,12 +29,33 @@ import {
   setUserProviders,
   resetUserProvidersForTests,
 } from "../src/provider-registry.js";
+import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
+import { appHomePath } from "../src/app-identity.js";
+import { DEFAULT_MODELS } from "../src/llm.js";
 import type { Session } from "../src/session.js";
 import type { CustomProviderConfig } from "../src/setup/types.js";
+import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
 
-function createMockSession(effectiveProvider = "openrouter"): Session {
+const PROVIDER_ENV_KEYS = providerEnvKeyNames();
+
+function createMockSession(
+  effectiveProvider = "openrouter",
+  extras?: {
+    model?: string;
+    setProviderOverride?: ReturnType<typeof mock>;
+    setModelOverride?: ReturnType<typeof mock>;
+  },
+): Session {
+  const config = {
+    llm: { provider: effectiveProvider, model: extras?.model ?? "openai/gpt-4.1" },
+    providers: {} as Record<string, unknown>,
+  };
   return {
     getEffectiveProvider: () => effectiveProvider,
+    getActiveModelId: () => extras?.model ?? "openai/gpt-4.1",
+    setProviderOverride: extras?.setProviderOverride ?? mock(),
+    setModelOverride: extras?.setModelOverride ?? mock(),
+    config,
   } as unknown as Session;
 }
 
@@ -46,19 +67,30 @@ function ensureConfigDir(): string {
 
 describe("/login and /logout", () => {
   let tmpHome: string;
+  const savedEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), "praana-login-test-"));
     process.env.PRAANA_HOME = tmpHome;
     resetCredentialStoreForTests();
     resetUserProvidersForTests();
+    resetProviderCatalogCacheForTests();
+    for (const key of PROVIDER_ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {
+    resetProviderCatalogCacheForTests();
     delete process.env.PRAANA_HOME;
     rmSync(tmpHome, { recursive: true, force: true });
     resetCredentialStoreForTests();
     resetUserProvidersForTests();
+    for (const key of PROVIDER_ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
   });
 
   // ── /login dispatch ──
@@ -83,16 +115,6 @@ describe("/login and /logout", () => {
         getThinking: () => false,
       });
       expect(result.action).toBe("open_login_wizard");
-      expect(result.loginProviderHint).toBe("openrouter");
-    });
-
-    it("lowercases the provider hint", async () => {
-      const session = createMockSession();
-      const result = await executeSlashCommand("/login OpenRouter", session, {
-        setModel: mock(),
-        setThinking: mock(),
-        getThinking: () => false,
-      });
       expect(result.loginProviderHint).toBe("openrouter");
     });
   });
@@ -157,19 +179,260 @@ describe("/login and /logout", () => {
       expect(listStoredProviders()).toEqual(["openrouter"]);
     });
 
-    it("warns when logging out the active provider", async () => {
-      setApiKey("openrouter", "sk-test-1");
-      const session = createMockSession("openrouter");
-      const result = await executeSlashCommand("/logout openrouter", session, {
+    it("resolves a unique alias like claude to the stored provider", async () => {
+      setApiKey("anthropic", "sk-ant-test");
+      setApiKey("openai", "sk-test-2");
+      const session = createMockSession("openai");
+      const result = await executeSlashCommand("/logout claude", session, {
         setModel: mock(),
         setThinking: mock(),
         getThinking: () => false,
       });
-      expect(result.lines.join(" ")).toContain("active provider");
-      expect(result.lines.join(" ")).toContain("next turn may fail");
+      expect(result.action).toBe("refresh_status");
+      expect(result.lines.join(" ")).toContain("Logged out: anthropic");
+      expect(listStoredProviders()).toEqual(["openai"]);
     });
 
-    it("places active-provider warning before success message in lines", async () => {
+    it("opens the picker with a search hint when an alias is ambiguous", async () => {
+      setApiKey("openai", "sk-test-1");
+      setApiKey("openai-codex", "sk-test-2");
+      const session = createMockSession("openai");
+      const result = await executeSlashCommand("/logout chatgpt", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("open_logout_wizard");
+      expect(result.logoutProviderHint).toBe("chatgpt");
+      expect(listStoredProviders().sort()).toEqual(["openai", "openai-codex"]);
+    });
+
+    it("switches to a fallback provider when logging out the active one", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const setProviderOverride = mock();
+      const setModelOverride = mock();
+      const setModel = mock();
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+        setProviderOverride,
+        setModelOverride,
+      });
+      const result = await executeSlashCommand("/logout openrouter", session, {
+        setModel,
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("refresh_status");
+      expect(result.lines.join(" ")).toContain("Logged out of openrouter");
+      expect(result.lines.join(" ")).toContain("Switched active provider to openai");
+      expect(result.lines.join(" ")).toContain(`(${DEFAULT_MODELS.openai})`);
+      expect(result.lines.join(" ")).not.toContain("next turn may fail");
+      expect(listStoredProviders()).toEqual(["openai"]);
+      expect(setProviderOverride).toHaveBeenCalledWith("openai");
+      expect(setModelOverride).toHaveBeenCalledWith(DEFAULT_MODELS.openai);
+      expect(setModel).toHaveBeenCalledWith(DEFAULT_MODELS.openai);
+      expect(session.config.llm.provider).toBe("openai");
+      expect(session.config.llm.model).toBe(DEFAULT_MODELS.openai);
+    });
+
+    it("writes the fallback model into config.toml, not the logged-out model", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const configPath = ensureConfigDir();
+      writeFileSync(
+        configPath,
+        `[llm]\nprovider = "openrouter"\nmodel = "moonshotai/kimi-k2.7-code"\n`,
+        "utf-8",
+      );
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+      });
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      const content = readFileSync(configPath, "utf-8");
+      expect(content).toContain('provider = "openai"');
+      expect(content).toContain(`model = "${DEFAULT_MODELS.openai}"`);
+      expect(content).not.toContain("moonshotai/kimi-k2.7-code");
+    });
+
+    it("replaces a stale config model when provider was already the fallback", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const setModelOverride = mock();
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+        setModelOverride,
+      });
+      session.config.llm.provider = "openai";
+      session.config.llm.model = "moonshotai/kimi-k2.7-code";
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(setModelOverride).toHaveBeenCalledWith(DEFAULT_MODELS.openai);
+      expect(session.config.llm.model).toBe(DEFAULT_MODELS.openai);
+    });
+
+    it("clears the logged-out provider's model catalog cache", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const cachePath = appHomePath("provider-catalog-cache.json");
+      mkdirSync(join(cachePath, ".."), { recursive: true });
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          catalogs: {
+            openrouter: {
+              fetchedAt: Date.now(),
+              models: { "moonshotai/kimi-k2.7-code": 262144 },
+            },
+            openai: {
+              fetchedAt: Date.now(),
+              models: { "gpt-4o": 128000 },
+            },
+          },
+        }),
+        "utf-8",
+      );
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+      });
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as {
+        catalogs: Record<string, unknown>;
+      };
+      expect(cache.catalogs.openrouter).toBeUndefined();
+      expect(cache.catalogs.openai).toBeDefined();
+    });
+
+    it("reuses a distinct configured model when switching back to that provider", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const setModelOverride = mock();
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+        setModelOverride,
+      });
+      session.config.llm.provider = "openai";
+      session.config.llm.model = "gpt-4o-mini";
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(setModelOverride).toHaveBeenCalledWith("gpt-4o-mini");
+      expect(session.config.llm.model).toBe("gpt-4o-mini");
+    });
+
+    it("does not keep a routed leftover model id that the fallback vendor also names", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      let modelOverride: string | null = "openai/gpt-4o";
+      let providerOverride: string | null = "openrouter";
+      const append = mock();
+      const session = {
+        getEffectiveProvider: () => providerOverride ?? "openrouter",
+        getActiveModelId: () => modelOverride ?? "openai/gpt-4o",
+        setProviderOverride: (p: string | null) => {
+          providerOverride = p;
+        },
+        setModelOverride: (m: string | null) => {
+          if (m === modelOverride) return;
+          modelOverride = m;
+        },
+        eventLog: { append },
+        config: {
+          llm: { provider: "openai", model: "openai/gpt-4o" },
+          providers: {} as Record<string, unknown>,
+        },
+      } as unknown as Session;
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(providerOverride).toBe("openai");
+      expect(modelOverride).toBe(DEFAULT_MODELS.openai);
+      expect(session.config.llm.model).toBe(DEFAULT_MODELS.openai);
+      expect(append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { type: "provider_override", provider: "openai" },
+        }),
+      );
+      expect(append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: {
+            type: "model_override",
+            provider: "openai",
+            model: DEFAULT_MODELS.openai,
+          },
+        }),
+      );
+    });
+
+    it("strips a vendor prefix from a distinct configured leftover before reuse", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      setApiKey("openai", "sk-test-2");
+      const setModelOverride = mock();
+      const session = createMockSession("openrouter", {
+        model: "moonshotai/kimi-k2.7-code",
+        setModelOverride,
+      });
+      session.config.llm.provider = "openai";
+      session.config.llm.model = "openai/gpt-4o-mini";
+      await executeSlashCommand("/logout openrouter", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(setModelOverride).toHaveBeenCalledWith("gpt-4o-mini");
+      expect(session.config.llm.model).toBe("gpt-4o-mini");
+    });
+
+    it("clears the catalog cache even when logging out the last provider", async () => {
+      setApiKey("openrouter", "sk-test-1");
+      const cachePath = appHomePath("provider-catalog-cache.json");
+      mkdirSync(join(cachePath, ".."), { recursive: true });
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          catalogs: {
+            openrouter: {
+              fetchedAt: Date.now(),
+              models: { "moonshotai/kimi-k2.7-code": 262144 },
+            },
+          },
+        }),
+        "utf-8",
+      );
+      const result = await executeSlashCommand(
+        "/logout openrouter",
+        createMockSession("openrouter"),
+        {
+          setModel: mock(),
+          setThinking: mock(),
+          getThinking: () => false,
+        },
+      );
+      expect(result.action).toBe("open_login_wizard");
+      const cache = JSON.parse(readFileSync(cachePath, "utf-8")) as {
+        catalogs: Record<string, unknown>;
+      };
+      expect(cache.catalogs.openrouter).toBeUndefined();
+    });
+
+    it("opens login when logging out the last stored provider", async () => {
       setApiKey("openrouter", "sk-test-1");
       const session = createMockSession("openrouter");
       const result = await executeSlashCommand("/logout openrouter", session, {
@@ -177,14 +440,26 @@ describe("/login and /logout", () => {
         setThinking: mock(),
         getThinking: () => false,
       });
-      const joined = result.lines.join(" ");
-      const warningIdx = joined.indexOf("active provider");
-      const loggedOutIdx = joined.indexOf("Logged out");
-      expect(warningIdx).toBeGreaterThanOrEqual(0);
-      expect(loggedOutIdx).toBeGreaterThanOrEqual(0);
-      // Warning must appear BEFORE the success message so it survives
-      // toast truncation (BUG #2 regression test)
-      expect(warningIdx).toBeLessThan(loggedOutIdx);
+      expect(result.action).toBe("open_login_wizard");
+      expect(result.lines.join(" ")).toContain("opening login");
+    });
+
+    it("warns when an env var still shadows logout", async () => {
+      setApiKey("openai", "sk-test-1");
+      const previous = process.env.OPENAI_API_KEY;
+      process.env.OPENAI_API_KEY = "sk-from-env";
+      try {
+        const session = createMockSession("openrouter");
+        const result = await executeSlashCommand("/logout openai", session, {
+          setModel: mock(),
+          setThinking: mock(),
+          getThinking: () => false,
+        });
+        expect(result.lines.join(" ")).toContain("OPENAI_API_KEY is still exported");
+      } finally {
+        if (previous === undefined) delete process.env.OPENAI_API_KEY;
+        else process.env.OPENAI_API_KEY = previous;
+      }
     });
 
     it("returns error when provider has no credentials", async () => {
@@ -231,7 +506,7 @@ describe("/login and /logout", () => {
       expect(result.toastTone).toBe("success");
       expect(result.lines.join(" ")).toContain("Logged out: my-llama");
       expect(result.lines.join(" ")).toContain("[providers.my-llama]");
-      expect(result.lines.join(" ")).toContain("/new");
+      expect(result.lines.join(" ")).not.toContain("/new");
 
       // Credential should be removed
       expect(listStoredProviders()).toEqual([]);

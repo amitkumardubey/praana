@@ -5,6 +5,10 @@ dist/
 .env
 refer/
 
+# Accidental / local `bun build --compile` output next to the JS bin wrapper
+/bin/praana
+/bin/praana.exe
+
 # Rust / napi-rs native addon
 /target/
 **/*.node

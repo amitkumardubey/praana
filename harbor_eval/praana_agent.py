@@ -170,7 +170,6 @@ class Praana(BaseInstalledAgent):
                 "bun install; "
                 'mkdir -p "$HOME/.local/bin"; '
                 f'ln -sfn {_INSTALL_DIR}/bin/praana.js "$HOME/.local/bin/praana"; '
-                f'ln -sfn {_INSTALL_DIR}/bin/pran.js "$HOME/.local/bin/pran"; '
                 f'export PATH="{_BUN_BIN}:$HOME/.local/bin:$PATH"; '
                 "praana --version"
             ),

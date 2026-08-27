@@ -11,13 +11,14 @@ import { AmbiguousSessionPrefixError } from "./session-errors.js";
 import { runTui } from "./ui/tui/run.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
-import { writeProviderConfig, getSetupConfigPath } from "./setup/config-writer.js";
+import { writeProviderConfig } from "./setup/config-writer.js";
 import { ensureCredentialsFileMode } from "./credentials.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
+import { needsInteractiveEmbedderConsent } from "./memory/embedder-consent.js";
 import {
   formatModelsCliOutput,
   listModelsForCli,
@@ -115,6 +116,7 @@ export async function main() {
   }
 
   const isInteractive = isInteractiveTerminal();
+  let needsOnboarding = false;
 
   // ── Provider validation ────────────────────────────────────
   const keyError = getMissingKeyMessage(config.llm.provider);
@@ -144,36 +146,7 @@ export async function main() {
     // Re-check after auto-select — may now be fully configured.
     const stillMissing = getMissingKeyMessage(config.llm.provider);
     if (stillMissing) {
-      if (isInteractive) {
-        const setupResult = await runInteractiveSetup(cwd);
-        if (!setupResult.success) {
-          getAppLogger().error("Provider setup cancelled", { code: "SESSION_START_FAILED" });
-          console.error("");
-          console.error("Run `praana setup` again, or edit `~/.praana/config.toml` manually.");
-          process.exit(1);
-        }
-        // Wizard writes ~/.praana/config.toml — reload that path.
-        const newConfig = loadConfig(getSetupConfigPath());
-        const newWarnings = getConfigWarnings();
-        if (newWarnings.length > 0) {
-          console.error("");
-          console.error("Configuration warnings:");
-          for (const w of newWarnings) console.error(`  ⚠ ${w}`);
-          console.error("");
-        }
-        const newKeyError = getMissingKeyMessage(newConfig.llm.provider);
-        if (newKeyError) {
-          console.error("");
-          console.error("Almost there! To finish setup:");
-          console.error("  • Run:  praana setup");
-          console.error("  • Or paste an API key into ~/.praana/credentials.json");
-          console.error("    and set [llm] provider/model in ~/.praana/config.toml");
-          console.error("");
-          getAppLogger().error(newKeyError, { code: "SESSION_START_FAILED" });
-          process.exit(1);
-        }
-        Object.assign(config, newConfig);
-      } else {
+      const printMissingProvider = () => {
         const envKeyNames = Array.from(
           new Set(
             formatProviderListForDisplay()
@@ -189,13 +162,18 @@ export async function main() {
         console.error(`    (also: ${envKeyNames.join(", ")})`);
         console.error("");
         getAppLogger().error(stillMissing, { code: "SESSION_START_FAILED" });
+      };
+      // Headless / CI / `praana run` must never hang on an overlay.
+      if (parsed.runMode || !isInteractive) {
+        printMissingProvider();
         process.exit(1);
       }
+      needsOnboarding = true;
     }
   }
 
   // ── Empty-model guard ─────────────────────────────────────
-  if (!config.llm.model || !config.llm.model.trim()) {
+  if (!needsOnboarding && (!config.llm.model || !config.llm.model.trim())) {
     getAppLogger().error("No LLM model configured", {
       code: "SESSION_START_FAILED",
     });
@@ -209,13 +187,10 @@ export async function main() {
   // ── First-run welcome ──────────────────────────────────────
   if (isFirstRun()) {
     markInitialized();
-    if (isInteractive) {
+    // Interactive sessions show welcome inside the TUI. Headless keeps a short notice.
+    if (!isInteractive) {
       console.log("");
       console.log("  Created ~/.praana/ for config, sessions, and memory.");
-      console.log("  Welcome to PRAANA! This is your first session.");
-      console.log("  Memory and embedding models will be set up automatically.");
-      console.log("  Run /help anytime, or praana doctor to check your setup.");
-      console.log("  Tip: Add personal instructions to ~/.praana/AGENTS.md");
       console.log("");
     }
   }
@@ -326,6 +301,14 @@ export async function main() {
   process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
   try {
+    if (needsOnboarding) {
+      await runTui(controller, undefined, { needsOnboarding: true });
+      return;
+    }
+    if (needsInteractiveEmbedderConsent(config.memory)) {
+      await runTui(controller, undefined, { needsEmbedderConsent: true });
+      return;
+    }
     const info = await controller.start();
     for (const line of info.startupNotices) {
       console.error(line);

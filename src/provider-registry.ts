@@ -58,6 +58,19 @@ export function setUserProviders(
   _userProviders = providers ?? {};
 }
 
+/** Merge a single user-declared provider into the in-memory registry (hot-reload). */
+export function upsertUserProvider(id: string, config: UserProviderConfig): void {
+  _userProviders = { ..._userProviders, [id]: config };
+}
+
+/** Drop a user-declared provider from the in-memory registry. */
+export function removeUserProvider(id: string): void {
+  if (!(id in _userProviders)) return;
+  const next = { ..._userProviders };
+  delete next[id];
+  _userProviders = next;
+}
+
 /** Returns true if a provider id is user-declared (in config.toml). */
 export function isUserDeclaredProvider(provider: string): boolean {
   return provider in _userProviders;

@@ -45,9 +45,9 @@ praana
 
 PRAANA auto-detects which provider key is set. On first run with no config file, it runs an interactive setup wizard. The interactive UI is a terminal-native `pi-tui` shell with native scrollback, slash-command autocomplete, transcript rendering, and full thinking-text display when `/thinking on` is enabled.
 
-### Global alias
+### PATH for global install
 
-Both `praana` and `pran` are on your PATH after a global install. If Bun's global bin directory isn't in your PATH:
+After `bun add -g praana`, ensure Bun's global bin directory is on your PATH:
 
 ```bash
 export PATH="$HOME/.bun/bin:$PATH"
@@ -62,6 +62,15 @@ bun install
 export ANTHROPIC_API_KEY="sk-ant-..."
 bun src/main.ts
 ```
+
+Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`):
+
+```bash
+bun run build:compile   # → dist/praana
+./dist/praana
+```
+
+Unreleased / dirty trees bake `--version` as `{package}-dev.<shortsha>[.dirty]` (exact release tag + clean tree stays the package version).
 
 ### Configuration
 
@@ -88,7 +97,7 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | Together | `TOGETHER_API_KEY` |
 | OpenCode | `OPENCODE_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
-| Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/setup` or `/login`. Optional `llm.region`. |
+| Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
@@ -185,7 +194,6 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
-| `/setup` | Interactive provider/config setup wizard (replaces /init) |
 | `/login [provider]` | Add or update a provider credential |
 | `/logout [provider]` | Remove a provider's credentials |
 | `/shell <cmd>` | Run a shell command inline (also `! <cmd>`) |

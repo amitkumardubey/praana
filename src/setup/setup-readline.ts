@@ -5,8 +5,9 @@ import { getAppLogger } from "../logger.js";
 import { askQuestion } from "../terminal.js";
 import {
   buildProviderSelectItems,
-  formatDetectedProviderLines,
   CUSTOM_PROVIDER_VALUE,
+  findProviderSelectItem,
+  setupProviderIntroLines,
   type SelectItem,
 } from "./provider-options.js";
 import { getSetupConfigPath } from "./config-writer.js";
@@ -16,6 +17,7 @@ import {
   fetchCustomProviderModels,
   pickDefaultModel,
   finalizeProviderSetup,
+  setupConfigConfirmPrompt,
   isValidCustomProviderId,
   isValidBaseUrl,
   formatEnvKeyOfferMessage,
@@ -53,14 +55,9 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
     console.log("  PRAANA — Provider Setup");
     console.log("═══════════════════════════════════════════════════════════════");
     console.log("");
-    console.log("No provider configured. Let's set one up.");
-    console.log("");
-
-    const detectedLines = formatDetectedProviderLines();
-    for (const line of detectedLines) {
+    for (const line of setupProviderIntroLines(existsSync(getSetupConfigPath()))) {
       console.log(line);
     }
-    if (detectedLines.length > 0) console.log("");
 
     // ── Provider selection ──
     const items = buildProviderSelectItems();
@@ -86,12 +83,7 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= items.length) {
         selectedItem = items[choiceNum - 1];
       } else {
-        const match = items.find(
-          (item) =>
-            item.value.toLowerCase() === lower ||
-            item.label.toLowerCase() === lower ||
-            (item.value === CUSTOM_PROVIDER_VALUE && lower === "custom"),
-        );
+        const match = findProviderSelectItem(items, lower);
         if (match) {
           selectedItem = match;
         } else {
@@ -276,36 +268,16 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       : undefined;
 
     console.log("");
-    const saveToConfig = await askQuestion(rl, "Create ~/.praana/config.toml? (y/n): ");
+    const saveToConfig = await askQuestion(
+      rl,
+      `${setupConfigConfirmPrompt(existsSync(getSetupConfigPath()))} (y/n): `,
+    );
     if (saveToConfig.toLowerCase() !== "y" && saveToConfig.toLowerCase() !== "yes") {
       return finalizeProviderSetup(providerId, "skip", {
         model,
         customProvider,
         keySaved,
       });
-    }
-
-    if (existsSync(getSetupConfigPath())) {
-      const overwrite = await askQuestion(
-        rl,
-        `Config already exists at ${getSetupConfigPath()}. Overwrite? (y/n): `,
-      );
-      if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
-        return finalizeProviderSetup(providerId, "skip", {
-          model,
-          customProvider,
-          keySaved,
-        });
-      }
-      const result = finalizeProviderSetup(providerId, "overwrite", {
-        model,
-        customProvider,
-        keySaved,
-      });
-      if (result.success) {
-        console.log(`\n✓ ${result.message}`);
-      }
-      return result;
     }
 
     const result = finalizeProviderSetup(providerId, "write", {

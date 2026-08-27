@@ -1,5 +1,14 @@
 import { describe, it, expect } from "bun:test";
-import { providerPageLines, buildProviderSelectItems, CUSTOM_PROVIDER_VALUE } from "../src/setup/provider-options.js";
+import {
+  providerPageLines,
+  buildProviderSelectItems,
+  CUSTOM_PROVIDER_VALUE,
+  findProviderSelectItem,
+  providerHintMatchesList,
+  resolveProviderHint,
+  resolveStoredProviderHint,
+  setupProviderIntroLines,
+} from "../src/setup/provider-options.js";
 import { generateSetupConfigContent, resolveDefaultModel } from "../src/setup/config-writer.js";
 import { finalizeProviderSetup } from "../src/setup/logic.js";
 import { SETUP_UNSUPPORTED_PROVIDERS } from "../src/provider-registry.js";
@@ -41,6 +50,42 @@ describe("providerPageLines", () => {
   });
 });
 
+describe("setupProviderIntroLines", () => {
+  it("uses first-run copy when no config and no available providers", () => {
+    expect(setupProviderIntroLines(false, [])).toEqual([
+      "No provider configured. Let's set one up.",
+      "",
+      "Choose a provider:",
+    ]);
+  });
+
+  it("does not claim nothing is configured on a later run", () => {
+    expect(
+      setupProviderIntroLines(true, ["poolside", "openrouter", "modal-muse"]),
+    ).toEqual([
+      "Update your provider.",
+      "",
+      "Already available:",
+      "  ✓ poolside",
+      "  ✓ openrouter",
+      "  ✓ modal-muse",
+      "",
+      "Choose a provider:",
+    ]);
+  });
+
+  it("lists already-available providers on first run without the empty-state heading", () => {
+    expect(setupProviderIntroLines(false, ["openrouter"])).toEqual([
+      "Let's set one up.",
+      "",
+      "Already available:",
+      "  ✓ openrouter",
+      "",
+      "Choose a provider:",
+    ]);
+  });
+});
+
 describe("buildProviderSelectItems", () => {
   it("excludes setup-unsupported providers", () => {
     const items = buildProviderSelectItems();
@@ -79,6 +124,81 @@ describe("buildProviderSelectItems", () => {
       [...unavailable.map((i) => i.value)].sort(),
     );
     expect(sorted.length).toBe(labels.length);
+  });
+
+  it("attaches search aliases so common names resolve", () => {
+    const items = buildProviderSelectItems();
+    const anthropic = items.find((i) => i.value === "anthropic");
+    expect(anthropic?.aliases).toContain("claude");
+    const bedrock = items.find((i) => i.value === "amazon-bedrock");
+    expect(bedrock?.aliases).toContain("bedrock");
+  });
+});
+
+describe("resolveProviderHint", () => {
+  const ids = ["openai", "openai-codex", "anthropic", "amazon-bedrock", "google"];
+
+  it("returns an exact provider id", () => {
+    expect(resolveProviderHint("OpenAI", ids)).toBe("openai");
+  });
+
+  it("returns a unique alias", () => {
+    expect(resolveProviderHint("claude", ids)).toBe("anthropic");
+    expect(resolveProviderHint("bedrock", ids)).toBe("amazon-bedrock");
+    expect(resolveProviderHint("gemini", ids)).toBe("google");
+  });
+
+  it("does not guess when an alias maps to more than one provider", () => {
+    expect(resolveProviderHint("chatgpt", ids)).toBeUndefined();
+  });
+});
+
+describe("findProviderSelectItem", () => {
+  const items = buildProviderSelectItems();
+
+  it("matches unique aliases and the custom entry", () => {
+    expect(findProviderSelectItem(items, "claude")?.value).toBe("anthropic");
+    expect(findProviderSelectItem(items, "custom")?.value).toBe(CUSTOM_PROVIDER_VALUE);
+  });
+
+  it("leaves ambiguous aliases unmatched", () => {
+    expect(findProviderSelectItem(items, "chatgpt")).toBeUndefined();
+  });
+});
+
+describe("providerHintMatchesList", () => {
+  const items = buildProviderSelectItems();
+
+  it("treats unique aliases and shared aliases as picker hits", () => {
+    expect(providerHintMatchesList("claude", items)).toBe(true);
+    expect(providerHintMatchesList("chatgpt", items)).toBe(true);
+    expect(providerHintMatchesList("open", items)).toBe(true);
+  });
+
+  it("does not treat unknown ids as picker hits", () => {
+    expect(providerHintMatchesList("local-llm", items)).toBe(false);
+  });
+});
+
+describe("resolveStoredProviderHint", () => {
+  it("resolves a unique alias among stored providers", () => {
+    expect(resolveStoredProviderHint("claude", ["openai", "anthropic"])).toEqual({
+      providerId: "anthropic",
+    });
+  });
+
+  it("opens the picker for a shared alias or prefix", () => {
+    expect(
+      resolveStoredProviderHint("chatgpt", ["openai", "openai-codex"]),
+    ).toEqual({ pickerQuery: "chatgpt" });
+    expect(
+      resolveStoredProviderHint("open", ["openai", "openrouter"]),
+    ).toEqual({ pickerQuery: "open" });
+  });
+
+  it("returns empty when the name is not among stored providers", () => {
+    expect(resolveStoredProviderHint("claude", ["openai"])).toEqual({});
+    expect(resolveStoredProviderHint("local-llm", ["openai"])).toEqual({});
   });
 });
 

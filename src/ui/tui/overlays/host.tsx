@@ -12,6 +12,10 @@ import { PaletteOverlay } from "./palette.js";
 import { LogoutOverlay } from "./logout.js";
 import { LoginOverlay, type LoginWizardResult } from "./login.js";
 import type { LogoutWizardResult } from "./logout.js";
+import { SetupOverlay } from "./setup.js";
+import { ConsentOverlay } from "./consent.js";
+import type { SetupResult } from "../../../setup/types.js";
+import type { Session } from "../../../session.js";
 
 export interface OverlayHostProps {
   overlay: OverlayUi;
@@ -21,6 +25,11 @@ export interface OverlayHostProps {
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
+  onSetupComplete: (result: SetupResult) => void;
+  onConsentComplete: (proceed: boolean) => void;
+  logoutSession: () => Session;
+  configProvider: () => string;
+  configModel: () => string;
   onPaletteRun: (command: string) => void;
   onPaletteInsert: (text: string) => void;
   onPaletteHandoff: (text: string) => void;
@@ -56,7 +65,7 @@ export function OverlayHost(props: OverlayHostProps) {
 
   useBindings(() => {
     const k = kind();
-    if (k === "model" || k === "login" || k === "logout") {
+    if (k === "model" || k === "login" || k === "logout" || k === "consent") {
       return {
         bindings: [{ key: "escape", cmd: () => props.onDismiss() }],
       };
@@ -103,6 +112,9 @@ export function OverlayHost(props: OverlayHostProps) {
         <Show when={kind() === "login"}>
           <LoginOverlay
             currentProvider={props.currentProvider()}
+            currentModelId={props.currentModelId()}
+            configProvider={props.configProvider()}
+            configModel={props.configModel()}
             initialProvider={props.overlay.loginHint()}
             onComplete={props.onLoginComplete}
             onCancel={props.onDismiss}
@@ -111,9 +123,20 @@ export function OverlayHost(props: OverlayHostProps) {
         <Show when={kind() === "logout"}>
           <LogoutOverlay
             currentProvider={props.currentProvider()}
+            session={props.logoutSession()}
+            initialProvider={props.overlay.logoutHint()}
             onComplete={props.onLogoutComplete}
             onCancel={props.onDismiss}
           />
+        </Show>
+        <Show when={kind() === "setup"}>
+          <SetupOverlay
+            onComplete={props.onSetupComplete}
+            onCancel={props.onDismiss}
+          />
+        </Show>
+        <Show when={kind() === "consent"}>
+          <ConsentOverlay onComplete={props.onConsentComplete} />
         </Show>
         <Show when={kind() === "palette"}>
           <PaletteOverlay

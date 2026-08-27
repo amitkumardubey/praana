@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import {
   findProviderCatalogModelId,
+  invalidateProviderCatalog,
   providerModelIdCandidates,
   PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
   resetProviderCatalogCacheForTests,
@@ -124,5 +125,25 @@ describe("provider-catalog", () => {
     fetchSpy.mockRejectedValue(new Error("network down"));
     const { listProviderCatalogModels } = await import("../src/provider-catalog.js");
     await expect(listProviderCatalogModels("opencode")).rejects.toThrow("network down");
+  });
+
+  it("invalidateProviderCatalog drops the cached catalog so the next lookup refetches", async () => {
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "mimo-v2.5-free" }] }),
+    } as Response);
+
+    await findProviderCatalogModelId("opencode", "mimo-v2.5-free");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    invalidateProviderCatalog("opencode");
+    fetchSpy.mockClear();
+    fetchSpy.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [{ id: "mimo-v2.5-free" }] }),
+    } as Response);
+
+    await findProviderCatalogModelId("opencode", "mimo-v2.5-free");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -15,7 +15,10 @@ export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
 
 const CACHE_VERSION = 1;
-const CACHE_FILE = appHomePath("provider-catalog-cache.json");
+
+function catalogCachePath(): string {
+  return appHomePath("provider-catalog-cache.json");
+}
 
 /**
  * Live-catalog provider set — built from `LIVE_CATALOG_PROVIDER_IDS` at
@@ -68,10 +71,11 @@ function isValidWindow(value: unknown): value is number {
 function loadDiskCache(): ProviderCatalogCacheFile {
   if (diskCache) return diskCache;
   diskCache = { version: CACHE_VERSION, catalogs: {} };
-  if (!existsSync(CACHE_FILE)) return diskCache;
+  const path = catalogCachePath();
+  if (!existsSync(path)) return diskCache;
 
   try {
-    const raw = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as ProviderCatalogCacheFile;
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as ProviderCatalogCacheFile;
     if (raw.version === CACHE_VERSION && raw.catalogs && typeof raw.catalogs === "object") {
       diskCache = raw;
     }
@@ -82,9 +86,10 @@ function loadDiskCache(): ProviderCatalogCacheFile {
 }
 
 function persistDiskCache(): void {
-  const dir = dirname(CACHE_FILE);
+  const path = catalogCachePath();
+  const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CACHE_FILE, JSON.stringify(loadDiskCache()), "utf-8");
+  writeFileSync(path, JSON.stringify(loadDiskCache()), "utf-8");
 }
 
 export function providerSupportsLiveCatalog(provider: string): boolean {
@@ -296,7 +301,8 @@ async function fetchProviderCatalog(
   return fetchProviderCatalogFresh(provider);
 }
 
-function invalidateProviderCatalog(provider: string): void {
+/** Drop the live model catalog for a provider (in-flight fetch + disk cache). */
+export function invalidateProviderCatalog(provider: string): void {
   const inFlight = fetchPromises.get(provider);
   if (inFlight) {
     inFlight.controller.abort();
@@ -304,6 +310,7 @@ function invalidateProviderCatalog(provider: string): void {
   }
 
   const file = loadDiskCache();
+  if (!(provider in file.catalogs)) return;
   delete file.catalogs[provider];
   persistDiskCache();
 }
@@ -454,7 +461,8 @@ export function resetProviderCatalogCacheForTests(): void {
   }
   diskCache = null;
   fetchPromises.clear();
-  if (existsSync(CACHE_FILE)) {
-    unlinkSync(CACHE_FILE);
+  const path = catalogCachePath();
+  if (existsSync(path)) {
+    unlinkSync(path);
   }
 }

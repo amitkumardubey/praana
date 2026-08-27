@@ -49,6 +49,26 @@ export function resolvedTargetLabel(
   return formatActiveModelLabel(provider, resolved.modelId);
 }
 
+/**
+ * True when the session is already on this provider + native model id.
+ *
+ * Compare raw ids, not {@link formatActiveModelLabel}: that helper collapses
+ * `openai` + `openai/gpt-4o` and `openai` + `gpt-4o` to the same label, which
+ * made `/model` skip the switch after logout fell back to a vendor that
+ * happens to share a model name with the logged-out gateway provider.
+ */
+export function isAlreadyOnResolvedModel(
+  resolved: ResolvedModelSpecifier,
+  currentProvider: string,
+  currentModelId: string,
+): boolean {
+  const targetProvider = resolved.switchedProvider
+    ? resolved.provider
+    : currentProvider;
+  if (targetProvider !== currentProvider) return false;
+  return resolved.modelId === currentModelId.trim();
+}
+
 function isPiAiProviderName(name: string): boolean {
   return listKnownProviders().includes(name);
 }

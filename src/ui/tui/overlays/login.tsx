@@ -7,16 +7,21 @@ import { useRenderer } from "@opentui/solid";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
+  providerHintMatchesList,
+  resolveProviderHint,
 } from "../../../setup/provider-options.js";
 import {
   bedrockNeedsApiKeyPrompt,
   fetchProviderModels,
+  fetchCustomProviderModels,
   isValidBaseUrl,
   isValidCustomProviderId,
   pickDefaultModel,
   providerRequiresApiKey,
   providerSupportsOAuth,
   saveProviderKey,
+  verifyProviderKey,
+  resolvePreferredModel,
 } from "../../../setup/logic.js";
 import { hasApiKey } from "../../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../../credentials.js";
@@ -25,14 +30,18 @@ import { runOAuthLoginWithUi } from "../oauth-login-ui.js";
 import {
   isUserDeclaredProvider,
   listUserDeclaredProviderIds,
+  upsertUserProvider,
 } from "../../../provider-registry.js";
 import {
   appendProviderSection,
   updateLlmProvider,
 } from "../../../setup/config-writer.js";
 import type { CustomProviderConfig } from "../../../setup/types.js";
+import { loadUserSettings } from "../../../user-settings.js";
 import { TUI_STYLE } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
+import { PaletteList } from "./picker.js";
+import { toPaletteOptions } from "./picker-items.js";
 
 export interface LoginWizardResult {
   provider: string;
@@ -43,6 +52,9 @@ export interface LoginWizardResult {
 
 export interface LoginOverlayProps {
   currentProvider: string;
+  currentModelId?: string;
+  configProvider?: string;
+  configModel?: string;
   initialProvider?: string;
   onComplete: (result: LoginWizardResult) => void;
   onCancel: () => void;
@@ -61,6 +73,8 @@ export type LoginStep =
   | "custom-id"
   | "custom-url"
   | "custom-key"
+  | "verifying"
+  | "save-anyway"
   | "fetching";
 
 export interface LoginRoutingCapabilities {
@@ -191,7 +205,19 @@ function providerMap(): Record<string, true> {
 
 export function LoginOverlay(props: LoginOverlayProps) {
   const renderer = useRenderer();
-  const hint = props.initialProvider?.toLowerCase().trim();
+  const rawHint = props.initialProvider?.toLowerCase().trim();
+  const providerItems = buildProviderSelectItems();
+  const resolvedHint = rawHint
+    ? resolveProviderHint(
+        rawHint,
+        providerItems.map((item) => item.value),
+      )
+    : undefined;
+  const pickerQuery =
+    rawHint && !resolvedHint && providerHintMatchesList(rawHint, providerItems)
+      ? rawHint
+      : "";
+  const hint = resolvedHint ?? (pickerQuery ? undefined : rawHint);
   const routed = hint ? routeLoginHint(hint, providerCapabilities(hint)) : undefined;
   const [step, setStep] = createSignal<LoginStep>(routed?.step ?? "picker");
   const [message, setMessage] = createSignal("");
@@ -208,7 +234,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
   let rejectOAuthText: ((error: Error) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
   let settled = false;
-  const maxVisible = Math.max(6, Math.min(12, (process.stdout.rows ?? 24) - 10));
 
   onMount(() => {
     if (step() === "oauth-status") void startOAuth();
@@ -227,6 +252,19 @@ export function LoginOverlay(props: LoginOverlayProps) {
     props.onComplete(result);
   };
 
+  const preferredModel = (providerId: string, liveModels?: Parameters<typeof pickDefaultModel>[1]) => {
+    const settings = loadUserSettings().settings;
+    return resolvePreferredModel(providerId, {
+      currentProvider: props.currentProvider,
+      currentModel: props.currentModelId,
+      configProvider: props.configProvider,
+      configModel: props.configModel,
+      settingsProvider: settings.provider,
+      settingsModel: settings.model,
+      liveModels,
+    });
+  };
+
   const finishKeyless = async () => {
     setStep("fetching");
     const liveModels = await fetchProviderModels(provider);
@@ -234,29 +272,33 @@ export function LoginOverlay(props: LoginOverlayProps) {
       provider,
       message: `${provider} doesn't require an API key.`,
       shouldSwitch: true,
-      defaultModel: pickDefaultModel(provider, liveModels),
+      defaultModel: preferredModel(provider, liveModels),
     });
   };
 
-  const finish = async (keySaved: boolean, keyValue: string) => {
+  const commitKey = async (keySaved: boolean, keyValue: string) => {
     const isCustom = isUserDeclaredProvider(provider);
     if (keySaved && keyValue) saveProviderKey(provider, keyValue);
     const usedOAuth = hasOAuthToken(provider) && !keySaved;
     if (isCustom) {
+      setStep("fetching");
+      const liveModels = await fetchProviderModels(provider);
+      const defaultModel = preferredModel(provider, liveModels);
       complete({
         provider,
         message: keySaved
-          ? `Key saved for ${provider}. Use /model to switch.`
+          ? `Key saved for ${provider}. Switched to ${provider}.`
           : `Using existing key for ${provider}.`,
-        shouldSwitch: false,
-        defaultModel: "",
+        shouldSwitch: true,
+        defaultModel,
       });
       return;
     }
     setStep("fetching");
     const liveModels = await fetchProviderModels(provider);
-    const defaultModel = pickDefaultModel(provider, liveModels);
-    updateLlmProvider(provider, defaultModel || undefined);
+    const defaultModel = preferredModel(provider, liveModels);
+    if (defaultModel) updateLlmProvider(provider, defaultModel);
+    else updateLlmProvider(provider);
     complete({
       provider,
       message: keySaved
@@ -269,7 +311,54 @@ export function LoginOverlay(props: LoginOverlayProps) {
     });
   };
 
-  const finishCustom = (keyValue: string) => {
+  let pendingVerifyKey = "";
+  let verifyingCustom = false;
+
+  const finish = async (keySaved: boolean, keyValue: string) => {
+    verifyingCustom = false;
+    if (!keySaved || !keyValue) {
+      await commitKey(false, "");
+      return;
+    }
+    setStep("verifying");
+    setMessage("Verifying key…");
+    const result = await verifyProviderKey(provider, keyValue);
+    if (result.status === "unauthorized") {
+      setMessage(result.message);
+      setStep("key");
+      return;
+    }
+    if (result.status === "unreachable") {
+      pendingVerifyKey = keyValue;
+      setMessage(result.message);
+      setStep("save-anyway");
+      return;
+    }
+    await commitKey(true, keyValue);
+  };
+
+  const finishCustom = async (keyValue: string) => {
+    verifyingCustom = true;
+    if (keyValue) {
+      setStep("verifying");
+      setMessage("Verifying key…");
+      const verified = await verifyProviderKey(customId, keyValue, { baseUrl: customBaseUrl });
+      if (verified.status === "unauthorized") {
+        setMessage(verified.message);
+        setStep("custom-key");
+        return;
+      }
+      if (verified.status === "unreachable") {
+        pendingVerifyKey = keyValue;
+        setMessage(verified.message);
+        setStep("save-anyway");
+        return;
+      }
+    }
+    await commitCustom(keyValue);
+  };
+
+  const commitCustom = async (keyValue: string) => {
     const config: CustomProviderConfig = {
       id: customId,
       api: "openai-completions",
@@ -277,14 +366,23 @@ export function LoginOverlay(props: LoginOverlayProps) {
       envKey: keyValue ? `${customId.toUpperCase().replace(/-/g, "_")}_API_KEY` : undefined,
     };
     if (keyValue) saveProviderKey(customId, keyValue);
+    upsertUserProvider(customId, {
+      api: config.api,
+      base_url: config.baseUrl,
+      env_key: config.envKey,
+    });
     const writeResult = appendProviderSection(config);
+    setStep("fetching");
+    const live = await fetchCustomProviderModels(customBaseUrl, keyValue || undefined);
+    const defaultModel = live?.[0]?.id ?? "";
+    if (defaultModel) updateLlmProvider(customId, defaultModel);
     complete({
       provider: customId,
       message: writeResult.written
-        ? `Provider ${customId} saved. Run /new to activate, then /model ${customId} <model>.`
+        ? `Provider ${customId} saved. Switched to ${customId}.`
         : writeResult.message,
-      shouldSwitch: false,
-      defaultModel: "",
+      shouldSwitch: true,
+      defaultModel,
     });
   };
 
@@ -374,38 +472,26 @@ export function LoginOverlay(props: LoginOverlayProps) {
         items.push({ value: id, label: id, description: "(custom)" });
       }
     }
-    return items.map((item) => ({
-      name: item.label,
-      description: item.description ?? "",
-      value: item.value,
-    }));
+    return toPaletteOptions(items);
   };
 
   return (
-    <OverlayFrame width={56}>
+    <OverlayFrame width={64}>
       {step() === "picker" && (
         <>
           <text><span style={TUI_STYLE.info}>{"Login — select a provider"}</span></text>
-          <select
-            id="login-provider-picker"
-            focused
-            width={40}
-            height={maxVisible}
-            showScrollIndicator
+          <PaletteList
             options={pickerOptions()}
-            onSelect={(_index, option) => {
-              if (typeof option?.value === "string") selectProvider(option.value);
-            }}
+            placeholder="search providers…"
+            initialQuery={pickerQuery}
+            onSelect={(value) => selectProvider(value)}
           />
         </>
       )}
       {step() === "auth-method" && (
         <>
           <text><span style={TUI_STYLE.info}>{`How do you want to authenticate ${provider}?`}</span></text>
-          <select
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={provider === "anthropic"
               ? [
                   { value: "oauth", name: "Claude Pro/Max OAuth", description: "Browser sign-in" },
@@ -415,9 +501,9 @@ export function LoginOverlay(props: LoginOverlayProps) {
                   { value: "oauth", name: "OAuth / subscription", description: "Browser sign-in" },
                   { value: "api_key", name: "API key", description: "Paste a static key" },
                 ]}
-            onSelect={(_index, option) => {
-              if (option?.value === "oauth") void startOAuth();
-              else if (option?.value === "api_key") setStep("key");
+            onSelect={(value) => {
+              if (value === "oauth") void startOAuth();
+              else if (value === "api_key") setStep("key");
             }}
           />
         </>
@@ -425,14 +511,11 @@ export function LoginOverlay(props: LoginOverlayProps) {
       {step() === "has-key" && (
         <>
           <text><span style={TUI_STYLE.info}>{`You already have a key for ${provider}.`}</span></text>
-          <select
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={YES_NO_OPTIONS}
-            onSelect={(_index, option) => {
-              if (option?.value === "yes") setStep("key");
-              else if (option?.value === "no") void finish(false, "");
+            onSelect={(value) => {
+              if (value === "yes") setStep("key");
+              else if (value === "no") void finish(false, "");
             }}
           />
         </>
@@ -440,18 +523,15 @@ export function LoginOverlay(props: LoginOverlayProps) {
       {step() === "has-oauth" && (
         <>
           <text><span style={TUI_STYLE.info}>{`You already have OAuth credentials for ${provider}.`}</span></text>
-          <select
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={REAUTH_OPTIONS}
-            onSelect={(_index, option) => {
-              if (option?.value === "yes") {
+            onSelect={(value) => {
+              if (value === "yes") {
                 setStep(providerSupportsOAuth(provider) && !isOAuthOnlyProvider(provider)
                   ? "auth-method"
                   : "oauth-status");
                 if (isOAuthOnlyProvider(provider)) void startOAuth();
-              } else if (option?.value === "no") void finish(false, "");
+              } else if (value === "no") void finish(false, "");
             }}
           />
         </>
@@ -521,7 +601,29 @@ export function LoginOverlay(props: LoginOverlayProps) {
         <>
           <text><span style={TUI_STYLE.info}>{`API key for ${customId}`}</span></text>
           <text><span style={TUI_STYLE.muted}>{"Press Enter to skip for keyless local servers"}</span></text>
-          <MaskedInput id="login-custom-key" focused onSubmit={(value) => finishCustom(value.trim())} />
+          <MaskedInput id="login-custom-key" focused onSubmit={(value) => void finishCustom(value.trim())} />
+        </>
+      )}
+      {step() === "verifying" && <text><span style={TUI_STYLE.info}>{message() || "Verifying key…"}</span></text>}
+      {step() === "save-anyway" && (
+        <>
+          <text><span style={TUI_STYLE.error}>{message()}</span></text>
+          <text><span style={TUI_STYLE.muted}>Save anyway and continue?</span></text>
+          <PaletteList
+            options={[
+              { value: "yes", name: "Yes — save anyway", description: "" },
+              { value: "no", name: "No — re-enter key", description: "" },
+            ]}
+            onSelect={(value) => {
+              if (value === "yes") {
+                if (verifyingCustom) void commitCustom(pendingVerifyKey);
+                else void commitKey(true, pendingVerifyKey);
+              } else if (value === "no") {
+                setMessage("");
+                setStep(verifyingCustom ? "custom-key" : "key");
+              }
+            }}
+          />
         </>
       )}
       {step() === "fetching" && <text><span style={TUI_STYLE.info}>{"Fetching models…"}</span></text>}
@@ -547,28 +649,20 @@ export function LoginOverlay(props: LoginOverlayProps) {
         <>
           <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
           <text>{oauthPrompt()}</text>
-          <select
-            focused
-            width={40}
-            height={Math.min(8, oauthOptions().length + 1)}
+          <PaletteList
             options={oauthOptions().map((option) => ({
               name: option.label,
               description: option.description ?? "",
               value: option.id,
             }))}
-            onSelect={(_index, option) => {
-              resolveOAuthSelect?.(typeof option?.value === "string" ? option.value : undefined);
-            }}
+            onSelect={(value) => resolveOAuthSelect?.(value)}
           />
         </>
       )}
       {step() === "oauth-error" && (
         <>
           <text><span style={TUI_STYLE.error}>{message()}</span></text>
-          <select
-            focused
-            width={40}
-            height={4}
+          <PaletteList
             options={[{ name: "Back to provider list", description: "", value: "back" }]}
             onSelect={() => setStep("picker")}
           />

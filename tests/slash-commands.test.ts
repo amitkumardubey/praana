@@ -504,6 +504,7 @@ describe("executeSlashCommand", () => {
 
     const session = {
       getEffectiveProvider: () => "openrouter",
+      getActiveModelId: () => "moonshotai/kimi-k2.7-code",
       getActiveModelLabel: mock(() => "openrouter/moonshotai/kimi-k2.7-code"),
       getContextWindowTokens: mock(() => 262_144),
       setProviderOverride: mock(),
@@ -526,7 +527,7 @@ describe("executeSlashCommand", () => {
     expect(result.action).toBe("none");
     expect(result.toastTone).toBe("info");
     expect(result.lines[0]).toBe("Already on: openrouter/moonshotai/kimi-k2.7-code (262,144 ctx)");
-    expect(setModel).not.toHaveBeenCalled();
+    expect(setModel).toHaveBeenCalledWith("moonshotai/kimi-k2.7-code");
     expect(setModelOverride).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -547,6 +548,44 @@ describe("executeSlashCommand", () => {
         outcome: "already_on",
       },
     });
+  });
+
+  it("switches model when labels collide but the raw id still has a vendor prefix", async () => {
+    (resolveModelSpecifier as ReturnType<typeof mock>).mockResolvedValue({
+      provider: "openai",
+      modelId: "gpt-4o",
+      switchedProvider: false,
+      source: "native-catalog",
+      known: true,
+    });
+
+    const setModel = mock();
+    const setModelOverride = mock();
+    const append = mock();
+    const { getLogger } = mockSessionLogger();
+
+    const session = {
+      getEffectiveProvider: () => "openai",
+      getActiveModelId: () => "openai/gpt-4o",
+      getActiveModelLabel: mock(() => "openai/gpt-4o"),
+      getContextWindowTokens: mock(() => 128_000),
+      setProviderOverride: mock(),
+      setModelOverride,
+      refreshModelContextWindow: mock(async () => 128_000),
+      eventLog: { append },
+      getLogger,
+    } as unknown as Session;
+
+    const result = await executeSlashCommand("/model openai gpt-4o", session, {
+      setModel,
+      setThinking: mock(),
+      getThinking: () => true,
+    });
+
+    expect(result.action).toBe("refresh_status");
+    expect(result.toastTone).toBe("success");
+    expect(setModelOverride).toHaveBeenCalledWith("gpt-4o");
+    expect(setModel).toHaveBeenCalledWith("gpt-4o");
   });
 
   it("shows error toast when model resolution throws", async () => {
@@ -1014,11 +1053,15 @@ describe("SLASH_COMMAND_METADATA", () => {
 
   it("surfaces commands previously missing from the TUI dropdown", () => {
     const names = SLASH_COMMAND_METADATA.map((c) => c.name);
-    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/setup", "/settings"]) {
+    for (const cmd of ["/scorecard", "/digest", "/events", "/why", "/memory", "/settings"]) {
       expect(names).toContain(cmd);
     }
     // /quit is an alias of /exit — also expose it for discoverability.
     const exit = SLASH_COMMAND_METADATA.find((c) => c.name === "/exit");
     expect(exit?.aliases).toContain("/quit");
+  });
+
+  it("does not expose /setup (first-run and praana setup cover that)", () => {
+    expect(SLASH_COMMAND_METADATA.map((c) => c.name)).not.toContain("/setup");
   });
 });
