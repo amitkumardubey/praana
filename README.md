@@ -24,7 +24,15 @@ Runs on Bun. One binary, pure TypeScript, local-first, any provider.
 
 ## Quick Start
 
-### Install
+### Install (no Bun)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+```
+
+Installs `praana` and `praana-natives.node` into `~/.local/bin` (or `/usr/local/bin` if root). Keep both files in the same directory — Tree-sitter `code_*` tools load the sidecar next to the binary. Linux musl (Alpine) and Windows are not supported on this path; use `bun add -g praana` instead.
+
+### Install with Bun
 
 ```bash
 # Install globally
@@ -38,9 +46,9 @@ Requires **Bun ≥ 1.4**. Install at [bun.sh/install](https://bun.sh/install).
 
 Global `bun add -g` / `npm i -g` installs `@praana/natives` as an optional dependency (Tree-sitter `code_*` tools). `praana doctor` reports whether the addon loaded.
 
-### Standalone binary (no Bun)
+### Standalone binary (manual)
 
-GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz` plus `SHA256SUMS`. Each archive contains the compiled `praana` executable **and** `praana-natives.node` (Tree-sitter `code_*` / post-edit syntax). Keep both files in the same directory after extract.
+GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz` plus `SHA256SUMS`. Each archive contains the compiled `praana` executable **and** `praana-natives.node`. Keep both files in the same directory after extract. Prefer [`install.sh`](install.sh) unless you need a custom layout.
 
 ```bash
 # Example: Linux x64
@@ -53,8 +61,6 @@ tar xzf praana-linux-x64.tar.gz
 ./praana --version
 praana doctor   # native: available (…)
 ```
-
-A one-line curl installer is tracked separately (issue #356).
 
 ### Set a provider key and launch
 
@@ -83,7 +89,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 bun src/main.ts
 ```
 
-Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`). Prefer a [GitHub Release](#standalone-binary-no-bun) archive unless you are iterating on compile itself:
+Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`). Prefer a [GitHub Release](#standalone-binary-manual) archive unless you are iterating on compile itself:
 
 ```bash
 bun run build:compile   # → dist/praana
