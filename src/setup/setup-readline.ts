@@ -16,6 +16,7 @@ import {
   fetchCustomProviderModels,
   pickDefaultModel,
   finalizeProviderSetup,
+  setupConfigConfirmPrompt,
   isValidCustomProviderId,
   isValidBaseUrl,
   formatEnvKeyOfferMessage,
@@ -276,36 +277,16 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       : undefined;
 
     console.log("");
-    const saveToConfig = await askQuestion(rl, "Create ~/.praana/config.toml? (y/n): ");
+    const saveToConfig = await askQuestion(
+      rl,
+      `${setupConfigConfirmPrompt(existsSync(getSetupConfigPath()))} (y/n): `,
+    );
     if (saveToConfig.toLowerCase() !== "y" && saveToConfig.toLowerCase() !== "yes") {
       return finalizeProviderSetup(providerId, "skip", {
         model,
         customProvider,
         keySaved,
       });
-    }
-
-    if (existsSync(getSetupConfigPath())) {
-      const overwrite = await askQuestion(
-        rl,
-        `Config already exists at ${getSetupConfigPath()}. Overwrite? (y/n): `,
-      );
-      if (overwrite.toLowerCase() !== "y" && overwrite.toLowerCase() !== "yes") {
-        return finalizeProviderSetup(providerId, "skip", {
-          model,
-          customProvider,
-          keySaved,
-        });
-      }
-      const result = finalizeProviderSetup(providerId, "overwrite", {
-        model,
-        customProvider,
-        keySaved,
-      });
-      if (result.success) {
-        console.log(`\n✓ ${result.message}`);
-      }
-      return result;
     }
 
     const result = finalizeProviderSetup(providerId, "write", {

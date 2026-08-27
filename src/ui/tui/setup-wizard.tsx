@@ -30,6 +30,7 @@ import {
   providerRequiresApiKey,
   providerSupportsOAuth,
   saveProviderKey,
+  setupConfigConfirmPrompt,
   verifyProviderKey,
 } from "../../setup/logic.js";
 import { hasApiKey } from "../../llm.js";
@@ -77,7 +78,6 @@ type Step =
   | "manual-model"
   | "embedder"
   | "confirm"
-  | "overwrite"
   | "oauth-status"
   | "oauth-text"
   | "oauth-select"
@@ -370,9 +370,6 @@ export function SetupWizard(props: SetupWizardProps) {
         break;
       case "confirm":
         setStep("provider");
-        break;
-      case "overwrite":
-        setStep("confirm");
         break;
       case "oauth-text":
         oauthAbort?.abort();
@@ -829,7 +826,7 @@ export function SetupWizard(props: SetupWizardProps) {
                   ? ["Key: ", { text: "in credential store", style: TUI_STYLE.success }]
                   : "Key: (not set)",
               "",
-              "Create ~/.praana/config.toml?",
+              setupConfigConfirmPrompt(existsSync(getSetupConfigPath())),
             ]}
           />
           <text> </text>
@@ -841,28 +838,8 @@ export function SetupWizard(props: SetupWizardProps) {
             options={YES_NO_OPTIONS}
             onSelect={(_index, option) => {
               if (option?.value === "no") finalize("skip");
-              else if (option?.value === "yes") {
-                if (existsSync(getSetupConfigPath())) setStep("overwrite");
-                else finalize("write");
-              }
+              else if (option?.value === "yes") finalize("write");
             }}
-          />
-        </>
-      )}
-
-      {step() === "overwrite" && (
-        <>
-          <text>{`Config exists at ${getSetupConfigPath()}`}</text>
-          <text> </text>
-          <text>Overwrite?</text>
-          <text> </text>
-          <select
-            id="setup-overwrite"
-            focused
-            width={40}
-            height={6}
-            options={YES_NO_OPTIONS}
-            onSelect={(_index, option) => finalize(option?.value === "yes" ? "overwrite" : "skip")}
           />
         </>
       )}

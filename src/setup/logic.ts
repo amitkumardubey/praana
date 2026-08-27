@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { getAppLogger } from "../logger.js";
 import {
   getProviderEnvKey,
@@ -20,8 +21,13 @@ import {
   PROVIDER_CATALOG_FETCH_TIMEOUT_MS,
   type ProviderCatalogModelEntry,
 } from "../provider-catalog.js";
-import { writeProviderConfig } from "./config-writer.js";
-import type { SetupResult, CustomProviderConfig } from "./types.js";
+import {
+  appendProviderSection,
+  getSetupConfigPath,
+  updateLlmProvider,
+  writeProviderConfig,
+} from "./config-writer.js";
+import type { SetupResult, CustomProviderConfig, WriteConfigResult } from "./types.js";
 
 export interface ProviderSetupInfo {
   provider: string;
@@ -426,6 +432,31 @@ export function bedrockNeedsApiKeyPrompt(): boolean {
   return !isProviderAvailable("amazon-bedrock");
 }
 
+/** Confirm-step copy: create on first run, patch [llm] when config already exists. */
+export function setupConfigConfirmPrompt(configExists: boolean): string {
+  return configExists
+    ? "Update ~/.praana/config.toml?"
+    : "Create ~/.praana/config.toml?";
+}
+
+function patchExistingSetupConfig(
+  provider: string,
+  opts?: {
+    model?: string;
+    customProvider?: CustomProviderConfig;
+  },
+): WriteConfigResult {
+  const llmResult = updateLlmProvider(provider, opts?.model);
+  if (!opts?.customProvider) return llmResult;
+  const customResult = appendProviderSection(opts.customProvider);
+  if (!customResult.written) return llmResult;
+  return {
+    written: true,
+    path: llmResult.path,
+    message: `${llmResult.message} Added [providers.${opts.customProvider.id}].`,
+  };
+}
+
 export function finalizeProviderSetup(
   provider: string,
   configAction: "write" | "skip" | "overwrite",
@@ -453,13 +484,19 @@ export function finalizeProviderSetup(
     };
   }
 
-  const writeResult = writeProviderConfig(provider, {
-    force: configAction === "overwrite",
-    model: opts?.model,
-    customProvider: opts?.customProvider,
-  });
+  const existed = existsSync(getSetupConfigPath());
+  // Re-running setup must patch [llm] (and append a custom provider section)
+  // instead of replacing the whole file — overwrite used to clobber [memory]
+  // and other sections.
+  const writeResult = existed
+    ? patchExistingSetupConfig(provider, opts)
+    : writeProviderConfig(provider, {
+        force: false,
+        model: opts?.model,
+        customProvider: opts?.customProvider,
+      });
 
-  if (!writeResult.written && configAction === "write") {
+  if (!writeResult.written && !existed) {
     return {
       success: true,
       provider,
@@ -474,7 +511,7 @@ export function finalizeProviderSetup(
   const keySaved = opts?.keySaved ?? false;
   const message = writeResult.written
     ? keySaved
-      ? `Key saved to ~/.praana/credentials.json. Config created at ${writeResult.path}. PRAANA is ready.`
+      ? `Key saved to ~/.praana/credentials.json. Config ${existed ? "updated" : "created"} at ${writeResult.path}. PRAANA is ready.`
       : writeResult.message
     : writeResult.message;
 
