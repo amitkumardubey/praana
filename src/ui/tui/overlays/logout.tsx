@@ -1,12 +1,14 @@
 /**
  * Solid logout provider picker.
  */
-import { createMemo, createSignal, onMount, Show } from "solid-js";
+import { createSignal, onMount, Show } from "solid-js";
 import { listStoredProviders } from "../../../credentials.js";
 import { isUserDeclaredProvider } from "../../../provider-registry.js";
+import { searchAliasesForProvider } from "../../../setup/provider-options.js";
 import { logoutProvider } from "../../../setup/logout.js";
 import { TUI_STYLE } from "../theme.js";
 import { OverlayFrame } from "./frame.js";
+import { PaletteList } from "./picker.js";
 
 export interface LogoutWizardResult {
   provider: string;
@@ -19,6 +21,7 @@ export interface LogoutWizardResult {
 
 export interface LogoutOverlayProps {
   currentProvider: string;
+  initialProvider?: string;
   session: {
     getEffectiveProvider(): string;
     getActiveModelId?(): string;
@@ -38,14 +41,18 @@ function buildOptions(currentProvider: string) {
     const tags: string[] = [];
     if (p === currentProvider) tags.push("active");
     if (isUserDeclaredProvider(p)) tags.push("custom");
-    const name = tags.length > 0 ? `${p} (${tags.join(", ")})` : p;
-    return { name, description: "", value: p };
+    return {
+      name: p,
+      description: tags.join(", "),
+      value: p,
+      aliases: searchAliasesForProvider(p),
+    };
   });
 }
 
 export function LogoutOverlay(props: LogoutOverlayProps) {
   const [options, setOptions] = createSignal(buildOptions(props.currentProvider));
-  const height = createMemo(() => Math.max(6, Math.min(12, options().length + 2)));
+  const pickerQuery = props.initialProvider?.toLowerCase().trim() ?? "";
 
   onMount(() => {
     setOptions(buildOptions(props.currentProvider));
@@ -64,19 +71,17 @@ export function LogoutOverlay(props: LogoutOverlayProps) {
   };
 
   return (
-    <OverlayFrame width={48}>
+    <OverlayFrame width={56}>
       <text><span style={TUI_STYLE.info}>Logout — select a provider to remove</span></text>
       <Show
         when={options().length > 0}
         fallback={<text><span style={TUI_STYLE.muted}>No stored credentials.</span></text>}
       >
-        <select
-          focused
-          height={height()}
+        <PaletteList
+          placeholder="search providers…"
           options={options()}
-          onSelect={(_i: number, option: { value?: unknown } | null) => {
-            if (option && typeof option.value === "string") removeProvider(option.value);
-          }}
+          initialQuery={pickerQuery}
+          onSelect={(value) => removeProvider(value)}
         />
       </Show>
     </OverlayFrame>

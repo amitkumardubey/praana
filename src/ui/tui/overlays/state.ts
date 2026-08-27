@@ -17,10 +17,11 @@ export interface OverlayUi {
   readonly kind: Accessor<OverlayKind>;
   readonly slashLines: Accessor<string[]>;
   readonly loginHint: Accessor<string | undefined>;
+  readonly logoutHint: Accessor<string | undefined>;
   showSlash(lines: string[]): void;
   showModel(): void;
   showLogin(providerHint?: string): void;
-  showLogout(): void;
+  showLogout(providerHint?: string): void;
   showPalette(): void;
   showSetup(): void;
   showConsent(): void;
@@ -33,11 +34,13 @@ export function createOverlayUi(): OverlayUi {
     const [kind, setKind] = createSignal<OverlayKind>("none");
     const [slashLines, setSlashLines] = createSignal<string[]>([]);
     const [loginHint, setLoginHint] = createSignal<string | undefined>(undefined);
+    const [logoutHint, setLogoutHint] = createSignal<string | undefined>(undefined);
 
     return {
       kind,
       slashLines,
       loginHint,
+      logoutHint,
       showSlash(lines: string[]) {
         setSlashLines(lines);
         setKind("slash");
@@ -49,7 +52,8 @@ export function createOverlayUi(): OverlayUi {
         setLoginHint(providerHint);
         setKind("login");
       },
-      showLogout() {
+      showLogout(providerHint?: string) {
+        setLogoutHint(providerHint);
         setKind("logout");
       },
       showPalette() {
@@ -65,6 +69,7 @@ export function createOverlayUi(): OverlayUi {
         setKind("none");
         setSlashLines([]);
         setLoginHint(undefined);
+        setLogoutHint(undefined);
       },
       dispose,
     };

@@ -190,6 +190,34 @@ describe("/login and /logout", () => {
       expect(listStoredProviders()).toEqual(["openrouter"]);
     });
 
+    it("resolves a unique alias like claude to the stored provider", async () => {
+      setApiKey("anthropic", "sk-ant-test");
+      setApiKey("openai", "sk-test-2");
+      const session = createMockSession("openai");
+      const result = await executeSlashCommand("/logout claude", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("refresh_status");
+      expect(result.lines.join(" ")).toContain("Logged out: anthropic");
+      expect(listStoredProviders()).toEqual(["openai"]);
+    });
+
+    it("opens the picker with a search hint when an alias is ambiguous", async () => {
+      setApiKey("openai", "sk-test-1");
+      setApiKey("openai-codex", "sk-test-2");
+      const session = createMockSession("openai");
+      const result = await executeSlashCommand("/logout chatgpt", session, {
+        setModel: mock(),
+        setThinking: mock(),
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("open_logout_wizard");
+      expect(result.logoutProviderHint).toBe("chatgpt");
+      expect(listStoredProviders().sort()).toEqual(["openai", "openai-codex"]);
+    });
+
     it("switches to a fallback provider when logging out the active one", async () => {
       setApiKey("openrouter", "sk-test-1");
       setApiKey("openai", "sk-test-2");

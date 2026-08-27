@@ -1,10 +1,14 @@
 /**
- * Centered overlay frame — absolute on the app root (avoids Portal mount issues).
+ * Centered overlay frame — same chrome as /model and the slash palette.
  */
 import { useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
 
 const OVERLAY_Z = 1000;
+
+/** Palette popup fill — matches /model and the slash command palette. */
+export const OVERLAY_BACKGROUND = "#2a2d37";
+export const OVERLAY_BORDER = "#3d414d";
 
 export function OverlayFrame(props: {
   children: JSX.Element;
@@ -33,8 +37,8 @@ export function OverlayFrame(props: {
       maxHeight={boxMaxHeight()}
       border
       borderStyle="rounded"
-      borderColor={props.borderColor ?? "#888888"}
-      backgroundColor={props.backgroundColor ?? "#1a1a1a"}
+      borderColor={props.borderColor ?? OVERLAY_BORDER}
+      backgroundColor={props.backgroundColor ?? OVERLAY_BACKGROUND}
       padding={1}
       flexDirection="column"
     >

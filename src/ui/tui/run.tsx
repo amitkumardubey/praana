@@ -474,7 +474,7 @@ export async function runTui(
       return;
     }
     if (result.action === "open_logout_wizard") {
-      overlay.showLogout();
+      overlay.showLogout(result.logoutProviderHint);
       renderer.requestRender();
       return;
     }

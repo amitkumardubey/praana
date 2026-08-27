@@ -124,6 +124,7 @@ export function OverlayHost(props: OverlayHostProps) {
           <LogoutOverlay
             currentProvider={props.currentProvider()}
             session={props.logoutSession()}
+            initialProvider={props.overlay.logoutHint()}
             onComplete={props.onLogoutComplete}
             onCancel={props.onDismiss}
           />

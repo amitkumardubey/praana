@@ -7,6 +7,7 @@ import {
   buildProviderSelectItems,
   formatDetectedProviderLines,
   CUSTOM_PROVIDER_VALUE,
+  findProviderSelectItem,
   type SelectItem,
 } from "./provider-options.js";
 import { getSetupConfigPath } from "./config-writer.js";
@@ -87,12 +88,7 @@ export async function runInteractiveSetupCli(_cwd: string): Promise<SetupResult>
       if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= items.length) {
         selectedItem = items[choiceNum - 1];
       } else {
-        const match = items.find(
-          (item) =>
-            item.value.toLowerCase() === lower ||
-            item.label.toLowerCase() === lower ||
-            (item.value === CUSTOM_PROVIDER_VALUE && lower === "custom"),
-        );
+        const match = findProviderSelectItem(items, lower);
         if (match) {
           selectedItem = match;
         } else {

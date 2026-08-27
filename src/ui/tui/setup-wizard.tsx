@@ -12,11 +12,13 @@ import { APP_VERSION } from "../../app-banner.js";
 import { renderBootBanner } from "./banner.js";
 import { TUI_STYLE } from "./theme.js";
 import { Lines } from "./text-lines.js";
+import { PaletteList } from "./overlays/picker.js";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
   formatDetectedProviderLines,
 } from "../../setup/provider-options.js";
+import { toPaletteOptions } from "./overlays/picker-items.js";
 import {
   adoptEnvKeyForProvider,
   bedrockNeedsApiKeyPrompt,
@@ -444,20 +446,11 @@ export function SetupWizard(props: SetupWizardProps) {
             ].join("\n")}
           </text>
           <text> </text>
-          <select
-            id="provider-picker-list"
-            focused
-            width={40}
-            height={maxVisible}
-            options={buildProviderSelectItems().map((item) => ({
-              name: item.label,
-              description: item.description ?? "",
-              value: item.value,
-            }))}
-            showScrollIndicator
-            onSelect={(_index, option) => {
-              if (option && typeof option.value === "string") selectProvider(option.value);
-            }}
+          <PaletteList
+            placeholder="search providers…"
+            options={toPaletteOptions(buildProviderSelectItems())}
+            maxVisible={maxVisible}
+            onSelect={(value) => selectProvider(value)}
           />
         </>
       )}
@@ -468,15 +461,11 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <text>How do you want to authenticate?</text>
           <text> </text>
-          <select
-            id="setup-auth-method"
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={AUTH_METHOD_OPTIONS}
-            onSelect={(_index, option) => {
-              if (option?.value === "oauth") void startOAuth(state.provider);
-              else if (option?.value === "api_key") setStep("key-choice");
+            onSelect={(value) => {
+              if (value === "oauth") void startOAuth(state.provider);
+              else if (value === "api_key") setStep("key-choice");
             }}
           />
         </>
@@ -492,15 +481,11 @@ export function SetupWizard(props: SetupWizardProps) {
               : "✓ Credentials already stored.\n\nReplace them?"}
           </text>
           <text> </text>
-          <select
-            id="setup-reuse-oauth"
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={REAUTH_OPTIONS}
-            onSelect={(_index, option) => {
-              if (option?.value === "yes") void startOAuth(state.provider);
-              else if (option?.value === "no") {
+            onSelect={(value) => {
+              if (value === "yes") void startOAuth(state.provider);
+              else if (value === "no") {
                 state.keySaved = false;
                 setStep("fetch-models");
               }
@@ -519,15 +504,11 @@ export function SetupWizard(props: SetupWizardProps) {
               <text> </text>
               <text>Replace with a new key?</text>
               <text> </text>
-              <select
-                id="setup-key-replace"
-                focused
-                width={40}
-                height={6}
+              <PaletteList
                 options={YES_NO_OPTIONS}
-                onSelect={(_index, option) => {
-                  if (option?.value === "yes") enterKeyInput();
-                  else if (option?.value === "no") {
+                onSelect={(value) => {
+                  if (value === "yes") enterKeyInput();
+                  else if (value === "no") {
                     state.keySaved = false;
                     setStep("fetch-models");
                   }
@@ -538,17 +519,13 @@ export function SetupWizard(props: SetupWizardProps) {
             <>
               <text>{formatEnvKeyOfferMessage(state.provider)}</text>
               <text> </text>
-              <select
-                id="setup-env-key"
-                focused
-                width={40}
-                height={6}
+              <PaletteList
                 options={YES_NO_OPTIONS}
-                onSelect={(_index, option) => {
-                  if (option?.value === "yes") {
+                onSelect={(value) => {
+                  if (value === "yes") {
                     state.keySaved = adoptEnvKeyForProvider(state.provider);
                     setStep("fetch-models");
-                  } else if (option?.value === "no") enterKeyInput();
+                  } else if (value === "no") enterKeyInput();
                 }}
               />
             </>
@@ -707,15 +684,12 @@ export function SetupWizard(props: SetupWizardProps) {
         <>
           <text>{`Pick a default model for ${providerForConfig()}`}</text>
           <text> </text>
-          <select
-            id="setup-model-picker"
-            focused
-            width={40}
-            height={maxVisible}
+          <PaletteList
+            placeholder="search models…"
             options={modelOptions()}
-            showScrollIndicator
-            onSelect={(_index, option) => {
-              state.model = typeof option?.value === "string" ? option.value : "";
+            maxVisible={maxVisible}
+            onSelect={(value) => {
+              state.model = value;
               afterModelChosen();
             }}
           />
@@ -763,19 +737,15 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <text>Save anyway and continue?</text>
           <text> </text>
-          <select
-            id="setup-save-anyway"
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={[
               { value: "yes", name: "Yes — save anyway", description: "" },
               { value: "no", name: "No — re-enter key", description: "" },
             ]}
-            onSelect={(_index, option) => {
-              if (option?.value === "yes") {
+            onSelect={(value) => {
+              if (value === "yes") {
                 acceptVerifiedKey(providerForConfig(), state.pendingKey);
-              } else if (option?.value === "no") {
+              } else if (value === "no") {
                 setMessage("");
                 setStep(state.isCustom ? "custom-key" : state.provider === "amazon-bedrock" ? "bedrock-key" : "key-input");
               }
@@ -790,18 +760,14 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <text>Download an ONNX embedding model for semantic recall (~38 MB), or keep keyword-only search?</text>
           <text> </text>
-          <select
-            id="setup-embedder"
-            focused
-            width={48}
-            height={6}
+          <PaletteList
             options={[
               { value: "proceed", name: "ONNX semantic recall", description: "Download once from HuggingFace" },
               { value: "skip", name: "Keyword-only", description: "Skip download — still works, less precise" },
             ]}
-            onSelect={(_index, option) => {
-              if (option?.value === "proceed" || option?.value === "skip") {
-                setEmbedderConsent(option.value);
+            onSelect={(value) => {
+              if (value === "proceed" || value === "skip") {
+                setEmbedderConsent(value);
               }
               setStep("confirm");
             }}
@@ -830,15 +796,11 @@ export function SetupWizard(props: SetupWizardProps) {
             ]}
           />
           <text> </text>
-          <select
-            id="setup-confirm"
-            focused
-            width={40}
-            height={6}
+          <PaletteList
             options={YES_NO_OPTIONS}
-            onSelect={(_index, option) => {
-              if (option?.value === "no") finalize("skip");
-              else if (option?.value === "yes") finalize("write");
+            onSelect={(value) => {
+              if (value === "no") finalize("skip");
+              else if (value === "yes") finalize("write");
             }}
           />
         </>
@@ -879,19 +841,13 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <text>{oauthPrompt()}</text>
           <text> </text>
-          <select
-            id="setup-oauth-select"
-            focused
-            width={40}
-            height={Math.min(8, oauthOptions().length + 1)}
+          <PaletteList
             options={oauthOptions().map((option) => ({
               name: option.label,
               description: option.description ?? "",
               value: option.id,
             }))}
-            onSelect={(_index, option) => {
-              resolveOAuthSelect?.(typeof option?.value === "string" ? option.value : undefined);
-            }}
+            onSelect={(value) => resolveOAuthSelect?.(value)}
           />
         </>
       )}
@@ -902,11 +858,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <text>{message()}</text>
           <text> </text>
-          <select
-            id="setup-oauth-back"
-            focused
-            width={40}
-            height={4}
+          <PaletteList
             options={[{ name: "Back to provider list", description: "", value: "back" }]}
             onSelect={() => setStep("provider")}
           />

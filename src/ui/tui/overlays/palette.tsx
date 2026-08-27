@@ -9,7 +9,7 @@ import { useBindings } from "@opentui/keymap/solid";
 import { RGBA, type InputRenderable } from "@opentui/core";
 import { SLASH_COMMAND_METADATA } from "../../../slash-commands.js";
 import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
-import { OverlayFrame } from "./frame.js";
+import { OverlayFrame, OVERLAY_BACKGROUND, OVERLAY_BORDER } from "./frame.js";
 import {
   buildPaletteItems,
   commandNeedsArgument,
@@ -96,8 +96,8 @@ export function PaletteOverlay(props: PaletteOverlayProps) {
   return (
     <OverlayFrame
       width={frameWidth()}
-      backgroundColor="#2a2d37"
-      borderColor="#3d414d"
+      backgroundColor={OVERLAY_BACKGROUND}
+      borderColor={OVERLAY_BORDER}
     >
       <input
         ref={(el: InputRenderable) => {

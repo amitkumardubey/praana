@@ -20,8 +20,9 @@ describe("createOverlayUi", () => {
     expect(ui.kind()).toBe("login");
     expect(ui.loginHint()).toBe("anthropic");
 
-    ui.showLogout();
+    ui.showLogout("claude");
     expect(ui.kind()).toBe("logout");
+    expect(ui.logoutHint()).toBe("claude");
 
     ui.showPalette();
     expect(ui.kind()).toBe("palette");
@@ -30,6 +31,7 @@ describe("createOverlayUi", () => {
     expect(ui.kind()).toBe("none");
     expect(ui.slashLines()).toEqual([]);
     expect(ui.loginHint()).toBeUndefined();
+    expect(ui.logoutHint()).toBeUndefined();
     ui.dispose();
   });
 });

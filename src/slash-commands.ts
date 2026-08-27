@@ -29,6 +29,7 @@ import { getProviderEnvKey, parseReasoningEffort, REASONING_EFFORT_LEVELS } from
 import { listStoredProviders } from "./credentials.js";
 import { isUserDeclaredProvider } from "./provider-registry.js";
 import { logoutProvider } from "./setup/logout.js";
+import { resolveStoredProviderHint } from "./setup/provider-options.js";
 import { executeShellCommand } from "./tools/system.js";
 import {
   USER_SETTINGS_KEYS,
@@ -122,6 +123,8 @@ export interface SlashCommandResult {
   };
   /** Provider hint passed to the login wizard overlay (from /login <provider>). */
   loginProviderHint?: string;
+  /** Search hint passed to the logout picker (from /logout <name> when ambiguous). */
+  logoutProviderHint?: string;
 }
 
 type ModelSwitchOutcome = "success" | "failed" | "already_on";
@@ -945,16 +948,28 @@ export async function executeSlashCommand(
         };
       }
 
-      // Specific provider requested
-      const hasStored = stored.includes(provider);
-      const isDeclared = isUserDeclaredProvider(provider);
+      // Specific provider requested — accept id or unique alias (claude → anthropic).
+      const lookedUp = resolveStoredProviderHint(provider, stored);
+      if (lookedUp.pickerQuery) {
+        lines.push("Opening logout wizard…");
+        return {
+          action: "open_logout_wizard",
+          lines,
+          display: "toast",
+          logoutProviderHint: lookedUp.pickerQuery,
+        };
+      }
+
+      const target = lookedUp.providerId ?? provider;
+      const hasStored = stored.includes(target);
+      const isDeclared = isUserDeclaredProvider(target);
 
       if (!hasStored && !isDeclared) {
         lines.push(`No credentials found for "${provider}".`);
         return result("none", "toast", "error");
       }
 
-      const outcome = logoutProvider(provider, session);
+      const outcome = logoutProvider(target, session);
       if (!outcome.removed && !outcome.sectionRemoved) {
         lines.push(...outcome.lines);
         return result("none", "toast", "info");
