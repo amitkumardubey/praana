@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 /**
- * Global CLI entry. Preload OpenTUI Solid before any .tsx import so Bun does not
- * fall back to react/jsx-dev-runtime when cwd has no package tsconfig/bunfig
- * (common for `bun add -g` / `bunx` launches).
+ * Global CLI entry. Registers a package-scoped OpenTUI Solid JSX transform
+ * before importing any .tsx — required because stock @opentui/solid/preload
+ * skips paths under node_modules (where `bun add -g` installs this package).
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-await import("@opentui/solid/preload");
+import { registerPraanaSolidTransform } from "./opentui-solid-runtime.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+await registerPraanaSolidTransform(root);
+
 const mod = await import(join(root, "src/main.ts"));
 await mod.main();

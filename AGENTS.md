@@ -25,7 +25,7 @@ Requires **Bun ≥1.2**. Native dependencies are optional (see Embedder Config a
 
 ### Global CLI (`bun link`)
 
-`package.json` exposes `praana` via `bin/praana.js` (preloads `@opentui/solid/preload` so global installs work without a cwd `tsconfig`/`bunfig`). Run `bun link` and add `$(bun pm bin -g)` to your PATH.
+`package.json` exposes `praana` via `bin/praana.js` (registers a **package-scoped** OpenTUI Solid JSX transform before loading `src/` — stock `@opentui/solid/preload` skips `node_modules`, which breaks `bun add -g`). Run `bun link` and add `$(bun pm bin -g)` to your PATH.
 
 ### Standalone binary (`bun run build:compile`)
 
