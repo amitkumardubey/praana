@@ -36,6 +36,26 @@ bunx praana
 
 Requires **Bun ≥ 1.4**. Install at [bun.sh/install](https://bun.sh/install).
 
+Global `bun add -g` / `npm i -g` installs `@praana/natives` as an optional dependency (Tree-sitter `code_*` tools). `praana doctor` reports whether the addon loaded.
+
+### Standalone binary (no Bun)
+
+GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz` plus `SHA256SUMS`. Each archive contains the compiled `praana` executable **and** `praana-natives.node` (Tree-sitter `code_*` / post-edit syntax). Keep both files in the same directory after extract.
+
+```bash
+# Example: Linux x64
+curl -fsSL -o praana-linux-x64.tar.gz \
+  https://github.com/amitkumardubey/praana/releases/latest/download/praana-linux-x64.tar.gz
+curl -fsSL -o SHA256SUMS \
+  https://github.com/amitkumardubey/praana/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+tar xzf praana-linux-x64.tar.gz
+./praana --version
+praana doctor   # native: available (…)
+```
+
+A one-line curl installer is tracked separately (issue #356).
+
 ### Set a provider key and launch
 
 ```bash
@@ -63,7 +83,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 bun src/main.ts
 ```
 
-Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`):
+Optional standalone binary (embeds Bun + app; Solid JSX via `@opentui/solid/bun-plugin`). Prefer a [GitHub Release](#standalone-binary-no-bun) archive unless you are iterating on compile itself:
 
 ```bash
 bun run build:compile   # → dist/praana

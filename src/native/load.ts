@@ -2,8 +2,12 @@
  * Lazy loader for @praana/natives (napi-rs addon).
  *
  * Never throws into the turn loop — callers inspect NativeLoadResult.
+ *
+ * Resolution order: npm/workspace `@praana/natives`, then `praana-natives.node`
+ * next to `process.execPath` (standalone release archive sidecar).
  */
 
+import { existsSync } from "node:fs";
 import {
   EXPECTED_NATIVE_API_MAJOR,
   NativeUnavailableError,
@@ -15,6 +19,10 @@ import {
   type ProjectHitsResult,
   type ProjectQueryOpts,
 } from "./types.js";
+import {
+  resolveSidecarAddonPath,
+  toImportSpecifier,
+} from "./sidecar.js";
 
 let cached: NativeLoadResult | null = null;
 /** When false, loadNative short-circuits as unavailable (from [native] enabled). */
@@ -76,6 +84,45 @@ function asBindings(mod: Record<string, unknown>): NativeBindings {
   };
 }
 
+function loadResultFromModule(mod: Record<string, unknown>): NativeLoadResult {
+  const bindings = asBindings(mod);
+  const version = bindings.nativeVersion();
+  const major = parseMajor(version);
+  if (major === null) {
+    const err = new NativeUnavailableError(
+      "version_mismatch",
+      `native API version unparseable: ${version}`,
+    );
+    return { available: false, bindings: null, error: err };
+  }
+  if (major !== EXPECTED_NATIVE_API_MAJOR) {
+    const err = new NativeUnavailableError(
+      "version_mismatch",
+      `native API major ${major} incompatible with expected ${EXPECTED_NATIVE_API_MAJOR}`,
+      version,
+    );
+    return { available: false, bindings: null, error: err };
+  }
+  return { available: true, bindings, error: null };
+}
+
+function nativeCandidates(options?: {
+  importSpecifier?: string;
+  sidecarPath?: string;
+  execPath?: string;
+}): string[] {
+  const sidecar =
+    options?.sidecarPath ??
+    resolveSidecarAddonPath(options?.execPath ?? process.execPath);
+  const candidates: string[] = [
+    options?.importSpecifier ?? "@praana/natives",
+  ];
+  if (existsSync(sidecar)) {
+    candidates.push(sidecar);
+  }
+  return [...new Set(candidates)];
+}
+
 /**
  * Configure whether the loader may attempt to dlopen the addon.
  * Called from session/config wiring; tests may reset via resetNativeLoadCache.
@@ -95,8 +142,12 @@ export function isNativeEnabled(): boolean {
  */
 export async function loadNative(options?: {
   forceReload?: boolean;
-  /** Override import specifier (tests). */
+  /** Override first import specifier (tests). Sidecar is still tried if present. */
   importSpecifier?: string;
+  /** Override sidecar path (tests). */
+  sidecarPath?: string;
+  /** Override process.execPath when resolving the default sidecar. */
+  execPath?: string;
 }): Promise<NativeLoadResult> {
   if (cached && !options?.forceReload) {
     return cached;
@@ -111,45 +162,34 @@ export async function loadNative(options?: {
     return cached;
   }
 
-  const specifier = options?.importSpecifier ?? "@praana/natives";
-
-  try {
-    const mod = (await import(specifier)) as Record<string, unknown>;
-    const bindings = asBindings(mod);
-    const version = bindings.nativeVersion();
-    const major = parseMajor(version);
-    if (major === null) {
-      const err = new NativeUnavailableError(
-        "version_mismatch",
-        `native API version unparseable: ${version}`,
-      );
-      cached = { available: false, bindings: null, error: err };
-      return cached;
+  let lastError: unknown;
+  for (const candidate of nativeCandidates(options)) {
+    try {
+      const specifier = toImportSpecifier(candidate);
+      const mod = (await import(specifier)) as Record<string, unknown>;
+      const result = loadResultFromModule(mod);
+      if (result.available) {
+        cached = result;
+        return cached;
+      }
+      lastError = result.error;
+    } catch (e) {
+      lastError = e;
     }
-    if (major !== EXPECTED_NATIVE_API_MAJOR) {
-      const err = new NativeUnavailableError(
-        "version_mismatch",
-        `native API major ${major} incompatible with expected ${EXPECTED_NATIVE_API_MAJOR}`,
-        version,
-      );
-      cached = { available: false, bindings: null, error: err };
-      return cached;
-    }
-    cached = { available: true, bindings, error: null };
-    return cached;
-  } catch (e) {
-    const causeMessage = e instanceof Error ? e.message : String(e);
-    const err =
-      e instanceof NativeUnavailableError
-        ? e
-        : new NativeUnavailableError(
-            "unavailable",
-            "native addon failed to load",
-            causeMessage,
-          );
-    cached = { available: false, bindings: null, error: err };
-    return cached;
   }
+
+  const causeMessage =
+    lastError instanceof Error ? lastError.message : String(lastError ?? "");
+  const err =
+    lastError instanceof NativeUnavailableError
+      ? lastError
+      : new NativeUnavailableError(
+          "unavailable",
+          "native addon failed to load",
+          causeMessage,
+        );
+  cached = { available: false, bindings: null, error: err };
+  return cached;
 }
 
 /** Reset cache — tests only. */

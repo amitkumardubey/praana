@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   EXPECTED_NATIVE_API_MAJOR,
+  SIDECAR_ADDON_FILENAME,
   loadNative,
   resetNativeLoadCache,
+  resolveSidecarAddonPath,
   setNativeEnabled,
   NativeUnavailableError,
 } from "../src/native/index.js";
@@ -106,6 +108,25 @@ describe("native loader", () => {
     expect(first.available).toBe(true);
     const second = await loadNative({ importSpecifier: join(fixtureDir, "other.mjs") });
     expect(second).toBe(first);
+  });
+
+  it("loads a compatible stub from the sidecar when the package import fails", async () => {
+    const missing = join(fixtureDir, "does-not-exist.mjs");
+    const sidecar = join(fixtureDir, "praana-natives.node.mjs");
+    writeFileSync(sidecar, stubNativeModule(`${EXPECTED_NATIVE_API_MAJOR}.2.0`));
+    const result = await loadNative({
+      forceReload: true,
+      importSpecifier: missing,
+      sidecarPath: sidecar,
+    });
+    expect(result.available).toBe(true);
+    expect(result.bindings?.ping()).toBe("pong");
+  });
+
+  it("resolves the sidecar next to process.execPath", () => {
+    expect(resolveSidecarAddonPath("/opt/praana/praana")).toBe(
+      join("/opt/praana", SIDECAR_ADDON_FILENAME),
+    );
   });
 
   it("respects native.enabled=false via setNativeEnabled", async () => {

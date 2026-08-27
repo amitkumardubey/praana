@@ -42,6 +42,8 @@ Uses `@opentui/solid/bun-plugin` and sets `compile.autoloadBunfig = false` so la
 
 Baked `--version` string: exact git tag `v{package.json version}` with a clean tree → that version (e.g. `0.12.0`); otherwise `{version}-dev.<shortsha>[.dirty]` so branch builds are not mistaken for a release.
 
+Release CI (`release-please.yml`) compiles those four targets, packs `praana-<os>-<arch>.tar.gz` + `SHA256SUMS` via `bun run package:binaries` (each archive is `praana` + `praana-natives.node`), and uploads them to the GitHub Release. `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`.
+
 ## Running
 
 ```bash
@@ -114,6 +116,10 @@ require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
 Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor`, and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code` or `find_files`).
+
+`praana` depends on `@praana/natives` via `optionalDependencies` (lockstep npm version). Release CI builds platform `.node` leaves (`linux-x64-gnu/musl`, `linux-arm64-gnu`, `darwin-arm64/x64`, `win32-x64-msvc`) and publishes leaves, then `@praana/natives`, then `praana`. Users do not need a Rust toolchain. **Prerequisite:** npm org `praana` must exist so `NPM_TOKEN` can publish `@praana/*`; the first release 404s without it.
+
+Standalone GitHub Release archives include a matching `praana-natives.node` sidecar (glibc linux-arm64 included). The loader dlopens it from `dirname(process.execPath)` when the npm package is absent. Do not move the `.node` away from the binary.
 
 ### fff — In-Process File Search (`@ff-labs/fff-bun`)
 

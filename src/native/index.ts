@@ -21,6 +21,11 @@ export {
   tryGetNative,
 } from "./load.js";
 export {
+  SIDECAR_ADDON_FILENAME,
+  resolveSidecarAddonPath,
+  toImportSpecifier,
+} from "./sidecar.js";
+export {
   formatNativeStatus,
   probeNativeStatus,
   nativeStatusToString,

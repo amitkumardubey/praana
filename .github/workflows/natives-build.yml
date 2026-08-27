@@ -1,0 +1,114 @@
+name: natives-build
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  build:
+    name: ${{ matrix.settings.target }}
+    runs-on: ${{ matrix.settings.host }}
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            smoke: true
+            full_test: true
+            js_binding: true
+          - host: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            zig: true
+            smoke: false
+          - host: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            zig: true
+            smoke: false
+          - host: macos-latest
+            target: aarch64-apple-darwin
+            smoke: true
+          - host: macos-13
+            target: x86_64-apple-darwin
+            smoke: true
+          - host: windows-latest
+            target: x86_64-pc-windows-msvc
+            smoke: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: natives-${{ matrix.settings.target }}
+
+      - name: Install Zig (cross)
+        if: matrix.settings.zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Cargo test
+        if: matrix.settings.full_test
+        run: cargo test -p praana-natives
+
+      - name: Build native addon
+        run: bun run build -- --target ${{ matrix.settings.target }}
+        working-directory: packages/praana-natives
+
+      - name: Bun smoke
+        if: matrix.settings.smoke
+        run: bun run natives:smoke
+
+      - name: Loader + code-intel suite slice
+        if: matrix.settings.full_test
+        run: bun test tests/native-loader.test.ts tests/code-intel-tools.test.ts
+        env:
+          PRAANA_REQUIRE_NATIVE: "1"
+
+      - name: Typecheck
+        if: matrix.settings.full_test
+        run: bun typecheck
+
+      - name: Upload bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.settings.target }}
+          path: packages/praana-natives/*.node
+          if-no-files-found: error
+
+      - name: Upload JS binding
+        if: matrix.settings.js_binding
+        uses: actions/upload-artifact@v4
+        with:
+          name: natives-js-binding
+          path: |
+            packages/praana-natives/index.js
+            packages/praana-natives/index.d.ts
+          if-no-files-found: error
