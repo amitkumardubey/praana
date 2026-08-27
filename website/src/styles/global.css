@@ -130,6 +130,9 @@ main {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.95rem;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
 }
 
 .install-block pre code {

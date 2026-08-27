@@ -17,8 +17,12 @@ const faq = [
     a: "Most agents append the full transcript until something breaks, then compact. PRAANA curates the prompt on every turn — tiered state objects demote and hydrate based on relevance, tool output is distilled at ingestion and stored in a content-addressed artifact store, and a deterministic checkpoint preserves decisions and intent when turns scroll out. Cognitive Memory carries learnings across sessions in local SQLite. Known limitations are published upfront. There are no benchmark claims we can't back.",
   },
   {
+    q: "How do I install?",
+    a: "No Bun: curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash — installs praana and praana-natives.node into ~/.local/bin. With Bun: bun add -g praana or bunx praana.",
+  },
+  {
     q: "Is it free and open source?",
-    a: "Yes. MIT-licensed. Source on GitHub, published on npm. Install with bun add -g praana or bunx praana.",
+    a: "Yes. MIT-licensed. Source on GitHub, published on npm. Install with the curl installer (no Bun) or bun add -g praana / bunx praana.",
   },
   {
     q: "Does my data leave my machine?",
@@ -26,7 +30,7 @@ const faq = [
   },
   {
     q: "What do I need to run it?",
-    a: "Bun ≥ 1.4 and an API key for any supported provider. Install Bun at bun.sh/install.",
+    a: "An API key for any supported provider. The curl installer does not require Bun. bun add -g / bunx still need Bun ≥ 1.4 (bun.sh/install).",
   },
   {
     q: "Is the context engine proven to be better than classic mode?",
@@ -54,11 +58,15 @@ const faqStructuredData = {
       Pure TypeScript. Local-first. Any provider.
     </p>
     <div class="install-block">
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash</code></pre>
+    </div>
+    <div class="install-block">
+      <span class="install-or">or with Bun</span>
       <pre><code>bun add -g praana</code></pre>
       <span class="install-or">or</span>
       <pre><code>bunx praana</code></pre>
     </div>
-    <p class="prereq">Requires <a href="https://bun.sh/install">Bun ≥ 1.4</a></p>
+    <p class="prereq">Curl installer: no Bun. <code>bun add -g</code> / <code>bunx</code>: <a href="https://bun.sh/install">Bun ≥ 1.4</a></p>
     <img src={`${base}assets/demo.png`} alt="PRAANA terminal — adaptive context and cognitive memory" width="720" height="auto" />
   </section>
 
@@ -152,7 +160,10 @@ const faqStructuredData = {
     </p>
 
     <h2>Quick start</h2>
-    <pre><code># Install
+    <pre><code># Install (no Bun)
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+
+# Or with Bun
 bun add -g praana         # global install
 # or
 bunx praana               # no install
