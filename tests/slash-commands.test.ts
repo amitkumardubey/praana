@@ -526,7 +526,7 @@ describe("executeSlashCommand", () => {
     expect(result.action).toBe("none");
     expect(result.toastTone).toBe("info");
     expect(result.lines[0]).toBe("Already on: openrouter/moonshotai/kimi-k2.7-code (262,144 ctx)");
-    expect(setModel).not.toHaveBeenCalled();
+    expect(setModel).toHaveBeenCalledWith("moonshotai/kimi-k2.7-code");
     expect(setModelOverride).not.toHaveBeenCalled();
     expect(append).toHaveBeenCalledWith(
       expect.objectContaining({

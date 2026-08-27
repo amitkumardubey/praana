@@ -1,5 +1,7 @@
 import { removeApiKey, listStoredProviders } from "../credentials.js";
 import { listEnvDetectedProviders } from "../llm.js";
+import { invalidateContextWindowsForProvider } from "../model-context.js";
+import { invalidateProviderCatalog } from "../provider-catalog.js";
 import {
   isUserDeclaredProvider,
   removeUserProvider,
@@ -36,6 +38,28 @@ function envWarningLine(provider: string): string | undefined {
   return `Removed credentials from PRAANA store. Note: ${envKey} is still exported in your shell environment.`;
 }
 
+/**
+ * Model to use after switching to `fallback`.
+ *
+ * Reuse config.llm.model only when config already names this fallback
+ * *and* that model is not the one we are leaving (stale `model =` left
+ * behind when a prior login patched provider but not model).
+ */
+function pickFallbackModel(
+  fallback: string,
+  session: LogoutSessionLike,
+): string {
+  const configured =
+    session.config?.llm.provider === fallback
+      ? session.config.llm.model.trim()
+      : "";
+  const active = session.getActiveModelId?.()?.trim() ?? "";
+  // Config may still name the fallback provider while `model` is the one
+  // we are leaving (a prior login patched provider but not model).
+  if (configured && configured !== active) return configured;
+  return pickDefaultModel(fallback);
+}
+
 function pickFallback(
   loggedOut: string,
   session: LogoutSessionLike,
@@ -47,11 +71,25 @@ function pickFallback(
   const remaining = [...new Set([...stored, ...envDetected])];
   if (remaining.length === 0) return null;
   const provider = remaining[0]!;
-  const model =
-    session.config?.llm.provider === provider && session.config.llm.model.trim()
-      ? session.config.llm.model
-      : pickDefaultModel(provider);
-  return { provider, model };
+  return { provider, model: pickFallbackModel(provider, session) };
+}
+
+function applyFallback(
+  session: LogoutSessionLike,
+  fallback: { provider: string; model: string },
+): void {
+  session.setProviderOverride?.(fallback.provider);
+  if (fallback.model) session.setModelOverride?.(fallback.model);
+  if (session.config) {
+    session.config.llm.provider = fallback.provider;
+    if (fallback.model) session.config.llm.model = fallback.model;
+  }
+  updateLlmProvider(fallback.provider, fallback.model || undefined);
+}
+
+function dropProviderModelCache(provider: string): void {
+  invalidateProviderCatalog(provider);
+  invalidateContextWindowsForProvider(provider);
 }
 
 /**
@@ -87,6 +125,8 @@ export function logoutProvider(
     };
   }
 
+  dropProviderModelCache(provider);
+
   const lines: string[] = [];
   const warning = envWarningLine(provider);
   let switchedTo: { provider: string; model: string } | undefined;
@@ -95,9 +135,7 @@ export function logoutProvider(
   if (isActive) {
     const fallback = pickFallback(provider, session);
     if (fallback && fallback.provider !== provider) {
-      session.setProviderOverride?.(fallback.provider);
-      if (fallback.model) session.setModelOverride?.(fallback.model);
-      updateLlmProvider(fallback.provider, fallback.model || undefined);
+      applyFallback(session, fallback);
       switchedTo = fallback;
       lines.push(
         `Logged out of ${provider}. Switched active provider to ${fallback.provider}${fallback.model ? ` (${fallback.model})` : ""}.`,
@@ -111,9 +149,8 @@ export function logoutProvider(
     if (session.config?.llm.provider === provider) {
       const fallback = pickFallback(provider, session);
       if (fallback) {
-        updateLlmProvider(fallback.provider, fallback.model || undefined);
-        session.config.llm.provider = fallback.provider;
-        if (fallback.model) session.config.llm.model = fallback.model;
+        applyFallback(session, fallback);
+        switchedTo = fallback;
       }
     }
   }

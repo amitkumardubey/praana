@@ -691,6 +691,7 @@ export async function executeSlashCommand(
           userInput: parsed.userInput,
           outcome: "already_on",
         });
+        handlers.setModel(resolved.modelId);
         const contextWindow = session.getContextWindowTokens(resolved.modelId);
         lines.push(
           `Already on: ${targetLabel} (${contextWindow.toLocaleString()} ctx)`,

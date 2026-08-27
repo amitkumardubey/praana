@@ -357,10 +357,13 @@ export async function runTui(
       return;
     }
     if (result.switchedTo) {
+      const switched = result.switchedTo;
       void (async () => {
-        await controller.executeSlashCommand(
-          `/model ${result.switchedTo!.provider} ${result.switchedTo!.model}`.trim(),
-        );
+        if (switched.model) {
+          await controller.executeSlashCommand(
+            `/model ${switched.provider} ${switched.model}`,
+          );
+        }
         refreshChrome();
         renderer.requestRender();
       })();

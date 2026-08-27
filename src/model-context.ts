@@ -28,7 +28,10 @@ export {
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 
 const CACHE_VERSION = 1;
-const CACHE_FILE = appHomePath("model-context-cache.json");
+
+function contextCachePath(): string {
+  return appHomePath("model-context-cache.json");
+}
 
 interface CacheEntry {
   contextWindow: number;
@@ -59,10 +62,11 @@ function applyOverride(override?: number): number | null {
 function loadDiskCache(): ModelContextCacheFile {
   if (diskCache) return diskCache;
   diskCache = { version: CACHE_VERSION, entries: {} };
-  if (!existsSync(CACHE_FILE)) return diskCache;
+  const path = contextCachePath();
+  if (!existsSync(path)) return diskCache;
 
   try {
-    const raw = JSON.parse(readFileSync(CACHE_FILE, "utf-8")) as ModelContextCacheFile & {
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as ModelContextCacheFile & {
       openRouterCatalog?: unknown;
     };
     if (raw.version === CACHE_VERSION && raw.entries && typeof raw.entries === "object") {
@@ -75,9 +79,10 @@ function loadDiskCache(): ModelContextCacheFile {
 }
 
 function persistDiskCache(): void {
-  const dir = dirname(CACHE_FILE);
+  const path = contextCachePath();
+  const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(CACHE_FILE, JSON.stringify(loadDiskCache(), null, 2), "utf-8");
+  writeFileSync(path, JSON.stringify(loadDiskCache(), null, 2), "utf-8");
 }
 
 function rememberContextWindow(provider: string, modelId: string, contextWindow: number): void {
@@ -204,12 +209,30 @@ export async function fetchAndCacheContextWindow(
   return resolved;
 }
 
+/** Drop cached context windows for every model under a provider. */
+export function invalidateContextWindowsForProvider(provider: string): void {
+  const prefix = `${provider}:`;
+  for (const key of [...memoryEntries.keys()]) {
+    if (key.startsWith(prefix)) memoryEntries.delete(key);
+  }
+  const file = loadDiskCache();
+  let changed = false;
+  for (const key of Object.keys(file.entries)) {
+    if (key.startsWith(prefix)) {
+      delete file.entries[key];
+      changed = true;
+    }
+  }
+  if (changed) persistDiskCache();
+}
+
 export function resetContextWindowCacheForTests(): void {
   memoryEntries.clear();
   diskCache = null;
   resetProviderCatalogCacheForTests();
   try {
-    if (existsSync(CACHE_FILE)) unlinkSync(CACHE_FILE);
+    const path = contextCachePath();
+    if (existsSync(path)) unlinkSync(path);
   } catch {
     // best-effort unlink in tests
   }
