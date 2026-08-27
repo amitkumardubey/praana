@@ -4,7 +4,7 @@ import { formatNativeStatus, nativeStatusToString } from "../src/native/index.js
 import { buildSystemFrame } from "../src/compiler.js";
 import { buildClassicSystemFrame } from "../src/compile-classic.js";
 import { Session } from "../src/session.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, getConfigWarnings } from "../src/config.js";
 import { resetNativeLoadCache, setNativeEnabled } from "../src/native/index.js";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -129,6 +129,7 @@ describe("Session nativeStatus probing", () => {
 
   beforeEach(() => {
     resetNativeLoadCache();
+    getConfigWarnings();
     tmpDir = join(tmpdir(), `praana-native-status-${Date.now()}-${Math.random().toString(16).slice(2)}`);
   });
 

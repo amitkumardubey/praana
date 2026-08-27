@@ -443,8 +443,9 @@ describe("consolidation processor", () => {
 
 describe("ConsolidationConfig", () => {
   it("has correct default values", async () => {
-    const { loadConfig } = await import("../src/config.js");
+    const { loadConfig, getConfigWarnings } = await import("../src/config.js");
     const config = loadConfig();
+    getConfigWarnings();
 
     expect(config.consolidation).toBeDefined();
     expect(config.consolidation.enabled).toBe(true);
