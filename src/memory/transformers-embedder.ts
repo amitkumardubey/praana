@@ -40,6 +40,14 @@ let transformersModulePromise: Promise<TransformersModule | null> | null = null;
 let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
 let loadedPreset: TransformersModelPreset | null = null;
 
+/** User declined the ONNX weight download — keyword-only recall is expected. */
+export class EmbedderDownloadSkipped extends Error {
+  constructor() {
+    super("embedding model download cancelled by user");
+    this.name = "EmbedderDownloadSkipped";
+  }
+}
+
 /** Reset cached pipeline — for tests only. */
 export function resetTransformersEmbedderForTests(): void {
   transformersModulePromise = null;
@@ -98,7 +106,7 @@ async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExt
             ? false
             : await confirmModelDownload(preset.id);
       if (!allowed) {
-        throw new Error("embedding model download cancelled by user");
+        throw new EmbedderDownloadSkipped();
       }
     }
 
@@ -171,7 +179,10 @@ export class TransformersEmbedder implements Embedder {
     try {
       const pipe = await loadPipeline(preset);
       return new TransformersEmbedder(pipe, preset);
-    } catch {
+    } catch (err) {
+      pipelinePromise = null;
+      loadedPreset = null;
+      if (err instanceof EmbedderDownloadSkipped) throw err;
       stopSpinner();
       return null;
     }

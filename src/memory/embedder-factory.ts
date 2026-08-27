@@ -6,9 +6,12 @@
 // Supports: transformers.js (default), Ollama (opt-in), keyword-only fallback.
 
 import type { MemoryConfig } from "../types.js";
-import { getAppLogger } from "../logger.js";
+import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { OllamaEmbedder } from "./embeddings.js";
-import { TransformersEmbedder } from "./transformers-embedder.js";
+import {
+  EmbedderDownloadSkipped,
+  TransformersEmbedder,
+} from "./transformers-embedder.js";
 import type { Embedder } from "./types.js";
 
 function isTransformersStrategy(strategy: string): boolean {
@@ -35,20 +38,31 @@ export function resolveEmbeddingBackend(
   return config.embedder ?? "unknown";
 }
 
-export async function createEmbedder(config: MemoryConfig): Promise<Embedder | null> {
-  const log = getAppLogger().child("memory");
+export async function createEmbedder(
+  config: MemoryConfig,
+  opts?: { logger?: PraanaLogger },
+): Promise<Embedder | null> {
+  const log = (opts?.logger ?? getAppLogger()).child("memory");
   const strategy = config.embedder ?? "auto";
   const ollamaUrl = config.ollama_url ?? "http://localhost:11434";
 
   if (isTransformersStrategy(strategy)) {
-    const embedder = await tryTransformersEmbedder(config);
-    if (embedder) {
-      log.notice(`embedder: transformers (${embedder.modelId}, ${embedder.dim}-dim)`);
-      return embedder;
+    try {
+      const embedder = await tryTransformersEmbedder(config);
+      if (embedder) {
+        log.notice(`embedder: transformers (${embedder.modelId}, ${embedder.dim}-dim)`);
+        return embedder;
+      }
+    } catch (err) {
+      if (err instanceof EmbedderDownloadSkipped) {
+        log.notice("embedder: keyword-only (model download skipped)");
+        return null;
+      }
+      throw err;
     }
 
     log.warn(
-      'Transformers embedder failed to load — recall will use keyword search only.',
+      "Transformers embedder failed to load — recall will use keyword search only.",
     );
     return null;
   }

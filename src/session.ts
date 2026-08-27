@@ -1584,7 +1584,9 @@ export class Session {
       dbPath = resolveDefaultMemoryDbPath();
     }
 
-    const embedder = await createEmbedder(this.config.memory);
+    const embedder = await createEmbedder(this.config.memory, {
+      logger: this.getLogger(),
+    });
     const summarizer = await createSummarizer(this.config.memory);
 
     return new MemoryStore({

@@ -8,6 +8,7 @@ export { retractMemory } from "./db.js";
 export { OllamaEmbedder, EMBEDDING_DIM } from "./embeddings.js";
 export {
   TransformersEmbedder,
+  EmbedderDownloadSkipped,
   isTransformersAvailable,
   isModelCached,
   resetTransformersEmbedderForTests,

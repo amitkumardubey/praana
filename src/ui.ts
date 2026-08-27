@@ -28,6 +28,13 @@ let writers: UiWriters = defaultWriters;
 
 let activeSpinner: Ora | null = null;
 
+export type SpinnerSink = {
+  start(text: string): void;
+  stop(): void;
+};
+
+let spinnerSink: SpinnerSink | null = null;
+
 function stderr(line: string): void {
   writers.stderr(line);
 }
@@ -48,16 +55,26 @@ export function setUiWriters(overrides?: Partial<UiWriters>): void {
   };
 }
 
+/** Route spinner start/stop through an alternate UI (OpenTUI SpinnerHost). */
+export function setSpinnerSink(sink?: SpinnerSink | null): void {
+  spinnerSink = sink ?? null;
+}
+
 /** Write a line to the UI stderr channel (tool diffs, ancillary output). */
 export function writeUiStderr(line: string): void {
   writers.stderr(line.endsWith("\n") ? line : line + "\n");
 }
 
 /**
- * Start a spinner on stderr with the given text.
- * No-op when stderr is not a TTY (tests, CI, piped output).
+ * Start a spinner with the given text.
+ * Routes through `setSpinnerSink` when OpenTUI owns the terminal.
+ * Otherwise ora on stderr, no-op when stderr is not a TTY (tests, CI, piped output).
  */
 export function startSpinner(text: string): void {
+  if (spinnerSink) {
+    spinnerSink.start(text);
+    return;
+  }
   if (!process.stderr.isTTY) return;
   stopSpinner();
   activeSpinner = ora({ text, stream: process.stderr, discardStdin: false }).start();
@@ -75,6 +92,10 @@ export function isSpinnerActive(): boolean {
  * Safe to call when no spinner is running.
  */
 export function stopSpinner(): void {
+  if (spinnerSink) {
+    spinnerSink.stop();
+    return;
+  }
   if (!activeSpinner) return;
   activeSpinner.stop();
   activeSpinner = null;
