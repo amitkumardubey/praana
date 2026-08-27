@@ -1,6 +1,6 @@
 {
   "name": "@praana/natives",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Native capability layer for PRAANA (napi-rs / Bun Node-API)",
   "license": "MIT",
   "type": "module",
