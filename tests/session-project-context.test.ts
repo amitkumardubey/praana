@@ -1,11 +1,12 @@
-import { describe, it, expect, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { describe, it, expect, afterEach, afterAll } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
 import type { PraanaConfig } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "praana-test-session-project-context");
+const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-project-context-"));
+const testLogDir = join(testRoot, "sessions");
 
 function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
   return {
@@ -13,7 +14,7 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     memory: {
       enabled: false,
       summarizer: "disabled",
-      db_path: join(tmpdir(), "praana-project-context-memory.db"),
+      db_path: join(testRoot, "memory.db"),
       embedder: "auto",
       ollama_url: "http://localhost:11434",
       ollama_model: "nomic-embed-text",
@@ -59,6 +60,10 @@ describe("Session project context", () => {
     if (projectDir) {
       rmSync(projectDir, { recursive: true, force: true });
     }
+  });
+
+  afterAll(() => {
+    rmSync(testRoot, { recursive: true, force: true });
   });
 
   it("stores projectContext on session but not in StateGraph when engine is disabled", async () => {

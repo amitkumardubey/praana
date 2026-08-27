@@ -1,4 +1,7 @@
 import { describe, it, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { handleDoctor } from "../src/doctor.js";
 import type { PraanaConfig } from "../src/types.js";
 
@@ -7,7 +10,7 @@ const baseConfig: PraanaConfig = {
   memory: { enabled: false },
   compiler: { token_budget: 100000 },
   tiers: {},
-  session: { log_dir: "/tmp/praana-test-sessions" },
+  session: { log_dir: mkdtempSync(join(tmpdir(), "praana-test-sessions-doctor-")) },
   consolidation: {},
   shell: {},
   edit: { confirm: false },

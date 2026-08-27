@@ -1,12 +1,16 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { EventLog } from "../src/event-log.js";
 import { StateGraph } from "../src/state-graph.js";
 import type { Event } from "../src/types.js";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-const TEST_DIR = join(tmpdir(), "praana-compression-test");
+const TEST_DIR = mkdtempSync(join(tmpdir(), "praana-compression-test-"));
+
+afterAll(() => {
+  rmSync(TEST_DIR, { recursive: true, force: true });
+});
 
 function makeEvent(overrides: Partial<Event> = {}): Event {
   return {

@@ -34,7 +34,7 @@ bun add -g praana
 bunx praana
 ```
 
-Requires **Bun ≥ 1.2**. Install at [bun.sh/install](https://bun.sh/install).
+Requires **Bun ≥ 1.4**. Install at [bun.sh/install](https://bun.sh/install).
 
 ### Set a provider key and launch
 
@@ -223,7 +223,8 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 ```bash
 bun dev          # run without build step
 bun typecheck    # TypeScript type-check (no emit)
-bun test         # 997 tests across 83 files, ~11s
+bun test         # 2095 tests across 177 files, ~15s
+bun run test:parallel  # same suite, files across CPU cores (opt-in)
 ```
 
 ### Docs site (Astro)

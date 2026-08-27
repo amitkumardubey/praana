@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, utimesSync, mkdtempSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { EVENT_LOG_FILENAME, findLatestSessionForCwd, resolveSessionId } from "../src/event-log.js";
 import { AmbiguousSessionPrefixError } from "../src/session-errors.js";
 import type { SessionMeta } from "../src/types.js";
 
-const testLogDir = join(tmpdir(), "praana-test-session-resolver");
+const testLogDir = mkdtempSync(join(tmpdir(), "praana-test-session-resolver-"));
 
 function writeMeta(sessionId: string, meta: Partial<SessionMeta> & Pick<SessionMeta, "cwd">): void {
   const dir = join(testLogDir, sessionId);

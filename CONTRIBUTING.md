@@ -12,14 +12,14 @@ bun typecheck
 bun test
 ```
 
-Requires **Bun ≥1.2**. Install at [bun.sh/install](https://bun.sh/install).
+Requires **Bun ≥1.4**. Install at [bun.sh/install](https://bun.sh/install).
 
 ## Development workflow
 
 1. **Find or open an issue** — check [open issues](https://github.com/amitkumardubey/praana/issues). Issues labeled [`good first issue`](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) are scoped for first-time contributors.
 2. **Branch from `main`** — use conventional branch names: `feat/issue-123-short-desc`, `fix/issue-456-bug-name`.
 3. **Write or update tests** — add coverage in `tests/` for new logic. Use in-memory SQLite (`:memory:`) for memory-layer tests.
-4. **Run the suite** — `bun typecheck && bun test` must pass before you open a PR.
+4. **Run the suite** — `bun typecheck && bun test` must pass before you open a PR. `bun run test:parallel` is opt-in (same suite, files across CPU cores).
 5. **Open a pull request** — link the issue (`Closes #123`), describe what changed and why.
 
 ## Code conventions

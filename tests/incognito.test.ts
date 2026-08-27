@@ -1,16 +1,22 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, afterAll } from "bun:test";
 import { Session } from "../src/session.js";
 import type { PraanaConfig } from "../src/types.js";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+const testLogDir = mkdtempSync(join(tmpdir(), "praana-incognito-test-"));
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
   memory: { enabled: true, summarizer: "disabled", db_path: ":memory:" },
   compiler: { token_budget: 100_000, recent_turns: 10 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
-  session: { log_dir: join(tmpdir(), "praana-incognito-test") },
+  session: { log_dir: testLogDir },
 };
+
+afterAll(() => {
+  rmSync(testLogDir, { recursive: true, force: true });
+});
 
 describe("incognito mode", () => {
   it("starts without memory when incognito flag is set", async () => {

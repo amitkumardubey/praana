@@ -1,7 +1,7 @@
 // Integration test: session resume with state rebuild
 import { describe, it, expect, afterAll } from "bun:test";
 import { Session } from "../src/session.js";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PraanaConfig } from "../src/types.js";
@@ -10,10 +10,11 @@ import {
   replayStateGraphFromEvents,
 } from "../src/state-graph-checkpoint.js";
 
-const testLogDir = join(tmpdir(), "praana-test-sessions");
+const testRoot = mkdtempSync(join(tmpdir(), "praana-test-resume-"));
+const testLogDir = join(testRoot, "sessions");
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(tmpdir(), "praana-test-memory.db") },
+  memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },
@@ -24,11 +25,7 @@ describe("Session resume", () => {
   let task1Id: string;
 
   afterAll(() => {
-    // Clean up test session dirs
-    try {
-      const dir = join(testLogDir, sessionId);
-      rmSync(dir, { recursive: true, force: true });
-    } catch {}
+    rmSync(testRoot, { recursive: true, force: true });
   });
 
   it("creates session with state objects", async () => {

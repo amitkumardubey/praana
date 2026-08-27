@@ -71,6 +71,46 @@ describe("discoverWorkspaceMembers", () => {
     expect(discoverWorkspaceMembers(dir)).toEqual([join(dir, "packages", "a")]);
   });
 
+  it("keeps YAML 1.2 unquoted on/yes/no/off as package strings", () => {
+    // YAML 1.1 coerced these to booleans; Bun.YAML (1.2) keeps them as strings.
+    for (const name of ["on", "yes", "no", "off"]) {
+      mkdirSync(join(dir, name), { recursive: true });
+      writeFileSync(join(dir, name, "package.json"), "{}");
+    }
+    writeFileSync(
+      join(dir, "pnpm-workspace.yaml"),
+      "packages:\n  - on\n  - yes\n  - no\n  - off\n",
+    );
+
+    expect(discoverWorkspaceMembers(dir).sort()).toEqual(
+      ["no", "off", "on", "yes"].map((name) => join(dir, name)),
+    );
+  });
+
+  it("ignores YAML 1.2 boolean package entries", () => {
+    mkdirSync(join(dir, "packages", "keep"), { recursive: true });
+    writeFileSync(join(dir, "packages", "keep", "package.json"), "{}");
+    writeFileSync(
+      join(dir, "pnpm-workspace.yaml"),
+      "packages:\n  - packages/*\n  - true\n  - false\n",
+    );
+
+    expect(discoverWorkspaceMembers(dir)).toEqual([
+      join(dir, "packages", "keep"),
+    ]);
+  });
+
+  it("skips invalid pnpm-workspace.yaml including embedded NUL", () => {
+    writeFileSync(
+      join(dir, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\n\0truncated",
+    );
+    mkdirSync(join(dir, "packages", "a"), { recursive: true });
+    writeFileSync(join(dir, "packages", "a", "package.json"), "{}");
+
+    expect(discoverWorkspaceMembers(dir)).toEqual([]);
+  });
+
   it("honors ! excludes", () => {
     mkdirSync(join(dir, "packages", "keep"), { recursive: true });
     mkdirSync(join(dir, "packages", "skip"), { recursive: true });

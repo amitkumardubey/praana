@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, afterEach, mock, type Mock } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
@@ -824,7 +824,7 @@ describe("executeSlashCommand", () => {
   });
 
   describe("/sessions", () => {
-    const sessionsLogDir = join(tmpdir(), "praana-test-sessions-list");
+    const sessionsLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-list-"));
 
     function writeSession(
       id: string,
