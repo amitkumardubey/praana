@@ -11,8 +11,8 @@
  *   bun run scripts/prepare-natives-publish.ts
  *   bun run scripts/prepare-natives-publish.ts -- --package-json packages/praana-natives/package.json
  */
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 export const NATIVE_PLATFORM_PACKAGES = [
   "@praana/natives-darwin-arm64",
@@ -90,10 +90,49 @@ export function prepareNativesPublish(packageJsonPath: string): {
   }
   const next = applyNativesOptionalDependencies(pkg, version);
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
+  stampNativesLeafPublishAccess(join(dirname(path), "npm"));
   return {
     version,
     optionalDependencies: nativesOptionalDependencies(version),
   };
+}
+
+/** napi leaf packages must be public or first publish 404s on a scoped org. */
+export function applyPublicPublishConfig(
+  pkg: Record<string, unknown>,
+): Record<string, unknown> {
+  const existing =
+    pkg.publishConfig && typeof pkg.publishConfig === "object"
+      ? (pkg.publishConfig as Record<string, unknown>)
+      : {};
+  return {
+    ...pkg,
+    publishConfig: { ...existing, access: "public" },
+  };
+}
+
+export function stampNativesLeafPublishAccess(npmDir: string): string[] {
+  const stamped: string[] = [];
+  if (!existsSync(npmDir)) {
+    return stamped;
+  }
+  for (const name of readdirSync(npmDir)) {
+    const pkgPath = join(npmDir, name, "package.json");
+    if (!existsSync(pkgPath)) {
+      continue;
+    }
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      pkgPath,
+      `${JSON.stringify(applyPublicPublishConfig(pkg), null, 2)}\n`,
+      "utf-8",
+    );
+    stamped.push(name);
+  }
+  return stamped;
 }
 
 async function main(): Promise<void> {
