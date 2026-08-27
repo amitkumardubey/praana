@@ -173,6 +173,29 @@ describe("logger", () => {
     expect(lines[0]).toContain("LLM stream error");
   });
 
+  it("notice() does not write stderr when suppressStderr is true", () => {
+    const writes: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr.write as typeof process.stderr.write) = ((
+      chunk: string | Uint8Array,
+      encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+      cb?: (err?: Error | null) => void,
+    ) => {
+      writes.push(String(chunk));
+      if (typeof encodingOrCb === "function") encodingOrCb();
+      else cb?.();
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const log = new PraanaLogger({ domain: "app", suppressStderr: true });
+      log.notice("embedder: keyword-only (model download skipped)");
+      expect(writes.join("")).not.toContain("keyword-only");
+    } finally {
+      process.stderr.write = origWrite;
+    }
+  });
+
   it("extracts pi-ai error messages", () => {
     expect(
       extractLlmErrorMessage({ errorMessage: "401 Unauthorized" }),

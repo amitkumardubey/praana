@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as downloadConsentActual from "../src/ui/tui/download-consent.js";
 import { createEmbedder } from "../src/memory/embedder-factory.js";
+import { setEmbedderConsent } from "../src/memory/embedder-consent.js";
 import {
   TransformersEmbedder,
   isTransformersAvailable,
   isModelCached,
   resetTransformersEmbedderForTests,
 } from "../src/memory/index.js";
+import { createTestLogger } from "../src/logger.js";
 import type { MemoryConfig } from "../src/types.js";
 import type { Embedder } from "../src/memory/types.js";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
@@ -50,8 +52,12 @@ describe("createEmbedder factory", () => {
   it("returns null when auto and transformers is unavailable", async () => {
     if (HAS_TRANSFORMERS) return;
 
-    const embedder = await createEmbedder(makeConfig({ embedder: "auto" }));
+    const lines: string[] = [];
+    const embedder = await createEmbedder(makeConfig({ embedder: "auto" }), {
+      logger: createTestLogger((line) => lines.push(line)),
+    });
     expect(embedder).toBeNull();
+    expect(lines.join("\n")).toContain("failed to load");
   });
 
   it(
@@ -150,18 +156,52 @@ describe.skipIf(!HAS_TRANSFORMERS)("download consent", () => {
     async () => {
       // Point PRAANA_HOME to a temp dir so the model is not cached there,
       // forcing loadPipeline to call confirmModelDownload. The mock returns
-      // false (decline) → loadPipeline throws → create() catches → null.
+      // false (decline) → loadPipeline throws EmbedderDownloadSkipped.
       resetTransformersEmbedderForTests();
       const tmpHome = mkdtempSync(join(tmpdir(), "praana-home-"));
       const prevHome = process.env.PRAANA_HOME;
       process.env.PRAANA_HOME = tmpHome;
       declineDownload = true;
+      const lines: string[] = [];
 
       try {
-        const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
+        const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }), {
+          logger: createTestLogger((line) => lines.push(line)),
+        });
         expect(embedder).toBeNull();
+        const log = lines.join("\n");
+        expect(log).toContain("keyword-only (model download skipped)");
+        expect(log).not.toContain("failed to load");
       } finally {
         declineDownload = false;
+        if (prevHome === undefined) delete process.env.PRAANA_HOME;
+        else process.env.PRAANA_HOME = prevHome;
+        resetTransformersEmbedderForTests();
+        rmSync(tmpHome, { recursive: true, force: true });
+      }
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
+
+  it(
+    "treats recorded skip as keyword-only, not a load failure",
+    async () => {
+      resetTransformersEmbedderForTests();
+      const tmpHome = mkdtempSync(join(tmpdir(), "praana-home-"));
+      const prevHome = process.env.PRAANA_HOME;
+      process.env.PRAANA_HOME = tmpHome;
+      setEmbedderConsent("skip");
+      const lines: string[] = [];
+
+      try {
+        const embedder = await createEmbedder(makeConfig({ embedder: "transformers" }), {
+          logger: createTestLogger((line) => lines.push(line)),
+        });
+        expect(embedder).toBeNull();
+        const log = lines.join("\n");
+        expect(log).toContain("keyword-only (model download skipped)");
+        expect(log).not.toContain("failed to load");
+      } finally {
         if (prevHome === undefined) delete process.env.PRAANA_HOME;
         else process.env.PRAANA_HOME = prevHome;
         resetTransformersEmbedderForTests();

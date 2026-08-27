@@ -367,7 +367,7 @@ export class PraanaLogger {
     });
   }
 
-  /** User-visible status — always on stderr; also written to system log files at info level. */
+  /** User-visible status — stderr unless suppressed (TUI) or captured. Also written to system log files at info level. */
   notice(message: string, opts?: { domain?: LogDomain; details?: Record<string, unknown> }): void {
     const domain = opts?.domain ?? this.options.domain;
     const line = `[${domain}] ${message}`;
@@ -375,7 +375,7 @@ export class PraanaLogger {
       this.options.captureNotice(line);
     } else if (this.options.writeLine) {
       this.options.writeLine(line);
-    } else if (!isTestEnv()) {
+    } else if (!this.options.suppressStderr && !isTestEnv()) {
       process.stderr.write(line + "\n");
     }
     const target =

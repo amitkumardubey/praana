@@ -40,6 +40,7 @@ import type { SetupResult } from "../../setup/types.js";
 import { loadConfig } from "../../config.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
+import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
@@ -123,6 +124,13 @@ export async function runTui(
   });
 
   const ui = createShellUi();
+  setSpinnerSink({
+    start: (text) => {
+      if (ui.spinner.active()) ui.spinner.setMessage(text);
+      else ui.spinner.start(text);
+    },
+    stop: () => ui.spinner.stop(),
+  });
   ui.toast.attachConsole({
     show() {
       renderer.console.show();
@@ -302,6 +310,7 @@ export async function runTui(
   };
 
   const startSessionFromOverlay = async (): Promise<boolean> => {
+    ui.spinner.start("Starting session…");
     try {
       const started = await controller.start();
       session = controller.session;
@@ -315,6 +324,8 @@ export async function runTui(
       ui.toast.show(`Failed to start session: ${(err as Error).message}`, "error");
       renderer.requestRender();
       return false;
+    } finally {
+      ui.spinner.stop();
     }
   };
 
@@ -330,7 +341,6 @@ export async function runTui(
       }
     }
     overlay.dismiss();
-    focusPrompt();
     if (!session) {
       if (!result.success) {
         void doShutdown(1);
@@ -340,12 +350,12 @@ export async function runTui(
       return;
     }
     void applySetupToLiveSession(result);
+    focusPrompt();
   };
 
   const handleConsentComplete = (proceed: boolean) => {
     setEmbedderConsent(proceed ? "proceed" : "skip");
     overlay.dismiss();
-    focusPrompt();
     if (!session) void startSessionFromOverlay();
   };
 
@@ -374,6 +384,7 @@ export async function runTui(
   };
 
   async function doShutdown(exitCode = 0): Promise<void> {
+    setSpinnerSink();
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
@@ -651,9 +662,9 @@ export async function runTui(
             overlay.showSetup();
           } else if (bootConsent) {
             overlay.showConsent();
+          } else {
+            prompt.focus();
           }
-
-          prompt.focus();
           renderer.requestRender();
         }}
         />
