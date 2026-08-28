@@ -84,6 +84,18 @@ function Test-LocalReleaseBase([string] $Base) {
   return $Base -notmatch '^https?://'
 }
 
+function Enable-Tls12 {
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  } catch {
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    } catch {
+      # Best-effort: GitHub requires TLS 1.2; curl.exe still works without this.
+    }
+  }
+}
+
 function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
   if (Test-LocalReleaseBase $Base) {
     $source = Join-Path $Base $Name
@@ -94,10 +106,28 @@ function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
     return
   }
   $uri = "$Base/$Name"
-  try {
-    Invoke-WebRequest -Uri $uri -OutFile $Dest -UseBasicParsing -UserAgent "praana-install"
-  } catch {
-    Write-Err "failed to download $Name from $Base (no archive on latest release yet?)"
+  # PS 5.1 `curl` is an alias for Invoke-WebRequest. Use curl.exe so GitHub's
+  # latest → tag → release-assets.githubusercontent.com redirects succeed.
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    & curl.exe -fsSL --retry 3 -A "praana-install" -o $Dest $uri
+    if ($LASTEXITCODE -ne 0) {
+      Write-Err "failed to download $Name from $uri (curl exit $LASTEXITCODE)"
+    }
+  } else {
+    Enable-Tls12
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+      Invoke-WebRequest -Uri $uri -OutFile $Dest -UseBasicParsing -UserAgent "praana-install"
+    } catch {
+      Write-Err "failed to download $Name from $uri : $($_.Exception.Message)"
+    } finally {
+      $ProgressPreference = $prevProgress
+    }
+  }
+  if (-not (Test-Path -LiteralPath $Dest) -or (Get-Item -LiteralPath $Dest).Length -eq 0) {
+    Write-Err "failed to download $Name from $uri (empty file)"
   }
 }
 
