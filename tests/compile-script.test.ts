@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect } from "bun:test";
-import { formatCompileVersion } from "../scripts/compile.js";
+import { formatCompileVersion, formatBuildError } from "../scripts/compile.js";
 
 describe("compile script", () => {
   const source = readFileSync(resolve("scripts/compile.ts"), "utf-8");
@@ -29,6 +29,7 @@ describe("compile script", () => {
 
   it("logs a thrown Bun.build error instead of a bare Bundle failed", () => {
     expect(source).toContain("Bun.build threw while compiling");
+    expect(source).toContain("formatBuildError");
   });
 
   it("is wired as build:compile in package.json", () => {
@@ -36,6 +37,17 @@ describe("compile script", () => {
       scripts?: Record<string, string>;
     };
     expect(pkg.scripts?.["build:compile"]).toBe("bun run scripts/compile.ts");
+  });
+});
+
+describe("formatBuildError", () => {
+  it("flattens AggregateError chains", () => {
+    const err = new AggregateError(
+      [new Error("missing darwin optional dep"), new Error("onnx binding")],
+      "Bundle failed",
+    );
+    expect(formatBuildError(err)).toContain("missing darwin optional dep");
+    expect(formatBuildError(err)).toContain("onnx binding");
   });
 });
 
