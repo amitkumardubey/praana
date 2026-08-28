@@ -66,7 +66,7 @@ detect_target() {
     Linux | linux) os_name=linux ;;
     Darwin | darwin) os_name=darwin ;;
     MINGW* | MSYS* | CYGWIN* | Windows_NT)
-      die "unsupported: Windows shell installer. Download praana-windows-x64.zip from GitHub Releases or use: bun add -g praana"
+      die "unsupported: use install.ps1 on Windows (PowerShell). See README."
       ;;
     *)
       die "unsupported: OS '$os'"

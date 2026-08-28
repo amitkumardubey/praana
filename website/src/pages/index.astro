@@ -18,7 +18,7 @@ const faq = [
   },
   {
     q: "How do I install?",
-    a: "No Bun: curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash — installs praana and praana-natives.node into ~/.local/bin. With Bun: bun add -g praana or bunx praana.",
+    a: "No Bun: Linux/macOS — curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash. Windows (PowerShell) — irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex. With Bun: bun add -g praana or bunx praana.",
   },
   {
     q: "Is it free and open source?",
@@ -58,7 +58,11 @@ const faqStructuredData = {
       Pure TypeScript. Local-first. Any provider.
     </p>
     <div class="install-block">
-      <pre><code>curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash</code></pre>
+      <pre><code># Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex</code></pre>
     </div>
     <div class="install-block">
       <span class="install-or">or with Bun</span>
@@ -161,7 +165,10 @@ const faqStructuredData = {
 
     <h2>Quick start</h2>
     <pre><code># Install (no Bun)
+# Linux / macOS:
 curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+# Windows (PowerShell):
+irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex
 
 # Or with Bun
 bun add -g praana         # global install
