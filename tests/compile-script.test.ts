@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect } from "bun:test";
-import { formatCompileVersion, formatBuildError } from "../scripts/compile.js";
+import {
+  formatCompileVersion,
+  formatBuildError,
+  resolveFffBinPackage,
+} from "../scripts/compile.js";
 
 describe("compile script", () => {
   const source = readFileSync(resolve("scripts/compile.ts"), "utf-8");
@@ -14,6 +18,18 @@ describe("compile script", () => {
   it("disables bunfig autoload so cwd OpenTUI preloads cannot break the binary", () => {
     expect(source).toContain("autoloadBunfig: false");
     expect(source).toContain("autoloadDotenv: false");
+  });
+
+  it("embeds fff native lib via src/fff-embed.ts on the main entry chain", () => {
+    const mainSource = readFileSync(resolve("src/main.ts"), "utf-8");
+    expect(mainSource).toContain('./fff-embed.js');
+    expect(readFileSync(resolve("src/fff-embed.ts"), "utf-8")).toContain('with: { type: "file" }');
+  });
+
+  it("asserts the platform fff-bin package before compile and defines FFF_LIBC on Linux", () => {
+    expect(source).toContain("assertFffBinPackage");
+    expect(source).toContain("FFF_LIBC");
+    expect(source).toContain("search: fff available");
   });
 
   it("compiles from src/main.ts into dist/praana by default", () => {
@@ -37,6 +53,20 @@ describe("compile script", () => {
       scripts?: Record<string, string>;
     };
     expect(pkg.scripts?.["build:compile"]).toBe("bun run scripts/compile.ts");
+  });
+});
+
+describe("resolveFffBinPackage", () => {
+  it("maps bun-linux-x64 to the gnu x64 fff-bin package", () => {
+    expect(resolveFffBinPackage("bun-linux-x64")).toBe(
+      "@ff-labs/fff-bin-linux-x64-gnu",
+    );
+  });
+
+  it("maps bun-darwin-arm64 to the darwin arm64 fff-bin package", () => {
+    expect(resolveFffBinPackage("bun-darwin-arm64")).toBe(
+      "@ff-labs/fff-bin-darwin-arm64",
+    );
   });
 });
 

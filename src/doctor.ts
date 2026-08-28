@@ -4,7 +4,7 @@ import { getConfigWarnings } from "./config.js";
 import { appHomePath, APP_NAME } from "./app-identity.js";
 import { isTransformersAvailable } from "./memory/transformers-embedder.js";
 import { loadNative, formatNativeStatus } from "./native/index.js";
-import { isFffAvailable, getFffLoadError } from "./fff.js";
+import { probeFffOperational } from "./fff.js";
 import type { PraanaConfig } from "./types.js";
 
 export async function handleDoctor(
@@ -63,14 +63,13 @@ export async function handleDoctor(
     lines.push(`⚠ native: unavailable: ${(err as Error).message}`);
   }
 
-  // fff (search_code / find_files) availability
+  // fff (search_code / find_files) availability — create probe, not dlopen-only
   try {
-    const fff = await isFffAvailable();
-    if (fff) {
+    const probe = await probeFffOperational("/tmp");
+    if (probe.ok) {
       lines.push("✓ search: fff available (search_code, find_files)");
     } else {
-      const detail = getFffLoadError() ?? "unknown";
-      lines.push(`⚠ search: fff unavailable: ${detail}`);
+      lines.push(`⚠ search: fff unavailable: ${probe.detail}`);
     }
   } catch (err) {
     lines.push(`⚠ search: fff unavailable: ${(err as Error).message}`);

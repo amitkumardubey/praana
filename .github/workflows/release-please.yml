@@ -117,10 +117,13 @@ jobs:
           set -euo pipefail
           if [[ "${{ matrix.artifact }}" == *.exe ]]; then
             dist/${{ matrix.artifact }} --version
+            dist/${{ matrix.artifact }} doctor | tee /tmp/praana-doctor.txt
           else
             chmod +x dist/${{ matrix.artifact }}
-            ./dist/${{ matrix.artifact }} --version
+            (cd /tmp && "${GITHUB_WORKSPACE}/dist/${{ matrix.artifact }}" --version)
+            (cd /tmp && "${GITHUB_WORKSPACE}/dist/${{ matrix.artifact }}" doctor) | tee /tmp/praana-doctor.txt
           fi
+          grep -q "search: fff available" /tmp/praana-doctor.txt
 
       - name: Upload compiled binary
         uses: actions/upload-artifact@v4

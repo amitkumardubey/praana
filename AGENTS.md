@@ -123,9 +123,11 @@ Standalone GitHub Release archives include a matching `praana-natives.node` side
 
 ### fff — In-Process File Search (`@ff-labs/fff-bun`)
 
-`search_code` and `find_files` are powered by fff, an in-process file search index (native library ships with the `@ff-labs/fff-bun` npm package). The `FileFinder` is created lazily per `cwd` and shared between both tools. The initial scan runs in the background; the first search waits up to `[search_code] scan_timeout_ms` (default 5000).
+`search_code` and `find_files` are powered by fff, an in-process file search index (native Rust library via Bun FFI — **not** pure JS). The `FileFinder` is created lazily per `cwd` and shared between both tools. The initial scan runs in the background; the first search waits up to `[search_code] scan_timeout_ms` (default 5000).
 
-fff availability is probed at session start and surfaced in the boot banner (`search: available` / `search: unavailable`), `/stats`, and `praana doctor`.
+**Standalone binaries:** the platform `libfff_c` native library must be **embedded at compile time** via `src/fff-embed.ts` (static `type: "file"` import on the `main.ts` chain). `scripts/compile.ts` asserts the matching `@ff-labs/fff-bin-*` package is present, passes `FFF_LIBC` on Linux (`gnu` default), and smoke-tests `praana doctor` from `/tmp` (no `node_modules` fallback). Unlike `@praana/natives`, fff does **not** ship as a sidecar.
+
+fff availability is probed at session start and surfaced in the boot banner (`search: available` / `search: unavailable`), `/stats`, and `praana doctor` (operational create probe, not dlopen-only).
 
 **Known tradeoff:** fff's `grep()` is synchronous — it blocks the event loop while searching. An `AbortSignal` cannot interrupt a running grep. For very large codebases, this may cause brief TUI freezes. Use `shell rg` for searching outside the project root or when interactive abort is needed.</think>
 

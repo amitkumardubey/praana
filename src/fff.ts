@@ -1,6 +1,7 @@
 import { join, relative, isAbsolute, normalize } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
+import * as fffBun from "@ff-labs/fff-bun";
 import type { SandboxConfig } from "./types.js";
 
 /**
@@ -26,50 +27,73 @@ export interface FffManager {
 let _fffLoadError: string | null = null;
 let _cachedAvailable: boolean | null = null;
 
-async function tryImportFff(): Promise<typeof import("@ff-labs/fff-bun") | null> {
-  try {
-    const mod = (await import("@ff-labs/fff-bun")) as typeof import("@ff-labs/fff-bun");
-    return mod;
-  } catch (e) {
-    _fffLoadError = (e as Error).message;
-    return null;
-  }
+function fffModule(): typeof fffBun {
+  return fffBun;
 }
 
 export function getFffLoadError(): string | null {
   return _fffLoadError;
 }
 
-/** Async probe — actually tries to import. Caches the result. */
+function recordFffError(message: string): void {
+  _fffLoadError = message;
+  _cachedAvailable = false;
+}
+
+/** Async probe — dlopen only. Caches the result. */
 export async function isFffAvailable(): Promise<boolean> {
   if (_cachedAvailable !== null) return _cachedAvailable;
-  const mod = await tryImportFff();
-  if (!mod) {
-    _cachedAvailable = false;
-    return false;
-  }
   try {
-    _cachedAvailable = mod.FileFinder.isAvailable();
-  } catch {
-    _cachedAvailable = false;
+    _cachedAvailable = fffModule().FileFinder.isAvailable();
+  } catch (e) {
+    recordFffError((e as Error).message);
   }
   return _cachedAvailable ?? false;
 }
 
+/**
+ * Operational probe — same checks as search_code / find_files (create + destroy).
+ * Doctor uses this so a dlopen-only pass cannot false-positive via node_modules fallback.
+ */
+export async function probeFffOperational(
+  cwd: string = process.cwd(),
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  if (!(await isFffAvailable())) {
+    return { ok: false, detail: getFffLoadError() ?? "native library not loadable" };
+  }
+
+  const result = fffModule().FileFinder.create({ basePath: cwd, aiMode: true });
+  if (!result.ok) {
+    recordFffError(result.error);
+    return { ok: false, detail: result.error };
+  }
+
+  try {
+    result.value.destroy();
+  } catch {
+    // ignore
+  }
+
+  _cachedAvailable = true;
+  _fffLoadError = null;
+  return { ok: true };
+}
+
 export async function createFffManager(basePath: string): Promise<FffManager> {
-  const mod = await tryImportFff();
-  if (!mod) {
-    const err = _fffLoadError ?? "fff native library not available";
+  if (!fffModule().FileFinder.isAvailable()) {
+    const err = "fff native library not available for this platform";
+    recordFffError(err);
     return createFailedManager(basePath, err);
   }
-  if (!mod.FileFinder.isAvailable()) {
-    return createFailedManager(basePath, "fff native library not available for this platform");
-  }
-  const result = mod.FileFinder.create({ basePath, aiMode: true });
+
+  const result = fffModule().FileFinder.create({ basePath, aiMode: true });
   if (!result.ok) {
+    recordFffError(result.error);
     return createFailedManager(basePath, result.error);
   }
+
   _cachedAvailable = true;
+  _fffLoadError = null;
   const finder = result.value;
   let destroyed = false;
 

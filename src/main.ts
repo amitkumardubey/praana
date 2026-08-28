@@ -1,3 +1,4 @@
+import "./fff-embed.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getMissingKeyMessage } from "./llm.js";

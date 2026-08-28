@@ -16,9 +16,11 @@
  *   bun run build:compile -- --outfile dist/praana-linux
  */
 import { mkdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import solidPlugin from "@opentui/solid/bun-plugin";
 
+const require = createRequire(import.meta.url);
 const DEFAULT_OUTFILE = "dist/praana";
 
 function parseArgs(argv: string[]): {
@@ -155,6 +157,108 @@ export async function resolveCompileVersion(
   });
 }
 
+type FffBinCoords = { os: string; arch: string; libc?: string };
+
+/** Map a bun compile target (or host) to the @ff-labs/fff-bin-* package name. */
+export function resolveFffBinPackage(target?: string): string {
+  const { os, arch, libc } = resolveFffBinCoords(target);
+  if (os === "linux") {
+    return `@ff-labs/fff-bin-linux-${arch}-${libc ?? "gnu"}`;
+  }
+  if (os === "darwin") {
+    return `@ff-labs/fff-bin-darwin-${arch}`;
+  }
+  if (os === "win32") {
+    return `@ff-labs/fff-bin-win32-${arch}`;
+  }
+  throw new Error(`Unsupported fff platform for compile target: ${target ?? "host"}`);
+}
+
+function resolveFffBinCoords(target?: string): FffBinCoords {
+  if (!target) {
+    return {
+      os: process.platform,
+      arch: process.arch,
+      libc: process.platform === "linux" ? "gnu" : undefined,
+    };
+  }
+
+  const match = /^bun-(darwin|linux|windows)-(x64|arm64)$/.exec(target);
+  if (!match) {
+    throw new Error(`Cannot resolve fff bin package for compile target: ${target}`);
+  }
+
+  const os = match[1] === "windows" ? "win32" : match[1]!;
+  return { os, arch: match[2]!, libc: os === "linux" ? "gnu" : undefined };
+}
+
+/** Fail fast when the platform fff native package is missing at compile time. */
+export function assertFffBinPackage(target?: string): void {
+  const pkg = resolveFffBinPackage(target);
+  try {
+    require.resolve(`${pkg}/package.json`);
+  } catch {
+    throw new Error(
+      `Missing ${pkg}. Standalone search_code requires the platform fff-bin package when compiling. Run bun install.`,
+    );
+  }
+}
+
+function buildDefines(version: string, target?: string): Record<string, string> {
+  const defines: Record<string, string> = {
+    PRAANA_BUILD_VERSION: JSON.stringify(version),
+  };
+  const { os, libc } = resolveFffBinCoords(target);
+  if (os === "linux" && libc) {
+    defines.FFF_LIBC = JSON.stringify(libc);
+  }
+  return defines;
+}
+
+async function smokeCompiledBinary(outPath: string, version: string): Promise<void> {
+  const smokeCwd = "/tmp";
+
+  const versionProc = Bun.spawn([outPath, "--version"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd: smokeCwd,
+  });
+  const [versionStdout, versionStderr, versionCode] = await Promise.all([
+    new Response(versionProc.stdout).text(),
+    new Response(versionProc.stderr).text(),
+    versionProc.exited,
+  ]);
+  const expected = `PRAANA v${version}`;
+  if (versionCode !== 0 || !versionStdout.includes(expected)) {
+    console.error("Smoke test failed (praana --version from /tmp):");
+    if (versionStdout.trim()) console.error(versionStdout);
+    if (versionStderr.trim()) console.error(versionStderr);
+    console.error(`Expected stdout to include: ${expected}`);
+    process.exit(1);
+  }
+  console.log(`Smoke OK: ${expected} (cwd=/tmp)`);
+
+  const doctorProc = Bun.spawn([outPath, "doctor"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd: smokeCwd,
+  });
+  const [doctorStdout, doctorStderr, doctorCode] = await Promise.all([
+    new Response(doctorProc.stdout).text(),
+    new Response(doctorProc.stderr).text(),
+    doctorProc.exited,
+  ]);
+  const doctorOut = `${doctorStdout}\n${doctorStderr}`;
+  if (doctorCode !== 0 || !doctorOut.includes("search: fff available")) {
+    console.error("Smoke test failed (praana doctor fff probe from /tmp):");
+    if (doctorStdout.trim()) console.error(doctorStdout);
+    if (doctorStderr.trim()) console.error(doctorStderr);
+    console.error("Expected doctor to report embedded fff as available");
+    process.exit(1);
+  }
+  console.log("Smoke OK: fff available via doctor (cwd=/tmp, no node_modules fallback)");
+}
+
 async function main(): Promise<void> {
   const { target, outfile, help } = parseArgs(process.argv.slice(2));
   if (help) {
@@ -170,6 +274,10 @@ async function main(): Promise<void> {
     `Compiling praana v${version} → ${outfile}${target ? ` (target=${target})` : ""}…`,
   );
 
+  assertFffBinPackage(target);
+  const fffBin = resolveFffBinPackage(target);
+  console.log(`fff embed: ${fffBin}`);
+
   let result: Awaited<ReturnType<typeof Bun.build>>;
   try {
     result = await Bun.build({
@@ -182,9 +290,7 @@ async function main(): Promise<void> {
       plugins: [solidPlugin],
       minify: true,
       sourcemap: "none",
-      define: {
-        PRAANA_BUILD_VERSION: JSON.stringify(version),
-      },
+      define: buildDefines(version, target),
       compile: {
         ...(target ? { target: target as Bun.Build.CompileTarget } : {}),
         outfile: outPath,
@@ -214,27 +320,9 @@ async function main(): Promise<void> {
 
   console.log(`Wrote ${outfile}`);
 
-  // Smoke: only when building for the host (no cross-compile target).
+  // Smoke on native host builds only (cross-target binaries run on matching CI runners).
   if (!target) {
-    const proc = Bun.spawn([outPath, "--version"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      cwd: resolve("."), // must work even with repo bunfig.toml present
-    });
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    const expected = `PRAANA v${version}`;
-    if (exitCode !== 0 || !stdout.includes(expected)) {
-      console.error("Smoke test failed (praana --version from repo cwd):");
-      if (stdout.trim()) console.error(stdout);
-      if (stderr.trim()) console.error(stderr);
-      console.error(`Expected stdout to include: ${expected}`);
-      process.exit(1);
-    }
-    console.log(`Smoke OK: ${expected} (repo bunfig.toml present)`);
+    await smokeCompiledBinary(outPath, version);
   }
 }
 

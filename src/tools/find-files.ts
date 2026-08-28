@@ -7,6 +7,7 @@ import {
   pathToConstraint,
   sandboxBlockReason,
   getFffManager,
+  getFffLoadError,
   clearFffCache,
 } from "../fff.js";
 
@@ -120,8 +121,9 @@ export async function runFindFiles(
   }
 
   if (!manager.isAvailable()) {
-    const { getFffLoadError } = await import("../fff.js");
-    const detail = getFffLoadError() ?? "unknown";
+    const ready = await manager.ensureReady();
+    const detail =
+      getFffLoadError() ?? (ready.ok ? null : ready.error) ?? "unknown";
     return {
       ok: false,
       error: `fff not available: ${detail}. Install @ff-labs/fff-bun or check platform support.`,
