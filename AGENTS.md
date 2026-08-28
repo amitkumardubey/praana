@@ -42,7 +42,7 @@ Uses `@opentui/solid/bun-plugin` and sets `compile.autoloadBunfig = false` so la
 
 Baked `--version` string: exact git tag `v{package.json version}` with a clean tree → that version (e.g. `0.12.0`); otherwise `{version}-dev.<shortsha>[.dirty]` so branch builds are not mistaken for a release.
 
-Release CI (`release-please.yml`) compiles those four targets, packs `praana-<os>-<arch>.tar.gz` + `SHA256SUMS` via `bun run package:binaries` (each archive is `praana` + `praana-natives.node`), and uploads them to the GitHub Release. `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`. Standalone install (no Bun): `install.sh` → `~/.local/bin`.
+Release CI (`release-please.yml`) compiles those four targets (darwin-x64 on `macos-15-intel`; other targets on matching native runners), packs `praana-<os>-<arch>.tar.gz` + `SHA256SUMS` via `bun run package:binaries --allow-missing` (each archive is `praana` + `praana-natives.node`; skips any target whose binary did not build), and uploads them to the GitHub Release. `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`. Standalone install (no Bun): `install.sh` → `~/.local/bin`.
 
 ## Running
 

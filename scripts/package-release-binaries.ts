@@ -106,6 +106,7 @@ function parseArgs(argv: string[]): {
   let nativeDir = DEFAULT_NATIVE_DIR;
   let nativeArtifactsDir: string | undefined;
   let skipNative = false;
+  let allowMissing = false;
   let help = false;
 
   for (let i = 0; i < argv.length; i++) {
@@ -116,6 +117,10 @@ function parseArgs(argv: string[]): {
     }
     if (arg === "--skip-native") {
       skipNative = true;
+      continue;
+    }
+    if (arg === "--allow-missing") {
+      allowMissing = true;
       continue;
     }
     if (arg === "--dist-dir") {
@@ -161,7 +166,7 @@ function parseArgs(argv: string[]): {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { distDir, outDir, nativeDir, nativeArtifactsDir, skipNative, help };
+  return { distDir, outDir, nativeDir, nativeArtifactsDir, skipNative, allowMissing, help };
 }
 
 function printHelp(): void {
@@ -182,6 +187,9 @@ Expects native sidecars named:
   ${RELEASE_BINARY_TARGETS.map((t) => nativeSidecarDistName(t)).join(", ")}
 
 Each archive contains \`${SIDECAR_ADDON_FILENAME}\` beside \`praana\` unless --skip-native.
+
+Options:
+  --allow-missing   Skip targets with no compiled binary (CI recovery)
 `);
 }
 
@@ -214,10 +222,12 @@ export async function packageReleaseBinaries(options: {
   nativeDir?: string;
   nativeArtifactsDir?: string;
   skipNative?: boolean;
+  allowMissing?: boolean;
 }): Promise<{ archives: string[]; checksumsPath: string }> {
   const distDir = resolve(options.distDir);
   const outDir = resolve(options.outDir);
   const skipNative = options.skipNative === true;
+  const allowMissing = options.allowMissing === true;
   const nativeDir = resolve(options.nativeDir ?? DEFAULT_NATIVE_DIR);
   const nativeArtifactsDir = options.nativeArtifactsDir
     ? resolve(options.nativeArtifactsDir)
@@ -231,6 +241,10 @@ export async function packageReleaseBinaries(options: {
     const binaryName = releaseBinaryFileName(target);
     const binaryPath = join(distDir, binaryName);
     if (!existsSync(binaryPath)) {
+      if (allowMissing) {
+        console.warn(`Skipping ${target}: missing compiled binary at ${binaryPath}`);
+        continue;
+      }
       throw new Error(`Missing compiled binary: ${binaryPath}`);
     }
 
@@ -272,12 +286,15 @@ export async function packageReleaseBinaries(options: {
   }
 
   const checksumsPath = join(outDir, "SHA256SUMS");
+  if (archives.length === 0) {
+    throw new Error("No release archives were produced");
+  }
   writeFileSync(checksumsPath, formatSha256Sums(checksumEntries), "utf-8");
   return { archives, checksumsPath };
 }
 
 async function main(): Promise<void> {
-  const { distDir, outDir, nativeDir, nativeArtifactsDir, skipNative, help } =
+  const { distDir, outDir, nativeDir, nativeArtifactsDir, skipNative, allowMissing, help } =
     parseArgs(process.argv.slice(2));
   if (help) {
     printHelp();
@@ -290,6 +307,7 @@ async function main(): Promise<void> {
     nativeDir,
     nativeArtifactsDir,
     skipNative,
+    allowMissing,
   });
   console.log(`Wrote ${result.archives.length} archives + ${basename(result.checksumsPath)}`);
   for (const archive of result.archives) {
