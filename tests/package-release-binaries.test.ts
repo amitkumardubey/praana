@@ -88,6 +88,30 @@ describe("packageReleaseBinaries", () => {
     }
   });
 
+  it("skips missing binaries when allowMissing is set", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-package-binaries-allow-missing-"));
+    const distDir = join(root, "dist");
+    const outDir = join(root, "out");
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(join(distDir, releaseBinaryFileName("linux-x64")), "bin\n");
+
+    try {
+      const result = await packageReleaseBinaries({
+        distDir,
+        outDir,
+        skipNative: true,
+        allowMissing: true,
+      });
+      expect(result.archives).toHaveLength(1);
+      expect(result.archives[0]).toContain("praana-linux-x64.tar.gz");
+      expect(readFileSync(result.checksumsPath, "utf-8")).toContain(
+        "praana-linux-x64.tar.gz",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails when a native sidecar is missing unless skipNative", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-package-binaries-no-native-"));
     const distDir = join(root, "dist");

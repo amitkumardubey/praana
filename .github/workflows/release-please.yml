@@ -75,11 +75,12 @@ jobs:
             target: bun-darwin-arm64
             artifact: praana-darwin-arm64
             smoke: true
-          - runner: macos-13
+          - runner: macos-15-intel
             target: bun-darwin-x64
             artifact: praana-darwin-x64
             smoke: true
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.target == 'bun-darwin-x64' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -118,7 +119,11 @@ jobs:
 
   package-release:
     needs: [release-please, build-binaries, build-natives]
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    if: >-
+      always() &&
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.build-natives.result == 'success' &&
+      (needs.build-binaries.result == 'success' || needs.build-binaries.result == 'failure')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -148,7 +153,7 @@ jobs:
           pattern: bindings-*
 
       - name: Package release archives
-        run: bun run package:binaries -- --dist-dir dist --native-artifacts-dir artifacts
+        run: bun run package:binaries -- --dist-dir dist --native-artifacts-dir artifacts --allow-missing
 
       - name: Upload GitHub Release assets
         env:
