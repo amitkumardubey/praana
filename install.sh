@@ -223,13 +223,14 @@ fi
 if ! "$dest/praana" --version >/dev/null 2>&1; then
   die "smoke --version failed after install"
 fi
+# Doctor strings are a best-effort check. curl-from-main can install the
+# previous GitHub Release (e.g. v0.14.0) whose doctor still says "fff".
 doc_out=$("$dest/praana" doctor 2>&1) || true
 if ! printf '%s\n' "$doc_out" | grep '✓ native:' >/dev/null; then
   printf '%s\n' "$doc_out" >&2
-  die "doctor did not report native capability"
+  printf 'warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)\n' >&2
 fi
 if ! printf '%s\n' "$doc_out" | grep '✓ search:' >/dev/null; then
-  printf '%s\n' "$doc_out" >&2
-  die "doctor did not report search capability"
+  printf 'warning: doctor did not report search capability (this GitHub Release may predate native grep; merge/release 0.15+)\n' >&2
 fi
 printf 'Run: praana --version\n'

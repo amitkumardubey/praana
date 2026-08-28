@@ -55,6 +55,8 @@ describe("install.ps1", () => {
     expect(source).toContain("irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex");
     expect(source).toContain("powershell -NoProfile -ExecutionPolicy Bypass");
     expect(source).toContain("praana-windows-x64.zip");
+    expect(source).toContain('Contains("Platform")');
+    expect(source).not.toMatch(/\$PSVersionTable\.Platform/);
   });
 
   it("targets windows-x64 and rejects ARM64", () => {
