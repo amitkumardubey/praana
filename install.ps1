@@ -189,6 +189,10 @@ try {
     Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$dest;`" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')"
   }
   $installedExe = Join-Path $dest $ExeName
+  # Expand-Archive does not restore Unix +x; pwsh-on-Linux CI needs it to smoke.
+  if ($PSVersionTable.Platform -eq "Unix") {
+    & chmod +x $installedExe
+  }
   & $installedExe --version | Out-Null
   if ($LASTEXITCODE -ne 0) {
     Write-Err "smoke --version failed after install"

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -76,13 +77,31 @@ describe("install.ps1", () => {
 
     const staging = join(root, "staging");
     mkdirSync(staging);
-    writeFileSync(join(staging, "praana.exe"), "fixture-praana\r\n");
+    writeFileSync(
+      join(staging, "praana.exe"),
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "PRAANA v0.0.0-fixture"
+  exit 0
+fi
+if [ "$1" = "doctor" ]; then
+  echo "✓ native: available (0.3.0, ping ok)"
+  echo "✓ search: native grep available (search_code, find_files)"
+  echo "⚠ embedder: runtime ready, weights not downloaded"
+  echo "All checks passed."
+  exit 0
+fi
+echo fixture-praana
+`,
+    );
+    chmodSync(join(staging, "praana.exe"), 0o755);
     writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\r\n");
+    writeFileSync(join(staging, "praana-natives.json"), '{"apiVersion":"0.3.0"}\n');
 
     const archiveName = "praana-windows-x64.zip";
     const archivePath = join(releaseDir, archiveName);
     const packed = Bun.spawnSync(
-      ["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME],
+      ["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME, "praana-natives.json"],
       { cwd: staging, stdout: "pipe", stderr: "pipe" },
     );
     expect(packed.exitCode).toBe(0);
