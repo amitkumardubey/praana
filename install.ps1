@@ -22,6 +22,7 @@ $ErrorActionPreference = "Stop"
 
 $ReleaseBaseDefault = "https://github.com/amitkumardubey/praana/releases/latest/download"
 $SidecarName = "praana-natives.node"
+$ManifestName = "praana-natives.json"
 $ArchiveName = "praana-windows-x64.zip"
 $ExeName = "praana.exe"
 $TargetStem = "praana-windows-x64"
@@ -158,22 +159,48 @@ try {
 
   $exePath = Join-Path $extractDir $ExeName
   $sidecarPath = Join-Path $extractDir $SidecarName
+  $manifestPath = Join-Path $extractDir $ManifestName
   if (-not (Test-Path -LiteralPath $exePath)) {
     Write-Err "archive missing $ExeName"
   }
   if (-not (Test-Path -LiteralPath $sidecarPath)) {
-    Write-Err "archive missing $SidecarName (Tree-sitter sidecar)"
+    Write-Err "archive missing $SidecarName (native sidecar)"
   }
 
   New-Item -ItemType Directory -Path $dest -Force | Out-Null
-  Copy-Item -LiteralPath $exePath -Destination (Join-Path $dest $ExeName) -Force
-  Copy-Item -LiteralPath $sidecarPath -Destination (Join-Path $dest $SidecarName) -Force
+  $stage = Join-Path $dest (".praana-install-" + [guid]::NewGuid().ToString())
+  New-Item -ItemType Directory -Path $stage -Force | Out-Null
+  Copy-Item -LiteralPath $exePath -Destination (Join-Path $stage $ExeName) -Force
+  Copy-Item -LiteralPath $sidecarPath -Destination (Join-Path $stage $SidecarName) -Force
+  if (Test-Path -LiteralPath $manifestPath) {
+    Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stage $ManifestName) -Force
+  }
+  Move-Item -LiteralPath (Join-Path $stage $ExeName) -Destination (Join-Path $dest $ExeName) -Force
+  Move-Item -LiteralPath (Join-Path $stage $SidecarName) -Destination (Join-Path $dest $SidecarName) -Force
+  if (Test-Path -LiteralPath (Join-Path $stage $ManifestName)) {
+    Move-Item -LiteralPath (Join-Path $stage $ManifestName) -Destination (Join-Path $dest $ManifestName) -Force
+  }
+  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
   Write-Host "Installed $ExeName and $SidecarName to $dest"
   if (-not (Test-PathOnPath $dest)) {
     Write-Host ""
     Write-Host "$dest is not on PATH. Add it (current user), then open a new terminal:"
     Write-Host "  [Environment]::SetEnvironmentVariable('Path', `"$dest;`" + [Environment]::GetEnvironmentVariable('Path', 'User'), 'User')"
+  }
+  $installedExe = Join-Path $dest $ExeName
+  & $installedExe --version | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Err "smoke --version failed after install"
+  }
+  $docOut = & $installedExe doctor 2>&1 | Out-String
+  if ($docOut -notmatch "✓ native:") {
+    Write-Host $docOut
+    Write-Err "doctor did not report native capability"
+  }
+  if ($docOut -notmatch "✓ search:") {
+    Write-Host $docOut
+    Write-Err "doctor did not report search capability"
   }
   Write-Host "Run: praana --version"
 } finally {

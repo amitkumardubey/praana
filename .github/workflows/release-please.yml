@@ -172,6 +172,27 @@ jobs:
       - name: Package release archives
         run: bun run package:binaries -- --dist-dir dist --native-artifacts-dir artifacts --allow-missing
 
+      - name: Smoke packed linux-x64 archive from a clean directory
+        run: |
+          set -euo pipefail
+          archive="dist/release/praana-linux-x64.tar.gz"
+          if [ ! -f "$archive" ]; then
+            echo "Skipping clean-dir doctor smoke: $archive not packed"
+            exit 0
+          fi
+          smoke=$(mktemp -d /tmp/praana-release-smoke.XXXXXX)
+          tar -xzf "$archive" -C "$smoke"
+          chmod +x "$smoke/praana"
+          "$smoke/praana" --version
+          set +e
+          out=$("$smoke/praana" doctor 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -q '✓ native:' || { echo "doctor missing native"; exit 1; }
+          printf '%s\n' "$out" | grep -q '✓ search:' || { echo "doctor missing search"; exit 1; }
+          rm -rf "$smoke"
+
       - name: Upload GitHub Release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

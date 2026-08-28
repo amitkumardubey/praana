@@ -6,7 +6,8 @@
  * `scripts/compile.ts` and matching `praana-natives-<target>.node` files in
  * `--native-dir` (default `dist/native`). Each archive contains:
  *   praana                 — compiled executable
- *   praana-natives.node    — Tree-sitter addon sidecar (same directory)
+ *   praana-natives.node    — native addon sidecar (search, tree-sitter, embed)
+ *   praana-natives.json    — api version, target triple, sha256 of the .node
  *
  * Usage:
  *   bun run scripts/package-release-binaries.ts
@@ -29,6 +30,11 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
+import {
+  NATIVE_API_VERSION,
+  SIDECAR_MANIFEST_FILENAME,
+  formatSidecarManifest,
+} from "../src/native/manifest.js";
 
 export const RELEASE_BINARY_TARGETS = [
   "linux-x64",
@@ -195,7 +201,7 @@ Expects binaries named:
 Expects native sidecars named:
   ${RELEASE_BINARY_TARGETS.map((t) => nativeSidecarDistName(t)).join(", ")}
 
-Each archive contains \`${SIDECAR_ADDON_FILENAME}\` beside the platform executable (\`praana\` or \`praana.exe\`) unless --skip-native.
+Each archive contains \`${SIDECAR_ADDON_FILENAME}\` and \`${SIDECAR_MANIFEST_FILENAME}\` beside the platform executable (\`praana\` or \`praana.exe\`) unless --skip-native.
 
 Options:
   --allow-missing   Skip targets with no compiled binary (CI recovery)
@@ -305,6 +311,16 @@ export async function packageReleaseBinaries(options: {
       if (nativePath) {
         copyFileSync(nativePath, join(stagingDir, SIDECAR_ADDON_FILENAME));
         entries.push(SIDECAR_ADDON_FILENAME);
+        const sha256 = await sha256File(nativePath);
+        writeFileSync(
+          join(stagingDir, SIDECAR_MANIFEST_FILENAME),
+          formatSidecarManifest({
+            apiVersion: NATIVE_API_VERSION,
+            target,
+            sha256,
+          }),
+        );
+        entries.push(SIDECAR_MANIFEST_FILENAME);
       }
 
       const archiveName = releaseArchiveFileName(target);

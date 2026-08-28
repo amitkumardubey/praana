@@ -1,31 +1,24 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
-import { resolve as resolvePath, isAbsolute, join } from "node:path";
+import { resolve as resolvePath, isAbsolute } from "node:path";
 import type { SandboxConfig } from "../types.js";
 import {
-  buildFffQuery,
-  fileTypeToConstraint,
+  fileTypeToGlob,
   pathToConstraint,
   sandboxBlockReason,
-  getFffManager,
-  clearFffCache,
-} from "../fff.js";
+  toStringList,
+} from "../sandbox-path.js";
+import { tryGetNative } from "../native/index.js";
 
 /**
- * search_code — fff-backed structured code search.
+ * search_code — native grep via `@praana/natives`.
  *
- * Wraps fff's grep with a stable JSON contract:
+ * Stable JSON contract:
  *   { matches: [{ file, line, column, text, context_before, context_after }],
  *     stats:   { totalMatches, filesWithMatches, truncated } }
  *
- * The FileFinder is created lazily per cwd and kept alive for the process;
- * the initial scan runs in the background and the first search waits for it.
- *
- * Note: fff's `grep()` is synchronous (not Promise-returning). This means the
- * search blocks the event loop while running. The `timeBudgetMs` option limits
- * search duration but does not make the call abortable — an AbortSignal cannot
- * interrupt a running grep. This is a known tradeoff of the in-process native
- * index vs. a child-process approach like the old `rg --json` streaming.
+ * Grep is synchronous and blocks the event loop. An AbortSignal cannot
+ * interrupt a running search. Use `shell rg` for huge trees or interactive abort.
  */
 
 export interface SearchCodeMatch {
@@ -72,7 +65,7 @@ const searchCodeSchema = z.object({
   pattern: z
     .string()
     .min(1)
-    .describe("Regex pattern to search for (regex syntax, fff-backed)"),
+    .describe("Regex pattern to search for (regex syntax, native grep)"),
   path: z
     .string()
     .optional()
@@ -111,10 +104,22 @@ const searchCodeSchema = z.object({
     .int()
     .min(1)
     .optional()
-    .describe("Timeout in milliseconds (default 30000, mapped to timeBudgetMs)"),
+    .describe("Timeout in milliseconds (default 30000)"),
 });
 
 export type SearchCodeArgs = z.infer<typeof searchCodeSchema>;
+
+export function collectIncludeGlobs(args: SearchCodeArgs): string[] {
+  const globs = [...toStringList(args.glob)];
+  if (args.file_type) globs.push(fileTypeToGlob(args.file_type));
+  return globs;
+}
+
+export function collectExcludeGlobs(args: SearchCodeArgs): string[] {
+  return toStringList(args.glob_exclude).map((g) =>
+    g.startsWith("!") ? g.slice(1) : g,
+  );
+}
 
 export function buildFffConstraints(
   args: SearchCodeArgs,
@@ -122,51 +127,39 @@ export function buildFffConstraints(
   searchPath: string,
 ): string[] {
   const constraints: string[] = [];
-
-  // path constraint
   if (args.path) {
     const c = pathToConstraint(cwd, searchPath);
     if (c) constraints.push(c);
   }
-
-  // file_type constraint
-  if (args.file_type) {
-    constraints.push(fileTypeToConstraint(args.file_type));
-  }
-
-  // include globs
-  for (const g of args.glob ? (Array.isArray(args.glob) ? args.glob : [args.glob]) : []) {
-    constraints.push(g);
-  }
-  // exclude globs
-  for (const g of args.glob_exclude
-    ? Array.isArray(args.glob_exclude)
-      ? args.glob_exclude
-      : [args.glob_exclude]
-    : []) {
+  constraints.push(...collectIncludeGlobs(args));
+  for (const g of collectExcludeGlobs(args)) {
     constraints.push(g.startsWith("!") ? g : `!${g}`);
   }
-
   return constraints;
 }
 
-export function buildFffGrepQuery(args: SearchCodeArgs, cwd: string, searchPath: string): string {
-  const constraints = buildFffConstraints(args, cwd, searchPath);
+export function buildFffGrepQuery(
+  args: SearchCodeArgs,
+  _cwd: string,
+  _searchPath: string,
+): string {
   let pattern = args.pattern;
-  if (args.case_insensitive) {
-    // In regex mode, use inline (?i) flag; avoid lowercasing which breaks char classes.
-    if (!pattern.startsWith("(?i)")) {
-      pattern = `(?i)${pattern}`;
-    }
+  if (args.case_insensitive && !pattern.startsWith("(?i)")) {
+    pattern = `(?i)${pattern}`;
   }
-  return buildFffQuery(pattern, constraints);
+  const extras = [
+    ...collectIncludeGlobs(args),
+    ...collectExcludeGlobs(args).map((g) => `!${g}`),
+  ].filter(Boolean);
+  if (extras.length === 0) return pattern;
+  return `${extras.join(" ")} ${pattern}`;
 }
 
-export async function runFffSearch(
+export async function runNativeSearch(
   args: SearchCodeArgs,
   cwd: string,
   sandbox: SandboxConfig | undefined,
-  scanTimeoutMs: number | undefined,
+  _scanTimeoutMs: number | undefined,
   getAbortSignal?: () => AbortSignal | undefined,
 ): Promise<SearchCodeResult> {
   const started = Date.now();
@@ -183,92 +176,55 @@ export async function runFffSearch(
   const signal = getAbortSignal?.();
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  let manager;
-  try {
-    manager = await getFffManager(cwd);
-  } catch (e) {
-    return { ok: false, error: `fff initialization failed: ${(e as Error).message}` };
-  }
-
-  if (!manager.isAvailable()) {
-    const { getFffLoadError } = await import("../fff.js");
-    const detail = getFffLoadError() ?? "unknown";
+  const native = await tryGetNative();
+  if (!native) {
     return {
       ok: false,
-      error: `fff not available: ${detail}. Install @ff-labs/fff-bun or check platform support.`,
+      error:
+        "native search unavailable. Install @praana/natives or keep praana-natives.node beside the standalone binary.",
     };
   }
 
-  const ctx = args.context ?? 0;
-  const maxResults = args.max_results;
-  const timeoutMs = args.timeout ?? 30_000;
-  const scanMs = scanTimeoutMs ?? 5000;
-
-  // Wait for scan (with timeout)
-  const ready = await manager.ensureReady(Math.min(timeoutMs, scanMs));
-  if (!ready.ok) {
-    return { ok: false, error: `fff not ready: ${ready.error}` };
-  }
-
-  const fffQuery = buildFffGrepQuery(args, cwd, searchPath);
-
-  const rawFinder = manager.raw() as unknown as {
-    grep(query: string, opts: Record<string, unknown>): { ok: true; value: { items: Array<{ relativePath: string; lineNumber: number; col: number; lineContent: string; contextBefore?: string[]; contextAfter?: string[] }>; totalMatched: number; totalFilesSearched: number; totalFiles: number; filteredFileCount: number; nextCursor: unknown | null; regexFallbackError?: string } } | { ok: false; error: string };
-  } | null;
-
-  if (!rawFinder) {
-    return { ok: false, error: "fff FileFinder not initialized" };
-  }
-
-  const grepOpts: Record<string, unknown> = {
-    mode: "regex",
-    maxFileSize: 10 * 1024 * 1024,
-    maxMatchesPerFile: 200,
-    smartCase: !args.case_insensitive,
-    beforeContext: ctx,
-    afterContext: ctx,
-    pageSize: maxResults ?? 200,
-    timeBudgetMs: timeoutMs,
-  };
-
-  // Check abort before grep (grep is sync, so we can't abort mid-search)
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  let grepResult: { ok: true; value: { items: Array<Record<string, unknown>>; totalMatched: number; totalFilesSearched: number; totalFiles: number; filteredFileCount: number; nextCursor: unknown | null; regexFallbackError?: string } } | { ok: false; error: string };
+  const timeoutMs = args.timeout ?? 30_000;
+  let result;
   try {
-    grepResult = rawFinder.grep(fffQuery, grepOpts) as typeof grepResult;
+    result = native.grep({
+      pattern: args.pattern,
+      path: searchPath,
+      globs: collectIncludeGlobs(args),
+      globExclude: collectExcludeGlobs(args),
+      caseInsensitive: args.case_insensitive ?? false,
+      context: args.context ?? 0,
+      maxResults: args.max_results ?? 200,
+      maxFileSize: 10 * 1024 * 1024,
+      timeBudgetMs: timeoutMs,
+    });
   } catch (e) {
-    return { ok: false, error: `fff grep failed: ${(e as Error).message}` };
+    return { ok: false, error: `native grep failed: ${(e as Error).message}` };
   }
 
-  if (!grepResult.ok) {
-    return { ok: false, error: `fff error: ${grepResult.error}` };
+  if (!result.ok) {
+    return { ok: false, error: result.error ?? "native grep failed" };
   }
 
-  const raw = grepResult.value;
-  const totalMatched = raw.totalMatched ?? raw.items.length;
-  const items = raw.items as Array<{
-    relativePath: string;
-    lineNumber: number;
-    col: number;
-    lineContent: string;
-    contextBefore?: string[];
-    contextAfter?: string[];
-  }>;
-
-  const matches: SearchCodeMatch[] = items.slice(0, maxResults ?? items.length).map((m) => ({
-    file: join(cwd, m.relativePath),
-    line: m.lineNumber,
-    column: m.col + 1,
-    text: m.lineContent,
-    context_before: m.contextBefore ?? [],
-    context_after: m.contextAfter ?? [],
-  }));
+  const maxResults = args.max_results;
+  const items = result.matches;
+  const matches: SearchCodeMatch[] = items
+    .slice(0, maxResults ?? items.length)
+    .map((m) => ({
+      file: m.path,
+      line: m.line,
+      column: m.column,
+      text: m.text,
+      context_before: m.contextBefore ?? [],
+      context_after: m.contextAfter ?? [],
+    }));
 
   const truncated =
-    raw.nextCursor !== null && raw.nextCursor !== undefined
-      ? true
-      : maxResults !== undefined && items.length >= maxResults;
+    result.truncated ||
+    (maxResults !== undefined && items.length >= maxResults);
   const filesWithMatches = new Set(matches.map((m) => m.file)).size;
 
   return {
@@ -280,18 +236,21 @@ export async function runFffSearch(
       totalMatches: matches.length,
       filesWithMatches,
       truncated,
-      dropped: truncated ? Math.max(totalMatched - matches.length, 1) : 0,
+      dropped: truncated ? Math.max(items.length - matches.length, 1) : 0,
     },
     duration_ms: Date.now() - started,
-    regex_fallback: raw.regexFallbackError ?? null,
+    regex_fallback: result.regexFallback ?? null,
   };
 }
+
+/** @deprecated Use runNativeSearch. */
+export const runFffSearch = runNativeSearch;
 
 export function createSearchCodeTool(ctx: SearchCodeToolContext) {
   return {
     search_code: defineTool({
       description:
-        "Fast structured code search powered by fff. Returns file:line:column matches with optional context lines. Use instead of `shell grep` for codebase exploration.",
+        "Fast structured code search powered by the native addon. Returns file:line:column matches with optional context lines. Use instead of `shell grep` for codebase exploration. Use `shell rg` for huge trees or when you need to abort.",
       parameters: searchCodeSchema,
       execute: async (raw: unknown) => {
         const parsed = searchCodeSchema.safeParse(raw);
@@ -303,7 +262,7 @@ export function createSearchCodeTool(ctx: SearchCodeToolContext) {
               .join("; ")}`,
           } satisfies SearchCodeError;
         }
-        return runFffSearch(
+        return runNativeSearch(
           parsed.data,
           ctx.cwd,
           ctx.sandbox,

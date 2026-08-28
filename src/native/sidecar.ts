@@ -11,6 +11,13 @@ import { pathToFileURL } from "node:url";
 /** Filename packed next to the standalone `praana` executable. */
 export const SIDECAR_ADDON_FILENAME = "praana-natives.node";
 
+export {
+  NATIVE_API_VERSION,
+  SIDECAR_MANIFEST_FILENAME,
+  formatSidecarManifest,
+  type SidecarManifest,
+} from "./manifest.js";
+
 export function resolveSidecarAddonPath(
   execPath: string = process.execPath,
 ): string {

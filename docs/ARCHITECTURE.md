@@ -79,8 +79,8 @@ src/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
-    search-code.ts — search_code: fff-backed structured code search (in-process grep → file:line:column matches with context)
-    find-files.ts — find_files: fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode)
+    search-code.ts — search_code: native grep via @praana/natives (file:line:column matches with context)
+    find-files.ts — find_files: fuzzy/glob path search via @praana/natives
     code-intel.ts — code_* tree-sitter tools (issue #11 Phase 1)
     lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #11 Phases 2–4)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
@@ -322,8 +322,8 @@ Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema
 Shell spawn uses `node:child_process` with `detached` (new process group on POSIX) and `process.kill(-pid)` plus SIGTERM→SIGKILL settle so orphaned children like `find` cannot hang the session. **Bun.Terminal** (`Bun.spawn({ terminal })`, Bun ≥1.3.5 / improved in 1.4) is a suitable future primitive for a *PTY-backed interactive* shell (vim, pagers, password prompts) without `node-pty`. It is **not** a drop-in replacement for the current spawn path: it does not provide equivalent process-tree cancellation, and it is not a UI replacement for OpenTUI. Do not switch the shell tool to `Bun.spawn`/`Bun.Terminal` until tree-kill semantics match.
 
 ### Code Search (`src/tools/search-code.ts`)
-- `search_code(pattern, path?, globs?, max_results?, ...)` — fff-backed structured search (in-process grep → file:line:column matches)
-- `find_files(pattern, mode?, path?, max_results?, ...)` — fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode)
+- `search_code(pattern, path?, globs?, max_results?, ...)` — native grep via `@praana/natives` (file:line:column matches)
+- `find_files(pattern, mode?, path?, max_results?, ...)` — fuzzy/glob path search via `@praana/natives`
 - `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon; availability probed at session start and shown in banner/`/stats`/system frame — see Native Addon)
 - `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
 - Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
@@ -362,8 +362,8 @@ Shared helpers live in `src/git-context.ts`. Structured git tools (`#26` + `#318
 
 ### Key Components
 - `MemoryStore` (`src/memory/store.ts`): Coordinates high-level Cognitive Memory operations, session starts, and session ends.
-- SQLite Database (`src/memory/db.ts`): Maintains durable sqlite/vec0 tables under `~/.praana/memory.db`.
-- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses Transformers.js (shipped as a dependency); model weights download to `~/.praana/models/` after a one-time consent prompt.
+- SQLite Database (`src/memory/db.ts`): Maintains durable tables under `~/.praana/memory.db` (`entries`, FTS, `entries_vec` BLOBs).
+- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses native ONNX in `@praana/natives`; model weights download to `~/.praana/models/` after a one-time consent prompt. Vectors are BLOBs + cosine kNN (no sqlite-vec).
 - Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
 - Extraction Logic (`src/memory/summarizer.ts` + `normalize-learning.ts`): At session end, sends the transcript plus the loaded project context (AGENTS.md / CLAUDE.md) to an LLM and extracts up to 5 **concise key-point** learnings (one short sentence each) across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) and a scope classification (`project` / `global`). The model is instructed to skip anything already documented in the project context, focusing on session-specific discoveries, decisions, gotchas, and preferences. `project`-scoped learnings are stored with the full default scopes (`user` + `agent` + `context`); `global`-scoped learnings are stored without the `context:` scope so they surface in every project session.
 
@@ -391,7 +391,7 @@ Global-only queries exclude entries that carry `context:`, so project facts stay
 
 ### Ranking and Decay
 The memory retrieval system fuses multiple signals into a unified search score:
-- **Vector distance** (from `entries_vec` using `sqlite-vec`) maps candidate entries.
+- **Vector distance** (from `entries_vec` BLOB rows, cosine kNN) maps candidate entries.
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.

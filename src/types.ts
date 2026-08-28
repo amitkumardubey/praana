@@ -287,8 +287,8 @@ export interface ToolsConfig {
 
 export interface SearchCodeConfig {
   /**
-   * Max ms to wait for the fff index scan on the first search_code / find_files
-   * call. Default: 5000.
+   * Unused by native grep (kept for config compatibility). Previously the max
+   * ms to wait for an fff index scan. Default: 5000.
    */
   scan_timeout_ms?: number;
 }

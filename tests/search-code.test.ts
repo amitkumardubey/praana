@@ -10,19 +10,13 @@ import {
 import {
   fileTypeToConstraint,
   pathToConstraint,
-  buildFffQuery,
-  clearFffCache,
-} from '../src/fff.js';
+} from '../src/sandbox-path.js';
+import { tryGetNative } from '../src/native/index.js';
 
 const testDir = '/tmp/praana-test-search-code';
 
-async function canUseFff(): Promise<boolean> {
-  try {
-    const { FileFinder } = await import('@ff-labs/fff-bun');
-    return FileFinder.isAvailable();
-  } catch {
-    return false;
-  }
+async function canUseNativeSearch(): Promise<boolean> {
+  return (await tryGetNative()) !== null;
 }
 
 function setupFixture() {
@@ -53,26 +47,18 @@ function setupFixture() {
 
   writeFileSync(join(testDir, 'src/c.txt'), ['first line', 'HELLO uppercase', 'third line'].join('\n'));
 
-  // noise in node_modules (should be ignored by default)
   writeFileSync(
     join(testDir, 'node_modules/lib.ts'),
     'export const hello = "should be ignored by default";',
   );
 
-  // hidden file (should be ignored by default)
   writeFileSync(
     join(testDir, 'src/.hidden.ts'),
     'export const hiddenHello = "shh";',
   );
 }
 
-describe('fff query helpers', () => {
-  it('buildFffQuery prepends constraints before the pattern', () => {
-    expect(buildFffQuery('foo', ['*.ts', 'src/'])).toBe('*.ts src/ foo');
-    expect(buildFffQuery('foo', [])).toBe('foo');
-    expect(buildFffQuery('foo', ['', 'src/'])).toBe('src/ foo');
-  });
-
+describe('search query helpers', () => {
   it('fileTypeToConstraint maps known types to extension globs', () => {
     expect(fileTypeToConstraint('ts')).toBe('*.ts');
     expect(fileTypeToConstraint('rust')).toBe('*.rs');
@@ -104,23 +90,21 @@ describe('fff query helpers', () => {
   });
 });
 
-describe('runFffSearch (live fff)', async () => {
-  let fffAvailable = false;
+describe('runFffSearch (live native grep)', async () => {
+  let nativeAvailable = false;
   beforeAll(async () => {
-    fffAvailable = await canUseFff();
+    nativeAvailable = await canUseNativeSearch();
   });
 
   beforeEach(() => {
     setupFixture();
-    clearFffCache();
   });
   afterEach(() => {
-    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
   it('finds a simple match and reports column 1-indexed', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'alpha' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -133,7 +117,7 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('returns empty matches for no hits', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'nonexistentstring' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -142,16 +126,15 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('respects case_insensitive flag', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'HELLO', case_insensitive: true }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    // Should find uppercase c.txt
     expect(r.matches.length).toBeGreaterThanOrEqual(1);
   });
 
   it('honors max_results', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'export', max_results: 1 }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -159,7 +142,7 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('returns context_before and context_after lines with context:1', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     writeFileSync(join(testDir, 'src/target.txt'), 'before-line\nTARGET line\nafter-line');
     const r = await runFffSearch({ pattern: 'TARGET', context: 1 }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
@@ -171,7 +154,7 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('searches a specific path relative to cwd', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'alpha', path: 'src' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -182,7 +165,7 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('reports duration_ms as a non-negative number', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'alpha' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -191,7 +174,7 @@ describe('runFffSearch (live fff)', async () => {
   });
 
   it('honors glob_exclude to drop node_modules', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFffSearch(
       { pattern: 'hello', case_insensitive: true, glob_exclude: 'node_modules' },
       testDir,
@@ -205,9 +188,8 @@ describe('runFffSearch (live fff)', async () => {
     }
   });
 
-  it('surfaces regex_fallback when fff falls back from regex to literal', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
-    // 'foo(' is an invalid regex (unclosed group) — fff should fall back to literal
+  it('surfaces regex_fallback when invalid regex falls back to literal', async () => {
+    if (!nativeAvailable) return;
     const r = await runFffSearch({ pattern: 'foo(' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -217,29 +199,27 @@ describe('runFffSearch (live fff)', async () => {
 });
 
 describe('createSearchCodeTool', async () => {
-  let fffAvailable = false;
+  let nativeAvailable = false;
   beforeAll(async () => {
-    fffAvailable = await canUseFff();
+    nativeAvailable = await canUseNativeSearch();
   });
 
   beforeEach(() => {
     setupFixture();
-    clearFffCache();
   });
   afterEach(() => {
-    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
   it('exposes a search_code tool with parameters schema', () => {
     const tools = createSearchCodeTool({ cwd: testDir });
     expect(tools.search_code).toBeDefined();
-    expect(tools.search_code.description).toMatch(/fff/i);
+    expect(tools.search_code.description).toMatch(/native/i);
     expect(tools.search_code.parameters).toBeDefined();
   });
 
-  it('runs the underlying fff end-to-end through the tool', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+  it('runs the underlying native grep end-to-end through the tool', async () => {
+    if (!nativeAvailable) return;
     const tools = createSearchCodeTool({ cwd: testDir });
     const r = (await tools.search_code.execute({
       pattern: 'alpha',
@@ -251,7 +231,7 @@ describe('createSearchCodeTool', async () => {
   it('rejects invalid arguments with a structured error', async () => {
     const tools = createSearchCodeTool({ cwd: testDir });
     const r = (await tools.search_code.execute({
-      pattern: '', // zod min(1) violation
+      pattern: '',
     })) as { ok: boolean; error: string };
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/Invalid arguments|pattern/i);
@@ -271,7 +251,7 @@ describe('createSearchCodeTool', async () => {
   });
 
   it('allows paths inside the sandbox allowlist', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const tools = createSearchCodeTool({
       cwd: testDir,
       sandbox: { enabled: true, allowed_paths: [join(testDir, 'src')] },

@@ -69,9 +69,17 @@ import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.j
 import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
 import type { SessionCheckpoint } from "./context-engine/types.js";
-import { probeNativeStatus, setNativeEnabled, type NativeAddonStatus } from "./native/index.js";
-import { isFffAvailable } from "./fff.js";
+import { probeNativeStatus, setNativeEnabled, tryGetNative, type NativeAddonStatus } from "./native/index.js";
 import { LspManager } from "./lsp/manager.js";
+
+async function probeSearchStatus(): Promise<string> {
+  try {
+    const native = await tryGetNative();
+    return native ? "available" : "unavailable";
+  } catch {
+    return "unavailable: probe failed";
+  }
+}
 
 /**
  * Return the checkpoint visible to the compiler after applying a reset_boundary.
@@ -126,7 +134,7 @@ export class Session {
   memoryInitError: string | null = null;
   /** Native addon status probed at session start (issue #319). */
   nativeStatus: NativeAddonStatus | null = null;
-  /** Whether fff (in-process file search) is available, probed at session start. */
+  /** Whether native search (search_code / find_files) is available. */
   fffStatus: string | null = null;
   incognito = false;
   digest: string | null = null;
@@ -277,7 +285,7 @@ export class Session {
       session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
       session.nativeStatus = await probeNativeStatus();
       try {
-        session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+        session.fffStatus = await probeSearchStatus();
       } catch {
         session.fffStatus = "unavailable: probe failed";
       }
@@ -349,7 +357,7 @@ export class Session {
 
     session.nativeStatus = await probeNativeStatus();
     try {
-      session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+      session.fffStatus = await probeSearchStatus();
     } catch {
       session.fffStatus = "unavailable: probe failed";
     }
@@ -514,7 +522,7 @@ export class Session {
     session.resumed = true;
     session.nativeStatus = await probeNativeStatus();
     try {
-      session.fffStatus = (await isFffAvailable()) ? "available" : "unavailable";
+      session.fffStatus = await probeSearchStatus();
     } catch {
       session.fffStatus = "unavailable: probe failed";
     }

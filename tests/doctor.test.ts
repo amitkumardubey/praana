@@ -54,13 +54,15 @@ describe("handleDoctor", () => {
     expect(result.lines.some((l) => l.includes("model: not set"))).toBe(true);
   });
 
-  it("treats missing transformers as a warning, not a failure", async () => {
+  it("treats missing embedder weights as a warning, not a failure", async () => {
     const result = await handleDoctor(baseConfig);
     const embedderLine = result.lines.find((l) => l.includes("embedder:"));
     expect(embedderLine).toBeDefined();
-    if (embedderLine!.includes("not installed")) {
-      expect(embedderLine).toContain("⚠");
-      expect(embedderLine).toContain("keyword-only mode");
+    expect(result.lines.some((l) => l.includes("native:"))).toBe(true);
+    expect(result.lines.some((l) => l.includes("search:"))).toBe(true);
+    expect(result.lines.some((l) => l.includes("vectors:"))).toBe(true);
+    if (embedderLine!.startsWith("⚠")) {
+      expect(embedderLine).toMatch(/keyword-only|weights not downloaded|addon missing|runtime missing/);
     }
     expect(result.success).toBe(true);
   });

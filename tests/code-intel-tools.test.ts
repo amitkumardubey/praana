@@ -3,8 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createCodeIntelTools } from "../src/tools/code-intel.js";
-import type { NativeBindings } from "../src/native/index.js";
 import { loadNative, resetNativeLoadCache } from "../src/native/index.js";
+import { stubNativeBindings } from "./helpers/native-bindings.js";
 
 describe("code-intel tools", () => {
   let fixtureDir: string;
@@ -35,25 +35,12 @@ describe("code-intel tools", () => {
   });
 
   it("rejects missing files", async () => {
-    const mock: NativeBindings = {
+    const mock = stubNativeBindings({
       nativeVersion: () => "0.2.0",
-      ping: () => "pong",
       parseFile: () => ({ ok: true, language: "typescript", diagnostics: [] }),
       listSymbols: () => ({ ok: true, language: "typescript", symbols: [] }),
       listImports: () => ({ ok: true, language: "typescript", imports: [] }),
-      findDefinition: () => ({
-        ok: true,
-        hits: [],
-        truncated: false,
-        filesScanned: 0,
-      }),
-      findReferences: () => ({
-        ok: true,
-        hits: [],
-        truncated: false,
-        filesScanned: 0,
-      }),
-    };
+    });
     const tools = createCodeIntelTools({
       cwd: fixtureDir,
       getNative: async () => mock,
@@ -64,25 +51,12 @@ describe("code-intel tools", () => {
   });
 
   it("enforces sandbox allowed_paths", async () => {
-    const mock: NativeBindings = {
+    const mock = stubNativeBindings({
       nativeVersion: () => "0.2.0",
-      ping: () => "pong",
       parseFile: () => ({ ok: true, language: "typescript", diagnostics: [] }),
       listSymbols: () => ({ ok: true, language: "typescript", symbols: [] }),
       listImports: () => ({ ok: true, language: "typescript", imports: [] }),
-      findDefinition: () => ({
-        ok: true,
-        hits: [],
-        truncated: false,
-        filesScanned: 0,
-      }),
-      findReferences: () => ({
-        ok: true,
-        hits: [],
-        truncated: false,
-        filesScanned: 0,
-      }),
-    };
+    });
     const allowed = join(fixtureDir, "allowed");
     mkdirSync(allowed);
     writeFileSync(join(allowed, "ok.ts"), "export const x = 1;\n");

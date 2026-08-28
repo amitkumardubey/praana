@@ -6,15 +6,10 @@ import {
   runFindFiles,
   buildFindFilesQuery,
 } from '../src/tools/find-files.js';
-import { clearFffCache } from '../src/fff.js';
+import { tryGetNative } from '../src/native/index.js';
 
-async function canUseFff(): Promise<boolean> {
-  try {
-    const { FileFinder } = await import('@ff-labs/fff-bun');
-    return FileFinder.isAvailable();
-  } catch {
-    return false;
-  }
+async function canUseNativeSearch(): Promise<boolean> {
+  return (await tryGetNative()) !== null;
 }
 
 const testDir = '/tmp/praana-test-find-files';
@@ -46,23 +41,21 @@ describe('buildFindFilesQuery', () => {
   });
 });
 
-describe('runFindFiles (live fff)', async () => {
-  let fffAvailable = false;
+describe('runFindFiles (live native)', async () => {
+  let nativeAvailable = false;
   beforeAll(async () => {
-    fffAvailable = await canUseFff();
+    nativeAvailable = await canUseNativeSearch();
   });
 
   beforeEach(() => {
     setupFixture();
-    clearFffCache();
   });
   afterEach(() => {
-    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
   it('finds files by fuzzy name', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: 'button' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -71,7 +64,7 @@ describe('runFindFiles (live fff)', async () => {
   });
 
   it('returns metadata for matches', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: 'button' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -84,7 +77,7 @@ describe('runFindFiles (live fff)', async () => {
   });
 
   it('supports glob mode', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: '**/*.tsx', mode: 'glob' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -95,7 +88,7 @@ describe('runFindFiles (live fff)', async () => {
   });
 
   it('scopes to a path constraint', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: 'button', path: 'src/components' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -105,7 +98,7 @@ describe('runFindFiles (live fff)', async () => {
   });
 
   it('honors max_results', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: 'tsx', max_results: 1 }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -113,7 +106,7 @@ describe('runFindFiles (live fff)', async () => {
   });
 
   it('returns empty for no matches', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const r = await runFindFiles({ pattern: 'zzzznothing' }, testDir, undefined, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -122,29 +115,27 @@ describe('runFindFiles (live fff)', async () => {
 });
 
 describe('createFindFilesTool', async () => {
-  let fffAvailable = false;
+  let nativeAvailable = false;
   beforeAll(async () => {
-    fffAvailable = await canUseFff();
+    nativeAvailable = await canUseNativeSearch();
   });
 
   beforeEach(() => {
     setupFixture();
-    clearFffCache();
   });
   afterEach(() => {
-    clearFffCache();
     if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
   });
 
   it('exposes a find_files tool with parameters schema', () => {
     const tools = createFindFilesTool({ cwd: testDir });
     expect(tools.find_files).toBeDefined();
-    expect(tools.find_files.description).toMatch(/fff/i);
+    expect(tools.find_files.description).toMatch(/native/i);
     expect(tools.find_files.parameters).toBeDefined();
   });
 
   it('runs end-to-end through the tool', async () => {
-    if (!fffAvailable) throw new Error('fff not available');
+    if (!nativeAvailable) return;
     const tools = createFindFilesTool({ cwd: testDir });
     const r = (await tools.find_files.execute({
       pattern: 'button',

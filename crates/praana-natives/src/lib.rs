@@ -1,8 +1,10 @@
 #![deny(clippy::all)]
 
+mod embed;
 mod lang;
 mod parse;
 mod project;
+mod search;
 mod symbols;
 mod types;
 
@@ -14,7 +16,7 @@ pub use types::*;
 
 /// Semver of the native *API surface* (independent of npm package version).
 /// Bump major when removing/renaming exports or changing result shapes incompatibly.
-pub const NATIVE_API_VERSION: &str = "0.2.0";
+pub const NATIVE_API_VERSION: &str = "0.3.0";
 
 #[napi]
 pub fn native_version() -> String {
@@ -96,6 +98,21 @@ pub fn find_references(
   opts: Option<ProjectQueryOpts>,
 ) -> ProjectHitsResult {
   project::find_references(Path::new(&root), &symbol, opts)
+}
+
+#[napi]
+pub fn grep(opts: GrepOpts) -> GrepResult {
+  search::grep(opts)
+}
+
+#[napi]
+pub fn find_files(opts: FindFilesOpts) -> FindFilesResult {
+  search::find_files(opts)
+}
+
+#[napi]
+pub fn embed_text(text: String, model_dir: String) -> EmbedResult {
+  embed::embed_text(text, model_dir)
 }
 
 #[cfg(test)]

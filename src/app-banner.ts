@@ -54,7 +54,7 @@ export function formatSessionBannerLines(
         ? "memory: incognito (disabled)"
         : "memory: disabled",
     session.nativeStatus ? `native: ${nativeStatusToString(session.nativeStatus)}` : `native: unknown`,
-    session.fffStatus ? `fff: ${session.fffStatus}` : `fff: unknown`,
+    session.fffStatus ? `search: ${session.fffStatus}` : `search: unknown`,
   ];
 }
 

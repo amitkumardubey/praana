@@ -178,6 +178,7 @@ describe("packageReleaseBinaries", () => {
       const names = listing.stdout.toString("utf-8").trim().split("\n");
       expect(names).toContain("praana");
       expect(names).toContain(SIDECAR_ADDON_FILENAME);
+      expect(names).toContain("praana-natives.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -231,6 +232,7 @@ describe("release native artifacts", () => {
         stdout: "pipe",
       });
       expect(listing.stdout.toString("utf-8")).toContain(SIDECAR_ADDON_FILENAME);
+      expect(listing.stdout.toString("utf-8")).toContain("praana-natives.json");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

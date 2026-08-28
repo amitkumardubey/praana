@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, mock } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as downloadConsentActual from "../src/ui/tui/download-consent.js";
@@ -126,14 +126,33 @@ describe("createEmbedder factory", () => {
     const b = await embedder.embed("same text");
     expect(Array.from(a)).toEqual(Array.from(b));
   });
+
+  it("DeterministicTestEmbedder keeps unrelated strings below recall minMatch", async () => {
+    const { cosineSimilarity } = await import("../src/cosine-similarity.js");
+    const embedder = new DeterministicTestEmbedder();
+    const a = await embedder.embed("The project uses Vitest for testing.");
+    const b = await embedder.embed("zzznomatchtoken");
+    expect(cosineSimilarity(a, b)).toBeLessThan(0.35);
+  });
 });
 
 describe("isModelCached", () => {
-  it("returns true when the onnx directory exists", () => {
+  it("returns true when tokenizer.json and an ONNX file exist", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "praana-cache-"));
+    const modelId = "Xenova/all-MiniLM-L6-v2";
+    const dir = join(tmpDir, modelId);
+    mkdirSync(join(dir, "onnx"), { recursive: true });
+    writeFileSync(join(dir, "tokenizer.json"), "{}");
+    writeFileSync(join(dir, "onnx", "model_quantized.onnx"), "onnx");
+    expect(isModelCached(tmpDir, modelId)).toBe(true);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns false when only the onnx directory exists", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "praana-cache-"));
     const modelId = "Xenova/all-MiniLM-L6-v2";
     mkdirSync(join(tmpDir, modelId, "onnx"), { recursive: true });
-    expect(isModelCached(tmpDir, modelId)).toBe(true);
+    expect(isModelCached(tmpDir, modelId)).toBe(false);
     rmSync(tmpDir, { recursive: true, force: true });
   });
 

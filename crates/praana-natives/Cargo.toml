@@ -19,6 +19,11 @@ tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
 tree-sitter-rust = "0.24"
 ignore = "0.4"
+regex = "1"
+globset = "0.4"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+tract-onnx = "0.21"
+ndarray = "0.16"
 
 [build-dependencies]
 napi-build = "2"

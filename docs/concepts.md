@@ -160,7 +160,7 @@ Recalled memories are ranked by a fusion of three signals:
 
 ### Embeddings — Honest Note
 
-PRAANA supports multiple embedders: `auto` (Transformers.js, shipped with the package), `transformers`, `transformers-nomic`, and `ollama`. First Transformers.js download prompts for consent; weights cache in `~/.praana/models/`.
+PRAANA supports multiple embedders: `auto` (native ONNX via `@praana/natives`), `transformers`, `transformers-nomic`, and `ollama`. First weight download prompts for consent; weights cache in `~/.praana/models/`. Vector recall uses BLOB storage + cosine kNN (no sqlite-vec / Homebrew SQLite).
 
 When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
 
@@ -178,7 +178,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 
 | Category | Tools | Mode |
 |---|---|---|
-| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (fff), `find_files` (fuzzy file search), `code_*` (tree-sitter), `lsp_diagnostics` (opt-in LSP). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
+| Codebase exploration | `read_file`, `read_and_summarize`, `search_code` (native grep), `find_files` (fuzzy file search), `code_*` (tree-sitter), `lsp_diagnostics` (opt-in LSP). Repeat reads of unchanged files return the existing artifact card / hard-block (configurable via `[tools] block_repeat_reads`); engine mode injects a **Files Read This Session** index | Both |
 | Git | `git_status`, `git_diff`, `git_commit`, `git_branches`, `git_log` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#300). Opt-in `[verify]` (issue #299) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#300) | Both |
@@ -187,7 +187,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
 | Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |
 
-`search_code` and `find_files` are powered by fff (`@ff-labs/fff-bun`), an in-process file search index. `search_code` returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. `find_files` returns file paths with metadata and git status via typo-resistant fuzzy or pure glob mode. The fff index scans the working directory once at session start in the background; the first search waits up to `[search_code] scan_timeout_ms` (default 5000) for it.
+`search_code` and `find_files` are powered by `@praana/natives` (same sidecar as tree-sitter). `search_code` returns `{ matches: [{ file, line, column, text, context_before, context_after }], stats: { totalMatches, filesWithMatches, truncated } }` — file:line:column matches with optional context, glob include/exclude, and `max_results` truncation. `find_files` returns file paths with metadata via typo-resistant fuzzy or pure glob mode. Grep is synchronous; use `shell rg` for huge trees or interactive abort.
 
 Tree-sitter `code_*` tools (#11 Phase 1) provide syntax diagnostics and name-based symbol queries via `@praana/natives`. The opt-in LSP tier (#11 Phases 2–4) adds diagnostics, formatting, hover, completions, semantic definition/references, and list+apply code actions against external servers configured under `[lsp]` (disabled by default; `format_on_edit` is also opt-in). A crashed language server is respawned (max 3 restarts per root, exponential backoff). Files in JS workspace packages or nested git repos use a dedicated server process (cap 8, LRU). Use `code_*` for fast in-project name queries; `lsp_definition` / `lsp_references` when you need types, stdlib, or `node_modules`.
 
