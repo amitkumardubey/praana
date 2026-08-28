@@ -43,10 +43,11 @@ describe("compile script", () => {
 describe("formatBuildError", () => {
   it("flattens AggregateError chains", () => {
     const err = new AggregateError(
-      [new Error("missing win32 optional dep")],
+      [new Error("missing darwin optional dep"), new Error("onnx binding")],
       "Bundle failed",
     );
-    expect(formatBuildError(err)).toContain("missing win32 optional dep");
+    expect(formatBuildError(err)).toContain("missing darwin optional dep");
+    expect(formatBuildError(err)).toContain("onnx binding");
   });
 });
 
