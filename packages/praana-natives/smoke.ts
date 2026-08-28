@@ -11,6 +11,7 @@ import {
   ping,
   listSymbols,
   parseFile,
+  grep,
 } from "./index.js";
 
 const version = nativeVersion();
@@ -57,10 +58,17 @@ try {
     console.error(`smoke fail: listSymbols(.rs) => ${JSON.stringify(symbolsRs)}`);
     process.exit(1);
   }
+
+  writeFileSync(join(dir, "probe.txt"), "praana-native-grep-probe\n", "utf8");
+  const grepResult = grep({ pattern: "praana-native-grep-probe", path: dir, maxResults: 1 });
+  if (!grepResult.ok || grepResult.matches.length < 1) {
+    console.error(`smoke fail: grep => ${JSON.stringify(grepResult)}`);
+    process.exit(1);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(
-  `@praana/natives smoke ok version=${version} ping=${pong} listSymbols=ok rust=ok`,
+  `@praana/natives smoke ok version=${version} ping=${pong} listSymbols=ok rust=ok grep=ok`,
 );

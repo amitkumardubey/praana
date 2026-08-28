@@ -15,9 +15,26 @@
  *   bun run build:compile -- --target bun-linux-x64
  *   bun run build:compile -- --outfile dist/praana-linux
  */
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import solidPlugin from "@opentui/solid/bun-plugin";
+import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
+import {
+  NATIVE_API_VERSION,
+  SIDECAR_MANIFEST_FILENAME,
+  formatSidecarManifest,
+} from "../src/native/manifest.js";
 
 const DEFAULT_OUTFILE = "dist/praana";
 
@@ -214,6 +231,21 @@ async function main(): Promise<void> {
 
   console.log(`Wrote ${outfile}`);
 
+  const nativeAddon = findBuiltNativeAddon();
+  if (nativeAddon) {
+    const sidecarDest = join(dirname(outPath), SIDECAR_ADDON_FILENAME);
+    copyFileSync(nativeAddon, sidecarDest);
+    writeFileSync(
+      join(dirname(outPath), SIDECAR_MANIFEST_FILENAME),
+      formatSidecarManifest({
+        apiVersion: NATIVE_API_VERSION,
+        target: "host",
+        sha256: "local-build",
+      }),
+    );
+    console.log(`Copied sidecar ${basename(nativeAddon)} → ${sidecarDest}`);
+  }
+
   // Smoke: only when building for the host (no cross-compile target).
   if (!target) {
     const proc = Bun.spawn([outPath, "--version"], {
@@ -235,6 +267,62 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     console.log(`Smoke OK: ${expected} (repo bunfig.toml present)`);
+
+    if (nativeAddon) {
+      smokeDoctorFromCleanDir(outPath, nativeAddon);
+    }
+  }
+}
+
+function findBuiltNativeAddon(): string | null {
+  const dir = resolve("packages/praana-natives");
+  if (!existsSync(dir)) return null;
+  const nodes = readdirSync(dir).filter((name) => name.endsWith(".node"));
+  return nodes[0] ? join(dir, nodes[0]!) : null;
+}
+
+function smokeDoctorFromCleanDir(exePath: string, nativeAddon: string): void {
+  const dir = mkdtempSync(join(tmpdir(), "praana-compile-smoke-"));
+  try {
+    const stagedName = basename(exePath).endsWith(".exe") ? "praana.exe" : "praana";
+    const stagedExe = join(dir, stagedName);
+    copyFileSync(exePath, stagedExe);
+    if (!stagedName.endsWith(".exe")) {
+      chmodSync(stagedExe, 0o755);
+    }
+    copyFileSync(nativeAddon, join(dir, SIDECAR_ADDON_FILENAME));
+    writeFileSync(
+      join(dir, SIDECAR_MANIFEST_FILENAME),
+      formatSidecarManifest({
+        apiVersion: NATIVE_API_VERSION,
+        target: "host",
+        sha256: "local-build",
+      }),
+    );
+    const proc = Bun.spawnSync([stagedExe, "doctor"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      cwd: dir,
+      env: {
+        ...process.env,
+        HOME: dir,
+        PRAANA_HOME: join(dir, ".praana"),
+        NODE_PATH: "",
+      },
+    });
+    const stdout = proc.stdout.toString("utf-8");
+    const stderr = proc.stderr.toString("utf-8");
+    const combined = `${stdout}\n${stderr}`;
+    if (!combined.includes("✓ native:") || !combined.includes("✓ search:")) {
+      console.error("Smoke test failed (praana doctor from clean /tmp):");
+      if (stdout.trim()) console.error(stdout);
+      if (stderr.trim()) console.error(stderr);
+      console.error("Expected doctor output to include '✓ native:' and '✓ search:'");
+      process.exit(1);
+    }
+    console.log("Smoke OK: doctor native + search from clean dir (no node_modules)");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

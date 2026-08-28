@@ -44,7 +44,7 @@ From **cmd.exe**:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex"
 ```
 
-Installs `praana` (or `praana.exe` on Windows) and `praana-natives.node` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep both files in the same directory — Tree-sitter `code_*` tools load the sidecar next to the binary. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
+Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
 
 ### Install with Bun
 
@@ -62,7 +62,7 @@ Global `bun add -g` / `npm i -g` installs `@praana/natives` as an optional depen
 
 ### Standalone binary (manual)
 
-GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz`, `praana-windows-x64.zip`, plus `SHA256SUMS`. Each archive contains the compiled executable **and** `praana-natives.node` in the same folder (`praana` or `praana.exe` on Windows). Prefer [`install.sh`](install.sh) on Linux/macOS or [`install.ps1`](install.ps1) on Windows unless you need a custom layout.
+GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz`, `praana-windows-x64.zip`, plus `SHA256SUMS`. Each archive contains the compiled executable, `praana-natives.node`, and `praana-natives.json` in the same folder (`praana` or `praana.exe` on Windows). Prefer [`install.sh`](install.sh) on Linux/macOS or [`install.ps1`](install.ps1) on Windows unless you need a custom layout.
 
 ```bash
 # Example: Linux x64
@@ -167,7 +167,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 4. **Session resume by O(1) checkpoint + event replay.** A deterministic checkpoint is written every turn — active request, rolling narrative, decisions with rationale, constraints. Resume restores the checkpoint and replays only post-checkpoint events.
 
-5. **Agent-native cross-session memory in local SQLite.** At `/exit`, PRAANA's summariser extracts learnings from the transcript — not bolted-on notes, not an MCP plugin. Six taxonomy kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Semantic search via Transformers.js (in-process, no sidecar). Project and global scopes queried and merged.
+5. **Agent-native cross-session memory in local SQLite.** At `/exit`, PRAANA's summariser extracts learnings from the transcript — not bolted-on notes, not an MCP plugin. Six taxonomy kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Semantic search via native ONNX embeddings in `@praana/natives`. Project and global scopes queried and merged.
 
 ---
 
@@ -191,7 +191,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
 
-**Tools:** structured `search_code` (fff) and `find_files` (fuzzy file search) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
+**Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
 
 **Session safety:** plan mode gates mutating tools behind your approval; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
 
@@ -207,7 +207,7 @@ These are real gaps, not a roadmap dressed as marketing.
 |---|---|
 | **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#162). |
 | **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#17) is not shipped. We don't publish benchmark claims we can't back. |
-| **Semantic recall** | `@huggingface/transformers` weights download on first run (~80MB, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
+| **Semantic recall** | ONNX weights download on first run (~25–80MB, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
 | **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
 | **Background Consolidation Processor** | Schema exists, not scalable yet. The learning loop is incomplete. |
 | **Intelligent Router** | Not started. Planned for after memory is proven. |

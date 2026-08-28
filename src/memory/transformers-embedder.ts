@@ -1,9 +1,14 @@
 // ============================================================
-// PRAANA Memory — Transformers.js embedder (in-process, deterministic)
+// PRAANA Memory — native ONNX embedder (weights cached in ~/.praana/models)
 // ============================================================
 
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { appHomePath } from "../app-identity.js";
 import { startSpinner, stopSpinner } from "../ui.js";
 import { confirmModelDownload } from "../ui/tui/download-consent.js";
@@ -13,32 +18,7 @@ import {
   resolveTransformersModel,
   type TransformersModelPreset,
 } from "./transformers-models.js";
-
-type FeatureExtractionPipeline = (
-  text: string,
-  options?: { pooling?: "mean"; normalize?: boolean },
-) => Promise<{ data: Float32Array }>;
-
-type TransformersModule = {
-  env: { cacheDir: string };
-  pipeline: (
-    task: "feature-extraction",
-    model: string,
-    options?: {
-      progress_callback?: (progress: {
-        status?: string;
-        file?: string;
-        progress?: number;
-        loaded?: number;
-        total?: number;
-      }) => void;
-    },
-  ) => Promise<FeatureExtractionPipeline>;
-};
-
-let transformersModulePromise: Promise<TransformersModule | null> | null = null;
-let pipelinePromise: Promise<FeatureExtractionPipeline> | null = null;
-let loadedPreset: TransformersModelPreset | null = null;
+import { tryGetNative, type NativeBindings } from "../native/index.js";
 
 /** User declined the ONNX weight download — keyword-only recall is expected. */
 export class EmbedderDownloadSkipped extends Error {
@@ -50,111 +30,82 @@ export class EmbedderDownloadSkipped extends Error {
 
 /** Reset cached pipeline — for tests only. */
 export function resetTransformersEmbedderForTests(): void {
-  transformersModulePromise = null;
-  pipelinePromise = null;
-  loadedPreset = null;
-}
-
-async function loadTransformersModule(): Promise<TransformersModule | null> {
-  if (!transformersModulePromise) {
-    transformersModulePromise = (async () => {
-      try {
-        const spec = "@huggingface/transformers";
-        return (await import(/* webpackIgnore: true */ spec)) as TransformersModule;
-      } catch {
-        return null;
-      }
-    })();
-  }
-  return transformersModulePromise;
+  // Native model cache lives in the addon; TS only needs a no-op reset hook.
 }
 
 export async function isTransformersAvailable(): Promise<boolean> {
-  return (await loadTransformersModule()) !== null;
+  return (await tryGetNative()) !== null;
 }
 
 /**
- * Check whether the ONNX weights for `modelId` are already present in
- * `cacheDir`. The cache layout is `<cacheDir>/<modelId>/onnx/` — if the
- * `onnx` subdirectory exists, the model was downloaded.
+ * Check whether tokenizer + ONNX weights for `modelId` are in `cacheDir`.
+ * Layout: `<cacheDir>/<modelId>/tokenizer.json` and `<cacheDir>/<modelId>/onnx/`.
  */
 export function isModelCached(cacheDir: string, modelId: string): boolean {
-  return existsSync(join(cacheDir, modelId, "onnx"));
+  const dir = join(cacheDir, modelId);
+  if (!existsSync(join(dir, "tokenizer.json"))) return false;
+  return (
+    existsSync(join(dir, "onnx", "model_quantized.onnx")) ||
+    existsSync(join(dir, "onnx", "model.onnx")) ||
+    existsSync(join(dir, "model_quantized.onnx"))
+  );
 }
 
-async function loadPipeline(preset: TransformersModelPreset): Promise<FeatureExtractionPipeline> {
-  if (pipelinePromise && loadedPreset?.id === preset.id) {
-    return pipelinePromise;
+function hfFileUrl(modelId: string, relativePath: string): string {
+  return `https://huggingface.co/${modelId}/resolve/main/${relativePath}`;
+}
+
+async function downloadToFile(url: string, dest: string): Promise<void> {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`download failed (${res.status}) ${url}`);
   }
+  const buf = Buffer.from(await res.arrayBuffer());
+  mkdirSync(dirname(dest), { recursive: true });
+  const tmp = `${dest}.tmp`;
+  writeFileSync(tmp, buf);
+  renameSync(tmp, dest);
+}
 
-  pipelinePromise = (async () => {
-    const mod = await loadTransformersModule();
-    if (!mod) {
-      throw new Error("@huggingface/transformers is not installed");
-    }
+async function ensureModelFiles(
+  cacheDir: string,
+  preset: TransformersModelPreset,
+): Promise<string> {
+  const modelDir = join(cacheDir, preset.id);
+  mkdirSync(join(modelDir, "onnx"), { recursive: true });
 
-    const cacheDir = appHomePath("models");
-    mkdirSync(cacheDir, { recursive: true });
-    mod.env.cacheDir = cacheDir;
-
-    if (!isModelCached(cacheDir, preset.id)) {
-      const recorded = getEmbedderConsent();
-      const allowed =
-        recorded === "proceed"
-          ? true
-          : recorded === "skip"
-            ? false
-            : await confirmModelDownload(preset.id);
-      if (!allowed) {
-        throw new EmbedderDownloadSkipped();
-      }
+  if (!isModelCached(cacheDir, preset.id)) {
+    const recorded = getEmbedderConsent();
+    const allowed =
+      recorded === "proceed"
+        ? true
+        : recorded === "skip"
+          ? false
+          : await confirmModelDownload(preset.id);
+    if (!allowed) {
+      throw new EmbedderDownloadSkipped();
     }
 
     let spinnerStarted = false;
-
     if (process.stderr.isTTY) {
-      startSpinner("Loading embedding model…");
+      startSpinner(`Downloading embedding model ${preset.id}…`);
       spinnerStarted = true;
     }
+    try {
+      await downloadToFile(
+        hfFileUrl(preset.id, "tokenizer.json"),
+        join(modelDir, "tokenizer.json"),
+      );
+      await downloadToFile(
+        hfFileUrl(preset.id, "onnx/model_quantized.onnx"),
+        join(modelDir, "onnx", "model_quantized.onnx"),
+      );
+    } finally {
+      if (spinnerStarted) stopSpinner();
+    }
+  }
 
-    const pipe = await mod.pipeline("feature-extraction", preset.id, {
-      progress_callback: (progress) => {
-        if (!process.stderr.isTTY) return;
-
-        if (progress.status === "downloading" || progress.status === "progress") {
-          const pct =
-            typeof progress.progress === "number"
-              ? Math.round(progress.progress)
-              : progress.total
-                ? Math.round(((progress.loaded ?? 0) / progress.total) * 100)
-                : undefined;
-
-          const label =
-            pct !== undefined
-              ? `Loading embedding model (${pct}%)…`
-              : "Loading embedding model…";
-
-          if (!spinnerStarted) {
-            startSpinner(label);
-            spinnerStarted = true;
-          } else {
-            startSpinner(label);
-          }
-        }
-
-        if (progress.status === "done" && spinnerStarted) {
-          stopSpinner();
-          spinnerStarted = false;
-        }
-      },
-    });
-
-    if (spinnerStarted) stopSpinner();
-    loadedPreset = preset;
-    return pipe;
-  })();
-
-  return pipelinePromise;
+  return modelDir;
 }
 
 export class TransformersEmbedder implements Embedder {
@@ -162,7 +113,8 @@ export class TransformersEmbedder implements Embedder {
   readonly modelId: string;
 
   private constructor(
-    private readonly pipe: FeatureExtractionPipeline,
+    private readonly native: NativeBindings,
+    private readonly modelDir: string,
     preset: TransformersModelPreset,
   ) {
     this.dim = preset.dim;
@@ -173,15 +125,16 @@ export class TransformersEmbedder implements Embedder {
     strategy: string;
     model?: string;
   }): Promise<TransformersEmbedder | null> {
-    if (!(await isTransformersAvailable())) return null;
+    const native = await tryGetNative();
+    if (!native) return null;
 
     const preset = resolveTransformersModel(opts.strategy, opts.model);
     try {
-      const pipe = await loadPipeline(preset);
-      return new TransformersEmbedder(pipe, preset);
+      const cacheDir = appHomePath("models");
+      mkdirSync(cacheDir, { recursive: true });
+      const modelDir = await ensureModelFiles(cacheDir, preset);
+      return new TransformersEmbedder(native, modelDir, preset);
     } catch (err) {
-      pipelinePromise = null;
-      loadedPreset = null;
       if (err instanceof EmbedderDownloadSkipped) throw err;
       stopSpinner();
       return null;
@@ -189,7 +142,10 @@ export class TransformersEmbedder implements Embedder {
   }
 
   async embed(text: string): Promise<Float32Array> {
-    const out = await this.pipe(text, { pooling: "mean", normalize: true });
-    return out.data;
+    const result = this.native.embedText(text, this.modelDir);
+    if (!result.ok) {
+      throw new Error(result.error ?? "native embed failed");
+    }
+    return Float32Array.from(result.embedding);
   }
 }

@@ -2,7 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect } from "bun:test";
-import { openMemoryDb, insertEntry, upsertEmbedding } from "../src/memory/db.js";
+import {
+  openMemoryDb,
+  insertEntry,
+  searchByVector,
+  upsertEmbedding,
+} from "../src/memory/db.js";
+import { openDatabase } from "../src/sqlite.js";
 import { MemoryStore } from "../src/memory/store.js";
 import type { Embedder } from "../src/memory/types.js";
 
@@ -87,5 +93,47 @@ describe("Memory vector re-embedding migration", () => {
         .get() as { c: number };
       expect(rows.c).toBe(1);
       reopened.db.close();
+    }));
+});
+
+describe("BLOB cosine kNN", () => {
+  it("ranks nearer embeddings first", () => {
+    const { db } = openMemoryDb(":memory:", 2);
+    upsertEmbedding(db, "near", new Float32Array([1, 0]));
+    upsertEmbedding(db, "far", new Float32Array([0, 1]));
+    const knn = searchByVector(db, new Float32Array([1, 0]), 2);
+    expect(knn.map((h) => h.entry_id)).toEqual(["near", "far"]);
+    expect(knn[0]!.distance).toBeCloseTo(0, 5);
+    expect(knn[1]!.distance).toBeCloseTo(1, 5);
+    db.close();
+  });
+});
+
+describe("vec0 format migration", () => {
+  it("stores BLOBs in entries_vec_blob when entries_vec is a leftover vec0 table", () =>
+    withTempDb((dbPath) => {
+      const raw = openDatabase(dbPath);
+      raw.exec("CREATE TABLE entries_vec (vec0 TEXT)");
+      raw.close();
+
+      const opened = openMemoryDb(dbPath, 384);
+      expect(opened.needsReembed).toBe(true);
+      const ghost = opened.db
+        .query("SELECT sql FROM sqlite_master WHERE name = 'entries_vec'")
+        .get() as { sql: string };
+      expect(ghost.sql.toLowerCase()).toContain("vec0");
+      const blob = opened.db
+        .query("SELECT name FROM sqlite_master WHERE name = 'entries_vec_blob'")
+        .get();
+      expect(blob).toBeTruthy();
+
+      upsertEmbedding(opened.db, "probe", new Float32Array(384));
+      const hits = searchByVector(opened.db, new Float32Array(384), 1);
+      expect(hits[0]?.entry_id).toBe("probe");
+      opened.db.close();
+
+      const again = openMemoryDb(dbPath, 384);
+      expect(again.needsReembed).toBe(true);
+      again.db.close();
     }));
 });

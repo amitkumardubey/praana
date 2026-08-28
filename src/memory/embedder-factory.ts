@@ -50,7 +50,7 @@ export async function createEmbedder(
     try {
       const embedder = await tryTransformersEmbedder(config);
       if (embedder) {
-        log.notice(`embedder: transformers (${embedder.modelId}, ${embedder.dim}-dim)`);
+        log.notice(`embedder: native ONNX (${embedder.modelId}, ${embedder.dim}-dim)`);
         return embedder;
       }
     } catch (err) {
@@ -62,7 +62,7 @@ export async function createEmbedder(
     }
 
     log.warn(
-      "Transformers embedder failed to load — recall will use keyword search only.",
+      "Native ONNX embedder failed to load — recall will use keyword search only.",
     );
     return null;
   }

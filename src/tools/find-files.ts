@@ -1,14 +1,9 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
-import { resolve as resolvePath, isAbsolute, join } from "node:path";
+import { resolve as resolvePath, isAbsolute, relative } from "node:path";
 import type { SandboxConfig } from "../types.js";
-import {
-  buildFffQuery,
-  pathToConstraint,
-  sandboxBlockReason,
-  getFffManager,
-  clearFffCache,
-} from "../fff.js";
+import { pathToConstraint, sandboxBlockReason } from "../sandbox-path.js";
+import { tryGetNative } from "../native/index.js";
 
 export interface FindFilesMatch {
   file: string;
@@ -60,7 +55,7 @@ const findFilesSchema = z.object({
   path: z
     .string()
     .optional()
-    .describe("Directory to scope search (base-relative constraint)"),
+    .describe("Directory to scope search"),
   max_results: z
     .number()
     .int()
@@ -77,25 +72,25 @@ const findFilesSchema = z.object({
 
 export type FindFilesArgs = z.infer<typeof findFilesSchema>;
 
-export function buildFindFilesQuery(args: FindFilesArgs, cwd: string, searchPath: string): string {
-  // For find_files, path constraint is the directory scope.
-  // In glob mode, pattern itself is a glob; path is extra constraint.
+export function buildFindFilesQuery(
+  args: FindFilesArgs,
+  cwd: string,
+  searchPath: string,
+): string {
   const constraints: string[] = [];
   if (args.path) {
     const c = pathToConstraint(cwd, searchPath);
     if (c) constraints.push(c);
   }
   if (constraints.length === 0) return args.pattern;
-  // fff's fileSearch query parser supports the same constraint syntax as grep
-  // (git:modified, globs, dir constraints), so we prepend constraints.
-  return buildFffQuery(args.pattern, constraints);
+  return `${constraints.join(" ")} ${args.pattern}`;
 }
 
 export async function runFindFiles(
   args: FindFilesArgs,
   cwd: string,
   sandbox: SandboxConfig | undefined,
-  scanTimeoutMs: number | undefined,
+  _scanTimeoutMs: number | undefined,
   getAbortSignal?: () => AbortSignal | undefined,
 ): Promise<FindFilesResult> {
   const started = Date.now();
@@ -112,86 +107,54 @@ export async function runFindFiles(
   const signal = getAbortSignal?.();
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  let manager;
-  try {
-    manager = await getFffManager(cwd);
-  } catch (e) {
-    return { ok: false, error: `fff initialization failed: ${(e as Error).message}` };
-  }
-
-  if (!manager.isAvailable()) {
-    const { getFffLoadError } = await import("../fff.js");
-    const detail = getFffLoadError() ?? "unknown";
+  const native = await tryGetNative();
+  if (!native) {
     return {
       ok: false,
-      error: `fff not available: ${detail}. Install @ff-labs/fff-bun or check platform support.`,
+      error:
+        "native search unavailable. Install @praana/natives or keep praana-natives.node beside the standalone binary.",
     };
-  }
-
-  const timeoutMs = args.timeout ?? 5000;
-  const maxResults = args.max_results ?? 50;
-  const scanMs = scanTimeoutMs ?? 5000;
-
-  const ready = await manager.ensureReady(Math.min(timeoutMs, scanMs));
-  if (!ready.ok) {
-    return { ok: false, error: `fff not ready: ${ready.error}` };
-  }
-
-  const rawFinder = manager.raw() as unknown as {
-    fileSearch(query: string, opts: Record<string, unknown>): { ok: true; value: { items: Array<{ relativePath: string; fileName: string; size: number; modified: number; gitStatus: string }>; totalMatched: number; totalFiles: number } } | { ok: false; error: string };
-    glob(pattern: string, opts: Record<string, unknown>): { ok: true; value: { items: Array<{ relativePath: string; fileName: string; size: number; modified: number; gitStatus: string }>; totalMatched: number; totalFiles: number } } | { ok: false; error: string };
-  } | null;
-
-  if (!rawFinder) {
-    return { ok: false, error: "fff FileFinder not initialized" };
   }
 
   if (signal?.aborted) return { ok: false, error: "Interrupted" };
 
-  const isGlob = args.mode === "glob";
-
-  let result: { ok: true; value: { items: Array<{ relativePath: string; fileName: string; size: number; modified: number; gitStatus: string }>; totalMatched: number } } | { ok: false; error: string };
-
+  const maxResults = args.max_results ?? 50;
+  let result;
   try {
-    if (isGlob) {
-      // In glob mode, pattern is the glob itself. If a path constraint is
-      // provided, prepend the directory so glob() can match within it.
-      let globPattern = args.pattern;
-      if (args.path) {
-        const c = pathToConstraint(cwd, searchPath);
-        if (c) {
-          const dir = c.endsWith("/") ? c : `${c}/`;
-          if (!globPattern.startsWith(dir)) {
-            globPattern = `${dir}${globPattern}`;
-          }
-        }
-      }
-      result = rawFinder.glob(globPattern, { pageSize: maxResults });
-    } else {
-      const query = buildFindFilesQuery(args, cwd, searchPath);
-      result = rawFinder.fileSearch(query, { pageSize: maxResults });
-    }
+    result = native.findFiles({
+      pattern: args.pattern,
+      path: searchPath,
+      mode: args.mode ?? "fuzzy",
+      maxResults,
+    });
   } catch (e) {
-    return { ok: false, error: `fff search failed: ${(e as Error).message}` };
+    return { ok: false, error: `native find_files failed: ${(e as Error).message}` };
   }
 
   if (!result.ok) {
-    return { ok: false, error: `fff error: ${result.error}` };
+    return { ok: false, error: result.error ?? "native find_files failed" };
   }
 
-  const raw = result.value;
-  const totalMatched = raw.totalMatched ?? raw.items.length;
-  const items = raw.items;
-  const matches: FindFilesMatch[] = items.slice(0, maxResults).map((it) => ({
-    file: join(cwd, it.relativePath),
-    relative_path: it.relativePath,
-    name: it.fileName,
-    size: it.size,
-    modified: it.modified,
-    git_status: it.gitStatus ?? "unknown",
-  }));
+  const totalMatched = result.totalMatched ?? result.matches.length;
+  const matches: FindFilesMatch[] = result.matches.slice(0, maxResults).map((it) => {
+    const abs = it.path;
+    let rel: string;
+    try {
+      rel = relative(cwd, abs).replace(/\\/g, "/");
+    } catch {
+      rel = it.relativePath;
+    }
+    return {
+      file: abs,
+      relative_path: rel,
+      name: it.name,
+      size: it.size,
+      modified: it.modified,
+      git_status: "unknown",
+    };
+  });
 
-  const truncated = totalMatched > matches.length;
+  const truncated = result.truncated || totalMatched > matches.length;
   return {
     ok: true,
     pattern: args.pattern,
@@ -210,7 +173,7 @@ export function createFindFilesTool(ctx: FindFilesToolContext) {
   return {
     find_files: defineTool({
       description:
-        "Fast fuzzy file search powered by fff. Returns file paths with metadata and git status. Use for finding files by name or path pattern. Supports fuzzy (typo-resistant) and glob modes.",
+        "Fast fuzzy file search powered by the native addon. Returns file paths with metadata. Use for finding files by name or path pattern. Supports fuzzy (typo-resistant) and glob modes.",
       parameters: findFilesSchema,
       execute: async (raw: unknown) => {
         const parsed = findFilesSchema.safeParse(raw);
@@ -222,7 +185,13 @@ export function createFindFilesTool(ctx: FindFilesToolContext) {
               .join("; ")}`,
           } satisfies FindFilesError;
         }
-        return runFindFiles(parsed.data, ctx.cwd, ctx.sandbox, ctx.scanTimeoutMs, ctx.getAbortSignal);
+        return runFindFiles(
+          parsed.data,
+          ctx.cwd,
+          ctx.sandbox,
+          ctx.scanTimeoutMs,
+          ctx.getAbortSignal,
+        );
       },
     }),
   };

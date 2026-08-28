@@ -5,7 +5,14 @@ export {
   type ListImportsResult,
   type ListSymbolsResult,
   type NativeBindings,
+  type NativeEmbedResult,
   type NativeErrorCode,
+  type NativeFindFilesMatch,
+  type NativeFindFilesOpts,
+  type NativeFindFilesResult,
+  type NativeGrepMatch,
+  type NativeGrepOpts,
+  type NativeGrepResult,
   type NativeLoadResult,
   type ParseDiagnostic,
   type ParseFileResult,
@@ -26,6 +33,12 @@ export {
   resolveSidecarAddonPath,
   toImportSpecifier,
 } from "./sidecar.js";
+export {
+  NATIVE_API_VERSION,
+  SIDECAR_MANIFEST_FILENAME,
+  formatSidecarManifest,
+  type SidecarManifest,
+} from "./manifest.js";
 export {
   formatNativeStatus,
   probeNativeStatus,

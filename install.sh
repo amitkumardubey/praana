@@ -4,12 +4,13 @@
 #   curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 #
 # Downloads the matching GitHub Release archive, verifies SHA256SUMS, and
-# installs `praana` plus `praana-natives.node` into ~/.local/bin (or
-# /usr/local/bin when root). Keep both files in the same directory.
+# installs `praana`, `praana-natives.node`, and `praana-natives.json` into
+# ~/.local/bin (or /usr/local/bin when root). Keep these files in the same directory.
 set -eu
 
 RELEASE_BASE_DEFAULT="https://github.com/amitkumardubey/praana/releases/latest/download"
 SIDECAR_NAME="praana-natives.node"
+MANIFEST_NAME="praana-natives.json"
 
 usage() {
   cat <<'EOF'
@@ -198,15 +199,37 @@ fi
 mkdir -p "$tmpdir/extract"
 tar -xzf "$tmpdir/$archive" -C "$tmpdir/extract"
 [ -f "$tmpdir/extract/praana" ] || die "archive missing praana"
-[ -f "$tmpdir/extract/$SIDECAR_NAME" ] || die "archive missing $SIDECAR_NAME (Tree-sitter sidecar)"
+[ -f "$tmpdir/extract/$SIDECAR_NAME" ] || die "archive missing $SIDECAR_NAME (native sidecar)"
 
 mkdir -p "$dest"
-cp "$tmpdir/extract/praana" "$dest/praana"
-cp "$tmpdir/extract/$SIDECAR_NAME" "$dest/$SIDECAR_NAME"
-chmod +x "$dest/praana"
+stage=$(mktemp -d "$dest/.praana-install.XXXXXX")
+cp "$tmpdir/extract/praana" "$stage/praana"
+cp "$tmpdir/extract/$SIDECAR_NAME" "$stage/$SIDECAR_NAME"
+if [ -f "$tmpdir/extract/$MANIFEST_NAME" ]; then
+  cp "$tmpdir/extract/$MANIFEST_NAME" "$stage/$MANIFEST_NAME"
+fi
+chmod +x "$stage/praana"
+mv -f "$stage/praana" "$dest/praana"
+mv -f "$stage/$SIDECAR_NAME" "$dest/$SIDECAR_NAME"
+if [ -f "$stage/$MANIFEST_NAME" ]; then
+  mv -f "$stage/$MANIFEST_NAME" "$dest/$MANIFEST_NAME"
+fi
+rmdir "$stage" 2>/dev/null || rm -rf "$stage"
 
 printf 'Installed %s and %s to %s\n' praana "$SIDECAR_NAME" "$dest"
 if ! path_has_dir "$dest"; then
   printf '\n%s is not on PATH. Add:\n  export PATH="%s:$PATH"\n' "$dest" "$dest"
+fi
+if ! "$dest/praana" --version >/dev/null 2>&1; then
+  die "smoke --version failed after install"
+fi
+doc_out=$("$dest/praana" doctor 2>&1) || true
+if ! printf '%s\n' "$doc_out" | grep '✓ native:' >/dev/null; then
+  printf '%s\n' "$doc_out" >&2
+  die "doctor did not report native capability"
+fi
+if ! printf '%s\n' "$doc_out" | grep '✓ search:' >/dev/null; then
+  printf '%s\n' "$doc_out" >&2
+  die "doctor did not report search capability"
 fi
 printf 'Run: praana --version\n'

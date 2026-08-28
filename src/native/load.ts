@@ -16,6 +16,11 @@ import {
   type ListSymbolsResult,
   type NativeBindings,
   type NativeLoadResult,
+  type NativeEmbedResult,
+  type NativeFindFilesOpts,
+  type NativeFindFilesResult,
+  type NativeGrepOpts,
+  type NativeGrepResult,
   type ParseFileResult,
   type ProjectHitsResult,
   type ProjectQueryOpts,
@@ -69,6 +74,15 @@ function asBindings(mod: Record<string, unknown>): NativeBindings {
   const findReferences = asFn<
     (root: string, symbol: string, opts?: ProjectQueryOpts | null) => unknown
   >(mod.findReferences, "findReferences");
+  const grep = asFn<(opts: NativeGrepOpts) => unknown>(mod.grep, "grep");
+  const findFiles = asFn<(opts: NativeFindFilesOpts) => unknown>(
+    mod.findFiles,
+    "findFiles",
+  );
+  const embedText = asFn<(text: string, modelDir: string) => unknown>(
+    mod.embedText,
+    "embedText",
+  );
 
   return {
     nativeVersion: () => String(nativeVersion()),
@@ -82,6 +96,10 @@ function asBindings(mod: Record<string, unknown>): NativeBindings {
       findDefinition(root, symbol, opts) as ProjectHitsResult,
     findReferences: (root, symbol, opts) =>
       findReferences(root, symbol, opts) as ProjectHitsResult,
+    grep: (opts) => grep(opts) as NativeGrepResult,
+    findFiles: (opts) => findFiles(opts) as NativeFindFilesResult,
+    embedText: (text, modelDir) =>
+      embedText(text, modelDir) as NativeEmbedResult,
   };
 }
 

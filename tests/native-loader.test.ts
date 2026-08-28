@@ -1,6 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -32,6 +31,15 @@ export function findDefinition() {
 }
 export function findReferences() {
   return { ok: true, hits: [], truncated: false, filesScanned: 0 };
+}
+export function grep() {
+  return { ok: true, matches: [], truncated: false, filesSearched: 0 };
+}
+export function findFiles() {
+  return { ok: true, matches: [], truncated: false, totalMatched: 0 };
+}
+export function embedText() {
+  return { ok: false, dim: 0, embedding: [], code: "unavailable", error: "no model" };
 }
 `;
 }
@@ -138,17 +146,23 @@ describe("native loader", () => {
   });
 
   it("loads a real .node sidecar via require when present", async () => {
-    const sidecar = join(homedir(), ".local", "bin", SIDECAR_ADDON_FILENAME);
-    if (!existsSync(sidecar)) return;
+    const nativesDir = join(import.meta.dir, "../packages/praana-natives");
+    const built = existsSync(nativesDir)
+      ? readdirSync(nativesDir)
+          .filter((name) => name.endsWith(".node"))
+          .map((name) => join(nativesDir, name))[0]
+      : undefined;
+    if (!built) return;
 
     const result = await loadNative({
       forceReload: true,
       importSpecifier: join(fixtureDir, "does-not-exist.mjs"),
-      sidecarPath: sidecar,
-      execPath: join(homedir(), ".local", "bin", "praana"),
+      sidecarPath: built,
+      execPath: join(fixtureDir, "praana"),
     });
     expect(result.available).toBe(true);
     expect(result.bindings?.ping()).toBe("pong");
+    expect(typeof result.bindings?.grep).toBe("function");
   });
 
   it("respects native.enabled=false via setNativeEnabled", async () => {

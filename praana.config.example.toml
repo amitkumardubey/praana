@@ -177,10 +177,8 @@ idle_hard_after_turns = 50
 log_dir = "~/.praana/sessions"
 
 [search_code]
-# search_code and find_files are powered by fff (@ff-labs/fff-bun), an
-# in-process file search index. No binary path is needed — the native library
-# ships with the npm package.
-# Optional: max ms to wait for the fff index scan on the first search.
+# search_code and find_files use @praana/natives (gitignore-aware walk + grep).
+# scan_timeout_ms is unused (kept for config compatibility).
 # scan_timeout_ms = 5000
 
 # Language Server Protocol client (issue #11 Phases 2–3).

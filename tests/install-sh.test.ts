@@ -110,14 +110,31 @@ describe("install.sh checksum install", () => {
 
     const staging = join(root, "staging");
     mkdirSync(staging);
-    writeFileSync(join(staging, "praana"), "#!/bin/sh\necho fixture-praana\n");
+    writeFileSync(
+      join(staging, "praana"),
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "PRAANA v0.0.0-fixture"
+  exit 0
+fi
+if [ "$1" = "doctor" ]; then
+  echo "✓ native: available (0.3.0, ping ok)"
+  echo "✓ search: native grep available (search_code, find_files)"
+  echo "⚠ embedder: runtime ready, weights not downloaded"
+  echo "All checks passed."
+  exit 0
+fi
+echo fixture-praana
+`,
+    );
     chmodSync(join(staging, "praana"), 0o755);
     writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\n");
+    writeFileSync(join(staging, "praana-natives.json"), '{"apiVersion":"0.3.0"}\n');
 
     const archiveName = "praana-linux-x64.tar.gz";
     const archivePath = join(releaseDir, archiveName);
     const packed = Bun.spawnSync(
-      ["tar", "-czf", archivePath, "praana", SIDECAR_ADDON_FILENAME],
+      ["tar", "-czf", archivePath, "praana", SIDECAR_ADDON_FILENAME, "praana-natives.json"],
       { cwd: staging, stdout: "pipe", stderr: "pipe" },
     );
     expect(packed.exitCode).toBe(0);

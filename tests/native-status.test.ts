@@ -11,17 +11,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import type { NativeLoadResult, NativeBindings } from "../src/native/types.js";
+import { stubNativeBindings } from "./helpers/native-bindings.js";
 
 function mockAvailableBindings(): NativeBindings {
-  return {
+  return stubNativeBindings({
     nativeVersion: () => "0.3.1",
     ping: () => "",
-    parseFile: () => ({ ok: true, diagnostics: [] }),
-    listSymbols: () => ({ ok: true, diagnostics: [], symbols: [] }),
-    listImports: () => ({ ok: true, diagnostics: [], imports: [] }),
-    findDefinition: () => ({ ok: true, hits: [], truncated: false, filesScanned: 0 }),
-    findReferences: () => ({ ok: true, hits: [], truncated: false, filesScanned: 0 }),
-  };
+  });
 }
 
 describe("formatNativeStatus", () => {
@@ -159,7 +155,7 @@ describe("Session nativeStatus probing", () => {
     expect(session.nativeStatus).toBeTruthy();
     const kind = session.nativeStatus!.kind;
     expect(kind === "available" || kind === "unavailable" || kind === "disabled").toBe(true);
-    // fff should also be probed
+    // search should also be probed
     expect(session.fffStatus).toBeTruthy();
     expect(
       session.fffStatus!.startsWith("available") ||

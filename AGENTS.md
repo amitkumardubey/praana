@@ -42,7 +42,7 @@ Uses `@opentui/solid/bun-plugin` and sets `compile.autoloadBunfig = false` so la
 
 Baked `--version` string: exact git tag `v{package.json version}` with a clean tree → that version (e.g. `0.12.0`); otherwise `{version}-dev.<shortsha>[.dirty]` so branch builds are not mistaken for a release.
 
-Release CI (`release-please.yml`) compiles five targets (linux x64/arm64, darwin arm64/x64 on matching runners, windows-x64 on `windows-latest`; darwin-x64 and windows-x64 use **native** host compiles without `--target`), packs `praana-<os>-<arch>.tar.gz` or `praana-windows-x64.zip` + `SHA256SUMS` via `bun run package:binaries --allow-missing` (each archive is the platform executable plus `praana-natives.node`; skips any target whose binary did not build), and uploads them to the GitHub Release. `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`. Standalone install (no Bun): `install.sh` → `~/.local/bin` on Linux/macOS; `install.ps1` → `%USERPROFILE%\.local\bin` on Windows (PowerShell; cmd users invoke via `powershell -Command "irm … | iex"`).
+Release CI (`release-please.yml`) compiles five targets (linux x64/arm64, darwin arm64/x64 on matching runners, windows-x64 on `windows-latest`; darwin-x64 and windows-x64 use **native** host compiles without `--target`), packs `praana-<os>-<arch>.tar.gz` or `praana-windows-x64.zip` + `SHA256SUMS` via `bun run package:binaries --allow-missing` (each archive is the platform executable plus `praana-natives.node` and `praana-natives.json`; skips any target whose binary did not build), and uploads them to the GitHub Release. **Standalone contract:** `praana` executable + one `praana-natives.node` beside it (search, tree-sitter, ONNX embed). `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`. Model weights still download to `~/.praana/models/` on first use (consent unchanged). Standalone install (no Bun): `install.sh` → `~/.local/bin` on Linux/macOS; `install.ps1` → `%USERPROFILE%\.local\bin` on Windows (PowerShell; cmd users invoke via `powershell -Command "irm … | iex"`). `praana doctor` must report native + search from a clean directory with no `node_modules`.
 
 ## Running
 
@@ -96,38 +96,38 @@ ollama_model = "nomic-embed-text"
 ```
 
 Strategies:
-- `auto` — uses Transformers.js (`@huggingface/transformers`, shipped as a dependency). Model weights download on first run to `~/.praana/models/` after a one-time consent prompt.
-- `transformers` — in-process ONNX via `@huggingface/transformers` (Xenova/all-MiniLM-L6-v2, 384-dim). Models cache in `~/.praana/models/`.
+- `auto` — in-process ONNX via `@praana/natives` (`native.embedText`). Model weights download on first run to `~/.praana/models/` after a one-time consent prompt.
+- `transformers` — MiniLM (Xenova/all-MiniLM-L6-v2, 384-dim) through the same native runtime. Models cache in `~/.praana/models/`.
 - `transformers-nomic` — 768-dim variant (Xenova/nomic-embed-text-v1) for higher-quality recall.
 - `ollama` — opt-in; requires running Ollama daemon. Run `ollama pull nomic-embed-text` first.
 
-When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
+When no semantic embedder is available (`[native] enabled = false`, addon missing, or weights skipped), recall uses **keyword-only search** (FTS) — never fake vectors. Vector rows are BLOBs in `entries_vec` with cosine kNN in TypeScript — no sqlite-vec extension and no Homebrew SQLite.
 
 When adding embedder support, implement the `Embedder` interface in `src/memory/types.ts`. The interface has two fields: `dim: number` and `embed(text: string): Promise<Float32Array>`.
 
 ### Native Addon (`@praana/natives`)
 
-Tree-sitter code intel (`code_*` tools) loads the optional napi addon. Configure in `[native]`:
+One cdylib owns tree-sitter (`code_*`), grep/path search (`search_code` / `find_files`), and ONNX embeddings. Configure in `[native]`:
 
 ```toml
 [native]
-enabled = true   # false = never load addon; code_* tools return unavailable
+enabled = true   # false = never load addon; code_* / search / native embed return unavailable
 require = false  # reserved; Phase 1 never aborts session start on missing addon
 ```
 
-Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor`, and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code` or `find_files`).
+Availability is probed once at session start via `loadNative()` and surfaced in the boot banner (`native: available (0.x.y)` / `disabled via config` / `unavailable: reason`), `/stats`, `praana doctor` (separate lines for native, search, embedder, vectors), and the compiled system frame (`## Native Addon` section when unavailable so the agent avoids `code_*` and prefers `search_code` or `find_files` — which also need the addon).
 
 `praana` depends on `@praana/natives` via `optionalDependencies` (lockstep npm version). Release CI builds platform `.node` leaves (`linux-x64-gnu/musl`, `linux-arm64-gnu`, `darwin-arm64/x64`, `win32-x64-msvc`) and publishes leaves, then `@praana/natives`, then `praana`. Users do not need a Rust toolchain. **Prerequisite:** npm org `praana` must exist so `NPM_TOKEN` can publish `@praana/*`; the first release 404s without it.
 
-Standalone GitHub Release archives include a matching `praana-natives.node` sidecar (glibc linux-arm64 included). The loader dlopens it from `dirname(process.execPath)` when the npm package is absent. Do not move the `.node` away from the binary.
+Standalone GitHub Release archives include a matching `praana-natives.node` sidecar plus `praana-natives.json` (api version, target, sha256). The loader dlopens the `.node` from `dirname(process.execPath)` when the npm package is absent. Do not move the `.node` away from the binary.
 
-### fff — In-Process File Search (`@ff-labs/fff-bun`)
+### Native file search (`search_code` / `find_files`)
 
-`search_code` and `find_files` are powered by fff, an in-process file search index (native library ships with the `@ff-labs/fff-bun` npm package). The `FileFinder` is created lazily per `cwd` and shared between both tools. The initial scan runs in the background; the first search waits up to `[search_code] scan_timeout_ms` (default 5000).
+`search_code` and `find_files` call N-API `grep` / `findFiles` on `@praana/natives` (gitignore-aware walk via the `ignore` crate). There is no separate fff package.
 
-fff availability is probed at session start and surfaced in the boot banner (`search: available` / `search: unavailable`), `/stats`, and `praana doctor`.
+Search availability is probed at session start and surfaced in the boot banner (`search: available` / `search: unavailable`), `/stats`, and `praana doctor` (a real grep against a tiny temp tree).
 
-**Known tradeoff:** fff's `grep()` is synchronous — it blocks the event loop while searching. An `AbortSignal` cannot interrupt a running grep. For very large codebases, this may cause brief TUI freezes. Use `shell rg` for searching outside the project root or when interactive abort is needed.</think>
+**Known tradeoff:** native `grep()` is synchronous — it blocks the event loop while searching. An `AbortSignal` cannot interrupt a running grep. For very large codebases, this may cause brief TUI freezes. Use `shell rg` for searching outside the project root or when interactive abort is needed.</think>
 
 ### LSP (`[lsp]`, issue #11 Phases 2–4)
 
@@ -366,8 +366,8 @@ src/
     memory.ts    — Adaptive Context tools (create_task, decide, add_constraint, search_session_log, etc.)
     knowledge.ts — Cognitive Memory tools (recall, remember)
     system.ts    — System tools (shell, read_file, write_file, edit_file)
-    search-code.ts — search_code: fff-backed structured code search (in-process grep → file:line:column matches with context, globs, max_results)
-    find-files.ts — find_files: fuzzy file path search powered by fff (typo-resistant fuzzy or pure glob mode; returns file paths with git status)
+    search-code.ts — search_code: native grep via @praana/natives (file:line:column matches with context, globs, max_results)
+    find-files.ts — find_files: fuzzy/glob path search via @praana/natives
     git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
     run-tests.ts — run_tests: structured test runner with multi-language adapter dispatch (issue #321)
     test-runner/ — language-specific adapters (bun, npm/pnpm/yarn, go, cargo, pytest, generic)
@@ -380,7 +380,7 @@ src/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables
     embeddings.ts — OllamaEmbedder
-    transformers-embedder.ts — Transformers.js in-process semantic embedder
+    transformers-embedder.ts — native ONNX embedder (HF weight download + native.embedText)
     transformers-models.ts — Model presets (MiniLM, nomic)
     summarizer.ts — extractLearnings: transcript → concise key-point learnings via LLM (skips AGENTS.md/README)
     normalize-learning.ts — Normalize LLM learning content into scannable key points
@@ -556,7 +556,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
 - Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`. Array allowlists (`[shell] allowed_paths`, etc.) **append-merge** across layers instead of replacing.
-- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`. First Transformers.js download prompts for consent (#187).
+- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`. First ONNX weight download prompts for consent (#187). `entries_vec` is a plain BLOB table (cosine in TS); do not load sqlite-vec. Installs that still have a sqlite-vec `vec0` `entries_vec` keep that ghost table (bun:sqlite cannot DROP it without the extension) and store new vectors in `entries_vec_blob`.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
 - **Concurrent DB access:** Both `openMemoryDb()` and `openContextEngineDb()` configure WAL mode plus a `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Don't open these databases with raw `new Database()` and then skip the pragmas — missing `busy_timeout` makes parallel sessions fail immediately with `SQLITE_BUSY` instead of retrying.

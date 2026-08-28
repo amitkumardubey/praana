@@ -4,7 +4,7 @@
 
 import type { Database } from "bun:sqlite";
 import { applyConcurrencyPragmas, openDatabase } from "../sqlite.js";
-import * as sqliteVec from "sqlite-vec";
+import { cosineSimilarity } from "../cosine-similarity.js";
 import type { MemoryEntry, MemoryKind } from "./types.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
 
@@ -88,7 +88,6 @@ export function openMemoryDb(
   embeddingBackend?: string,
 ): OpenMemoryDbResult {
   const db = openDatabase(path);
-  sqliteVec.load(db);
   applyConcurrencyPragmas(db);
   db.exec(BASE_SCHEMA);
   ensureLayerColumns(db);
@@ -235,6 +234,57 @@ function ensureFtsBackfill(db: Database): void {
   `);
 }
 
+const VEC_BLOB_TABLE = "entries_vec";
+const VEC_BLOB_FALLBACK_TABLE = "entries_vec_blob";
+const VECTOR_TABLE_KEY = "vector_table";
+
+function isVec0Table(db: Database): boolean {
+  const row = db
+    .query(
+      "SELECT sql FROM sqlite_master WHERE name = 'entries_vec'",
+    )
+    .get() as { sql: string | null } | undefined;
+  return Boolean(row?.sql?.toLowerCase().includes("vec0"));
+}
+
+function isBlobVectorTable(
+  name: string,
+): name is typeof VEC_BLOB_TABLE | typeof VEC_BLOB_FALLBACK_TABLE {
+  return name === VEC_BLOB_TABLE || name === VEC_BLOB_FALLBACK_TABLE;
+}
+
+function sqliteTableExists(db: Database, name: string): boolean {
+  return Boolean(
+    db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .get(name),
+  );
+}
+
+function createBlobVectorTable(db: Database, name: string): void {
+  if (!isBlobVectorTable(name)) {
+    throw new Error(`invalid vector table ${name}`);
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${name} (
+      entry_id TEXT PRIMARY KEY,
+      embedding BLOB NOT NULL
+    )
+  `);
+}
+
+/**
+ * BLOB kNN table. Leftover sqlite-vec `vec0` virtual tables cannot be DROPped
+ * without the extension (and bun:sqlite blocks sqlite_master writes), so those
+ * installs store vectors in `entries_vec_blob` and leave the ghost table alone.
+ */
+function resolveVectorTable(db: Database): string {
+  const stored = getMemoryMeta(db, VECTOR_TABLE_KEY);
+  if (stored && isBlobVectorTable(stored)) return stored;
+  if (isVec0Table(db)) return VEC_BLOB_FALLBACK_TABLE;
+  return VEC_BLOB_TABLE;
+}
+
 function ensureVectorTable(db: Database, dim: number): boolean {
   const row = db
     .query("SELECT value FROM memory_meta WHERE key = 'embedding_dim'")
@@ -244,33 +294,45 @@ function ensureVectorTable(db: Database, dim: number): boolean {
     .query("SELECT value FROM memory_meta WHERE key = ?")
     .get(REEMBED_NEEDED_KEY) as { value: string } | undefined;
 
-  const vecExists = db
-    .query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
-    )
-    .get();
+  if (isVec0Table(db)) {
+    const fallbackExisted = sqliteTableExists(db, VEC_BLOB_FALLBACK_TABLE);
+    if (storedDim !== dim && fallbackExisted) {
+      db.exec(`DROP TABLE IF EXISTS ${VEC_BLOB_FALLBACK_TABLE}`);
+    }
+    createBlobVectorTable(db, VEC_BLOB_FALLBACK_TABLE);
+    setMemoryMeta(db, VECTOR_TABLE_KEY, VEC_BLOB_FALLBACK_TABLE);
+    db.query(
+      "INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('embedding_dim', ?)",
+    ).run(String(dim));
+    const firstMigration = !fallbackExisted;
+    const dimChanged = storedDim !== dim;
+    if (firstMigration || dimChanged) markReembedNeeded(db);
+    return (
+      firstMigration || dimChanged || reembedFlag?.value === "1"
+    );
+  }
 
-  if (vecExists && storedDim === dim) {
+  const blobExists = sqliteTableExists(db, VEC_BLOB_TABLE);
+
+  if (blobExists && storedDim === dim) {
+    if (!getMemoryMeta(db, VECTOR_TABLE_KEY)) {
+      setMemoryMeta(db, VECTOR_TABLE_KEY, VEC_BLOB_TABLE);
+    }
     return reembedFlag?.value === "1";
   }
 
-  if (vecExists) {
+  if (blobExists) {
     markReembedNeeded(db);
-    db.exec("DROP TABLE IF EXISTS entries_vec");
+    db.exec(`DROP TABLE IF EXISTS ${VEC_BLOB_TABLE}`);
   }
 
-  db.exec(`
-    CREATE VIRTUAL TABLE entries_vec USING vec0(
-      entry_id TEXT PRIMARY KEY,
-      embedding float[${dim}]
-    )
-  `);
-
+  createBlobVectorTable(db, VEC_BLOB_TABLE);
+  setMemoryMeta(db, VECTOR_TABLE_KEY, VEC_BLOB_TABLE);
   db.query(
     "INSERT OR REPLACE INTO memory_meta (key, value) VALUES ('embedding_dim', ?)",
   ).run(String(dim));
 
-  return Boolean(vecExists) || reembedFlag?.value === "1";
+  return blobExists || reembedFlag?.value === "1";
 }
 
 export function getStoredEmbeddingBackend(db: Database): string | null {
@@ -429,36 +491,33 @@ export function mergeEntryMetadata(
   }
 }
 
+function blobToFloat32(embedding: Uint8Array | Buffer): Float32Array {
+  const bytes = embedding instanceof Uint8Array ? embedding : new Uint8Array(embedding);
+  return new Float32Array(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength / Float32Array.BYTES_PER_ELEMENT,
+  );
+}
+
 export function getEmbedding(
   db: Database,
   entryId: string,
 ): Float32Array | null {
-  const vecExists = db
-    .query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
-    )
-    .get();
-  if (!vecExists) return null;
+  const table = resolveVectorTable(db);
+  if (!sqliteTableExists(db, table)) return null;
 
   const row = db
-    .query("SELECT embedding FROM entries_vec WHERE entry_id = ?")
+    .query(`SELECT embedding FROM ${table} WHERE entry_id = ?`)
     .get(entryId) as { embedding: Uint8Array } | null;
   if (!row) return null;
-  return new Float32Array(
-    row.embedding.buffer,
-    row.embedding.byteOffset,
-    row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT,
-  );
+  return blobToFloat32(row.embedding);
 }
 
 export function countVectorEmbeddings(db: Database): number {
-  const vecExists = db
-    .query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'",
-    )
-    .get();
-  if (!vecExists) return 0;
-  const row = db.query("SELECT COUNT(*) as c FROM entries_vec").get() as {
+  const table = resolveVectorTable(db);
+  if (!sqliteTableExists(db, table)) return 0;
+  const row = db.query(`SELECT COUNT(*) as c FROM ${table}`).get() as {
     c: number;
   };
   return row.c;
@@ -660,7 +719,10 @@ export function getEntriesByScope(db: Database, scopes: string[]): MemoryEntry[]
 
 export function deleteEntry(db: Database, id: string): void {
   db.query("DELETE FROM entries WHERE id = ?").run(id);
-  db.query("DELETE FROM entries_vec WHERE entry_id = ?").run(id);
+  const table = resolveVectorTable(db);
+  if (sqliteTableExists(db, table)) {
+    db.query(`DELETE FROM ${table} WHERE entry_id = ?`).run(id);
+  }
   db.query("DELETE FROM entries_fts WHERE entry_id = ?").run(id);
 }
 
@@ -727,12 +789,18 @@ export function upsertEmbedding(
   entryId: string,
   embedding: Float32Array,
 ): void {
-  const buf = Buffer.from(embedding.buffer);
-  db.query("DELETE FROM entries_vec WHERE entry_id = ?").run(entryId);
-  db.query("INSERT INTO entries_vec (entry_id, embedding) VALUES (?, ?)").run(
-    entryId,
-    buf,
+  const table = resolveVectorTable(db);
+  if (!sqliteTableExists(db, table)) {
+    createBlobVectorTable(db, table);
+  }
+  const buf = Buffer.from(
+    embedding.buffer,
+    embedding.byteOffset,
+    embedding.byteLength,
   );
+  db.query(
+    `INSERT OR REPLACE INTO ${table} (entry_id, embedding) VALUES (?, ?)`,
+  ).run(entryId, buf);
 }
 
 export function searchByVector(
@@ -740,14 +808,21 @@ export function searchByVector(
   query: Float32Array,
   k: number,
 ): Array<{ entry_id: string; distance: number }> {
-  const buf = Buffer.from(query.buffer);
-  return db
-    .query(
-      `SELECT entry_id, distance FROM entries_vec
-     WHERE embedding MATCH ? AND k = ?
-     ORDER BY distance`,
-    )
-    .all(buf, k) as Array<{ entry_id: string; distance: number }>;
+  const table = resolveVectorTable(db);
+  if (!sqliteTableExists(db, table)) return [];
+
+  const rows = db
+    .query(`SELECT entry_id, embedding FROM ${table}`)
+    .all() as Array<{ entry_id: string; embedding: Uint8Array }>;
+
+  const scored: Array<{ entry_id: string; distance: number }> = [];
+  for (const row of rows) {
+    const vec = blobToFloat32(row.embedding);
+    const similarity = cosineSimilarity(query, vec);
+    scored.push({ entry_id: row.entry_id, distance: 1 - similarity });
+  }
+  scored.sort((a, b) => a.distance - b.distance);
+  return scored.slice(0, k);
 }
 
 export function searchByFts(

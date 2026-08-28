@@ -98,7 +98,71 @@ export interface ProjectHitsResult {
   filesScanned: number;
 }
 
-/** Bindings for native API 0.2+ (tree-sitter code intel). */
+export interface NativeGrepOpts {
+  pattern: string;
+  path: string;
+  globs?: string[] | null;
+  globExclude?: string[] | null;
+  caseInsensitive?: boolean | null;
+  context?: number | null;
+  maxResults?: number | null;
+  maxFileSize?: number | null;
+  timeBudgetMs?: number | null;
+}
+
+export interface NativeGrepMatch {
+  path: string;
+  relativePath: string;
+  line: number;
+  column: number;
+  text: string;
+  contextBefore: string[];
+  contextAfter: string[];
+}
+
+export interface NativeGrepResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  matches: NativeGrepMatch[];
+  truncated: boolean;
+  filesSearched: number;
+  regexFallback?: string | null;
+}
+
+export interface NativeFindFilesOpts {
+  pattern: string;
+  path: string;
+  mode?: string | null;
+  maxResults?: number | null;
+}
+
+export interface NativeFindFilesMatch {
+  path: string;
+  relativePath: string;
+  name: string;
+  size: number;
+  modified: number;
+}
+
+export interface NativeFindFilesResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  matches: NativeFindFilesMatch[];
+  truncated: boolean;
+  totalMatched: number;
+}
+
+export interface NativeEmbedResult {
+  ok: boolean;
+  error?: string | null;
+  code?: string | null;
+  dim: number;
+  embedding: number[];
+}
+
+/** Bindings for native API 0.3+ (tree-sitter, search, embed). */
 export interface NativeBindings {
   nativeVersion(): string;
   ping(): string;
@@ -115,6 +179,9 @@ export interface NativeBindings {
     symbol: string,
     opts?: ProjectQueryOpts | null,
   ): ProjectHitsResult;
+  grep(opts: NativeGrepOpts): NativeGrepResult;
+  findFiles(opts: NativeFindFilesOpts): NativeFindFilesResult;
+  embedText(text: string, modelDir: string): NativeEmbedResult;
 }
 
 export interface NativeLoadResult {

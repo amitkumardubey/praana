@@ -1,16 +1,11 @@
 /**
  * Bun SQLite bootstrap. Call `initBunSqlite()` once at process startup before
- * opening any database (required on macOS for sqlite-vec extension loading).
+ * opening any database.
+ *
+ * Vector recall uses BLOB + cosine in TypeScript — no SQLite extension load,
+ * so Homebrew SQLite is not required on macOS.
  */
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { platform } from "node:os";
-
-/** Homebrew libsqlite3 paths (Apple's system SQLite disables extensions). */
-const MACOS_SQLITE_DYLIB_CANDIDATES = [
-  "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib",
-  "/usr/local/opt/sqlite/lib/libsqlite3.dylib",
-] as const;
 
 let initialized = false;
 
@@ -20,26 +15,7 @@ export type PraanaDatabase = Database;
 export const BUSY_TIMEOUT_MS = 5000;
 
 export function initBunSqlite(): void {
-  if (initialized) return;
   initialized = true;
-
-  if (platform() !== "darwin") return;
-
-  for (const dylib of MACOS_SQLITE_DYLIB_CANDIDATES) {
-    if (existsSync(dylib)) {
-      Database.setCustomSQLite(dylib);
-      return;
-    }
-  }
-
-  throw new Error(
-    [
-      "sqlite-vec requires a SQLite build with extension loading.",
-      "macOS system SQLite does not support extensions.",
-      "Install Homebrew SQLite: brew install sqlite",
-      `Then ensure one of these exists: ${MACOS_SQLITE_DYLIB_CANDIDATES.join(", ")}`,
-    ].join(" "),
-  );
 }
 
 /**

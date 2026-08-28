@@ -2,12 +2,8 @@ import { describe, it, expect } from "bun:test";
 import {
   pathToConstraint,
   fileTypeToConstraint,
-  buildFffQuery,
-  getFffLoadError,
-  resetFffCache,
-  clearFffCache,
   sandboxBlockReason,
-} from "../src/fff.js";
+} from "../src/sandbox-path.js";
 
 describe("pathToConstraint", () => {
   it("returns null for empty or equal-to-base paths", () => {
@@ -45,28 +41,6 @@ describe("fileTypeToConstraint", () => {
 
   it("falls back to a generic extension glob for unknown types", () => {
     expect(fileTypeToConstraint("unknown")).toBe("*.unknown");
-  });
-});
-
-describe("buildFffQuery", () => {
-  it("prepends constraints before the pattern", () => {
-    expect(buildFffQuery("foo", ["*.ts", "src/"])).toBe("*.ts src/ foo");
-  });
-
-  it("returns pattern unchanged with no constraints", () => {
-    expect(buildFffQuery("foo", [])).toBe("foo");
-    expect(buildFffQuery("foo", ["", null as unknown as string])).toBe("foo");
-  });
-});
-
-describe("getFffLoadError and resetFffCache", () => {
-  it("getFffLoadError returns null initially", () => {
-    resetFffCache();
-    expect(getFffLoadError()).toBeNull();
-  });
-
-  it("clearFffCache does not throw", () => {
-    expect(() => clearFffCache()).not.toThrow();
   });
 });
 
