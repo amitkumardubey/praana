@@ -190,21 +190,21 @@ try {
   }
   $installedExe = Join-Path $dest $ExeName
   # Expand-Archive does not restore Unix +x; pwsh-on-Linux CI needs it to smoke.
-  if ($PSVersionTable.Platform -eq "Unix") {
+  # PS 5.1 Hashtable has no Platform entry; StrictMode forbids unguarded lookup.
+  if ($PSVersionTable.Contains("Platform") -and $PSVersionTable["Platform"] -eq "Unix") {
     & chmod +x $installedExe
   }
-  & $installedExe --version | Out-Null
-  if ($LASTEXITCODE -ne 0) {
+  $null = & $installedExe --version
+  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
     Write-Err "smoke --version failed after install"
   }
   $docOut = & $installedExe doctor 2>&1 | Out-String
   if ($docOut -notmatch "✓ native:") {
     Write-Host $docOut
-    Write-Err "doctor did not report native capability"
+    Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"
   }
   if ($docOut -notmatch "✓ search:") {
-    Write-Host $docOut
-    Write-Err "doctor did not report search capability"
+    Write-Host "warning: doctor did not report search capability (this GitHub Release may predate native grep; merge/release 0.15+)"
   }
   Write-Host "Run: praana --version"
 } finally {

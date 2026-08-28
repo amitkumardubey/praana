@@ -165,6 +165,64 @@ echo fixture-praana
     }
   });
 
+  it("does not fail install when doctor still uses the pre-0.15 search line", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-install-sh-old-doctor-"));
+    const releaseDir = join(root, "release");
+    const prefix = join(root, "bin");
+    mkdirSync(releaseDir, { recursive: true });
+
+    const staging = join(root, "staging");
+    mkdirSync(staging);
+    writeFileSync(
+      join(staging, "praana"),
+      `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "PRAANA 0.14.0"
+  exit 0
+fi
+if [ "$1" = "doctor" ]; then
+  echo "✓ native: available (0.2.0)"
+  echo "⚠ search: fff unavailable: unknown"
+  echo "All checks passed."
+  exit 0
+fi
+echo fixture-praana
+`,
+    );
+    chmodSync(join(staging, "praana"), 0o755);
+    writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\n");
+
+    const archiveName = "praana-linux-x64.tar.gz";
+    const archivePath = join(releaseDir, archiveName);
+    const packed = Bun.spawnSync(
+      ["tar", "-czf", archivePath, "praana", SIDECAR_ADDON_FILENAME],
+      { cwd: staging, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(packed.exitCode).toBe(0);
+
+    const hash = await sha256File(archivePath);
+    writeFileSync(
+      join(releaseDir, "SHA256SUMS"),
+      formatSha256Sums([{ filename: archiveName, hash }]),
+    );
+
+    try {
+      const result = runInstall(["--prefix", prefix], {
+        PRAANA_UNAME_S: "Linux",
+        PRAANA_UNAME_M: "x86_64",
+        PRAANA_LIBC: "gnu",
+        PRAANA_RELEASE_BASE: fileReleaseBase(releaseDir),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(existsSync(join(prefix, "praana"))).toBe(true);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        "doctor did not report search capability",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails when SHA256SUMS has no entry for the archive", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-install-missing-sum-"));
     const releaseDir = join(root, "release");
