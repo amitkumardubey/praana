@@ -48,7 +48,7 @@ Global `bun add -g` / `npm i -g` installs `@praana/natives` as an optional depen
 
 ### Standalone binary (manual)
 
-GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz` plus `SHA256SUMS`. Each archive contains the compiled `praana` executable **and** `praana-natives.node`. Keep both files in the same directory after extract. Prefer [`install.sh`](install.sh) unless you need a custom layout.
+GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz`, `praana-windows-x64.zip`, plus `SHA256SUMS`. Each archive contains the compiled executable **and** `praana-natives.node` in the same folder (`praana` or `praana.exe` on Windows). Prefer [`install.sh`](install.sh) on Linux/macOS unless you need a custom layout.
 
 ```bash
 # Example: Linux x64

@@ -76,11 +76,15 @@ jobs:
             artifact: praana-darwin-arm64
             smoke: true
           - runner: macos-15-intel
-            target: bun-darwin-x64
+            target: ""
             artifact: praana-darwin-x64
             smoke: true
+          - runner: windows-latest
+            target: ""
+            artifact: praana-windows-x64.exe
+            smoke: true
     runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.target == 'bun-darwin-x64' }}
+    continue-on-error: ${{ matrix.artifact == 'praana-darwin-x64' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -97,13 +101,26 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Compile
-        run: bun run build:compile -- --target ${{ matrix.target }} --outfile dist/${{ matrix.artifact }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.target }}" ]; then
+            bun run build:compile -- --target "${{ matrix.target }}" --outfile "dist/${{ matrix.artifact }}"
+          else
+            bun run build:compile -- --outfile "dist/${{ matrix.artifact }}"
+          fi
 
       - name: Smoke
         if: matrix.smoke
+        shell: bash
         run: |
-          chmod +x dist/${{ matrix.artifact }}
-          ./dist/${{ matrix.artifact }} --version
+          set -euo pipefail
+          if [[ "${{ matrix.artifact }}" == *.exe ]]; then
+            dist/${{ matrix.artifact }} --version
+          else
+            chmod +x dist/${{ matrix.artifact }}
+            ./dist/${{ matrix.artifact }} --version
+          fi
 
       - name: Upload compiled binary
         uses: actions/upload-artifact@v4

@@ -2,7 +2,7 @@
 /**
  * Package compiled praana binaries into GitHub Release archives.
  *
- * Expects `dist/praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}` from
+ * Expects `dist/praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64,windows-x64.exe}` from
  * `scripts/compile.ts` and matching `praana-natives-<target>.node` files in
  * `--native-dir` (default `dist/native`). Each archive contains:
  *   praana                 — compiled executable
@@ -35,6 +35,7 @@ export const RELEASE_BINARY_TARGETS = [
   "linux-arm64",
   "darwin-arm64",
   "darwin-x64",
+  "windows-x64",
 ] as const;
 
 export type ReleaseBinaryTarget = (typeof RELEASE_BINARY_TARGETS)[number];
@@ -45,6 +46,7 @@ export const RELEASE_NATIVE_TRIPLE: Record<ReleaseBinaryTarget, string> = {
   "linux-arm64": "aarch64-unknown-linux-gnu",
   "darwin-arm64": "aarch64-apple-darwin",
   "darwin-x64": "x86_64-apple-darwin",
+  "windows-x64": "x86_64-pc-windows-msvc",
 };
 
 const DEFAULT_DIST_DIR = "dist";
@@ -52,11 +54,18 @@ const DEFAULT_OUT_DIR = "dist/release";
 const DEFAULT_NATIVE_DIR = "dist/native";
 
 export function releaseBinaryFileName(target: ReleaseBinaryTarget): string {
-  return `praana-${target}`;
+  return target === "windows-x64" ? "praana-windows-x64.exe" : `praana-${target}`;
 }
 
 export function releaseArchiveFileName(target: ReleaseBinaryTarget): string {
-  return `praana-${target}.tar.gz`;
+  return target === "windows-x64"
+    ? "praana-windows-x64.zip"
+    : `praana-${target}.tar.gz`;
+}
+
+/** Executable name inside the release archive (beside the native sidecar). */
+export function releaseStagedExecutableName(target: ReleaseBinaryTarget): string {
+  return target === "windows-x64" ? "praana.exe" : "praana";
 }
 
 export function nativeSidecarDistName(target: ReleaseBinaryTarget): string {
@@ -186,11 +195,34 @@ Expects binaries named:
 Expects native sidecars named:
   ${RELEASE_BINARY_TARGETS.map((t) => nativeSidecarDistName(t)).join(", ")}
 
-Each archive contains \`${SIDECAR_ADDON_FILENAME}\` beside \`praana\` unless --skip-native.
+Each archive contains \`${SIDECAR_ADDON_FILENAME}\` beside the platform executable (\`praana\` or \`praana.exe\`) unless --skip-native.
 
 Options:
   --allow-missing   Skip targets with no compiled binary (CI recovery)
 `);
+}
+
+async function zipStaging(
+  stagingDir: string,
+  entries: string[],
+  archivePath: string,
+): Promise<void> {
+  const proc = Bun.spawn(
+    ["zip", "-j", archivePath, ...entries.map((entry) => join(stagingDir, entry))],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [stderr, exitCode] = await Promise.all([
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(
+      `zip failed (exit ${exitCode}) writing ${archivePath}: ${stderr.trim()}`,
+    );
+  }
 }
 
 async function tarStaging(
@@ -262,11 +294,14 @@ export async function packageReleaseBinaries(options: {
 
     const stagingDir = mkdtempSync(join(tmpdir(), `praana-release-${target}-`));
     try {
-      const staged = join(stagingDir, "praana");
+      const stagedName = releaseStagedExecutableName(target);
+      const staged = join(stagingDir, stagedName);
       copyFileSync(binaryPath, staged);
-      chmodSync(staged, 0o755);
+      if (target !== "windows-x64") {
+        chmodSync(staged, 0o755);
+      }
 
-      const entries = ["praana"];
+      const entries = [stagedName];
       if (nativePath) {
         copyFileSync(nativePath, join(stagingDir, SIDECAR_ADDON_FILENAME));
         entries.push(SIDECAR_ADDON_FILENAME);
@@ -274,7 +309,11 @@ export async function packageReleaseBinaries(options: {
 
       const archiveName = releaseArchiveFileName(target);
       const archivePath = join(outDir, archiveName);
-      await tarStaging(stagingDir, entries, archivePath);
+      if (target === "windows-x64") {
+        await zipStaging(stagingDir, entries, archivePath);
+      } else {
+        await tarStaging(stagingDir, entries, archivePath);
+      }
       archives.push(archivePath);
       checksumEntries.push({
         filename: archiveName,

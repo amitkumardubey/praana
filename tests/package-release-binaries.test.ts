@@ -19,6 +19,7 @@ import {
   packageReleaseBinaries,
   releaseArchiveFileName,
   releaseBinaryFileName,
+  releaseStagedExecutableName,
   sha256File,
 } from "../scripts/package-release-binaries.js";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
@@ -51,13 +52,23 @@ describe("packageReleaseBinaries", () => {
         const archivePath = join(outDir, archiveName);
         expect(existsSync(archivePath)).toBe(true);
 
-        const listing = Bun.spawnSync(["tar", "-tzf", archivePath], {
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        expect(listing.exitCode).toBe(0);
-        const names = listing.stdout.toString("utf-8").trim().split("\n");
-        expect(names).toContain("praana");
+        const stagedName = releaseStagedExecutableName(target);
+        if (target === "windows-x64") {
+          const listing = Bun.spawnSync(["unzip", "-l", archivePath], {
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          expect(listing.exitCode).toBe(0);
+          expect(listing.stdout.toString("utf-8")).toContain(stagedName);
+        } else {
+          const listing = Bun.spawnSync(["tar", "-tzf", archivePath], {
+            stdout: "pipe",
+            stderr: "pipe",
+          });
+          expect(listing.exitCode).toBe(0);
+          const names = listing.stdout.toString("utf-8").trim().split("\n");
+          expect(names).toContain(stagedName);
+        }
 
         checksumLines.push({
           filename: archiveName,

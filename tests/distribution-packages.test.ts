@@ -146,7 +146,9 @@ describe("release-please binary compile runners", () => {
     expect(yaml).toContain("ubuntu-24.04-arm");
     expect(yaml).toContain("target: bun-linux-arm64");
     expect(yaml).toContain("macos-15-intel");
-    expect(yaml).toContain("target: bun-darwin-x64");
+    expect(yaml).toContain("artifact: praana-darwin-x64");
+    expect(yaml).toContain("windows-latest");
+    expect(yaml).toContain("artifact: praana-windows-x64.exe");
     expect(yaml).toContain("--allow-missing");
     expect(yaml).toContain("pattern: release-binary-*");
     expect(yaml).not.toContain("name: release-binaries");

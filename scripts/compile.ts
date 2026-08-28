@@ -122,6 +122,22 @@ async function gitOutput(args: string[]): Promise<{
   return { ok: exitCode === 0, stdout: stdout.trim() };
 }
 
+/** Flatten Bun.build AggregateError chains for actionable CI logs. */
+export function formatBuildError(err: unknown): string {
+  if (err instanceof AggregateError) {
+    const nested = err.errors
+      .map((nestedErr) => formatBuildError(nestedErr))
+      .filter((line) => line.length > 0);
+    if (nested.length > 0) {
+      return nested.join("\n");
+    }
+  }
+  if (err instanceof Error) {
+    return err.stack ?? err.message;
+  }
+  return String(err);
+}
+
 export async function resolveCompileVersion(
   packageVersion: string,
 ): Promise<string> {
@@ -184,7 +200,7 @@ async function main(): Promise<void> {
     console.error(
       `Bun.build threw while compiling${target ? ` target=${target}` : ""}:`,
     );
-    console.error(err instanceof Error ? (err.stack ?? err.message) : err);
+    console.error(formatBuildError(err));
     process.exit(1);
   }
 
