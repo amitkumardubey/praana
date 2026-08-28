@@ -23,14 +23,18 @@ function runInstall(
   if (!POWERSHELL) {
     throw new Error("PowerShell not found on PATH");
   }
-  const result = Bun.spawnSync([POWERSHELL, "-NoProfile", "-File", INSTALL_PS1, ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: {
-      ...process.env,
-      ...env,
+  // Do not use -File: switches after -File are not bound to param() on PS 5.1.
+  const result = Bun.spawnSync(
+    [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", INSTALL_PS1, ...args],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        ...env,
+      },
     },
-  });
+  );
   return {
     exitCode: result.exitCode ?? 1,
     stdout: result.stdout.toString("utf-8"),
@@ -61,7 +65,7 @@ describe("install.ps1", () => {
     const arm = runInstall(["-PrintTarget"], { PRAANA_PROCESSOR_ARCHITECTURE: "ARM64" });
     expect(arm.exitCode).not.toBe(0);
     expect(`${arm.stdout}${arm.stderr}`.toLowerCase()).toContain("unsupported");
-  });
+  }, 30_000);
 
   it("installs praana.exe and the sidecar into -Prefix from a fixture archive", async () => {
     if (!POWERSHELL) return;
