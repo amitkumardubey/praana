@@ -126,19 +126,41 @@ function isTestEnv(): boolean {
 
 const rollingStreams = new Map<string, DestinationStream>();
 
+function isSymlinkUnavailable(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return (
+    code === "EPERM" ||
+    code === "EACCES" ||
+    code === "ENOTSUP" ||
+    code === "EOPNOTSUPP" ||
+    code === "EINVAL"
+  );
+}
+
 /** Atomically create or refresh a `current.log` symlink in `dir` pointing at
  * `basename(targetFile)`. Concurrent writers target the same daily rolling file,
  * so the symlink is idempotent; we use a temp-file + rename to avoid pino-roll's
- * TOCTOU race on the shared link path (see issue #249). */
+ * TOCTOU race on the shared link path (see issue #249).
+ * Windows without Developer Mode / admin cannot create symlinks (EPERM) — skip
+ * `current.log` rather than crashing startup. */
 export function refreshCurrentLogSymlink(dir: string, targetFile: string): void {
+  try {
+    refreshCurrentLogSymlinkUnchecked(dir, targetFile);
+  } catch (err) {
+    if (isSymlinkUnavailable(err)) return;
+    throw err;
+  }
+}
+
+function refreshCurrentLogSymlinkUnchecked(dir: string, targetFile: string): void {
   const linkPath = join(dir, LOG_SYMLINK_FILENAME);
   const target = basename(targetFile);
 
   try {
     symlinkSync(target, linkPath);
     return;
-  } catch (e: any) {
-    if (e.code !== "EEXIST") throw e;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
   }
 
   try {
@@ -189,7 +211,12 @@ async function createRollingFileDestination(basePath: string): Promise<Destinati
   });
   const currentFile = (stream as unknown as { file: string }).file;
   const logDir = dirname(currentFile);
-  refreshCurrentLogSymlink(logDir, currentFile);
+  try {
+    refreshCurrentLogSymlink(logDir, currentFile);
+  } catch (err) {
+    // current.log is convenience for tail -f; missing it must not abort startup.
+    appLogger.warn("failed to create current.log symlink", { cause: err as Error });
+  }
   stream.on("cleanup-complete", () => {
     try {
       refreshCurrentLogSymlink(logDir, (stream as unknown as { file: string }).file);

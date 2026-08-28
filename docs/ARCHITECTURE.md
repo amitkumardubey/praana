@@ -111,7 +111,7 @@ PRAANA writes two rolling logs via `pino-roll`:
 - **App log**: `~/.praana/logs/praana.YYYY-MM-DD.N.log`, with a `current.log` symlink for `tail -f` convenience.
 - **Session system log**: `~/.praana/sessions/<id>/system.YYYY-MM-DD.N.log`, also exposed via `current.log`.
 
-Because `current.log` lives in a shared directory, two simultaneous sessions could collide on its creation. The logger creates the symlink itself with `symlink: false` in `pino-roll` and an atomic temp-file + `renameSync` replacement, so concurrent `initAppLogFile()` calls never hit the `EEXIST` TOCTOU race from pino-roll's default symlink handling. The symlink is refreshed on every log roll so it stays pointed at the active file.
+Because `current.log` lives in a shared directory, two simultaneous sessions could collide on its creation. The logger creates the symlink itself with `symlink: false` in `pino-roll` and an atomic temp-file + `renameSync` replacement, so concurrent `initAppLogFile()` calls never hit the `EEXIST` TOCTOU race from pino-roll's default symlink handling. The symlink is refreshed on every log roll so it stays pointed at the active file. If the OS forbids symlinks (Windows without Developer Mode or an elevated token, `EPERM`), `current.log` is skipped and startup continues — rotating files still write.
 
 ## Runtime Architecture (Turn Flow)
 

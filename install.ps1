@@ -149,6 +149,24 @@ function Test-PathOnPath([string] $Dir) {
   return $parts -contains $normalized
 }
 
+function Invoke-InstalledExe {
+  param(
+    [Parameter(Mandatory = $true)][string] $Exe,
+    [Parameter(Mandatory = $true)][string[]] $ExeArgs
+  )
+  # PS 5.1 + ErrorAction Stop treats native stderr as NativeCommandError.
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $Exe @ExeArgs 2>&1 | Out-String
+    $code = 0
+    if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
+    return @{ ExitCode = $code; Output = $output }
+  } finally {
+    $ErrorActionPreference = $prev
+  }
+}
+
 if ($Help) {
   Show-Usage
   exit 0
@@ -224,11 +242,12 @@ try {
   if ($PSVersionTable.Contains("Platform") -and $PSVersionTable["Platform"] -eq "Unix") {
     & chmod +x $installedExe
   }
-  $null = & $installedExe --version
-  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+  $ver = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("--version")
+  if ($ver.ExitCode -ne 0) {
     Write-Err "smoke --version failed after install"
   }
-  $docOut = & $installedExe doctor 2>&1 | Out-String
+  $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  $docOut = [string]$doc.Output
   if ($docOut -notmatch "✓ native:") {
     Write-Host $docOut
     Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"

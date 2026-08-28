@@ -59,6 +59,7 @@ describe("install.ps1", () => {
     expect(source).not.toMatch(/\$PSVersionTable\.Platform/);
     expect(source).toContain("curl.exe");
     expect(source).toContain("Tls12");
+    expect(source).toContain("Invoke-InstalledExe");
   });
 
   it("targets windows-x64 and rejects ARM64", () => {

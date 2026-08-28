@@ -8,6 +8,7 @@ import {
   readlinkSync,
   rmSync,
   writeFileSync,
+  chmodSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -121,6 +122,19 @@ describe("logger", () => {
       expect(readlinkSync(join(dir, "current.log"))).toBe("new.log");
       expect(readFileSync(join(dir, "current.log"), "utf-8")).toBe("new");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshCurrentLogSymlink does not throw when the directory forbids symlink create", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-symlink-eacces-"));
+    const target = join(dir, "praana.2026-07-17.1.log");
+    writeFileSync(target, "log body");
+    chmodSync(dir, 0o555);
+    try {
+      expect(() => refreshCurrentLogSymlink(dir, target)).not.toThrow();
+    } finally {
+      chmodSync(dir, 0o755);
       rmSync(dir, { recursive: true, force: true });
     }
   });
