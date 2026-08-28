@@ -26,11 +26,25 @@ Runs on Bun. One binary, pure TypeScript, local-first, any provider.
 
 ### Install (no Bun)
 
+**Linux / macOS** (bash, zsh, WSL):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
 ```
 
-Installs `praana` and `praana-natives.node` into `~/.local/bin` (or `/usr/local/bin` if root). Keep both files in the same directory — Tree-sitter `code_*` tools load the sidecar next to the binary. Linux musl (Alpine) and Windows are not supported on this path; use `bun add -g praana` instead.
+**Windows** (PowerShell — use this instead of `curl | bash`):
+
+```powershell
+irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex
+```
+
+From **cmd.exe**:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex"
+```
+
+Installs `praana` (or `praana.exe` on Windows) and `praana-natives.node` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep both files in the same directory — Tree-sitter `code_*` tools load the sidecar next to the binary. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
 
 ### Install with Bun
 
@@ -48,7 +62,7 @@ Global `bun add -g` / `npm i -g` installs `@praana/natives` as an optional depen
 
 ### Standalone binary (manual)
 
-GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz` plus `SHA256SUMS`. Each archive contains the compiled `praana` executable **and** `praana-natives.node`. Keep both files in the same directory after extract. Prefer [`install.sh`](install.sh) unless you need a custom layout.
+GitHub Releases attach `praana-{linux-x64,linux-arm64,darwin-arm64,darwin-x64}.tar.gz`, `praana-windows-x64.zip`, plus `SHA256SUMS`. Each archive contains the compiled executable **and** `praana-natives.node` in the same folder (`praana` or `praana.exe` on Windows). Prefer [`install.sh`](install.sh) on Linux/macOS or [`install.ps1`](install.ps1) on Windows unless you need a custom layout.
 
 ```bash
 # Example: Linux x64
