@@ -84,6 +84,18 @@ function Test-LocalReleaseBase([string] $Base) {
   return $Base -notmatch '^https?://'
 }
 
+function Enable-Tls12 {
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  } catch {
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    } catch {
+      # Best-effort: GitHub requires TLS 1.2; curl.exe still works without this.
+    }
+  }
+}
+
 function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
   if (Test-LocalReleaseBase $Base) {
     $source = Join-Path $Base $Name
@@ -94,10 +106,28 @@ function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
     return
   }
   $uri = "$Base/$Name"
-  try {
-    Invoke-WebRequest -Uri $uri -OutFile $Dest -UseBasicParsing -UserAgent "praana-install"
-  } catch {
-    Write-Err "failed to download $Name from $Base (no archive on latest release yet?)"
+  # PS 5.1 `curl` is an alias for Invoke-WebRequest. Use curl.exe so GitHub's
+  # latest → tag → release-assets.githubusercontent.com redirects succeed.
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    & curl.exe -fsSL --retry 3 -A "praana-install" -o $Dest $uri
+    if ($LASTEXITCODE -ne 0) {
+      Write-Err "failed to download $Name from $uri (curl exit $LASTEXITCODE)"
+    }
+  } else {
+    Enable-Tls12
+    $prevProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+      Invoke-WebRequest -Uri $uri -OutFile $Dest -UseBasicParsing -UserAgent "praana-install"
+    } catch {
+      Write-Err "failed to download $Name from $uri : $($_.Exception.Message)"
+    } finally {
+      $ProgressPreference = $prevProgress
+    }
+  }
+  if (-not (Test-Path -LiteralPath $Dest) -or (Get-Item -LiteralPath $Dest).Length -eq 0) {
+    Write-Err "failed to download $Name from $uri (empty file)"
   }
 }
 
@@ -117,6 +147,24 @@ function Test-PathOnPath([string] $Dir) {
   $normalized = $Dir.TrimEnd('\')
   $parts = $env:PATH -split ';' | ForEach-Object { $_.TrimEnd('\') }
   return $parts -contains $normalized
+}
+
+function Invoke-InstalledExe {
+  param(
+    [Parameter(Mandatory = $true)][string] $Exe,
+    [Parameter(Mandatory = $true)][string[]] $ExeArgs
+  )
+  # PS 5.1 + ErrorAction Stop treats native stderr as NativeCommandError.
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $output = & $Exe @ExeArgs 2>&1 | Out-String
+    $code = 0
+    if ($null -ne $LASTEXITCODE) { $code = $LASTEXITCODE }
+    return @{ ExitCode = $code; Output = $output }
+  } finally {
+    $ErrorActionPreference = $prev
+  }
 }
 
 if ($Help) {
@@ -194,11 +242,12 @@ try {
   if ($PSVersionTable.Contains("Platform") -and $PSVersionTable["Platform"] -eq "Unix") {
     & chmod +x $installedExe
   }
-  $null = & $installedExe --version
-  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+  $ver = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("--version")
+  if ($ver.ExitCode -ne 0) {
     Write-Err "smoke --version failed after install"
   }
-  $docOut = & $installedExe doctor 2>&1 | Out-String
+  $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  $docOut = [string]$doc.Output
   if ($docOut -notmatch "✓ native:") {
     Write-Host $docOut
     Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"
