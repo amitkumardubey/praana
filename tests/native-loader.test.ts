@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -10,6 +11,7 @@ import {
   resolveSidecarAddonPath,
   setNativeEnabled,
   NativeUnavailableError,
+  isNativeAddonPath,
 } from "../src/native/index.js";
 
 function stubNativeModule(version: string): string {
@@ -127,6 +129,26 @@ describe("native loader", () => {
     expect(resolveSidecarAddonPath("/opt/praana/praana")).toBe(
       join("/opt/praana", SIDECAR_ADDON_FILENAME),
     );
+  });
+
+  it("identifies .node paths for require-based loading", () => {
+    expect(isNativeAddonPath("/opt/praana/praana-natives.node")).toBe(true);
+    expect(isNativeAddonPath("@praana/natives")).toBe(false);
+    expect(isNativeAddonPath(join(fixtureDir, "stub.mjs"))).toBe(false);
+  });
+
+  it("loads a real .node sidecar via require when present", async () => {
+    const sidecar = join(homedir(), ".local", "bin", SIDECAR_ADDON_FILENAME);
+    if (!existsSync(sidecar)) return;
+
+    const result = await loadNative({
+      forceReload: true,
+      importSpecifier: join(fixtureDir, "does-not-exist.mjs"),
+      sidecarPath: sidecar,
+      execPath: join(homedir(), ".local", "bin", "praana"),
+    });
+    expect(result.available).toBe(true);
+    expect(result.bindings?.ping()).toBe("pong");
   });
 
   it("respects native.enabled=false via setNativeEnabled", async () => {

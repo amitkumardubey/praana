@@ -14,6 +14,7 @@ export {
   type SymbolHit,
 } from "./types.js";
 export {
+  isNativeAddonPath,
   isNativeEnabled,
   loadNative,
   resetNativeLoadCache,

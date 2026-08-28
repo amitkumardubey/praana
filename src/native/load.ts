@@ -8,6 +8,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import {
   EXPECTED_NATIVE_API_MAJOR,
   NativeUnavailableError,
@@ -123,6 +124,23 @@ function nativeCandidates(options?: {
   return [...new Set(candidates)];
 }
 
+/** Node-API `.node` addons must load via require/dlopen — not dynamic import(). */
+export function isNativeAddonPath(candidate: string): boolean {
+  return candidate.endsWith(".node");
+}
+
+async function loadCandidateModule(
+  candidate: string,
+  execPath: string,
+): Promise<Record<string, unknown>> {
+  if (isNativeAddonPath(candidate)) {
+    const req = createRequire(execPath);
+    return req(candidate) as Record<string, unknown>;
+  }
+  const specifier = toImportSpecifier(candidate);
+  return (await import(specifier)) as Record<string, unknown>;
+}
+
 /**
  * Configure whether the loader may attempt to dlopen the addon.
  * Called from session/config wiring; tests may reset via resetNativeLoadCache.
@@ -163,10 +181,10 @@ export async function loadNative(options?: {
   }
 
   let lastError: unknown;
+  const execPath = options?.execPath ?? process.execPath;
   for (const candidate of nativeCandidates(options)) {
     try {
-      const specifier = toImportSpecifier(candidate);
-      const mod = (await import(specifier)) as Record<string, unknown>;
+      const mod = await loadCandidateModule(candidate, execPath);
       const result = loadResultFromModule(mod);
       if (result.available) {
         cached = result;
