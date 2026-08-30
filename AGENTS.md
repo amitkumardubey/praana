@@ -61,6 +61,9 @@ bun start -- resume <session_id>
 praana run "fix the failing tests"
 praana run --prompt "install deps" --max-steps 40
 
+# Install the latest GitHub Release (binary + sidecar)
+praana upgrade
+
 # Debug mode (saves compiled prompts, verbose tool blocks)
 PRAANA_DEBUG=true bun start
 
@@ -82,6 +85,7 @@ Key env vars:
 - `PRAANA_MODEL` — override model at runtime
 - `PRAANA_SUMMARIZER_MODEL` — override summariser model
 - `PRAANA_DEBUG=true` — saves compiled prompts per turn to `prompts/`
+- `PRAANA_NO_UPDATE_CHECK=1` — skip the TTY startup version check
 
 ### Embedder Config
 
@@ -285,7 +289,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/debug` | Toggle debug mode |
 | `/thinking <on\|off>` | Toggle LLM reasoning stream visibility |
 | `/incognito <on\|off>` | Toggle Cognitive Memory persistence |
-| `/settings` | View persistent settings (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`); `/settings set <key> <value>` / `/settings reset` |
+| `/settings` | View persistent settings (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`, `auto_update`); `/settings set <key> <value>` / `/settings reset` |
 | `/clear` | Reset in-session context (same session ID; clears working memory + model-visible history via a `reset_boundary` event) |
 | `/new` | Start a new session (new ID, reload config, background summarizer) |
 | `/why <id>` | Explain context-unit scoring (engine mode, debug) |
@@ -341,6 +345,7 @@ src/
   llm.ts         — Provider registry, model building via pi-ai
   credentials.ts — Credential store (`~/.praana/credentials.json`); key resolution order
   user-settings.ts — Persistent UX prefs (`~/.praana/settings.json`) applied as session defaults
+  update/        — Version check cache, install-kind detect, `praana upgrade` / auto_update
   provider-catalog.ts — Live model catalogs (HTTP `/models` + Bedrock control plane); 6h disk cache
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)

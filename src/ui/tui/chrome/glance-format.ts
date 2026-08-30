@@ -142,6 +142,11 @@ export function formatTuiGlanceParts(
   } else {
     flags.push(seg("mem off", TUI_STYLE.chromeMuted));
   }
+  if (input.updateRestart) {
+    flags.push(seg("restart", TUI_STYLE.warning));
+  } else if (input.updateAvailable) {
+    flags.push(seg("update", TUI_STYLE.warning));
+  }
 
   return {
     metrics: interleave(metrics, SEPARATOR),

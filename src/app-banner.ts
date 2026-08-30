@@ -169,6 +169,7 @@ function usageLines(): string[] {
     `  ${CLI_NAME}                     Start new session in current directory`,
     `  ${CLI_NAME} setup               Configure provider interactively`,
     `  ${CLI_NAME} doctor              Check setup and provider configuration`,
+    `  ${CLI_NAME} upgrade             Install the latest GitHub Release (binary + sidecar)`,
     `  ${CLI_NAME} models [provider] [--all]  List configured models (--all includes unconfigured)`,
     `  ${CLI_NAME} providers [--all]   List configured providers (--all includes unconfigured)`,
     `  ${CLI_NAME} resume [session]   Resume last session here, or a specific session`,

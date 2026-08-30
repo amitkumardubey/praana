@@ -955,6 +955,24 @@ describe("executeSlashCommand", () => {
       expect(onDisk.thinking).toBe(false);
     });
 
+    it("set persists auto_update", async () => {
+      const result = await executeSlashCommand(
+        "/settings set auto_update on",
+        settingsSession(),
+        {
+          setModel: mock(),
+          setThinking: mock(),
+          getThinking: () => true,
+        },
+      );
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("success");
+      const onDisk = JSON.parse(
+        readFileSync(join(praanaHome, ".praana", "settings.json"), "utf-8"),
+      );
+      expect(onDisk.auto_update).toBe(true);
+    });
+
     it("reset restores defaults", async () => {
       writeFileSync(
         join(praanaHome, ".praana", "settings.json"),

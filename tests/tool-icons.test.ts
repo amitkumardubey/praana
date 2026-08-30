@@ -350,6 +350,21 @@ describe("formatTuiGlanceLine", () => {
     expect(line).toContain("plan");
   });
 
+  it("shows update flag when an update is available", () => {
+    const line = segmentsToPlainText(
+      formatTuiGlanceLine({ ...base, updateAvailable: true }, { showCost: false }),
+    );
+    expect(line).toContain("update");
+  });
+
+  it("shows restart flag after a successful auto-update", () => {
+    const line = segmentsToPlainText(
+      formatTuiGlanceLine({ ...base, updateRestart: true }, { showCost: false }),
+    );
+    expect(line).toContain("restart");
+    expect(line).not.toContain("update");
+  });
+
   it("combines think + effort and shows green engine on flag", () => {
     const line = segmentsToPlainText(formatTuiGlanceLine(
       {

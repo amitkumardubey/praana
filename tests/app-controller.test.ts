@@ -654,6 +654,7 @@ describe("AppController", () => {
       incognito: false,
       debug: true,
       theme: "default",
+      auto_update: false,
     });
 
     const controller = new AppController({
@@ -676,6 +677,7 @@ describe("AppController", () => {
       incognito: true,
       debug: false,
       theme: "default",
+      auto_update: false,
     });
 
     const setIncognito = mock(async () => {});
@@ -742,6 +744,7 @@ describe("AppController", () => {
       incognito: false,
       debug: false,
       theme: "default",
+      auto_update: false,
     });
 
     let modelOverride: string | null = null;
