@@ -28,6 +28,8 @@ import {
   listProvidersForCli,
 } from "./providers-cli.js";
 import { runHeadless } from "./headless-run.js";
+import { refreshUpdateCheck } from "./update/check.js";
+import { runUpgrade } from "./update/upgrade.js";
 
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
@@ -91,6 +93,22 @@ export async function main() {
     const result = await handleDoctor(config);
     for (const line of result.lines) console.log(line);
     process.exit(result.success ? 0 : 1);
+  }
+
+  if (parsed.upgradeMode) {
+    const check = await refreshUpdateCheck({
+      currentVersion: APP_VERSION,
+      ignoreSkip: true,
+      isTty: true,
+      runMode: false,
+    });
+    const result = await runUpgrade({
+      force: parsed.force,
+      currentVersion: APP_VERSION,
+      latestVersion: check?.latest,
+    });
+    for (const line of result.lines) console.log(line);
+    process.exit(result.exitCode);
   }
 
   const warnings = getConfigWarnings();

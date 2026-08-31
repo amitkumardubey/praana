@@ -25,6 +25,7 @@ export const USER_SETTINGS_KEYS = [
   "incognito",
   "debug",
   "theme",
+  "auto_update",
 ] as const;
 
 export type UserSettingsKey = (typeof USER_SETTINGS_KEYS)[number];
@@ -36,6 +37,7 @@ export interface UserSettings {
   incognito: boolean;
   debug: boolean;
   theme: string;
+  auto_update: boolean;
 }
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
@@ -45,6 +47,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   incognito: false,
   debug: false,
   theme: "default",
+  auto_update: false,
 };
 
 export function getUserSettingsPath(): string {
@@ -139,6 +142,12 @@ export function normalizeUserSettings(
   if (raw.theme !== undefined) {
     if (theme === undefined || theme.length === 0) invalid = true;
     else settings.theme = theme;
+  }
+
+  const autoUpdate = coerceBoolean(raw.auto_update);
+  if (raw.auto_update !== undefined) {
+    if (autoUpdate === undefined) invalid = true;
+    else settings.auto_update = autoUpdate;
   }
 
   return { settings, invalid };
@@ -256,7 +265,7 @@ export function parseSettingsSetValue(
   key: UserSettingsKey,
   rawValue: string,
 ): { ok: true; value: string | boolean } | { ok: false; error: string } {
-  if (key === "thinking" || key === "incognito" || key === "debug") {
+  if (key === "thinking" || key === "incognito" || key === "debug" || key === "auto_update") {
     const bool = parseSettingsBoolean(rawValue);
     if (bool === undefined) {
       return { ok: false, error: `Invalid boolean for ${key}: use on|off|true|false` };

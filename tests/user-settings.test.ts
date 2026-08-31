@@ -64,6 +64,7 @@ describe("user-settings", () => {
       incognito: true,
       debug: true,
       theme: "nord",
+      auto_update: false,
     });
     expect(saved.ok).toBe(true);
     const loaded = loadUserSettings();
@@ -93,6 +94,7 @@ describe("user-settings", () => {
       incognito: true,
       debug: true,
       theme: "custom",
+      auto_update: false,
     });
     const reset = resetUserSettings();
     expect(reset.ok).toBe(true);
@@ -129,5 +131,13 @@ describe("user-settings", () => {
     expect(parseSettingsSetValue("model", "  gpt-4o  ")).toEqual({ ok: true, value: "gpt-4o" });
     expect(parseSettingsSetValue("model", "  ").ok).toBe(false);
     expect(parseSettingsSetValue("debug", "maybe").ok).toBe(false);
+  });
+
+  it("auto_update defaults to false and parses on/off", () => {
+    expect(DEFAULT_USER_SETTINGS.auto_update).toBe(false);
+    expect(parseSettingsSetValue("auto_update", "on")).toEqual({ ok: true, value: true });
+    expect(parseSettingsSetValue("auto_update", "off")).toEqual({ ok: true, value: false });
+    const created = loadUserSettings();
+    expect(created.settings.auto_update).toBe(false);
   });
 });

@@ -39,6 +39,7 @@ src/
   bedrock/       — Amazon Bedrock region, credentials, live chat-model catalog helpers
   credentials.ts — Credential store (`~/.praana/credentials.json`); key resolution
   user-settings.ts — Persistent UX prefs (`~/.praana/settings.json`) applied as session defaults
+  update/        — Version check cache, install-kind detect, `praana upgrade` / auto_update
   llm.ts         — Provider registry and model building via pi-ai
   config.ts      — Multi-source JSON/TOML config loading & deep-merge (allowlists append-merge)
   types.ts       — Core shared TypeScript types
@@ -486,7 +487,7 @@ After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then exec
 
 - **Credential store** (`~/.praana/credentials.json`): preferred over bare env for API keys; setup/login can adopt an env key into the store.
 - **`/login` / `/logout`**: add or remove a provider credential (and optionally switch the active provider). Bedrock uses ambient AWS credentials or a pasted Bedrock API key (bearer token).
-- **`/settings`**: persists UX defaults to `~/.praana/settings.json` (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`). Session `/model` / `/thinking` / `/incognito` / `/debug` do **not** auto-write settings — only `/settings set` / `/settings reset` do.
+- **`/settings`**: persists UX defaults to `~/.praana/settings.json` (`model`, `provider`, `thinking`, `incognito`, `debug`, `theme`, `auto_update`). Session `/model` / `/thinking` / `/incognito` / `/debug` do **not** auto-write settings — only `/settings set` / `/settings reset` do. `auto_update` (off by default) installs the latest GitHub Release in the background on TTY start when a newer npm version exists.
 - **`/reasoning <level>`**: session override for `llm.reasoning_effort` (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); persisted via a `reasoning_effort_override` system note.
 
 ### Headless run and Harbor
@@ -611,4 +612,4 @@ Slash commands are handled by `src/slash-commands.ts`:
 - `/plan <on|off|execute>` — toggles plan mode (blocks mutating tools until approved)
 - `/help` — prints slash commands documentation
 
-CLI: `praana --incognito`, `praana --debug`, `praana --config <path>`, `praana resume [<session_id>]` (no id / 12-char prefix supported), `praana run "<instruction>"`, `praana setup` (also `praana init`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. Harbor adapter: `harbor_eval/`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
+CLI: `praana --incognito`, `praana --debug`, `praana --config <path>`, `praana resume [<session_id>]` (no id / 12-char prefix supported), `praana run "<instruction>"`, `praana setup` (also `praana init`), `praana upgrade` (alias `praana update`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. Harbor adapter: `harbor_eval/`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.

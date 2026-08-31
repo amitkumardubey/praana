@@ -18,6 +18,10 @@ import {
 } from "../../app-banner.js";
 import { APP_NAME } from "../../app-identity.js";
 import { formatLaunchCanvasMeta, formatTuiWelcomeLine } from "./boot-summary.js";
+import { loadUserSettings } from "../../user-settings.js";
+import { formatUpdateNotice, refreshUpdateCheck } from "../../update/check.js";
+import { beginUpgradeLock, endUpgradeLock, runUpgrade } from "../../update/upgrade.js";
+import { classifyInstallKind } from "../../update/install-kind.js";
 import {
   resolveExpandedContent,
   type TranscriptIndex,
@@ -158,20 +162,69 @@ export async function runTui(
   let turnStartedAt = 0;
   let ready = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
+  let updateAvailable = false;
+  let updateRestart = false;
 
   const attachSink = (started: StartupInfo) => {
     attachSinkImpl?.(started);
   };
 
+  const withUpdateFlags = (base: ReturnType<AppController["getStatusBarInput"]>) => ({
+    ...base,
+    updateAvailable,
+    updateRestart,
+  });
+
   const refreshChrome = () => {
     if (!session) return;
-    const base = controller.getStatusBarInput();
     const preview = openTuiSink?.getContextPreview() ?? null;
-    ui.chrome.setStatus(base, {
+    ui.chrome.setStatus(withUpdateFlags(controller.getStatusBarInput()), {
       showCost: config.ui.show_cost,
       backgroundZones: config.ui.background_zones,
       preview,
     });
+  };
+
+  const maybeNotifyUpdate = () => {
+    void (async () => {
+      const result = await refreshUpdateCheck({
+        currentVersion: APP_VERSION,
+        env: process.env,
+        isTty: true,
+        runMode: false,
+      });
+      if (!result?.available) return;
+      updateAvailable = true;
+      ui.toast.show(formatUpdateNotice(result.current, result.latest), "warn");
+      refreshChrome();
+      renderer.requestRender();
+
+      if (!loadUserSettings().settings.auto_update) return;
+      if (classifyInstallKind() === "source") return;
+      if (!beginUpgradeLock()) return;
+      ui.toast.show("Updating praana…", "info");
+      try {
+        const upgraded = await runUpgrade({
+          currentVersion: APP_VERSION,
+          latestVersion: result.latest,
+        });
+        if (upgraded.exitCode === 0 && upgraded.ranInstaller) {
+          updateAvailable = false;
+          updateRestart = true;
+          const shadow = upgraded.lines.find((line) => line.startsWith("Warning:"));
+          ui.toast.show(
+            shadow ?? `Updated to ${result.latest} — restart praana`,
+            shadow ? "warn" : "success",
+          );
+          refreshChrome();
+          renderer.requestRender();
+        } else if (upgraded.exitCode !== 0 && upgraded.ranInstaller) {
+          ui.toast.show(upgraded.lines[0] ?? "Upgrade failed.", "error");
+        }
+      } finally {
+        endUpgradeLock();
+      }
+    })();
   };
 
   const focusPrompt = () => {
@@ -631,7 +684,7 @@ export async function runTui(
                 renderer.requestRender();
               },
               onContextPreview: (snapshot: ContextDisplaySnapshot) => {
-                ui.chrome.setStatus(controller.getStatusBarInput(), {
+                ui.chrome.setStatus(withUpdateFlags(controller.getStatusBarInput()), {
                   showCost: config.ui.show_cost,
                   backgroundZones: config.ui.background_zones,
                   preview: snapshot,
@@ -658,6 +711,7 @@ export async function runTui(
 
           if (session && info) {
             attachSink(info);
+            maybeNotifyUpdate();
           } else if (bootOnboarding) {
             overlay.showSetup();
           } else if (bootConsent) {

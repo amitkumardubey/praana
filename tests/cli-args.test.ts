@@ -55,6 +55,12 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["doctor"]).doctorMode).toBe(true);
   });
 
+  it("parses upgrade and update aliases", () => {
+    expect(parseCliArgs(["upgrade"]).upgradeMode).toBe(true);
+    expect(parseCliArgs(["update"]).upgradeMode).toBe(true);
+    expect(parseCliArgs(["upgrade", "--force"]).force).toBe(true);
+  });
+
   it("parses home-dir flag", () => {
     expect(parseCliArgs(["--home-dir", "/tmp/praana"]).homeDir).toBe("/tmp/praana");
     expect(parseCliArgs(["-H", "/tmp/praana"]).homeDir).toBe("/tmp/praana");

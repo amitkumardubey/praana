@@ -150,6 +150,7 @@ function sessionEffectiveSettings(
     incognito: session.isIncognito() ? "true" : "false",
     debug: session.debug ? "true" : "false",
     theme: loadUserSettings().settings.theme,
+    auto_update: loadUserSettings().settings.auto_update ? "true" : "false",
   };
 }
 
@@ -178,6 +179,8 @@ async function applySettingToSession(
       break;
     case "theme":
       // Persisted only — theming UI lands in #43.
+      break;
+    case "auto_update":
       break;
   }
 }

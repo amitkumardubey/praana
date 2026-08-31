@@ -20,6 +20,7 @@ export interface CliArgs {
   showHelp: boolean;
   versionMode: boolean;
   doctorMode: boolean;
+  upgradeMode: boolean;
   homeDir: string | undefined;
 }
 
@@ -42,6 +43,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   let showHelp = false;
   let versionMode = false;
   let doctorMode = false;
+  let upgradeMode = false;
   let homeDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -93,6 +95,10 @@ export function parseCliArgs(args: string[]): CliArgs {
     }
     if (args[i] === "doctor") {
       doctorMode = true;
+      continue;
+    }
+    if (args[i] === "upgrade" || args[i] === "update") {
+      upgradeMode = true;
       continue;
     }
     if (args[i] === "providers") {
@@ -176,6 +182,7 @@ export function parseCliArgs(args: string[]): CliArgs {
     showHelp,
     versionMode,
     doctorMode,
+    upgradeMode,
     homeDir,
   };
 }

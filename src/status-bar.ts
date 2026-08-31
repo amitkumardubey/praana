@@ -46,6 +46,10 @@ export interface StatusBarInput {
   agentsContextLoaded: boolean;
   sessionInputTokens: number;
   sessionOutputTokens: number;
+  /** True when npm latest is newer than this binary. */
+  updateAvailable?: boolean;
+  /** True after a successful in-session auto-update (restart to pick up the new binary). */
+  updateRestart?: boolean;
 }
 
 /**

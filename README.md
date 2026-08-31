@@ -46,6 +46,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
 
+Upgrade later with `praana upgrade` (alias `praana update`) — it re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
+
 ### Install with Bun
 
 ```bash
@@ -120,7 +122,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), and `praana models` (lists models). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
+Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), and `praana models` (lists models). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
 
 #### Supported providers
 
