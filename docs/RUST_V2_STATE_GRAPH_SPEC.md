@@ -1069,6 +1069,11 @@ Telemetry does not store user query or object text.
 
 ## 11. Tool contracts
 
+`docs/RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` owns the exact provider-visible
+request and success DTOs, descriptions, defaults, and bounds for these tools.
+This section owns only their StateGraph effects, revision semantics, and domain
+errors; field tables here must not be used to generate a second schema.
+
 All tools return the common `ToolResultDto` and `ToolErrorDto` from the tool
 runtime specification. State service failures use this internal detail, placed
 under `ToolErrorDto.details.state` after redaction:
@@ -1397,6 +1402,10 @@ producer, projection, request tail, or tool is enabled before Phase 4.
 9. Integrate StateGraph tail into admission and compaction handoff validation.
 10. Evaluate future engine consumption only in Phase 10 after append-mode
     acceptance gates pass and a separate projection contract is approved.
+
+### 16.1 Bounded Phase 4 packet
+
+Create `crates/praana-core/src/state/{mod,types,apply,replay,render,checkpoint,service}.rs` and `crates/praana-core/tests/state_graph_v1.rs`. Check in transition/replay/render/checkpoint/tool fixtures first and run `cargo test -p praana-core --test state_graph_v1`; expected red is unresolved state modules. Implement pure transitions, then event replay/durability, then checkpoint/rendering, then Built-in Tool Catalog adapters. Green requires the named test, History/Compaction integration, fmt, clippy with warnings denied, and workspace tests. Do not add embeddings, engine scoring, direct memory writes, or last-write-wins revisions.
 
 ## 17. Common implementation mistakes
 

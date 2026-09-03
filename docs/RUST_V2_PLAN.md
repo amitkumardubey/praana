@@ -2,17 +2,26 @@
 
 > This is a living architecture and delivery plan. Update it when experiments invalidate an assumption; preserve the decision history and evidence rather than forcing implementation to follow obsolete detail.
 
-**Date:** 2026-08-31
+**Date:** 2026-09-01
 
-**Status:** Draft approved for implementation; no Rust v2 implementation started
+**Status:** Implementation-ready for Phases 0-7 and 9; Phase 8 requires
+provider/tool-specific schema-2 specs before coding; no Rust v2 implementation
+started
 
 **Goal:** Replace PRAANA's TypeScript/Bun runtime with an eventually all-Rust application built around append-oriented real messages, provider-native reasoning continuation, lossless artifacts, searchable session history, bounded compaction, a current-state StateGraph, and optional plugin-owned cross-session memory.
 
 **Architecture:** A Rust core owns the canonical event history, accepted-conversation projection, provider protocol state, tool loop, artifacts, current-session search, compaction, StateGraph, and safety hooks. A temporary TypeScript/OpenTUI client consumes a versioned JSONL IPC stream while the Rust headless core reaches parity. Ratatui replaces OpenTUI only after core behavior is stable. Cross-session Cognitive Memory is absent by default and available through a full-lifecycle plugin contract.
 
-**Initial tech stack:** Rust 2021 or newer, Tokio, Reqwest with rustls, Serde, Clap, Rusqlite with bundled SQLite and FTS5, Tracing, Schemars, ULID, SHA-256, Regex, and the existing Rust tree-sitter/search implementation. Ratatui and Crossterm are deferred until the core is stable.
+**Initial tech stack:** Rust 2021 or newer, Tokio, Async Trait, Reqwest with
+rustls, Serde/Serde JSON, Zeroize, Clap, Rusqlite with bundled SQLite and FTS5,
+Tracing, Schemars, ULID, SHA-256, Regex, and the existing Rust
+tree-sitter/search implementation. Ratatui and Crossterm are deferred until the
+core is stable.
 
-**Current implementation used as an oracle:** TypeScript/Bun under `src/`, Bun tests under `tests/`, and the existing Rust N-API crate under `crates/praana-natives/`.
+**Current implementation used for non-normative comparison only:** TypeScript/Bun under `src/`, Bun tests under `tests/`, and the existing Rust N-API crate under `crates/praana-natives/`. Rust v2 specifications and fixtures are the authority.
+
+**Implementation entry point:** Give a coding model one packet from
+`docs/RUST_V2_IMPLEMENTATION_HANDOFF.md`, not this full architecture plan.
 
 ---
 
@@ -24,7 +33,7 @@ The following decisions are locked for Rust v2.
 |---|---|
 | End state | All Rust, including the TUI |
 | Migration strategy | Implement the new architecture directly in Rust; do not first rebuild it in TypeScript |
-| Transition | Keep the TypeScript implementation as a behavioral oracle and temporary OpenTUI client |
+| Transition | Keep the TypeScript implementation as a non-normative comparison baseline and temporary OpenTUI client |
 | Initial provider scope | OpenAI-compatible Chat Completions, OpenAI Responses, and OpenRouter |
 | Initial distribution | Standalone native binaries and install scripts |
 | Initial history policy | `history.mode = "append"` is the only accepted runtime value |
@@ -60,15 +69,20 @@ this table:
 | Concern | Normative owner |
 |---|---|
 | Accepted Rust v2 config keys, defaults, sources, merge, environment/CLI overrides, path normalization, validation, reload, and config digest | `RUST_V2_CONFIG_SPEC.md` |
+| Stable system policy, project instruction discovery, project facts, skill catalog, and provider-neutral instruction slot bytes | `RUST_V2_SYSTEM_CONTEXT_SPEC.md` |
+| Provider registry, model catalog/profile trust, capability resolution, credential store/resolution, setup, login, and logout | `RUST_V2_PROVIDER_CATALOG_CREDENTIAL_SPEC.md` |
 | Canonical event envelope, event/attempt/turn lifecycle, accepted-conversation projection, and logical request projection | `RUST_V2_PROTOCOL_SPEC.md` |
 | Literal OpenAI/OpenRouter Chat Completions and Responses wire placement, fields, parsing, and OpenAI retry delay/backoff | `RUST_V2_OPENAI_SPEC.md` |
-| Physical session files and database, artifact transactions and preview generation, retrieval, and current-session search | `RUST_V2_HISTORY_STORAGE_SPEC.md` |
+| Physical session files/database, host UI-operation ledger/journals, artifact transactions and preview generation, retrieval, and current-session search | `RUST_V2_HISTORY_STORAGE_SPEC.md` |
 | Admission, compaction selection, compactor input, summary and handoff payloads/rendering, and compaction activation | `RUST_V2_COMPACTION_SPEC.md` |
 | Token estimation, component accounting, estimator identity/calibration, persisted estimates, and shared versioned Unicode utilities | `RUST_V2_TOKEN_ACCOUNTING_SPEC.md` |
 | `StateChanged` payloads, StateGraph transitions, projection, checkpoint, and state rendering | `RUST_V2_STATE_GRAPH_SPEC.md` |
 | Internal tool execution/result DTOs, built-in tool-name grammar, registry, and provider-visible catalog order | `RUST_V2_TOOL_RUNTIME_SPEC.md` |
+| Exact Phase 3/4 built-in tool descriptions, request/success DTOs, defaults, bounds, and intent mapping | `RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` |
+| Secret detectors, precedence, streaming/structured redaction, replacement bytes, metadata, and surface policy | `RUST_V2_REDACTION_SPEC.md` |
 | Cross-session memory API, DTOs, lifecycle, digest, and plugin behavior | `RUST_V2_MEMORY_PLUGIN_SPEC.md` |
-| Serialized shared UI command/event DTOs and temporary JSONL transport | `RUST_V2_IPC_SPEC.md` |
+| Permanent semantic core/UI commands, results, events, crossing IDs, transcript/catalog/setup/settings DTOs, sink policy, and operation idempotency | `RUST_V2_UI_CONTRACT.md` |
+| Temporary OpenTUI JSONL envelopes, framing, request correlation, acknowledgement, connection backpressure, and semantic wire conversion | `RUST_V2_IPC_SPEC.md` |
 | Terminal layout, interaction, rendering, and other presentation behavior only | `RUST_V2_RATATUI_SPEC.md` |
 
 Each row is a direct, final authority assignment. A shadow type declaration in
@@ -77,8 +91,9 @@ concern, including over an architectural sketch in this plan. A duplicated type,
 field list, ordering, or example outside its owner is non-normative explanatory
 material and MUST be removed or updated when it disagrees with the owner.
 Logical authority order in the plan or protocol does not prescribe a literal
-provider role or wire field; the provider wire owner does. Ratatui does not own
-or redefine shared UI DTO serialization.
+provider role or wire field; the provider wire owner does. Ratatui and IPC do
+not own or redefine permanent semantic UI DTOs. TypeScript is never an
+authority or a second event model.
 
 ### Version registry
 
@@ -91,13 +106,21 @@ different namespaces and MUST NOT be compared or serialized as one another.
 | Canonical events | `event_schema_version` | Integer schema version | 2 |
 | Accepted-conversation projection | `projection_version` | String projection ID | `rust-v2-projection-1` |
 | History storage | `history_schema_version` | Integer schema version | 1 |
+| Host UI operation storage | `host_operation_schema_version` | Integer schema version | 1 |
 | StateGraph | `state_schema_version` | Integer schema version | 1 |
 | Compaction payload | `compaction_schema_version` | Integer schema version | 1 |
 | Memory plugin API and DTO | `memory_api_version`, `memory_dto_schema_version` | Integer API/schema versions | 1 |
 | OpenAI adapter | `openai_adapter_spec_version` | Integer specification version | 1 |
+| Permanent core/UI semantics | `ui_contract_schema_version` | Integer schema version | 1 |
+| UI transcript projection | `transcript_projection_schema_version` | Integer schema version | 1 |
 | Temporary UI IPC | `ipc_major_version` | Integer protocol major | 1 |
 | Token accounting | `token_estimator_schema_version` | Integer schema version | 1 |
 | Shared Unicode utilities | `unicode_utility_version` | String implementation ID | `praana-unicode-15.1-v1` |
+| System/project context | `system_context_schema_version` | Integer schema version | 1 |
+| Provider registry/profile manifest | `provider_registry_schema_version` | Integer schema version | 1 |
+| Credential store | `credential_store_schema_version` | Integer schema version | 1 |
+| Built-in tool catalog | `builtin_tool_catalog_schema_version` | Integer schema version | 1 |
+| Secret redaction | `redaction_version` | String implementation ID | `praana-redaction-v1` |
 
 ---
 
@@ -232,6 +255,7 @@ src/
   memory/
   telemetry/
   config/
+  ui_contract/          # permanent commands/results/events and sinks
 ```
 
 Create a new crate only for a real binary, plugin, compilation, or API boundary.
@@ -241,8 +265,9 @@ Create a new crate only for a real binary, plugin, compilation, or API boundary.
 - Produce the `praana` executable.
 - Own command parsing and process exit behavior.
 - Initially provide `praana run`, `praana doctor`, and session resume commands.
-- Provide a temporary framed JSONL IPC mode for OpenTUI.
-- Add Ratatui only after the headless core and bridge are stable.
+- Provide a temporary framed JSONL IPC serializer for the core UI contract.
+- Add Ratatui as a direct UI-contract consumer only after the headless core and
+  bridge are stable.
 
 ---
 
@@ -412,7 +437,9 @@ other replay value.
 - Do not index opaque or encrypted reasoning in transcript search.
 - Do not include old opaque reasoning in compacted context.
 - Keep conclusions, rationale, uncertainty, and next actions through StateGraph and handoff summaries.
-- Treat provider-managed IDs such as `previous_response_id` as optional optimizations, never the local source of truth.
+- Initial schema v1 never sends `previous_response_id`. Treat any later
+  provider-managed continuation ID as an explicitly versioned optimization,
+  never the local source of truth.
 
 ### Model switching
 
@@ -932,6 +959,10 @@ Anthropic, Gemini/Vertex, Bedrock, Azure, OAuth variations, and custom provider 
 
 Do not expand N-API to host the stateful Rust turn engine. Use a long-lived child process with framed JSONL messages.
 
+`RUST_V2_UI_CONTRACT.md` is the permanent semantic boundary used by every UI.
+The temporary IPC specification owns envelopes/framing/wire conversion only;
+the TypeScript client does not create another command or event model.
+
 ### Commands from UI to core
 
 - Create/resume/end session.
@@ -939,8 +970,10 @@ Do not expand N-API to host the stateful Rust turn engine. Use a long-lived chil
 - Abort turn.
 - Confirm/deny risk action.
 - Run slash command.
+- Request slash metadata and path completion.
 - Change model/reasoning/settings.
-- Request transcript page or expanded artifact.
+- Request model catalogs, transcript pages, and typed content reads.
+- Drive setup, authentication, consent, snapshots, and shutdown.
 
 ### Events from core to UI
 
@@ -952,7 +985,9 @@ Do not expand N-API to host the stateful Rust turn engine. Use a long-lived chil
 - System notices and errors.
 - Risk confirmation requests.
 - Turn completion/interruption.
-- Transcript paging data.
+
+Transcript/catalog/content data returns as typed command results, not an
+unsolicited second event model. The UI Contract mapping table is exhaustive.
 
 ### IPC rules
 
@@ -962,7 +997,8 @@ Do not expand N-API to host the stateful Rust turn engine. Use a long-lived chil
 - Bounded frames and explicit large-payload artifact references.
 - Backpressure and cancellation behavior.
 - Child crash is surfaced visibly; the UI may restart and resume from durable session state.
-- IPC DTOs are language-neutral and reusable by future external memory plugins where appropriate.
+- IPC serializes UI-contract DTOs only; memory plugins use their independent
+  plugin contract and never reuse this temporary transport by implication.
 
 The TypeScript UI remains a client only. New session/context behavior belongs in Rust.
 
@@ -1070,9 +1106,10 @@ Do not optimize tool-call count, commit count, or generated lines as primary qua
 
 ## 19. Verification Strategy
 
-### TypeScript oracle
+### Non-normative TypeScript comparison
 
-Keep the current implementation runnable during migration.
+Keep the current implementation runnable during migration, but never use it to
+resolve a conflict in Rust v2 specifications or to define a second event model.
 
 - Capture black-box fixtures before replacing stable behavior.
 - Compare only contracts marked "preserve"; do not require parity for intentionally replaced compilers or memory behavior.
@@ -1129,6 +1166,8 @@ Use property testing and fuzzing for:
 - Path sandbox normalization.
 - Secret redaction.
 - IPC framing.
+- UI-contract command/event mapping, cursors, sink bounds, and durable operation
+  replay.
 - Future plugin framing.
 
 Core invariants:
@@ -1167,6 +1206,8 @@ Each phase has an exit gate. Add a narrower implementation checklist when it hel
 - [ ] Split pure Rust logic into `praana-native-core` while preserving the N-API wrapper.
 - [ ] Add `praana-core` and `praana-cli` workspace crates.
 - [ ] Add shared deterministic clock/ID/test dependencies.
+- [ ] Freeze UI contract schema 1 fixtures and the exhaustive semantic/dotted
+      name mapping before implementing IPC or Ratatui.
 
 **Exit criteria:** Existing TypeScript native tests still pass; Rust workspace gates pass; fixtures are redacted and deterministic; no production command uses the new core yet.
 
@@ -1174,12 +1215,16 @@ Each phase has an exit gate. Add a narrower implementation checklist when it hel
 
 - [ ] Implement strict schema-v1 config loading, canonical effective snapshots,
       and config digest metadata from `RUST_V2_CONFIG_SPEC.md`.
+- [ ] Implement stable system/project context discovery and rendering from
+      `RUST_V2_SYSTEM_CONTEXT_SPEC.md`.
 - [ ] Implement versioned event envelopes and canonical event enums.
 - [ ] Implement append/fsync and longest-valid-prefix recovery.
 - [ ] Implement attempts, supersession, tool execution states, and turn commits.
 - [ ] Implement accepted-conversation projection.
 - [ ] Implement reset boundaries and incomplete-tail recovery notices.
 - [ ] Add fault-injection and property tests.
+- [ ] Implement History-owned session/host operation ledgers and restart replay
+      for UI-contract `OperationId` before claiming command idempotency.
 
 **Exit criteria:** Config source/merge/path/secret fixtures pass; creation writes
 a matching canonical config snapshot and metadata digest; a synthetic multi-step
@@ -1188,6 +1233,8 @@ orphaned tool messages or automatic side-effect replay.
 
 ### Phase 2: OpenAI/OpenRouter provider runtime
 
+- [ ] Implement provider registry/profile/catalog and credential/setup contracts
+      from `RUST_V2_PROVIDER_CATALOG_CREDENTIAL_SPEC.md`.
 - [ ] Implement HTTP/auth abstraction and SSE parser.
 - [ ] Implement the minimal hard request-admission path required before any
       OpenAI/OpenRouter network send: trustworthy model-window resolution,
@@ -1212,6 +1259,9 @@ for this gate; no network is needed for tests.
 
 - [ ] Implement provider-independent turn orchestration.
 - [ ] Implement typed tool registry/schema generation.
+- [ ] Implement `praana-redaction-v1` before any tool result can become durable.
+- [ ] Implement only the Phase 3 schemas in
+      `RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md`; Phase 4 tools remain disabled.
 - [ ] Before enabling any shell, process, file-read, search, test, or other
       potentially large-output tool, implement the minimal History-owned
       artifact blob/reference transaction, the config-owned per-result/per-batch
@@ -1236,6 +1286,8 @@ side-effect-capable timeout poisons and stops the runtime instead of detaching.
 
 ### Phase 4: Artifacts, search, and StateGraph
 
+- [ ] Enable only the Phase 4 History/StateGraph tool schemas from
+      `RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` after their backing services pass.
 - [ ] Activate the full derived/history-search portion of the complete
       `history.db` schema created in Phase 3, with bundled SQLite/FTS5.
 - [ ] Implement full artifact retrieval, filtering, retention, and inspection.
@@ -1282,7 +1334,8 @@ rejects when Phase 5 compaction is unavailable.
 
 ### Phase 7: TypeScript/OpenTUI bridge
 
-- [ ] Define and version IPC commands/events.
+- [ ] Serialize UI contract schema 1 through IPC v1; do not define IPC semantic
+      commands/events.
 - [ ] Add Rust IPC server mode.
 - [ ] Add TypeScript client adapter behind a development flag.
 - [ ] Map streaming attempts, rewind, tool, usage, risk, and completion events.
@@ -1293,18 +1346,24 @@ rejects when Phase 5 compaction is unavailable.
 
 ### Phase 8: Provider and tool parity
 
+- [ ] Approve a new provider/tool catalog schema with exact DTOs and fixtures
+      before enabling any Phase 8 provider or reserved tool name.
 - [ ] Port Anthropic with thinking signatures.
 - [ ] Port Gemini/Vertex with thought signatures.
 - [ ] Port Bedrock with reasoning/event-stream handling.
 - [ ] Port Azure/custom-provider compatibility.
 - [ ] Port remaining OAuth, catalog, LSP, verification, and slash-command behavior.
 - [ ] Add provider-specific harness profiles and model-switch handoffs.
+- [ ] Freeze the TypeScript engine oracle as a content-addressed fixture bundle
+      and runnable container/binary with source commit, lockfiles, configuration,
+      scorecard schema, model/task corpus, and expected result hashes before any
+      TypeScript deletion.
 
 **Exit criteria:** Supported-provider fixture suites and selected live smoke tests pass; all retained TypeScript-only core capabilities have an explicit Rust equivalent or deletion decision.
 
 ### Phase 9: Ratatui and standalone cutover
 
-- [ ] Build Ratatui shell against the Rust core event sink.
+- [ ] Build Ratatui against `praana-core::ui_contract`, independent of IPC.
 - [ ] Port virtual transcript, input, overlays, setup, and settings.
 - [ ] Add PTY and terminal snapshot tests.
 - [ ] Build standalone release matrix and doctor checks.
@@ -1315,9 +1374,14 @@ rejects when Phase 5 compaction is unavailable.
 
 ### Phase 10: Engine comparison decision
 
-- [ ] Run Rust append mode against the preserved TypeScript engine baseline.
+- [ ] Run Rust append mode against the preserved content-addressed TypeScript
+      engine oracle captured in Phase 8; Phase 10 does not require deleted source
+      to remain buildable in the main tree.
 - [ ] Evaluate correctness, compaction fidelity, cache/cost, and churn by model/task.
-- [ ] If engine behavior remains valuable, write a separate Rust engine projection plan over the same canonical events/artifacts.
+- [ ] If engine behavior remains valuable, write a separate Rust engine
+      projection plan over the same canonical events/artifacts. Ship it only
+      behind an explicit experimental feature and a later config schema that
+      accepts `history.mode = engine`.
 - [ ] Otherwise archive the engine as research evidence and remove the mode from the final config.
 
 **Exit criteria:** The engine is either implemented as a non-mutating alternative projection or explicitly retired based on measured evidence.
@@ -1403,7 +1467,9 @@ Rust v2 is complete when:
 - Provider-native reasoning continuation is preserved where supported and explicitly reset where incompatible.
 - Append history is the default and classic history no longer exists.
 - Large tool output is lossless, stored once, searchable, and recoverable by artifact ID.
-- Compaction uses complete committed turns, immutable summary evidence, a bounded current handoff, and atomic activation.
+- Compaction uses complete committed turns or protocol-normalized interrupted
+  capsules, immutable summary evidence, a bounded current handoff, and atomic
+  activation without replaying uncertain effects.
 - Request admission runs before every provider call and reserves output/reasoning space.
 - StateGraph is an event-derived current-state projection available in the default mode.
 - Cross-session memory is disabled by default and available only through the full-lifecycle plugin contract.

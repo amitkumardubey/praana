@@ -2,7 +2,8 @@
 
 **Status:** Normative design for Rust v2 Phases 3, 4, 6, and 8
 
-**Depends on:** `docs/RUST_V2_PLAN.md`, especially canonical events, artifacts, safety pipeline, and implementation phases
+**Depends on:** `docs/RUST_V2_PLAN.md`, `docs/RUST_V2_UI_CONTRACT.md`, and the
+canonical event, artifact, safety-pipeline, and implementation-phase contracts
 
 **Audience:** Implementers of `praana-core` tools, hooks, shell supervision, artifacts, provider adapters, and tests
 
@@ -23,6 +24,10 @@ those owners and does not define competing formats or algorithms.
 `docs/RUST_V2_CONFIG_SPEC.md` is the sole authority for tool enablement,
 allowed paths, concurrency, timeouts, risk allowlists, circuit values, and all
 defaults consumed here.
+`docs/RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` owns every Phase 3/4 built-in
+description and tool-specific input/success DTO; this runtime owns their common
+envelope and execution. `docs/RUST_V2_REDACTION_SPEC.md` owns detector bytes,
+precedence, traversal, and streaming behavior used at the redaction stage.
 
 The runtime MUST preserve this logical order:
 
@@ -188,6 +193,7 @@ pub struct ToolDescriptor {
     pub name: ToolName,
     pub order: u16,
     pub description: String,
+    pub strict: bool,
     pub input_schema: serde_json::Value,
     pub output_schema: serde_json::Value,
     pub capabilities: ToolCapabilities,
@@ -207,6 +213,11 @@ Generation is exact:
 8. Serialize compact UTF-8 JSON with no insignificant whitespace.
 9. Hash those bytes with SHA-256 into lowercase hex.
 10. Convert the normalized core schema to each provider's supported schema subset in the provider adapter. Provider conversion MUST NOT change the core descriptor or catalog order.
+
+Every built-in v1 descriptor sets `strict = true`. The registry owns this bit;
+provider adapters serialize it exactly and MUST NOT infer strictness from the
+schema. A future non-strict descriptor requires a Tool Runtime schema-version
+change and provider conformance fixtures.
 
 The core schema is the authority. If a provider cannot express a constraint, core still enforces it before `inspect` through Serde plus JSON Schema validation.
 
@@ -302,6 +313,12 @@ No memory plugin or future external extension may inject arbitrary model-visible
 ## 9. Initial Tool Catalog
 
 The following order values are fixed. Phase indicates when a tool first becomes required. Tools whose backing feature is disabled are omitted without shifting other values.
+
+`RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` schema 1 supplies implementable schemas
+for Phase 3/4 rows. Phase 8 rows below reserve names/orders only; they MUST NOT be
+implemented or provider-visible until a later catalog schema defines their exact
+request/success DTOs and fixtures. Memory rows import their exact schemas from
+the Memory Plugin specification when capability-enabled.
 
 | Order | Tool | Phase | Mutation/capability summary |
 |---:|---|---:|---|
@@ -446,6 +463,19 @@ pub struct ToolResultMeta {
     pub redacted: bool,
     pub truncated: bool,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BinaryEncoding { Base64 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryDataV1 {
+    pub encoding: BinaryEncoding,
+    pub data: String,
+    pub sha256: Sha256Digest,
+    pub byte_count: u64,
+}
 ```
 
 Exact rules:
@@ -476,19 +506,33 @@ streamed through redaction/canonical artifact storage without assembling one
 unbounded JSON string in memory. Normal inline admission is governed by History
 Storage's artifact policy.
 
-These bytes are the complete result consumed by History Storage. Protocol
-`ToolResultMessage` adds canonical call/turn/batch identity, status, hash/counts,
-and either inline bytes or the History-owned artifact preview/reference. The
-provider receives the resulting inline bytes or preview exactly. IPC owns the
-serialized shared UI result DTO; a UI may derive compact presentation. There is
-no separate shell-only or TUI-only internal result shape.
+These RFC 8785 bytes are named `canonical_tool_result_bytes` and are the sole
+complete tool-result payload consumed by History Storage. Their media type is
+exactly `application/vnd.praana.tool-result+json;version=1`. Their SHA-256,
+byte count, and token estimate always describe the complete finalized
+post-redaction `ToolResultDto`, never an extracted stdout string or preview.
+Binary/non-UTF-8 tool output is represented inside tool-specific `data` by
+`BinaryDataV1`. `data` is RFC 4648 standard-alphabet base64 with required
+padding, `sha256` describes decoded bytes, and `byte_count` equals decoded size.
+Large outer canonical JSON is then artifactized as one complete result by
+History, avoiding a circular child-artifact reference. The outer result is
+always valid canonical JSON.
+
+Protocol `ToolResultMessage` adds canonical call/turn/batch identity, status,
+hash/counts, and either the complete inline canonical bytes or the History-owned
+artifact preview/reference. The provider receives the exact inline canonical
+JSON string or deterministic preview string. The UI
+Contract owns the one semantic UI conversion; IPC only serializes it and a UI
+may derive compact presentation. There is no separate shell-only, IPC-only, or
+TUI-only internal result shape.
 
 ## 12. Stable Error Codes
 
 These are internal `ToolErrorCode` variants and canonical tool-result body codes,
 not provider, History, StateGraph, or IPC strings.
 `RUST_V2_PROTOCOL_SPEC.md` Appendix A normatively maps them to canonical
-`ErrorClass`, `ToolResultStatus`, retryability, and IPC wrappers.
+`ErrorClass`, `ToolResultStatus`, and retryability; the UI Contract maps the
+resulting semantic failure to `CoreErrorDto`. IPC does not rename it.
 
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -556,7 +600,8 @@ Any call can instead become `Rejected`, `CancelledBeforeStart`, or `Failed`. The
 ### 13.1 Admission algorithm
 
 1. Verify the accepted assistant step and all call IDs.
-2. Emit UI `tool_call_pending` for every call in provider order using redacted display arguments.
+2. Emit `UiEvent::ToolCallPending` for every call in provider order using
+   redacted display arguments.
 3. Look up descriptors, enforce raw size, validate schema, deserialize, and call `inspect` in provider order.
 4. Run plan, validation, risk, and circuit for each prepared call in provider order. Risk confirmation requests are serialized by one session confirmation queue. No path lock is held while waiting for confirmation.
 5. Calls blocked before write-lock acquisition receive a finalized error result with `execution_started=false`.
@@ -648,6 +693,8 @@ rm
 git_reset
 git_force_push
 git_clean
+gh_issue_close
+gh_pr_merge
 package_install
 write_outside_cwd
 ```
@@ -724,12 +771,15 @@ For successful read/retrieve calls, this stage may add repeat-read/churn warning
 
 ### 14.10 Post stage 4: redact
 
-- Recursively redact all string keys and values in data, errors, warnings, and
-  metadata labels. No History preview exists yet; History later derives it only
-  from this finalized redacted value and validated metadata.
-- Redaction is streaming-safe across chunk boundaries when applied to captured process output.
-- Known provider keys, private keys, authorization assignments, and configured credential canaries are covered.
-- IDs that match validated ULID/SHA formats are not redacted solely for looking token-like.
+- Apply `RUST_V2_REDACTION_SPEC.md` version `praana-redaction-v1` exactly to
+  every string value in data, errors, warnings, and metadata labels. Object keys
+  are detector context and remain unchanged. No History preview exists yet;
+  History later derives it only from this finalized redacted value and validated
+  redaction metadata.
+- Captured process output uses that specification's incremental UTF-8, line,
+  fixed-token overlap, and PEM state machine. No local regex/overlap is allowed.
+- The detector specification exclusively owns provider-key/private-key/
+  assignment patterns and SHA/ULID exemptions.
 - Redaction never changes `ok` unless redaction itself fails.
 - A redaction panic/error discards the entire unredacted candidate and replaces it with `TOOL_REDACTION_FAILED`. No candidate bytes become an artifact, event, model message, UI event, or log.
 
@@ -1024,22 +1074,27 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 
 ## 20. Event and UI Surface
 
-The runtime emits typed UI events through an event sink; it never writes terminal escape sequences.
+The runtime emits UI-contract `UiEvent` variants through `UiEventSink`; it never
+writes terminal escape sequences or dotted/underscore wire names.
 
 Minimum events:
 
 ```text
-tool_batch_started
-tool_call_pending
-risk_confirmation_requested
-tool_call_started
-tool_call_progress
-tool_call_finished
-tool_batch_finished
-system_notice
+UiEvent::ToolBatchStarted
+UiEvent::ToolCallPending
+UiEvent::RiskConfirmationRequested
+UiEvent::ToolCallStarted
+UiEvent::ToolCallProgress
+UiEvent::ToolCallFinished
+UiEvent::ToolBatchFinished
+UiEvent::SystemNotice
 ```
 
-`tool_call_progress` is lossy and non-canonical. It carries byte counts, phase, and elapsed time only. Pending/started/finished events carry call IDs. UI backpressure may coalesce progress but never final results.
+`UiEvent::ToolCallProgress` is latest-only and non-canonical. It carries byte
+counts, phase, and elapsed time only. Pending/started/finished events carry call
+IDs. The UI Contract owns exact payloads, durability references, priorities,
+coalescing, and bounded sink failure. UI backpressure may coalesce progress but
+never final results.
 
 Canonical event append is a serialized service with restrictive file permissions, append, flush, and fsync semantics from the architecture plan. Tool completion is not visible to the provider until its finish event and any artifact are durable.
 
@@ -1159,7 +1214,8 @@ Resume must identify uncertain calls, never rerun side effects, resolve every ar
 3. Implement intent/path normalization and validation with property tests.
 4. Implement explicit pre/post pipeline with recording fakes, cancellation, panic containment, and RAII leases.
 5. At the start of Phase 3, integrate History Storage's minimal complete
-   artifact blob/provenance transaction, 800/1600 decision, preview service,
+   artifact blob/provenance transaction, Config-resolved per-result/per-batch
+   decision, preview service,
    journal/spool ownership, and orphan recovery before enabling a potentially
    large-output tool.
 6. Implement canonical tool start/finish/batch durability and fault injection,
@@ -1176,6 +1232,10 @@ Resume must identify uncertain calls, never rerun side effects, resolve every ar
 
 Do not port the current `src/tools/index.ts` object spread pattern, `src/tools/tool-def.ts`, direct `process.stdout` shell streaming, or mutable hook registration order.
 
+### 22.1 Bounded Phase 3 runtime packet
+
+Create `tools/{contract,registry,intent,runtime,locks,result}.rs`, `hooks/{mod,plan,validate,risk,circuit,redact}.rs`, `process/{mod,unix,windows,capture}.rs`, and `tests/tool_runtime_phase3.rs`. Check in schema/order/hook/fault/process fixtures first. Run `cargo test -p praana-core --test tool_runtime_phase3`; expected red is unresolved runtime modules. Implement common runtime and Redaction owner integration before any built-in, then process supervisors, then the Phase 3 Built-in Tool Catalog packet. Green requires artifact/history crash tests, target process-tree tests, fmt, clippy with warnings denied, and workspace tests. Phase 4/6/8 tools are separate packets and may not expand this one.
+
 ## 23. Acceptance Gate
 
 The Rust tool runtime is ready for the TypeScript IPC client only when:
@@ -1188,7 +1248,7 @@ The Rust tool runtime is ready for the TypeScript IPC client only when:
 - No unredacted result or raw shell output reaches durable or UI surfaces.
 - Unix process groups and Windows Job Objects pass descendant-kill tests.
 - Shell capture is bounded and large output is lossless up to explicit hard limits through artifacts.
-- Internal tool errors map through the protocol appendix to provider, canonical,
-  IPC, headless, and TUI surfaces; tests assert mappings rather than identical
-  strings across namespaces.
+- Internal tool errors map through the protocol appendix and UI Contract to
+  provider, canonical, headless, and UI surfaces; IPC only serializes the UI
+  result. Tests assert mappings rather than identical strings across namespaces.
 - Phase-specific tool suites pass on Linux, macOS, and Windows targets.

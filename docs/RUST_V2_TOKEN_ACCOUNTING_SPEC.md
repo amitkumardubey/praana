@@ -81,6 +81,51 @@ One `TokenEstimatorV1` interface selects exactly one content estimator and one
 framing profile for each estimation context:
 
 ```rust
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case",
+        deny_unknown_fields)]
+pub enum TokenEstimationContext {
+    ArtifactResult,
+    ArtifactPreview,
+    StateGraph,
+    MemoryDigest,
+    CompactionSourceTurn { turn_id: TurnId },
+    CompactionSegment,
+    HistoricalHandoff,
+    ProviderRequestComponent { component: RequestComponentKind },
+    BinaryTelemetry,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RequestComponentKind {
+    System,
+    ToolSchema,
+    MemoryBootstrap,
+    Handoff,
+    RetainedMessages,
+    StateGraph,
+    ActiveToolCycle,
+    Continuation,
+    ProviderFraming,
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum TokenAccountingError {
+    #[error("token input is not valid UTF-8")]
+    InvalidUtf8,
+    #[error("tokenizer or framing profile is unknown: {0}")]
+    ProfileUnknown(String),
+    #[error("tokenizer profile fixture failed: {0}")]
+    ProfileFixtureFailed(String),
+    #[error("token accounting overflow")]
+    Overflow,
+    #[error("persisted token input hash does not match")]
+    InputHashMismatch,
+    #[error("rendered component exceeds its owner bound")]
+    BoundExceeded,
+}
+
 pub trait TokenEstimatorV1: Send + Sync {
     fn estimator_id(&self) -> &str;
 
@@ -119,10 +164,13 @@ normalization. The owning renderer must submit exactly the bytes whose bound is
 being tested. This prevents token accounting from changing canonical content.
 
 Provider adapters that normalize text before wire serialization submit the
-post-normalization wire-equivalent text. Artifact decisions submit exact
-post-redaction canonical result bytes. Invalid UTF-8 content is never estimated
-as replacement text for inline admission; binary content is artifactized and
-uses section 4.4.
+post-normalization wire-equivalent text. Tool-result artifact decisions submit
+the exact post-redaction RFC 8785 `canonical_tool_result_bytes` owned by Tool
+Runtime. Those outer bytes are always valid UTF-8 JSON. Binary child payloads
+are padded base64 objects inside that DTO. Section 4.4 may estimate their
+original bytes for telemetry, while inline admission always estimates the
+complete canonical outer JSON. Binary bytes are never replacement-decoded as
+text.
 
 ### 4.2 Unicode data
 
@@ -147,6 +195,35 @@ NormalizationTest.txt
 
 The build MUST use checked-in generated range/mapping tables. It MUST NOT fetch
 Unicode data during a normal build or test.
+
+The repository layout is fixed:
+
+```text
+crates/praana-core/data/unicode/15.1.0/manifest.json
+crates/praana-core/data/unicode/15.1.0/source/UnicodeData.txt
+crates/praana-core/data/unicode/15.1.0/source/Scripts.txt
+crates/praana-core/data/unicode/15.1.0/source/PropList.txt
+crates/praana-core/data/unicode/15.1.0/source/DerivedCoreProperties.txt
+crates/praana-core/data/unicode/15.1.0/source/emoji-data.txt
+crates/praana-core/data/unicode/15.1.0/source/CaseFolding.txt
+crates/praana-core/data/unicode/15.1.0/source/DerivedNormalizationProps.txt
+crates/praana-core/data/unicode/15.1.0/source/NormalizationTest.txt
+crates/praana-core/src/unicode/generated_v15_1.rs
+crates/praana-core/tests/fixtures/unicode_v15_1.json
+```
+
+`manifest.json` is RFC 8785 JSON with `unicode_version`, source filename,
+official HTTPS URL, byte count, and lowercase SHA-256 for every source file,
+plus SHA-256 for the generated Rust and fixture files. The bootstrap command
+`cargo run -p praana-xtask -- unicode fetch --version 15.1.0` downloads only
+from `https://www.unicode.org/Public/15.1.0/ucd/` and
+`https://www.unicode.org/Public/15.1.0/ucd/emoji/`, computes and writes the
+manifest, and is never run by `build.rs`. Review commits source files and
+manifest together. `unicode generate --offline` verifies every source hash
+before generating; `unicode verify --offline` regenerates into a temporary
+directory and byte-compares all outputs. A Unicode update changes the directory,
+utility version, estimator ID, manifest, fixtures, and schema version when
+serialized behavior changes; in-place source replacement is forbidden.
 
 ### 4.3 Scalar weights and rounding
 
@@ -241,14 +318,25 @@ An adapter estimate ID has the form
 profile must state whether generic or provider-tokenizer content counting is
 used. Framing profiles are immutable under one ID.
 
+All initial profiles live in
+`crates/praana-core/data/token_profiles_v1.json`, RFC 8785 encoded. Each row is
+the complete `FramingProfileV1` plus provider, protocol, exact model/revision
+matcher, content-estimator ID, tokenizer artifact hashes, and fixture-manifest
+hash. The file SHA-256 is part of `ModelCapabilityProfile` and request admission.
+There is no compiled fallback table elsewhere. Unknown models use the generic
+estimator plus an explicitly checked-in conservative framing row; they never
+infer constants from a model-name prefix.
+
 ## 7. Component Boundaries
 
 The following boundaries are normative.
 
 ### 7.1 Artifact decisions
 
-History Storage serializes one finalized post-redaction `ToolResultDto` into its
-exact complete canonical bytes and estimates that byte string as one component.
+History Storage receives one finalized post-redaction `ToolResultDto` as Tool
+Runtime's exact `canonical_tool_result_bytes` and estimates that complete byte
+string as one component. It MUST NOT reserialize the DTO or estimate an
+extracted display/text view.
 A result is over the per-result threshold only when
 `TokenEstimateV1.total_tokens > history.artifact_inline_tokens`. Equality
 remains eligible for inline storage.
@@ -488,7 +576,50 @@ These are internal token-accounting codes. They map through the normative error
 mapping appendix in `RUST_V2_PROTOCOL_SPEC.md`; they are not required to be
 identical to provider, tool, History, StateGraph, or IPC surface strings.
 
-## 13. Acceptance Criteria
+## 13. Bounded Implementation Packet
+
+Exact files:
+
+```text
+crates/praana-core/src/token/mod.rs
+crates/praana-core/src/token/generic.rs
+crates/praana-core/src/token/profile.rs
+crates/praana-core/src/token/calibration.rs
+crates/praana-core/src/unicode/mod.rs
+crates/praana-core/src/unicode/generated_v15_1.rs
+crates/praana-core/data/token_profiles_v1.json
+crates/praana-core/data/unicode/15.1.0/
+crates/praana-core/tests/token_accounting_v1.rs
+crates/praana-core/tests/unicode_v15_1.rs
+crates/praana-xtask/src/unicode.rs
+```
+
+Tests-first sequence:
+
+1. Check in fixture manifests and tests for every context, scalar class,
+   boundary, overflow, hash mismatch, profile fallback, and cross-platform
+   Unicode mapping. Run `cargo test -p praana-core --test token_accounting_v1
+   --test unicode_v15_1`; expected red output is unresolved `token`/`unicode`
+   modules.
+2. Implement manifest verification and offline generation. Run `cargo run -p
+   praana-xtask -- unicode verify --offline`; expected green output is
+   `unicode 15.1.0: sources=8 generated=2 verified`.
+3. Implement generic estimation and exact error mapping. The two tests turn
+   green with byte-identical Linux/macOS/Windows fixture output.
+4. Implement profile loading, request component manifests, and calibration.
+   Run `cargo test -p praana-core token::`; expected zero failures and no
+   unlisted profile.
+5. Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+   --all-features -- -D warnings`, and `cargo test --workspace`; all exit zero.
+
+Non-goals are training a tokenizer, fetching at normal build/test time,
+estimating hidden reasoning as plaintext, or introducing subsystem-local token
+heuristics. Common mistakes are platform Unicode predicates, rounding after
+combining components, reusing an estimator ID after data changes, estimating a
+display view instead of canonical result bytes, and reserving a different
+output count than the provider wire value.
+
+## 14. Acceptance Criteria
 
 Token accounting is accepted only when:
 

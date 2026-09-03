@@ -25,10 +25,18 @@ effective config digest. Narrower specifications own their named concerns: compa
 admission and exact summary/handoff payloads, StateGraph owns `StateChanged`
 payloads, History Storage owns physical storage/artifact previews/search, Token
 Accounting owns all token estimation and shared Unicode utilities, Tool Runtime
-owns internal execution/result DTOs and catalog order, and provider
+owns internal execution/result DTOs and catalog order, System Context owns
+instruction slot bytes, Provider Catalog/Credential owns provider/profile/auth
+resolution, Redaction owns detector/transformation behavior, and provider
 specifications own literal wire placement. A duplicate here is non-normative in
-that narrower concern. The current TypeScript implementation is an oracle only
-for behavior explicitly retained by the plan.
+that narrower concern. The current TypeScript implementation is only a
+non-normative comparison baseline for behavior explicitly retained by the plan.
+
+`docs/RUST_V2_UI_CONTRACT.md` is the sole authority for permanent UI commands,
+results, semantic events, crossing IDs, provider-visible-delta notification,
+and operation idempotency semantics. `docs/RUST_V2_HISTORY_STORAGE_SPEC.md`
+owns the operation ledgers that make those commands restart-safe. Neither UI
+events nor operation rows are a second canonical conversation event log.
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT,
 RECOMMENDED, MAY, and OPTIONAL are to be interpreted as described by RFC 2119.
@@ -73,6 +81,7 @@ The initial implementation MUST NOT add any of the following to this protocol:
 - Cross-session Cognitive Memory. Memory plugin records are not canonical
   conversation events.
 - Durable streaming-delta events. Deltas are ephemeral UI events.
+- A second IPC-, Ratatui-, or TypeScript-owned semantic event model.
 - Automatic rerun of a tool whose side effects are uncertain.
 - In-place editing, deletion, or hiding of a valid canonical event.
 - A provider-managed response ID as the source of local conversation truth.
@@ -206,7 +215,8 @@ Hash definitions are exact:
   wire body, excluding credentials and HTTP headers. A body field such as
   `previous_response_id` is included; out-of-body transport/request IDs are not.
 - `capability_profile_hash` is SHA-256 of RFC 8785 canonical JSON for the exact
-  resolved `ModelCapabilityProfile` from the Compaction specification,
+  resolved `ModelCapabilityProfile` from the Provider Catalog/Credential
+  specification as consumed by Compaction admission,
   including its profile/model revision and context window.
 - `arguments_hash` is SHA-256 of RFC 8785 canonical JSON for the parsed argument
   object.
@@ -353,7 +363,7 @@ pub struct AdmissionSnapshot {
     pub estimated_input_sha256: Sha256Digest,
     pub context_window_tokens: u64,
     pub estimated_input_tokens: u64,
-    pub requested_output_tokens: u64,
+    pub resolved_output_tokens: u64,
     pub requested_reasoning_tokens: u64,
     pub safety_margin_tokens: u64,
     pub projected_fill_millionths: u32,
@@ -425,10 +435,18 @@ pub struct AssistantMessage {
     pub step_id: StepId,
     pub provider: String,
     pub model: String,
+    pub phase: Option<AssistantPhase>,
     pub blocks: Vec<AssistantBlock>,
     pub finish_reason: FinishReason,
     pub continuation: Option<ProviderContinuation>,
     pub usage: ProviderUsage,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssistantPhase {
+    Commentary,
+    FinalAnswer,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -441,6 +459,7 @@ pub struct AssistantMessage {
 pub enum AssistantBlock {
     Text(TextBlock),
     ReasoningSummary(ReasoningSummaryBlock),
+    Refusal(RefusalBlock),
     ToolCall(ToolCall),
     Image(ImageBlock),
 }
@@ -462,6 +481,13 @@ pub struct TextBlock {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReasoningSummaryBlock {
+    pub text: String,
+    pub provider_item_id: Option<ProviderItemId>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefusalBlock {
     pub text: String,
     pub provider_item_id: Option<ProviderItemId>,
 }
@@ -516,6 +542,9 @@ Validation rules:
 - `UserMessage.blocks` MUST be non-empty. Text may be empty only when another
   non-empty image or artifact block is present.
 - `AssistantMessage.blocks` MUST be non-empty.
+- `phase` is present as JSON null when a protocol supplies no phase. OpenAI
+  Responses copies the provider value exactly; Chat uses null. Adapters replay a
+  non-null phase and never infer one from finish reason.
 - A provider completion whose empty blocks are removed to leave no block fails
   the attempt with `E_PROVIDER_OUTPUT_UNSUPPORTED`; an empty assistant step is
   never accepted.
@@ -528,6 +557,10 @@ Validation rules:
   it and canonicalizing the result MUST equal `arguments`.
 - Empty assistant text blocks are removed before acceptance. Empty reasoning
   summary blocks are removed before acceptance.
+- Empty refusal blocks are removed before acceptance. A refusal is portable
+  accepted assistant content, remains ordered with other blocks, and MUST NOT be
+  rewritten as ordinary text or a user message. A step containing a refusal
+  MUST NOT contain a tool call and has `finish_reason = stop` or `length`.
 - `ReasoningSummaryBlock` is provider-visible summary text, not hidden chain of
   thought. Opaque or encrypted reasoning exists only in continuation data.
 
@@ -624,7 +657,8 @@ pub struct ArtifactRetrieval {
 
 ```
 
-For `Inline`, `text` is the complete result. For `Artifact`, `preview` is an
+For `Inline`, `text` is the complete Tool Runtime-owned
+`canonical_tool_result_bytes` decoded as UTF-8. For `Artifact`, `preview` is an
 immutable deterministic preview and the referenced artifact contains the
 complete result. Neither form means "best effort" or silent truncation.
 `ArtifactRetrieval.tool` MUST equal `retrieve_artifact`, and its arguments MUST
@@ -633,10 +667,12 @@ contain exactly `{"artifact_id":"<id>"}` for full retrieval.
 The body hash, counts, and token-estimate metadata always describe the complete
 result, not the preview. `ToolResultBody` and nested `ArtifactRef` estimate
 fields must agree for an artifact result.
-For canonical JSON tool results, `media_type` is `application/json` and `text`
-or artifact bytes are RFC 8785 canonical JSON. For plain output it is
-`text/plain`. `line_count` is the number of logical lines, where an empty byte
-string has zero lines and otherwise lines equal LF count plus one.
+For every v1 tool result, `media_type` is exactly
+`application/vnd.praana.tool-result+json;version=1`; inline text and artifact
+bytes are the same RFC 8785 canonical `ToolResultDto` bytes. `line_count` is
+JSON null for this outer result. Text, log, diff, and binary child payload
+counts live in typed result/artifact metadata and do not change the outer media
+type or hash.
 
 The Tool Runtime specification owns the finalized internal `ToolResultDto` and
 its deterministic conversion into this canonical result message. The History
@@ -739,7 +775,15 @@ pub struct OpenAiResponseMessageItem {
     pub id: Option<ProviderItemId>,
     pub status: OpenAiItemStatus,
     pub role: OpenAiMessageRole,
+    pub phase: Option<OpenAiAssistantPhase>,
     pub content: Vec<OpenAiResponseContentPart>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum OpenAiAssistantPhase {
+    Commentary,
+    FinalAnswer,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -843,12 +887,13 @@ pub struct BedrockReasoningBlock {
 }
 ```
 
-`OpenAiResponsesContinuation.output_items` preserves provider output order.
-`response_id` is an optimization. The ordered local items are the source of
+`OpenAiResponsesContinuation.output_items` preserves provider output order,
+including each assistant message's original `phase`. `response_id` is retained
+for audit/future optimization only. The ordered local items are the source of
 truth and MUST be sufficient to issue the next request without
-`previous_response_id`. The Responses adapter MAY send `previous_response_id`
-only when the provider profile explicitly enables it and the same local output
-items remain available.
+`previous_response_id`. Initial schema v1 MUST NOT send `previous_response_id`,
+regardless of provider profile; enabling it requires a later config/provider
+schema and new wire fixtures.
 
 When the active reasoning policy requires non-empty local encrypted reasoning,
 missing encrypted content is `E_CONTINUATION_MISSING` even if `response_id` is
@@ -982,6 +1027,11 @@ pub struct SessionStarted {
     pub artifact_policy_version: String,
     pub token_estimator_schema_version: u32,
     pub unicode_utility_version: String,
+    pub system_context_schema_version: u32,
+    pub provider_registry_schema_version: u32,
+    pub builtin_tool_catalog_schema_version: u32,
+    pub redaction_version: String,
+    pub ui_contract_schema_version: u32,
     pub initial_model: ModelSelection,
     pub initial_toolset_hash: Sha256Digest,
 }
@@ -1138,7 +1188,35 @@ pub struct TurnInterrupted {
     pub uncertain_execution_ids: Vec<ToolExecutionId>,
     pub message: String,
 }
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterruptedTurnCapsuleV1 {
+    pub capsule_schema_version: u32,
+    pub turn_id: TurnId,
+    pub turn_index: u64,
+    pub user_message_id: MessageId,
+    pub accepted_step_ids: Vec<StepId>,
+    pub completed_batch_ids: Vec<ToolBatchId>,
+    pub reason: InterruptionReason,
+    pub failed_attempt_id: Option<AttemptId>,
+    pub uncertain_execution_ids: Vec<ToolExecutionId>,
+    pub interruption_event_id: EventId,
+    pub source_start_sequence: u64,
+    pub source_end_sequence: u64,
+    pub source_hash: Sha256Digest,
+}
 ```
+
+`InterruptedTurnCapsuleV1` is a deterministic projection record, not a new
+canonical event and not a committed turn. It is created only after
+`TurnInterrupted` is durable. `accepted_step_ids` and `completed_batch_ids` are
+the protocol-complete accepted prefix in canonical order; failed partial output
+is excluded. `source_end_sequence` is the interruption event sequence and
+`source_hash` covers the exact canonical event lines for the range. Every
+uncertain execution remains explicit and is never converted to success or
+replayed. This capsule is the only form in which a closed interrupted turn may
+later enter compaction; until it exists, the turn is a hard selection barrier.
 
 `SessionStarted.config_schema_version` and `config_digest_sha256` MUST match the
 immutable creation metadata and `config.snapshot.json` defined by the Config
@@ -1510,6 +1588,25 @@ garbage-collected only after canonical replay and History Storage recovery have
 first resolved every matching durable started execution as an exact recovered
 finish or an uncertain finish. IPC clients and UI lifecycle code have no
 artifact garbage-collection authority.
+
+### 8.6 UI operation correlation
+
+Before a UI command can cause a canonical mutation, its History-owned operation
+record is durably `reserved` with every affected canonical `EventId`
+preallocated. The event writer receives those IDs through
+`reserved_event_id`; it never generates replacements after a crash. After each
+event fsync, the operation coordinator records the first/terminal sequence when
+applicable and finally stores the typed UI-contract result.
+
+Canonical envelopes do not add `operation_id`: operation correlation is the
+validated mapping from the operation record's `PlannedEffectRef` event IDs to
+the canonical envelopes. On recovery, a planned ID found with the wrong event
+kind, session, turn context, or payload is
+`HISTORY_OPERATION_LEDGER_CORRUPT` and blocks mutation. Finding all planned
+effects allows deterministic result reconstruction; finding none permits the
+UI-contract safe reserved-operation rule; a partial or secret-bearing uncertain
+effect becomes interrupted. Canonical replay never infers idempotency from
+timestamps, text equality, or a connection request ID.
 
 ## 9. Formal State Machines
 
@@ -1965,6 +2062,14 @@ context retry has `emergency_context_retry = true`. Exhaustion returns
 `E_PROVIDER_RETRY_EXHAUSTED`. Retry scheduling is not a canonical event;
 attempt starts and failures are.
 
+`observable_delta_emitted` becomes true before the UI dispatcher receives the
+first non-empty user-visible assistant text or reasoning-summary delta. It does
+not depend on successful rendering or IPC acknowledgement. Once true, a later
+failure durably closes the attempt, emits the UI-contract failure rewind with
+no replacement, and terminates the outer turn with `turn_interrupted`. It MUST
+NOT start a retry. `attempt.rewind` remains valid for cancellation and
+accepted-content reconciliation and never overrides this barrier.
+
 Every retry rebuilds the effective request as needed and performs fresh
 admission. The estimator computation MAY be reused only when the complete
 request hash and resolved capability-profile hash exactly match the prior
@@ -2380,6 +2485,11 @@ explicitly opaque provider-owned IDs, not canonical local IDs.
       "artifact_policy_version": "rust-v2-artifact-1",
       "token_estimator_schema_version": 1,
       "unicode_utility_version": "praana-unicode-15.1-v1",
+      "system_context_schema_version": 1,
+      "provider_registry_schema_version": 1,
+      "builtin_tool_catalog_schema_version": 1,
+      "redaction_version": "praana-redaction-v1",
+      "ui_contract_schema_version": 1,
       "initial_model": {
         "provider": "openai",
         "protocol": "openai-responses-v1",
@@ -2494,7 +2604,7 @@ explicitly opaque provider-owned IDs, not canonical local IDs.
         "estimated_input_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
         "context_window_tokens": 200000,
         "estimated_input_tokens": 1200,
-        "requested_output_tokens": 4096,
+        "resolved_output_tokens": 4096,
         "requested_reasoning_tokens": 4096,
         "safety_margin_tokens": 1000,
         "projected_fill_millionths": 51960,
@@ -2533,6 +2643,7 @@ explicitly opaque provider-owned IDs, not canonical local IDs.
         "step_id": "01ARZ3NDEKTSV4RRFFQ69G5FB3",
         "provider": "openai",
         "model": "gpt-5",
+        "phase": "commentary",
         "blocks": [
           {
             "type": "reasoning_summary",
@@ -2664,17 +2775,17 @@ The Serde discriminant is `open_ai_responses`, because `rename_all =
         "tool_name": "read_file",
         "status": "success",
         "body": {
-          "media_type": "text/plain",
+          "media_type": "application/vnd.praana.tool-result+json;version=1",
           "content": {
             "storage": "artifact",
             "data": {
-              "preview": "Artifact 01ARZ3NDEKTSV4RRFFQ69G5FBB: read_file [label=\"README.md\"] (3204 bytes, 400 lines, 801 estimated tokens; error=false).\nSample (head_tail):\n# PRAANA\nEnd of README.\n[... 3180 bytes and 398 lines omitted ...]\nRetrieve with retrieve_artifact({\"artifact_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FBB\"}).",
+                "preview": "Artifact 01ARZ3NDEKTSV4RRFFQ69G5FBB: read_file [label=\"README.md\"] (3204 canonical JSON bytes, 801 estimated tokens; error=false).\nResult summary: read_file returned UTF-8 content for README.md.\nRetrieve the complete canonical ToolResultDto with retrieve_artifact({\"artifact_id\":\"01ARZ3NDEKTSV4RRFFQ69G5FBB\"}).",
               "reference": {
                 "artifact_id": "01ARZ3NDEKTSV4RRFFQ69G5FBB",
                 "sha256": "057f8570b5137bf1253bc47b3feb66d59c8df1a2c92caf7b4f83d3f99a671619",
-                "media_type": "text/plain",
+                "media_type": "application/vnd.praana.tool-result+json;version=1",
                 "byte_count": 3204,
-                "line_count": 400,
+                "line_count": null,
                 "estimated_tokens": 801,
                 "token_estimator_schema_version": 1,
                 "estimator_id": "praana-generic-unicode-15.1-v1",
@@ -2690,7 +2801,7 @@ The Serde discriminant is `open_ai_responses`, because `rename_all =
           },
           "sha256": "057f8570b5137bf1253bc47b3feb66d59c8df1a2c92caf7b4f83d3f99a671619",
           "byte_count": 3204,
-          "line_count": 400,
+          "line_count": null,
           "estimated_tokens": 801,
           "token_estimator_schema_version": 1,
           "estimator_id": "praana-generic-unicode-15.1-v1",
@@ -3293,7 +3404,7 @@ earlier contract.
 ### Packet F: Phase 3 artifact substrate and tool batches
 
 - [ ] Before enabling a large-output tool, implement the History-owned minimal
-  artifact body/provenance transaction, 800/1600 policy, content-aware bounded
+  artifact body/provenance transaction, Config-resolved threshold policy, content-aware bounded
   preview, and artifact-before-event durability.
 - [ ] Add exact orphan-artifact reconstruction only from the full finalized
   metadata required by Section 14.2; otherwise append an uncertain result.
@@ -3556,20 +3667,25 @@ the outer `ToolErrorCode`.
 
 ### A.7 IPC domain
 
-IPC framing/connection errors remain IPC-only wrapper codes:
+IPC framing/connection errors remain the IPC-only transport codes below.
+Semantic command failures serialize UI-contract `CoreErrorDto` and are never
+renamed to an `IPC_*` code. The UI Contract owns the exact canonical
+`ErrorClass` to `CoreErrorCode` mapping and command-specific codes.
 
-| IPC condition or mapped class | IPC code | Retryable |
+| IPC transport condition | IPC code | Retryable |
 |---|---|---|
-| Malformed, oversized, non-UTF-8, invalid envelope/payload, unknown command | Existing narrow `IPC_BAD_FRAME`, `IPC_FRAME_TOO_LARGE`, `IPC_INVALID_UTF8`, `IPC_INVALID_ENVELOPE`, `IPC_INVALID_PAYLOAD`, or `IPC_COMMAND_UNKNOWN` | No |
-| Version/handshake/capability mismatch | `IPC_VERSION_UNSUPPORTED`, `IPC_HANDSHAKE_REQUIRED`, or `IPC_NOT_SUPPORTED` | No in current connection |
+| Malformed JSON frame | `IPC_BAD_FRAME` | No |
+| Oversized frame | `IPC_FRAME_TOO_LARGE` | No |
+| Invalid UTF-8 | `IPC_INVALID_UTF8` | No |
+| Invalid envelope | `IPC_INVALID_ENVELOPE` | No |
+| Version/UI-contract mismatch or command before handshake | `IPC_VERSION_UNSUPPORTED` or `IPC_HANDSHAKE_REQUIRED` | No in current connection |
 | Duplicate request identity | `IPC_REQUEST_ID_REUSED` | No |
-| Local concurrency/backpressure or canonical `conflict` | `IPC_TOO_MANY_REQUESTS`, `IPC_SESSION_BUSY`, or `IPC_BACKPRESSURE` | Yes as documented by IPC |
-| Canonical `not_found` | Narrow `IPC_SESSION_NOT_FOUND`, `IPC_TURN_NOT_FOUND`, `IPC_CONFIRMATION_NOT_FOUND`, or `IPC_ARTIFACT_NOT_FOUND` | No unless the referenced object may appear later |
-| Canonical `cancelled` | `IPC_CANCELLED` | Yes only for a new operation |
-| Canonical `timeout` | `IPC_TIMEOUT` | Conditional on domain mapping |
-| Canonical `authentication` | `IPC_AUTH_FAILED` | No until credentials change |
-| Canonical `persistence` or uncertain durability | `IPC_DURABILITY_FAILED` | Only after core recovery determines outcome |
-| Any other redacted canonical failure | `IPC_INTERNAL` | False unless the domain mapping explicitly says true |
+| More than 64 in-flight requests | `IPC_TOO_MANY_REQUESTS` | Yes after a response |
+| Unknown dotted command/event | `IPC_COMMAND_UNKNOWN` or `IPC_EVENT_UNKNOWN` | No |
+| Payload fails the selected UI-contract type | `IPC_INVALID_PAYLOAD` | No |
+| Event sequence invalid | `IPC_SEQUENCE_INVALID` | No; reconnect required |
+| Connection writer exceeds its critical deadline | `IPC_BACKPRESSURE` | No; reconnect required |
+| Transport implementation failure before a semantic result exists | `IPC_INTERNAL` | No |
 
 Specialized specifications may define additional internal detail codes, but
 each new code MUST add an explicit row to this appendix or to a versioned table

@@ -25,6 +25,17 @@ overrides the literal wire placement specified here.
 `docs/RUST_V2_CONFIG_SPEC.md` exclusively owns provider/LLM config keys,
 defaults, sources, merge, URL normalization, context-window overrides, output
 and timeout values, and future-key rejection.
+`docs/RUST_V2_PROVIDER_CATALOG_CREDENTIAL_SPEC.md` owns provider/profile trust,
+catalogs, endpoint fingerprints, and credential resolution.
+`docs/RUST_V2_SYSTEM_CONTEXT_SPEC.md` owns provider-neutral instruction slot
+bytes; this adapter owns only their OpenAI/OpenRouter placement.
+
+OpenAI reasoning behavior in this revision was verified on 2026-09-01 against
+the official Reasoning guide at
+`https://developers.openai.com/api/docs/guides/reasoning`. In particular,
+stateless `store:false` responses return `encrypted_content` by default, the
+legacy `reasoning.encrypted_content` include remains accepted but is not
+required, and manual replay must preserve every assistant message `phase`.
 
 ## 2. Protocol Scope
 
@@ -75,10 +86,15 @@ use crate::protocol::{
 use crate::tools::{ToolCatalog, ToolDescriptor};
 ```
 
-The remaining profile, model, reasoning, output, temperature, tool-choice, and
+The remaining profile, model, reasoning, resolved output, temperature, tool-choice, and
 internal-request controls are adapter inputs. They are not alternate canonical
 message or usage schemas. The adapter converts them to a secret-free OpenAI wire
 body and returns adapter events/errors to the protocol attempt controller.
+
+`resolved_max_output_tokens` is the already-clamped `Rout` produced by request
+admission. The adapter has no access to raw `llm.max_output_tokens`, does not
+clamp again, and serializes this exact value. This guarantees the amount reserved
+by admission equals the provider wire limit.
 
 ### 4.1 Instruction blocks
 
@@ -355,14 +371,17 @@ Conditional fields are added as follows:
 - `tools`: present only when non-empty.
 - `tool_choice`: present only when tools are present. Map `Auto` to `auto`, `None` to `none`, and `Required` to `required`.
 - `parallel_tool_calls`: `true` when tools are present and the model capability allows parallel calls; omitted otherwise.
-- OpenAI `max_completion_tokens`: the effective `llm.max_output_tokens`.
-- OpenRouter `max_tokens`: the effective `llm.max_output_tokens`.
+- OpenAI `max_completion_tokens`: `resolved_max_output_tokens`.
+- OpenRouter `max_tokens`: `resolved_max_output_tokens`.
 - `temperature`: present only when optional `llm.temperature_milli` is set and
   allowed by model capabilities.
 - OpenAI `reasoning_effort`: present when reasoning is not off.
 - OpenRouter `reasoning`: present as specified in Section 5.2 when reasoning is not off.
 
-The adapter MUST NOT send `store`, `n`, `logprobs`, `top_logprobs`, `seed`, `response_format`, `functions`, or legacy `function_call` in v1.
+For ordinary assistant turns the adapter MUST NOT send `store`, `n`, `logprobs`,
+`top_logprobs`, `seed`, `response_format`, `functions`, or legacy
+`function_call` in v1. The internal compaction exception is defined in section
+8.5 and does not apply to user turns.
 
 If streaming usage is not supported by a future profile, that profile is not v1-compatible. V1 never silently omits `stream_options` for OpenAI or OpenRouter.
 
@@ -416,7 +435,8 @@ Chat wire format cannot represent arbitrary interleaving of text and tool calls.
 
 - All `Text` blocks precede all `ToolCall` blocks.
 - It contains no replay-required `ReasoningSummary` block.
-- Refusal state, if any, applies to text only and there are no tool calls in that same message.
+- It contains at most one `Refusal` block, after every `Text` block, and no tool
+  call in that message.
 
 Adjacent text blocks are concatenated with no inserted separator. Empty text with tool calls maps to `content: null`. Tool calls map in canonical block order:
 
@@ -436,6 +456,17 @@ Adjacent text blocks are concatenated with no inserted separator. Empty text wit
   ]
 }
 ```
+
+A refusal-only replay is:
+
+```json
+{"role":"assistant","content":null,"refusal":"I cannot help with that request."}
+```
+
+When preceding text exists, `content` is that concatenated text and `refusal`
+is still the exact refusal block text. Capture a non-empty Chat response
+`refusal` as canonical `AssistantBlock::Refusal` after visible text. Never map
+it to `content`, and reject multiple or empty refusal values.
 
 `raw_arguments` is sent exactly as accepted. It MUST parse as one JSON object and match `arguments`; mismatch is `canonical_request_invalid`. The adapter never reserializes from `arguments` when raw bytes are present.
 
@@ -501,11 +532,12 @@ Conditional fields:
 
 - `instructions`: required complete five-slot compiled instruction string.
 - `tools`, `tool_choice`, and `parallel_tool_calls`: same conditions as Chat, using Responses tool shape.
-- `max_output_tokens`: the effective `llm.max_output_tokens`.
+- `max_output_tokens`: `resolved_max_output_tokens`.
 - `temperature`: only when optional `llm.temperature_milli` is set and
   capability-allowed.
 - `reasoning`: when reasoning is enabled.
-- `include`: when active reasoning replay is enabled.
+- `include`: omitted in v1; stateless encrypted reasoning is returned by
+  default. Legacy include behavior requires a later adapter/profile version.
 - `previous_response_id`: forbidden in schema v1; Section 10 reserves future
   behavior.
 
@@ -515,16 +547,22 @@ Reasoning request shape is:
 {
   "reasoning": {
     "effort": "medium",
-    "summary": "auto"
-  },
-  "include": ["reasoning.encrypted_content"]
+    "summary": "auto",
+    "context": "current_turn"
+  }
 }
 ```
 
-`summary: auto` and the encrypted-content include are REQUIRED whenever
-reasoning is enabled. Config schema v1 accepts only
-`history.reasoning_replay = active`. If reasoning is off, both fields are
-omitted.
+`summary: auto` is REQUIRED whenever reasoning is enabled. Emit
+`context: current_turn` exactly when the resolved capability profile reports
+`CurrentTurn` or `AllTurns`; omit `context` for `Unsupported`. Never send
+`all_turns` in schema v1. `current_turn` matches
+`history.reasoning_replay = active`: local
+manual replay supplies every output item from the active tool cycle but does
+not ask the provider to render reasoning from earlier completed turns. The
+adapter captures non-empty encrypted reasoning returned by stateless mode
+without requesting the legacy include. If reasoning is off, the complete
+`reasoning` field is omitted.
 
 ### 8.2 User input items
 
@@ -561,6 +599,7 @@ Portable assistant text maps to:
 {
   "type": "message",
   "role": "assistant",
+  "phase": "commentary",
   "content": [
     {
       "type": "output_text",
@@ -571,7 +610,17 @@ Portable assistant text maps to:
 }
 ```
 
-A refusal maps to a content part with `type: refusal` and `refusal: <text>` if replay is required. Text and refusal parts preserve their order. The adapter never converts refusal text into user content.
+`phase` is `commentary` or `final_answer`. Capture the exact provider value in
+both canonical `AssistantMessage.phase` and
+`OpenAiResponseMessageItem.phase`, then preserve it during manual replay. Omit
+the wire field only when canonical phase is null; never infer a phase from item
+order or finish reason. Dropping a present phase is a continuation-fixture
+failure.
+
+A refusal maps to canonical `AssistantBlock::Refusal`, then back to a content
+part with `type: refusal` and `refusal: <text>` during replay. Text and refusal
+parts preserve their order. The adapter never converts refusal text into
+ordinary assistant text or user content.
 
 ### 8.4 Function calls and outputs
 
@@ -628,15 +677,47 @@ item with `role: user`. In both protocols the content is:
 
 ```text
 [PRAANA:INTERNAL_COMPACTION_CONTROL]
-<owner-rendered compaction query and output-schema request>
+{exact UTF-8 bytes returned by render_compaction_control_v1}
 [/PRAANA:INTERNAL_COMPACTION_CONTROL]
 ```
 
-This provider-role adaptation does not fabricate user history. The exact bytes
+The brace line above names a function and is not literal wire text. The exact
+content between the marker lines is the return value of
+`render_compaction_control_v1` defined by `RUST_V2_COMPACTION_SPEC.md`; the
+adapter adds no whitespace and both marker lines end in LF. This provider-role
+adaptation does not fabricate user history. The exact bytes
 are included in request hashing and admission, tools are absent, and successful
 output can become canonical only through `HistoryCompactedV1`. The five-slot
 instruction string remains one string and is not modified to impersonate a
 current user message.
+
+Strict candidate output uses the checked-in schema and hash from Compaction.
+Chat Completions adds this field only for an internal compaction attempt:
+
+```rust
+json!({"response_format": {"type": "json_schema", "json_schema": {
+    "name": "praana_compaction_candidate_v1",
+    "strict": true,
+    "schema": schema_json
+}}})
+```
+
+Responses adds this field only for an internal compaction attempt:
+
+```rust
+json!({"text": {"format": {
+    "type": "json_schema",
+    "name": "praana_compaction_candidate_v1",
+    "strict": true,
+    "schema": schema_json
+}}})
+```
+
+`schema_json` is the parsed JSON object from the exact checked-in schema bytes;
+the adapter inserts it without modification. It is not serialized as a string.
+The request hash uses the resulting complete
+wire body. If the selected model/profile does not support this strict schema
+shape, it cannot be selected as a compactor.
 
 ## 9. Responses Reasoning Capture and Replay
 
@@ -656,6 +737,8 @@ For a reasoning output item, capture:
 - Ordered `summary` text parts for visible reasoning summary.
 - Non-empty `encrypted_content` exactly as received.
 
+For every message output item, capture and replay its optional `phase` exactly.
+
 Encrypted content is opaque. It MUST NOT be decoded, tokenized as text, summarized, displayed, indexed, searched, sent to memory plugins, or included in diagnostic dumps. It may be encrypted at rest by a future storage layer, but at minimum follows session-file permissions and secret-safe logging.
 
 ### 9.2 Active-cycle replay
@@ -670,7 +753,8 @@ Effective `history.reasoning_replay = active` means:
 6. This repeats for additional tool cycles.
 7. Once a terminal assistant response is accepted, opaque continuation is no longer included in the next user turn.
 
-In stateless mode, reasoning items are replayed as:
+In stateless `store:false` mode, encrypted reasoning is returned by default and
+reasoning items are replayed as:
 
 ```json
 {
@@ -1550,12 +1634,18 @@ This is Phase 2 sequencing. Do not pull it into Phase 0.
 
 Do not start with Reqwest calls and fill in validation later. Pure request and stream fixtures must pass before live transport is connected.
 
+### 23.1 Bounded Phase 2 packet
+
+Create/modify only `crates/praana-core/src/provider/openai/{mod,chat,responses,sse,error,usage}.rs`, provider registry/profile modules from their owner spec, and `crates/praana-core/tests/openai_v1.rs`. Check in request/SSE/continuation fixtures first. Run `cargo test -p praana-core --test openai_v1`; expected red is unresolved adapter modules. Implement pure conversion/parser code before transport, then fake-server retry/abort integration. The packet is green only when that test, protocol fixtures, fmt, clippy with warnings denied, and workspace tests exit zero. It does not implement tools, history compaction, UI, non-OpenAI providers, OAuth, or server-ID continuation.
+
 ## 24. Common Mistakes
 
 - Treating `previous_response_id` as durable history.
 - Sending `previous_response_id` and full replay items together.
 - Omitting `store: false` in default Responses requests.
-- Forgetting `include: ["reasoning.encrypted_content"]` when active replay is required.
+- Requiring the legacy `include: ["reasoning.encrypted_content"]` in stateless
+  mode even though current OpenAI behavior returns encrypted content by default.
+- Dropping a returned assistant message `phase` during manual replay.
 - Capturing reasoning summary but dropping encrypted reasoning needed for tool continuation.
 - Replaying encrypted reasoning after the active tool cycle, compaction, reset, or model switch.
 - Decoding, logging, indexing, or summarizing encrypted reasoning.
@@ -1590,7 +1680,9 @@ The OpenAI/OpenRouter v1 provider runtime is accepted only when:
 - Every required golden request matches semantically and every header fixture matches exactly after mandated redaction.
 - The SSE parser passes every-byte UTF-8 and delimiter split tests for LF, CRLF, and CR.
 - Chat text, refusal, reasoning, fragmented calls, parallel calls, finish reasons, and usage map exactly as specified.
-- Responses output item order, fragmented calls, reasoning summaries, encrypted reasoning, and usage map exactly as specified.
+- Responses output item order, assistant phase, refusals, fragmented calls,
+  reasoning summaries, default stateless encrypted reasoning, and usage map
+  exactly as specified.
 - A fake provider completes at least two consecutive Responses tool cycles with encrypted stateless reasoning replay.
 - Missing encrypted continuation prevents tool execution rather than silently degrading.
 - A response ID never bypasses missing required local continuation, and

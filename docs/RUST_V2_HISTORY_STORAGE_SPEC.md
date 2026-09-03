@@ -27,6 +27,14 @@ retention, artifact-policy defaults, config parsing, and the effective config
 snapshot/digest. This specification consumes those typed values and owns their
 storage behavior.
 
+`docs/RUST_V2_UI_CONTRACT.md` is the sole semantic authority for UI operations,
+`OperationId`, `OperationRecordDto`, request/result hashes, statuses, replay,
+and retention semantics. This specification owns the exact physical ledgers,
+transactions, and host-operation journals that make those semantics durable.
+`docs/RUST_V2_REDACTION_SPEC.md` owns redaction. History accepts only finalized
+post-redaction tool bytes and persists the supplied redaction version/summary;
+it never redacts or reinterprets source bytes itself.
+
 ## 1. Goals and invariants
 
 The storage layer MUST satisfy all of the following:
@@ -67,6 +75,24 @@ normalization are owned by the Config specification. One session directory is:
   quarantine/
 ```
 
+Host-scoped UI operation durability is stored under the application data root,
+not a session directory:
+
+```text
+<PRAANA_HOME>/ui-operations.db
+<PRAANA_HOME>/ui-operations.db-wal
+<PRAANA_HOME>/ui-operations.db-shm
+<PRAANA_HOME>/ui-operation-journals/<operation-id>.json
+<PRAANA_HOME>/ui-operation-journals/<operation-id>.before
+<PRAANA_HOME>/ui-operation-journals/<operation-id>.after
+```
+
+These paths are fixed host-state paths, not Config-v1 keys. Files/directories
+use the same private permissions, non-symlink checks, full-sync policy, and
+directory-fsync rules as session storage. The host database stores only typed
+non-secret operation plans/results and effective UI settings. Credential or
+setup secrets never enter it.
+
 Temporary and recovery files may also occur in that directory:
 
 ```text
@@ -95,11 +121,11 @@ normalization. A symlink at the session directory, `events.jsonl`, `history.db`,
 relative to an already opened session-directory handle where the platform
 permits it.
 
-All Rust storage APIs use the protocol-owned ID newtypes. SQLite stores their
-canonical string encodings, but a `TEXT` column is never exposed as a raw Rust
-`String` at a core boundary. Application validators enforce uppercase Crockford
-ULID syntax in addition to SQL length checks. Provider `ToolCallId` remains the
-opaque provider-string exception.
+All Rust storage APIs use protocol-owned ID newtypes plus UI-contract
+`OperationId`. SQLite stores canonical string encodings, but a `TEXT` column is
+never exposed as a raw Rust `String` at a core boundary. Application validators
+enforce uppercase Crockford ULID syntax in addition to SQL length checks.
+Provider `ToolCallId` remains the opaque provider-string exception.
 
 ### 2.1 Canonical and derived data
 
@@ -110,6 +136,8 @@ opaque provider-string exception.
 | Artifact identity, producer provenance, and immutable preview | `history.db.artifacts` | Canonical | SQLite row; referenced by an event |
 | Session identity and creation parameters | `meta.json` | Canonical static manifest | Must agree with `SessionStarted` |
 | Complete non-secret creation configuration | `config.snapshot.json` | Canonical static manifest | Config-spec canonical JSON and SHA-256 |
+| Session-scoped UI operation reservation/result | `history.db.operation_records` | Canonical idempotency ledger | Verify typed plan/result hashes and canonical event IDs |
+| Host-scoped UI operation reservation/result and settings | `ui-operations.db` | Canonical host-control ledger | Full-sync SQLite plus host journal reconciliation |
 | Logical accepted conversation | Memory and projection tables | Derived | Replay canonical events |
 | Turn ledger and reset epochs | `history.db.turns` | Derived | Replay canonical events |
 | FTS and normalized search documents | Search tables | Derived | Replay events and artifact rows |
@@ -124,9 +152,11 @@ Canonical does not mean model-visible. `events.jsonl` records failed attempts,
 interruptions, resets, and supersession. The accepted-conversation projector
 decides visibility. `history.db` is not a second transcript.
 
-Artifact bodies cannot be rebuilt from previews or events and are therefore
-canonical. Every other SQLite table can be dropped and reconstructed from the
-valid event prefix and canonical artifact tables.
+Artifact bodies and operation records cannot be rebuilt from previews or the
+event log alone and are therefore canonical. Every other per-session SQLite
+table can be dropped and reconstructed from the valid event prefix and
+canonical artifact/operation tables. The host operation database follows its
+own journal recovery and is never treated as a derived session projection.
 
 ### 2.2 `meta.json`
 
@@ -148,6 +178,12 @@ NOT be updated in this file.
   "projection_version": "rust-v2-projection-1",
   "token_estimator_schema_version": 1,
   "unicode_utility_version": "praana-unicode-15.1-v1",
+  "system_context_schema_version": 1,
+  "provider_registry_schema_version": 1,
+  "builtin_tool_catalog_schema_version": 1,
+  "redaction_version": "praana-redaction-v1",
+  "ui_contract_schema_version": 1,
+  "cursor_hmac_key_base64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   "creator_version": "0.1.0-dev"
 }
 ```
@@ -156,12 +192,18 @@ JSON keys are serialized in the order shown. The path is absolute and lexical
 normalization has already been applied; it is not required to exist on resume.
 The `SessionStarted` envelope repeats session ID and creation timestamp; its
 payload repeats cwd, agent, config schema/digest, projection version, compaction
-policy version, artifact policy version, token estimator schema version, and
-Unicode utility version. `config_digest_sha256` also MUST equal SHA-256 of the
+policy version, artifact policy version, token estimator/system-context/provider-
+registry/tool-catalog/UI schema versions, Unicode utility version, and redaction
+version. `config_digest_sha256` also MUST equal SHA-256 of the
 Config-spec canonical effective JSON in `config.snapshot.json`. Those
 overlapping fields must agree. A mismatch maps
 to public `E_SESSION_ID_MISMATCH` or internal `HISTORY_META_MISMATCH` and
 prevents a mutating resume.
+
+`cursor_hmac_key_base64` is a random 32-byte key encoded with RFC 4648 standard
+base64 and padding, generated at session creation. The all-`A` value above is a
+fixture value only. It is never emitted to UI, provider, logs, canonical events,
+operation results, or diagnostics. Mode `0600` protects it with the manifest.
 
 ### 2.3 `config.snapshot.json`
 
@@ -315,7 +357,7 @@ This is the complete `history_schema_version = 1` schema. There are no v1
 migrations from any TypeScript database.
 
 ```sql
-PRAGMA application_id = 1347567950;
+PRAGMA application_id = 1347567937;
 PRAGMA user_version = 1;
 -- application_id above is hexadecimal 0x50524141, ASCII "PRAA".
 
@@ -324,20 +366,52 @@ CREATE TABLE schema_meta (
   value               TEXT NOT NULL
 ) STRICT, WITHOUT ROWID;
 
+CREATE TABLE operation_records (
+  operation_id        TEXT PRIMARY KEY NOT NULL CHECK(length(operation_id) = 26),
+  ui_contract_schema_version INTEGER NOT NULL CHECK(ui_contract_schema_version = 1),
+  operation_kind      TEXT NOT NULL CHECK(operation_kind IN
+                      ('session_create','session_resume','session_end',
+                       'session_clear','session_new','turn_submit','turn_cancel',
+                       'risk_resolve','slash_execute','model_select',
+                       'reasoning_set','settings_patch','setup_apply','auth_login',
+                       'auth_logout','consent_resolve','shutdown')),
+  request_sha256      TEXT NOT NULL CHECK(length(request_sha256) = 64),
+  status              TEXT NOT NULL CHECK(status IN
+                      ('reserved','succeeded','failed','interrupted')),
+  session_id          TEXT CHECK(session_id IS NULL OR length(session_id) = 26),
+  planned_effects_json TEXT NOT NULL CHECK(json_valid(planned_effects_json)),
+  result_json         TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+  result_sha256       TEXT CHECK(result_sha256 IS NULL OR length(result_sha256) = 64),
+  first_canonical_sequence INTEGER CHECK(first_canonical_sequence IS NULL OR
+                                         first_canonical_sequence > 0),
+  terminal_canonical_sequence INTEGER CHECK(terminal_canonical_sequence IS NULL OR
+                                            terminal_canonical_sequence >=
+                                            first_canonical_sequence),
+  created_at_ms       INTEGER NOT NULL,
+  finished_at_ms      INTEGER,
+  CHECK((status = 'reserved') = (finished_at_ms IS NULL)),
+  CHECK((status = 'reserved') = (result_json IS NULL)),
+  CHECK((result_json IS NULL) = (result_sha256 IS NULL))
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX operation_records_session_idx
+  ON operation_records(session_id, created_at_ms);
+CREATE INDEX operation_records_retention_idx
+  ON operation_records(status, finished_at_ms);
+
 CREATE TABLE artifact_blobs (
   blob_id             TEXT PRIMARY KEY NOT NULL,
   sha256              TEXT NOT NULL UNIQUE
                       CHECK(length(sha256) = 64),
   canonical_result    BLOB NOT NULL,
   byte_count          INTEGER NOT NULL CHECK(byte_count >= 0),
-  line_count          INTEGER NOT NULL CHECK(line_count >= 0),
+  line_count          INTEGER CHECK(line_count IS NULL OR line_count >= 0),
   estimated_tokens    INTEGER NOT NULL CHECK(estimated_tokens >= 0),
   token_estimator_schema_version INTEGER NOT NULL
                       CHECK(token_estimator_schema_version = 1),
   token_estimator_id  TEXT NOT NULL,
   token_input_sha256  TEXT NOT NULL CHECK(length(token_input_sha256) = 64),
-  result_encoding     TEXT NOT NULL CHECK(result_encoding IN
-                      ('rfc8785-json','utf8-text','binary')),
+  result_encoding     TEXT NOT NULL CHECK(result_encoding = 'rfc8785-json'),
   redaction_version   TEXT NOT NULL,
   redaction_json      TEXT NOT NULL CHECK(json_valid(redaction_json)),
   created_at_ms       INTEGER NOT NULL
@@ -369,7 +443,8 @@ CREATE TABLE artifacts (
   result_status               TEXT NOT NULL CHECK(result_status IN
                               ('success','error','blocked','cancelled',
                                'uncertain','skipped')),
-  result_media_type           TEXT NOT NULL,
+  result_media_type           TEXT NOT NULL CHECK(result_media_type =
+                              'application/vnd.praana.tool-result+json;version=1'),
   result_sha256               TEXT NOT NULL CHECK(length(result_sha256) = 64),
   result_byte_count           INTEGER NOT NULL CHECK(result_byte_count >= 0),
   result_line_count           INTEGER CHECK(result_line_count IS NULL OR result_line_count >= 0),
@@ -430,11 +505,20 @@ CREATE TABLE turns (
                               CHECK(accepted_message_tokens >= 0),
   accepted_message_estimator_id TEXT,
   accepted_message_input_sha256 TEXT
-                              CHECK(accepted_message_input_sha256 IS NULL OR
-                                    length(accepted_message_input_sha256) = 64),
+                               CHECK(accepted_message_input_sha256 IS NULL OR
+                                     length(accepted_message_input_sha256) = 64),
+  interruption_capsule_json   TEXT
+                              CHECK(interruption_capsule_json IS NULL OR
+                                    json_valid(interruption_capsule_json)),
+  interruption_capsule_sha256 TEXT
+                              CHECK(interruption_capsule_sha256 IS NULL OR
+                                    length(interruption_capsule_sha256) = 64),
   retired_by_epoch            INTEGER CHECK(retired_by_epoch IS NULL OR retired_by_epoch > 0),
   source_hash                 TEXT CHECK(source_hash IS NULL OR length(source_hash) = 64),
   CHECK((status = 'committed') = (commit_sequence IS NOT NULL)),
+  CHECK((status = 'interrupted') = (interruption_capsule_json IS NOT NULL)),
+  CHECK((interruption_capsule_json IS NULL) =
+        (interruption_capsule_sha256 IS NULL)),
   CHECK(end_sequence IS NULL OR end_sequence >= start_sequence)
 ) STRICT, WITHOUT ROWID;
 
@@ -573,7 +657,9 @@ CREATE TABLE skill_session_stats (
 `schema_meta` contains at least `history_schema_version`, `event_schema_version`,
 string canonical `projection_version`, `artifact_policy_version`,
 `redaction_version`, `token_estimator_schema_version`, and
-`unicode_utility_version`. The integer projection-checkpoint column is named
+`unicode_utility_version`, `system_context_schema_version`,
+`provider_registry_schema_version`, `builtin_tool_catalog_schema_version`, and
+`ui_contract_schema_version`. The integer projection-checkpoint column is named
 `checkpoint_schema_version`; it is not the string canonical projection ID.
 
 `event_schema_version` is `2`. `artifact_blobs.blob_id` is
@@ -584,6 +670,14 @@ per producing tool call, preserving provenance even when bytes deduplicate.
 `summary_segments.segment_json` and `handoff_json` are RFC 8785 canonical bytes
 of the finalized Compaction-owner DTOs, stored as SQLite text. Their normalized
 source/output estimator IDs and hashes must equal the nested DTO/event values.
+
+For an interrupted turn, `interruption_capsule_json` is the RFC 8785 canonical
+JSON of Protocol `InterruptedTurnCapsuleV1`; its hash is over those exact bytes.
+The row is not `protocol_complete = 1` until replay has validated every accepted
+step/batch reference, excluded failed partial output, and matched the capsule to
+the durable `turn_interrupted` event. Compaction treats only that validated row
+as closed. Rebuild derives both columns from canonical events and never upgrades
+an interrupted turn to committed.
 
 The foreign keys to derived `summary_segments` and canonical `artifacts` are
 safe because a derived-table rebuild inserts parent rows before search rows.
@@ -604,6 +698,141 @@ ASCII `praana-projection-checkpoint-v1`, NUL, UTF-8 `projection_name`, NUL,
 32-byte decoded `event_prefix_hash`, and RFC 8785 canonical JSON bytes parsed
 from `payload_json`. Writers store compact RFC 8785 JSON in `payload_json`.
 
+### 5.3 Host UI operation database and journals
+
+`ui-operations.db` applies section 5.1 pragmas and uses:
+
+```sql
+PRAGMA application_id = 1347567945;
+PRAGMA user_version = 1;
+-- application_id is hexadecimal 0x50524149, ASCII "PRAI".
+
+CREATE TABLE schema_meta (
+  key                 TEXT PRIMARY KEY NOT NULL,
+  value               TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE operation_records (
+  operation_id        TEXT PRIMARY KEY NOT NULL CHECK(length(operation_id) = 26),
+  ui_contract_schema_version INTEGER NOT NULL CHECK(ui_contract_schema_version = 1),
+  operation_kind      TEXT NOT NULL CHECK(operation_kind IN
+                      ('session_create','session_resume','session_end',
+                       'session_clear','session_new','turn_submit','turn_cancel',
+                       'risk_resolve','slash_execute','model_select',
+                       'reasoning_set','settings_patch','setup_apply','auth_login',
+                       'auth_logout','consent_resolve','shutdown')),
+  request_sha256      TEXT NOT NULL CHECK(length(request_sha256) = 64),
+  status              TEXT NOT NULL CHECK(status IN
+                      ('reserved','succeeded','failed','interrupted')),
+  session_id          TEXT CHECK(session_id IS NULL OR length(session_id) = 26),
+  planned_effects_json TEXT NOT NULL CHECK(json_valid(planned_effects_json)),
+  result_json         TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+  result_sha256       TEXT CHECK(result_sha256 IS NULL OR length(result_sha256) = 64),
+  first_canonical_sequence INTEGER CHECK(first_canonical_sequence IS NULL OR
+                                         first_canonical_sequence > 0),
+  terminal_canonical_sequence INTEGER CHECK(terminal_canonical_sequence IS NULL OR
+                                            terminal_canonical_sequence >=
+                                            first_canonical_sequence),
+  created_at_ms       INTEGER NOT NULL,
+  finished_at_ms      INTEGER,
+  CHECK((status = 'reserved') = (finished_at_ms IS NULL)),
+  CHECK((status = 'reserved') = (result_json IS NULL)),
+  CHECK((result_json IS NULL) = (result_sha256 IS NULL))
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX operation_records_session_idx
+  ON operation_records(session_id, created_at_ms);
+CREATE INDEX operation_records_retention_idx
+  ON operation_records(status, finished_at_ms);
+
+CREATE TABLE effective_settings (
+  singleton           INTEGER PRIMARY KEY NOT NULL CHECK(singleton = 1),
+  revision            INTEGER NOT NULL CHECK(revision >= 0),
+  settings_json       TEXT NOT NULL CHECK(json_valid(settings_json)),
+  settings_sha256     TEXT NOT NULL CHECK(length(settings_sha256) = 64),
+  updated_at_ms       INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE host_revisions (
+  state_kind          TEXT PRIMARY KEY NOT NULL CHECK(state_kind IN
+                      ('credentials','setup_config','consent')),
+  revision            INTEGER NOT NULL CHECK(revision >= 0),
+  state_sha256        TEXT NOT NULL CHECK(length(state_sha256) = 64),
+  updated_at_ms       INTEGER NOT NULL
+) STRICT, WITHOUT ROWID;
+```
+
+Implementation uses one migration constant for the identical
+`operation_records` table and indexes in both databases. `schema_meta` contains
+`ui_contract_schema_version=1` and `host_operation_schema_version=1`.
+`effective_settings.settings_json` is RFC 8785 JSON for
+`EffectiveSettingsDto`; its embedded revision equals the column and its digest
+equals `settings_sha256`. A settings patch reserves the operation and updates
+settings plus terminal result in one `BEGIN IMMEDIATE` transaction and one full
+sync commit.
+
+Host writes that cannot share that transaction use this exact journal DTO:
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostOperationJournalV1 {
+    pub schema_version: u32,
+    pub operation_id: OperationId,
+    pub operation_kind: OperationKind,
+    pub target_label: HostStateTarget,
+    pub before_revision: u64,
+    pub after_revision: u64,
+    pub before_sha256: Sha256Digest,
+    pub after_sha256: Sha256Digest,
+    pub before_file_sha256: Sha256Digest,
+    pub after_file_sha256: Sha256Digest,
+    pub stage: HostJournalStage,
+    pub created_at_ms: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostStateTarget { Credentials, SetupConfig, Consent }
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostJournalStage { Prepared, Replaced, RevisionCommitted }
+```
+
+`schema_version` is 1. Manifest JSON is RFC 8785 plus LF. `.before` and
+`.after` contain exact private target-file bytes and may contain credentials;
+they use mode `0600`, are never logged/backed up by PRAANA, and are removed plus
+directory-fsynced immediately after the operation record reaches terminal
+status. Write order is: reserve operation; write/fsync before/after and manifest;
+fsync journal directory; atomically replace target; update manifest to
+`replaced`; transactionally advance `host_revisions` and terminal operation
+result; update manifest to `revision_committed`; remove journal files; fsync
+directory.
+
+Startup runs before setup/auth/consent commands. Exact before target identity,
+revision, and both hashes permit a new operation; exact after values prove the
+old operation succeeded; any mixed state marks it interrupted and preserves the
+journal for visible manual recovery. Secret-bearing operations are never
+automatically replayed from plaintext command data.
+
+Operation result JSON is the exact UI-contract `CoreCommandSuccess` or
+`CoreErrorDto` representation and is never a generic JSON object. Plans are the
+exact `Vec<PlannedEffectRef>`. Readers deserialize and validate both before
+using a row. A bad hash/schema is `HISTORY_OPERATION_LEDGER_CORRUPT` and blocks
+mutation; it is not rebuilt from guesses.
+
+`OperationResultRef` is reconstructed exactly from the containing ledger
+scope, row `operation_id`, `ui_contract_schema_version`, and `result_sha256`.
+It is not stored as duplicate JSON. Null `result_json`/`result_sha256` means the
+record is reserved and `result_ref` is null; every terminal row yields a
+non-null reference.
+
+Session operation rows are removed only with whole-session deletion. Host
+terminal rows older than 30 days are pruned only if no live session references
+them. Reserved/interrupted rows are not age-pruned. Duplicate IDs across the
+session and host ledgers are an integrity error.
+
 ## 6. Artifact policy
 
 ### 6.1 Effective policy
@@ -621,8 +850,9 @@ threshold comparison, estimator selection, and rounding are defined by
 Results are considered in accepted tool-call order after all parallel results
 have completed post-tool processing:
 
-1. Any binary/non-UTF-8 result is artifactized regardless of estimate.
-2. Any text/JSON result over `history.artifact_inline_tokens` is artifactized.
+1. Receive the finalized Tool Runtime `canonical_tool_result_bytes`; reject any
+   non-UTF-8 or non-canonical-JSON outer result as a runtime contract failure.
+2. Any canonical result over `history.artifact_inline_tokens` is artifactized.
 3. For each otherwise eligible result, inline it only if adding it keeps the
    batch inline sum at or under `history.artifact_batch_inline_tokens`.
 4. Artifactize every other result. Error results receive exactly the same test.
@@ -640,10 +870,12 @@ aged.
 
 ### 6.2 Canonical body and text view
 
-`canonical_result` is the exact complete post-redaction result bytes described
-by protocol `ToolResultBody`. Structured JSON uses RFC 8785. Plain text uses
-unchanged UTF-8 bytes. Binary output uses exact bytes after the tool-runtime
-redaction/spooling policy and is never decoded merely for storage. The artifact
+`canonical_result` is exactly Tool Runtime's complete post-redaction RFC 8785
+`canonical_tool_result_bytes`, with media type
+`application/vnd.praana.tool-result+json;version=1`. History validates the
+bytes/hash but never reserializes them. Raw text and binary output exist only as
+typed fields or referenced child artifacts inside the DTO; they are not an
+alternate outer result encoding. The artifact
 row preserves execution, batch, step, call, attempt, and event identity so
 recovery can prove that an orphan belongs to one execution.
 
@@ -687,6 +919,7 @@ pub struct ArtifactPreviewV1 {
     pub line_count: u64,
     pub estimated_tokens: u64,
     pub is_error: bool,
+    pub exit_code: Option<i32>,
     pub redaction: PreviewRedaction,
     pub sample: PreviewSample,
     pub retrieval: Vec<ArtifactRetrievalHint>,
@@ -737,7 +970,9 @@ pub struct ArtifactRetrievalHint {
 }
 ```
 
-Every field shown is required. `label` is serialized as JSON null when absent.
+Every field shown is required. `label` and `exit_code` serialize as JSON null
+when absent. Process/test/git results copy their real exit code; blocked,
+cancelled-before-start, read, write, search, and state tools use null.
 The strict decoder rejects duplicate keys, missing keys, unknown keys, unknown
 enum values, and a schema version other than 1. Protocol ID newtypes provide the
 exact uppercase-ULID/provider-ID validation. Other History request/response DTO
@@ -786,7 +1021,7 @@ without a label cannot fit, artifact finalization fails with
 `preview_text` has exactly this LF-only format, with no leading or trailing LF:
 
 ```text
-Artifact <ARTIFACT_ID>: <TOOL_NAME><LABEL> (<BYTE_COUNT> bytes, <LINE_COUNT> lines, <ESTIMATED_TOKENS> estimated tokens; error=<true|false>).
+Artifact <ARTIFACT_ID>: <TOOL_NAME><LABEL> (<BYTE_COUNT> bytes, <LINE_COUNT> lines, <ESTIMATED_TOKENS> estimated tokens; error=<true|false>; exit=<integer|none>).
 Sample (<STRATEGY>):
 <SAMPLE_TEXT_OR_[no textual sample]>
 [... <OMITTED_BYTES> bytes and <OMITTED_LINES> lines omitted ...]
@@ -1187,14 +1422,22 @@ pub struct RetrieveArtifactResponse {
     pub artifact_id: ArtifactId,
     pub sha256: Sha256Digest,
     pub selector: ArtifactSelector,
-    pub content: String,
+    pub content: ArtifactRetrievedContent,
     pub returned_bytes: u64,
     pub complete: bool,
     pub selected_line_start: Option<u64>,
     pub selected_line_end: Option<u64>,
-    pub total_lines: u64,
+    pub total_lines: Option<u64>,
     pub matches: Vec<ArtifactRegexMatch>,
     pub continuation: Option<RetrieveArtifactRequest>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "encoding", content = "data", rename_all = "snake_case",
+        deny_unknown_fields)]
+pub enum ArtifactRetrievedContent {
+    Utf8(String),
+    Base64(String),
 }
 
 pub struct ArtifactRegexMatch {
@@ -1204,15 +1447,23 @@ pub struct ArtifactRegexMatch {
 }
 ```
 
+`Utf8` is used for selected JSON/text views. `Base64` uses RFC 4648 standard
+alphabet with required padding and represents exact decoded source bytes;
+`returned_bytes` counts decoded bytes. Binary content permits only
+`selector=complete_result` with byte `max_bytes`; line, regex, JSON-pointer,
+stdout/stderr, head, and tail selectors return `HISTORY_SELECTOR_UNSUPPORTED`.
+Its line fields and total are JSON null.
+
 Columns count Unicode scalar values, not bytes. Returned text preserves source
 LF bytes after JSON decoding; it does not normalize line endings inside strings.
 Access telemetry is written after successful retrieval and is not part of the
 canonical response.
 
 Repeated identical retrieval may be detected for a model-use nudge, but the
-storage API always returns the requested bytes. A caller choosing to substitute
-a compact card must set `complete = false` and `skipped_payload = true` at its
-own protocol layer. It may not masquerade as a successful full retrieval.
+storage API always returns the requested bytes. There is no `skipped_payload`
+field in this storage DTO. A UI/tool caller choosing to suppress a duplicate
+payload must return its own explicitly typed duplicate-reference result; it may
+not mutate this response or masquerade as complete retrieval.
 
 ## 11. Unified session search
 
@@ -1250,6 +1501,10 @@ pub struct SessionSearchRequest {
 
 pub enum SessionSearchMode { Exact, Regex, Fts }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSourceKind { Event, Artifact, SummarySegment, State }
+
 pub struct SessionSearchFilters {
     pub source_kinds: Vec<SearchSourceKind>,
     pub event_kinds: Vec<String>,
@@ -1261,12 +1516,12 @@ pub struct SessionSearchFilters {
     pub artifact_ids: Vec<ArtifactId>,
     pub summary_segment_ids: Vec<SummarySegmentId>,
     pub state_ids: Vec<StateId>,
-    pub include_before_reset: bool,
+    pub include_prior_epochs: bool,
 }
 ```
 
 Empty filter vectors mean no restriction. Sequence bounds are inclusive.
-`include_before_reset` defaults to false, selecting only the current reset
+`include_prior_epochs` defaults to false, selecting only the current reset
 epoch. Explicit audit clients may set it true. Path globs match normalized `/`
 separated paths, are case-sensitive on every platform, and support `*`, `?`,
 and `**`; they never read the filesystem.
@@ -1334,7 +1589,36 @@ pub struct SearchRetrieval {
     pub tool: String,
     pub arguments: serde_json::Value,
 }
+
+pub struct SessionSearchPage {
+    pub projection_through_sequence: u64,
+    pub results: Vec<SessionSearchResult>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSearchCursorV1 {
+    pub cursor_schema_version: u32,
+    pub session_id: SessionId,
+    pub projection_through_sequence: u64,
+    pub request_sha256: Sha256Digest,
+    pub last_primary_micros: i64,
+    pub last_event_sequence: u64,
+    pub last_document_id: String,
+    pub last_line: u64,
+    pub last_column: u64,
+}
 ```
+
+The returned cursor is ASCII
+`base64url_no_pad(rfc8785(cursor_payload)) + "." +
+base64url_no_pad(HMAC-SHA256(cursor_hmac_key, rfc8785(cursor_payload)))`.
+Decode, verify HMAC in constant time, require schema 1/session/request hash, and
+require the current projection sequence to equal the payload. Any failure is
+`HISTORY_SEARCH_CURSOR_STALE` without revealing which check failed. Page results
+begin strictly after the stored complete sort tuple and contain at most request
+`limit`; `next_cursor` is null exactly when no later result exists.
 
 `result_id` is the uppercase Crockford ULID encoding of the first 16 bytes of
 SHA-256 over ASCII `praana-search-result-v1`, NUL, source kind, NUL, canonical
@@ -1493,6 +1777,10 @@ Commit fixtures for:
   aggregate budget, including parallel completion in reverse order.
 - Search result JSON for exact, regex, and FTS with every filter.
 - SQLite schema SQL and `sqlite_master` shape.
+- Session and host operation rows for every UI-contract `OperationKind`, with
+  canonical request, result, and plan hashes.
+- Host settings transaction and credential/setup/consent journal before/after
+  recovery.
 
 ### 15.2 Crash points
 
@@ -1515,6 +1803,11 @@ after each point:
 14. Compaction event fsync before summary projection.
 15. WAL checkpoint.
 16. Session-directory deletion rename.
+17. UI operation reservation commit.
+18. Each preallocated canonical event fsync before operation-result update.
+19. Host target replacement before revision update.
+20. Host revision commit before operation-result update.
+21. Terminal operation-result commit before journal cleanup.
 
 Each fixture resumes in a fresh process. It asserts valid-prefix preservation,
 no invented completion, no automatic uncertain side-effect replay, no visible
@@ -1562,7 +1855,10 @@ dangling reference, and idempotent projection replay.
    lock, canonical JSON, event append, prefix hashing, and JSONL recovery.
 2. In Phase 1, implement the canonical event state validator and accepted-conversation
    projector without SQLite projections.
-3. At the start of Phase 3 and before enabling any large-output tool, create the
+3. In Phase 1, implement session and host UI-operation ledgers, host settings,
+   host journals, and restart reconciliation before claiming `OperationId`
+   idempotency.
+4. At the start of Phase 3 and before enabling any large-output tool, create the
    exact complete schema in section 5 but implement only the minimal canonical
    artifact blob/reference transaction: schema checks, artifact canonicalization,
     redaction boundary, config-owned per-result/per-batch decisions,
@@ -1571,19 +1867,23 @@ dangling reference, and idempotent projection replay.
    recovery. Implement the journal/spool formats and startup recovery before
    enabling multi-file writes or shell. Derived retrieval/search features remain
    inactive.
-4. Run artifact, journal/spool, fault-injection, and long-output fixtures before
+5. Run artifact, journal/spool, fault-injection, and long-output fixtures before
    enabling Phase 3 tools.
-5. In Phase 4, implement retrieval selectors, bounds, cancellation, and line/regex/JSON
+6. In Phase 4, implement retrieval selectors, bounds, cancellation, and line/regex/JSON
    filters.
-6. In Phase 4, implement idempotent turn, StateGraph checkpoint, and search
+7. In Phase 4, implement idempotent turn, StateGraph checkpoint, and search
    projections with prefix-hash checkpoints.
-7. In Phase 4, implement exact and regex search, then FTS5/BM25 and cursors.
-8. In Phase 4, add orphan inspection/GC, derived rebuild,
+8. In Phase 4, implement exact and regex search, then FTS5/BM25 and cursors.
+9. In Phase 4, add orphan inspection/GC, derived rebuild,
    canonical integrity diagnosis, and whole-session deletion. Add summary
    projections when Phase 5 compaction is enabled.
-9. Add telemetry and skill observations only after behavior does not depend on
+10. Add telemetry and skill observations only after behavior does not depend on
    their availability.
-10. Run full retrieval/search/StateGraph fixtures before the temporary UI.
+11. Run full retrieval/search/StateGraph fixtures before the temporary UI.
+
+### 16.1 Bounded packets
+
+Phase 1 packet creates `history/{event_log,replay,projection,operation_ledger}.rs` and `tests/history_phase1.rs`; fixtures are written first and `cargo test -p praana-core --test history_phase1` initially fails on missing modules. Phase 3 packet adds `history/{db,artifact,preview,journal,spool}.rs` and `tests/history_artifacts.rs`; Phase 4 adds `history/{retrieve,search,cursor,checkpoint}.rs` and `tests/history_search.rs`. Each packet implements only its listed sequence slice and turns its named red test green before integration. Every packet ends with fmt, clippy with warnings denied, and workspace tests. No packet treats SQLite as event authority, migrates old data, or enables a tool before its artifact/recovery substrate is green.
 
 ## 17. Common implementation mistakes
 
@@ -1600,6 +1900,8 @@ dangling reference, and idempotent projection replay.
 - Making access-count or telemetry write failure affect prompt behavior.
 - Rebuilding a missing canonical body from a summary.
 - Skipping a malformed non-final event and continuing replay.
+- Claiming restart-safe UI commands from an in-memory response cache or an
+  operation row without a preallocated, recoverable effect plan.
 
 ## 18. Acceptance criteria
 
@@ -1630,4 +1932,6 @@ History storage is accepted only when:
 12. Referenced source evidence remains searchable after reset and any number of
     compaction epochs.
 13. No test or production path requires Cognitive Memory, embeddings, Bun, or a
-    global context-engine database.
+     global context-engine database.
+14. Every UI operation crash point returns the stored result, safely completes
+    one reserved plan, or reports interrupted; it never duplicates an effect.

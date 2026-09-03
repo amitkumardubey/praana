@@ -6,6 +6,11 @@
 
 **Date:** 2026-08-31
 
+Provider registry, model-catalog trust, capability profiles, credentials, setup,
+login, and logout are owned by
+`docs/RUST_V2_PROVIDER_CATALOG_CREDENTIAL_SPEC.md`. Configuration stores only
+non-secret provider/model/protocol/endpoint choices.
+
 ## 1. Scope and Authority
 
 This document is the sole normative authority for Rust v2 configuration. It
@@ -337,7 +342,7 @@ unless stated otherwise.
 | `tools.default_timeout_ms` | Integer `10..=60000`. |
 | `tools.shell_timeout_ms` | Integer `10..=600000`; no greater than `shell_max_timeout_ms`. |
 | `tools.shell_max_timeout_ms` | Integer `10..=600000`. |
-| `risk.allow` | Unique array containing only `rm`, `git_reset`, `git_force_push`, `git_clean`, `package_install`, or `write_outside_cwd`. |
+| `risk.allow` | Unique array containing only `rm`, `git_reset`, `git_force_push`, `git_clean`, `gh_issue_close`, `gh_pr_merge`, `package_install`, or `write_outside_cwd`. |
 | `circuit.loop_threshold` | Integer `2..=100`. The Nth qualifying attempt is blocked. |
 | `circuit.max_tokens` | Integer `0..=9007199254740991`; zero disables the budget. |
 | `circuit.max_wall_ms` | Integer `0..=604800000`; zero disables the budget. |
@@ -433,9 +438,17 @@ credential environment variable never selects a provider or model implicitly.
 
 `history.compactor_provider` and `history.compactor_model` are both empty or
 both non-empty. A configured pair uses the provider combinations in section
-6.1. Empty means no configured compactor; only a fixture-validated same-model
-self-compactor may then compact. Compaction remains unavailable rather than
-silently choosing a model.
+6.1. Empty means `auto`: resolve the active session provider, protocol, exact
+model, revision rule, endpoint fingerprint, and credential source as the
+compactor target. Session creation then requires that exact capability profile
+to be `SelfCompactionCapability::Validated` and support the strict
+`praana.compaction_candidate.v1` schema. If it does not, creation fails with
+`CONFIG_COMPACTOR_REQUIRED` and instructs the user to set both compactor fields.
+A non-empty configured pair is validated for a trusted context window, strict
+schema output, credentials, and compactor admission during session creation.
+Thus a provider-capable session never starts and later discovers at the pressure
+threshold that no compactor exists. Resolution performs no network completion
+and does not silently select a different model.
 
 ### 6.5 History mode and reasoning replay
 
@@ -691,8 +704,9 @@ in section 12.3; already durable decisions are never rewritten.
 
 ### 12.2 Runtime commands are not config mutation
 
-Model/reasoning selection, TUI theme, thinking visibility, and other negotiated
-settings commands use their own typed runtime/settings contracts. They do not
+Model/reasoning selection, TUI theme, thinking visibility, and other typed
+settings commands use `RUST_V2_UI_CONTRACT.md`. Baseline `settings.patch` is
+part of IPC v1 and is not capability-negotiated. These commands do not
 edit an in-memory `ConfigV1` or rewrite a config source. A model/reasoning change
 uses the canonical protocol boundary. Setup may atomically write one selected
 user config file only while no session turn is active, then creates a new
@@ -787,6 +801,7 @@ rotation produces the same digest.
 | `CONFIG_PATH_OUTSIDE_PLUGIN_ROOT` | Built-in memory DB escapes its fixed plugin-owned root. |
 | `CONFIG_SECRET_FORBIDDEN` | Secret-like key/header/value appears in configuration. |
 | `CONFIG_SETUP_REQUIRED` | Provider-capable session requested with empty provider/model. |
+| `CONFIG_COMPACTOR_REQUIRED` | Neither the auto-resolved active model nor the explicit compactor pair satisfies trusted context-window, credentials, and strict compaction-schema requirements. |
 | `CONFIG_SNAPSHOT_MISMATCH` | Session snapshot, metadata, or digest disagree. |
 | `CONFIG_RELOAD_UNSUPPORTED` | Live reload or generic config patch requested. |
 
@@ -811,8 +826,8 @@ Rust v2 does not accept old aliases.
 
 ## 15. Future Keys and Rejected Values
 
-The following are design placeholders only. They are not accepted schema-v1
-keys or values:
+The following future designs are explicitly rejected by schema v1. They are not
+accepted keys or values:
 
 - `history.mode = engine`, any `engine` table, and context-unit scoring keys.
 - `history.reasoning_replay = none|all` and server response-ID continuation.

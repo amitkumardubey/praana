@@ -4,8 +4,8 @@
 
 **End state:** One standalone Rust executable with an in-process Ratatui UI and no Bun, TypeScript, OpenTUI, Solid, N-API, or `.node` sidecar
 
-**Depends on:** `docs/RUST_V2_PLAN.md`, `docs/RUST_V2_CONFIG_SPEC.md`,
-`docs/RUST_V2_TOOL_RUNTIME_SPEC.md`, and `docs/RUST_V2_IPC_SPEC.md`
+**Depends on:** `docs/RUST_V2_PLAN.md`, `docs/RUST_V2_UI_CONTRACT.md`,
+`docs/RUST_V2_CONFIG_SPEC.md`, and `docs/RUST_V2_TOOL_RUNTIME_SPEC.md`
 
 ## 1. Purpose
 
@@ -13,17 +13,19 @@ This document fixes the final all-Rust terminal UI architecture, retained OpenTU
 
 Ratatui work starts only after the Rust headless core and temporary TypeScript IPC bridge are stable. The TUI is a client of core services inside the same process. It does not become a second owner of session, provider, tool, artifact, memory, or history state.
 
-This specification owns presentation behavior only. The IPC specification owns
-serialized shared UI DTOs; core subsystem specifications own semantic state and
-conversions. Ratatui may consume the in-process Rust form but MUST NOT redefine
-either serialized fields or core semantics.
+This specification owns presentation behavior only. The UI Contract is the
+sole owner of permanent semantic command/result/event DTOs, crossing IDs,
+priorities, and coalescing. Ratatui imports those types directly from
+`praana-core::ui_contract`; it does not depend on IPC and MUST NOT redefine core
+semantics. IPC is only one temporary serializer of the same contract.
 The Config specification owns all accepted application config. Schema v1 has no
 `[ui]` table: presentation choices named here are fixed bounds, CLI flags, or
 typed UI settings, not hidden config aliases.
 
-## 2. Current Oracle and Required Correction
+## 2. Current Comparison Baseline and Required Correction
 
-The behavioral oracle is the current TypeScript implementation under:
+The non-normative behavioral comparison baseline is the current TypeScript
+implementation under:
 
 ```text
 src/app-controller.ts
@@ -47,15 +49,19 @@ The current UI already has:
 - Keyboard transcript focus and tool/thinking expansion.
 - A lightweight transcript index and lazy tool-result references.
 
-The current implementation is not the final virtualization oracle by itself: `TranscriptStore.loadIndex` flattens every group and `TranscriptView` renders every entry. Rust MUST implement the approved virtual transcript design rather than porting this retained-all behavior. Valid historical content remains reachable while mounted rows and heavy bodies remain bounded.
+The current implementation is not a normative virtualization design:
+`TranscriptStore.loadIndex` flattens every group and `TranscriptView` renders
+every entry. Rust MUST implement this specification's virtual transcript rather
+than porting retained-all behavior. Valid historical content remains reachable
+while mounted rows and heavy bodies remain bounded.
 
 ## 3. Locked Decisions
 
 - Use Ratatui with the Crossterm backend.
 - Use one reducer-owned `AppState`; widgets do not own authoritative mutable state.
-- Core emits typed semantic `UiEvent` values through a sink. It never calls Ratatui and never writes terminal bytes.
+- Core emits typed semantic `UiEventRecord` values through the UI-contract sink. It never calls Ratatui and never writes terminal bytes.
 - UI actions become typed `CoreCommand` values. Widgets never call session/tool/provider stores directly.
-- The direct in-process command/event boundary uses Rust DTOs, not serialized JSONL. It preserves the same semantics as the temporary IPC protocol.
+- The direct in-process boundary uses UI-contract Rust DTOs, not serialized JSONL or IPC DTOs.
 - Use an alternate screen and raw mode for the full TUI. Provide a plain line-mode fallback.
 - Implement the prompt editor in PRAANA using `ropey`; do not use `tui-textarea`.
 - Virtualize transcript by complete outer-turn groups and visual lines.
@@ -71,8 +77,9 @@ Use workspace-managed dependencies with these feature choices. Cargo.lock pins e
 
 ```toml
 [dependencies]
-ratatui = { version = "0.29", default-features = false, features = ["crossterm", "underline-color"] }
-crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["std", "underline-color"] }
+ratatui-crossterm = { version = "0.1.2", default-features = false, features = ["crossterm_0_29", "underline-color"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
@@ -95,6 +102,15 @@ criterion = "0.5"
 
 Rules:
 
+- Ratatui 0.30 separates backend implementations into workspace crates. Import
+  `CrosstermBackend` from `ratatui_crossterm`; do not enable Ratatui's optional
+  `crossterm` facade feature in addition to the direct backend dependency.
+- Keep Crossterm as a direct dependency because the main loop uses
+  `crossterm::event::EventStream`; `event-stream` also enables `events`. The
+  backend's `crossterm_0_29` selector and the direct `crossterm` requirement
+  MUST resolve to the same single Crossterm 0.29.0 package in `Cargo.lock`.
+  Direct Crossterm event/terminal types and the backend crate's
+  `ratatui_crossterm::crossterm` re-export therefore have identical Rust types.
 - Do not add another terminal abstraction, async runtime, editor widget, Markdown renderer, or syntax engine.
 - Do not enable Crossterm serde/event serialization in production.
 - Do not enable Syntect Oniguruma. `regex-fancy` keeps the default binary free of that native dependency.
@@ -102,16 +118,34 @@ Rules:
 - Release binaries use rustls through the core provider stack; the TUI adds no TLS/network dependency.
 - If the listed major/minor pair is unavailable or has a security advisory at implementation time, update this document in the same design-review change before substituting it. The implementer does not silently choose an alternative library.
 
+Official docs.rs sources accessed 2026-09-01:
+
+- Ratatui 0.30.2 API, crate organization, and features:
+  <https://docs.rs/ratatui/0.30.2/ratatui/>,
+  <https://docs.rs/crate/ratatui/0.30.2>, and
+  <https://docs.rs/crate/ratatui/0.30.2/features>.
+- Ratatui Crossterm backend 0.1.2 API, backend type, and features:
+  <https://docs.rs/ratatui-crossterm/0.1.2/ratatui_crossterm/>,
+  <https://docs.rs/ratatui-crossterm/0.1.2/ratatui_crossterm/struct.CrosstermBackend.html>,
+  <https://docs.rs/crate/ratatui-crossterm/0.1.2>, and
+  <https://docs.rs/crate/ratatui-crossterm/0.1.2/features>.
+- Crossterm 0.29.0 API, features, and async event stream:
+  <https://docs.rs/crossterm/0.29.0/crossterm/>,
+  <https://docs.rs/crate/crossterm/0.29.0/features>, and
+  <https://docs.rs/crossterm/0.29.0/crossterm/event/struct.EventStream.html>.
+
 ## 5. Crate and Module Layout
 
-Ratatui belongs in `praana-cli`; reusable semantic UI DTOs and the event sink belong in `praana-core`.
+Ratatui belongs in `praana-cli`; the complete semantic boundary and event sink
+belong in `praana-core::ui_contract` exactly as specified by the UI Contract.
 
 ```text
-crates/praana-core/src/ui/
+crates/praana-core/src/ui_contract/
   mod.rs
-  event.rs             # UiEvent and priority/coalescing key
-  command.rs           # CoreCommand and command result DTOs
-  sink.rs              # UiEventSink, NullUiSink, ChannelUiSink
+  event.rs             # UI-contract UiEventRecord
+  command.rs           # UI-contract CoreCommand
+  result.rs            # UI-contract CoreCommandResult
+  sink.rs              # UI-contract sinks and bounded delivery
 
 crates/praana-cli/src/tui/
   mod.rs
@@ -169,58 +203,40 @@ Components may expose `update`, `render`, and focus/navigation helpers. They MUS
 
 ## 6. Core/UI Event Sink Separation
 
-### 6.1 Trait
-
-```rust
-use async_trait::async_trait;
-
-#[async_trait]
-pub trait UiEventSink: Send + Sync + 'static {
-    async fn emit(&self, event: UiEvent) -> Result<(), UiSinkError>;
-}
-```
-
-Core uses this trait for headless, temporary IPC, tests, and Ratatui:
+The UI Contract owns the exact `UiEventSink` trait, `UiEventRecord`, priority,
+coalescing, queue bounds, critical-delivery deadline, detach behavior, and
+`CoreCommand`/`CoreCommandResult` types. This document does not restate those
+semantics. Core uses that trait for headless, temporary IPC, tests, and Ratatui:
 
 ```text
-NullUiSink       discards nonessential UI events for headless execution
+NullUiSink       explicitly consumes/discards all UI events for headless execution
 JsonUiSink       writes headless machine-readable output when requested
 IpcUiSink        maps events to temporary JSONL frames
 ChannelUiSink    sends typed events to in-process Ratatui
 RecordingUiSink  deterministic tests
 ```
 
-`UiEvent` is not a canonical event. It may coalesce presentation updates, but every accepted/final state references canonical IDs/sequences when applicable. Canonical event durability never depends on successful drawing.
+Ratatui applies the UI Contract's receiver-detach rule by entering its persistent
+fatal presentation state. It never asks core to alter canonical state in
+response to delivery or drawing failure.
 
-### 6.2 Event priority
-
-```rust
-pub enum UiEventPriority {
-    Critical,
-    LatestOnly(UiCoalesceKey),
-    Appendable(UiCoalesceKey),
-}
-```
-
-- Critical: accepted/rewound attempts, final tool result, confirmation, turn/session completion, errors.
-- Latest-only: spinner, status, usage, tool progress.
-- Appendable: adjacent text deltas for one attempt/block, capped at 16 KiB per queued item.
-
-The in-process channel has 1,024 event slots and 8 MiB estimated payload capacity. Coalescing occurs before enqueue. Critical events backpressure their producer; they are never dropped. Provider/tool output remains independently bounded by core artifacts and process capture.
-
-### 6.3 Commands
-
-The UI sends typed commands through an `mpsc` request channel with `oneshot` responses:
+The UI sends UI-contract commands through an `mpsc` request channel with
+`oneshot` responses:
 
 ```rust
 pub struct CoreCommandRequest {
-    pub request_id: String,
+    pub request: LocalRequestToken,
     pub command: CoreCommand,
     pub respond_to: tokio::sync::oneshot::Sender<CoreCommandResult>,
 }
+
+pub struct LocalRequestToken(pub u64);
 ```
 
-The command enum covers session create/resume/end/new/clear, turn submit/cancel, risk resolution, slash command, model/reasoning/settings, transcript page, content read, setup/auth/logout/consent, and shutdown. It reuses core DTOs from the IPC specification but does not serialize them.
+`LocalRequestToken` is presentation-only and monotonically allocated by the
+Ratatui effect runner. It never crosses IPC, enters core, or substitutes for
+canonical `OperationId`. The exact command coverage and command/result pairing
+are the UI Contract's exhaustive tables.
 
 Widgets send `Action`; the effect runner translates approved actions to commands. Rendering never sends a command.
 
@@ -238,7 +254,7 @@ pub struct AppState {
     pub focus: FocusTarget,
     pub terminal: TerminalState,
     pub pending: PendingRequests,
-    pub settings: UiSettings,
+    pub settings: EffectiveSettingsDto,
     pub dirty: bool,
     pub should_exit: bool,
 }
@@ -263,7 +279,7 @@ pub enum FocusTarget {
 
 `SessionUiState` contains only display/session references:
 
-- Session ID and 12-character resume ID.
+- Canonical session ID and the UI-contract 12-character resume selector.
 - Cwd display label, project label, provider/model label.
 - Effective reasoning, memory/native/search/LSP statuses.
 - Turn/attempt IDs and whether cancellation is pending.
@@ -296,13 +312,20 @@ Maximum stack depth is 4. The top overlay owns keyboard/mouse input. Background 
 ```rust
 pub enum Action {
     Terminal(TerminalInput),
-    CoreEvent(UiEvent),
-    CommandFinished { request_id: String, result: CoreCommandResult },
+    CoreEvent(UiEventRecord),
+    CommandFinished { request: LocalRequestToken, result: CoreCommandResult },
     Tick { now: std::time::Instant },
     Resize { width: u16, height: u16 },
     Suspend,
     Resume,
     Fatal(String),
+}
+
+pub enum Effect {
+    Invoke { request: LocalRequestToken, command: CoreCommand },
+    CancelLocal { request: LocalRequestToken },
+    ScheduleTick { deadline: std::time::Instant },
+    RestoreTerminalAndExit { code: i32 },
 }
 
 pub struct UpdateResult {
@@ -347,7 +370,10 @@ Frame policy:
 - Toast expiry schedules its exact next deadline; there is no permanent polling tick.
 - When idle, the loop consumes no periodic CPU.
 
-Core event reading never waits for terminal rendering. A slow render causes state-level coalescing, not protocol/event loss.
+Core event reading never waits for terminal rendering. A slow render coalesces
+render/state updates. Only UI-contract latest-only or appendable records may
+coalesce/drop before delivery; critical/accepted state is never discarded and
+accepted reconciliation repairs provisional gaps.
 
 ### 8.3 Rendering
 
@@ -467,7 +493,10 @@ Two completion modes are distinct:
 - Typing exactly `/` from a non-slash buffer opens the centered slash palette.
 - Path-like token completion appears above the editor near the caret.
 
-Path trigger rules match the current behavior: tokens beginning `./`, `../`, `~/`, `/`, or containing `/`; a bare `.` also triggers. Core completion service lists at most 100 entries; UI filters case-insensitive prefix, ASCII-sorts display labels, and shows at most 12.
+Path trigger rules match the current behavior: tokens beginning `./`, `../`,
+`~/`, `/`, or containing `/`; a bare `.` also triggers. The effect runner sends
+UI-contract `CoreCommand::PathComplete` and consumes its typed page. UI filters
+case-insensitive prefix, ASCII-sorts display labels, and shows at most 12.
 
 Each async completion request carries editor generation, token start/end, and caret position. Results are discarded if any differ on return. Tab accepts. Up/Down select. Enter accepts unless the buffer already exactly equals the selected completion, in which case it closes completion and submits. Escape closes.
 
@@ -486,25 +515,18 @@ The slash palette is centered with a search field, result list, and detail pane.
 - Commands that hand off to model/login/logout/setup overlays replace the palette atomically.
 - Escape/Ctrl+C cancels and restores editor focus.
 
-The command metadata catalog is returned by core. UI does not duplicate descriptions or decide side effects.
+The command metadata catalog is returned only by UI-contract
+`CoreCommand::SlashCatalog`. UI does not duplicate descriptions or decide side
+effects.
 
 ## 12. Transcript Model
 
 ### 12.1 Roles
 
-```rust
-pub enum TranscriptRole {
-    User,
-    Assistant,
-    ThinkingSummary,
-    Tool,
-    Recall,
-    System,
-    TurnFooter,
-}
-```
-
-`ThinkingSummary` means visible provider reasoning summary or accepted visible reasoning text. Opaque/encrypted provider reasoning is absent. The `Recall` row exists only when ambient memory display is enabled.
+Ratatui renders every `TranscriptRoleDto` supplied by the UI Contract and
+defines no local role enum. Role names, availability, wire values, and semantic
+content remain owned exclusively by that contract. This specification only
+defines how those rows are laid out, virtualized, navigated, and styled.
 
 Every row has stable entry ID, group ID, optional turn/attempt/canonical event IDs, compact metadata, estimated/measured height by layout key, expansion state, and optional immutable content reference.
 
@@ -525,14 +547,14 @@ Failed/superseded partial output may be shown briefly as provisional but never r
 ```rust
 pub struct TranscriptState {
     pub groups: std::collections::VecDeque<GroupMeta>,
-    pub loaded_before: Option<PageCursor>,
-    pub loaded_after: Option<PageCursor>,
+    pub loaded_before: Option<TranscriptCursor>,
+    pub loaded_after: Option<TranscriptCursor>,
     pub has_before: bool,
     pub has_after: bool,
     pub viewport: TranscriptViewport,
     pub heights: HeightIndex,
     pub detail_cache: DetailCache,
-    pub selected_entry_id: Option<String>,
+    pub selected_entry_id: Option<TranscriptEntryId>,
     pub focus_mode: bool,
     pub unseen_tail_groups: u32,
 }
@@ -546,7 +568,7 @@ pub struct TranscriptViewport {
 }
 
 pub struct ScrollAnchor {
-    pub entry_id: String,
+    pub entry_id: TranscriptEntryId,
     pub visual_line_within_entry: u32,
     pub screen_row: u16,
 }
@@ -892,7 +914,6 @@ Plain mode:
 UI-owned limits:
 
 ```text
-core UiEvent channel:              1,024 events / 8 MiB
 terminal input queue:                256 events
 compact transcript groups:           200
 compact transcript entries:       10,000
@@ -978,7 +999,7 @@ Mandatory flows:
 
 1. First setup, credential mask, consent allow/deny, and cancellation.
 2. Create session, type/edit multiline text, paste chip, path completion, submit.
-3. Assistant stream, provider retry rewind, accepted reconciliation.
+3. Pre-visible provider retry, post-visible terminal rewind/interruption, cancellation rewind, and accepted reconciliation.
 4. Parallel tools, risk allow/deny, timeout/cancel, result expansion.
 5. Focus transcript, page to oldest history and back, preserve anchor during live output.
 6. Model selector/search/switch and reasoning setting.
@@ -993,11 +1014,31 @@ PTY assertions inspect final screen, emitted core commands, canonical events, ex
 
 ### 25.4 Platform matrix
 
-- Linux x64 and arm64: snapshots, PTY, performance smoke.
+- Linux x64: snapshots, PTY, reference-class full performance gate, and hosted-CI performance smoke.
+- Linux arm64: snapshots, PTY, and hosted-CI performance smoke.
 - macOS arm64 and x64: snapshots, PTY, keyboard/paste/resize smoke.
 - Windows x64: snapshots, ConPTY flows, Job Object interaction, resize, key modifiers.
 - At least one tmux run and one SSH terminal run are manual release checks.
 - `TERM=xterm-256color`, `screen-256color`, `tmux-256color`, `dumb`, truecolor, `NO_COLOR`, and redirected stdio.
+
+### 25.5 Dependency and performance checks
+
+- `tui_dependency_surface` compile-tests
+  `ratatui::Terminal<ratatui_crossterm::CrosstermBackend<_>>` and the direct
+  `crossterm::event::EventStream` with production features only. It also passes
+  a direct `crossterm::event::Event` to a function accepting
+  `ratatui_crossterm::crossterm::event::Event`, proving crate identity.
+- CI stores `cargo tree -p praana-cli -e features` and
+  `cargo tree -p praana-cli -d`. It fails unless exactly one Crossterm package,
+  version 0.29.0, is selected; `event-stream`, `events`, and bracketed paste are
+  enabled; Ratatui's `crossterm` facade is disabled; and Ratatui/Crossterm
+  `serde`, `osc52`, or unstable features are absent.
+- Deterministic performance-invariant tests assert bounded row selection,
+  cache limits, no startup detail reads, exact high-rate input, and fixture
+  scaling without relying on wall-clock timing.
+- The wall-clock harness emits the versioned baseline/candidate record defined
+  in section 26. Reference-class and hosted-CI modes are separate commands so a
+  hosted run cannot be mistaken for the deletion gate.
 
 ## 26. Performance Harness and Acceptance Thresholds
 
@@ -1014,13 +1055,99 @@ visible terminal:              120x40
 loaded compact cache:          bounded per section 13
 ```
 
-All heavy bodies remain in core artifacts/history and are fetched on demand. The harness records CPU, RAM, OS, architecture, terminal backend, compiler profile, dependency versions, and sample count.
+All heavy bodies remain in core artifacts/history and are fetched on demand.
+The harness replays only UI Contract-owned commands, results, and event records;
+benchmark barriers and timestamps are local instrumentation and MUST NOT add a
+semantic DTO or event variant.
 
-Warm up 100 operations. Measure at least 1,000 typing/stream/scroll samples and 100 page/expand/resize samples in a release build. Report median, p95, p99, maximum, allocations where available, and RSS before/after.
+Warm up 100 operations of each measured kind. Measure at least 1,000
+typing/stream/scroll samples and 100 page/expand/resize samples in a locked
+release build. Report median, p95, p99, maximum, allocations where available,
+process CPU time, and RSS before/after. In-process latency ends only after the
+Ratatui draw and backend flush complete; storage time is measured separately
+where the table excludes it.
 
-### 26.2 Latency thresholds
+Reference and hosted wall-clock modes render through
+`CrosstermBackend<CountingWriterV1>`. `CountingWriterV1` consumes every write,
+checks and records byte and flush counts, performs no allocation after setup,
+and performs no terminal or filesystem I/O. PTY tests cover real terminal I/O
+separately. The fixed writer makes this gate measure reducer, layout, Ratatui
+diff, Crossterm encoding, and flush dispatch without host terminal variance.
 
-On the project reference development machine:
+### 26.2 Reference class and baseline record
+
+The full gate runs in a self-hosted CI environment labeled
+`linux-x86_64-perf-v1`, not on an arbitrary developer machine. A qualifying
+worker has Linux x86_64, four physical cores from one NUMA node assigned through
+an exclusive cpuset with SMT siblings outside that cpuset, at least 8 GiB RAM,
+swap disabled, a local non-rotational work volume, the `performance` CPU
+governor, turbo disabled, and no other process runnable in the benchmark cpuset.
+The benchmark process is pinned to that cpuset. `LC_ALL=C`, `TZ=UTC`, and
+`RUST_BACKTRACE=0` are set; network access is disabled after dependencies are
+present.
+
+Class membership is machine-verifiable. The accepted baseline record completes
+the class definition with exact values for the OS image digest, kernel, CPU
+vendor/family/model/stepping and microcode, hypervisor or bare-metal state,
+NUMA/cpuset topology, RAM, work-volume device and filesystem, governor/turbo
+state, Rust toolchain, target, linker, allocator, Cargo profile, `RUSTFLAGS`,
+`Cargo.lock` SHA-256, fixture/schema SHA-256, dependency versions/features,
+harness version, `CountingWriterV1`, and sample counts. All those fields except
+the measured commit and output digests must match for a normal candidate run.
+A versioned CPU and memory calibrator runs five times before the harness. A
+worker qualifies only when the fingerprint matches and both calibration medians
+are within 10 percent of the accepted record. A mismatch is an infrastructure
+failure, never a passing or failing candidate.
+
+The implementation provides three non-interchangeable harness modes:
+
+```text
+cargo bench --locked -p praana-cli --bench tui_performance -- --mode record-baseline --output target/tui-perf/baseline-draft.json
+cargo bench --locked -p praana-cli --bench tui_performance -- --mode reference-gate --baseline benchmarks/baselines/tui/linux-x86_64-perf-v1.json --output target/tui-perf/candidate.json
+cargo bench --locked -p praana-cli --bench tui_performance -- --mode hosted-smoke --output target/tui-perf/hosted-smoke.json
+```
+
+`record-baseline` and `reference-gate` refuse a non-qualifying worker.
+`hosted-smoke` marks its output non-reference and cannot read or write an
+accepted baseline. No mode writes directly to the tracked baseline path.
+
+Create the first baseline as follows:
+
+1. Provision a clean qualifying worker and build the baseline commit with
+   `cargo build --workspace --release --locked`.
+2. Verify a clean tracked worktree, the fixed fixture seed and digest, and the
+   dependency-feature checks in section 25.5.
+3. Run five fresh harness processes. Each process performs the required warmup
+   and sample counts; retain every raw result, including failed or outlying
+   runs. A run may be replaced only for a predeclared infrastructure failure,
+   which remains recorded.
+4. Use the median of the five run-level p95 values and the median of the five
+   run-level p99 values as the baseline latency values. Use the median of the
+   five run-level idle-CPU and stabilized-RSS values as their baselines. The
+   draft must satisfy every absolute threshold before acceptance.
+5. Store all run summaries, raw-result digests, calibrator results, environment
+   fields, commit SHA, and aggregate values in
+   `benchmarks/baselines/tui/linux-x86_64-perf-v1.json`.
+6. Review and commit that record independently of a candidate optimization.
+   The harness MUST reject a dirty tree, fixture mismatch, fingerprint mismatch,
+   or candidate attempt to rewrite the accepted baseline.
+
+For a candidate, CI validates the fingerprint and calibrator, then runs the same
+five-process procedure. Candidate gate values are the same medians of run-level
+percentiles and resource values used for the baseline. CI retains the complete
+candidate JSON and raw outputs as artifacts even on failure; a single fastest
+run is never used as the gate result.
+
+A baseline update is never automatic. A toolchain, dependency, image,
+microcode, allocator, fixture, or harness change requires old and new commits to
+be measured on the same still-qualifying worker, with both result sets attached
+to design review. Accepting the new record requires an explicit specification
+review; a slower baseline cannot be used to make an otherwise failing candidate
+pass.
+
+### 26.3 Latency thresholds
+
+On `linux-x86_64-perf-v1`:
 
 | Operation | p95 | p99 |
 |---|---:|---:|
@@ -1035,20 +1162,50 @@ On the project reference development machine:
 | Resize 120x40 to 80x24 and anchored redraw | 100 ms | 200 ms |
 | Tail page to first interactive frame on resume | 200 ms | 400 ms excluding core session-open time |
 
-No operation may have work proportional to total historical body bytes. Typing, stream, and scrolling work must remain within 20 percent when the fixture grows from 100 to 10,000 groups, excluding intentional page I/O.
+The candidate gate value for every percentile MUST satisfy both the absolute
+table limit and the baseline-relative limit. The relative limit is the larger
+of `baseline * 1.20` or `baseline + 2 ms` for p95, and the larger of
+`baseline * 1.20` or `baseline + 5 ms` for p99. Quantiles use a documented
+nearest-rank implementation over monotonic-clock durations. These are hard
+regression gates, not advisory benchmark output.
 
-### 26.3 Throughput and resource thresholds
+No operation may have work proportional to total historical body bytes.
+Typing, stream, and scrolling gate values must remain within 20 percent when
+the fixture grows from 100 to 10,000 groups, excluding intentional page I/O.
+
+### 26.4 Throughput and resource thresholds
 
 - At 200 synthetic key events per second for 10 seconds, lose zero characters and produce the exact final buffer.
 - At 100 assistant delta events per second for 30 seconds, accepted final text is exact; rendered frames may coalesce and remain at or below 30 per second.
-- Idle TUI CPU is below 1 percent averaged over 30 seconds on the reference machine with no spinner/toast.
+- Idle TUI process CPU is below 1 percent averaged over 30 seconds on the reference class with no spinner/toast, where one fully busy logical CPU is 100 percent. It also may not exceed the accepted baseline by more than 0.2 percentage points.
 - UI incremental RSS from 100 to 10,000 historical groups is at most 40 MiB after cache stabilization.
+- The same incremental RSS may not exceed the accepted baseline by more than 8 MiB.
 - Repeatedly expanding 100 distinct 1 MiB details leaves detail cache at or below 8 MiB plus 2 MiB allocator tolerance after two seconds.
 - Mounted/rendered transcript rows remain bounded by viewport plus two viewport heights and five complete groups of metadata overscan on each side.
 - Startup reads no heavy historical detail body before user expansion.
 - A 30-minute stream/scroll/resize soak shows no monotonic growth above 10 MiB after caches reach steady state.
 
-Failure of a threshold blocks TypeScript deletion. Threshold changes require recorded before/after evidence and an update to this specification, not a test skip.
+MiB means 1,048,576 bytes. RSS is sampled from the process after the same
+fixture phases and stabilization barriers in every run.
+
+### 26.5 Hosted-CI smoke
+
+Hosted Linux x64 and arm64 workers do not qualify as the reference class. Their
+smoke run uses one fresh release process, 25 warmups, at least 200 samples for
+typing/stream/scroll, and at least 30 samples for page/expand/resize. It hard
+fails if:
+
+- Any p95 exceeds twice the corresponding absolute p95 in section 26.3.
+- Typing, stream, or scrolling grows by more than 30 percent from 100 to 10,000
+  groups.
+- Any exactness, frame-cap, cache, mounted-row, startup-read, or 40 MiB RSS
+  bound in section 26.4 fails.
+
+Hosted idle CPU, p99, and soak measurements are informational because worker
+contention is uncontrolled. They cannot replace the full reference-class gate.
+Failure of any applicable hard threshold blocks TypeScript deletion. Threshold
+or baseline changes require recorded before/after evidence and an update to
+this specification, not a test skip.
 
 ## 27. Fault and Safety Tests
 
@@ -1067,9 +1224,22 @@ Terminal restoration is asserted after every fatal injection. A UI rendering fai
 
 ## 28. Incremental Cutover Plan
 
+### 28.0 Bounded Phase 9 packet
+
+Create only the `praana-core::ui_contract` consumers and `praana-cli/src/tui/`
+modules listed in section 5, plus snapshot/PTY/performance fixtures. First add
+`tui_ui_contract_v1`, terminal restoration, reducer, and snapshot tests; the
+expected red result is missing TUI modules, never missing semantic DTOs. Execute
+Stages 1 through 7 below as separate review checkpoints, turning each named gate
+green before the next stage. Final green requires platform snapshot/PTY suites,
+the qualifying reference performance gate, standalone archive smoke, fmt,
+clippy with warnings denied, and workspace tests. TypeScript deletion is the
+last sub-packet and cannot begin while any parity row lacks Rust evidence or an
+approved deletion.
+
 ### Stage 0: Freeze semantic UI contracts
 
-- Finalize `UiEvent`, `CoreCommand`, transcript DTOs, and event priorities in core.
+- Implement the already frozen UI-contract DTOs and priorities without Ratatui-local copies.
 - Run the same recording-sink tests for headless, temporary IPC, and future channel sink.
 - Capture OpenTUI screenshots/key flows and retained behavior matrix.
 
@@ -1077,6 +1247,8 @@ Terminal restoration is asserted after every fatal injection. A UI rendering fai
 
 ### Stage 1: Ratatui shell behind a development flag
 
+- Lock the section 4 dependency surface and add `tui_dependency_surface` plus
+  the single-Crossterm feature-tree check.
 - Implement terminal lifecycle, app loop, reducer/effects, theme, launch, chrome, spinner, toast, and plain fallback.
 - Connect `ChannelUiSink` and core command channel.
 - No provider/tool changes in this stage.
@@ -1095,6 +1267,9 @@ Terminal restoration is asserted after every fatal injection. A UI rendering fai
 - Implement group paging, Fenwick heights, anchor restoration, tail follow, accepted/provisional attempt handling, tool rows, and turn footer.
 - Add lazy paged expansion and full-screen detail.
 - Add Markdown/syntax caches.
+- Complete the section 26 harness, record the first accepted
+  `linux-x86_64-perf-v1` baseline by the section 26.2 procedure, and enable the
+  separate hosted-CI smoke command.
 
 **Gate:** Every historical row in the 1,000-group fixture is reachable, bounded-memory assertions pass, and all transcript latency thresholds pass.
 
@@ -1146,7 +1321,7 @@ Each row is a release checklist item with a Rust test or explicit manual check I
 
 ### 29.2 Transcript
 
-- User, assistant, visible thinking summary, tool, recall, system, and footer rows.
+- User, assistant, visible thinking summary, tool, plugin-gated memory, system, and footer rows.
 - Streaming coalescence and accepted reconciliation.
 - Attempt rewind/supersession.
 - Multiple parallel tools keyed by call ID.
@@ -1196,7 +1371,7 @@ Each row is a release checklist item with a Rust test or explicit manual check I
 - Native/search/LSP/provider boot statuses.
 - Risk deny on cancel/exit.
 - Tool/process cancellation and uncertain-tool recovery notices.
-- Session epilogue and 12-character resume ID after terminal restoration.
+- Session epilogue and 12-character resume selector after terminal restoration.
 
 ## 30. TypeScript Deletion Gate
 
@@ -1205,7 +1380,9 @@ All conditions are mandatory:
 - Rust core phases 1 through 8 pass their independent gates.
 - Every feature-parity item in section 29 has automated coverage where deterministic and a recorded manual result where terminal-specific.
 - Snapshot, PTY, property, fuzz, performance, fault-injection, security, and release-matrix suites pass.
-- All measured thresholds in section 26 pass on the reference machine and performance-smoke thresholds pass on CI targets.
+- The accepted section 26.2 baseline is valid, every full threshold passes on a
+  qualifying `linux-x86_64-perf-v1` worker, and section 26.5 smoke thresholds
+  pass on Linux CI targets.
 - Standalone clean archives run `doctor`, headless, new TUI, setup, login, risk, resume, and version smoke with no Bun or Node installation.
 - Linux x64/arm64, macOS arm64/x64, and Windows x64 terminate process trees and restore terminal state correctly.
 - A 100-session soak and 50 crash/resume runs have no canonical history divergence, duplicate user message, replayed uncertain tool, terminal corruption, or unbounded UI growth.
