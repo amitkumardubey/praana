@@ -1,0 +1,33 @@
+{
+  "scenario": "pre-block-with-suggestions",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/maiin.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan",
+    "validate"
+  ],
+  "execute": "skipped",
+  "post_trace": [],
+  "dispatch": {
+    "pre": {
+      "action": "block",
+      "error": "Path does not exist: src/maiin.ts (/workspace/praana/src/maiin.ts)",
+      "isError": true,
+      "suggestions": [
+        "/workspace/praana/src/main.ts"
+      ]
+    },
+    "post": null
+  },
+  "result": {
+    "ok": false,
+    "error": "Path does not exist: src/maiin.ts (/workspace/praana/src/maiin.ts)",
+    "suggestions": [
+      "/workspace/praana/src/main.ts"
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{"type":"tool_call_start","id":"call_fixture_resp_01","name":"read_file"}
+{"type":"tool_call_delta","id":"call_fixture_resp_01","argsDelta":"{\"pa"}
+{"type":"tool_call_delta","id":"call_fixture_resp_01","argsDelta":"th\": \"src/main.ts\"}"}
+{"type":"tool_call_end","toolCall":{"id":"call_fixture_resp_01","name":"read_file","args":{"path":"src/main.ts"},"rawArgs":"{\"path\": \"src/main.ts\"}"}}
+{"type":"done","reason":"tool_use","message":{"role":"assistant","content":"","toolCalls":[{"id":"call_fixture_resp_01","name":"read_file","args":{"path":"src/main.ts"},"rawArgs":"{\"path\": \"src/main.ts\"}"}]}}

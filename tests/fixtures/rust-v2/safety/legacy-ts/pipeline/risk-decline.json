@@ -1,0 +1,26 @@
+{
+  "scenario": "risk-decline",
+  "tool_name": "shell",
+  "args": {
+    "command": "rm -rf build"
+  },
+  "pre_trace": [
+    "plan",
+    "validate",
+    "risk"
+  ],
+  "execute": "skipped",
+  "post_trace": [],
+  "dispatch": {
+    "pre": {
+      "action": "block",
+      "error": "User declined rm: rm -rf build",
+      "isError": true
+    },
+    "post": null
+  },
+  "result": {
+    "ok": false,
+    "error": "User declined rm: rm -rf build"
+  }
+}

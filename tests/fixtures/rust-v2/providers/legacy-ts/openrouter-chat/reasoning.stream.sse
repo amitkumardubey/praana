@@ -1,0 +1,10 @@
+data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Considering fixture structure."}}]}
+
+data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"reasoning_content":"Answer must be deterministic."}}]}
+
+data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"content":"Fixture ready."}}]}
+
+data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":40,"total_tokens":240,"prompt_tokens_details":{"cached_tokens":128},"prompt_cache_miss_tokens":72}}
+
+data: [DONE]
+

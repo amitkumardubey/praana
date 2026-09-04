@@ -1,0 +1,27 @@
+{
+  "scenario": "validation-block",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/main.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan",
+    "validate"
+  ],
+  "execute": "skipped",
+  "post_trace": [],
+  "dispatch": {
+    "pre": {
+      "action": "block",
+      "error": "Read the file first before edit_file: src/main.ts",
+      "isError": true
+    },
+    "post": null
+  },
+  "result": {
+    "ok": false,
+    "error": "Read the file first before edit_file: src/main.ts"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "scenario": "plan-block",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/main.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan"
+  ],
+  "execute": "skipped",
+  "post_trace": [],
+  "dispatch": {
+    "pre": {
+      "action": "block",
+      "error": "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/find_files/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'.",
+      "isError": true
+    },
+    "post": null
+  },
+  "result": {
+    "ok": false,
+    "error": "Plan mode is active. Mutating tools are blocked until the user approves the plan. Use read_file/search_code/find_files/recall/create_task to explore and record the plan, then ask the user to confirm with 'go', 'execute', 'proceed', or 'continue'."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "method": "POST",
+  "url": "https://openrouter.ai/api/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "[REDACTED]",
+    "http-referer": "https://github.com/amitkumardubey/praana",
+    "x-title": "PRAANA"
+  },
+  "body": {
+    "model": "praana/openrouter-fixture-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a deterministic fixture agent."
+      },
+      {
+        "role": "user",
+        "content": "Reply with the single word: ready."
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

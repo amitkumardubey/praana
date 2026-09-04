@@ -1,0 +1,75 @@
+{
+  "method": "POST",
+  "url": "https://api.openai.com/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "[REDACTED]"
+  },
+  "body": {
+    "model": "praana-fixture-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a deterministic fixture agent."
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Describe this image and decide whether to read the file."
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,Zml4dHVyZS1pbWFnZS1ieXRlcw=="
+            }
+          }
+        ]
+      }
+    ],
+    "stream": true,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file from the workspace.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "grep",
+          "description": "Search file contents.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "pattern": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "pattern"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

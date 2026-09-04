@@ -1,0 +1,62 @@
+{
+  "scenario": "post-handler-throw",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/main.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan",
+    "validate",
+    "risk",
+    "circuit",
+    "write_path",
+    "lsp_snapshot"
+  ],
+  "execute": "ran",
+  "post_trace": [
+    "lsp",
+    "verify",
+    "enrich",
+    "redact",
+    "circuit_accounting",
+    "write_path_release"
+  ],
+  "dispatch": {
+    "pre": {
+      "action": "continue",
+      "args": {
+        "path": "src/main.ts",
+        "old_text": "alpha",
+        "new_text": "beta"
+      }
+    },
+    "post": {
+      "result": {
+        "ok": true,
+        "content": "updated main",
+        "lsp": {
+          "diagnostics": [],
+          "introduced": []
+        }
+      },
+      "isError": false
+    }
+  },
+  "result": {
+    "ok": true,
+    "content": "updated main",
+    "lsp": {
+      "diagnostics": [],
+      "introduced": []
+    }
+  },
+  "logged_errors": [
+    {
+      "hook": "post_tool_call",
+      "message": "Hook post_tool_call failed",
+      "error": "post-handler-fixture-failure"
+    }
+  ]
+}

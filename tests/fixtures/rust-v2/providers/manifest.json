@@ -1,0 +1,34 @@
+{
+  "fixture_schema_version": 1,
+  "fixture_kind": "provider-phase-0",
+  "oracle_sha256_by_file": {
+    "src/llm/auth.ts": "41beb8db735ce7bc4103802b19965193c0d5f72668bb5aaa2ab3796c2b47420a",
+    "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",
+    "src/llm/drivers/openai.ts": "4b24614a825409fca99acbe26b2b144a06c3591a12a5e42f764666b5c6a97bb7",
+    "src/llm/drivers/responses.ts": "93f6d143c92046cec2ea4f552921ef0ff527fdf5bdd30789ac2327ebe928b6f6",
+    "src/llm/resolver.ts": "57f9f08352ca46610f1aaab73fad21645992d5dc1df8a83761bf5d8e25178662",
+    "src/llm/retry.ts": "f8787c74f916cc9ac66ae35f2ebc86fd6f0d4d51f3a36ccb58ab3418e9ba108b",
+    "src/llm/sse.ts": "05fbc74755497531ea53558a5c249df47e9e14c0e9e85831160e9481a1bdc986",
+    "src/llm/stream.ts": "ed35aa2af6ec5b4a7cfbe7179851f0e3ec9550d6ac1402b92f35990937d833b3",
+    "src/llm/tool-accumulator.ts": "4541234f02a81e79cb63055c9a70f89a67fe99fd27c674f0e2318f606f1bef11",
+    "src/llm/types.ts": "03a27697bf3f83819ffbd131c06ee943bca46591160e2debccbedc343298df90",
+    "src/llm/url.ts": "7a3852c7849728c6f5d8939fff9ef1e20d2d99851445d2c80a63b92c6ca406ea",
+    "src/llm/wire-config.ts": "1fa8d09c8f1a22895873e09279ac08184636b9f1bf7328d4e5105de93503181d",
+    "src/provider-registry.ts": "a731c0716a8d24c5c4ffa6202d8d8ff65fcfcdf6502fc35f3194caceb23af4c7"
+  },
+  "fixture_sha256_by_file": {
+    "README.md": "8285ef84a200b1a6fa73e2eb283393243370e40cd47fa3f1a7c0be474c139335",
+    "legacy-ts/openai-chat/basic.request.json": "85b5925cb2272d9f118db45449664b5c6ccdba5b482a3463d14761fd7b4bbefb",
+    "legacy-ts/openai-chat/multimodal-tools.request.json": "c065c9dba30c2a84e0a1e18b3c51512e11d0c0f754297958742ebb3ba4f3f2ca",
+    "legacy-ts/openai-chat/parallel-tools.events.jsonl": "e2b7204853b05226fc803f5add5dd267cadc709e5c740dee0843506674e0c551",
+    "legacy-ts/openai-chat/parallel-tools.stream.sse": "9ca4cd33952cac89f340e9773703c9e4113e8c549d26bd15919bb8bce77b2bd7",
+    "legacy-ts/openai-responses/basic.request.json": "ce1f6acab3c935d0630c354dcbb1a017cb86f15db01ac5d847a37b710a186f55",
+    "legacy-ts/openai-responses/tool-call.events.jsonl": "506cde7d3043fe92d907f0d76874212daa1465467a5df01f3aca9488d414cbed",
+    "legacy-ts/openai-responses/tool-call.stream.sse": "fc54bc0fe40e165563c2534b960cf27c82047e533c9fe2b41bff28d0121f7af5",
+    "legacy-ts/openrouter-chat/basic.headers.json": "afd93bf2197730476b8473031ffed9d818f21fe0ce5014af3edf265709e61a86",
+    "legacy-ts/openrouter-chat/basic.request.json": "4c93c4e2df34329e2f755057a5a7c6b25fd91d6674664487efbbe81682da3a34",
+    "legacy-ts/openrouter-chat/reasoning.events.jsonl": "1e1c9ce9005626c89101c28f7d60cb8c3218275252e4852f8622976609d5af8f",
+    "legacy-ts/openrouter-chat/reasoning.stream.sse": "36760a3a46de390548c1e6cd3d910beef5d56b6f35dada5670cc3b57c765b291",
+    "v1/README.md": "f41c800fe8f04fb694dd1c04621a3d2ee3839fe9be2e3e8528e6bec20dabe210"
+  }
+}
