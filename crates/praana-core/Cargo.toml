@@ -1,0 +1,11 @@
+[package]
+name = "praana-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+praana-native-core = { path = "../praana-native-core" }
+getrandom = "0.4"
+ulid = { version = "3", default-features = false }

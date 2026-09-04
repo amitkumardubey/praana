@@ -1,0 +1,27 @@
+[package]
+name = "praana-native-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+embeddings = ["dep:tokenizers", "dep:tract-onnx", "dep:ndarray"]
+
+[dependencies]
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-rust = "0.24"
+ignore = "0.4"
+regex = "1"
+globset = "0.4"
+tokenizers = { version = "0.21", default-features = false, features = ["onig"], optional = true }
+tract-onnx = { version = "0.21", optional = true }
+ndarray = { version = "0.16", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
