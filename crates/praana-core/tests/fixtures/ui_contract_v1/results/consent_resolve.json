@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "consent_resolved",
+    "data": {
+      "consent_id": "01J8Z3NDEK000000000000000A",
+      "decision": "allow_once",
+      "persisted": false
+    }
+  }
+}

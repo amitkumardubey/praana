@@ -1,0 +1,26 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001N",
+    "canonical_sequence": 54
+  },
+  "event": {
+    "type": "turn_started",
+    "data": {
+      "turn_id": "01J8Z3NDEK0000000000000002",
+      "user_message_id": "01J8Z3NDEK000000000000000B",
+      "user_text": {
+        "preview": "Fix the failing tests.",
+        "complete": true,
+        "sha256": "5b15e387cd68a15581a803640ece90f440b0524596a3b7a8aee9e500ca593cd1",
+        "detail_ref": null
+      },
+      "turn_index": 1
+    }
+  }
+}

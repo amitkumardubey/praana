@@ -1,0 +1,26 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001M",
+    "canonical_sequence": 53
+  },
+  "event": {
+    "type": "context_updated",
+    "data": {
+      "window_tokens": 200000,
+      "occupied_tokens": 40000,
+      "available_tokens": 160000,
+      "occupied_percent_milli": 20000,
+      "compact_at_percent_milli": 70000,
+      "cache_read_tokens": 256,
+      "cache_write_tokens": 0,
+      "compaction_epoch": 0,
+      "pressure": "normal"
+    }
+  }
+}

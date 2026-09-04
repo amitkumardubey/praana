@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "auth_login",
+    "data": {
+      "provider": "openai",
+      "state": "authenticated",
+      "flow": null
+    }
+  }
+}

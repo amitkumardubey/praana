@@ -1,0 +1,15 @@
+{
+  "type": "setup_apply",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000T",
+    "expected_revision": 2,
+    "provider": "openai",
+    "model_id": "gpt-5",
+    "values": {
+      "api_key": {
+        "type": "secret",
+        "value": "[REDACTED]"
+      }
+    }
+  }
+}

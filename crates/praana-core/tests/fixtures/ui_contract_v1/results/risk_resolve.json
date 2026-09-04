@@ -1,0 +1,10 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "risk_resolved",
+    "data": {
+      "confirmation_id": "01J8Z3NDEK0000000000000009",
+      "accepted": false
+    }
+  }
+}

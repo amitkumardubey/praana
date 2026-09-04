@@ -1,0 +1,21 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001X",
+    "canonical_sequence": 62
+  },
+  "event": {
+    "type": "turn_interrupted",
+    "data": {
+      "turn_id": "01J8Z3NDEK0000000000000002",
+      "reason": "user_abort",
+      "message": "Interrupted by user.",
+      "uncertain_execution_ids": []
+    }
+  }
+}

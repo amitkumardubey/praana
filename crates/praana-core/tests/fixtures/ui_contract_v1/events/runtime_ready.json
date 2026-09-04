@@ -1,0 +1,27 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "runtime_ready",
+    "data": {
+      "core_version": "0.16.0",
+      "ui_contract_schema_version": 1,
+      "event_schema_version": 1,
+      "history_schema_version": 1,
+      "config_schema_version": 1,
+      "system_context_schema_version": 1,
+      "provider_registry_schema_version": 1,
+      "builtin_tool_catalog_schema_version": 1,
+      "redaction_version": "1",
+      "features": [
+        "settings_patch"
+      ]
+    }
+  }
+}

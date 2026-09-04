@@ -1,0 +1,19 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "credential_revision",
+    "revision": 2
+  },
+  "event": {
+    "type": "auth_changed",
+    "data": {
+      "provider": "openai",
+      "state": "authenticated",
+      "active_model": null
+    }
+  }
+}

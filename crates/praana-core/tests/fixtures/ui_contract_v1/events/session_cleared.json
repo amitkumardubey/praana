@@ -1,0 +1,19 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_snapshot",
+    "canonical_through_sequence": 101
+  },
+  "event": {
+    "type": "session_cleared",
+    "data": {
+      "canonical_sequence": 101,
+      "reset_epoch": 1,
+      "transcript_tail_cursor": null
+    }
+  }
+}

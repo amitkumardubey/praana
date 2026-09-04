@@ -1,0 +1,45 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "transcript_page",
+    "data": {
+      "transcript_projection_schema_version": 1,
+      "canonical_through_sequence": 40,
+      "groups": [
+        {
+          "group_id": "01J8Z3NDEK000000000000001C",
+          "turn_id": null,
+          "committed": true,
+          "entries": [
+            {
+              "entry_id": "01J8Z3NDEK000000000000001D",
+              "role": "system",
+              "turn_id": null,
+              "attempt_id": null,
+              "canonical_event_id": null,
+              "canonical_sequence": null,
+              "content": {
+                "type": "system",
+                "data": {
+                  "notice_id": "01J8Z3NDEK000000000000001E",
+                  "code": "boot",
+                  "tone": "info",
+                  "title": "Session boot",
+                  "message": "Recovered checkpoint replayed.",
+                  "persistence": "transient"
+                }
+              },
+              "expandable": false,
+              "estimated_lines": 2,
+              "provisional": false
+            }
+          ]
+        }
+      ],
+      "before_cursor": null,
+      "after_cursor": "Y3Vyc29yLXRyYW5zY3JpcHQtMDE",
+      "has_before": false,
+      "has_after": true
+    }
+  }
+}

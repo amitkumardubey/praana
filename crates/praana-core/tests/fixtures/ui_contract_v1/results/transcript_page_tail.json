@@ -1,0 +1,43 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "transcript_page",
+    "data": {
+      "transcript_projection_schema_version": 1,
+      "canonical_through_sequence": 90,
+      "groups": [
+        {
+          "group_id": "01J8Z3NDEK0000000000000002",
+          "turn_id": "01J8Z3NDEK0000000000000002",
+          "committed": true,
+          "entries": [
+            {
+              "entry_id": "01J8Z3NDEK000000000000001A",
+              "role": "user",
+              "turn_id": "01J8Z3NDEK0000000000000002",
+              "attempt_id": null,
+              "canonical_event_id": "01J8Z3NDEK000000000000001B",
+              "canonical_sequence": 43,
+              "content": {
+                "type": "user",
+                "data": {
+                  "preview": "Fix the failing tests.",
+                  "complete": true,
+                  "sha256": "5b15e387cd68a15581a803640ece90f440b0524596a3b7a8aee9e500ca593cd1",
+                  "detail_ref": null
+                }
+              },
+              "expandable": false,
+              "estimated_lines": 1,
+              "provisional": false
+            }
+          ]
+        }
+      ],
+      "before_cursor": null,
+      "after_cursor": null,
+      "has_before": false,
+      "has_after": false
+    }
+  }
+}

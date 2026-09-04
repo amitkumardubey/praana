@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "auth_logout",
+    "data": {
+      "provider": "openai",
+      "state": "unauthenticated",
+      "fallback_model": null
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "type": "slash_catalog",
+  "data": {
+    "query": "",
+    "cursor": null,
+    "limit": 50
+  }
+}

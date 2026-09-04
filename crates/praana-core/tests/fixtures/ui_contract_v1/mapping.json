@@ -1,0 +1,371 @@
+{
+  "ui_contract_schema_version": 1,
+  "rows": [
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionCreate",
+      "ipc_dotted_name": "session.create",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionCreate)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionResume",
+      "ipc_dotted_name": "session.resume",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionResume)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionEnd",
+      "ipc_dotted_name": "session.end",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionEnd)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionSnapshot",
+      "ipc_dotted_name": "session.snapshot",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionSnapshot)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionClear",
+      "ipc_dotted_name": "session.clear",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionClear)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SessionNew",
+      "ipc_dotted_name": "session.new",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SessionNew)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::TurnSubmit",
+      "ipc_dotted_name": "turn.submit",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::TurnSubmit)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::TurnCancel",
+      "ipc_dotted_name": "turn.cancel",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::TurnCancel)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::RiskResolve",
+      "ipc_dotted_name": "risk.resolve",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::RiskResolve)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SlashCatalog",
+      "ipc_dotted_name": "slash.catalog",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SlashCatalog)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SlashExecute",
+      "ipc_dotted_name": "slash.execute",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SlashExecute)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::PathComplete",
+      "ipc_dotted_name": "path.complete",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::PathComplete)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::ModelCatalog",
+      "ipc_dotted_name": "catalog.models",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::ModelCatalog)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::ModelSelect",
+      "ipc_dotted_name": "model.select",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::ModelSelect)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::ReasoningSet",
+      "ipc_dotted_name": "reasoning.set",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::ReasoningSet)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SettingsPatch",
+      "ipc_dotted_name": "settings.patch",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SettingsPatch)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::TranscriptPage",
+      "ipc_dotted_name": "transcript.page",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::TranscriptPage)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::ContentRead",
+      "ipc_dotted_name": "content.read",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::ContentRead)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SetupStatus",
+      "ipc_dotted_name": "setup.status",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SetupStatus)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::SetupApply",
+      "ipc_dotted_name": "setup.apply",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::SetupApply)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::AuthLogin",
+      "ipc_dotted_name": "auth.login",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::AuthLogin)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::AuthLogout",
+      "ipc_dotted_name": "auth.logout",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::AuthLogout)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::ConsentResolve",
+      "ipc_dotted_name": "consent.resolve",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::ConsentResolve)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::RuntimePing",
+      "ipc_dotted_name": "runtime.ping",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::RuntimePing)"
+    },
+    {
+      "direction": "ui_to_core",
+      "semantic_variant": "CoreCommand::Shutdown",
+      "ipc_dotted_name": "runtime.shutdown",
+      "ratatui_mapping": "Effect::Invoke(CoreCommand::Shutdown)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RuntimeReady",
+      "ipc_dotted_name": "runtime.ready",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RuntimeReady)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RuntimeStopping",
+      "ipc_dotted_name": "runtime.stopping",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RuntimeStopping)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RuntimeStopped",
+      "ipc_dotted_name": "runtime.stopped",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RuntimeStopped)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RuntimeBackpressure",
+      "ipc_dotted_name": "runtime.backpressure",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RuntimeBackpressure)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SystemNotice",
+      "ipc_dotted_name": "system.notice",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SystemNotice)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SystemError",
+      "ipc_dotted_name": "system.error",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SystemError)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SessionOpened",
+      "ipc_dotted_name": "session.opened",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SessionOpened)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SessionStatus",
+      "ipc_dotted_name": "session.status",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SessionStatus)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SessionCleared",
+      "ipc_dotted_name": "session.cleared",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SessionCleared)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SessionEnded",
+      "ipc_dotted_name": "session.ended",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SessionEnded)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ModelChanged",
+      "ipc_dotted_name": "model.changed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ModelChanged)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ReasoningChanged",
+      "ipc_dotted_name": "reasoning.changed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ReasoningChanged)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SettingsChanged",
+      "ipc_dotted_name": "settings.changed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SettingsChanged)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ContextUpdated",
+      "ipc_dotted_name": "context.updated",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ContextUpdated)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::TurnStarted",
+      "ipc_dotted_name": "turn.started",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::TurnStarted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AttemptStarted",
+      "ipc_dotted_name": "attempt.started",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AttemptStarted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AssistantDelta",
+      "ipc_dotted_name": "assistant.delta",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AssistantDelta)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AttemptRewind",
+      "ipc_dotted_name": "attempt.rewind",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AttemptRewind)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AssistantAccepted",
+      "ipc_dotted_name": "assistant.accepted",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AssistantAccepted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AttemptSuperseded",
+      "ipc_dotted_name": "attempt.superseded",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AttemptSuperseded)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::UsageUpdated",
+      "ipc_dotted_name": "usage.updated",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::UsageUpdated)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::TurnCompleted",
+      "ipc_dotted_name": "turn.completed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::TurnCompleted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::TurnInterrupted",
+      "ipc_dotted_name": "turn.interrupted",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::TurnInterrupted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolBatchStarted",
+      "ipc_dotted_name": "tool.batch_started",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolBatchStarted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolCallPending",
+      "ipc_dotted_name": "tool.call_pending",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolCallPending)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RiskConfirmationRequested",
+      "ipc_dotted_name": "risk.confirmation_requested",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RiskConfirmationRequested)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::RiskConfirmationResolved",
+      "ipc_dotted_name": "risk.confirmation_resolved",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::RiskConfirmationResolved)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolCallStarted",
+      "ipc_dotted_name": "tool.call_started",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolCallStarted)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolCallProgress",
+      "ipc_dotted_name": "tool.call_progress",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolCallProgress)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolCallFinished",
+      "ipc_dotted_name": "tool.call_finished",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolCallFinished)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ToolBatchFinished",
+      "ipc_dotted_name": "tool.batch_finished",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ToolBatchFinished)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::SetupChanged",
+      "ipc_dotted_name": "setup.changed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::SetupChanged)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AuthFlowUpdated",
+      "ipc_dotted_name": "auth.flow_updated",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AuthFlowUpdated)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::AuthChanged",
+      "ipc_dotted_name": "auth.changed",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::AuthChanged)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ConsentRequested",
+      "ipc_dotted_name": "consent.requested",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ConsentRequested)"
+    },
+    {
+      "direction": "core_to_ui",
+      "semantic_variant": "UiEvent::ConsentResolved",
+      "ipc_dotted_name": "consent.resolved",
+      "ratatui_mapping": "Action::CoreEvent(UiEvent::ConsentResolved)"
+    }
+  ]
+}

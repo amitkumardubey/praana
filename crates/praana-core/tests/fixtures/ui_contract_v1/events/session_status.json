@@ -1,0 +1,77 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001H",
+    "canonical_sequence": 50
+  },
+  "event": {
+    "type": "session_status",
+    "data": {
+      "boot": {
+        "native": {
+          "state": "available",
+          "label": "Native addon",
+          "detail": null
+        },
+        "search": {
+          "state": "available",
+          "label": "Native search",
+          "detail": null
+        },
+        "lsp": {
+          "state": "available",
+          "label": "Language servers",
+          "detail": null
+        },
+        "memory": {
+          "state": "available",
+          "label": "Cognitive memory",
+          "detail": null
+        },
+        "provider": {
+          "state": "available",
+          "label": "Provider registry",
+          "detail": null
+        },
+        "history": {
+          "state": "available",
+          "label": "History store",
+          "detail": null
+        },
+        "skills": {
+          "state": "available",
+          "label": "Skills catalog",
+          "detail": null
+        },
+        "discovered_skill_count": 12
+      },
+      "active_model": {
+        "provider": "openai",
+        "model_id": "gpt-5",
+        "display_name": "GPT-5",
+        "protocol": "openai_responses",
+        "reasoning_effort": "medium",
+        "context_window_tokens": 400000,
+        "boundary_canonical_sequence": null
+      },
+      "reasoning": {
+        "requested": "medium",
+        "effective": "medium",
+        "supported": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "boundary_canonical_sequence": null
+      },
+      "turn_active": false
+    }
+  }
+}

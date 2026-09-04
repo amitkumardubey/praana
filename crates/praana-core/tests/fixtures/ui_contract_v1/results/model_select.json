@@ -1,0 +1,15 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "model_selected",
+    "data": {
+      "provider": "openai",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "protocol": "openai_responses",
+      "reasoning_effort": "medium",
+      "context_window_tokens": 400000,
+      "boundary_canonical_sequence": null
+    }
+  }
+}

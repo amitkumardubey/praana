@@ -1,0 +1,20 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "runtime_backpressure",
+    "data": {
+      "coalesced": 3,
+      "dropped_ephemeral": 1,
+      "blocked_ms": 12,
+      "queue_events": 40,
+      "queue_bytes": 65536
+    }
+  }
+}

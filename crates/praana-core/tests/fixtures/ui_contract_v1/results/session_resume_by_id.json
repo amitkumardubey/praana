@@ -1,0 +1,99 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "session_opened",
+    "data": {
+      "session_id": "01J8Z3NDEK0000000000000001",
+      "resumed": true,
+      "canonical_sequence": 42,
+      "metadata": {
+        "session_id": "01J8Z3NDEK0000000000000001",
+        "resume_selector": "01J8Z3NDEK00",
+        "created_at_ms": 1700000000000,
+        "cwd_label": "/workspace/praana",
+        "project_label": "praana",
+        "config_schema_version": 1,
+        "creation_config_digest_sha256": "d4ca82451f47925f1a90fb181a52f37083a9398de4446801aa433eaadd07f17a",
+        "loaded_config_digest_sha256": "ac0aefbae37b4fc0176fa9fb21f51e2a04967d1f7d651698ba00bad7efc36a0a",
+        "runtime_config_digest_sha256": "0cec81bec5fd205d7790463e8f88e9fe5216942d0a6bbc7feae060ac75950642",
+        "config_changed_since_create": false,
+        "history_mode": "full",
+        "projection_version": "01J8Z3NDEK0000000000000015",
+        "incognito": false
+      },
+      "active_model": {
+        "provider": "openai",
+        "model_id": "gpt-5",
+        "display_name": "GPT-5",
+        "protocol": "openai_responses",
+        "reasoning_effort": "medium",
+        "context_window_tokens": 400000,
+        "boundary_canonical_sequence": null
+      },
+      "reasoning": {
+        "requested": "medium",
+        "effective": "medium",
+        "supported": [
+          "off",
+          "minimal",
+          "low",
+          "medium",
+          "high"
+        ],
+        "boundary_canonical_sequence": null
+      },
+      "settings": {
+        "revision": 3,
+        "thinking_visible": true,
+        "debug": false,
+        "theme": "default",
+        "tool_icons": "unicode",
+        "mouse_enabled": true,
+        "animation_enabled": true,
+        "syntax_highlighting": true,
+        "syntax_theme": "base16-ocean.dark",
+        "incognito_default": false
+      },
+      "boot": {
+        "native": {
+          "state": "available",
+          "label": "Native addon",
+          "detail": null
+        },
+        "search": {
+          "state": "available",
+          "label": "Native search",
+          "detail": null
+        },
+        "lsp": {
+          "state": "available",
+          "label": "Language servers",
+          "detail": null
+        },
+        "memory": {
+          "state": "available",
+          "label": "Cognitive memory",
+          "detail": null
+        },
+        "provider": {
+          "state": "available",
+          "label": "Provider registry",
+          "detail": null
+        },
+        "history": {
+          "state": "available",
+          "label": "History store",
+          "detail": null
+        },
+        "skills": {
+          "state": "available",
+          "label": "Skills catalog",
+          "detail": null
+        },
+        "discovered_skill_count": 12
+      },
+      "transcript_tail_cursor": null,
+      "recovery": []
+    }
+  }
+}

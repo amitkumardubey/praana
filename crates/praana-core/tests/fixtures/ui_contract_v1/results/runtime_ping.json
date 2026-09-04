@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "runtime_pong",
+    "data": {
+      "server_time_ms": 1700000000000,
+      "session_id": "01J8Z3NDEK0000000000000001",
+      "turn_id": null
+    }
+  }
+}

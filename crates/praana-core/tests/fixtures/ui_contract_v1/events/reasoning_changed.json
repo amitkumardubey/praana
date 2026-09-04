@@ -1,0 +1,27 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001K",
+    "canonical_sequence": 52
+  },
+  "event": {
+    "type": "reasoning_changed",
+    "data": {
+      "requested": "medium",
+      "effective": "medium",
+      "supported": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "boundary_canonical_sequence": null
+    }
+  }
+}

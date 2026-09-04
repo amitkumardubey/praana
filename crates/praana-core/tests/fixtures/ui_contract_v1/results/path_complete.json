@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "path_completion",
+    "data": {
+      "token": "src/ma",
+      "items": [
+        {
+          "display": "main.ts",
+          "replacement": "src/main.ts",
+          "kind": "file",
+          "append_separator": false
+        }
+      ],
+      "next_cursor": null
+    }
+  }
+}

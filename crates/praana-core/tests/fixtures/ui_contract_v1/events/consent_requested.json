@@ -1,0 +1,29 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "host_revision",
+    "kind": "consent",
+    "revision": 1,
+    "sha256": "2117f99c33b13f233b3de1407b7cf551443797f7831f9f6536583851efe89cd8"
+  },
+  "event": {
+    "type": "consent_requested",
+    "data": {
+      "consent_id": "01J8Z3NDEK000000000000000A",
+      "purpose": "model-download",
+      "version": "1",
+      "size_bytes": 90000000,
+      "location_label": "~/.praana/models",
+      "choices": [
+        "allow_once",
+        "allow_persisted",
+        "deny"
+      ],
+      "expires_at_ms": 1700000900000
+    }
+  }
+}

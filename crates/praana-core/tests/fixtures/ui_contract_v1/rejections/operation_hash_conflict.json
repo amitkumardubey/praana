@@ -1,0 +1,5 @@
+{
+  "target": "operation_replay",
+  "input_json": "{\"operation_id\": \"01J8Z3NDEK000000000000002H\", \"command_type\": \"turn_submit\", \"request_sha256\": \"2fe93d9874f43b57da302afb9a608018b57d8c6ad0d293233513bf95caac9416\"}",
+  "expected_code": "operation_conflict"
+}

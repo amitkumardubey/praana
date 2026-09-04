@@ -1,0 +1,10 @@
+{
+  "type": "session_new",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000J",
+    "cwd": "/workspace/praana",
+    "config_path": null,
+    "incognito": false,
+    "debug": false
+  }
+}

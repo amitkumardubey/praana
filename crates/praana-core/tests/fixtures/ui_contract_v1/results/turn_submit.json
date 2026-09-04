@@ -1,0 +1,12 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "turn_submitted",
+    "data": {
+      "session_id": "01J8Z3NDEK0000000000000001",
+      "turn_id": "01J8Z3NDEK0000000000000002",
+      "user_message_event_id": "01J8Z3NDEK0000000000000019",
+      "canonical_sequence": 43
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "setup_status",
+    "data": {
+      "revision": 2,
+      "required": false,
+      "providers": [
+        {
+          "provider": "openai",
+          "display_name": "OpenAI",
+          "fields": [
+            {
+              "id": "api_key",
+              "label": "API key",
+              "help": "Create an API key in the provider console.",
+              "kind": "secret",
+              "required": true,
+              "secret": true,
+              "choices": [],
+              "default_value": null
+            }
+          ],
+          "auth_methods": [
+            "api_key",
+            "device_code",
+            "browser"
+          ],
+          "supported_protocols": [
+            "openai_chat_completions",
+            "openai_responses"
+          ]
+        }
+      ],
+      "configured_providers": [
+        "openai"
+      ],
+      "authentication": [
+        {
+          "provider": "openai",
+          "state": "authenticated",
+          "methods": [
+            "api_key"
+          ]
+        }
+      ],
+      "active_auth_flows": [],
+      "missing_requirements": [],
+      "pending_consents": []
+    }
+  }
+}

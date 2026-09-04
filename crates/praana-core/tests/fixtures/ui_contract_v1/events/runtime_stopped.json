@@ -1,0 +1,18 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "runtime_stopped",
+    "data": {
+      "clean": true,
+      "exit_code": 0,
+      "final_canonical_sequence": 99
+    }
+  }
+}

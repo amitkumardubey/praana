@@ -1,0 +1,24 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001J",
+    "canonical_sequence": 51
+  },
+  "event": {
+    "type": "model_changed",
+    "data": {
+      "provider": "openai",
+      "model_id": "gpt-5",
+      "display_name": "GPT-5",
+      "protocol": "openai_responses",
+      "reasoning_effort": "medium",
+      "context_window_tokens": 400000,
+      "boundary_canonical_sequence": null
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": "01J8Z3NDEK0000000000000003",
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK0000000000000023",
+    "canonical_sequence": 68
+  },
+  "event": {
+    "type": "tool_call_progress",
+    "data": {
+      "execution_id": "01J8Z3NDEK0000000000000006",
+      "phase": "running",
+      "elapsed_ms": 40,
+      "stdout_bytes": 120,
+      "stderr_bytes": 0
+    }
+  }
+}

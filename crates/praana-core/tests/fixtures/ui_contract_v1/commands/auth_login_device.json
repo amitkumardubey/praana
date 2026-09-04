@@ -1,0 +1,10 @@
+{
+  "type": "auth_login",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000W",
+    "provider": "openai",
+    "method": {
+      "type": "device_code"
+    }
+  }
+}

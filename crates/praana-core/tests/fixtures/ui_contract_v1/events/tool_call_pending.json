@@ -1,0 +1,25 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": "01J8Z3NDEK0000000000000003",
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001Z",
+    "canonical_sequence": 64
+  },
+  "event": {
+    "type": "tool_call_pending",
+    "data": {
+      "batch_id": "01J8Z3NDEK0000000000000007",
+      "call_id": "01J8Z3NDEK0000000000000005",
+      "call_index": 0,
+      "tool_name": "shell",
+      "label": "shell: bun test",
+      "redacted_arguments": {
+        "command": "bun test"
+      }
+    }
+  }
+}

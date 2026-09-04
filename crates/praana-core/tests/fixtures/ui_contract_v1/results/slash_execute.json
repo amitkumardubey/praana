@@ -1,0 +1,14 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "slash_executed",
+    "data": {
+      "display": "toast",
+      "title": null,
+      "lines": [
+        "Model selector opened"
+      ],
+      "action": "open_model_selector"
+    }
+  }
+}

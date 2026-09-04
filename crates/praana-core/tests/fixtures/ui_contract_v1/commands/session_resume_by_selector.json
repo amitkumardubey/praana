@@ -1,0 +1,13 @@
+{
+  "type": "session_resume",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000F",
+    "locator": {
+      "type": "resume_selector",
+      "value": "01J8Z3NDEK00"
+    },
+    "cwd": "/workspace/praana",
+    "after_canonical_sequence": 42,
+    "debug": false
+  }
+}

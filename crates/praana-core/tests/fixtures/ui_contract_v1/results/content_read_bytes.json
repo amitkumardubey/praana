@@ -1,0 +1,22 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "content_read",
+    "data": {
+      "content_type": "text/plain; charset=utf-8",
+      "encoding": "utf8",
+      "data": "fixture bytes",
+      "byte_start": 0,
+      "byte_end": 13,
+      "total_bytes": 13,
+      "line_start": null,
+      "line_end": null,
+      "total_lines": null,
+      "matches": [],
+      "next_cursor": null,
+      "eof": true,
+      "sha256": "1404238dc853f94d690b944e01eb2ce463e9a58935f19ffedac95013d7566946",
+      "redacted": false
+    }
+  }
+}

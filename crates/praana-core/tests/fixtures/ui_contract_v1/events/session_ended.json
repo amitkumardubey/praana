@@ -1,0 +1,77 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_snapshot",
+    "canonical_through_sequence": 99
+  },
+  "event": {
+    "type": "session_ended",
+    "data": {
+      "session_id": "01J8Z3NDEK0000000000000001",
+      "resume_selector": "01J8Z3NDEK00",
+      "canonical_sequence": 99,
+      "committed_turns": 4,
+      "interrupted_turns": 0,
+      "state": {
+        "graph_sequence": 7,
+        "counts": {
+          "total": 3,
+          "tasks": 1,
+          "decisions": 1,
+          "constraints": 1,
+          "notes": 0,
+          "errors": 0,
+          "active": 2,
+          "soft": 1,
+          "hard": 0
+        },
+        "objects": [
+          {
+            "state_id": "01J8Z3NDEK0000000000000011",
+            "kind": "task",
+            "tier": "active",
+            "status": {
+              "type": "task",
+              "data": "in_progress"
+            },
+            "label": "Fix failing tests",
+            "focused": true
+          },
+          {
+            "state_id": "01J8Z3NDEK0000000000000012",
+            "kind": "decision",
+            "tier": "active",
+            "status": {
+              "type": "decision",
+              "data": "accepted"
+            },
+            "label": "Use bun test",
+            "focused": false
+          },
+          {
+            "state_id": "01J8Z3NDEK0000000000000013",
+            "kind": "constraint",
+            "tier": "soft",
+            "status": {
+              "type": "note"
+            },
+            "label": "Keep changes minimal",
+            "focused": false
+          }
+        ],
+        "truncated": false
+      },
+      "memory": {
+        "state": "available",
+        "extracted": 3,
+        "stored": 3,
+        "skipped": 0
+      },
+      "ended_at_ms": 1700000100000
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "type": "content_read",
+  "data": {
+    "reference": {
+      "type": "tool_result",
+      "data": {
+        "execution_id": "01J8Z3NDEK0000000000000006",
+        "sha256": "8f2e6f4a4a54e641052ab15f69c54d6e43e43b03e484cafaec8f0d58ce4a76de"
+      }
+    },
+    "selection": {
+      "type": "lines",
+      "data": {
+        "start": 1,
+        "end": 2
+      }
+    }
+  }
+}

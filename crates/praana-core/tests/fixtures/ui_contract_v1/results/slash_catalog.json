@@ -1,0 +1,23 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "slash_catalog",
+    "data": {
+      "revision": 5,
+      "items": [
+        {
+          "name": "model",
+          "aliases": [
+            "m"
+          ],
+          "usage": "/model [provider] <model-id>",
+          "description": "Switch the active model.",
+          "argument_kind": "optional",
+          "handoff": "model_selector",
+          "order": 10
+        }
+      ],
+      "next_cursor": null
+    }
+  }
+}

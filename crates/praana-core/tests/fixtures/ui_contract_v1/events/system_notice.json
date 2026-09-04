@@ -1,0 +1,21 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "system_notice",
+    "data": {
+      "notice_id": "01J8Z3NDEK000000000000001F",
+      "code": "setup-hint",
+      "tone": "info",
+      "title": "Setup available",
+      "message": "Run /login to configure a provider.",
+      "persistence": "transient"
+    }
+  }
+}
