@@ -78,7 +78,7 @@ jobs:
 
       - name: Cargo test
         if: matrix.settings.full_test
-        run: cargo test -p praana-natives
+        run: cargo test -p praana-native-core --all-features -p praana-natives
 
       - name: Build native addon
         run: bun run build -- --target ${{ matrix.settings.target }} ${{ matrix.settings.cross_compile && '--cross-compile' || '' }}
