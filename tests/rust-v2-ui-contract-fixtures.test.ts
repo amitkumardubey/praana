@@ -384,16 +384,25 @@ describe("rust-v2 UI contract fixture freeze", () => {
   });
 
   it("no prefixed semantic IDs appear in canonical ID fields", () => {
-    for (const rel of EXPECTED_INVENTORY) {
-      if (!rel.endsWith(".json")) continue;
-      const parsed = JSON.parse(requireFixture(rel));
+    const scanPrefixedId = (parsed: unknown, label: string) => {
       walkJson(parsed, (value, key) => {
         if (typeof value !== "string" || key === null || !key.endsWith("_id")) return;
         expect(
           /^(op_|req_|conn_|stream_|block_|cursor_)/.test(value),
-          `prefixed semantic ID in ${rel}: ${value}`,
+          `prefixed semantic ID in ${label}: ${value}`,
         ).toBe(false);
       });
+    };
+
+    for (const rel of EXPECTED_INVENTORY) {
+      const raw = requireFixture(rel);
+      if (rel.endsWith(".json")) {
+        scanPrefixedId(JSON.parse(raw), rel);
+      } else if (rel.endsWith(".jsonl")) {
+        for (const [index, line] of raw.split("\n").filter(Boolean).entries()) {
+          scanPrefixedId(JSON.parse(line), `${rel}#${index}`);
+        }
+      }
     }
   });
 

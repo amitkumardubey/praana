@@ -754,6 +754,7 @@ Required tests:
 - `initial_pre_epoch_clock_is_rejected`
 - `initial_timestamp_above_48_bits_is_rejected`
 - `overflow_wait_beyond_48_bits_leaves_last_unchanged`
+- `overflow_wait_entropy_failure_leaves_last_unchanged`
 - `entropy_failure_does_not_advance_state`
 - `out_of_range_entropy_does_not_advance_state`
 - `protocol_ulid_adapter_wraps_generated_value`

@@ -337,6 +337,39 @@ fn overflow_wait_beyond_48_bits_leaves_last_unchanged() {
 }
 
 #[test]
+fn overflow_wait_entropy_failure_leaves_last_unchanged() {
+    // First id consumes the maximum 80-bit random at time t. Overflow wait
+    // observes t+1, then entropy fails. `last` must stay the first id.
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let sleeper = Arc::new(AdvancingSleeper::new(
+        clock.clone(),
+        vec![1_700_000_000_001],
+    ));
+    let generator = MonotonicUlidGenerator::new(
+        clock.clone() as Arc<dyn Clock>,
+        sleeper.clone() as Arc<dyn Sleeper>,
+        Box::new(SequenceRandom::new(vec![
+            Ok(ULID_MAX_RANDOM),
+            Err(IdGenerationError::EntropyUnavailable),
+            Ok(0x0a0b_0c0d_0e0f_1011_1213),
+        ])),
+    );
+    let first = generator.next_id::<TestId>().expect("first id");
+    assert_eq!(first.inner().random(), ULID_MAX_RANDOM);
+
+    let failed = generator.next_id::<TestId>();
+    assert!(matches!(failed, Err(IdGenerationError::EntropyUnavailable)));
+    assert_eq!(sleeper.recorded_sleeps(), vec![Duration::from_millis(1)]);
+
+    // Clock is already at t+1 from the overflow wait; a later good draw uses
+    // the unused entropy slot and does not increment the exhausted random.
+    let third = generator.next_id::<TestId>().expect("third id");
+    assert_eq!(third.inner().timestamp_ms(), 1_700_000_000_001);
+    assert_eq!(third.inner().random(), 0x0a0b_0c0d_0e0f_1011_1213);
+    assert_eq!(first.inner().random(), ULID_MAX_RANDOM);
+}
+
+#[test]
 fn entropy_failure_does_not_advance_state() {
     // First id at t; then the clock advances but entropy fails once; the next
     // good draw must build on the unchanged `last` state.
@@ -460,9 +493,9 @@ fn concurrent_generation_is_unique_and_strictly_ordered() {
 #[test]
 fn system_clock_is_callable_without_panicking() {
     let now = SystemClock.now_ms();
-    // No wall-clock assertion; only callability.
+    // No wall-clock assertion and no real sleep; only callability.
     let _ = now;
-    ThreadSleeper.sleep(Duration::from_nanos(1));
+    let _sleeper = ThreadSleeper;
 }
 
 #[test]

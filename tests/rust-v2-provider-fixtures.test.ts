@@ -105,60 +105,19 @@ interface CapturedRequest {
   body: unknown;
 }
 
-// ── Fixed legacy SSE inputs ──────────────────────────────────
-
-const OPENAI_PARALLEL_TOOLS_SSE = [
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Checking both files now."},"finish_reason":null}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_fixture_0001","type":"function","function":{"name":"read_file","arguments":"{\\"pa"}}]},"finish_reason":null}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_fixture_0002","type":"function","function":{"name":"grep","arguments":"{\\"qu"}}]},"finish_reason":null}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\\": \\"src/main.ts\\"}"}}]},"finish_reason":null}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"ery\\": \\"fixture-anchor\\"}"}}]},"finish_reason":null}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
-  "",
-  'data: {"id":"chatcmpl-fixture-001","object":"chat.completion.chunk","created":1700000000,"model":"praana-fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":34,"total_tokens":154,"prompt_tokens_details":{"cached_tokens":64},"prompt_cache_miss_tokens":56}}',
-  "",
-  "data: [DONE]",
-  "",
-].join("\n");
-
-const OPENROUTER_REASONING_SSE = [
-  'data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Considering fixture structure."}}]}',
-  "",
-  'data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"reasoning_content":"Answer must be deterministic."}}]}',
-  "",
-  'data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{"content":"Fixture ready."}}]}',
-  "",
-  'data: {"id":"gen-fixture-0001","created":1700000000,"model":"praana/openrouter-fixture-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":200,"completion_tokens":40,"total_tokens":240,"prompt_tokens_details":{"cached_tokens":128},"prompt_cache_miss_tokens":72}}',
-  "",
-  "data: [DONE]",
-  "",
-].join("\n");
-
-const RESPONSES_TOOL_CALL_SSE = [
-  "event: response.output_item.added",
-  'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_fixture_resp_01","name":"read_file","arguments":""}}',
-  "",
-  "event: response.function_call_arguments.delta",
-  'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"pa"}',
-  "",
-  "event: response.function_call_arguments.delta",
-  'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"th\\": \\"src/main.ts\\"}"}',
-  "",
-  "event: response.completed",
-  'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":90,"output_tokens":25,"total_tokens":115}}}',
-  "",
-].join("\n");
-
 // URL -> fixed SSE response body. Any other URL is a harness violation.
+// Packet §9.2 requires the committed .stream.sse fixture files to be the exact
+// bytes fed to the legacy TypeScript driver.
 const CANNED_RESPONSES: Record<string, string> = {
-  "https://api.openai.com/v1/chat/completions": OPENAI_PARALLEL_TOOLS_SSE,
-  "https://api.openai.com/v1/responses": RESPONSES_TOOL_CALL_SSE,
-  "https://openrouter.ai/api/v1/chat/completions": OPENROUTER_REASONING_SSE,
+  "https://api.openai.com/v1/chat/completions": requireFixture(
+    "legacy-ts/openai-chat/parallel-tools.stream.sse",
+  ),
+  "https://api.openai.com/v1/responses": requireFixture(
+    "legacy-ts/openai-responses/tool-call.stream.sse",
+  ),
+  "https://openrouter.ai/api/v1/chat/completions": requireFixture(
+    "legacy-ts/openrouter-chat/reasoning.stream.sse",
+  ),
 };
 
 let fetchViolations: string[] = [];
