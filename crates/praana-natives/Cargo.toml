@@ -18,7 +18,7 @@ praana-native-core = { path = "../praana-native-core", features = ["embeddings"]
 napi-build = "2"
 
 [dev-dependencies]
-# The contract test calls the Rust functions directly in a plain test binary
-# (outside Node), so the napi symbol table must load dynamically there.
+# Phase 0 exception (packet Step 7): napi_contract.rs calls the Rust #[napi]
+# exports from a plain test binary outside Node, so the symbol table must load
+# dynamically. Pure tests and tempfile moved to praana-native-core.
 napi = { version = "3", default-features = false, features = ["napi8", "dyn-symbols"] }
-tempfile = "3"

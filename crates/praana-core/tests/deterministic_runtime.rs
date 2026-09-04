@@ -306,6 +306,37 @@ fn initial_timestamp_above_48_bits_is_rejected() {
 }
 
 #[test]
+fn overflow_wait_beyond_48_bits_leaves_last_unchanged() {
+    // First id consumes the maximum 80-bit random at time t. The overflow path
+    // then observes a millisecond above the 48-bit ULID range and must fail
+    // without mutating `last`. A later in-range observation still succeeds.
+    const ABOVE: i64 = (ULID_MAX_TIMESTAMP_MS + 1) as i64;
+    let clock = Arc::new(ManualClock::new(1_700_000_000_000));
+    let sleeper = Arc::new(AdvancingSleeper::new(clock.clone(), vec![ABOVE]));
+    let generator = MonotonicUlidGenerator::new(
+        clock.clone() as Arc<dyn Clock>,
+        sleeper.clone() as Arc<dyn Sleeper>,
+        Box::new(SequenceRandom::new(vec![Ok(ULID_MAX_RANDOM), Ok(0xabcd)])),
+    );
+    let first = generator.next_id::<TestId>().expect("first id");
+    assert_eq!(first.inner().random(), ULID_MAX_RANDOM);
+
+    let failed = generator.next_id::<TestId>();
+    assert!(matches!(
+        failed,
+        Err(IdGenerationError::ClockBeyondUlidRange { observed_ms: ABOVE })
+    ));
+    assert_eq!(sleeper.recorded_sleeps(), vec![Duration::from_millis(1)]);
+
+    // `last` is still the first id: a new in-range millisecond draws fresh entropy.
+    clock.set(1_700_000_000_002);
+    let third = generator.next_id::<TestId>().expect("third id");
+    assert_eq!(third.inner().timestamp_ms(), 1_700_000_000_002);
+    assert_eq!(third.inner().random(), 0xabcd);
+    assert_eq!(first.inner().random(), ULID_MAX_RANDOM);
+}
+
+#[test]
 fn entropy_failure_does_not_advance_state() {
     // First id at t; then the clock advances but entropy fails once; the next
     // good draw must build on the unchanged `last` state.

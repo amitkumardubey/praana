@@ -84,6 +84,12 @@ fn definition_and_reference_search_work() {
 
 #[test]
 fn grep_returns_matches_context_and_ignores_node_modules() {
+    let ignored = fixture("search/node_modules/ignored.ts");
+    assert!(
+        ignored.is_file(),
+        "committed Phase 0 fixture must exist: {}",
+        ignored.display()
+    );
     let out = grep(GrepOptions {
         pattern: "fixture-probe".into(),
         path: fixture("search"),
@@ -99,10 +105,18 @@ fn grep_returns_matches_context_and_ignores_node_modules() {
         .matches
         .iter()
         .any(|m| m.text.contains("fixture-probe-text")));
-    assert!(out
-        .matches
-        .iter()
-        .all(|m| !m.path.to_string_lossy().contains("node_modules")));
+    assert!(
+        out.matches
+            .iter()
+            .all(|m| !m.path.to_string_lossy().contains("node_modules")),
+        "node_modules must be skipped"
+    );
+    assert!(
+        out.matches
+            .iter()
+            .all(|m| !m.text.contains("fixture-probe-ignored")),
+        "ignored.ts under node_modules must not match"
+    );
     let m = out
         .matches
         .iter()
@@ -150,7 +164,10 @@ fn find_files_fuzzy_and_glob() {
         .all(|m| !m.relative_path.contains("node_modules")));
     let probe = glob.matches.iter().find(|m| m.name == "probe.txt").unwrap();
     assert!(probe.size > 0);
-    assert!(probe.modified > 0.0);
+    // Millisecond mtime is host filesystem metadata; assert only that it is a
+    // finite non-negative value so the contract stays deterministic across hosts.
+    assert!(probe.modified.is_finite());
+    assert!(probe.modified >= 0.0);
 }
 
 #[cfg(feature = "embeddings")]

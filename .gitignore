@@ -1,4 +1,7 @@
 node_modules/
+# Phase 0 search contract: committed fixture under a path named node_modules/
+!crates/praana-native-core/tests/fixtures/search/node_modules/
+!crates/praana-native-core/tests/fixtures/search/node_modules/**
 dist/
 .worktrees/
 *.log

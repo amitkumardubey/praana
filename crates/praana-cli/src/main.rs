@@ -6,10 +6,7 @@ use clap::Parser;
     version,
     about = "PRAANA Rust v2 core (Phase 0 skeleton)"
 )]
-struct Cli {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
-}
+struct Cli {}
 
 fn main() {
     let _cli = Cli::parse();

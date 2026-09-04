@@ -345,11 +345,8 @@ describe("rust-v2 UI contract fixture freeze", () => {
       "call_ids", "result_execution_ids", "discard_block_ids",
       "uncertain_execution_ids",
     ]);
-    for (const rel of [...EXPECTED_INVENTORY]) {
-      if (rel === "manifest.json" || rel === "mapping.json") continue;
-      const raw = requireFixture(rel);
-      if (!rel.endsWith(".json")) continue;
-      const parsed = JSON.parse(raw);
+
+    const validateParsed = (rel: string, parsed: unknown) => {
       walkJson(parsed, (value, key, path) => {
         if (typeof value !== "string" || key === null) return;
         if (ULID_FIELDS.has(key)) {
@@ -362,13 +359,27 @@ describe("rust-v2 UI contract fixture freeze", () => {
           expect(SHA256_HEX.test(value), `bad digest in ${rel}: ${path}`).toBe(true);
         }
       });
-      // Array-valued ULID fields
       walkJson(parsed, (value, key) => {
         if (key === null || !ULID_ARRAY_FIELDS.has(key) || !Array.isArray(value)) return;
         for (const item of value) {
           expect(CROCKFORD_ULID.test(item as string), `bad ULID array item in ${rel}: ${key}`).toBe(true);
         }
       });
+    };
+
+    for (const rel of [...EXPECTED_INVENTORY]) {
+      if (rel === "manifest.json" || rel === "mapping.json") continue;
+      const raw = requireFixture(rel);
+      if (rel.endsWith(".jsonl")) {
+        expect(raw.includes("\r"), `${rel} contains CR`).toBe(false);
+        expect(raw.endsWith("\n"), `${rel} must end with trailing LF`).toBe(true);
+        for (const [index, line] of raw.slice(0, -1).split("\n").entries()) {
+          validateParsed(`${rel}#${index}`, JSON.parse(line));
+        }
+        continue;
+      }
+      if (!rel.endsWith(".json")) continue;
+      validateParsed(rel, JSON.parse(raw));
     }
   });
 
@@ -485,13 +496,19 @@ describe("rust-v2 UI contract fixture freeze", () => {
           throw new Error(`${rel}: contains a non-finite number`);
         }
       }
-      if (rel.startsWith("results/") && rel.endsWith(".json")) {
-        const parsed = JSON.parse(raw);
+      const scanRecallRole = (parsed: unknown, label: string) => {
         walkJson(parsed, (value, key) => {
           if (key === "role" && value === "recall") {
-            throw new Error(`${rel}: contains a Recall role`);
+            throw new Error(`${label}: contains a Recall role`);
           }
         });
+      };
+      if (rel.endsWith(".json")) {
+        scanRecallRole(JSON.parse(raw), rel);
+      } else if (rel.endsWith(".jsonl")) {
+        for (const [index, line] of raw.split("\n").filter(Boolean).entries()) {
+          scanRecallRole(JSON.parse(line), `${rel}#${index}`);
+        }
       }
     }
   });

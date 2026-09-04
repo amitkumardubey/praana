@@ -319,6 +319,8 @@ tests/
 
 Git does not track empty directories. In Phase 0, `v1/README.md` is the only required file below `v1/`; create the request/stream/event directories when their first normative fixture is added. Do not add `.gitkeep` files.
 
+The search fixture at `crates/praana-native-core/tests/fixtures/search/node_modules/ignored.ts` is intentional. Root `.gitignore` must keep a negation so this path is force-trackable despite the global `node_modules/` rule. Contract tests must assert the file exists and that `fixture-probe-ignored` never appears in grep/find_files results.
+
 The `legacy-ts` fixtures record current behavior. The `v1` fixtures implement `RUST_V2_OPENAI_SPEC.md` and may intentionally differ. A fixture must never be shared between those meanings.
 
 The safety fixtures are also `legacy-ts` evidence. Their shape and strings do not predeclare the future Tool Runtime contract. The UI Contract fixtures are normative authority-owned data, but their presence does not permit Phase 0 Rust UI types or serializers.
@@ -399,7 +401,12 @@ praana-native-core = { path = "../praana-native-core", features = ["embeddings"]
 napi-build = "2"
 ```
 
-It needs no dev dependency after pure tests move. Do not change `NATIVE_API_VERSION` from `0.3.0`; extraction is not an API change.
+It needs no further runtime or pure-test dependency after pure tests move. One
+dev-dependency exception is required for Phase 0 Step 7: the `napi_contract`
+test binary calls `#[napi]` exports outside Node, so it depends on
+`napi` with the `dyn-symbols` feature. Do not add `tempfile` (or any other)
+dev-dependency here; pure tests and tempfile live in `praana-native-core`.
+Do not change `NATIVE_API_VERSION` from `0.3.0`; extraction is not an API change.
 
 ### 6.4 `praana-core/Cargo.toml`
 
@@ -746,6 +753,7 @@ Required tests:
 - `maximum_timestamp_overflow_returns_timestamp_exhausted`
 - `initial_pre_epoch_clock_is_rejected`
 - `initial_timestamp_above_48_bits_is_rejected`
+- `overflow_wait_beyond_48_bits_leaves_last_unchanged`
 - `entropy_failure_does_not_advance_state`
 - `out_of_range_entropy_does_not_advance_state`
 - `protocol_ulid_adapter_wraps_generated_value`
@@ -961,10 +969,13 @@ manifest shape here.
 - Checks schema version 1, all exact Section 11 mapping rows, ASCII dotted IPC
   names, complete uppercase ULIDs, complete lowercase SHA-256 values, and the
   required redacted auth/setup fixtures.
+- Walks every `.json` and every JSONL line for ULID/digest fields; do not skip
+  the retry/reconciliation/memory JSONL sequences.
 - Checks the four required retry/reconciliation JSONL sequences and the
   `memory_enabled.jsonl` fixture without importing or defining a semantic Rust
   type.
-- Rejects credential-like values, prefixed semantic IDs, and a `Recall` role.
+- Rejects credential-like values, prefixed semantic IDs, and a `Recall` role
+  in any JSON or JSONL fixture (not only `results/`).
 
 Its expected red command, before fixture data is added, is:
 
@@ -1079,7 +1090,7 @@ Add minimal source files in this order:
 6. `crates/praana-core/src/lib.rs`
 7. `crates/praana-cli/src/main.rs`
 
-At this point `praana-native-core/lib.rs` exports only the error and types modules. `praana-core/lib.rs` exports only `clock` and `id`. `praana-cli/main.rs` derives a zero-subcommand Clap parser and provides help/version; with no arguments it prints `Rust v2 core is not operational in Phase 0.` and exits successfully. It must not initialize sessions, read PRAANA config, access credentials, open databases, or call a provider.
+At this point `praana-native-core/lib.rs` exports only the error and types modules. `praana-core/lib.rs` exports only `clock` and `id`. `praana-cli/main.rs` derives a zero-subcommand Clap parser and provides help/version; with no arguments it prints `Rust v2 core is not operational in Phase 0.` and exits successfully. Extra positional arguments must be rejected by Clap (no silent ignore). It must not initialize sessions, read PRAANA config, access credentials, open databases, or call a provider.
 
 Run:
 
@@ -1412,6 +1423,12 @@ If a checkpoint fails, stop at the immediately preceding passing state and fix o
 - Changing `packages/praana-natives/package.json`, `package.json`, Bun lockfiles, release scripts, or production CLI wiring.
 - Assuming `cargo test` proves the `.node` addon still exports the same JavaScript API.
 - Committing without explicit user instruction.
+- Letting root `node_modules/` gitignore drop the committed search fixture under
+  `crates/praana-native-core/tests/fixtures/search/node_modules/`.
+- Adding unrelated session dumps, chat transcripts, or non-packet files to the
+  Phase 0 branch.
+- Skipping JSONL files when validating UI-contract ULID/digest or Recall-role
+  sanitization rules.
 
 ## 14. Exit Criteria
 
@@ -1437,5 +1454,16 @@ Phase 0 is complete only when all statements are true:
 - A freshly built real N-API addon passes smoke and required native integration tests.
 - CI runs Rust workspace gates and preserves the existing native target matrix.
 - No unrelated file was modified.
+- The committed search `node_modules/ignored.ts` fixture is tracked and covered
+  by contract assertions.
 
 If any item is false, Phase 1 must not start.
+
+## 15. Review close-out notes (post Phase 0 implementation)
+
+- Historical red-step terminal output from the original fixture/API red phase is
+  not reconstructible from a finished tree. Later packets must retain the named
+  red reason in the worker return for each focused command.
+- Authority-owned `docs/RUST_V2_*.md` files may land on the same branch as Phase
+  0 for implementation access. Prefer a separate docs/spec PR when splitting is
+  practical; do not delete owner specs to “narrow” a Phase 0 diff.

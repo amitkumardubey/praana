@@ -165,6 +165,12 @@ fn definition_and_reference_search_work_over_a_root() {
 
 #[test]
 fn grep_returns_context_one_based_lines_and_skips_node_modules() {
+    let ignored = fixture("search/node_modules/ignored.ts");
+    assert!(
+        ignored.is_file(),
+        "committed Phase 0 fixture must exist: {}",
+        ignored.display()
+    );
     let root = fixture("search");
     let result = grep(GrepOpts {
         pattern: "fixture-probe".into(),
@@ -195,6 +201,13 @@ fn grep_returns_context_one_based_lines_and_skips_node_modules() {
             .iter()
             .all(|m| !m.path.contains("node_modules")),
         "node_modules must be skipped"
+    );
+    assert!(
+        result
+            .matches
+            .iter()
+            .all(|m| !m.text.contains("fixture-probe-ignored")),
+        "ignored.ts under node_modules must not match"
     );
     let m = result
         .matches
@@ -245,7 +258,10 @@ fn fuzzy_and_glob_file_search() {
         .all(|m| !m.relative_path.contains("node_modules")));
     let probe = glob.matches.iter().find(|m| m.name == "probe.txt").unwrap();
     assert!(probe.size > 0.0);
-    assert!(probe.modified > 0.0);
+    // Millisecond mtime is host filesystem metadata; assert only that it is a
+    // finite non-negative value so the contract stays deterministic across hosts.
+    assert!(probe.modified.is_finite());
+    assert!(probe.modified >= 0.0);
 }
 
 #[test]

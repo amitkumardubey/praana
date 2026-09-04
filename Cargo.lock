@@ -1272,7 +1272,6 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "praana-native-core",
- "tempfile",
 ]
 
 [[package]]
