@@ -1,0 +1,29 @@
+{
+  "scenario": "circuit-block",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/main.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan",
+    "validate",
+    "risk",
+    "circuit"
+  ],
+  "execute": "skipped",
+  "post_trace": [],
+  "dispatch": {
+    "pre": {
+      "action": "block",
+      "error": "Circuit breaker: edit_file with the same arguments repeated or failed 3 times; required: different approach or ask the user.",
+      "isError": true
+    },
+    "post": null
+  },
+  "result": {
+    "ok": false,
+    "error": "Circuit breaker: edit_file with the same arguments repeated or failed 3 times; required: different approach or ask the user."
+  }
+}

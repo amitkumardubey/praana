@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "settings_patched",
+    "data": {
+      "revision": 4,
+      "thinking_visible": true,
+      "debug": false,
+      "theme": "high_contrast",
+      "tool_icons": "unicode",
+      "mouse_enabled": true,
+      "animation_enabled": true,
+      "syntax_highlighting": true,
+      "syntax_theme": "base16-ocean.dark",
+      "incognito_default": false
+    }
+  }
+}

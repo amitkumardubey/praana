@@ -1,0 +1,23 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "credential_revision",
+    "revision": 2
+  },
+  "event": {
+    "type": "auth_flow_updated",
+    "data": {
+      "flow_id": "01J8Z3NDEK0000000000000010",
+      "provider": "openai",
+      "state": "pending",
+      "verification_uri": "https://example.com/device",
+      "user_code": "ABCD-EFGH",
+      "expires_at_ms": 1700000900000,
+      "message": "Open the verification page and enter the code."
+    }
+  }
+}

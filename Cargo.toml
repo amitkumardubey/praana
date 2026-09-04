@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/praana-natives"]
+members = [
+  "crates/praana-native-core",
+  "crates/praana-natives",
+  "crates/praana-core",
+  "crates/praana-cli",
+]
 
 [profile.release]
 lto = true

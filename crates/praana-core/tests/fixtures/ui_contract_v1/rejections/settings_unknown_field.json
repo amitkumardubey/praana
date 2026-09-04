@@ -1,0 +1,5 @@
+{
+  "target": "command",
+  "input_json": "{\"type\": \"settings_patch\", \"data\": {\"operation_id\": \"01J8Z3NDEK000000000000002G\", \"expected_revision\": 3, \"changes\": {\"theme\": \"default\", \"font_size\": 14}}}",
+  "expected_code": "unknown_field"
+}

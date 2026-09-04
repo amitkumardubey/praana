@@ -1,0 +1,21 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": "01J8Z3NDEK0000000000000003",
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001R",
+    "canonical_sequence": 57
+  },
+  "event": {
+    "type": "attempt_rewind",
+    "data": {
+      "attempt_id": "01J8Z3NDEK0000000000000003",
+      "reason": "failed",
+      "discard_block_ids": [],
+      "replacement_attempt_id": null
+    }
+  }
+}

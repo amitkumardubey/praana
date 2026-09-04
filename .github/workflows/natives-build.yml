@@ -78,11 +78,23 @@ jobs:
 
       - name: Cargo test
         if: matrix.settings.full_test
-        run: cargo test -p praana-natives
+        run: cargo test -p praana-native-core --all-features -p praana-natives
 
       - name: Build native addon
-        run: bun run build -- --target ${{ matrix.settings.target }} ${{ matrix.settings.cross_compile && '--cross-compile' || '' }}
+        if: ${{ !matrix.settings.zig }}
+        run: bun run build -- --target ${{ matrix.settings.target }}
         working-directory: packages/praana-natives
+
+      - name: Build native addon (zig cross)
+        if: ${{ matrix.settings.zig }}
+        run: bun run build -- --target ${{ matrix.settings.target }} --cross-compile
+        working-directory: packages/praana-natives
+        env:
+          # Zig's shared cache races when several tree-sitter cc-rs crates
+          # compile parser.c in parallel. Serialize those jobs so musl stays
+          # in the existing six-target matrix.
+          CARGO_BUILD_JOBS: "1"
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-local-${{ matrix.settings.target }}
 
       - name: Bun smoke
         if: matrix.settings.smoke

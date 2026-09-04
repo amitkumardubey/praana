@@ -1,0 +1,5 @@
+{
+  "target": "transcript",
+  "input_json": "{\"entry_id\": \"01J8Z3NDEK000000000000002F\", \"role\": \"recall\", \"content\": {\"type\": \"user\", \"data\": {\"preview\": \"q\", \"complete\": true, \"sha256\": \"61a30012547fa19e74933e6ac56a04d3149d6d76d38d2ed219c84b85c151d593\", \"detail_ref\": null}}}",
+  "expected_code": "unknown_variant"
+}

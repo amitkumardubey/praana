@@ -1,0 +1,19 @@
+{
+  "method": "POST",
+  "url": "https://api.openai.com/v1/responses",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "[REDACTED]"
+  },
+  "body": {
+    "model": "praana-fixture-model",
+    "input": [
+      {
+        "role": "user",
+        "content": "Reply with the single word: ready."
+      }
+    ],
+    "stream": true,
+    "instructions": "You are a deterministic fixture agent."
+  }
+}

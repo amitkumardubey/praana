@@ -1,0 +1,21 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "system_error",
+    "data": {
+      "code": "unavailable",
+      "message": "Native addon is unavailable.",
+      "retry": "new_operation",
+      "details": {
+        "type": "none"
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "target": "command",
+  "input_json": "{\"type\": \"session_create\", \"data\": {\"operation_id\": \"op_01J8Z3NDEK0000000000000001\", \"cwd\": \"/workspace/praana\", \"config_path\": null, \"incognito\": false, \"debug\": false}}",
+  "expected_code": "invalid_ulid"
+}

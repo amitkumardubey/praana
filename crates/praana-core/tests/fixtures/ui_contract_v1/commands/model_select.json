@@ -1,0 +1,9 @@
+{
+  "type": "model_select",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000Q",
+    "provider": "openai",
+    "model_id": "gpt-5",
+    "reasoning_effort": "medium"
+  }
+}

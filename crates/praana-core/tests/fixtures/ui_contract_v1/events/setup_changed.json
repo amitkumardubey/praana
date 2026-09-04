@@ -1,0 +1,62 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "host_revision",
+    "kind": "setup_config",
+    "revision": 3,
+    "sha256": "ba276f37cae201dd60383f059a0899625c993b679c7613078b986d22db078df1"
+  },
+  "event": {
+    "type": "setup_changed",
+    "data": {
+      "revision": 3,
+      "required": false,
+      "providers": [
+        {
+          "provider": "openai",
+          "display_name": "OpenAI",
+          "fields": [
+            {
+              "id": "api_key",
+              "label": "API key",
+              "help": "Create an API key in the provider console.",
+              "kind": "secret",
+              "required": true,
+              "secret": true,
+              "choices": [],
+              "default_value": null
+            }
+          ],
+          "auth_methods": [
+            "api_key",
+            "device_code",
+            "browser"
+          ],
+          "supported_protocols": [
+            "openai_chat_completions",
+            "openai_responses"
+          ]
+        }
+      ],
+      "configured_providers": [
+        "openai"
+      ],
+      "authentication": [
+        {
+          "provider": "openai",
+          "state": "authenticated",
+          "methods": [
+            "api_key"
+          ]
+        }
+      ],
+      "active_auth_flows": [],
+      "missing_requirements": [],
+      "pending_consents": []
+    }
+  }
+}

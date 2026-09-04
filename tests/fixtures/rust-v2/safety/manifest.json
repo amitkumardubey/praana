@@ -1,0 +1,41 @@
+{
+  "fixture_schema_version": 1,
+  "fixture_kind": "legacy-typescript-safety",
+  "oracle_sha256_by_file": {
+    "src/circuit/loop-gate.ts": "5738f156b50795894fd6ff17749281063babccffd94fa5ce1461819ce0a7b33c",
+    "src/hooks/block-result.ts": "d9d4cafa02196021726438d2866026c1d4c74b8848da1c426869b8029a0ea817",
+    "src/hooks/handlers/circuit.ts": "85bd4497a252d187759ccd0c0a1da0d2ff8ee976984674dbfcdfbd015aafd611",
+    "src/hooks/handlers/lsp.ts": "e6dedd10acae5590a8924dd8b366c828566ee55227d82006a7aae8b39582fef8",
+    "src/hooks/handlers/plan-mode.ts": "0d4b852b8f0fd1fa8a944bb3b9cd114b56f80928fae097259abadc29f9f10262",
+    "src/hooks/handlers/redact.ts": "146c4d51e712f29efd85e7ed7e030fa135de1579389d72b944f30444dfcc2e51",
+    "src/hooks/handlers/risk.ts": "ccba2f9a5ae1607867a9dceddfebd27cb87e17ebbab999150b7b76e07a926eef",
+    "src/hooks/handlers/validate.ts": "7c6c651df5554a4ae4302f8c2e496fac83150ac700e84465b3d317400236a44b",
+    "src/hooks/handlers/verify.ts": "afa6ab75c79d4043fd3837f6c0b1b22a1b085cad191a6495b30d7d27f4f95ae7",
+    "src/hooks/handlers/write-path.ts": "3d5d53dfd3c5bf34c8fd5b707619041ab9547e24107a37f5b94f88b76eee528f",
+    "src/hooks/index.ts": "c15592a640ed3b741dbb9232ba92d5b06db34b7721bb31b7641b14ebcc5e048d",
+    "src/hooks/registry.ts": "27af39a838c79d2611122450a2acc5800800972973da0099c25a5123d0d2aa89",
+    "src/hooks/types.ts": "d564a53d764b6c39e1bbc5844e18bea49ab071a27921a2951829063da77e65a2",
+    "src/plan-mode.ts": "b5bd3bf403a3fe3dbf382834525fdc7de1dba0b3f82f7d49e1cf3e989b975e8f",
+    "src/redact/secrets.ts": "4f9a5f952d766efab9d563440edafebdfc5fa223594091011a75b3fbec8590c1",
+    "src/risk/classes.ts": "41d5e1ac1533537b9cf230c55e498be241685776e21f92999accc0a18ee00571",
+    "src/risk/classify.ts": "5782a3fd200920fe85407ce2914b4e25f2a8289ca2c052b4be3efed88b540725",
+    "src/session.ts": "d554c7eaadd834dad49af6b33e156841d0cf81d8d3d924343e03f6305d25044e",
+    "src/turn.ts": "eae1186ac46400f40e369ce688c817d538254941cddc68de43a2e9e90349e348",
+    "src/validate/fuzzy-path.ts": "21c73dc827b86fa9ac59f3cde49c8b69378b386300d77f94051de0b9ea79d616",
+    "src/validate/shell-check.ts": "9a19a8c836f5cb6e72f11e53562287fb3298fcedc4872b1a60e1071b4bfd8e73"
+  },
+  "fixture_sha256_by_file": {
+    "README.md": "a739a227a711866703c7a00ebe1b5c64cb67357e3aac62ce0e42b41104a20b9e",
+    "legacy-ts/pipeline/circuit-block.json": "9251bd21564e3b6f2d4c9c28ff12f0bf8d7c285fbd3105961f4fb876ce6aa165",
+    "legacy-ts/pipeline/plan-block.json": "2afe41e1752cac41d8026bc35465e0f9d821c517cf38627a70abd925d9494721",
+    "legacy-ts/pipeline/post-enrich-redact-release.json": "fa3c615fc9778b25cbf4c1bceb5323bdf7e2c8d4db36b8648ba024baf96f7b1e",
+    "legacy-ts/pipeline/risk-decline.json": "3052c77b02bdc3169f17d8d2bcac1b6d47965708c309a140bc2cc146f728f6f5",
+    "legacy-ts/pipeline/success.json": "64807ef2f934ce96a9c05014dcc2d4b9fa157e94d3730d2088399984f1b2875a",
+    "legacy-ts/pipeline/validation-block.json": "f465ad9191238af4a20524c8c3e15a2b53a70c13814489f8ec65841b68555691",
+    "legacy-ts/pipeline/write-conflict.json": "c7357b8f1f6019923d3102a6b45ca58def518a5c6bdd9a5f7719e00be68a482f",
+    "legacy-ts/tool-results/enriched-error-redacted.json": "6c50de67582380e6ec89396b8c67a7c6878a7213cd456350a179d859c1e6f3d4",
+    "legacy-ts/tool-results/post-handler-throw.json": "f46ca4f2b6be2e77ed2de114fc85d39317b1d767360b04cab17817af5270b5db",
+    "legacy-ts/tool-results/pre-block-with-suggestions.json": "3817b1b51b4b2fdcad91f1fcf846731fbf9fec68efe42679f326d6b0141db150",
+    "legacy-ts/tool-results/success-redacted.json": "d296499d3f2905d7a689ebd37c55a26ca8c4dc130dc1e831ae8cf2776741362b"
+  }
+}

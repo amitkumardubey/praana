@@ -1,0 +1,32 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK000000000000001W",
+    "canonical_sequence": 61
+  },
+  "event": {
+    "type": "turn_completed",
+    "data": {
+      "footer": {
+        "turn_id": "01J8Z3NDEK0000000000000002",
+        "outcome": "stop",
+        "usage": {
+          "input_tokens": 1200,
+          "output_tokens": 340,
+          "reasoning_tokens": 80,
+          "cache_read_tokens": 256,
+          "cache_write_tokens": 0,
+          "total_tokens": 1620,
+          "cost_microusd": null,
+          "estimated": true
+        },
+        "elapsed_ms": 4200
+      }
+    }
+  }
+}

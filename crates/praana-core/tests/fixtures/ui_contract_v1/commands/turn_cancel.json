@@ -1,0 +1,8 @@
+{
+  "type": "turn_cancel",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000M",
+    "turn_id": "01J8Z3NDEK0000000000000002",
+    "reason": "user_interrupt"
+  }
+}

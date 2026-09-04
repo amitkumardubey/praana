@@ -1,0 +1,8 @@
+{
+  "type": "turn_submit",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000K",
+    "text": "Fix the failing tests.",
+    "client_submitted_at_ms": 1700000001000
+  }
+}

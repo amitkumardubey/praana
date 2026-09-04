@@ -1,0 +1,25 @@
+{
+  "method": "POST",
+  "url": "https://api.openai.com/v1/chat/completions",
+  "headers": {
+    "content-type": "application/json",
+    "authorization": "[REDACTED]"
+  },
+  "body": {
+    "model": "praana-fixture-model",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a deterministic fixture agent."
+      },
+      {
+        "role": "user",
+        "content": "Reply with the single word: ready."
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

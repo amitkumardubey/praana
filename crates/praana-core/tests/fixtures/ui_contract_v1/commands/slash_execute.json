@@ -1,0 +1,7 @@
+{
+  "type": "slash_execute",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000P",
+    "text": "/model"
+  }
+}

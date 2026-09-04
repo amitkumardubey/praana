@@ -1,0 +1,2 @@
+plain text probe file with the anchor fixture-probe-text inside.
+second line without anchors.

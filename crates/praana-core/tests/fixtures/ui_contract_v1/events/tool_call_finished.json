@@ -1,0 +1,32 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": "01J8Z3NDEK0000000000000001",
+  "turn_id": "01J8Z3NDEK0000000000000002",
+  "attempt_id": "01J8Z3NDEK0000000000000003",
+  "operation_id": null,
+  "durability": {
+    "type": "canonical_event",
+    "event_id": "01J8Z3NDEK0000000000000024",
+    "canonical_sequence": 69
+  },
+  "event": {
+    "type": "tool_call_finished",
+    "data": {
+      "batch_id": "01J8Z3NDEK0000000000000007",
+      "execution_id": "01J8Z3NDEK0000000000000006",
+      "call_id": "01J8Z3NDEK0000000000000005",
+      "tool_name": "shell",
+      "status": "success",
+      "summary": "3 pass",
+      "duration_ms": 250,
+      "error": null,
+      "content_ref": {
+        "type": "tool_result",
+        "data": {
+          "execution_id": "01J8Z3NDEK0000000000000006",
+          "sha256": "8f2e6f4a4a54e641052ab15f69c54d6e43e43b03e484cafaec8f0d58ce4a76de"
+        }
+      }
+    }
+  }
+}

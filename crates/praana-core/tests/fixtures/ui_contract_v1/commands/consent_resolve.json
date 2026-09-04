@@ -1,0 +1,10 @@
+{
+  "type": "consent_resolve",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000Y",
+    "consent_id": "01J8Z3NDEK000000000000000A",
+    "purpose": "model-download",
+    "version": "1",
+    "decision": "allow_once"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "shutdown_admitted",
+    "data": {
+      "deadline_ms": 1700000050000
+    }
+  }
+}

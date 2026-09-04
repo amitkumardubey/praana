@@ -1,0 +1,18 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "reasoning_set",
+    "data": {
+      "requested": "medium",
+      "effective": "medium",
+      "supported": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high"
+      ],
+      "boundary_canonical_sequence": null
+    }
+  }
+}

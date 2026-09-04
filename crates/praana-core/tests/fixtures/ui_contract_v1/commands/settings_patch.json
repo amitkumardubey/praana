@@ -1,0 +1,18 @@
+{
+  "type": "settings_patch",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000S",
+    "expected_revision": 3,
+    "changes": {
+      "thinking_visible": null,
+      "debug": null,
+      "theme": "high_contrast",
+      "tool_icons": null,
+      "mouse_enabled": null,
+      "animation_enabled": null,
+      "syntax_highlighting": null,
+      "syntax_theme": null,
+      "incognito_default": null
+    }
+  }
+}

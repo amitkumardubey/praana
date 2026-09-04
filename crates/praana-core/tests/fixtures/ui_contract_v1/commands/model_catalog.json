@@ -1,0 +1,10 @@
+{
+  "type": "model_catalog",
+  "data": {
+    "provider": null,
+    "query": "gpt",
+    "cursor": null,
+    "limit": 25,
+    "refresh": false
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "scenario": "post-enrich-redact-release",
+  "tool_name": "edit_file",
+  "args": {
+    "path": "src/main.ts",
+    "old_text": "alpha",
+    "new_text": "beta"
+  },
+  "pre_trace": [
+    "plan",
+    "validate",
+    "risk",
+    "circuit",
+    "write_path"
+  ],
+  "execute": "ran",
+  "post_trace": [
+    "verify",
+    "enrich",
+    "redact",
+    "circuit_accounting",
+    "write_path_release"
+  ],
+  "dispatch": {
+    "pre": {
+      "action": "continue",
+      "args": {
+        "path": "src/main.ts",
+        "old_text": "alpha",
+        "new_text": "beta"
+      }
+    },
+    "post": {
+      "result": {
+        "ok": false,
+        "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts",
+        "suggestions": [
+          "/workspace/praana/src/main.ts"
+        ]
+      },
+      "isError": true
+    }
+  },
+  "result": {
+    "ok": false,
+    "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts",
+    "suggestions": [
+      "/workspace/praana/src/main.ts"
+    ]
+  }
+}

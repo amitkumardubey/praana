@@ -1,0 +1,13 @@
+{
+  "type": "auth_login",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000V",
+    "provider": "openai",
+    "method": {
+      "type": "api_key",
+      "data": {
+        "credential": "[REDACTED]"
+      }
+    }
+  }
+}

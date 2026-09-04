@@ -12,21 +12,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = "3"
-tree-sitter = "0.25"
-tree-sitter-typescript = "0.23"
-tree-sitter-javascript = "0.25"
-tree-sitter-python = "0.25"
-tree-sitter-go = "0.25"
-tree-sitter-rust = "0.24"
-ignore = "0.4"
-regex = "1"
-globset = "0.4"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-tract-onnx = "0.21"
-ndarray = "0.16"
+praana-native-core = { path = "../praana-native-core", features = ["embeddings"] }
 
 [build-dependencies]
 napi-build = "2"
 
 [dev-dependencies]
-tempfile = "3"
+# Phase 0 exception (packet Step 7): napi_contract.rs calls the Rust #[napi]
+# exports from a plain test binary outside Node, so the symbol table must load
+# dynamically. Pure tests and tempfile moved to praana-native-core.
+napi = { version = "3", default-features = false, features = ["napi8", "dyn-symbols"] }

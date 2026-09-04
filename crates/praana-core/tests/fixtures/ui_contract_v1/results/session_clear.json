@@ -1,0 +1,11 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "session_cleared",
+    "data": {
+      "canonical_sequence": 101,
+      "reset_epoch": 1,
+      "transcript_tail_cursor": null
+    }
+  }
+}

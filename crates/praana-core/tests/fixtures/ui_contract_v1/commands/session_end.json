@@ -1,0 +1,8 @@
+{
+  "type": "session_end",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000G",
+    "reason": "clean",
+    "memory_grace_ms": null
+  }
+}

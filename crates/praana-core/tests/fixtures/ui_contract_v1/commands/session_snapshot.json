@@ -1,0 +1,7 @@
+{
+  "type": "session_snapshot",
+  "data": {
+    "include_boot": true,
+    "include_pending_confirmations": true
+  }
+}

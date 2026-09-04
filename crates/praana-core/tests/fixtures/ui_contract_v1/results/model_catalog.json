@@ -1,0 +1,28 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "model_catalog",
+    "data": {
+      "revision": 11,
+      "items": [
+        {
+          "provider": "openai",
+          "model_id": "gpt-5",
+          "display_name": "GPT-5",
+          "protocol": "openai_responses",
+          "context_window_tokens": 400000,
+          "reasoning_levels": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "availability": "available",
+          "selected": true,
+          "source": "static"
+        }
+      ],
+      "next_cursor": null
+    }
+  }
+}

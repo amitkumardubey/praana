@@ -1,0 +1,20 @@
+{
+  "type": "content_read",
+  "data": {
+    "reference": {
+      "type": "assistant_text",
+      "data": {
+        "message_id": "01J8Z3NDEK000000000000000B",
+        "sha256": "5a7cfb18e394b034fc5e62cd046eaf6c1b0e8ac1ad64dff19ed684f2b174eb99"
+      }
+    },
+    "selection": {
+      "type": "grep",
+      "data": {
+        "pattern": "fixture",
+        "cursor": null,
+        "max_matches": 50
+      }
+    }
+  }
+}

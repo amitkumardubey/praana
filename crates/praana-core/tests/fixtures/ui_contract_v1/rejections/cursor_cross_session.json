@@ -1,0 +1,5 @@
+{
+  "target": "result",
+  "input_json": "{\"status\": \"ok\", \"data\": {\"type\": \"transcript_page\", \"data\": {\"before_cursor\": \"c3Bhbi1vdGhlci1zZXNzaW9u\"}}}",
+  "expected_code": "cursor_invalid"
+}

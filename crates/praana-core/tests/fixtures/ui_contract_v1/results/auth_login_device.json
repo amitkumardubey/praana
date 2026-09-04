@@ -1,0 +1,19 @@
+{
+  "status": "ok",
+  "data": {
+    "type": "auth_login",
+    "data": {
+      "provider": "openai",
+      "state": "pending",
+      "flow": {
+        "flow_id": "01J8Z3NDEK0000000000000010",
+        "provider": "openai",
+        "state": "pending",
+        "verification_uri": "https://example.com/device",
+        "user_code": "ABCD-EFGH",
+        "expires_at_ms": 1700000900000,
+        "message": "Open the verification page and enter the code."
+      }
+    }
+  }
+}

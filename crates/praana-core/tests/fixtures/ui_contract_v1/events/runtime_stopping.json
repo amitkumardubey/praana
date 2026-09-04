@@ -1,0 +1,17 @@
+{
+  "ui_contract_schema_version": 1,
+  "session_id": null,
+  "turn_id": null,
+  "attempt_id": null,
+  "operation_id": null,
+  "durability": {
+    "type": "ephemeral"
+  },
+  "event": {
+    "type": "runtime_stopping",
+    "data": {
+      "reason": "ui_exit",
+      "deadline_ms": 1700000050000
+    }
+  }
+}

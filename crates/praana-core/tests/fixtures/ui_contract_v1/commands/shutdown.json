@@ -1,0 +1,8 @@
+{
+  "type": "shutdown",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000Z",
+    "reason": "ui_exit",
+    "grace_ms": null
+  }
+}

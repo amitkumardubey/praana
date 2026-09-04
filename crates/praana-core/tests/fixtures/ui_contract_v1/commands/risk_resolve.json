@@ -1,0 +1,9 @@
+{
+  "type": "risk_resolve",
+  "data": {
+    "operation_id": "01J8Z3NDEK000000000000000N",
+    "confirmation_id": "01J8Z3NDEK0000000000000009",
+    "decision": "allow_once",
+    "argument_sha256": "2732125b3e4f3996d1b944ee58e8e3d56aea6923a2e361c8307ad72605fc1341"
+  }
+}

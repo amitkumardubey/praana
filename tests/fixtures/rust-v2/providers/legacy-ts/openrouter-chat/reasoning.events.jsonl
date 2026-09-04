@@ -1,0 +1,5 @@
+{"type":"thinking_delta","delta":"Considering fixture structure."}
+{"type":"thinking_delta","delta":"Answer must be deterministic."}
+{"type":"text_delta","delta":"Fixture ready."}
+{"type":"usage","usage":{"input":200,"output":40,"totalTokens":240,"cacheReadTokens":128,"cacheWriteTokens":72}}
+{"type":"done","reason":"stop","message":{"role":"assistant","content":"Fixture ready.","thinking":"Considering fixture structure.Answer must be deterministic."}}
