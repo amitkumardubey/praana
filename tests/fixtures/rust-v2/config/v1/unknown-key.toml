@@ -1,0 +1,2 @@
+[compiler]
+token_budget = 100000

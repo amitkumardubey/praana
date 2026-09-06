@@ -1,0 +1,1 @@
+{"risk":{"allow":["rm"]},"tools":{"allowed_paths":["./shared"],"max_parallel_calls":4},"llm":{"provider":"openai","model":"gpt-5"}}

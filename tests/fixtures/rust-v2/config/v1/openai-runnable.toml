@@ -1,0 +1,6 @@
+[llm]
+provider = "openai"
+protocol = "openai-responses-v1"
+model = "gpt-5"
+context_window = 200000
+max_output_tokens = 8192

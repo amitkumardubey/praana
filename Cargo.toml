@@ -5,6 +5,7 @@ members = [
   "crates/praana-natives",
   "crates/praana-core",
   "crates/praana-cli",
+  "crates/praana-xtask",
 ]
 
 [profile.release]

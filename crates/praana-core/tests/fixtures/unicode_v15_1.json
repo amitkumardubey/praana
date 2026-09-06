@@ -1,0 +1,157 @@
+{
+  "default_casefold_samples": [
+    {
+      "input": "Straße",
+      "output": "strasse"
+    },
+    {
+      "input": "Σςσ",
+      "output": "σσσ"
+    },
+    {
+      "input": "İIı",
+      "output": "i̇iı"
+    },
+    {
+      "input": "HELLO world 123!",
+      "output": "hello world 123!"
+    }
+  ],
+  "nfkc_casefold_samples": [
+    {
+      "input": "K",
+      "output": "k"
+    },
+    {
+      "input": "ﬃ",
+      "output": "ffi"
+    },
+    {
+      "input": "Ａ/Ｂ",
+      "output": "a/b"
+    },
+    {
+      "input": "Straße",
+      "output": "strasse"
+    }
+  ],
+  "scalar_classification_samples": [
+    {
+      "category": "ignored_format",
+      "input": "‍",
+      "units": 0
+    },
+    {
+      "category": "ignored_format",
+      "input": "︀",
+      "units": 0
+    },
+    {
+      "category": "ignored_format",
+      "input": "️",
+      "units": 0
+    },
+    {
+      "category": "ignored_format",
+      "input": "󠄀",
+      "units": 0
+    },
+    {
+      "category": "ignored_format",
+      "input": "󠇯",
+      "units": 0
+    },
+    {
+      "category": "cjk_script",
+      "input": "中",
+      "units": 8
+    },
+    {
+      "category": "cjk_script",
+      "input": "文",
+      "units": 8
+    },
+    {
+      "category": "cjk_script",
+      "input": "あ",
+      "units": 8
+    },
+    {
+      "category": "cjk_script",
+      "input": "ア",
+      "units": 8
+    },
+    {
+      "category": "cjk_script",
+      "input": "가",
+      "units": 8
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "😀",
+      "units": 12
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "❤",
+      "units": 12
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "$",
+      "units": 12
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "+",
+      "units": 12
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "^",
+      "units": 12
+    },
+    {
+      "category": "symbol_or_emoji",
+      "input": "©",
+      "units": 12
+    },
+    {
+      "category": "other_scalar",
+      "input": "a",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": "Z",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": "9",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": " ",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": "\n",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": "\r",
+      "units": 3
+    },
+    {
+      "category": "other_scalar",
+      "input": "́",
+      "units": 3
+    }
+  ],
+  "unicode_version": "15.1.0",
+  "utility_version": "praana-unicode-15.1-v1"
+}

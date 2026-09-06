@@ -1,0 +1,2 @@
+[memory.options]
+db_path = "/etc/praana/escaped.db"

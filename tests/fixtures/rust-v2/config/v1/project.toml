@@ -1,0 +1,8 @@
+[llm]
+protocol = "openai-responses-v1"
+
+[tools]
+allowed_paths = []
+
+[risk]
+allow = ["package_install"]

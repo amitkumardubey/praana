@@ -1,0 +1,112 @@
+config_schema_version = 1
+
+[history]
+mode = "append"
+compact_at = 0.60
+compact_clear_at = 0.45
+compact_mass_fraction = 0.50
+reasoning_replay = "active"
+artifact_inline_tokens = 800
+artifact_batch_inline_tokens = 1600
+artifact_preview_tokens = 160
+safety_margin_ratio = 0.03
+safety_margin_min_tokens = 512
+summary_segment_max_tokens = 2400
+handoff_max_tokens = 1600
+compactor_provider = ""
+compactor_model = ""
+compactor_timeout_ms = 60000
+compactor_max_output_tokens = 4096
+
+[state]
+active_max_tokens = 4096
+auto_hydrate = true
+auto_hydrate_max = 3
+idle_soft_after_turns = 20
+idle_hard_after_turns = 50
+automation_policy_version = "state-lexical-v1"
+
+[llm]
+provider = ""
+protocol = "auto"
+model = ""
+context_window = 0
+unsafe_allow_context_window_increase = false
+max_output_tokens = 8192
+min_output_tokens = 256
+reasoning_effort = "medium"
+reasoning_reserve_tokens = 0
+request_timeout_ms = 120000
+fallback_provider = ""
+fallback_protocol = "auto"
+fallback_model = ""
+fallback_context_window = 0
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+
+[providers.openai.extra_headers]
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.extra_headers]
+
+[turn]
+max_steps = 25
+max_attempts = 3
+
+[tools]
+shell_enabled = true
+allowed_paths = []
+max_parallel_calls = 8
+max_spawned_processes = 4
+default_timeout_ms = 60000
+shell_timeout_ms = 30000
+shell_max_timeout_ms = 600000
+
+[risk]
+allow = []
+
+[circuit]
+loop_threshold = 3
+max_tokens = 0
+max_wall_ms = 0
+
+[session]
+root = "~/.praana/sessions"
+retention_days = 0
+orphan_retention_days = 7
+incognito = false
+shutdown_grace_ms = 3000
+
+[logging]
+level = "info"
+format = "text"
+stderr = true
+file = false
+directory = "~/.praana/logs"
+rotate_bytes = 10485760
+keep_files = 5
+
+[memory]
+plugin = "none"
+
+[memory.options]
+db_path = "~/.praana/plugins/builtin-sqlite/memory.db"
+extraction = true
+digest_max_tokens = 1200
+recall_limit = 10
+llm_contradictions = false
+
+[memory.timeouts]
+open_ms = 2000
+start_ms = 3000
+recall_ms = 3000
+remember_ms = 2000
+retract_ms = 2000
+pin_ms = 2000
+feedback_ms = 1000
+stats_ms = 1000
+end_ms = 30000
+close_ms = 2000
