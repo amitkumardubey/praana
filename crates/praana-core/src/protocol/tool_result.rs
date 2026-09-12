@@ -72,6 +72,25 @@ pub struct ArtifactRetrieval {
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+pub fn validate_mime_type(s: &str) -> Result<(), &'static str> {
+    if s.is_empty() || s.contains(';') || s.contains(' ') {
+        return Err("E_EVENT_SCHEMA_INVALID");
+    }
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err("E_EVENT_SCHEMA_INVALID");
+    }
+    for part in parts {
+        for b in part.bytes() {
+            if !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-')
+            {
+                return Err("E_EVENT_SCHEMA_INVALID");
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn deserialize_media_type<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -80,21 +99,16 @@ where
     if s == "application/vnd.praana.tool-result+json;version=1" {
         return Ok(s);
     }
-    if s.is_empty() || s.contains(';') || s.contains(' ') {
-        return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
-    }
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
-    }
-    for part in parts {
-        for b in part.bytes() {
-            if !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-')
-            {
-                return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
-            }
-        }
-    }
+    validate_mime_type(&s).map_err(serde::de::Error::custom)?;
+    Ok(s)
+}
+
+pub fn deserialize_image_media_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    validate_mime_type(&s).map_err(serde::de::Error::custom)?;
     Ok(s)
 }
 

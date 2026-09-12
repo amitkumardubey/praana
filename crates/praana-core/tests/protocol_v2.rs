@@ -751,4 +751,13 @@ fn image_block_media_type_validation() {
         r#"{{"media_type":"image/png@test","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
     );
     assert!(serde_json::from_str::<ImageBlock>(&invalid_chars).is_err());
+
+    // Tool result versioned media type is NOT allowed on ImageBlock
+    let tool_result_type = format!(
+        r#"{{"media_type":"application/vnd.praana.tool-result+json;version=1","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(
+        serde_json::from_str::<ImageBlock>(&tool_result_type).is_err(),
+        "tool-result media type must be rejected on ImageBlock"
+    );
 }

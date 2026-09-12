@@ -332,15 +332,6 @@ impl<'a> serde::Serialize for CanonicalJsonValue<'a> {
     }
 }
 
-/// Normalizes a JSON value into canonical form by round-tripping through RFC 8785 bytes.
-pub fn canonicalize_json_val(val: &serde_json::Value) -> serde_json::Value {
-    let bytes = match crate::canonical_json::to_canonical_json_bytes(val) {
-        Ok(bytes) => bytes,
-        Err(_) => return val.clone(),
-    };
-    serde_json::from_slice(&bytes).unwrap_or_else(|_| val.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::check_raw_duplicate_keys_and_depth;
