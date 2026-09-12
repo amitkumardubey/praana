@@ -130,9 +130,8 @@ tool data belongs in `history.db`, not the event line.
 
 All JSON object field names are lower snake case. Enum discriminants are lower
 snake case. All structs and enums use `#[serde(deny_unknown_fields)]`. A missing
-required field, unknown field, duplicate JSON object key, wrong JSON type,
-unknown enum discriminant, or JSON nesting deeper than 64 objects/arrays is
-`E_EVENT_SCHEMA_INVALID`.
+required field, unknown field, duplicate JSON object key, wrong JSON type, or
+unknown enum discriminant is `E_EVENT_SCHEMA_INVALID`.
 
 Every `Option<T>` field is serialized explicitly as JSON `null` when absent.
 Empty vectors and maps are serialized as `[]` and `{}`. Implementations MUST NOT

@@ -335,8 +335,7 @@ fn session_lock_prevents_concurrent_writers() {
 
     let store2_res = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     assert!(store2_res.is_err());
-    // History-domain code; the protocol boundary maps it to E_SESSION_LOCKED.
-    assert_eq!(store2_res.unwrap_err().code(), "HISTORY_SESSION_LOCKED");
+    assert_eq!(store2_res.unwrap_err().code(), "E_SESSION_LOCKED");
 }
 
 #[test]
@@ -420,6 +419,12 @@ fn malformed_final_line_is_quarantined() {
         .expect("valid prefix must replay");
     assert_eq!(events.len(), 6);
     assert_eq!(store.current_sequence(), 6);
+    let warning = store
+        .warnings()
+        .iter()
+        .find(|w| w.code() == "E_JSONL_FINAL_TRUNCATED")
+        .expect("must report E_JSONL_FINAL_TRUNCATED warning");
+    assert!(warning.recoverable);
 }
 
 #[test]
@@ -589,15 +594,20 @@ fn uncertain_mutating_tool_is_never_rerun() {
     );
     let uncertain = uncertain.unwrap();
     assert!(uncertain.result.recovered);
-    assert_eq!(
-        uncertain.result.body.media_type,
-        praana_core::protocol::constants::TOOL_RESULT_MEDIA_TYPE
-    );
+    assert_eq!(uncertain.result.body.media_type, "application/json");
     assert_eq!(uncertain.result.body.line_count, None);
     assert_eq!(uncertain.result.body.estimator_id, GENERIC_ESTIMATOR_ID);
     match &uncertain.result.body.content {
         praana_core::protocol::tool_result::ToolResultContent::Inline(inline) => {
-            assert!(inline.text.contains("E_TOOL_SIDE_EFFECT_UNCERTAIN"));
+            assert_eq!(
+                inline.text,
+                r#"{"code":"E_TOOL_SIDE_EFFECT_UNCERTAIN","error":"The process stopped after this tool was marked started. Its side effects are unknown. Do not repeat the mutation until state has been inspected.","ok":false}"#
+            );
+            assert_eq!(
+                uncertain.result.body.sha256,
+                calculate_sha256(inline.text.as_bytes())
+            );
+            assert_eq!(uncertain.result.body.byte_count, inline.text.len() as u64);
         }
         other => panic!("expected inline body, got {other:?}"),
     }
@@ -631,6 +641,21 @@ fn uncertain_mutating_peer_skips_unstarted_calls() {
     );
     assert_eq!(skipped.started_event_id, None);
     assert!(!skipped.result.recovered);
+    assert_eq!(skipped.result.body.media_type, "application/json");
+    match &skipped.result.body.content {
+        praana_core::protocol::tool_result::ToolResultContent::Inline(inline) => {
+            assert_eq!(
+                inline.text,
+                r#"{"code":"E_TOOL_SKIPPED_UNCERTAIN_PEER","error":"Skipped because another call in the parallel batch has uncertain side effects.","ok":false}"#
+            );
+            assert_eq!(
+                skipped.result.body.sha256,
+                calculate_sha256(inline.text.as_bytes())
+            );
+            assert_eq!(skipped.result.body.byte_count, inline.text.len() as u64);
+        }
+        other => panic!("expected inline body, got {other:?}"),
+    }
     let batch = after.iter().find_map(|e| match &e.event {
         CanonicalEvent::ToolBatchCompleted(b) => Some(b),
         _ => None,
@@ -892,11 +917,11 @@ fn create_writes_immutable_meta_json() {
     let meta: SessionMetaV1 =
         serde_json::from_str(fs::read_to_string(&path).unwrap().trim_end()).unwrap();
     assert_eq!(meta.schema_version, 1);
-    assert_eq!(meta.session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    assert_eq!(meta.session_id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     assert_eq!(meta.event_schema_version, 2);
     assert_eq!(meta.agent_id, "praana");
     assert_eq!(
-        meta.config_digest_sha256,
+        meta.config_digest_sha256.as_str(),
         "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760"
     );
     let snapshot = session_dir.join("config.snapshot.json");
@@ -1147,16 +1172,17 @@ fn missing_config_snapshot_refuses_open() {
     fs::copy(dir.join("events.jsonl"), session_dir.join("events.jsonl")).unwrap();
     let meta = SessionMetaV1 {
         schema_version: 1,
-        session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        session_id: SessionId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap(),
         created_at_ms: 0,
         cwd: "/workspace".into(),
         agent_id: "praana".into(),
         config_schema_version: 1,
-        config_digest_sha256: "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760"
-            .into(),
+        config_digest_sha256: Sha256Digest(
+            "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760".into(),
+        ),
         event_schema_version: 2,
         history_schema_version: 1,
-        projection_version: PROJECTION_VERSION.to_owned(),
+        projection_version: ProjectionId::from_str_canonical(PROJECTION_VERSION).unwrap(),
         token_estimator_schema_version: 1,
         unicode_utility_version: UNICODE_UTILITY_VERSION.to_owned(),
         system_context_schema_version: 1,
@@ -1186,4 +1212,114 @@ fn lock_metadata_records_process_start_time() {
     let lock = fs::read_to_string(session_dir.join("session.lock")).unwrap();
     assert!(lock.contains("process_start="));
     assert!(!lock.contains("process_start=unknown"));
+}
+
+#[cfg(unix)]
+#[test]
+fn permissions_tightening_emits_warning() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_temp, session_dir) = copy_fixture_to_session("01_committed_text_turn", "tighten_test");
+    fs::set_permissions(&session_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let events_path = session_dir.join("events.jsonl");
+    fs::set_permissions(&events_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let store = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    assert_eq!(
+        fs::metadata(&session_dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(&events_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    let warnings = store.warnings();
+    let tightened: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.code() == "HISTORY_PERMISSIONS_TIGHTENED")
+        .collect();
+    assert!(
+        !tightened.is_empty(),
+        "expected HISTORY_PERMISSIONS_TIGHTENED warning"
+    );
+    for w in tightened {
+        assert!(w.recoverable);
+    }
+}
+
+#[test]
+fn meta_json_tmp_atomicity_and_survival() {
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("meta_tmp_test");
+    fs::create_dir_all(&session_dir).unwrap();
+    let tmp_path = session_dir.join("meta.json.tmp");
+    fs::write(&tmp_path, b"partial data").unwrap();
+
+    let store = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let meta_path = session_dir.join("meta.json");
+    assert!(meta_path.exists(), "meta.json must be created");
+    assert!(!tmp_path.exists(), "meta.json.tmp must be cleaned up");
+    assert_eq!(store.session_id().as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+}
+
+#[test]
+fn lowercase_session_id_in_meta_json_fails_open() {
+    let (_temp, session_dir) =
+        copy_fixture_to_session("01_committed_text_turn", "s_lowercase_meta");
+    let store = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    drop(store);
+
+    let meta_path = session_dir.join("meta.json");
+    let content = fs::read_to_string(&meta_path).unwrap();
+    let malformed = content.replace("01ARZ3NDEKTSV4RRFFQ69G5FAV", "01arz3ndektsv4rrffq69g5fav");
+    fs::write(&meta_path, malformed).unwrap();
+
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "HISTORY_META_MISMATCH");
+}
+
+#[test]
+fn tool_call_arguments_order_independent_bytes() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/protocol_v2/02_single_tool_cycle_inline/events.jsonl");
+    let events = EventLogStore::read_events_from_path(&fixture).unwrap();
+    let mut envelope1 = events[4].clone();
+    let mut envelope2 = envelope1.clone();
+
+    let raw_args = r#"{"path":"README.md"}"#.to_string();
+
+    if let CanonicalEvent::AssistantStepAccepted(accepted1) = &mut envelope1.event {
+        if let praana_core::protocol::messages::AssistantBlock::ToolCall(call1) =
+            &mut accepted1.message.blocks[0]
+        {
+            let mut map1 = serde_json::Map::new();
+            map1.insert("z".to_string(), serde_json::json!("last"));
+            map1.insert("a".to_string(), serde_json::json!("first"));
+            map1.insert("m".to_string(), serde_json::json!("middle"));
+            call1.arguments = map1;
+            call1.raw_arguments = raw_args.clone();
+        }
+    }
+
+    if let CanonicalEvent::AssistantStepAccepted(accepted2) = &mut envelope2.event {
+        if let praana_core::protocol::messages::AssistantBlock::ToolCall(call2) =
+            &mut accepted2.message.blocks[0]
+        {
+            let mut map2 = serde_json::Map::new();
+            map2.insert("a".to_string(), serde_json::json!("first"));
+            map2.insert("m".to_string(), serde_json::json!("middle"));
+            map2.insert("z".to_string(), serde_json::json!("last"));
+            call2.arguments = map2;
+            call2.raw_arguments = raw_args;
+        }
+    }
+
+    let json1 = serialize_event_compact(&envelope1).unwrap();
+    let json2 = serialize_event_compact(&envelope2).unwrap();
+    assert_eq!(
+        json1, json2,
+        "ToolCall.arguments with different insertion orders must serialize to identical JSONL bytes"
+    );
 }

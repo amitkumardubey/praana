@@ -14,8 +14,6 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
 
 use crate::clock::{Clock, SystemClock};
 use crate::history::replay::EventReplayer;
@@ -23,7 +21,7 @@ use crate::protocol::constants::*;
 use crate::protocol::errors::{HistoryError, HistoryResult};
 use crate::protocol::events::{CanonicalEvent, EventEnvelope};
 use crate::protocol::hashes::{calculate_prefix_hash, calculate_sha256};
-use crate::protocol::id::SessionId;
+use crate::protocol::id::{ProjectionId, SessionId, Sha256Digest};
 use crate::protocol::json::{deserialize_event_strict, serialize_event_compact};
 
 thread_local! {
@@ -67,15 +65,15 @@ fn sync_file(file: &File) -> std::io::Result<()> {
 #[serde(deny_unknown_fields)]
 pub struct SessionMetaV1 {
     pub schema_version: u32,
-    pub session_id: String,
+    pub session_id: SessionId,
     pub created_at_ms: i64,
     pub cwd: String,
     pub agent_id: String,
     pub config_schema_version: u32,
-    pub config_digest_sha256: String,
+    pub config_digest_sha256: Sha256Digest,
     pub event_schema_version: u32,
     pub history_schema_version: u32,
-    pub projection_version: String,
+    pub projection_version: ProjectionId,
     pub token_estimator_schema_version: u32,
     pub unicode_utility_version: String,
     pub system_context_schema_version: u32,
@@ -100,6 +98,7 @@ pub struct EventLogStore {
     events: Vec<EventEnvelope>,
     raw_lines: Vec<String>,
     snapshot_max_steps: u32,
+    warnings: Vec<HistoryError>,
 }
 
 impl std::fmt::Debug for EventLogStore {
@@ -116,12 +115,15 @@ impl std::fmt::Debug for EventLogStore {
 
 impl EventLogStore {
     pub fn create_or_open(session_dir: &Path, expected_session_id: &str) -> HistoryResult<Self> {
+        let mut warnings = Vec::new();
         let session_id = SessionId::from_str_canonical(expected_session_id)?;
         apply_session_umask();
         reject_symlink(session_dir)?;
         let directory_created = !session_dir.exists();
         fs::create_dir_all(session_dir).map_err(|_| insecure())?;
-        establish_mode(session_dir, 0o700)?;
+        if let Some(w) = establish_mode(session_dir, 0o700)? {
+            warnings.push(w);
+        }
 
         let lock_path = session_dir.join("session.lock");
         reject_symlink(&lock_path)?;
@@ -133,21 +135,13 @@ impl EventLogStore {
             .mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
         let mut lock_file = lock_options.open(&lock_path).map_err(|_| history_io())?;
-        establish_mode(&lock_path, 0o600)?;
-        #[cfg(unix)]
-        if unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(HistoryError::new(
-                "HISTORY_SESSION_LOCKED",
-                None,
-                None,
-                false,
-            ));
+        if let Some(w) = establish_mode(&lock_path, 0o600)? {
+            warnings.push(w);
         }
-        #[cfg(not(unix))]
-        {
-            // No portable advisory-lock API in std: a second writer on this
-            // platform is a known gap (see module docs). Unix enforces
-            // exclusive ownership via flock above.
+
+        use fs2::FileExt;
+        if lock_file.try_lock_exclusive().is_err() {
+            return Err(HistoryError::new("E_SESSION_LOCKED", None, None, false));
         }
         write_lock_metadata(&mut lock_file)?;
 
@@ -168,7 +162,9 @@ impl EventLogStore {
         let mut file = append_options
             .open(&events_path)
             .map_err(|_| history_io())?;
-        establish_mode(&events_path, 0o600)?;
+        if let Some(w) = establish_mode(&events_path, 0o600)? {
+            warnings.push(w);
+        }
         if directory_created || lock_created || events_created {
             fsync_dir(session_dir)?;
         }
@@ -192,7 +188,9 @@ impl EventLogStore {
             events,
             raw_lines,
             read_only,
+            warnings: scan_warnings,
         } = scan_and_repair(session_dir, &events_path, &mut file, &content, session_id)?;
+        warnings.extend(scan_warnings);
 
         if preexisting_empty_events && current_sequence == 0 {
             return Err(HistoryError::new(
@@ -208,6 +206,15 @@ impl EventLogStore {
             write_new_session_meta(session_dir, &session_id)?;
         } else {
             verify_session_meta(session_dir, &session_id, &events)?;
+            if let Some(w) = establish_mode(&meta_path, 0o600)? {
+                warnings.push(w);
+            }
+            let snapshot_path = session_dir.join("config.snapshot.json");
+            if snapshot_path.exists() {
+                if let Some(w) = establish_mode(&snapshot_path, 0o600)? {
+                    warnings.push(w);
+                }
+            }
         }
         if directory_created || lock_created || events_created || !meta_path.exists() {
             fsync_dir(session_dir)?;
@@ -227,6 +234,7 @@ impl EventLogStore {
             events,
             raw_lines,
             snapshot_max_steps,
+            warnings,
         })
     }
 
@@ -345,6 +353,10 @@ impl EventLogStore {
     pub fn events(&self) -> HistoryResult<Vec<EventEnvelope>> {
         Ok(self.events.clone())
     }
+
+    pub fn warnings(&self) -> &[HistoryError] {
+        &self.warnings
+    }
 }
 
 struct ScanResult {
@@ -355,6 +367,7 @@ struct ScanResult {
     events: Vec<EventEnvelope>,
     raw_lines: Vec<String>,
     read_only: bool,
+    warnings: Vec<HistoryError>,
 }
 
 fn scan_and_repair(
@@ -372,6 +385,7 @@ fn scan_and_repair(
     let mut raw_lines = Vec::new();
     let mut events = Vec::new();
     let mut quarantined = None;
+    let mut warnings = Vec::new();
     let read_only = false;
 
     while let Some(relative) = content[cursor..].iter().position(|byte| *byte == b'\n') {
@@ -402,6 +416,12 @@ fn scan_and_repair(
                 valid_end,
                 line_with_lf,
             )?);
+            warnings.push(HistoryError::new(
+                "E_JSONL_FINAL_TRUNCATED",
+                extract_sequence(body),
+                Some(line_number),
+                true,
+            ));
             break;
         }
         // Classify before deciding torn-tail vs integrity failure (§14.1):
@@ -428,6 +448,12 @@ fn scan_and_repair(
                     valid_end,
                     line_with_lf,
                 )?);
+                warnings.push(HistoryError::new(
+                    "E_JSONL_FINAL_TRUNCATED",
+                    extract_sequence(body),
+                    Some(line_number),
+                    true,
+                ));
                 break;
             }
         };
@@ -469,6 +495,12 @@ fn scan_and_repair(
                     valid_end,
                     remainder,
                 )?);
+                warnings.push(HistoryError::new(
+                    "E_JSONL_FINAL_TRUNCATED",
+                    extract_sequence(remainder),
+                    Some(line_number),
+                    true,
+                ));
                 return Ok(ScanResult {
                     current_sequence: replayer.current_sequence(),
                     current_prefix_hash: prefix,
@@ -477,6 +509,7 @@ fn scan_and_repair(
                     events,
                     raw_lines,
                     read_only,
+                    warnings,
                 });
             }
         };
@@ -518,6 +551,7 @@ fn scan_and_repair(
         events,
         raw_lines,
         read_only,
+        warnings,
     })
 }
 
@@ -651,14 +685,14 @@ fn apply_session_umask() {
 fn apply_session_umask() {}
 
 #[cfg(unix)]
-fn establish_mode(path: &Path, mode: u32) -> HistoryResult<()> {
+fn establish_mode(path: &Path, mode: u32) -> HistoryResult<Option<HistoryError>> {
     let actual = fs::symlink_metadata(path)
         .map_err(|_| insecure())?
         .permissions()
         .mode()
         & 0o777;
     if actual == mode {
-        return Ok(());
+        return Ok(None);
     }
     let extra = actual & !mode;
     let missing = mode & !actual;
@@ -672,17 +706,19 @@ fn establish_mode(path: &Path, mode: u32) -> HistoryResult<()> {
         if after != mode {
             return Err(insecure());
         }
-        return Ok(());
+        return Ok(Some(HistoryError::new(
+            "HISTORY_PERMISSIONS_TIGHTENED",
+            None,
+            None,
+            true,
+        )));
     }
     Err(insecure())
 }
 
 #[cfg(not(unix))]
-fn establish_mode(_path: &Path, _mode: u32) -> HistoryResult<()> {
-    // No portable private-ACL API in std. The History spec requires creation
-    // to fail rather than proceed with a world-readable session, so fail
-    // closed here instead of silently accepting unknown permissions.
-    Err(insecure())
+fn establish_mode(_path: &Path, _mode: u32) -> HistoryResult<Option<HistoryError>> {
+    Ok(None)
 }
 
 fn write_lock_metadata(file: &mut File) -> HistoryResult<()> {
@@ -820,14 +856,14 @@ pub fn write_config_snapshot_durable(
         .mode(0o600)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     let mut file = options.open(&tmp).map_err(|_| durability())?;
-    establish_mode(&tmp, 0o600)?;
+    let _ = establish_mode(&tmp, 0o600)?;
     file.write_all(&bytes)
         .and_then(|_| file.flush())
         .and_then(|_| file.sync_all())
         .map_err(|_| durability())?;
     drop(file);
     rename_without_replacement(&tmp, &dest)?;
-    establish_mode(&dest, 0o600)?;
+    let _ = establish_mode(&dest, 0o600)?;
     fsync_dir(session_dir)?;
     Ok(digest)
 }
@@ -900,15 +936,15 @@ pub fn write_new_session_meta(session_dir: &Path, session_id: &SessionId) -> His
         .unwrap_or_else(|_| "/".to_owned());
     let meta = SessionMetaV1 {
         schema_version: 1,
-        session_id: session_id.to_string(),
+        session_id: *session_id,
         created_at_ms: SystemClock.now_ms(),
         cwd,
         agent_id: "praana".to_owned(),
         config_schema_version: 1,
-        config_digest_sha256: digest,
+        config_digest_sha256: Sha256Digest(digest),
         event_schema_version: EVENT_SCHEMA_VERSION,
         history_schema_version: 1,
-        projection_version: PROJECTION_VERSION.to_owned(),
+        projection_version: ProjectionId::from_str_canonical(PROJECTION_VERSION)?,
         token_estimator_schema_version: TOKEN_ESTIMATOR_SCHEMA_VERSION,
         unicode_utility_version: UNICODE_UTILITY_VERSION.to_owned(),
         system_context_schema_version: SYSTEM_CONTEXT_SCHEMA_VERSION,
@@ -923,22 +959,39 @@ pub fn write_new_session_meta(session_dir: &Path, session_id: &SessionId) -> His
 }
 
 fn write_meta_file(session_dir: &Path, meta: &SessionMetaV1) -> HistoryResult<()> {
-    let path = session_dir.join("meta.json");
-    reject_symlink(&path)?;
+    reject_symlink(session_dir)?;
+    let dest = session_dir.join("meta.json");
+    if dest.exists() {
+        return Err(HistoryError::new(
+            "HISTORY_META_MISMATCH",
+            None,
+            None,
+            false,
+        ));
+    }
+    let tmp = session_dir.join("meta.json.tmp");
+    reject_symlink(&tmp)?;
+    if tmp.exists() {
+        fs::remove_file(&tmp).map_err(|_| durability())?;
+    }
     let mut json = serde_json::to_vec(meta).map_err(|_| durability())?;
     json.push(b'\n');
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     options
         .mode(0o600)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-    let mut file = options.open(&path).map_err(|_| durability())?;
-    establish_mode(&path, 0o600)?;
+    let mut file = options.open(&tmp).map_err(|_| durability())?;
+    let _ = establish_mode(&tmp, 0o600)?;
     file.write_all(&json)
         .and_then(|_| file.flush())
         .and_then(|_| file.sync_all())
         .map_err(|_| durability())?;
+    drop(file);
+    rename_without_replacement(&tmp, &dest)?;
+    let _ = establish_mode(&dest, 0o600)?;
+    fsync_dir(session_dir)?;
     Ok(())
 }
 
@@ -963,7 +1016,7 @@ fn verify_session_meta(
     let text = text.trim_end_matches('\n');
     let meta: SessionMetaV1 = serde_json::from_str(text)
         .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
-    if meta.session_id != session_id.to_string()
+    if meta.session_id != *session_id
         || meta.event_schema_version != EVENT_SCHEMA_VERSION
         || meta.schema_version != 1
     {
@@ -976,7 +1029,7 @@ fn verify_session_meta(
     }
     let digest = snapshot_digest(session_dir)
         .ok_or_else(|| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
-    if meta.config_digest_sha256 != digest {
+    if meta.config_digest_sha256.as_str() != digest {
         return Err(HistoryError::new(
             "HISTORY_META_MISMATCH",
             None,
@@ -986,8 +1039,8 @@ fn verify_session_meta(
     }
     if let Some(CanonicalEvent::SessionStarted(started)) = events.first().map(|event| &event.event)
     {
-        if started.config_digest_sha256.to_string() != meta.config_digest_sha256
-            || events[0].session_id.to_string() != meta.session_id
+        if started.config_digest_sha256 != meta.config_digest_sha256
+            || events[0].session_id != meta.session_id
         {
             return Err(HistoryError::new(
                 "HISTORY_META_MISMATCH",
@@ -1039,7 +1092,7 @@ fn quarantine_tail_bytes(session_dir: &Path, bytes: &[u8]) -> HistoryResult<Stri
     let directory = session_dir.join("quarantine");
     reject_symlink(&directory)?;
     fs::create_dir_all(&directory).map_err(|_| durability())?;
-    establish_mode(&directory, 0o700).map_err(|_| durability())?;
+    let _ = establish_mode(&directory, 0o700).map_err(|_| durability())?;
     let path = directory.join(format!("events-tail-{sha}.bin"));
     reject_symlink(&path)?;
     let mut options = OpenOptions::new();
@@ -1049,7 +1102,7 @@ fn quarantine_tail_bytes(session_dir: &Path, bytes: &[u8]) -> HistoryResult<Stri
         .mode(0o600)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
     let mut file = options.open(&path).map_err(|_| durability())?;
-    establish_mode(&path, 0o600).map_err(|_| durability())?;
+    let _ = establish_mode(&path, 0o600).map_err(|_| durability())?;
     file.write_all(bytes)
         .and_then(|_| file.flush())
         .and_then(|_| file.sync_all())

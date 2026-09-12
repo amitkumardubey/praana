@@ -7,7 +7,6 @@ use crate::clock::{Clock, SystemClock};
 use crate::history::event_log::EventLogStore;
 use crate::history::replay::{accepted_messages, AttemptStatus, EventReplayer};
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
-use crate::protocol::constants::TOOL_RESULT_MEDIA_TYPE;
 use crate::protocol::errors::{ErrorClass, HistoryError, HistoryResult, ProtocolError};
 use crate::protocol::events::*;
 use crate::protocol::hashes::{
@@ -340,7 +339,7 @@ impl SessionRecoveryEngine {
     ) -> HistoryResult<EventEnvelope> {
         let message_id = self.next_id()?;
         let recovered = status == ToolResultStatus::Uncertain;
-        let text = canonical_recovery_tool_result(error_code, error_message, &call_id, &tool_name)?;
+        let text = canonical_recovery_tool_result(error_code, error_message)?;
         self.envelope(
             Some(turn_id),
             Some(attempt_id),
@@ -554,50 +553,17 @@ fn sum_attempt_usage(replay: &EventReplayer, turn_id: TurnId) -> ProviderUsage {
     total
 }
 
-fn canonical_recovery_tool_result(
-    code: &str,
-    message: &str,
-    call_id: &ToolCallId,
-    tool_name: &str,
-) -> HistoryResult<String> {
+fn canonical_recovery_tool_result(code: &str, error: &str) -> HistoryResult<String> {
     #[derive(serde::Serialize)]
-    struct RecoveryToolResult<'a> {
-        ok: bool,
-        error: RecoveryToolError<'a>,
-        meta: RecoveryToolMeta<'a>,
-    }
-    #[derive(serde::Serialize)]
-    struct RecoveryToolError<'a> {
+    struct SyntheticToolResult<'a> {
         code: &'a str,
-        message: &'a str,
-        retryable: bool,
+        error: &'a str,
+        ok: bool,
     }
-    #[derive(serde::Serialize)]
-    struct RecoveryToolMeta<'a> {
-        tool_call_id: &'a str,
-        tool_name: &'a str,
-        duration_ms: u64,
-        cancelled: bool,
-        timed_out: bool,
-        redacted: bool,
-        truncated: bool,
-    }
-    let dto = RecoveryToolResult {
+    let dto = SyntheticToolResult {
+        code,
+        error,
         ok: false,
-        error: RecoveryToolError {
-            code,
-            message,
-            retryable: false,
-        },
-        meta: RecoveryToolMeta {
-            tool_call_id: call_id.as_str(),
-            tool_name,
-            duration_ms: 0,
-            cancelled: false,
-            timed_out: false,
-            redacted: false,
-            truncated: false,
-        },
     };
     let bytes = crate::canonical_json::to_canonical_json_bytes(&dto)
         .map_err(|_| HistoryError::new("E_EVENT_SCHEMA_INVALID", None, None, false))?;
@@ -623,7 +589,7 @@ fn synthetic_tool_result_body(text: &str) -> HistoryResult<ToolResultBody> {
         )
         .map_err(|_| HistoryError::new("E_EVENT_SCHEMA_INVALID", None, None, false))?;
     Ok(ToolResultBody {
-        media_type: TOOL_RESULT_MEDIA_TYPE.to_owned(),
+        media_type: "application/json".to_owned(),
         content: ToolResultContent::Inline(InlineToolResult {
             text: text.to_owned(),
         }),

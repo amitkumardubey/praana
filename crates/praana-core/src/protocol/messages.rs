@@ -157,6 +157,7 @@ pub struct ToolCall {
     pub call_id: ToolCallId,
     #[serde(deserialize_with = "deserialize_tool_name")]
     pub name: String,
+    #[serde(serialize_with = "crate::protocol::json::serialize_canonical_json_map")]
     pub arguments: serde_json::Map<String, serde_json::Value>,
     pub raw_arguments: String,
 }

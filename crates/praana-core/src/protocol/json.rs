@@ -272,6 +272,41 @@ pub fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryE
     Ok(())
 }
 
+pub fn serialize_canonical_json_map<S>(
+    map: &serde_json::Map<String, serde_json::Value>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    let btree = canonicalize_json_map(map);
+    btree.serialize(serializer)
+}
+
+pub fn canonicalize_json_map(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    let mut btree = std::collections::BTreeMap::new();
+    for (k, v) in map {
+        btree.insert(k.clone(), canonicalize_json_val(v));
+    }
+    btree
+}
+
+pub fn canonicalize_json_val(val: &serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::Object(map) => {
+            let btree = canonicalize_json_map(map);
+            serde_json::to_value(btree).unwrap()
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(canonicalize_json_val).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::check_raw_duplicate_keys_and_depth;

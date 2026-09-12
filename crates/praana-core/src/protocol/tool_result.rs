@@ -50,6 +50,7 @@ pub struct ArtifactToolResult {
 pub struct ArtifactRef {
     pub artifact_id: ArtifactId,
     pub sha256: Sha256Digest,
+    #[serde(deserialize_with = "deserialize_media_type")]
     pub media_type: String,
     #[serde(deserialize_with = "deserialize_bounded_u64")]
     pub byte_count: u64,
@@ -67,12 +68,40 @@ pub struct ArtifactRef {
 #[serde(deny_unknown_fields)]
 pub struct ArtifactRetrieval {
     pub tool: String,
+    #[serde(serialize_with = "crate::protocol::json::serialize_canonical_json_map")]
     pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+pub fn deserialize_media_type<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    if s == "application/vnd.praana.tool-result+json;version=1" {
+        return Ok(s);
+    }
+    if s.is_empty() || s.contains(';') || s.contains(' ') {
+        return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
+    }
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
+    }
+    for part in parts {
+        for b in part.bytes() {
+            if !matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-')
+            {
+                return Err(serde::de::Error::custom("E_EVENT_SCHEMA_INVALID"));
+            }
+        }
+    }
+    Ok(s)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolResultBody {
+    #[serde(deserialize_with = "deserialize_media_type")]
     pub media_type: String,
     pub content: ToolResultContent,
     pub sha256: Sha256Digest,
