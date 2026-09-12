@@ -92,6 +92,16 @@ P0
   attempts/turns/tool state validation, interruption capsules; no provider HTTP
   and no SQLite-derived search/artifacts.
 - Focused tests: `protocol_v2`, `history_phase1`.
+- Property tests: `cargo test -p praana-core properties::` (§17.2; fixture-seeded
+  proptest suite in `crates/praana-core/src/properties.rs`).
+- Phase 3 artifact fixtures (`12_*`, `e22_*`, `e23_*`) are present under
+  `tests/fixtures/protocol_v2/` but skipped by Phase 1 runners until the
+  artifact packet owns them.
+- Fuzz targets (§17.3) are not yet checked in; `cargo-fuzz` is not part of the
+  default toolchain gate for this packet.
+- Implementation modules: `crates/praana-core/src/protocol/*`,
+  `crates/praana-core/src/history/{event_log,replay,projection,recovery}.rs`.
+  `operation_ledger.rs` remains P1C.
 
 ### P1C: Permanent UI Contract and Operation Idempotency
 

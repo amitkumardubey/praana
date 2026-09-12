@@ -7,9 +7,26 @@ use serde_json::Value;
 
 /// Serialize any serializable value into RFC 8785 canonical JSON bytes.
 pub fn to_canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    to_canonical_json_bytes_with(value, false)
+}
+
+/// RFC 8785 canonical JSON with Compaction §10 `safe_json` string escaping.
+///
+/// Literal `<`, `>`, and `&` inside JSON strings are emitted as `\u003c`,
+/// `\u003e`, and `\u0026` while encoding, not by editing a finished byte stream.
+pub fn to_canonical_json_bytes_html_safe<T: Serialize>(
+    value: &T,
+) -> Result<Vec<u8>, serde_json::Error> {
+    to_canonical_json_bytes_with(value, true)
+}
+
+fn to_canonical_json_bytes_with<T: Serialize>(
+    value: &T,
+    html_safe: bool,
+) -> Result<Vec<u8>, serde_json::Error> {
     let json_val = serde_json::to_value(value)?;
     let mut out = Vec::new();
-    write_canonical_value(&json_val, &mut out);
+    write_canonical_value(&json_val, &mut out, html_safe);
     Ok(out)
 }
 
@@ -19,20 +36,20 @@ pub fn to_canonical_json_string<T: Serialize>(value: &T) -> Result<String, serde
     Ok(String::from_utf8(bytes).expect("canonical json is guaranteed valid utf-8"))
 }
 
-fn write_canonical_value(val: &Value, out: &mut Vec<u8>) {
+fn write_canonical_value(val: &Value, out: &mut Vec<u8>, html_safe: bool) {
     match val {
         Value::Null => out.extend_from_slice(b"null"),
         Value::Bool(true) => out.extend_from_slice(b"true"),
         Value::Bool(false) => out.extend_from_slice(b"false"),
         Value::Number(num) => write_canonical_number(num, out),
-        Value::String(s) => write_canonical_string(s, out),
+        Value::String(s) => write_canonical_string(s, out, html_safe),
         Value::Array(arr) => {
             out.push(b'[');
             for (i, elem) in arr.iter().enumerate() {
                 if i > 0 {
                     out.push(b',');
                 }
-                write_canonical_value(elem, out);
+                write_canonical_value(elem, out, html_safe);
             }
             out.push(b']');
         }
@@ -51,16 +68,16 @@ fn write_canonical_value(val: &Value, out: &mut Vec<u8>) {
                 if i > 0 {
                     out.push(b',');
                 }
-                write_canonical_string(key, out);
+                write_canonical_string(key, out, html_safe);
                 out.push(b':');
-                write_canonical_value(&map[*key], out);
+                write_canonical_value(&map[*key], out, html_safe);
             }
             out.push(b'}');
         }
     }
 }
 
-fn write_canonical_string(s: &str, out: &mut Vec<u8>) {
+fn write_canonical_string(s: &str, out: &mut Vec<u8>, html_safe: bool) {
     out.push(b'"');
     for b in s.bytes() {
         match b {
@@ -71,6 +88,9 @@ fn write_canonical_string(s: &str, out: &mut Vec<u8>) {
             0x0A => out.extend_from_slice(b"\\n"),
             0x0C => out.extend_from_slice(b"\\f"),
             0x0D => out.extend_from_slice(b"\\r"),
+            b'<' if html_safe => out.extend_from_slice(br"\u003c"),
+            b'>' if html_safe => out.extend_from_slice(br"\u003e"),
+            b'&' if html_safe => out.extend_from_slice(br"\u0026"),
             b if b < 0x20 => {
                 let hex = format!("\\u{:04x}", b);
                 out.extend_from_slice(hex.as_bytes());
