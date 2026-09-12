@@ -280,31 +280,65 @@ where
     S: serde::Serializer,
 {
     use serde::Serialize;
-    let btree = canonicalize_json_map(map);
-    btree.serialize(serializer)
+    CanonicalJsonMap(map).serialize(serializer)
 }
 
-pub fn canonicalize_json_map(
-    map: &serde_json::Map<String, serde_json::Value>,
-) -> std::collections::BTreeMap<String, serde_json::Value> {
-    let mut btree = std::collections::BTreeMap::new();
-    for (k, v) in map {
-        btree.insert(k.clone(), canonicalize_json_val(v));
+/// A borrowed wrapper over a JSON map that serializes keys in RFC 8785 UTF-16 code unit order.
+pub struct CanonicalJsonMap<'a>(pub &'a serde_json::Map<String, serde_json::Value>);
+
+impl<'a> serde::Serialize for CanonicalJsonMap<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        // RFC 8785 Section 3.2.3:
+        // "The keys of every JSON object MUST be sorted in lexicographical order by the UTF-16 code units of their names."
+        let mut keys: Vec<&String> = self.0.keys().collect();
+        keys.sort_by(|a, b| {
+            let a_units = a.encode_utf16();
+            let b_units = b.encode_utf16();
+            a_units.cmp(b_units)
+        });
+
+        let mut ser_map = serializer.serialize_map(Some(keys.len()))?;
+        for key in keys {
+            ser_map.serialize_entry(key, &CanonicalJsonValue(&self.0[key]))?;
+        }
+        ser_map.end()
     }
-    btree
 }
 
+/// A borrowed wrapper over a JSON value ensuring all nested objects serialize with RFC 8785 key order.
+pub struct CanonicalJsonValue<'a>(pub &'a serde_json::Value);
+
+impl<'a> serde::Serialize for CanonicalJsonValue<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        match self.0 {
+            serde_json::Value::Object(map) => CanonicalJsonMap(map).serialize(serializer),
+            serde_json::Value::Array(arr) => {
+                let mut seq = serializer.serialize_seq(Some(arr.len()))?;
+                for item in arr {
+                    seq.serialize_element(&CanonicalJsonValue(item))?;
+                }
+                seq.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
+/// Normalizes a JSON value into canonical form by round-tripping through RFC 8785 bytes.
 pub fn canonicalize_json_val(val: &serde_json::Value) -> serde_json::Value {
-    match val {
-        serde_json::Value::Object(map) => {
-            let btree = canonicalize_json_map(map);
-            serde_json::to_value(btree).unwrap()
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(canonicalize_json_val).collect())
-        }
-        other => other.clone(),
-    }
+    let bytes = match crate::canonical_json::to_canonical_json_bytes(val) {
+        Ok(bytes) => bytes,
+        Err(_) => return val.clone(),
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| val.clone())
 }
 
 #[cfg(test)]

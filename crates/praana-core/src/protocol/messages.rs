@@ -165,6 +165,7 @@ pub struct ToolCall {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageBlock {
+    #[serde(deserialize_with = "crate::protocol::tool_result::deserialize_media_type")]
     pub media_type: String,
     pub source: ImageSource,
     pub alt_text: Option<String>,

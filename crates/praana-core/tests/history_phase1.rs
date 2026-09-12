@@ -1323,3 +1323,93 @@ fn tool_call_arguments_order_independent_bytes() {
         "ToolCall.arguments with different insertion orders must serialize to identical JSONL bytes"
     );
 }
+
+#[test]
+fn tool_call_arguments_utf16_code_unit_sorting() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/protocol_v2/02_single_tool_cycle_inline/events.jsonl");
+    let events = EventLogStore::read_events_from_path(&fixture).unwrap();
+    let mut envelope = events[4].clone();
+
+    // In RFC 8785 (UTF-16 code units):
+    // "\u{1F300}" (cyclone emoji) has surrogate pair 0xD83C, 0xDF00.
+    // "\u{E000}" (private use BMP) has code unit 0xE000.
+    // In UTF-16: 0xD83C < 0xE000, so "\u{1F300}" must sort BEFORE "\u{E000}".
+    // In UTF-8: "\u{E000}" is [0xEE, 0x80, 0x80], while "\u{1F300}" is [0xF0, 0x9F, 0x8C, 0x80].
+    // If standard BTreeMap / UTF-8 sorting were used, "\u{E000}" would incorrectly sort before "\u{1F300}".
+    if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut envelope.event {
+        if let praana_core::protocol::messages::AssistantBlock::ToolCall(call) =
+            &mut accepted.message.blocks[0]
+        {
+            let mut map = serde_json::Map::new();
+            map.insert("\u{E000}".to_string(), serde_json::json!("bmp"));
+            map.insert("\u{1F300}".to_string(), serde_json::json!("astral"));
+            call.arguments = map;
+        }
+    }
+
+    let json = serialize_event_compact(&envelope).unwrap();
+    let expected_pattern = r#""arguments":{"🌀":"astral","":"bmp"}"#;
+    assert!(
+        json.contains(expected_pattern),
+        "ToolCall.arguments must sort non-BMP astral keys before high-BMP keys per RFC 8785 UTF-16 order; got: {json}"
+    );
+}
+
+#[test]
+fn meta_json_crash_point_4_tmp_fsync_failure() {
+    reset_fsync_injection();
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("meta_crash_4");
+
+    // Injected failure immediately after meta.json.tmp fsync before rename
+    fail_after_meta_tmp_fsync(true);
+
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
+
+    // meta.json.tmp exists from the interrupted write, but meta.json was not published
+    assert!(session_dir.join("meta.json.tmp").exists());
+    assert!(!session_dir.join("meta.json").exists());
+
+    reset_fsync_injection();
+    // Reopening refuses with E_SESSION_NOT_STARTED because events.jsonl has no sequence-1 session_started
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "E_SESSION_NOT_STARTED");
+}
+
+#[test]
+fn meta_json_crash_point_5_dir_fsync_after_rename_failure() {
+    reset_fsync_injection();
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("meta_crash_5");
+
+    // Injected failure immediately after meta.json rename before directory fsync
+    fail_after_meta_rename(true);
+
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
+
+    // meta.json was already atomically renamed before directory fsync failed
+    assert!(session_dir.join("meta.json").exists());
+    assert!(!session_dir.join("meta.json.tmp").exists());
+
+    reset_fsync_injection();
+    // The published meta.json is valid, but opening refuses with E_SESSION_NOT_STARTED because events.jsonl has no sequence-1
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "E_SESSION_NOT_STARTED");
+}
+
+#[cfg(not(unix))]
+#[test]
+fn non_unix_permissions_fail_closed() {
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("non_unix_test");
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "HISTORY_INSECURE_PERMISSIONS");
+}

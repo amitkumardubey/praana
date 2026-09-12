@@ -704,3 +704,51 @@ fn attempt_number_gaps_are_rejected() {
     });
     assert_eq!(err.unwrap_err().code(), "E_EVENT_TRANSITION_INVALID");
 }
+
+#[test]
+fn image_block_media_type_validation() {
+    use praana_core::protocol::messages::ImageBlock;
+
+    let valid_data = r#"{"data":"abc=","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","byte_count":3}"#;
+
+    let valid_json = format!(
+        r#"{{"media_type":"image/png","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    let block = serde_json::from_str::<ImageBlock>(&valid_json);
+    assert!(block.is_ok(), "valid image/png media type must parse");
+
+    let valid_jpeg = format!(
+        r#"{{"media_type":"image/jpeg","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&valid_jpeg).is_ok());
+
+    // Uppercase is invalid per Protocol §4.2
+    let uppercase = format!(
+        r#"{{"media_type":"IMAGE/PNG","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&uppercase).is_err());
+
+    // Parameters are invalid per Protocol §4.2
+    let params = format!(
+        r#"{{"media_type":"image/png;charset=utf-8","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&params).is_err());
+
+    // Missing subtype
+    let missing_subtype = format!(
+        r#"{{"media_type":"image","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&missing_subtype).is_err());
+
+    // Empty media type
+    let empty = format!(
+        r#"{{"media_type":"","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&empty).is_err());
+
+    // Invalid characters
+    let invalid_chars = format!(
+        r#"{{"media_type":"image/png@test","source":{{"type":"inline_base64","data":{valid_data}}},"alt_text":null}}"#
+    );
+    assert!(serde_json::from_str::<ImageBlock>(&invalid_chars).is_err());
+}

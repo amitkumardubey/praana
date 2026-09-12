@@ -1,10 +1,14 @@
 //! Canonical append-only event store, exclusive writer lock, and startup repair.
 //!
 //! Platform notes: Unix enforces private modes (`0700`/`0600`), `O_NOFOLLOW`,
-//! and single-writer ownership via `flock`. Outside Unix there is no portable
-//! std API for private ACLs or advisory locks: permission establishment fails
-//! closed with `HISTORY_INSECURE_PERMISSIONS`, while the cross-process writer
-//! lock remains best-effort (a second local writer is a known gap there).
+//! and single-writer ownership via advisory locks (`fs2`). Outside Unix, private
+//! ACLs are not yet implemented in std: permission establishment fails closed
+//! with `HISTORY_INSECURE_PERMISSIONS`, while the cross-process writer lock
+//! is maintained via `fs2`. Directory fsync outside Unix remains a no-op.
+
+/// Internal diagnostic code emitted as a recoverable warning when an existing session
+/// file or directory had wider permissions and was tightened to the required private mode.
+pub const WARN_HISTORY_PERMISSIONS_TIGHTENED: &str = "HISTORY_PERMISSIONS_TIGHTENED";
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -28,6 +32,8 @@ thread_local! {
     static FAIL_AFTER_SUCCESSFUL_FSYNCS: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
     static SUCCESSFUL_FSYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_AFTER_META_TMP_FSYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_AFTER_META_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Test-only failpoint: fail the next append `fsync`.
@@ -41,10 +47,22 @@ pub fn fail_after_n_successful_fsyncs(n: usize) {
     FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| flag.set(Some(n)));
 }
 
+/// Test-only failpoint: fail immediately after `meta.json.tmp` fsync before rename (History §15.2 point 4).
+pub fn fail_after_meta_tmp_fsync(fail: bool) {
+    FAIL_AFTER_META_TMP_FSYNC.with(|flag| flag.set(fail));
+}
+
+/// Test-only failpoint: fail immediately after `meta.json` rename before directory fsync (History §15.2 point 5).
+pub fn fail_after_meta_rename(fail: bool) {
+    FAIL_AFTER_META_RENAME.with(|flag| flag.set(fail));
+}
+
 /// Test-only failpoint reset.
 pub fn reset_fsync_injection() {
     SUCCESSFUL_FSYNCS.with(|count| count.set(0));
     FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| flag.set(None));
+    FAIL_AFTER_META_TMP_FSYNC.with(|flag| flag.set(false));
+    FAIL_AFTER_META_RENAME.with(|flag| flag.set(false));
 }
 
 fn sync_file(file: &File) -> std::io::Result<()> {
@@ -707,7 +725,7 @@ fn establish_mode(path: &Path, mode: u32) -> HistoryResult<Option<HistoryError>>
             return Err(insecure());
         }
         return Ok(Some(HistoryError::new(
-            "HISTORY_PERMISSIONS_TIGHTENED",
+            WARN_HISTORY_PERMISSIONS_TIGHTENED,
             None,
             None,
             true,
@@ -718,7 +736,9 @@ fn establish_mode(path: &Path, mode: u32) -> HistoryResult<Option<HistoryError>>
 
 #[cfg(not(unix))]
 fn establish_mode(_path: &Path, _mode: u32) -> HistoryResult<Option<HistoryError>> {
-    Ok(None)
+    // History §3: On non-Unix platforms where private ACLs are not yet established,
+    // session creation fails closed rather than proceeding with world-readable permissions.
+    Err(insecure())
 }
 
 fn write_lock_metadata(file: &mut File) -> HistoryResult<()> {
@@ -989,8 +1009,22 @@ fn write_meta_file(session_dir: &Path, meta: &SessionMetaV1) -> HistoryResult<()
         .and_then(|_| file.sync_all())
         .map_err(|_| durability())?;
     drop(file);
+
+    // History §15.2 crash point 4: crash immediately after meta.json.tmp fsync before rename
+    if FAIL_AFTER_META_TMP_FSYNC.with(|flag| flag.get()) {
+        FAIL_AFTER_META_TMP_FSYNC.with(|flag| flag.set(false));
+        return Err(durability());
+    }
+
     rename_without_replacement(&tmp, &dest)?;
     let _ = establish_mode(&dest, 0o600)?;
+
+    // History §15.2 crash point 5: crash immediately after rename before directory fsync
+    if FAIL_AFTER_META_RENAME.with(|flag| flag.get()) {
+        FAIL_AFTER_META_RENAME.with(|flag| flag.set(false));
+        return Err(durability());
+    }
+
     fsync_dir(session_dir)?;
     Ok(())
 }
