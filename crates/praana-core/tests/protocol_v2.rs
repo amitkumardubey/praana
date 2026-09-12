@@ -7,7 +7,9 @@ use praana_core::protocol::events::*;
 use praana_core::protocol::hashes::*;
 use praana_core::protocol::id::*;
 use praana_core::protocol::json::*;
-use praana_core::protocol::messages::{AssistantBlock, ConversationMessage, RefusalBlock};
+use praana_core::protocol::messages::{
+    AssistantBlock, ConversationMessage, RefusalBlock, ToolCall, UserBlock,
+};
 use praana_core::protocol::models::*;
 use praana_core::protocol::recovery::RecoveryNotice;
 use praana_core::protocol::state_graph::StateGraphV1;
@@ -297,7 +299,10 @@ fn source_hash_includes_line_feeds() {
         "{\"event\":\"b\"}\n".to_string(),
     ];
     let h = calculate_source_hash(&lines);
-    assert_eq!(h.0.len(), 64);
+    assert_eq!(
+        h.to_string(),
+        "69cbad9748d918b21eb19df30275d0f1fab56af5222a686ddc8f69e81f4ff0d5"
+    );
 }
 
 #[test]
@@ -432,7 +437,7 @@ fn system_note_and_uncertain_finish_round_trip() {
                 tool_name: "write_file".into(),
                 status: ToolResultStatus::Uncertain,
                 body: ToolResultBody {
-                    media_type: "application/json".into(),
+                    media_type: praana_core::protocol::constants::TOOL_RESULT_MEDIA_TYPE.into(),
                     content: ToolResultContent::Inline(InlineToolResult {
                         text: text.to_owned(),
                     }),
@@ -576,6 +581,36 @@ fn empty_message_blocks_are_rejected() {
     });
     assert_eq!(empty_user.unwrap_err().code(), "E_EVENT_SCHEMA_INVALID");
 
+    let empty_user_text = replay_fixture_with_mutation("01_committed_text_turn", 2, |e| {
+        if let CanonicalEvent::UserMessageAccepted(accepted) = &mut e.event {
+            match &mut accepted.message.blocks[0] {
+                UserBlock::Text(text) => text.text.clear(),
+                _ => panic!("fixture user block must be text"),
+            }
+        } else {
+            panic!("sequence 2 must be user_message_accepted");
+        }
+    });
+    assert_eq!(
+        empty_user_text.unwrap_err().code(),
+        "E_EVENT_SCHEMA_INVALID"
+    );
+
+    let empty_assistant_text = replay_fixture_with_mutation("01_committed_text_turn", 5, |e| {
+        if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut e.event {
+            match &mut accepted.message.blocks[0] {
+                AssistantBlock::Text(text) => text.text.clear(),
+                _ => panic!("fixture assistant block must be text"),
+            }
+        } else {
+            panic!("sequence 5 must be assistant_step_accepted");
+        }
+    });
+    assert_eq!(
+        empty_assistant_text.unwrap_err().code(),
+        "E_EVENT_SCHEMA_INVALID"
+    );
+
     let empty_assistant = replay_fixture_with_mutation("01_committed_text_turn", 5, |e| {
         if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut e.event {
             accepted.message.blocks.clear();
@@ -619,4 +654,53 @@ fn reset_requires_clears_state() {
         }
     });
     assert_eq!(uncleared.unwrap_err().code(), "E_EVENT_TRANSITION_INVALID");
+}
+
+#[test]
+fn model_and_tool_name_bounds_are_enforced() {
+    assert!(serde_json::from_str::<ModelSelection>(
+        r#"{"provider":"","protocol":"openai-responses-v1","model":"gpt-5","model_revision":null,"model_family":"gpt-5","endpoint_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reasoning_effort":"medium"}"#
+    )
+    .is_err());
+    let too_long = "a".repeat(257);
+    let json = format!(
+        r#"{{"provider":"{too_long}","protocol":"openai-responses-v1","model":"gpt-5","model_revision":null,"model_family":"gpt-5","endpoint_fingerprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reasoning_effort":"medium"}}"#
+    );
+    assert!(serde_json::from_str::<ModelSelection>(&json).is_err());
+    assert!(serde_json::from_str::<ToolCall>(
+        r#"{"call_id":"call_001","name":"ReadFile","arguments":{},"raw_arguments":"{}"}"#
+    )
+    .is_err());
+    assert!(serde_json::from_str::<ToolCall>(
+        r#"{"call_id":"call_001","name":"read_file","arguments":{},"raw_arguments":"{}"}"#
+    )
+    .is_ok());
+}
+
+#[test]
+fn raw_arguments_duplicate_keys_are_invalid() {
+    let err = replay_fixture_with_mutation("02_single_tool_cycle_inline", 5, |e| {
+        if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut e.event {
+            for block in &mut accepted.message.blocks {
+                if let AssistantBlock::ToolCall(call) = block {
+                    call.raw_arguments = r#"{"path":"a","path":"b"}"#.into();
+                }
+            }
+        } else {
+            panic!("sequence 5 must be assistant_step_accepted");
+        }
+    });
+    assert_eq!(err.unwrap_err().code(), "E_TOOL_ARGUMENTS_INVALID");
+}
+
+#[test]
+fn attempt_number_gaps_are_rejected() {
+    let err = replay_fixture_with_mutation("07_failed_preemission_then_retry", 6, |e| {
+        if let CanonicalEvent::AssistantAttemptStarted(started) = &mut e.event {
+            started.attempt_number = 3;
+        } else {
+            panic!("sequence 6 must be assistant_attempt_started");
+        }
+    });
+    assert_eq!(err.unwrap_err().code(), "E_EVENT_TRANSITION_INVALID");
 }

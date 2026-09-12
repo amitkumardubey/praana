@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::id::*;
 use crate::protocol::json::{deserialize_bounded_u64, deserialize_optional_bounded_u64};
+use crate::protocol::messages::deserialize_tool_name;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -96,6 +97,7 @@ pub struct ToolResultMessage {
     pub batch_id: ToolBatchId,
     pub execution_id: ToolExecutionId,
     pub call_id: ToolCallId,
+    #[serde(deserialize_with = "deserialize_tool_name")]
     pub tool_name: String,
     pub status: ToolResultStatus,
     pub body: ToolResultBody,

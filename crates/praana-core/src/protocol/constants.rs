@@ -19,3 +19,5 @@ pub const MAX_JSON_INTEGER: u64 = 9_007_199_254_740_991; // 2^53 - 1
 pub const MIN_JSON_TIMESTAMP_MS: i64 = -9_007_199_254_740_991;
 pub const MAX_JSON_TIMESTAMP_MS: i64 = 9_007_199_254_740_991;
 pub const MAX_ID_BYTES: usize = 256;
+pub const MAX_MODEL_LABEL_BYTES: usize = 256;
+pub const TOOL_RESULT_MEDIA_TYPE: &str = "application/vnd.praana.tool-result+json;version=1";

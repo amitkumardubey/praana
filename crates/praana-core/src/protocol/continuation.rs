@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::id::{ProviderItemId, ProviderResponseId, Sha256Digest, ToolCallId};
+use crate::protocol::models::{
+    deserialize_model_label, deserialize_optional_model_label, ModelSelection,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -21,9 +24,13 @@ pub enum ProviderContinuation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContinuationScope {
+    #[serde(deserialize_with = "deserialize_model_label")]
     pub provider: String,
+    #[serde(deserialize_with = "deserialize_model_label")]
     pub protocol: String,
+    #[serde(deserialize_with = "deserialize_model_label")]
     pub model: String,
+    #[serde(deserialize_with = "deserialize_optional_model_label")]
     pub model_revision: Option<String>,
     pub endpoint_fingerprint: Sha256Digest,
 }
@@ -164,4 +171,27 @@ pub struct BedrockReasoningBlock {
     pub text: Option<String>,
     pub signature: Option<String>,
     pub redacted_content_base64: Option<String>,
+}
+
+impl ProviderContinuation {
+    pub fn scope(&self) -> &ContinuationScope {
+        match self {
+            Self::OpenAiResponses(value) => &value.scope,
+            Self::Anthropic(value) => &value.scope,
+            Self::Gemini(value) => &value.scope,
+            Self::Bedrock(value) => &value.scope,
+        }
+    }
+}
+
+pub fn continuation_compatible(
+    continuation: &ProviderContinuation,
+    target: &ModelSelection,
+) -> bool {
+    let scope = continuation.scope();
+    scope.provider == target.provider
+        && scope.protocol == target.protocol
+        && scope.model == target.model
+        && scope.model_revision == target.model_revision
+        && scope.endpoint_fingerprint == target.endpoint_fingerprint
 }

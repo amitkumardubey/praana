@@ -16,8 +16,8 @@ use crate::history::replay::{EventReplayer, TurnTerminal};
 use crate::protocol::events::{CanonicalEvent, EventEnvelope};
 use crate::protocol::hashes::calculate_tool_arguments_hash;
 use crate::protocol::id::SessionId;
-use crate::protocol::json::serialize_canonical;
-use crate::protocol::messages::{AssistantBlock, ConversationMessage, FinishReason};
+use crate::protocol::json::{deserialize_event_strict, serialize_canonical};
+use crate::protocol::messages::{AssistantBlock, ConversationMessage, FinishReason, UserBlock};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/protocol_v2")
@@ -80,7 +80,7 @@ fn replay_all(events: &[EventEnvelope], lines: &[String]) -> EventReplayer {
 }
 
 fn project_events(events: &[EventEnvelope], lines: &[String]) -> ConversationProjection {
-    ConversationProjection::project_with_context(events, Some(lines), &[]).unwrap()
+    ConversationProjection::project_with_context(events, Some(lines), &[], None).unwrap()
 }
 
 fn projection_tool_call_ids(messages: &[ConversationMessage]) -> BTreeSet<String> {
@@ -355,6 +355,9 @@ proptest! {
                 }
                 prop_assert!(replay
                     .compacted_turn_ids
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>()
                     .is_superset(&retired.iter().copied().collect()));
             }
         }
@@ -462,5 +465,101 @@ proptest! {
             calculate_tool_arguments_hash(&left_v).unwrap(),
             calculate_tool_arguments_hash(&right_v).unwrap()
         );
+    }
+}
+
+fn replay_mutated_fixture(
+    fixture: &str,
+    sequence: u64,
+    mutate: impl FnOnce(&mut EventEnvelope),
+) -> String {
+    let path = fixture_root().join(fixture).join("events.jsonl");
+    let bytes = fs::read(&path).unwrap();
+    let mut envelopes = Vec::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        envelopes.push(
+            deserialize_event_strict::<EventEnvelope>(std::str::from_utf8(line).unwrap()).unwrap(),
+        );
+    }
+    if let Some(envelope) = envelopes
+        .iter_mut()
+        .find(|event| event.sequence == sequence)
+    {
+        mutate(envelope);
+    }
+    let mut replay = EventReplayer::new();
+    for (index, envelope) in envelopes.iter().enumerate() {
+        if let Err(err) = replay.process_event(envelope, Some(index + 1), None) {
+            return err.code().to_owned();
+        }
+    }
+    "OK".to_owned()
+}
+
+fn one_mutation_expected_code(kind: u8) -> (&'static str, String) {
+    match kind {
+        0 => (
+            "E_SCHEMA_VERSION_UNSUPPORTED",
+            replay_mutated_fixture("01_committed_text_turn", 1, |event| {
+                event.schema_version = 1;
+            }),
+        ),
+        1 => (
+            "E_JSONL_SEQUENCE_GAP",
+            replay_mutated_fixture("01_committed_text_turn", 3, |event| {
+                event.sequence = 5;
+            }),
+        ),
+        2 => (
+            "E_EVENT_SCHEMA_INVALID",
+            replay_mutated_fixture("01_committed_text_turn", 2, |event| {
+                if let CanonicalEvent::UserMessageAccepted(accepted) = &mut event.event {
+                    if let UserBlock::Text(text) = &mut accepted.message.blocks[0] {
+                        text.text.clear();
+                    }
+                }
+            }),
+        ),
+        3 => (
+            "E_EVENT_SCHEMA_INVALID",
+            replay_mutated_fixture("01_committed_text_turn", 5, |event| {
+                if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut event.event {
+                    accepted.message.blocks.clear();
+                }
+            }),
+        ),
+        4 => (
+            "E_TOOL_ARGUMENTS_INVALID",
+            replay_mutated_fixture("02_single_tool_cycle_inline", 5, |event| {
+                if let CanonicalEvent::AssistantStepAccepted(accepted) = &mut event.event {
+                    for block in &mut accepted.message.blocks {
+                        if let AssistantBlock::ToolCall(call) = block {
+                            call.raw_arguments = r#"{"path":"a","path":"b"}"#.into();
+                        }
+                    }
+                }
+            }),
+        ),
+        _ => (
+            "E_EVENT_TRANSITION_INVALID",
+            replay_mutated_fixture("07_failed_preemission_then_retry", 6, |event| {
+                if let CanonicalEvent::AssistantAttemptStarted(started) = &mut event.event {
+                    started.attempt_number = 3;
+                }
+            }),
+        ),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn one_mutation_invalid_trace_raises_narrow_code(kind in 0u8..6) {
+        let (expected, actual) = one_mutation_expected_code(kind);
+        prop_assert_eq!(actual, expected);
     }
 }

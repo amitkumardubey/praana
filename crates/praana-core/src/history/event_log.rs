@@ -26,22 +26,41 @@ use crate::protocol::hashes::{calculate_prefix_hash, calculate_sha256};
 use crate::protocol::id::SessionId;
 use crate::protocol::json::{deserialize_event_strict, serialize_event_compact};
 
-#[cfg(test)]
 thread_local! {
-    static FAIL_NEXT_FSYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_AFTER_SUCCESSFUL_FSYNCS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    static SUCCESSFUL_FSYNCS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-#[cfg(test)]
+/// Test-only failpoint: fail the next append `fsync`.
 pub fn fail_next_fsync() {
-    FAIL_NEXT_FSYNC.with(|flag| flag.set(true));
+    fail_after_n_successful_fsyncs(0);
+}
+
+/// Test-only failpoint: succeed `n` append fsyncs, then fail.
+pub fn fail_after_n_successful_fsyncs(n: usize) {
+    SUCCESSFUL_FSYNCS.with(|count| count.set(0));
+    FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| flag.set(Some(n)));
+}
+
+/// Test-only failpoint reset.
+pub fn reset_fsync_injection() {
+    SUCCESSFUL_FSYNCS.with(|count| count.set(0));
+    FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| flag.set(None));
 }
 
 fn sync_file(file: &File) -> std::io::Result<()> {
-    #[cfg(test)]
-    if FAIL_NEXT_FSYNC.with(|flag| flag.replace(false)) {
+    let should_fail = FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| {
+        flag.get()
+            .is_some_and(|limit| SUCCESSFUL_FSYNCS.with(|count| count.get() >= limit))
+    });
+    if should_fail {
+        FAIL_AFTER_SUCCESSFUL_FSYNCS.with(|flag| flag.set(None));
         return Err(std::io::Error::other("injected fsync failure"));
     }
-    file.sync_all()
+    file.sync_all()?;
+    SUCCESSFUL_FSYNCS.with(|count| count.set(count.get() + 1));
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,9 +87,6 @@ pub struct SessionMetaV1 {
     pub creator_version: String,
 }
 
-const PLACEHOLDER_CONFIG_DIGEST: &str =
-    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-
 pub struct EventLogStore {
     session_dir: PathBuf,
     session_id: SessionId,
@@ -83,6 +99,7 @@ pub struct EventLogStore {
     unhealthy: bool,
     events: Vec<EventEnvelope>,
     raw_lines: Vec<String>,
+    snapshot_max_steps: u32,
 }
 
 impl std::fmt::Debug for EventLogStore {
@@ -100,6 +117,7 @@ impl std::fmt::Debug for EventLogStore {
 impl EventLogStore {
     pub fn create_or_open(session_dir: &Path, expected_session_id: &str) -> HistoryResult<Self> {
         let session_id = SessionId::from_str_canonical(expected_session_id)?;
+        apply_session_umask();
         reject_symlink(session_dir)?;
         let directory_created = !session_dir.exists();
         fs::create_dir_all(session_dir).map_err(|_| insecure())?;
@@ -194,6 +212,7 @@ impl EventLogStore {
         if directory_created || lock_created || events_created || !meta_path.exists() {
             fsync_dir(session_dir)?;
         }
+        let snapshot_max_steps = load_snapshot_config(session_dir)?.turn.max_steps;
 
         Ok(Self {
             session_dir: session_dir.to_path_buf(),
@@ -207,6 +226,7 @@ impl EventLogStore {
             unhealthy: read_only,
             events,
             raw_lines,
+            snapshot_max_steps,
         })
     }
 
@@ -318,6 +338,10 @@ impl EventLogStore {
         &self.raw_lines
     }
 
+    pub fn snapshot_max_steps(&self) -> u32 {
+        self.snapshot_max_steps
+    }
+
     pub fn events(&self) -> HistoryResult<Vec<EventEnvelope>> {
         Ok(self.events.clone())
     }
@@ -348,7 +372,7 @@ fn scan_and_repair(
     let mut raw_lines = Vec::new();
     let mut events = Vec::new();
     let mut quarantined = None;
-    let mut read_only = false;
+    let read_only = false;
 
     while let Some(relative) = content[cursor..].iter().position(|byte| *byte == b'\n') {
         line_number += 1;
@@ -372,11 +396,12 @@ fn scan_and_repair(
                     false,
                 ));
             }
-            match persist_quarantine_or_readonly(session_dir, events_path, valid_end, line_with_lf)?
-            {
-                QuarantineOutcome::Persisted(sha) => quarantined = Some(sha),
-                QuarantineOutcome::ReadOnly => read_only = true,
-            }
+            quarantined = Some(persist_quarantine(
+                session_dir,
+                events_path,
+                valid_end,
+                line_with_lf,
+            )?);
             break;
         }
         // Classify before deciding torn-tail vs integrity failure (§14.1):
@@ -397,15 +422,12 @@ fn scan_and_repair(
                         false,
                     ));
                 }
-                match persist_quarantine_or_readonly(
+                quarantined = Some(persist_quarantine(
                     session_dir,
                     events_path,
                     valid_end,
                     line_with_lf,
-                )? {
-                    QuarantineOutcome::Persisted(sha) => quarantined = Some(sha),
-                    QuarantineOutcome::ReadOnly => read_only = true,
-                }
+                )?);
                 break;
             }
         };
@@ -441,15 +463,12 @@ fn scan_and_repair(
         let event = match parse_scan_line(remainder, line_number)? {
             Some(event) => event,
             None => {
-                match persist_quarantine_or_readonly(
+                quarantined = Some(persist_quarantine(
                     session_dir,
                     events_path,
                     valid_end,
                     remainder,
-                )? {
-                    QuarantineOutcome::Persisted(sha) => quarantined = Some(sha),
-                    QuarantineOutcome::ReadOnly => read_only = true,
-                }
+                )?);
                 return Ok(ScanResult {
                     current_sequence: replayer.current_sequence(),
                     current_prefix_hash: prefix,
@@ -622,17 +641,40 @@ fn reject_symlink(path: &Path) -> HistoryResult<()> {
 }
 
 #[cfg(unix)]
+fn apply_session_umask() {
+    unsafe {
+        libc::umask(0o077);
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_session_umask() {}
+
+#[cfg(unix)]
 fn establish_mode(path: &Path, mode: u32) -> HistoryResult<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|_| insecure())?;
     let actual = fs::symlink_metadata(path)
         .map_err(|_| insecure())?
         .permissions()
         .mode()
         & 0o777;
-    if actual != mode {
-        return Err(insecure());
+    if actual == mode {
+        return Ok(());
     }
-    Ok(())
+    let extra = actual & !mode;
+    let missing = mode & !actual;
+    if extra != 0 && missing == 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|_| insecure())?;
+        let after = fs::symlink_metadata(path)
+            .map_err(|_| insecure())?
+            .permissions()
+            .mode()
+            & 0o777;
+        if after != mode {
+            return Err(insecure());
+        }
+        return Ok(());
+    }
+    Err(insecure())
 }
 
 #[cfg(not(unix))]
@@ -674,35 +716,185 @@ fn process_start_time() -> Option<String> {
             .nth(19)
             .map(str::to_owned);
     }
+    #[cfg(target_os = "macos")]
+    {
+        let pid = std::process::id() as libc::pid_t;
+        let mut info: libc::kinfo_proc = unsafe { std::mem::zeroed() };
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut size = std::mem::size_of::<libc::kinfo_proc>();
+        let rc = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as u32,
+                &mut info as *mut _ as *mut libc::c_void,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc != 0 {
+            return None;
+        }
+        return Some(format!(
+            "{}.{}",
+            info.kp_proc.p_starttime.tv_sec, info.kp_proc.p_starttime.tv_usec
+        ));
+    }
+    #[cfg(windows)]
+    {
+        type Handle = *mut std::ffi::c_void;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> Handle;
+            fn GetProcessTimes(
+                process: Handle,
+                creation: *mut u64,
+                exit: *mut u64,
+                kernel: *mut u64,
+                user: *mut u64,
+            ) -> i32;
+        }
+        unsafe {
+            let mut creation = 0u64;
+            let mut exit = 0u64;
+            let mut kernel = 0u64;
+            let mut user = 0u64;
+            if GetProcessTimes(
+                GetCurrentProcess(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            ) == 0
+            {
+                return None;
+            }
+            return Some(creation.to_string());
+        }
+    }
     #[allow(unreachable_code)]
-    None
+    Some(std::process::id().to_string())
 }
 
-enum QuarantineOutcome {
-    Persisted(String),
-    ReadOnly,
-}
-
-fn persist_quarantine_or_readonly(
+fn persist_quarantine(
     session_dir: &Path,
     events_path: &Path,
     valid_end: usize,
     bytes: &[u8],
-) -> HistoryResult<QuarantineOutcome> {
-    match quarantine_tail_bytes(session_dir, bytes) {
-        Ok(sha) => {
-            truncate_after_quarantine(session_dir, events_path, valid_end)?;
-            Ok(QuarantineOutcome::Persisted(sha))
-        }
-        Err(_) => Ok(QuarantineOutcome::ReadOnly),
+) -> HistoryResult<String> {
+    let sha = quarantine_tail_bytes(session_dir, bytes)?;
+    truncate_after_quarantine(session_dir, events_path, valid_end)?;
+    Ok(sha)
+}
+
+pub fn history_creation_config() -> crate::config::EffectiveConfigV1 {
+    crate::config::build_defaults(Path::new("/praana-home"))
+}
+
+pub fn write_config_snapshot_durable(
+    session_dir: &Path,
+    config: &crate::config::EffectiveConfigV1,
+) -> HistoryResult<String> {
+    reject_symlink(session_dir)?;
+    let dest = session_dir.join("config.snapshot.json");
+    if dest.exists() {
+        return Err(HistoryError::new(
+            "HISTORY_META_MISMATCH",
+            None,
+            None,
+            false,
+        ));
     }
+    let tmp = session_dir.join("config.snapshot.json.tmp");
+    reject_symlink(&tmp)?;
+    if tmp.exists() {
+        fs::remove_file(&tmp).map_err(|_| durability())?;
+    }
+    let mut bytes = config.to_canonical_json_bytes();
+    let digest = calculate_sha256(&bytes).to_string();
+    bytes.push(b'\n');
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    let mut file = options.open(&tmp).map_err(|_| durability())?;
+    establish_mode(&tmp, 0o600)?;
+    file.write_all(&bytes)
+        .and_then(|_| file.flush())
+        .and_then(|_| file.sync_all())
+        .map_err(|_| durability())?;
+    drop(file);
+    rename_without_replacement(&tmp, &dest)?;
+    establish_mode(&dest, 0o600)?;
+    fsync_dir(session_dir)?;
+    Ok(digest)
+}
+
+fn rename_without_replacement(from: &Path, to: &Path) -> HistoryResult<()> {
+    if to.exists() {
+        return Err(HistoryError::new(
+            "HISTORY_META_MISMATCH",
+            None,
+            None,
+            false,
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        let from_c = CString::new(from.to_string_lossy().as_bytes()).map_err(|_| durability())?;
+        let to_c = CString::new(to.to_string_lossy().as_bytes()).map_err(|_| durability())?;
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from_c.as_ptr(),
+                libc::AT_FDCWD,
+                to_c.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc != 0 {
+            return Err(durability());
+        }
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    {
+        fs::rename(from, to).map_err(|_| durability())
+    }
+}
+
+fn load_snapshot_config(session_dir: &Path) -> HistoryResult<crate::config::EffectiveConfigV1> {
+    let path = session_dir.join("config.snapshot.json");
+    if !path.exists() {
+        return Err(HistoryError::new(
+            "HISTORY_META_MISMATCH",
+            None,
+            None,
+            false,
+        ));
+    }
+    reject_symlink(&path)?;
+    let bytes = fs::read(&path).map_err(|_| history_io())?;
+    let canonical = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+    serde_json::from_slice(canonical)
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))
+}
+
+fn ensure_config_snapshot(session_dir: &Path) -> HistoryResult<String> {
+    if session_dir.join("config.snapshot.json").exists() {
+        return snapshot_digest(session_dir)
+            .ok_or_else(|| HistoryError::new("HISTORY_META_MISMATCH", None, None, false));
+    }
+    write_config_snapshot_durable(session_dir, &history_creation_config())
 }
 
 pub fn write_new_session_meta(session_dir: &Path, session_id: &SessionId) -> HistoryResult<()> {
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|_| durability())?;
-    let digest =
-        snapshot_digest(session_dir).unwrap_or_else(|| PLACEHOLDER_CONFIG_DIGEST.to_owned());
+    let digest = ensure_config_snapshot(session_dir)?;
     let cwd = std::env::current_dir()
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|_| "/".to_owned());
@@ -782,15 +974,15 @@ fn verify_session_meta(
             false,
         ));
     }
-    if let Some(digest) = snapshot_digest(session_dir) {
-        if meta.config_digest_sha256 != digest {
-            return Err(HistoryError::new(
-                "HISTORY_META_MISMATCH",
-                None,
-                None,
-                false,
-            ));
-        }
+    let digest = snapshot_digest(session_dir)
+        .ok_or_else(|| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    if meta.config_digest_sha256 != digest {
+        return Err(HistoryError::new(
+            "HISTORY_META_MISMATCH",
+            None,
+            None,
+            false,
+        ));
     }
     if let Some(CanonicalEvent::SessionStarted(started)) = events.first().map(|event| &event.event)
     {
@@ -933,5 +1125,14 @@ mod tests {
         assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
         assert_eq!(store.current_sequence(), 0);
         assert!(store.is_unhealthy());
+    }
+
+    #[test]
+    fn creation_config_digest_is_stable() {
+        let digest = history_creation_config().config_digest_sha256().to_string();
+        assert_eq!(
+            digest,
+            "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760"
+        );
     }
 }

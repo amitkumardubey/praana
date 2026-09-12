@@ -93,7 +93,8 @@ P0
   and no SQLite-derived search/artifacts.
 - Focused tests: `protocol_v2`, `history_phase1`.
 - Property tests: `cargo test -p praana-core properties::` (§17.2; fixture-seeded
-  proptest suite in `crates/praana-core/src/properties.rs`).
+  proptest suite in `crates/praana-core/src/properties.rs`, including one-mutation
+  invalid traces with narrow expected codes).
 - Phase 3 artifact fixtures (`12_*`, `e22_*`, `e23_*`) are present under
   `tests/fixtures/protocol_v2/` but skipped by Phase 1 runners until the
   artifact packet owns them.

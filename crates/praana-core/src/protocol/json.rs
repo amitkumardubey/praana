@@ -111,7 +111,7 @@ enum Container {
     Array,
 }
 
-fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryError> {
+pub fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryError> {
     let bytes = json_str.as_bytes();
     let mut i = 0;
     let len = bytes.len();

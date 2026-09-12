@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::history::replay::{accepted_messages, EventReplayer, TurnTerminal};
 use crate::protocol::compaction::{render_historical_handoff, HistoricalHandoffV1};
-use crate::protocol::continuation::ProviderContinuation;
+use crate::protocol::continuation::{continuation_compatible, ProviderContinuation};
 use crate::protocol::errors::HistoryError;
 use crate::protocol::events::{CanonicalEvent, EventEnvelope, InterruptionReason};
 use crate::protocol::hashes::derive_recovery_notice_id;
 use crate::protocol::id::TurnId;
 use crate::protocol::messages::ConversationMessage;
+use crate::protocol::models::ModelSelection;
 use crate::protocol::recovery::{RecoveryKind, RecoveryNotice};
 use crate::protocol::state_graph::StateGraphV1;
 
@@ -31,13 +32,14 @@ pub struct ConversationProjection {
 
 impl ConversationProjection {
     pub fn project(events: &[EventEnvelope]) -> Result<Self, HistoryError> {
-        Self::project_with_context(events, None, &[] as &[RecoveryNotice])
+        Self::project_with_context(events, None, &[] as &[RecoveryNotice], None)
     }
 
     pub fn project_with_context(
         events: &[EventEnvelope],
         raw_lines: Option<&[String]>,
         extra_notices: &[RecoveryNotice],
+        target_model: Option<&ModelSelection>,
     ) -> Result<Self, HistoryError> {
         let mut replay = EventReplayer::new();
         for (index, event) in events.iter().enumerate() {
@@ -90,7 +92,14 @@ impl ConversationProjection {
                         last_step.message.finish_reason,
                         crate::protocol::messages::FinishReason::ToolUse
                     ) {
-                        active_continuation = last_step.message.continuation.clone();
+                        if let Some(continuation) = last_step.message.continuation.clone() {
+                            let target = target_model.or(replay.current_model());
+                            if target
+                                .is_some_and(|model| continuation_compatible(&continuation, model))
+                            {
+                                active_continuation = Some(continuation);
+                            }
+                        }
                     }
                 }
             }
@@ -129,8 +138,6 @@ impl ConversationProjection {
             }
         }
 
-        let mut compacted_turn_ids: Vec<_> = replay.compacted_turn_ids.iter().copied().collect();
-        compacted_turn_ids.sort();
         Ok(Self {
             reset_epoch: replay.reset_epoch,
             through_sequence: replay.current_sequence(),
@@ -140,7 +147,7 @@ impl ConversationProjection {
             active_turn,
             pending_recovery,
             active_continuation,
-            compacted_turn_ids,
+            compacted_turn_ids: replay.compacted_turn_ids,
         })
     }
 }

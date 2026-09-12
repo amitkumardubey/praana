@@ -1,12 +1,54 @@
 //! Canonical conversation messages and ordered content blocks.
 
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use crate::protocol::continuation::ProviderContinuation;
+use crate::protocol::errors::HistoryError;
 use crate::protocol::id::*;
 use crate::protocol::json::deserialize_bounded_u64;
-use crate::protocol::models::ProviderUsage;
+use crate::protocol::models::{deserialize_model_label, ProviderUsage};
 use crate::protocol::tool_result::{ArtifactRef, ToolResultMessage};
+
+pub fn validate_tool_name(name: &str) -> Result<(), HistoryError> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return Err(HistoryError::new(
+            "E_EVENT_SCHEMA_INVALID",
+            None,
+            None,
+            false,
+        ));
+    }
+    if !bytes[0].is_ascii_lowercase() {
+        return Err(HistoryError::new(
+            "E_EVENT_SCHEMA_INVALID",
+            None,
+            None,
+            false,
+        ));
+    }
+    if !bytes[1..]
+        .iter()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+    {
+        return Err(HistoryError::new(
+            "E_EVENT_SCHEMA_INVALID",
+            None,
+            None,
+            false,
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn deserialize_tool_name<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    validate_tool_name(&value).map_err(de::Error::custom)?;
+    Ok(value)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
@@ -63,7 +105,9 @@ pub struct AssistantMessage {
     pub message_id: MessageId,
     pub turn_id: TurnId,
     pub step_id: StepId,
+    #[serde(deserialize_with = "deserialize_model_label")]
     pub provider: String,
+    #[serde(deserialize_with = "deserialize_model_label")]
     pub model: String,
     pub phase: Option<AssistantPhase>,
     pub blocks: Vec<AssistantBlock>,
@@ -111,6 +155,7 @@ pub struct RefusalBlock {
 #[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub call_id: ToolCallId,
+    #[serde(deserialize_with = "deserialize_tool_name")]
     pub name: String,
     pub arguments: serde_json::Map<String, serde_json::Value>,
     pub raw_arguments: String,

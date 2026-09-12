@@ -6,11 +6,10 @@ use praana_core::history::event_log::*;
 use praana_core::history::projection::*;
 use praana_core::history::recovery::*;
 use praana_core::protocol::compaction::render_historical_handoff;
+use praana_core::protocol::constants::*;
 use praana_core::protocol::errors::HistoryError;
 use praana_core::protocol::events::*;
-use praana_core::protocol::hashes::{
-    calculate_prefix_hash, calculate_sha256, calculate_source_hash,
-};
+use praana_core::protocol::hashes::{calculate_prefix_hash, calculate_sha256};
 use praana_core::protocol::id::*;
 use praana_core::protocol::json::serialize_event_compact;
 use praana_core::protocol::models::*;
@@ -37,11 +36,7 @@ fn jsonl_lines(path: &std::path::Path) -> Vec<String> {
 fn project_path(events_path: &std::path::Path) -> ConversationProjection {
     let events = EventLogStore::read_and_validate_from_path(events_path).unwrap();
     let lines = jsonl_lines(events_path);
-    ConversationProjection::project_with_context(&events, Some(&lines), &[]).unwrap()
-}
-
-fn fixture_session_id() -> SessionId {
-    SessionId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()
+    ConversationProjection::project_with_context(&events, Some(&lines), &[], None).unwrap()
 }
 
 fn write_fixture_meta(session_dir: &std::path::Path, session_id: &str) {
@@ -291,7 +286,7 @@ fn append_fsyncs_before_acknowledgement() {
             agent: "praana".into(),
             config_schema_version: 1,
             config_digest_sha256: Sha256Digest::from_hex_str(
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760",
             )
             .unwrap(),
             history_mode: HistoryMode::Append,
@@ -594,7 +589,10 @@ fn uncertain_mutating_tool_is_never_rerun() {
     );
     let uncertain = uncertain.unwrap();
     assert!(uncertain.result.recovered);
-    assert_eq!(uncertain.result.body.media_type, "application/json");
+    assert_eq!(
+        uncertain.result.body.media_type,
+        praana_core::protocol::constants::TOOL_RESULT_MEDIA_TYPE
+    );
     assert_eq!(uncertain.result.body.line_count, None);
     assert_eq!(uncertain.result.body.estimator_id, GENERIC_ESTIMATOR_ID);
     match &uncertain.result.body.content {
@@ -687,7 +685,7 @@ fn append_acknowledgement_persists_exact_bytes_and_prefix_hash() {
             agent: "praana".into(),
             config_schema_version: 1,
             config_digest_sha256: Sha256Digest::from_hex_str(
-                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760",
             )
             .unwrap(),
             history_mode: HistoryMode::Append,
@@ -848,9 +846,10 @@ fn interruption_capsule_hashes_durable_jsonl_slice() {
     let capsule = build_interrupted_turn_capsule(&events, &lines, turn_id).unwrap();
     assert_eq!(capsule.source_start_sequence, 2);
     assert_eq!(capsule.source_end_sequence, 6);
-    let expected = calculate_source_hash(
-        &lines[(capsule.source_start_sequence as usize - 1)..capsule.source_end_sequence as usize],
-    );
+    let expected = praana_core::protocol::id::Sha256Digest::from_hex_str(
+        "c8e36989b0885555e83069c100e4ba81561d1b1ed247b3e3c65d2ac5d500ab0f",
+    )
+    .unwrap();
     assert_eq!(capsule.source_hash, expected);
 }
 
@@ -896,11 +895,21 @@ fn create_writes_immutable_meta_json() {
     assert_eq!(meta.session_id, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
     assert_eq!(meta.event_schema_version, 2);
     assert_eq!(meta.agent_id, "praana");
+    assert_eq!(
+        meta.config_digest_sha256,
+        "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760"
+    );
+    let snapshot = session_dir.join("config.snapshot.json");
+    assert!(snapshot.exists(), "create must write config.snapshot.json");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&snapshot).unwrap().permissions().mode() & 0o777,
             0o600
         );
     }
@@ -936,6 +945,7 @@ fn unix_session_files_use_private_modes() {
     assert_eq!(mode(&session_dir.join("events.jsonl")), 0o600);
     assert_eq!(mode(&session_dir.join("session.lock")), 0o600);
     assert_eq!(mode(&session_dir.join("meta.json")), 0o600);
+    assert_eq!(mode(&session_dir.join("config.snapshot.json")), 0o600);
     let sha = store.quarantined_tail().unwrap();
     assert_eq!(mode(&session_dir.join("quarantine")), 0o700);
     assert_eq!(
@@ -972,35 +982,23 @@ fn quarantine_persist_failure_keeps_prefix_and_blocks_append() {
     let before = fs::metadata(session_dir.join("events.jsonl"))
         .unwrap()
         .len();
-    let mut store =
-        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
-    assert!(store.is_unhealthy());
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
     assert_eq!(
         fs::metadata(session_dir.join("events.jsonl"))
             .unwrap()
             .len(),
         before
     );
-    assert_eq!(store.events().unwrap().len(), 6);
-    let next = EventEnvelope {
-        schema_version: 2,
-        event_id: EventId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FBZ").unwrap(),
-        session_id: fixture_session_id(),
-        sequence: 7,
-        timestamp_ms: 1788134400999,
-        turn_id: None,
-        attempt_id: None,
-        event: CanonicalEvent::SystemNote(SystemNote {
-            code: "E_TEST".into(),
-            level: NoteLevel::Info,
-            audience: NoteAudience::Audit,
-            message: "nope".into(),
-            references: Vec::new(),
-            details: Default::default(),
-        }),
-    };
-    let err = store.append_event(&next).unwrap_err();
-    assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
+    let content = fs::read(session_dir.join("events.jsonl")).unwrap();
+    let complete_lines = content
+        .split(|byte| *byte == b'\n')
+        .filter(|line| {
+            !line.is_empty() && serde_json::from_slice::<serde_json::Value>(line).is_ok()
+        })
+        .count();
+    assert_eq!(complete_lines, 6);
 }
 
 #[test]
@@ -1026,4 +1024,166 @@ fn interruption_reason_slugs_are_explicit() {
     for (reason, slug) in cases {
         assert_eq!(interruption_reason_slug(&reason), slug);
     }
+}
+
+#[test]
+fn fixture_09_post_recovery_matches_committed_text_turn() {
+    let (_temp, session_dir) =
+        copy_fixture_to_session("09_terminal_accept_crash_repair", "s09_post");
+    let mut engine =
+        SessionRecoveryEngine::new(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    assert_eq!(engine.run_recovery().unwrap(), 1);
+    let projection = engine.projection().unwrap();
+    let expected: ConversationProjection = serde_json::from_str(
+        &fs::read_to_string(fixture_root().join("01_committed_text_turn/expected_projection.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(projection, expected);
+    assert_eq!(engine.run_recovery().unwrap(), 0);
+}
+
+#[test]
+fn fixture_11_post_recovery_orders_uncertain_then_skipped() {
+    let (_temp, session_dir) =
+        copy_fixture_to_session("11_uncertain_mutation_recovery", "s11_post");
+    let mut engine =
+        SessionRecoveryEngine::new(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    assert_eq!(engine.run_recovery().unwrap(), 3);
+    let projection = engine.projection().unwrap();
+    let results: Vec<_> = projection
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            praana_core::protocol::messages::ConversationMessage::ToolResult(result) => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].call_id.as_str(), "call_001");
+    assert_eq!(
+        results[0].status,
+        praana_core::protocol::tool_result::ToolResultStatus::Uncertain
+    );
+    assert_eq!(results[1].call_id.as_str(), "call_002");
+    assert_eq!(
+        results[1].status,
+        praana_core::protocol::tool_result::ToolResultStatus::Skipped
+    );
+    assert_eq!(projection.through_sequence, 9);
+    assert!(projection
+        .pending_recovery
+        .iter()
+        .any(|notice| notice.kind == RecoveryKind::ToolSideEffectUncertain));
+}
+
+#[test]
+fn recovery_failpoints_after_each_append_are_idempotent() {
+    for already in 0..3 {
+        reset_fsync_injection();
+        let (_temp, session_dir) = copy_fixture_to_session(
+            "11_uncertain_mutation_recovery",
+            &format!("s11_fail_{already}"),
+        );
+        fail_after_n_successful_fsyncs(already);
+        let mut engine =
+            SessionRecoveryEngine::new(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let err = engine.run_recovery().unwrap_err();
+        assert_eq!(err.code(), "E_EVENT_DURABILITY_UNCERTAIN");
+        drop(engine);
+        reset_fsync_injection();
+        let mut engine =
+            SessionRecoveryEngine::new(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let _repaired = engine.run_recovery().unwrap();
+        assert_eq!(engine.run_recovery().unwrap(), 0);
+        let events = engine.store().events().unwrap();
+        let started = events
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::ToolExecutionStarted(_)))
+            .count();
+        assert_eq!(started, 1);
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::ToolExecutionFinished(finished)
+                if finished.result.status
+                    == praana_core::protocol::tool_result::ToolResultStatus::Uncertain
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::ToolExecutionFinished(finished)
+                if finished.result.status
+                    == praana_core::protocol::tool_result::ToolResultStatus::Skipped
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::ToolBatchCompleted(_))));
+    }
+}
+
+#[test]
+fn active_continuation_requires_compatible_target_model() {
+    let path = fixture_root().join("05_responses_reasoning_active_cycle/events.jsonl");
+    let events = EventLogStore::read_and_validate_from_path(&path).unwrap();
+    let lines = jsonl_lines(&path);
+    let mut target = match &events[0].event {
+        CanonicalEvent::SessionStarted(started) => started.initial_model.clone(),
+        other => panic!("expected session_started, got {other:?}"),
+    };
+    target.protocol = "openai-chat-completions-v1".into();
+    let projection =
+        ConversationProjection::project_with_context(&events, Some(&lines), &[], Some(&target))
+            .unwrap();
+    assert!(projection.active_continuation.is_none());
+}
+
+#[test]
+fn missing_config_snapshot_refuses_open() {
+    let dir = fixture_root().join("01_committed_text_turn");
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("nosnap");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::copy(dir.join("events.jsonl"), session_dir.join("events.jsonl")).unwrap();
+    let meta = SessionMetaV1 {
+        schema_version: 1,
+        session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        created_at_ms: 0,
+        cwd: "/workspace".into(),
+        agent_id: "praana".into(),
+        config_schema_version: 1,
+        config_digest_sha256: "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760"
+            .into(),
+        event_schema_version: 2,
+        history_schema_version: 1,
+        projection_version: PROJECTION_VERSION.to_owned(),
+        token_estimator_schema_version: 1,
+        unicode_utility_version: UNICODE_UTILITY_VERSION.to_owned(),
+        system_context_schema_version: 1,
+        provider_registry_schema_version: 1,
+        builtin_tool_catalog_schema_version: 1,
+        redaction_version: REDACTION_VERSION.to_owned(),
+        ui_contract_schema_version: 1,
+        cursor_hmac_key_base64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+        creator_version: "0.1.0".into(),
+    };
+    fs::write(
+        session_dir.join("meta.json"),
+        format!("{}\n", serde_json::to_string(&meta).unwrap()),
+    )
+    .unwrap();
+    let err =
+        EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap_err();
+    assert_eq!(err.code(), "HISTORY_META_MISMATCH");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn lock_metadata_records_process_start_time() {
+    let temp = TempDir::new().unwrap();
+    let session_dir = temp.path().join("lock");
+    let _store = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let lock = fs::read_to_string(session_dir.join("session.lock")).unwrap();
+    assert!(lock.contains("process_start="));
+    assert!(!lock.contains("process_start=unknown"));
 }

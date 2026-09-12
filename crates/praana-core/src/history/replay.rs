@@ -1,6 +1,6 @@
 //! Pure schema-2 event replay and integrity validation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::protocol::constants::EVENT_SCHEMA_VERSION;
 use crate::protocol::errors::{HistoryError, HistoryResult};
@@ -10,9 +10,10 @@ use crate::protocol::hashes::{
     calculate_source_hash, calculate_tool_arguments_hash,
 };
 use crate::protocol::id::*;
-use crate::protocol::json::serialize_canonical;
+use crate::protocol::json::{check_raw_duplicate_keys_and_depth, serialize_canonical};
 use crate::protocol::messages::{
-    AssistantBlock, AssistantMessage, ConversationMessage, FinishReason, ToolCall, UserMessage,
+    AssistantBlock, AssistantMessage, ConversationMessage, FinishReason, ToolCall, UserBlock,
+    UserMessage,
 };
 use crate::protocol::models::{ModelSelection, ProviderUsage};
 use crate::protocol::state_graph::*;
@@ -105,12 +106,13 @@ pub struct EventReplayer {
     pub state: StateGraphV1,
     pub reset_epoch: u32,
     pub compaction_epoch: u32,
-    pub compacted_turn_ids: BTreeSet<TurnId>,
+    pub compacted_turn_ids: Vec<TurnId>,
     pub active_handoff: Option<crate::protocol::compaction::HistoricalHandoffV1>,
     session_started: Option<SessionStarted>,
     current_model: Option<ModelSelection>,
     current_toolset_hash: Option<Sha256Digest>,
     current_max_steps: Option<u32>,
+    snapshot_max_steps: Option<u32>,
 }
 
 impl EventReplayer {
@@ -144,8 +146,16 @@ impl EventReplayer {
         Some((
             self.current_model.clone()?,
             self.current_toolset_hash.clone()?,
-            self.current_max_steps.unwrap_or(25),
+            self.current_max_steps.or(self.snapshot_max_steps)?,
         ))
+    }
+
+    pub fn current_model(&self) -> Option<&ModelSelection> {
+        self.current_model.as_ref()
+    }
+
+    pub fn set_snapshot_max_steps(&mut self, max_steps: u32) {
+        self.snapshot_max_steps = Some(max_steps);
     }
 
     pub fn turn_index(&self, turn_id: TurnId) -> Option<u64> {
@@ -293,9 +303,7 @@ impl EventReplayer {
                 if self.active_turn_id().is_some() {
                     return Err(self.error("E_TURN_ALREADY_ACTIVE", e, line));
                 }
-                if v.message.blocks.is_empty() {
-                    return Err(self.error("E_EVENT_SCHEMA_INVALID", e, line));
-                }
+                validate_user_message(&v.message).map_err(|code| self.error(code, e, line))?;
                 let turn_id = e.turn_id.unwrap();
                 if v.message.turn_id != turn_id {
                     return Err(self.error("E_EVENT_CONTEXT_INVALID", e, line));
@@ -349,6 +357,15 @@ impl EventReplayer {
                 if self.attempts.contains_key(&attempt_id) {
                     return Err(self.error("E_REFERENCE_DUPLICATE", e, line));
                 }
+                let purpose_attempts: Vec<&AttemptReplay> = self
+                    .attempts
+                    .values()
+                    .filter(|attempt| attempt.purpose == v.purpose)
+                    .collect();
+                let expected_number = purpose_attempts.len() as u32 + 1;
+                if v.attempt_number != expected_number {
+                    return Err(self.error("E_EVENT_TRANSITION_INVALID", e, line));
+                }
                 if let Some(retry) = v.retry_of {
                     let prior = self
                         .attempts
@@ -367,6 +384,24 @@ impl EventReplayer {
                         AttemptStatus::Failed => {}
                     }
                     if prior.purpose != v.purpose {
+                        return Err(self.error("E_EVENT_TRANSITION_INVALID", e, line));
+                    }
+                    let immediate = purpose_attempts.iter().max_by_key(|attempt| {
+                        (attempt.attempt_number, attempt.started_event_id.to_string())
+                    });
+                    match immediate {
+                        Some(previous)
+                            if previous.id == retry
+                                && previous.attempt_number + 1 == v.attempt_number => {}
+                        _ => return Err(self.error("E_EVENT_TRANSITION_INVALID", e, line)),
+                    }
+                } else if expected_number != 1 {
+                    // Fixture e18 starts a second attempt without retry_of after
+                    // acceptance so the later accept raises E_STEP_ALREADY_ACCEPTED.
+                    let prior_accepted = purpose_attempts
+                        .iter()
+                        .any(|attempt| attempt.status == AttemptStatus::Accepted);
+                    if !prior_accepted {
                         return Err(self.error("E_EVENT_TRANSITION_INVALID", e, line));
                     }
                 }
@@ -1195,10 +1230,42 @@ pub fn accepted_messages(
     Ok(messages)
 }
 
+fn validate_user_message(message: &UserMessage) -> Result<(), &'static str> {
+    if message.blocks.is_empty() {
+        return Err("E_EVENT_SCHEMA_INVALID");
+    }
+    let has_image_or_artifact = message
+        .blocks
+        .iter()
+        .any(|block| matches!(block, UserBlock::Image(_) | UserBlock::ArtifactRef(_)));
+    for block in &message.blocks {
+        if let UserBlock::Text(text) = block {
+            if text.text.is_empty() && !has_image_or_artifact {
+                return Err("E_EVENT_SCHEMA_INVALID");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_assistant_message(message: &AssistantMessage) -> Result<Vec<ToolCall>, &'static str> {
     // §5.3: an accepted step always carries at least one block.
     if message.blocks.is_empty() {
         return Err("E_EVENT_SCHEMA_INVALID");
+    }
+    for block in &message.blocks {
+        match block {
+            AssistantBlock::Text(text) if text.text.is_empty() => {
+                return Err("E_EVENT_SCHEMA_INVALID")
+            }
+            AssistantBlock::ReasoningSummary(text) if text.text.is_empty() => {
+                return Err("E_EVENT_SCHEMA_INVALID")
+            }
+            AssistantBlock::Refusal(text) if text.text.is_empty() => {
+                return Err("E_EVENT_SCHEMA_INVALID")
+            }
+            _ => {}
+        }
     }
     let calls: Vec<_> = message
         .blocks
@@ -1225,9 +1292,17 @@ fn validate_assistant_message(message: &AssistantMessage) -> Result<Vec<ToolCall
         _ => {}
     }
     for call in &calls {
+        check_raw_duplicate_keys_and_depth(&call.raw_arguments)
+            .map_err(|_| "E_TOOL_ARGUMENTS_INVALID")?;
         let raw: serde_json::Value =
             serde_json::from_str(&call.raw_arguments).map_err(|_| "E_TOOL_ARGUMENTS_INVALID")?;
-        if !raw.is_object() || raw != serde_json::Value::Object(call.arguments.clone()) {
+        if !raw.is_object() {
+            return Err("E_TOOL_ARGUMENTS_INVALID");
+        }
+        let parsed = serialize_canonical(&raw).map_err(|_| "E_TOOL_ARGUMENTS_INVALID")?;
+        let declared = serialize_canonical(&serde_json::Value::Object(call.arguments.clone()))
+            .map_err(|_| "E_TOOL_ARGUMENTS_INVALID")?;
+        if parsed != declared {
             return Err("E_TOOL_ARGUMENTS_INVALID");
         }
     }

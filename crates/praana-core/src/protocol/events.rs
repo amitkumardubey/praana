@@ -7,7 +7,7 @@ use crate::protocol::compaction::{HistoricalHandoffV1, HistoryCompactedV1};
 use crate::protocol::errors::ProtocolError;
 use crate::protocol::id::*;
 use crate::protocol::json::{deserialize_bounded_u64, deserialize_sequence, deserialize_timestamp};
-use crate::protocol::messages::*;
+use crate::protocol::messages::{deserialize_tool_name, *};
 use crate::protocol::models::*;
 use crate::protocol::recovery::RecoveryNotice;
 use crate::protocol::state_graph::StateChangedV1;
@@ -171,6 +171,7 @@ pub struct ToolExecutionStarted {
     pub step_id: StepId,
     pub call_id: ToolCallId,
     pub call_index: u32,
+    #[serde(deserialize_with = "deserialize_tool_name")]
     pub tool_name: String,
     pub arguments_hash: Sha256Digest,
     pub mutability: ToolMutability,

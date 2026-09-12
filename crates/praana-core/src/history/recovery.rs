@@ -7,6 +7,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::history::event_log::EventLogStore;
 use crate::history::replay::{accepted_messages, AttemptStatus, EventReplayer};
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
+use crate::protocol::constants::TOOL_RESULT_MEDIA_TYPE;
 use crate::protocol::errors::{ErrorClass, HistoryError, HistoryResult, ProtocolError};
 use crate::protocol::events::*;
 use crate::protocol::hashes::{
@@ -85,6 +86,7 @@ impl SessionRecoveryEngine {
             &events,
             Some(self.store.raw_lines()),
             self.pending_notices(),
+            None,
         )
     }
 
@@ -92,7 +94,11 @@ impl SessionRecoveryEngine {
         let mut appended = 0usize;
         loop {
             let events = self.store.events()?;
-            let replay = replay(&events, self.store.raw_lines())?;
+            let replay = replay(
+                &events,
+                self.store.raw_lines(),
+                Some(self.store.snapshot_max_steps()),
+            )?;
 
             if let Some(attempt) = replay
                 .attempts
@@ -143,7 +149,6 @@ impl SessionRecoveryEngine {
                         step_id,
                         execution,
                     } => {
-                        let text = "{\"code\":\"E_TOOL_SIDE_EFFECT_UNCERTAIN\",\"error\":\"The process stopped after this tool was marked started. Its side effects are unknown. Do not repeat the mutation until state has been inspected.\",\"ok\":false}";
                         let event = self.tool_finish(
                             turn_id,
                             attempt_id,
@@ -155,7 +160,8 @@ impl SessionRecoveryEngine {
                             execution.tool_name.clone(),
                             Some(execution.started_event_id.expect("started execution")),
                             ToolResultStatus::Uncertain,
-                            text,
+                            "E_TOOL_SIDE_EFFECT_UNCERTAIN",
+                            "The process stopped after this tool was marked started. Its side effects are unknown. Do not repeat the mutation until state has been inspected.",
                         )?;
                         self.store.append_event(&event)?;
                         self.push_notice(tool_uncertain_notice(
@@ -173,7 +179,6 @@ impl SessionRecoveryEngine {
                         call_index,
                     } => {
                         let execution_id = self.next_id()?;
-                        let text = "{\"code\":\"E_TOOL_SKIPPED_UNCERTAIN_PEER\",\"error\":\"Skipped because another call in the parallel batch has uncertain side effects.\",\"ok\":false}";
                         let event = self.tool_finish(
                             turn_id,
                             attempt_id,
@@ -185,7 +190,8 @@ impl SessionRecoveryEngine {
                             call.name,
                             None,
                             ToolResultStatus::Skipped,
-                            text,
+                            "E_TOOL_SKIPPED_UNCERTAIN_PEER",
+                            "Skipped because another call in the parallel batch has uncertain side effects.",
                         )?;
                         self.store.append_event(&event)?;
                     }
@@ -329,10 +335,12 @@ impl SessionRecoveryEngine {
         tool_name: String,
         started_event_id: Option<EventId>,
         status: ToolResultStatus,
-        text: &str,
+        error_code: &str,
+        error_message: &str,
     ) -> HistoryResult<EventEnvelope> {
         let message_id = self.next_id()?;
         let recovered = status == ToolResultStatus::Uncertain;
+        let text = canonical_recovery_tool_result(error_code, error_message, &call_id, &tool_name)?;
         self.envelope(
             Some(turn_id),
             Some(attempt_id),
@@ -352,7 +360,7 @@ impl SessionRecoveryEngine {
                     call_id,
                     tool_name,
                     status,
-                    body: synthetic_tool_result_body(text)?,
+                    body: synthetic_tool_result_body(&text)?,
                     recovered,
                 },
             }),
@@ -457,8 +465,15 @@ fn next_tool_repair(replay: &EventReplayer) -> Option<ToolRepair> {
     None
 }
 
-fn replay(events: &[EventEnvelope], raw_lines: &[String]) -> HistoryResult<EventReplayer> {
+fn replay(
+    events: &[EventEnvelope],
+    raw_lines: &[String],
+    snapshot_max_steps: Option<u32>,
+) -> HistoryResult<EventReplayer> {
     let mut replay = EventReplayer::new();
+    if let Some(max_steps) = snapshot_max_steps {
+        replay.set_snapshot_max_steps(max_steps);
+    }
     for (index, event) in events.iter().enumerate() {
         replay.process_event(event, Some(index + 1), Some(raw_lines))?;
     }
@@ -539,6 +554,57 @@ fn sum_attempt_usage(replay: &EventReplayer, turn_id: TurnId) -> ProviderUsage {
     total
 }
 
+fn canonical_recovery_tool_result(
+    code: &str,
+    message: &str,
+    call_id: &ToolCallId,
+    tool_name: &str,
+) -> HistoryResult<String> {
+    #[derive(serde::Serialize)]
+    struct RecoveryToolResult<'a> {
+        ok: bool,
+        error: RecoveryToolError<'a>,
+        meta: RecoveryToolMeta<'a>,
+    }
+    #[derive(serde::Serialize)]
+    struct RecoveryToolError<'a> {
+        code: &'a str,
+        message: &'a str,
+        retryable: bool,
+    }
+    #[derive(serde::Serialize)]
+    struct RecoveryToolMeta<'a> {
+        tool_call_id: &'a str,
+        tool_name: &'a str,
+        duration_ms: u64,
+        cancelled: bool,
+        timed_out: bool,
+        redacted: bool,
+        truncated: bool,
+    }
+    let dto = RecoveryToolResult {
+        ok: false,
+        error: RecoveryToolError {
+            code,
+            message,
+            retryable: false,
+        },
+        meta: RecoveryToolMeta {
+            tool_call_id: call_id.as_str(),
+            tool_name,
+            duration_ms: 0,
+            cancelled: false,
+            timed_out: false,
+            redacted: false,
+            truncated: false,
+        },
+    };
+    let bytes = crate::canonical_json::to_canonical_json_bytes(&dto)
+        .map_err(|_| HistoryError::new("E_EVENT_SCHEMA_INVALID", None, None, false))?;
+    String::from_utf8(bytes)
+        .map_err(|_| HistoryError::new("E_EVENT_SCHEMA_INVALID", None, None, false))
+}
+
 fn synthetic_tool_result_body(text: &str) -> HistoryResult<ToolResultBody> {
     let bytes = text.as_bytes();
     let sha = calculate_sha256(bytes);
@@ -557,7 +623,7 @@ fn synthetic_tool_result_body(text: &str) -> HistoryResult<ToolResultBody> {
         )
         .map_err(|_| HistoryError::new("E_EVENT_SCHEMA_INVALID", None, None, false))?;
     Ok(ToolResultBody {
-        media_type: "application/json".to_owned(),
+        media_type: TOOL_RESULT_MEDIA_TYPE.to_owned(),
         content: ToolResultContent::Inline(InlineToolResult {
             text: text.to_owned(),
         }),
@@ -593,7 +659,7 @@ pub fn build_interrupted_turn_capsule(
     raw_lines: &[String],
     turn_id: TurnId,
 ) -> HistoryResult<InterruptedTurnCapsuleV1> {
-    let replay = replay(events, raw_lines)?;
+    let replay = replay(events, raw_lines, None)?;
     let turn = replay
         .turns
         .values()
