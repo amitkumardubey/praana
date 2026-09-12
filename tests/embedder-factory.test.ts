@@ -238,16 +238,24 @@ describe.skipIf(!HAS_TRANSFORMERS)("TransformersEmbedder", () => {
     embedder = await createEmbedder(makeConfig({ embedder: "transformers" }));
   }, TRANSFORMERS_TIMEOUT_MS);
 
-  it("produces unit-norm vectors", async () => {
-    const vec = await embedder.embed("unit norm check");
-    let norm = 0;
-    for (const v of vec) norm += v * v;
-    expect(Math.sqrt(norm)).toBeCloseTo(1.0, 3);
-  });
+  it(
+    "produces unit-norm vectors",
+    async () => {
+      const vec = await embedder.embed("unit norm check");
+      let norm = 0;
+      for (const v of vec) norm += v * v;
+      expect(Math.sqrt(norm)).toBeCloseTo(1.0, 3);
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
 
-  it("is deterministic for the same input", async () => {
-    const a = await embedder.embed("same text");
-    const b = await embedder.embed("same text");
-    expect(Array.from(a)).toEqual(Array.from(b));
-  });
+  it(
+    "is deterministic for the same input",
+    async () => {
+      const a = await embedder.embed("same text");
+      const b = await embedder.embed("same text");
+      expect(Array.from(a)).toEqual(Array.from(b));
+    },
+    TRANSFORMERS_TIMEOUT_MS,
+  );
 });
