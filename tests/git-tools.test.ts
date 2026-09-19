@@ -518,7 +518,7 @@ describe.skipIf(!hasGit)("git_log integration", () => {
   });
 
   it("handles since filter", async () => {
-    const result = await runGitLog(testDir, { since: "1970-01-01", max_count: 5 });
+    const result = await runGitLog(testDir, { since: "2000-01-01", max_count: 5 });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.commits.length).toBeGreaterThan(0);
