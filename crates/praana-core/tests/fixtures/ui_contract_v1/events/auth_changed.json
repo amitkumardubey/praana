@@ -3,10 +3,12 @@
   "session_id": null,
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK000000000000003A",
   "durability": {
     "type": "credential_revision",
-    "revision": 2
+    "data": {
+      "revision": 2
+    }
   },
   "event": {
     "type": "auth_changed",

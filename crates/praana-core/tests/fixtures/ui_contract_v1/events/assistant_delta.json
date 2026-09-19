@@ -5,9 +5,7 @@
   "attempt_id": "01J8Z3NDEK0000000000000003",
   "operation_id": null,
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK000000000000001Q",
-    "canonical_sequence": 56
+    "type": "ephemeral"
   },
   "event": {
     "type": "assistant_delta",

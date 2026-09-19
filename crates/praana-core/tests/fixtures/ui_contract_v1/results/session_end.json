@@ -39,7 +39,9 @@
             "tier": "active",
             "status": {
               "type": "decision",
-              "data": "accepted"
+              "data": {
+                "status": "active"
+              }
             },
             "label": "Use bun test",
             "focused": false

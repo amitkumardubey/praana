@@ -102,7 +102,7 @@ P0
   default toolchain gate for this packet.
 - Implementation modules: `crates/praana-core/src/protocol/*`,
   `crates/praana-core/src/history/{event_log,replay,projection,recovery}.rs`.
-  `operation_ledger.rs` remains P1C.
+  `operation_ledger.rs` is P1C.
 
 ### P1C: Permanent UI Contract and Operation Idempotency
 
@@ -113,6 +113,11 @@ P0
   ledgers and crash recovery. No IPC or Ratatui.
 - Focused tests: `ui_contract_v1`, `ui_sink_backpressure`,
   `operation_idempotency`.
+- Implementation modules: `crates/praana-core/src/ui_contract/*`,
+  `crates/praana-core/src/history/operation_ledger.rs`.
+- `execute_core_command` returns honest `Unavailable` until later packets own
+  effects. IPC is P7; Ratatui is P9. This packet does not depend on Syntect;
+  `syntax_theme` membership is the Syntect 5.2 `ThemeSet::load_defaults` names.
 
 ### P1D: System and Project Context
 

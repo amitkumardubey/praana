@@ -5,9 +5,7 @@
   "attempt_id": null,
   "operation_id": null,
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK000000000000001M",
-    "canonical_sequence": 53
+    "type": "ephemeral"
   },
   "event": {
     "type": "context_updated",
@@ -20,7 +18,7 @@
       "cache_read_tokens": 256,
       "cache_write_tokens": 0,
       "compaction_epoch": 0,
-      "pressure": "normal"
+      "pressure": "available"
     }
   }
 }

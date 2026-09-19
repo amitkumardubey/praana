@@ -3,10 +3,13 @@
   "session_id": "01J8Z3NDEK0000000000000001",
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK0000000000000031",
   "durability": {
-    "type": "canonical_snapshot",
-    "canonical_through_sequence": 101
+    "type": "canonical_event",
+    "data": {
+      "event_id": "01J8Z3NDEK000000000000002F",
+      "canonical_sequence": 101
+    }
   },
   "event": {
     "type": "session_cleared",

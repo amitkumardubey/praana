@@ -441,6 +441,7 @@ describe("rust-v2 UI contract fixture freeze", () => {
     expect(typesOf(lines("events/postvisible_interruption.jsonl"))).toEqual([
       "attempt_started",
       "assistant_delta",
+      "system_error",
       "attempt_rewind",
       "turn_interrupted",
     ]);

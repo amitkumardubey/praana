@@ -3,11 +3,13 @@
   "session_id": "01J8Z3NDEK0000000000000001",
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK0000000000000037",
   "durability": {
     "type": "canonical_event",
-    "event_id": "01J8Z3NDEK000000000000001K",
-    "canonical_sequence": 52
+    "data": {
+      "event_id": "01J8Z3NDEK000000000000001K",
+      "canonical_sequence": 52
+    }
   },
   "event": {
     "type": "reasoning_changed",

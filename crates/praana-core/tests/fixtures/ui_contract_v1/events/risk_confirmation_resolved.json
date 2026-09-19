@@ -3,11 +3,9 @@
   "session_id": "01J8Z3NDEK0000000000000001",
   "turn_id": "01J8Z3NDEK0000000000000002",
   "attempt_id": "01J8Z3NDEK0000000000000003",
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK000000000000003C",
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK0000000000000021",
-    "canonical_sequence": 66
+    "type": "ephemeral"
   },
   "event": {
     "type": "risk_confirmation_resolved",

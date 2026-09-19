@@ -3,10 +3,12 @@
   "session_id": "01J8Z3NDEK0000000000000001",
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK0000000000000032",
   "durability": {
     "type": "canonical_snapshot",
-    "canonical_through_sequence": 99
+    "data": {
+      "canonical_through_sequence": 99
+    }
   },
   "event": {
     "type": "session_ended",
@@ -47,7 +49,9 @@
             "tier": "active",
             "status": {
               "type": "decision",
-              "data": "accepted"
+              "data": {
+                "status": "active"
+              }
             },
             "label": "Use bun test",
             "focused": false

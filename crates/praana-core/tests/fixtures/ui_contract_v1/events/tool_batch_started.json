@@ -5,9 +5,10 @@
   "attempt_id": "01J8Z3NDEK0000000000000003",
   "operation_id": null,
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK000000000000001Y",
-    "canonical_sequence": 63
+    "type": "canonical_snapshot",
+    "data": {
+      "canonical_through_sequence": 63
+    }
   },
   "event": {
     "type": "tool_batch_started",
