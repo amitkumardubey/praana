@@ -1220,8 +1220,11 @@ later enter compaction; until it exists, the turn is a hard selection barrier.
 
 `SessionStarted.config_schema_version` and `config_digest_sha256` MUST match the
 immutable creation metadata and `config.snapshot.json` defined by the Config
-specification. `SessionStarted.history_mode` and effective `history.mode` MUST
-be `append` in the initial implementation. `engine` is not a schema-2
+specification. `project_context_source_sha256` is deliberately metadata-only:
+System Context defines it and History stores it only in immutable `meta.json`.
+It is not a `SessionStarted` field, Config-v1 value, or canonical-event hash
+input. `SessionStarted.history_mode` and effective `history.mode` MUST be
+`append` in the initial implementation. `engine` is not a schema-2
 discriminant or accepted initial config value. It is only a Phase 10 future
 evaluation that requires new approved config and projection contracts.
 

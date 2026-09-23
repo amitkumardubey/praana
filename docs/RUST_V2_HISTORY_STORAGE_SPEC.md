@@ -173,6 +173,7 @@ NOT be updated in this file.
   "agent_id": "praana",
   "config_schema_version": 1,
   "config_digest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "project_context_source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "event_schema_version": 2,
   "history_schema_version": 1,
   "projection_version": "rust-v2-projection-1",
@@ -195,8 +196,12 @@ payload repeats cwd, agent, config schema/digest, projection version, compaction
 policy version, artifact policy version, token estimator/system-context/provider-
 registry/tool-catalog/UI schema versions, Unicode utility version, and redaction
 version. `config_digest_sha256` also MUST equal SHA-256 of the
-Config-spec canonical effective JSON in `config.snapshot.json`. Those
-overlapping fields must agree. A mismatch maps
+Config-spec canonical effective JSON in `config.snapshot.json`.
+`project_context_source_sha256` is a required 64-lowercase-hex string,
+serialized immediately after the config digest; System Context section 7.1
+exclusively defines its input bytes and resume comparison. It is not copied to
+`config.snapshot.json` or `SessionStarted`, and is excluded from the config
+digest. The event/snapshot overlapping fields must agree. A mismatch maps
 to public `E_SESSION_ID_MISMATCH` or internal `HISTORY_META_MISMATCH` and
 prevents a mutating resume.
 
@@ -209,16 +214,21 @@ operation results, or diagnostics. Mode `0600` protects it with the manifest.
 
 The Config specification exclusively defines this file's complete schema,
 canonical serialization, digest, secret exclusions, and changed-config resume
-behavior. History owns only private file creation and durability. Creation
-writes and fsyncs `config.snapshot.json.tmp`, renames it without replacement,
+behavior. It contains only the effective Config-v1 object and MUST NOT contain
+`project_context_source_sha256` or any project-context manifest. History owns
+only private file creation and durability. Creation writes and fsyncs
+`config.snapshot.json.tmp`, renames it without replacement,
 fsyncs the session directory, then writes `meta.json` and sequence-1
 `SessionStarted` with the matching digest. A process never edits the snapshot.
 
-Resume validates snapshot bytes and digest before opening a mutating event
-writer. A mismatch is `HISTORY_META_MISMATCH` and maps to the Config-spec
-snapshot error. A current runtime config with a different valid digest does not
-alter the creation snapshot; it follows the Config-spec resume warning and
-model-boundary rules.
+Resume validates snapshot bytes and digest and validates the metadata field's
+hex grammar before opening a mutating event writer. A snapshot/digest mismatch
+is `HISTORY_META_MISMATCH` and maps to the Config-spec snapshot error. System
+Context performs the semantic project-context digest recomputation after this
+metadata validation; a changed current source emits its owner-defined warning
+and never rewrites `meta.json`. A current runtime config with a different valid
+digest does not alter the creation snapshot; it follows the Config-spec resume
+warning and model-boundary rules.
 
 ## 3. Permissions and open policy
 

@@ -44,13 +44,9 @@ may remove them only at the Ratatui cutover gate.
 ```text
 P0
  |
- +--> P1A --> P1B --> P1C
- |      |       |       |
- |      +--> P1D       +--> P2B
- |              |             |
- +--------------+--> P2A -----+
-                              |
-                 P3A --> P3B --> P3C
+ +--> P1A --> P1B --> P1C --> P2A --> P2B --+
+ |              |                               |
+ |              +--> P1D --> P3A --> P3B -------+--> P3C
                                   |
                             P4A --> P4B
                                   |
@@ -122,10 +118,22 @@ P0
 ### P1D: System and Project Context
 
 - Owner: `RUST_V2_SYSTEM_CONTEXT_SPEC.md`.
-- Depends: P1A.
-- Output: exact stable policy, AGENTS/project/stack/skills discovery and slot
-  bytes. No provider wire formatting.
-- Focused test: `system_context_v1`.
+- Depends: P1A, P1B. P1B supplies the immutable `meta.json` write/read boundary;
+  P1D supplies its project-context provenance value. P3A depends on P1D because
+  it reuses P1D's report-only detector.
+- Output: exact stable policy, AGENTS/project/stack/skills discovery, slot bytes,
+  immutable project-context source provenance in session metadata, and the
+  report-only high-confidence secret detector. No replacement, streaming,
+  structured redaction, tool hook, or provider wire formatting.
+- Focused test: `system_context_v1` only, including detector and metadata-resume
+  cases. Expected initial red reason: unresolved `system_context` and
+  `redaction::detectors` modules/API.
+- Focused command: `cargo test -p praana-core --test system_context_v1`.
+- Acceptance gate: this command is green; exact source/discovery/render/hash and
+  changed-on-resume fixtures pass; and no P1D code formats an OpenAI request or
+  transforms a secret.
+- P2B owns deferred OpenAI integration: `openai_v1` request-body/slot-placement
+  fixtures consume P1D's unchanged `InstructionSlotsV1` bytes.
 
 ### P2A: Provider Registry, Credentials, and Setup
 
@@ -151,10 +159,11 @@ P0
 
 - Owners: `RUST_V2_REDACTION_SPEC.md`; `RUST_V2_TOOL_RUNTIME_SPEC.md` common
   runtime packet.
-- Depends: P1B.
-- Output: redaction, typed/erased tools, strict schemas, registry, intents,
-  hook pipeline, locks, process supervision, canonical result serialization.
-  No built-in tool is enabled yet.
+- Depends: P1B, P1D.
+- Output: redaction transformation, typed/erased tools, strict schemas, registry,
+  intents, hook pipeline, locks, process supervision, canonical result
+  serialization. It reuses P1D's `redaction::detectors::detect_secret_matches_v1`
+  rather than implementing a second detector. No built-in tool is enabled yet.
 - Focused tests: `redaction_v1`, `redaction_stream_v1`,
   `tool_runtime_phase3`.
 

@@ -8,11 +8,15 @@
 
 ## 1. Authority
 
-This document owns secret detection, replacement precedence, streaming state,
-structured traversal, redaction metadata, canary tests, and surface policy.
-Tool Runtime owns where redaction runs in its hook order. History hashes and
-stores only finalized post-redaction tool results. Provider credentials are
-handled by the credential specification and never enter this detector.
+This document owns secret-detection semantics, replacement precedence, streaming
+state, structured traversal, redaction metadata, canary tests, and surface
+policy. **P1D implements the reusable report-only text detector** in
+`praana_core::redaction::detectors` because project-instruction loading precedes
+P3A. P3A owns redaction transformation and consumes that exact detector; it
+MUST NOT duplicate or broaden its patterns. Tool Runtime owns where redaction
+runs in its hook order. History hashes and stores only finalized post-redaction
+tool results. Provider credentials are handled by the credential specification
+and never enter this detector.
 
 Redaction never changes tool execution input. It operates on copies used for
 canonical/log/UI tool-call arguments and on finalized tool results before their
@@ -52,9 +56,13 @@ Kinds sort by the precedence below and appear once in metadata.
 
 ## 3. Text Detector Precedence
 
-Scan valid UTF-8 left-to-right. At one byte offset choose the matching detector
-with the lowest precedence number, then the longest byte match, then the kind
-name ASCII. Replace one maximal non-overlapping match and continue after it.
+Scan valid UTF-8 left-to-right. The P1D-owned
+`redaction::detectors::detect_secret_matches_v1(input: &str) -> Vec<SecretMatchV1>`
+implements these complete-input rules and returns the selected non-overlapping
+spans in this order. P3A uses those spans for replacement. At one byte offset
+choose the matching detector with the lowest precedence number, then the longest
+byte match, then the kind name ASCII. Replace one maximal non-overlapping match
+and continue after it.
 
 | Priority | Kind | Exact detection |
 |---:|---|---|
@@ -168,8 +176,6 @@ from output, events, artifacts, FTS, UI, logs, errors, and operation ledgers.
 ## 10. Bounded Implementation Packet
 
 ```text
-crates/praana-core/src/redaction/mod.rs
-crates/praana-core/src/redaction/detectors.rs
 crates/praana-core/src/redaction/assignment.rs
 crates/praana-core/src/redaction/stream.rs
 crates/praana-core/src/redaction/json.rs
@@ -177,10 +183,16 @@ crates/praana-core/tests/redaction_v1.rs
 crates/praana-core/tests/redaction_stream_v1.rs
 ```
 
+P1D already creates `src/redaction/mod.rs` and `src/redaction/detectors.rs` and
+runs its detector cases inside `system_context_v1`; P3A imports them unchanged.
+P3A adds replacement over returned spans, streaming equivalence, structured
+traversal, and Tool Runtime integration. Its initial red reason is unresolved
+transformation/streaming/structured-redaction modules, not a missing detector.
+
 1. Write complete and byte-split golden tests; expected red is unresolved
-   `redaction`.
-2. Implement fixed detectors/precedence and assignment exemptions until complete
-   text tests pass.
+   transformation/streaming/structured-redaction modules.
+2. Consume P1D fixed detector spans and implement replacement/assignment
+   preservation and exemptions until complete text tests pass.
 3. Implement streaming UTF-8/line/PEM state and make all chunk partitions equal.
 4. Implement structured traversal and Tool Runtime integration; run canary
    end-to-end tests.

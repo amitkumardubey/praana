@@ -757,7 +757,11 @@ CLI field overrides. It contains no source paths, credential values, credential
 environment names, provider headers added by authentication, runtime settings,
 or timestamps.
 
-The JSON object mirrors section 5.1. Keys are lower snake case. Path strings use
+The JSON object mirrors section 5.1 and no other field. In particular,
+`project_context_source_sha256` (and any project-context source hash/manifest)
+is not a Config-v1 field: it is immutable session provenance in `meta.json` as
+owned by the System Context and History specifications. Supplying it in a config
+source is `CONFIG_UNKNOWN_KEY`. Keys are lower snake case. Path strings use
 section 7 canonical JSON form. `llm.temperature_milli` is always present and is
 JSON null when unset. Empty maps and arrays are present. Numbers are integers
 except the four ratio fields, which use their shortest exact JSON decimal.
@@ -781,7 +785,9 @@ resume.
 
 The digest records behavior selection, not source provenance. Two source stacks
 that resolve to the same effective object produce the same digest. A credential
-rotation produces the same digest.
+rotation or project-context source change produces the same digest; the latter
+is tracked only by immutable `meta.json.project_context_source_sha256` and the
+System Context resume comparison.
 
 ## 14. Errors and Warnings
 
@@ -943,6 +949,8 @@ Commit one-file fixtures for:
 - `duplicate-key.json`: duplicate `llm` key.
 - `json-null.json`: `{"llm":{"model":null}}`.
 - `future-ui.toml`: `[ui] theme = "default"`.
+- `project-context-provenance.toml`:
+  `project_context_source_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"`.
 
 ## 17. Exact Test Names
 
@@ -985,6 +993,7 @@ config::tests::incognito_and_plugin_none_select_identical_memory_boundary
 config::tests::live_reload_is_rejected
 config::tests::resume_reports_creation_loaded_and_applied_runtime_digests
 config::tests::future_tables_and_values_are_rejected
+config::tests::project_context_provenance_is_not_a_config_key
 history::tests::session_meta_config_digest_matches_snapshot
 protocol::tests::session_started_config_digest_matches_meta
 ```

@@ -167,9 +167,44 @@ unchanged.
 
 `stable_prefix_sha256` is SHA-256 of ASCII `praana-system-context-v1`, NUL,
 `system_policy`, NUL, and `project_context`. Memory, handoff, current state, and
-session ID are excluded. The Config snapshot stores the hash of discovered
-normalized project-context source bytes and labels so resume detects changed
-instructions without pretending they were the creation-time context.
+session ID are excluded.
+
+### 7.1 Creation-time source provenance
+
+`project_context_source_sha256` is a session-metadata digest, not configuration.
+At creation it is SHA-256 over these exact bytes:
+
+```text
+ASCII "praana-project-context-source-v1", NUL,
+for every successfully read discovery candidate in section 3, in discovery order:
+  ASCII scope ("user" or "project"), NUL,
+  UTF-8 relative_label, NUL,
+  normalized source bytes, NUL
+```
+
+The candidate list is formed before the combined rendering bound is applied.
+Thus a source that is later omitted by the whole-file bound is still represented;
+the fixed omission record itself is not a source. Duplicate root/cwd candidates
+are skipped exactly as section 3 says and therefore contribute once. Missing
+candidates contribute nothing. This digest includes labels and normalized bytes,
+not absolute paths, stack facts, skills, rendered headings, omission text, slot
+hashes, timestamps, or config values.
+
+History stores the lowercase-hex 64-character digest as the required immutable
+`meta.json` field `project_context_source_sha256`, serialized immediately after
+`config_digest_sha256`. It is excluded from `config.snapshot.json`, RFC 8785
+canonical effective configuration, `config_digest_sha256`, and `SessionStarted`:
+project instructions are session-input provenance, not a Config-v1 key or a
+canonical conversation event field.
+
+On resume, P1D rediscovery and normalization run before compiling slots. It
+recomputes this digest from the current candidates and compares it with the
+immutable metadata value. A difference emits exactly one user-visible
+`PROJECT_CONTEXT_CHANGED_SINCE_CREATE` warning without source content or paths;
+the newly discovered current project context is used for subsequent requests.
+The creation metadata is never updated. Missing/invalid/unreadable current
+candidates still follow section 3 and block resume. Equal digests emit no
+warning.
 
 ## 8. Security
 
@@ -179,41 +214,94 @@ instructions without pretending they were the creation-time context.
   the selected git root, remotes, URLs, or a path named by file content.
 - Diagnostics include relative labels and error codes, not instruction content.
 - Project context does not pass through secret redaction because redaction would
-  silently alter user instructions. The loader instead runs the Redaction-spec
-  detector in report-only mode and blocks with `PROJECT_CONTEXT_SECRET_FOUND`
-  when a high-confidence secret is present.
+  silently alter user instructions. **P1D** implements the report-only detector
+  defined below and blocks with `PROJECT_CONTEXT_SECRET_FOUND` when it finds a
+  high-confidence secret. P3A reuses that detector for transformation; P1D does
+  not depend on P3A or implement replacement, streaming, structured traversal,
+  tool hooks, or tool-result persistence.
+
+### 8.1 Reusable report-only detector
+
+The owning module is `praana_core::redaction::detectors`, implemented by P1D.
+It exposes this exact API; callers MUST NOT duplicate patterns or inspect source
+bytes outside these returned spans:
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretMatchV1 {
+    pub kind: SecretKind,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+pub fn detect_secret_matches_v1(input: &str) -> Vec<SecretMatchV1>;
+```
+
+`SecretKind` is the Redaction-spec section 2 enum. The function implements the
+complete valid-UTF-8 text rules, precedence, non-overlap, and key-assignment
+rules of Redaction sections 3 and 4, returning matches in replacement order.
+It neither allocates replacement text nor logs input. Project-context callers
+reject when the returned vector is non-empty. P1D inputs are already bounded to
+65,536 bytes per source and 65,536 bytes combined, so streaming is unnecessary.
+P3A MUST consume this API for complete UTF-8 text and make its streaming and
+structured paths observationally equivalent; it MUST NOT add a second detector
+or change this API's rules. Invalid UTF-8 is rejected earlier by section 3.
 
 ## 9. Fixtures and Tests
 
 Fixtures cover no git root, root/cwd merge, CLAUDE fallback, user context,
 duplicate root/cwd, CRLF/BOM, exact bound, over-bound whole-file omission,
-unreadable/symlink/invalid UTF-8/NUL, secret detection, stack ordering, skill
-ordering, and stable-prefix equality across turns.
+unreadable/symlink/invalid UTF-8/NUL, report-only secret detection and match
+spans, stack ordering, skill ordering, stable-prefix equality across turns, and
+creation/resume source-provenance equality and change warning.
 
-Golden files live under
-`crates/praana-core/tests/fixtures/system_context_v1/` and include source trees,
-expected slots, source manifest, and SHA-256 values.
+The sole committed fixture file is
+`crates/praana-core/tests/fixtures/system_context_v1/cases.json`. It contains
+fixture source trees as JSON data plus expected slots, source manifests,
+SHA-256 values, and resume outcomes; the test materializes its trees under a
+deterministic temporary root.
 
 ## 10. Bounded Implementation Packet
 
-Files:
+P1D files (and no other production source files):
 
 ```text
+crates/praana-core/src/redaction/mod.rs
+crates/praana-core/src/redaction/detectors.rs
+crates/praana-core/src/history/event_log.rs
 crates/praana-core/src/system_context/mod.rs
 crates/praana-core/src/system_context/load.rs
 crates/praana-core/src/system_context/render.rs
 crates/praana-core/src/system_context/stack.rs
 crates/praana-core/src/system_context/skills.rs
 crates/praana-core/tests/system_context_v1.rs
+crates/praana-core/tests/fixtures/system_context_v1/cases.json
 ```
 
-1. Write fixture and rejection tests. Run `cargo test -p praana-core --test
-   system_context_v1`; expected red output is unresolved `system_context`.
-2. Implement discovery/normalization/bounds until source-manifest tests pass.
-3. Implement exact rendering/hash until every golden byte matches.
-4. Integrate provider-neutral slots; run OpenAI request fixtures and verify only
-   volatile suffixes change across turns.
-5. Run workspace fmt, clippy with warnings denied, and all tests.
+The P1B-owned session-creation/resume metadata writer is extended in
+`history/event_log.rs` only at its already-owned `meta.json` boundary to
+write/read/validate the field in section 7.1; no new P1D storage layout or
+Config-v1 field is created.
+
+1. Write fixture and rejection tests, including detector spans and metadata
+   resume behavior. Run `cargo test -p praana-core --test system_context_v1`.
+   Expected red reason: unresolved `system_context` and
+   `redaction::detectors` modules/API.
+2. Implement the report-only detector and discovery/normalization/bounds until
+   source-manifest tests pass.
+3. Implement exact rendering, stable-prefix hash, source-provenance digest, and
+   metadata comparison until every golden byte matches.
+4. Run `cargo test -p praana-core --test system_context_v1` as the focused green
+   command, then workspace fmt, clippy with warnings denied, and all tests.
+
+P1D runs only `system_context_v1` (including its report-only detector and
+metadata-resume cases). OpenAI request-body/slot-placement fixtures are P2B's
+`openai_v1` integration tests; P1D supplies `InstructionSlotsV1` bytes only and
+must not format, send, or fixture provider requests.
+
+Acceptance gate: the focused command is green; every fixture matches discovery,
+report-only detection, rendering, provenance digest, and changed-on-resume
+behavior exactly; and no P1D code performs replacement or provider formatting.
 
 Non-goals: dynamic includes, arbitrary rule formats, semantic summarization,
 provider wire roles, history rendering, and network discovery. Common mistakes:
