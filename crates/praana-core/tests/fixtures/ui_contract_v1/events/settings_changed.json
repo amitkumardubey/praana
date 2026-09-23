@@ -3,11 +3,13 @@
   "session_id": null,
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK0000000000000038",
   "durability": {
     "type": "settings_revision",
-    "revision": 4,
-    "sha256": "ddeb29c1fb98b3cc8df9c648bf3188822a23152e09c52c8e7ca2770eb43bc9ee"
+    "data": {
+      "revision": 4,
+      "sha256": "ddeb29c1fb98b3cc8df9c648bf3188822a23152e09c52c8e7ca2770eb43bc9ee"
+    }
   },
   "event": {
     "type": "settings_changed",

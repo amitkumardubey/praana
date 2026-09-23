@@ -5,9 +5,7 @@
   "attempt_id": "01J8Z3NDEK0000000000000003",
   "operation_id": null,
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK000000000000001Z",
-    "canonical_sequence": 64
+    "type": "ephemeral"
   },
   "event": {
     "type": "tool_call_pending",
@@ -18,7 +16,13 @@
       "tool_name": "shell",
       "label": "shell: bun test",
       "redacted_arguments": {
-        "command": "bun test"
+        "type": "object",
+        "data": {
+          "command": {
+            "type": "string",
+            "data": "bun test"
+          }
+        }
       }
     }
   }

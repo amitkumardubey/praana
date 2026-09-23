@@ -5,9 +5,7 @@
   "attempt_id": "01J8Z3NDEK0000000000000003",
   "operation_id": null,
   "durability": {
-    "type": "canonical_event",
-    "event_id": "01J8Z3NDEK0000000000000020",
-    "canonical_sequence": 65
+    "type": "ephemeral"
   },
   "event": {
     "type": "risk_confirmation_requested",
@@ -19,7 +17,13 @@
       "title": "Remove files",
       "detail": "rm -rf build",
       "redacted_arguments": {
-        "command": "rm -rf build"
+        "type": "object",
+        "data": {
+          "command": {
+            "type": "string",
+            "data": "rm -rf build"
+          }
+        }
       },
       "argument_sha256": "2732125b3e4f3996d1b944ee58e8e3d56aea6923a2e361c8307ad72605fc1341",
       "choices": [

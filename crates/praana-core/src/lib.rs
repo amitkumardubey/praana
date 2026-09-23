@@ -10,6 +10,10 @@
 //! (`history::projection`), and idempotent crash recovery
 //! (`history::recovery`).
 
+//! Phase 1C scope: permanent semantic UI contract (`ui_contract`), bounded
+//! event sink policy, and History-owned session/host operation ledgers with
+//! crash recovery (`history::operation_ledger`).
+
 pub mod canonical_json;
 pub mod clock;
 pub mod config;
@@ -17,6 +21,7 @@ pub mod history;
 pub mod id;
 pub mod protocol;
 pub mod token;
+pub mod ui_contract;
 pub mod unicode;
 
 #[cfg(test)]

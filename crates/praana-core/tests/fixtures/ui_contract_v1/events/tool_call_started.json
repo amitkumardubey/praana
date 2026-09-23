@@ -6,8 +6,10 @@
   "operation_id": null,
   "durability": {
     "type": "canonical_event",
-    "event_id": "01J8Z3NDEK0000000000000022",
-    "canonical_sequence": 67
+    "data": {
+      "event_id": "01J8Z3NDEK0000000000000022",
+      "canonical_sequence": 67
+    }
   },
   "event": {
     "type": "tool_call_started",

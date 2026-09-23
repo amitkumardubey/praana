@@ -17,8 +17,8 @@
         "loaded_config_digest_sha256": "ac0aefbae37b4fc0176fa9fb21f51e2a04967d1f7d651698ba00bad7efc36a0a",
         "runtime_config_digest_sha256": "0cec81bec5fd205d7790463e8f88e9fe5216942d0a6bbc7feae060ac75950642",
         "config_changed_since_create": false,
-        "history_mode": "full",
-        "projection_version": "01J8Z3NDEK0000000000000018",
+        "history_mode": "append",
+        "projection_version": "rust-v2-projection-1",
         "incognito": false
       },
       "active_model": {

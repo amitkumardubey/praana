@@ -3,7 +3,7 @@
   "session_id": null,
   "turn_id": null,
   "attempt_id": null,
-  "operation_id": null,
+  "operation_id": "01J8Z3NDEK000000000000003E",
   "durability": {
     "type": "ephemeral"
   },
