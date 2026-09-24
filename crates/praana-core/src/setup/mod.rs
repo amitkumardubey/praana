@@ -515,13 +515,6 @@ impl SetupService {
             .ok_or_else(|| SetupError::ProviderUnknown(provider_name.to_owned()))?;
         let fields = provider_setup(descriptor).fields;
         validate_setup_values(&fields, &values).map_err(SetupError::InvalidInput)?;
-        let mut store = load_store(&self.credential_path())?;
-        if store.revision != expected_revision {
-            return Err(SetupError::RevisionConflict {
-                expected: expected_revision,
-                actual: store.revision,
-            });
-        }
         let protocol_name = choice_value(&values, FIELD_PROTOCOL)?;
         let protocol = protocol_from_config(provider_name, protocol_name)?;
         let base_url = choice_value(&values, FIELD_BASE_URL)?;
@@ -540,7 +533,7 @@ impl SetupService {
             })
             .ok_or_else(|| SetupError::ModelUnknown(model_id.to_string()))?;
         let (compactor_provider, compactor_model) =
-            resolve_compactor_selection(&values, provider_name, &protocol, profile_row, &manifest)?;
+            resolve_compactor_selection(&values, provider_name, profile_row, &manifest)?;
         let reasoning = choice_value(&values, FIELD_REASONING_EFFORT)?;
         let reasoning_value = reasoning_protocol(reasoning)
             .ok_or_else(|| SetupError::InvalidInput("unsupported reasoning effort".to_owned()))?;
@@ -560,6 +553,9 @@ impl SetupService {
             &compactor_provider,
             &compactor_model,
         )?;
+        // The host operation ledger is the idempotency authority: a byte-identical
+        // retry (e.g. after a crash) replays the stored terminal result before any
+        // credential-store revision check can observe the already-applied revision.
         let operation_values = clone_setup_values_for_operation(&values);
         let command = CoreCommand::SetupApply(SetupApplyCommand {
             operation_id,
@@ -585,6 +581,13 @@ impl SetupService {
                 ))
             }
         };
+        let mut store = load_store(&self.credential_path())?;
+        if store.revision != expected_revision {
+            return Err(SetupError::RevisionConflict {
+                expected: expected_revision,
+                actual: store.revision,
+            });
+        }
         let secret = match values.get(&SetupFieldId(FIELD_API_KEY.to_owned())) {
             Some(SetupValueDto::Secret(value)) => Some(value.expose().to_owned()),
             _ => None,
@@ -682,7 +685,6 @@ fn optional_text_value(
 fn resolve_compactor_selection(
     values: &BTreeMap<SetupFieldId, SetupValueDto>,
     primary_provider: &str,
-    primary_protocol: &ProviderProtocol,
     primary_row: &crate::provider::ModelProfileRowV1,
     manifest: &crate::provider::ModelProfileManifestV1,
 ) -> Result<(String, String), SetupError> {
@@ -726,13 +728,6 @@ fn resolve_compactor_selection(
         return Err(SetupError::Config(
             "selected compactor does not support strict compaction output".to_owned(),
         ));
-    }
-    if primary_row.strict_json_schema
-        && compactor_provider == primary_provider
-        && compactor_protocol == *primary_protocol
-        && compactor_model == primary_row.model_id.as_str()
-    {
-        return Ok((compactor_provider, compactor_model));
     }
     Ok((compactor_provider, compactor_model))
 }

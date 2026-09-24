@@ -30,27 +30,35 @@ fn bundled_manifest_resolves_all_approved_models_dev_rows() {
     let manifest = bundled_manifest().unwrap();
     assert_eq!(manifest.schema_version, 1);
     assert_eq!(manifest.profiles.len(), 3);
+    use praana_core::provider::ReasoningAccounting;
     let approved = [
         (
             "openai",
             ProviderProtocol::Chat,
             "gpt-5.6-sol",
             "adapter-estimate:openai:openai-chat-v1:v1",
+            ReasoningAccounting::IncludedInOutputLimit,
         ),
         (
             "openai",
             ProviderProtocol::Responses,
             "gpt-5.6-sol",
             "adapter-estimate:openai:openai-responses-v1:v1",
+            ReasoningAccounting::IncludedInOutputLimit,
         ),
         (
             "openrouter",
             ProviderProtocol::Chat,
             "openai/gpt-5.6-sol",
             "adapter-estimate:openrouter:openai-chat-v1:v1",
+            ReasoningAccounting::Unknown {
+                conservative_reserve_tokens: 25_000,
+            },
         ),
     ];
-    for ((provider, protocol, model, framing), row) in approved.iter().zip(&manifest.profiles) {
+    for ((provider, protocol, model, framing, reasoning_accounting), row) in
+        approved.iter().zip(&manifest.profiles)
+    {
         assert_eq!(row.provider.as_str(), *provider);
         assert_eq!(&row.protocol, protocol);
         assert_eq!(row.model_id.as_str(), *model);
@@ -59,6 +67,7 @@ fn bundled_manifest_resolves_all_approved_models_dev_rows() {
         assert_eq!(row.max_output_tokens, 128_000);
         assert_eq!(row.tokenizer_profile_id, None);
         assert_eq!(row.framing_profile_id, *framing);
+        assert_eq!(&row.reasoning_accounting, reasoning_accounting);
         assert_eq!(
             row.reasoning_context,
             praana_core::provider::ReasoningContextCapability::AllTurns
@@ -80,6 +89,7 @@ fn bundled_manifest_resolves_all_approved_models_dev_rows() {
             praana_core::provider::ReasoningContextCapability::AllTurns
         );
         assert!(!resolved.continuation_after_internal_request);
+        assert_eq!(&resolved.reasoning_accounting, reasoning_accounting);
     }
     assert!(
         resolve_bundled_profile("openai", &ProviderProtocol::Responses, "made-up", None).is_err()

@@ -97,3 +97,69 @@ fn setup_apply_validates_profile_writes_secret_free_config_and_returns_active_mo
         Some("credential-value-123")
     );
 }
+
+#[test]
+fn setup_apply_replays_same_operation_id_without_reapplying() {
+    use praana_core::ui_contract::ids::OperationId;
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let mut values = BTreeMap::new();
+    values.insert(
+        SetupFieldId("api_key".to_owned()),
+        SetupValueDto::Secret(SensitiveStringDto::from("credential-value-123".to_owned())),
+    );
+    values.insert(
+        SetupFieldId("base_url".to_owned()),
+        SetupValueDto::Text("https://api.openai.com/v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("protocol".to_owned()),
+        SetupValueDto::Choice("openai-responses-v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("reasoning_effort".to_owned()),
+        SetupValueDto::Choice("high".to_owned()),
+    );
+    let clone_values = |source: &BTreeMap<SetupFieldId, SetupValueDto>| {
+        let mut copy = BTreeMap::new();
+        for (field, value) in source {
+            let copied = match value {
+                SetupValueDto::Text(v) => SetupValueDto::Text(v.clone()),
+                SetupValueDto::Choice(v) => SetupValueDto::Choice(v.clone()),
+                SetupValueDto::Boolean(v) => SetupValueDto::Boolean(*v),
+                SetupValueDto::Secret(v) => SetupValueDto::Secret(v.expose().to_owned().into()),
+            };
+            copy.insert(field.clone(), copied);
+        }
+        copy
+    };
+
+    let operation_id = OperationId(ulid::Ulid::generate());
+    let first = service
+        .apply_operation(
+            operation_id,
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            clone_values(&values),
+            2_000,
+        )
+        .unwrap();
+    // Same operation id retried (as after a crash) replays the stored terminal
+    // result without applying a second credential revision.
+    let replay = service
+        .apply_operation(
+            operation_id,
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            clone_values(&values),
+            3_000,
+        )
+        .unwrap();
+    assert_eq!(first.revision, replay.revision);
+    assert_eq!(replay.configured_provider.as_str(), "openai");
+    let credentials = load_store(&home.join("credentials.json")).unwrap();
+    assert_eq!(credentials.revision, first.revision);
+}
