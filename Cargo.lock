@@ -1665,6 +1665,7 @@ dependencies = [
  "libc",
  "praana-native-core",
  "proptest",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

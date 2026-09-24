@@ -15,3 +15,4 @@ pub use loader::{
 pub use raw::RawConfigV1;
 pub use resume::{resolve_resume_config, ResumeConfigResult};
 pub use types::*;
+pub use validate::normalize_provider_url;
