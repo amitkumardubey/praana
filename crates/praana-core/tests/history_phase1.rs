@@ -43,6 +43,7 @@ fn write_fixture_meta(session_dir: &std::path::Path, session_id: &str) {
     write_new_session_meta(
         session_dir,
         &SessionId::from_str_canonical(session_id).unwrap(),
+        &Sha256Digest::from_hex_str(EMPTY_PROJECT_CONTEXT_SOURCE_SHA256).unwrap(),
     )
     .unwrap();
 }
@@ -1179,6 +1180,9 @@ fn missing_config_snapshot_refuses_open() {
         config_schema_version: 1,
         config_digest_sha256: Sha256Digest(
             "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760".into(),
+        ),
+        project_context_source_sha256: Sha256Digest(
+            "8089ad149c033af866b8281a5b9e27974ffe0b55fb9fd84559216fb4358f8576".into(),
         ),
         event_schema_version: 2,
         history_schema_version: 1,

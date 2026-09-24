@@ -132,6 +132,19 @@ P0
 - Acceptance gate: this command is green; exact source/discovery/render/hash and
   changed-on-resume fixtures pass; and no P1D code formats an OpenAI request or
   transforms a secret.
+- Spec reconciliation note (evidence-changed contract): Redaction §2 declares
+  `SecretKind::OpenAiKey` under `#[serde(rename_all = "kebab-case")]` while §3's
+  precedence table lists the kind as `openai-key`. serde's default kebab-case
+  yields `open-ai-key`, contradicting the §3 table. P1D resolves this in favor of
+  the normative §3 table (the canonical kind enumeration used by the
+  `[REDACTED:<kind>]` replacement format) by pinning
+  `#[serde(rename = "openai-key")]` on the `OpenAiKey` variant, so the
+  serialized `kind` value equals the §3 table string. This is documented in
+  `RUST_V2_REDACTION_SPEC.md` §2 and reflected in `cases.json`.
+- P1D gates status: green. `cargo test -p praana-core --test system_context_v1`
+  (13/13), `cargo fmt --all -- --check`, and
+  `cargo clippy --workspace --all-targets -- -D warnings` all pass; full
+  `cargo test --workspace` passes.
 - P2B owns deferred OpenAI integration: `openai_v1` request-body/slot-placement
   fixtures consume P1D's unchanged `InstructionSlotsV1` bytes.
 

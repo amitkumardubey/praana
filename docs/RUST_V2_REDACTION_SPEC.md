@@ -36,6 +36,12 @@ pub enum SecretKind {
     GithubToken,
     GitlabToken,
     AnthropicKey,
+    // NOTE: §3 precedence table lists this kind as `openai-key` (no hyphen
+    // between "open" and "ai"). Plain `rename_all = "kebab-case"` would
+    // serialize `OpenAiKey` as `open-ai-key`, contradicting §3. The explicit
+    // rename below pins the serialized form to the §3 table string so the
+    // `[REDACTED:<kind>]` replacement and the `SecretMatchV1.kind` field agree.
+    #[serde(rename = "openai-key")]
     OpenAiKey,
     KeyAssignment,
 }

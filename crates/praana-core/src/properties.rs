@@ -127,7 +127,15 @@ fn copy_fixture_session(fixture: &Path) -> (TempDir, PathBuf) {
     )
     .unwrap();
     let session_id = SessionId::from_str_canonical(&session_id_from_fixture(fixture)).unwrap();
-    crate::history::event_log::write_new_session_meta(&session_dir, &session_id).unwrap();
+    crate::history::event_log::write_new_session_meta(
+        &session_dir,
+        &session_id,
+        &crate::protocol::id::Sha256Digest::from_hex_str(
+            crate::history::event_log::EMPTY_PROJECT_CONTEXT_SOURCE_SHA256,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     (temp, session_dir)
 }
 
