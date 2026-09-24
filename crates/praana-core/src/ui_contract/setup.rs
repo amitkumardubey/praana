@@ -246,6 +246,8 @@ pub struct AuthLogoutResultDto {
     pub provider: ProviderId,
     pub state: AuthState,
     pub fallback_model: Option<ActiveModelDto>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub authentication_required: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

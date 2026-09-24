@@ -65,4 +65,16 @@ impl TokenProfileStoreV1 {
             "generic-conservative".to_string(),
         ))
     }
+
+    pub fn contains_framing_profile(&self, framing_profile_id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.framing_profile.framing_profile_id == framing_profile_id)
+    }
+
+    pub fn contains_tokenizer_profile(&self, tokenizer_profile_id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.tokenizer_profile_id.as_deref() == Some(tokenizer_profile_id))
+    }
 }

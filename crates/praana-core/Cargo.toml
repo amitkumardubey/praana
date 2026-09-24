@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", 
 async-trait = "0.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 zeroize = "1"
+reqwest = { version = "0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -947,9 +947,17 @@ fn plan_effects(
                 }),
                 _ => false,
             };
+            let expected_revision = match command {
+                CoreCommand::SetupApply(apply) => {
+                    apply.expected_revision.checked_add(1).ok_or_else(|| {
+                        LedgerError::Storage("credential revision overflow".to_string())
+                    })?
+                }
+                _ => 1,
+            };
             let mut plan = vec![PlannedEffectRef::CredentialRevision {
-                from_revision: 0,
-                to_revision: 1,
+                from_revision: expected_revision - 1,
+                to_revision: expected_revision,
             }];
             if secret {
                 plan.push(PlannedEffectRef::NonReplayableSecretWrite);
@@ -1162,7 +1170,7 @@ fn chmod_wal_shm_for(db_path: &Path) {
 /// - Same ID with a different kind or request hash: `OperationConflict`
 ///   without executing.
 /// - `Interrupted` rows report `OperationInterrupted`.
-pub async fn reserve_operation(
+pub fn reserve_operation_sync(
     ledger: &OperationLedger,
     command: &CoreCommand,
     history: &HistoryService,
@@ -1259,6 +1267,14 @@ pub async fn reserve_operation(
             Err(error)
         }
     }
+}
+
+pub async fn reserve_operation(
+    ledger: &OperationLedger,
+    command: &CoreCommand,
+    history: &HistoryService,
+) -> Result<OperationReservation, CoreErrorDto> {
+    reserve_operation_sync(ledger, command, history)
 }
 
 fn reserve_inner(
@@ -1939,6 +1955,7 @@ fn reconstruct_proven_after_result(
                     provider,
                     state: AuthState::Unauthenticated,
                     fallback_model: None,
+                    authentication_required: false,
                 }),
             ))
         }

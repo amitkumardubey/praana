@@ -17,10 +17,13 @@
 pub mod canonical_json;
 pub mod clock;
 pub mod config;
+pub mod credentials;
 pub mod history;
 pub mod id;
 pub mod protocol;
+pub mod provider;
 pub mod redaction;
+pub mod setup;
 pub mod system_context;
 pub mod token;
 pub mod ui_contract;
