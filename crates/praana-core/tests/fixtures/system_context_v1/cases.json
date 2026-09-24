@@ -1,0 +1,1335 @@
+{
+  "schema_version": 1,
+  "detector_cases": [
+    {
+      "id": "pem_complete",
+      "input": "-----BEGIN RSA PRIVATE KEY-----\nabc\ndef\n-----END RSA PRIVATE KEY-----\nafter",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 0,
+          "end": 69
+        }
+      ]
+    },
+    {
+      "id": "pem_private_11",
+      "input": "x\n-----BEGIN PRIVATE KEY-----\nzzz\n-----END PRIVATE KEY-----\ny",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 2,
+          "end": 59
+        }
+      ]
+    },
+    {
+      "id": "pem_ec_14",
+      "input": "x\n-----BEGIN EC PRIVATE KEY-----\nzzz\n-----END EC PRIVATE KEY-----\ny",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 2,
+          "end": 65
+        }
+      ]
+    },
+    {
+      "id": "pem_openssh_19",
+      "input": "x\n-----BEGIN OPENSSH PRIVATE KEY-----\nzzz\n-----END OPENSSH PRIVATE KEY-----\ny",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 2,
+          "end": 75
+        }
+      ]
+    },
+    {
+      "id": "pem_unterminated",
+      "input": "-----BEGIN PRIVATE KEY-----\nabc",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 0,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "id": "aws_exact",
+      "input": "token AKIAABCDEFGHIJKLMNOP.",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 6,
+          "end": 26
+        }
+      ]
+    },
+    {
+      "id": "aws_start_boundary_fail",
+      "input": "xAKIAABCDEFGHIJKLMNOP",
+      "expected": []
+    },
+    {
+      "id": "aws_short",
+      "input": "AKIAAAAAAAAAAAAAAAA",
+      "expected": []
+    },
+    {
+      "id": "aws_long",
+      "input": "AKIAAAAAAAAAAAAAAAAAA",
+      "expected": []
+    },
+    {
+      "id": "aws_lowercase_tail",
+      "input": "AKIAAAAAAAAAAAAAAAAo",
+      "expected": []
+    },
+    {
+      "id": "aws_prefix_0",
+      "input": "(ASIAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_1",
+      "input": "(AIDAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_2",
+      "input": "(AROAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_3",
+      "input": "(AIPAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_4",
+      "input": "(ANPAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_5",
+      "input": "(ANVAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "aws_prefix_6",
+      "input": "(ASCAABCDEFGHIJKLMNOP)",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 1,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "github_ghp_min",
+      "input": "x ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa y",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 2,
+          "end": 42
+        }
+      ]
+    },
+    {
+      "id": "github_ghp_max",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 259
+        }
+      ]
+    },
+    {
+      "id": "github_ghp_over",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": []
+    },
+    {
+      "id": "github_ghp_under",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": []
+    },
+    {
+      "id": "github_gho_0",
+      "input": "(gho_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 1,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "github_ghu_1",
+      "input": "(ghu_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 1,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "github_ghs_2",
+      "input": "(ghs_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 1,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "github_ghr_3",
+      "input": "(ghr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 1,
+          "end": 41
+        }
+      ]
+    },
+    {
+      "id": "github_pat_min",
+      "input": "github_pat_bbbbbbbbbbbbbbbbbbbbbb",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 33
+        }
+      ]
+    },
+    {
+      "id": "github_pat_max",
+      "input": "github_pat_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 266
+        }
+      ]
+    },
+    {
+      "id": "github_pat_over",
+      "input": "github_pat_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected": []
+    },
+    {
+      "id": "github_pat_under",
+      "input": "github_pat_bbbbbbbbbbbbbbbbbbbbb",
+      "expected": []
+    },
+    {
+      "id": "gitlab_min",
+      "input": "glpat-cccccccccccccccccccc",
+      "expected": [
+        {
+          "kind": "gitlab-token",
+          "start": 0,
+          "end": 26
+        }
+      ]
+    },
+    {
+      "id": "gitlab_max",
+      "input": "glpat-ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "expected": [
+        {
+          "kind": "gitlab-token",
+          "start": 0,
+          "end": 261
+        }
+      ]
+    },
+    {
+      "id": "gitlab_over",
+      "input": "glpat-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "expected": []
+    },
+    {
+      "id": "gitlab_under",
+      "input": "glpat-ccccccccccccccccccc",
+      "expected": []
+    },
+    {
+      "id": "anthropic_min",
+      "input": "sk-ant-dddddddddddddddddddd",
+      "expected": [
+        {
+          "kind": "anthropic-key",
+          "start": 0,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "id": "anthropic_max",
+      "input": "sk-ant-ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expected": [
+        {
+          "kind": "anthropic-key",
+          "start": 0,
+          "end": 262
+        }
+      ]
+    },
+    {
+      "id": "anthropic_over",
+      "input": "sk-ant-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expected": []
+    },
+    {
+      "id": "anthropic_under",
+      "input": "sk-ant-ddddddddddddddddddd",
+      "expected": []
+    },
+    {
+      "id": "anthropic_beats_openai",
+      "input": "sk-ant-dddddddddddddddddddd",
+      "expected": [
+        {
+          "kind": "anthropic-key",
+          "start": 0,
+          "end": 27
+        }
+      ]
+    },
+    {
+      "id": "openai_min",
+      "input": "sk-eeeeeeeeeeeeeeeeeeeeee",
+      "expected": [
+        {
+          "kind": "openai-key",
+          "start": 0,
+          "end": 25
+        }
+      ]
+    },
+    {
+      "id": "openai_max",
+      "input": "sk-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expected": [
+        {
+          "kind": "openai-key",
+          "start": 0,
+          "end": 258
+        }
+      ]
+    },
+    {
+      "id": "openai_over",
+      "input": "sk-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expected": []
+    },
+    {
+      "id": "openai_under",
+      "input": "sk-eeeeeeeeeeeeeeeeeee",
+      "expected": []
+    },
+    {
+      "id": "openai_proj",
+      "input": "sk-proj-ffffffffffffffffffffff",
+      "expected": [
+        {
+          "kind": "openai-key",
+          "start": 0,
+          "end": 30
+        }
+      ]
+    },
+    {
+      "id": "openai_svcacct",
+      "input": "sk-svcacct-gggggggggggggggggggg",
+      "expected": [
+        {
+          "kind": "openai-key",
+          "start": 0,
+          "end": 31
+        }
+      ]
+    },
+    {
+      "id": "openai_excludes_sk_ant",
+      "input": "sk-ant-ddddddddddddddddddd",
+      "expected": []
+    },
+    {
+      "id": "openai_proj_body_19_under",
+      "comment": "sk-proj- plus 19 token bytes: the optional label is not counted inside the 20..255 body, so 19 < 20 does not match.",
+      "input": "sk-proj-fffffffffffffffffff",
+      "expected": []
+    },
+    {
+      "id": "openai_proj_body_15_under",
+      "comment": "sk-proj- plus 15 token bytes never reaches the 20-byte minimum body.",
+      "input": "sk-proj-fffffffffffffff",
+      "expected": []
+    },
+    {
+      "id": "openai_svcacct_body_255_max",
+      "comment": "sk-svcacct- plus 255 token bytes: one openai-key span of length len(\"sk-svcacct-\")+255 = 266.",
+      "input": {
+        "repeat": {
+          "prefix": "sk-svcacct-",
+          "unit": "g",
+          "count": 255,
+          "suffix": ""
+        }
+      },
+      "expected": [
+        {
+          "kind": "openai-key",
+          "start": 0,
+          "end": 266
+        }
+      ]
+    },
+    {
+      "id": "openai_svcacct_body_256_over",
+      "comment": "sk-svcacct- plus 256 token bytes exceeds the 255-byte body maximum and does not match.",
+      "input": {
+        "repeat": {
+          "prefix": "sk-svcacct-",
+          "unit": "g",
+          "count": 256,
+          "suffix": ""
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "assignment_basic",
+      "input": "API_KEY = abcdefghij",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 10,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "assignment_export",
+      "input": "export ACCESS_TOKEN=abc12345",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 20,
+          "end": 28
+        }
+      ]
+    },
+    {
+      "id": "assignment_quotes",
+      "input": "PASSWORD = \"s3cr3t!!\"",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 12,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "assignment_colon",
+      "input": "db.password: p@ssw0rd!",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 13,
+          "end": 22
+        }
+      ]
+    },
+    {
+      "id": "assignment_key_dash",
+      "input": "api-key: abcd1234efgh",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 9,
+          "end": 21
+        }
+      ]
+    },
+    {
+      "id": "assignment_key_dot",
+      "input": "my.api.key: abcd1234efgh",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 12,
+          "end": 24
+        }
+      ]
+    },
+    {
+      "id": "assignment_non_secret_key",
+      "input": "USERNAME = abcdefghij",
+      "expected": []
+    },
+    {
+      "id": "assignment_hex40_exempt",
+      "input": "API_KEY = abababababababababababababababababababab",
+      "expected": []
+    },
+    {
+      "id": "assignment_hex64_exempt",
+      "input": "API_KEY = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": []
+    },
+    {
+      "id": "assignment_hex40_uppercase_exempt",
+      "input": "API_KEY = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "expected": []
+    },
+    {
+      "id": "assignment_ulid_exempt",
+      "input": "API_KEY = 01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "expected": []
+    },
+    {
+      "id": "assignment_ulid_lowercase_not_exempt",
+      "input": "API_KEY = 01arz3ndektsv4rrffq69g5fav",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 10,
+          "end": 36
+        }
+      ]
+    },
+    {
+      "id": "assignment_mixed_hex_exempt",
+      "input": "API_KEY = aBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaBaB",
+      "expected": []
+    },
+    {
+      "id": "assignment_value_short",
+      "input": "API_KEY = abc1234",
+      "expected": []
+    },
+    {
+      "id": "assignment_value_whitespace",
+      "input": "API_KEY = abc def12",
+      "expected": []
+    },
+    {
+      "id": "assignment_value_too_long",
+      "input": "API_KEY = zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "expected": []
+    },
+    {
+      "id": "assignment_indent",
+      "input": "   API_KEY = abcdefghij",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 13,
+          "end": 23
+        }
+      ]
+    },
+    {
+      "id": "assignment_tab_ws",
+      "input": "\tAPI_KEY=\tabcdefghij",
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 10,
+          "end": 20
+        }
+      ]
+    },
+    {
+      "id": "assignment_over_limit",
+      "input": {
+        "repeat": {
+          "prefix": "API_KEY = ",
+          "unit": "z",
+          "count": 65526,
+          "suffix": "\nnext"
+        }
+      },
+      "expected": [
+        {
+          "kind": "key-assignment",
+          "start": 10,
+          "end": 65536
+        }
+      ]
+    },
+    {
+      "id": "assignment_over_limit_no_separator",
+      "input": {
+        "repeat": {
+          "prefix": "no separator here ",
+          "unit": "z",
+          "count": 65518,
+          "suffix": "\nnext"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "assignment_over_limit_bad_key",
+      "input": {
+        "repeat": {
+          "prefix": "!bad key = ",
+          "unit": "z",
+          "count": 65525,
+          "suffix": "\nnext"
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "token_in_value_wins_over_assignment",
+      "input": "MY_API_KEY=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaajunk",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 11,
+          "end": 55
+        }
+      ]
+    },
+    {
+      "id": "anthropic_in_value_wins_over_assignment",
+      "input": "MY_API_KEY=sk-ant-dddddddddddddddddddd",
+      "expected": [
+        {
+          "kind": "anthropic-key",
+          "start": 11,
+          "end": 38
+        }
+      ]
+    },
+    {
+      "id": "two_lines_two_kinds",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nAKIAABCDEFGHIJKLMNOP",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 40
+        },
+        {
+          "kind": "aws-access-key",
+          "start": 41,
+          "end": 61
+        }
+      ]
+    },
+    {
+      "id": "pem_then_token",
+      "input": "-----BEGIN PRIVATE KEY-----\nzz\n-----END PRIVATE KEY-----\nAKIAABCDEFGHIJKLMNOP",
+      "expected": [
+        {
+          "kind": "private-key",
+          "start": 0,
+          "end": 56
+        },
+        {
+          "kind": "aws-access-key",
+          "start": 57,
+          "end": 77
+        }
+      ]
+    },
+    {
+      "id": "token_shaped_key_not_an_assignment",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa = secret12",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 50
+        }
+      ]
+    },
+    {
+      "id": "duplicate_secret_occurrences",
+      "input": "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa mid ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected": [
+        {
+          "kind": "github-token",
+          "start": 0,
+          "end": 40
+        },
+        {
+          "kind": "github-token",
+          "start": 45,
+          "end": 85
+        }
+      ]
+    },
+    {
+      "id": "empty_input",
+      "input": "",
+      "expected": []
+    },
+    {
+      "id": "unicode_context",
+      "input": "héllo AKIAABCDEFGHIJKLMNOP wörld",
+      "expected": [
+        {
+          "kind": "aws-access-key",
+          "start": 7,
+          "end": 27
+        }
+      ]
+    }
+  ],
+  "discovery_cases": [
+    {
+      "id": "no_sources",
+      "sources": [],
+      "included_labels": [],
+      "omitted": 0,
+      "provenance_sha256": "8089ad149c033af866b8281a5b9e27974ffe0b55fb9fd84559216fb4358f8576"
+    },
+    {
+      "id": "cwd_only_no_git_root",
+      "has_git_root": false,
+      "prj_files": {
+        "AGENTS.md": "hello\n"
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "6abd30084737d1b8b69a2407aeff0e87e2034f85ab9616b870111a085adb5080"
+    },
+    {
+      "id": "user_only",
+      "home_files": {
+        "AGENTS.md": "user rules\n"
+      },
+      "sources": [
+        {
+          "scope": "user",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "6d24af71568f2f7209119ed2e5e73dc51d898ebf399ce8f7693fb673c872fc32"
+    },
+    {
+      "id": "user_and_root",
+      "home_files": {
+        "AGENTS.md": "user rules\n"
+      },
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": "project rules\n"
+      },
+      "sources": [
+        {
+          "scope": "user",
+          "relative_label": "AGENTS.md"
+        },
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md",
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "6a7bddccfc9b53953fc6c890649120c864ca292d145ae8759999d240d521fb14"
+    },
+    {
+      "id": "root_cwd_merge",
+      "has_git_root": true,
+      "cwd_rel": "sub",
+      "prj_files": {
+        "AGENTS.md": "root rules\n",
+        "sub/AGENTS.md": "sub rules\n"
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "../AGENTS.md"
+        },
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "../AGENTS.md",
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "b84e73cb95afca78bfffa3eb6e907ac781e8ba4f7e5248b8ec45f340a03315f4"
+    },
+    {
+      "id": "duplicate_root_cwd",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": "root rules\n"
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "8a933210609a44009918831c42add20d538048b52b8d303d2145a588169c800c"
+    },
+    {
+      "id": "claude_fallback",
+      "has_git_root": true,
+      "prj_files": {
+        "CLAUDE.md": "claude rules\n"
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "CLAUDE.md"
+        }
+      ],
+      "included_labels": [
+        "CLAUDE.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "9387e45404bf54f82e8ae49aa5b01b008613b9377ceb86f719b9fc20e506f903"
+    },
+    {
+      "id": "root_agents_no_claude",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": "root rules\n",
+        "CLAUDE.md": "claude rules\n"
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "8a933210609a44009918831c42add20d538048b52b8d303d2145a588169c800c"
+    },
+    {
+      "id": "crlf_bom",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "bytes_b64": "77u/YQ0KYg1jCg=="
+        }
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "dbb74fadf25e748095bd90fb76ad67153deb548afb1b5d85ee4ce7b060962dd8"
+    },
+    {
+      "id": "exact_file_bound",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "repeat": {
+            "unit": "x",
+            "count": 65536
+          }
+        }
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "da5e68ef80529885863aed8cb3b92e92398c234b310b6e72873638b4991cbcda"
+    },
+    {
+      "id": "file_over_bound",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "repeat": {
+            "unit": "x",
+            "count": 65537
+          }
+        }
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "file_over_bound"
+      }
+    },
+    {
+      "id": "combined_omission",
+      "has_git_root": true,
+      "cwd_rel": "sub",
+      "prj_files": {
+        "AGENTS.md": {
+          "repeat": {
+            "unit": "x",
+            "count": 60000
+          }
+        },
+        "sub/AGENTS.md": {
+          "repeat": {
+            "unit": "y",
+            "count": 10000
+          }
+        }
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "../AGENTS.md"
+        },
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "../AGENTS.md"
+      ],
+      "omitted": 1,
+      "provenance_sha256": "43ac445a7de8a77a0ac6aca6c136706ecfccce81882fa6b397c09cb2768fe9f1"
+    },
+    {
+      "id": "crlf_exact_bound",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "repeat": {
+            "unit": "ab\r\n",
+            "count": 16384
+          }
+        }
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "535acb9da39f868e6f0000c8b0569d624dfd89fb03e596f96e30ccf114dbe339"
+    },
+    {
+      "id": "unreadable_blocks",
+      "home_files": {
+        "AGENTS.md": "user rules\n"
+      },
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": "root rules\n"
+      },
+      "unix_only": true,
+      "unreadable": [
+        "home:AGENTS.md"
+      ],
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "unreadable"
+      }
+    },
+    {
+      "id": "symlink_rejected",
+      "home_files": {
+        "AGENTS.md": "user rules\n"
+      },
+      "has_git_root": true,
+      "symlink": {
+        "prj:AGENTS.md": "target.md"
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "symlink"
+      }
+    },
+    {
+      "id": "invalid_utf8",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "bytes_b64": "//4K"
+        }
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "invalid_utf8"
+      }
+    },
+    {
+      "id": "contains_nul",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": {
+          "bytes_b64": "YQBiCg=="
+        }
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "contains_nul"
+      }
+    },
+    {
+      "id": "directory_candidate",
+      "has_git_root": true,
+      "directory": [
+        "prj:AGENTS.md"
+      ],
+      "empty_tree_files": true,
+      "error": {
+        "code": "PROJECT_CONTEXT_READ_FAILED",
+        "label": "AGENTS.md",
+        "detail": "not_regular_file"
+      }
+    },
+    {
+      "id": "secret_in_project",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": "cfg\ntoken = ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_SECRET_FOUND",
+        "label": "AGENTS.md",
+        "detail": "github-token"
+      }
+    },
+    {
+      "id": "secret_in_user",
+      "home_files": {
+        "AGENTS.md": "key: glpat-cccccccccccccccccccc\n"
+      },
+      "error": {
+        "code": "PROJECT_CONTEXT_SECRET_FOUND",
+        "label": "AGENTS.md",
+        "detail": "gitlab-token"
+      }
+    },
+    {
+      "id": "empty_file",
+      "has_git_root": true,
+      "prj_files": {
+        "AGENTS.md": ""
+      },
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md"
+        }
+      ],
+      "included_labels": [
+        "AGENTS.md"
+      ],
+      "omitted": 0,
+      "provenance_sha256": "8dd0ec0ad51f8f4e67f073db54686e352269b377cb11a04ad04a31bd641b7ede"
+    }
+  ],
+  "render_cases": [
+    {
+      "id": "instructions_only",
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md",
+          "content": "line1\nline2\n"
+        }
+      ],
+      "omitted": 0,
+      "stack_files": [],
+      "skills": [],
+      "expected_project_context": "## Project Instructions\n### project: AGENTS.md\nline1\nline2",
+      "expected_stable_prefix_sha256": "a80637f966f99ff9ba287dbc0b967287f7cc790b9141c358a619f38be0b93044"
+    },
+    {
+      "id": "all_sections",
+      "sources": [
+        {
+          "scope": "user",
+          "relative_label": "AGENTS.md",
+          "content": "user rules\n"
+        },
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md",
+          "content": "project rules\n"
+        }
+      ],
+      "omitted": 0,
+      "stack_files": [
+        "bun.lock",
+        "bun.lockb",
+        "package.json",
+        "Cargo.toml",
+        "go.mod"
+      ],
+      "skills": [
+        {
+          "name": "commit-helper",
+          "description": "helps with commits",
+          "scope": "project"
+        },
+        {
+          "name": "review-checklist",
+          "description": "PR review steps",
+          "scope": "user"
+        }
+      ],
+      "expected_project_context": "## Project Instructions\n### user: AGENTS.md\nuser rules\n\n### project: AGENTS.md\nproject rules\n\n## Project Stack\n- bun: bun.lock\n- bun: bun.lockb\n- go: go.mod\n- javascript: package.json\n- rust: Cargo.toml\n## Available Skills\n- commit-helper [project]: helps with commits\n- review-checklist [user]: PR review steps",
+      "expected_stable_prefix_sha256": "4d5473c865f074f9d58ad84e7d29f2092194f9622a3ef146beb4bb7517e3129c"
+    },
+    {
+      "id": "empty_slot",
+      "sources": [],
+      "omitted": 0,
+      "stack_files": [],
+      "skills": [],
+      "expected_project_context": "",
+      "expected_stable_prefix_sha256": "f1c0239e10278ac962447eff084e83717f76daf27f324dc9bf43812ac59a70e9"
+    },
+    {
+      "id": "omission_record",
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "../AGENTS.md",
+          "content": "root rules\n"
+        },
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md",
+          "content": "extra rules\n"
+        }
+      ],
+      "omitted": 1,
+      "stack_files": [],
+      "skills": [],
+      "expected_project_context": "## Project Instructions\n### project: ../AGENTS.md\nroot rules\n\n### project: omitted\nAdditional project instruction files were omitted because the fixed 65536-byte context bound was reached.",
+      "expected_stable_prefix_sha256": "965d17522cdb94ba87b19f56d2da0badd6f6d47baa02b1d8f7f0ac6aafedee77"
+    },
+    {
+      "id": "empty_content_file",
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "AGENTS.md",
+          "content": ""
+        },
+        {
+          "scope": "project",
+          "relative_label": "CLAUDE.md",
+          "content": "claude\n"
+        }
+      ],
+      "omitted": 0,
+      "stack_files": [],
+      "skills": [],
+      "expected_project_context": "## Project Instructions\n### project: AGENTS.md\n\n### project: CLAUDE.md\nclaude",
+      "expected_stable_prefix_sha256": "5029ccf921d34fb4fd329841007915279c0c0e4ffa1197f4b48bba7b71c7ec80"
+    },
+    {
+      "id": "claude_label",
+      "sources": [
+        {
+          "scope": "project",
+          "relative_label": "CLAUDE.md",
+          "content": "claude rules\n"
+        }
+      ],
+      "omitted": 0,
+      "stack_files": [],
+      "skills": [],
+      "expected_project_context": "## Project Instructions\n### project: CLAUDE.md\nclaude rules",
+      "expected_stable_prefix_sha256": "cd109b849963454cabacf2256e30060fa20624094aba51f821347574d5e13ae6"
+    },
+    {
+      "id": "stack_sorting",
+      "sources": [],
+      "omitted": 0,
+      "stack_files": [
+        "requirements.txt",
+        "pyproject.toml",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "package.json"
+      ],
+      "skills": [],
+      "expected_project_context": "## Project Stack\n- java: build.gradle\n- java: build.gradle.kts\n- java: pom.xml\n- javascript: package.json\n- python: pyproject.toml\n- python: requirements.txt",
+      "expected_stable_prefix_sha256": "4e4f44cba9bf92525ebf75bacf4a603cb43815995304c044bc93040767c3abe6"
+    },
+    {
+      "id": "skill_sanitization",
+      "sources": [],
+      "omitted": 0,
+      "stack_files": [],
+      "skills": [
+        {
+          "name": "a",
+          "description": "line1\nline2",
+          "scope": "project"
+        },
+        {
+          "name": "z9_last",
+          "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "scope": "user"
+        }
+      ],
+      "expected_project_context": "## Available Skills\n- a [project]: line1 line2\n- z9_last [user]: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected_stable_prefix_sha256": "ed56a7f20bbfa52cf43a0dea281b2e01fa06b3be78041585fd7fd3ed2c9758c5"
+    }
+  ],
+  "volatile_cases": [
+    {
+      "id": "stable_prefix_equality_across_volatile_changes",
+      "project_context": "## Project Instructions\n### project: AGENTS.md\nrules",
+      "variants": [
+        {
+          "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "cwd": "/work/alpha",
+          "native": "available",
+          "search": "available",
+          "lsp": "unavailable"
+        },
+        {
+          "session_id": "01BBWGRSTW8YBMGEEY75YXTMEH",
+          "cwd": "/work/beta two",
+          "native": "disabled",
+          "search": "unavailable",
+          "lsp": "available"
+        }
+      ],
+      "expected_stable_prefix_sha256": "68837be83ecac94b868de6f107c2082541d0a9790be29fca8a50738ba44228d1"
+    }
+  ],
+  "current_state_cases": [
+    {
+      "id": "current_state_with_sg",
+      "state_graph_rendering": "StateGraph line one",
+      "facts_input": {
+        "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "cwd": "/work/alpha",
+        "native": "available",
+        "search": "available",
+        "lsp": "unavailable"
+      },
+      "expected_current_state": "StateGraph line one\n\n## Runtime Facts\n- session_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV\n- cwd_label: alpha\n- history_mode: append\n- native: available\n- search: available\n- lsp: unavailable"
+    },
+    {
+      "id": "current_state_without_sg",
+      "state_graph_rendering": "",
+      "facts_input": {
+        "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "cwd": "/work/alpha",
+        "native": "available",
+        "search": "available",
+        "lsp": "unavailable"
+      },
+      "expected_current_state": "## Runtime Facts\n- session_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV\n- cwd_label: alpha\n- history_mode: append\n- native: available\n- search: available\n- lsp: unavailable"
+    },
+    {
+      "id": "current_state_escaping",
+      "state_graph_rendering": "",
+      "facts_input": {
+        "session_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "cwd": "/work/my proj",
+        "native": "available",
+        "search": "available",
+        "lsp": "available"
+      },
+      "expected_current_state": "## Runtime Facts\n- session_id: 01ARZ3NDEKTSV4RRFFQ69G5FAV\n- cwd_label: \"my proj\"\n- history_mode: append\n- native: available\n- search: available\n- lsp: available"
+    }
+  ]
+}

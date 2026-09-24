@@ -89,6 +89,7 @@ pub struct SessionMetaV1 {
     pub agent_id: String,
     pub config_schema_version: u32,
     pub config_digest_sha256: Sha256Digest,
+    pub project_context_source_sha256: Sha256Digest,
     pub event_schema_version: u32,
     pub history_schema_version: u32,
     pub projection_version: ProjectionId,
@@ -132,7 +133,35 @@ impl std::fmt::Debug for EventLogStore {
 }
 
 impl EventLogStore {
+    pub fn create_or_open_with_project_context(
+        session_dir: &Path,
+        expected_session_id: &str,
+        project_context_source_sha256: &Sha256Digest,
+    ) -> HistoryResult<Self> {
+        Self::create_or_open_impl(
+            session_dir,
+            expected_session_id,
+            project_context_source_sha256,
+        )
+    }
+
+    /// Open an existing session, or create one that records the empty
+    /// project-context provenance (System Context §7.1). This primitive does
+    /// not perform project-context discovery, so callers that discover sources
+    /// MUST use [`Self::create_or_open_with_project_context`] and pass the
+    /// computed digest; recording the empty-source digest for a session that
+    /// actually has instruction files would disagree with a later recomputation.
     pub fn create_or_open(session_dir: &Path, expected_session_id: &str) -> HistoryResult<Self> {
+        let empty = Sha256Digest::from_hex_str(EMPTY_PROJECT_CONTEXT_SOURCE_SHA256)
+            .expect("empty provenance is a fixed valid constant");
+        Self::create_or_open_impl(session_dir, expected_session_id, &empty)
+    }
+
+    fn create_or_open_impl(
+        session_dir: &Path,
+        expected_session_id: &str,
+        project_context_source_sha256: &Sha256Digest,
+    ) -> HistoryResult<Self> {
         let mut warnings = Vec::new();
         let session_id = SessionId::from_str_canonical(expected_session_id)?;
         apply_session_umask();
@@ -221,7 +250,9 @@ impl EventLogStore {
 
         let meta_path = session_dir.join("meta.json");
         if events_created && current_sequence == 0 {
-            write_new_session_meta(session_dir, &session_id)?;
+            // Every create path that writes meta.json supplies the digest at
+            // this boundary; no empty-source fallback is fabricated here.
+            write_new_session_meta(session_dir, &session_id, project_context_source_sha256)?;
         } else {
             verify_session_meta(session_dir, &session_id, &events)?;
             if let Some(w) = establish_mode(&meta_path, 0o600)? {
@@ -947,7 +978,16 @@ fn ensure_config_snapshot(session_dir: &Path) -> HistoryResult<String> {
     write_config_snapshot_durable(session_dir, &history_creation_config())
 }
 
-pub fn write_new_session_meta(session_dir: &Path, session_id: &SessionId) -> HistoryResult<()> {
+/// Immutable project-context source provenance digest stored in `meta.json`
+/// immediately after `config_digest_sha256` (System Context section 7.1).
+pub const EMPTY_PROJECT_CONTEXT_SOURCE_SHA256: &str =
+    "8089ad149c033af866b8281a5b9e27974ffe0b55fb9fd84559216fb4358f8576";
+
+pub fn write_new_session_meta(
+    session_dir: &Path,
+    session_id: &SessionId,
+    project_context_source_sha256: &Sha256Digest,
+) -> HistoryResult<()> {
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|_| durability())?;
     let digest = ensure_config_snapshot(session_dir)?;
@@ -962,6 +1002,7 @@ pub fn write_new_session_meta(session_dir: &Path, session_id: &SessionId) -> His
         agent_id: "praana".to_owned(),
         config_schema_version: 1,
         config_digest_sha256: Sha256Digest(digest),
+        project_context_source_sha256: project_context_source_sha256.clone(),
         event_schema_version: EVENT_SCHEMA_VERSION,
         history_schema_version: 1,
         projection_version: ProjectionId::from_str_canonical(PROJECTION_VERSION)?,
@@ -1085,6 +1126,21 @@ fn verify_session_meta(
         }
     }
     Ok(())
+}
+
+/// Read the immutable `project_context_source_sha256` from `meta.json`
+/// (System Context section 7.1 resume comparison boundary). The creation
+/// metadata is never rewritten; callers compute the current digest and compare.
+pub fn read_project_context_source_sha256(session_dir: &Path) -> HistoryResult<Sha256Digest> {
+    let path = session_dir.join("meta.json");
+    reject_symlink(&path)?;
+    let bytes = fs::read(&path)
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let meta: SessionMetaV1 = serde_json::from_str(text.trim_end_matches('\n'))
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    Ok(meta.project_context_source_sha256)
 }
 
 fn snapshot_digest(session_dir: &Path) -> Option<String> {
