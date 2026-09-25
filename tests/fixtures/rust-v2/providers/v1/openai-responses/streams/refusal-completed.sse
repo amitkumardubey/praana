@@ -1,0 +1,12 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_01","phase":"final_answer"}}
+
+event: response.refusal.delta
+data: {"type":"response.refusal.delta","output_index":0,"delta":"no"}
+
+event: response.refusal.done
+data: {"type":"response.refusal.done","output_index":0,"text":"no"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture","status":"completed","output":[{"type":"message","id":"msg_01"}]}}
+

@@ -1,0 +1,6 @@
+data: {"choices":[{"delta":{"reasoning":"think"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}
+
+data: [DONE]
+

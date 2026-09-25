@@ -1,0 +1,6 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_01","name":"read_file","arguments":"{"}}
+
+event: response.incomplete
+data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","name":"read_file","arguments":"{"}]}}
+

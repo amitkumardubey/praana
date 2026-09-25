@@ -1,0 +1,4 @@
+data: {"choices":[{"delta":{"refusal":"no"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
