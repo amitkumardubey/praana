@@ -321,8 +321,19 @@ fn normalize_assignment_key(key: &str) -> String {
         .collect()
 }
 
+pub(crate) fn key_matches_assignment(key: &str) -> bool {
+    let normalized = normalize_assignment_key(key);
+    ASSIGNMENT_KEY_SUBSTRINGS
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
 /// Exemptions: exactly 40 or 64 hexadecimal characters (either case), or an
 /// uppercase Crockford ULID of length 26.
+pub(crate) fn value_is_assignment_exempt(value: &str) -> bool {
+    is_assignment_exempt(value)
+}
+
 fn is_assignment_exempt(value: &str) -> bool {
     let len = value.len();
     if (len == 40 || len == 64) && value.bytes().all(|b| b.is_ascii_hexdigit()) {

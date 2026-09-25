@@ -204,6 +204,15 @@ P0
   rather than implementing a second detector. No built-in tool is enabled yet.
 - Focused tests: `redaction_v1`, `redaction_stream_v1`,
   `tool_runtime_phase3`.
+- Landed in `praana-core`: streaming redaction with a bounded line and PEM
+  spool, the fixed hook pipeline, canonical path locks, Unix process-group
+  supervision, and a Windows Job Object supervisor. `ResultCommit` is the
+  post-release seam P3B fills. This packet does not write start/finish events
+  or claim crash recovery. `ErasedTool::execute_erased` stays on the public
+  trait. The Windows path is implemented and has not been executed on the
+  Linux authoring host. An uncooperative side-effect timeout reports status
+  uncertain with `E_TOOL_SIDE_EFFECT_UNCERTAIN` in `error.details`; the DTO
+  `error.code` field remains `TOOL_INTERNAL`.
 
 ### P3B: Artifact and Journal Substrate
 

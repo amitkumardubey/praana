@@ -27,7 +27,10 @@ bitflags! {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct ToolName(String);
 
 impl ToolName {
@@ -133,3 +136,71 @@ impl std::fmt::Display for ToolContractError {
 }
 
 impl std::error::Error for ToolContractError {}
+
+use std::any::Any;
+
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use tokio_util::sync::CancellationToken;
+
+use super::error::ToolError;
+use super::intent::{ToolExecutionContext, ToolInspectContext, ToolIntent};
+
+pub struct PreparedToolCall {
+    pub input: Box<dyn Any + Send>,
+    pub intent: ToolIntent,
+}
+
+#[async_trait]
+pub trait TypedTool: Send + Sync + 'static {
+    type Input: DeserializeOwned + JsonSchema + Send + Sync + 'static;
+    type Output: Serialize + JsonSchema + Send + Sync + 'static;
+
+    const NAME: &'static str;
+    const ORDER: u16;
+    const DESCRIPTION: &'static str;
+
+    fn static_capabilities(&self) -> ToolCapabilities;
+
+    fn inspect(
+        &self,
+        input: &Self::Input,
+        context: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError>;
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: Self::Input,
+        cancel: CancellationToken,
+    ) -> Result<Self::Output, ToolError>;
+}
+
+#[async_trait]
+pub trait ErasedTool: Send + Sync + 'static {
+    fn descriptor(&self) -> &ToolDescriptor;
+
+    fn parse_and_inspect(
+        &self,
+        raw: &serde_json::Value,
+        context: &ToolInspectContext,
+    ) -> Result<PreparedToolCall, ToolError>;
+
+    async fn execute_erased(
+        &self,
+        context: ToolExecutionContext,
+        prepared: PreparedToolCall,
+        cancel: CancellationToken,
+    ) -> Result<serde_json::Value, ToolError>;
+}
+
+pub(crate) fn raw_contains_nul(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => text.contains('\0'),
+        serde_json::Value::Array(items) => items.iter().any(raw_contains_nul),
+        serde_json::Value::Object(map) => map.values().any(raw_contains_nul),
+        _ => false,
+    }
+}
