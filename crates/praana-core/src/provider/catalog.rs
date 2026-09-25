@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use crate::config::normalize_provider_url;
 use crate::credentials::validate_credential_value;
-use crate::ui_contract::json_data::{ModelId, ProviderId, Sha256Digest};
+use crate::protocol::id::Sha256Digest;
+use crate::ui_contract::json_data::{ModelId, ProviderId};
 
 use super::profile::{
     parse_strict_json, resolve_bundled_profile, ModelCapabilityProfile, ProfileError,
@@ -572,12 +573,13 @@ pub fn resolve_profile_with_catalog(
         ));
     }
     let trusted = trusted_cache(provider, endpoint, now_ms, cache)?;
-    if let Ok(profile) = resolve_bundled_profile(
+    if let Ok(mut profile) = resolve_bundled_profile(
         provider,
         protocol,
         model,
         trusted.map(|cache| cache.body_sha256.clone()),
     ) {
+        profile.endpoint_fingerprint = endpoint_fingerprint(endpoint)?;
         return Ok(profile);
     }
 
@@ -647,6 +649,9 @@ pub fn resolve_profile_with_catalog(
         reasoning_efforts: Vec::new(),
         parallel_tools: false,
         strict_json_schema: false,
+        temperature_with_reasoning: false,
+        image_input: super::profile::ImageInputCapability::Unsupported,
+        endpoint_fingerprint: endpoint_fingerprint(endpoint)?,
         self_compaction: SelfCompactionCapability::Prohibited,
         continuation_after_internal_request: false,
     })

@@ -276,7 +276,7 @@ describe("rust-v2 provider legacy fixtures", () => {
     };
 
     expect(manifest.fixture_schema_version).toBe(1);
-    expect(manifest.fixture_kind).toBe("provider-phase-0");
+    expect(manifest.fixture_kind).toBe("provider-v1");
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);

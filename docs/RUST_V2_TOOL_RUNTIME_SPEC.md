@@ -219,6 +219,41 @@ provider adapters serialize it exactly and MUST NOT infer strictness from the
 schema. A future non-strict descriptor requires a Tool Runtime schema-version
 change and provider conformance fixtures.
 
+### 6.1 P2B shared contract
+
+P2B needs `crate::tools::{ToolName, ToolDescriptor, ToolCatalog}` before the
+P3A runtime exists. This subsection is the only tool surface P2B may import.
+It does not include tool implementations, schema generation, execution,
+hooks, locks, shell supervision, built-ins, or the safety pipeline.
+
+`schema_sha256` is protocol-owned `crate::protocol::id::Sha256Digest`.
+`ToolCapabilities` is the bitflags type in Section 7. The approved crate is
+`bitflags` 2.9, without the `serde` feature, declared on `praana-core`. P2B
+constructs capability bits directly; it does not execute them.
+
+```rust
+pub struct ToolCatalog {
+    descriptors: Vec<ToolDescriptor>,
+}
+```
+
+Catalog construction is the validation boundary:
+
+- Tool names match `^[a-z][a-z0-9_]{0,63}$`.
+- Names are unique.
+- `order: u16` values are unique.
+- Description is nonempty, contains no NUL, and is at most 4096 UTF-8 bytes.
+- `strict` is `true`. A `false` value is rejected.
+- `input_schema` is a JSON object whose root `type` is `"object"`.
+- `output_schema` and `capabilities` are stored and are not otherwise
+  interpreted.
+- The caller supplies `schema_sha256`. This contract does not generate or
+  rehash schemas.
+
+After validation, catalog order is the explicit `order` ascending. The
+provider adapter preserves that order and MUST NOT sort by name. Duplicate
+order values are not accepted, so there is no name tie-break.
+
 The core schema is the authority. If a provider cannot express a constraint, core still enforces it before `inspect` through Serde plus JSON Schema validation.
 
 Schema generation occurs once at registry build. A schema generation or normalization error is a startup error for a required built-in tool. It is not deferred until a model calls the tool.
@@ -300,8 +335,10 @@ pub struct ToolRegistry {
 Registration rules:
 
 - Duplicate names are fatal at startup, even if descriptors are byte-identical.
-- Duplicate numeric order values are allowed; the tie-breaker is tool name ascending by ASCII byte.
-- Final ordering is `(order ascending, name ascending)`.
+- Duplicate numeric order values are fatal. Section 6.1 rejects them when
+  building `ToolCatalog`.
+- Provider-visible order is explicit `order` ascending only. Adapters MUST NOT
+  sort that catalog by name.
 - Registration timing, feature discovery, plugin timing, hash seeds, and locale MUST NOT affect order.
 - Disabled tools are omitted. Placeholder unavailable tools are not emitted to providers.
 - Core standard memory tools reserve their order slots even when absent; absence does not renumber any other tool.

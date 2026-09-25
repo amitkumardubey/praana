@@ -12,7 +12,7 @@ impl EffectiveConfigV1 {
 
     pub fn config_digest_sha256(&self) -> Sha256Digest {
         let bytes = self.to_canonical_json_bytes();
-        Sha256Digest::from_bytes(&bytes)
+        Sha256Digest::digest_bytes(&bytes)
     }
 
     pub fn request_live_reload(&self) -> Result<(), ConfigError> {

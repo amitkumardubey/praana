@@ -54,7 +54,7 @@ fn generic_estimator_fixture_cases() {
         assert_eq!(estimate.tokenizer_profile_id, None);
         assert_eq!(
             estimate.input_sha256,
-            Sha256Digest::from_bytes(input.as_bytes())
+            Sha256Digest::digest_bytes(input.as_bytes())
         );
     }
 }
@@ -131,7 +131,7 @@ fn generic_estimator_binary_telemetry() {
 
     assert_eq!(estimate.content_tokens, 4);
     assert_eq!(estimate.total_tokens, 4);
-    assert_eq!(estimate.input_sha256, Sha256Digest::from_bytes(&bytes));
+    assert_eq!(estimate.input_sha256, Sha256Digest::digest_bytes(&bytes));
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn token_estimate_v1_json_serialization_preserves_null() {
         token_estimator_schema_version: 1,
         estimator_id: "praana-generic-unicode-15.1-v1".to_string(),
         tokenizer_profile_id: None,
-        input_sha256: Sha256Digest::from_bytes(b"test"),
+        input_sha256: Sha256Digest::digest_bytes(b"test"),
         content_tokens: 1,
         framing_tokens: 0,
         total_tokens: 1,
@@ -246,7 +246,7 @@ fn token_calibration_bucket_exact_p95_and_telemetry() {
             "gpt-5".to_string(),
             None,
             "praana-generic-unicode-15.1-v1".to_string(),
-            Sha256Digest::from_bytes(b"req"),
+            Sha256Digest::digest_bytes(b"req"),
             100,
             100 + i + 1, // positive errors 1..=19
             None,
@@ -265,7 +265,7 @@ fn token_calibration_bucket_exact_p95_and_telemetry() {
         "gpt-5".to_string(),
         None,
         "praana-generic-unicode-15.1-v1".to_string(),
-        Sha256Digest::from_bytes(b"req"),
+        Sha256Digest::digest_bytes(b"req"),
         100,
         0, // 0 reported tokens -> excluded
         None,
@@ -284,7 +284,7 @@ fn token_calibration_bucket_exact_p95_and_telemetry() {
         "gpt-5".to_string(),
         None,
         "praana-generic-unicode-15.1-v1".to_string(),
-        Sha256Digest::from_bytes(b"req"),
+        Sha256Digest::digest_bytes(b"req"),
         100,
         120, // error = 20
         None,
@@ -311,7 +311,7 @@ fn token_calibration_overflow_rejected() {
         "gpt-5".to_string(),
         None,
         "praana-generic-unicode-15.1-v1".to_string(),
-        Sha256Digest::from_bytes(b"req"),
+        Sha256Digest::digest_bytes(b"req"),
         100,
         u64::MAX, // Exceeds signed i64 range
         None,
@@ -449,10 +449,8 @@ fn separately_rounded_components_vs_combined_ceil() {
 
 #[test]
 fn compaction_source_turn_uses_turn_id() {
-    let turn_id = TurnId("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
-    let ctx = TokenEstimationContext::CompactionSourceTurn {
-        turn_id: turn_id.clone(),
-    };
+    let turn_id = TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+    let ctx = TokenEstimationContext::CompactionSourceTurn { turn_id };
     let json = serde_json::to_string(&ctx).unwrap();
     assert!(json.contains("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
 }
@@ -463,7 +461,7 @@ fn component_bound_exact_limit_and_plus_one() {
         token_estimator_schema_version: 1,
         estimator_id: "praana-generic-unicode-15.1-v1".to_string(),
         tokenizer_profile_id: None,
-        input_sha256: Sha256Digest::from_bytes(b"exact"),
+        input_sha256: Sha256Digest::digest_bytes(b"exact"),
         content_tokens: 160,
         framing_tokens: 0,
         total_tokens: 160,
@@ -473,7 +471,7 @@ fn component_bound_exact_limit_and_plus_one() {
         token_estimator_schema_version: 1,
         estimator_id: "praana-generic-unicode-15.1-v1".to_string(),
         tokenizer_profile_id: None,
-        input_sha256: Sha256Digest::from_bytes(b"plus_one"),
+        input_sha256: Sha256Digest::digest_bytes(b"plus_one"),
         content_tokens: 161,
         framing_tokens: 0,
         total_tokens: 161,
@@ -520,12 +518,67 @@ fn component_bound_exact_limit_and_plus_one() {
 #[test]
 fn input_hash_verification_matches_or_returns_mismatch() {
     let input = b"exact input content for token accounting";
-    let valid_hash = Sha256Digest::from_bytes(input);
-    let invalid_hash = Sha256Digest::from_bytes(b"tampered or different content");
+    let valid_hash = Sha256Digest::digest_bytes(input);
+    let invalid_hash = Sha256Digest::digest_bytes(b"tampered or different content");
 
     assert_eq!(check_input_hash(input, &valid_hash), Ok(()));
     assert_eq!(
         check_input_hash(input, &invalid_hash),
         Err(TokenAccountingError::InputHashMismatch)
+    );
+}
+
+#[test]
+fn token_manifest_digest_is_protocol_owned() {
+    let from_token = Sha256Digest::digest_bytes(b"token-manifest");
+    let from_protocol = praana_core::protocol::id::Sha256Digest::digest_bytes(b"token-manifest");
+    assert_eq!(from_token.as_str(), from_protocol.as_str());
+    let preserved = Sha256Digest::from_bytes([0xab; 32]);
+    assert_ne!(preserved.as_str(), from_protocol.as_str());
+}
+
+#[test]
+fn compaction_source_turn_uses_protocol_ulid() {
+    let turn_id =
+        praana_core::protocol::id::TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .unwrap();
+    let context = TokenEstimationContext::CompactionSourceTurn { turn_id };
+    match context {
+        TokenEstimationContext::CompactionSourceTurn { turn_id } => {
+            assert_eq!(turn_id.as_str(), "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        }
+        _ => panic!("expected compaction source turn"),
+    }
+}
+
+#[test]
+fn image_fixed_per_item_contribution_checks_overflow() {
+    use praana_core::token::ImageTokenOccupancyV1;
+
+    let occupancy = ImageTokenOccupancyV1::fixed_per_image(4).unwrap();
+    assert_eq!(occupancy.image_contribution(3).unwrap(), 12);
+    let framing = FramingProfileV1 {
+        framing_profile_schema_version: 1,
+        framing_profile_id: "test:image".to_string(),
+        fixed_tokens: 1,
+        per_item_tokens: 0,
+        item_count: 0,
+        additional_tokens: occupancy.image_contribution(3).unwrap(),
+    };
+    assert_eq!(framing.calculate_framing_tokens().unwrap(), 13);
+    assert!(ImageTokenOccupancyV1::fixed_per_image(0).is_err());
+    assert!(serde_json::from_str::<ImageTokenOccupancyV1>(
+        r#"{"type":"fixed_per_image","tokens_per_image":0}"#
+    )
+    .is_err());
+    let parsed = serde_json::from_str::<ImageTokenOccupancyV1>(
+        r#"{"type":"fixed_per_image","tokens_per_image":4}"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.tokens_per_image(), 4);
+    let huge = ImageTokenOccupancyV1::fixed_per_image(u64::MAX).unwrap();
+    assert_eq!(
+        huge.image_contribution(2).unwrap_err(),
+        TokenAccountingError::Overflow
     );
 }

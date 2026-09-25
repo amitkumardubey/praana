@@ -79,12 +79,18 @@ does not read session storage. It imports, rather than redeclares, canonical
 types from the protocol and specialized owners:
 
 ```rust
+use crate::history::projection::ConversationProjection;
 use crate::protocol::{
-    AssistantBlock, ConversationMessage, ConversationProjection, FinishReason,
+    AssistantBlock, ConversationMessage, FinishReason,
     OpenAiResponsesContinuation, ProviderContinuation, ProviderUsage, ToolCall,
 };
 use crate::tools::{ToolCatalog, ToolDescriptor};
 ```
+
+Protocol owns `ConversationProjection` semantics. History provides the Rust
+implementation at `crate::history::projection::ConversationProjection`. Do not
+re-export that type from `crate::protocol` and do not create a second
+projection.
 
 The remaining profile, model, reasoning, resolved output, temperature, tool-choice, and
 internal-request controls are adapter inputs. They are not alternate canonical
@@ -809,14 +815,15 @@ later config/provider specification must enable all of these rules together:
 - Clear it after terminal response, compaction boundary, reset, model switch, or provider switch.
 - Never use it as proof that a local assistant step was accepted.
 
-If the provider rejects `previous_response_id` with missing/expired/not-found
-semantics before model emission, perform at most one new canonical attempt
-without the ID using complete local stateless replay. The replacement attempt
-runs fresh admission and records the supersession and fallback. This fallback
-is allowed only once per request and is recorded as
-`continuation_id_rejected`. If any required local replay material, including
-required encrypted reasoning, is incomplete, return `continuation_unavailable`
-instead; the response ID never authorizes degraded continuation.
+Schema v1 never sends `previous_response_id`, so rejection and stateless
+fallback are not reachable. `continuation_id_rejected` remains reserved future
+behavior. A later schema that enables the ID may, before model emission,
+perform at most one new canonical attempt without the ID using complete local
+stateless replay, with fresh admission, recorded supersession, and at most one
+fallback. If required local replay material, including encrypted reasoning, is
+incomplete, that future path returns `continuation_unavailable`. The response
+ID never authorizes degraded continuation. No schema-v1 request body contains
+`previous_response_id`.
 
 Do not query provider history to reconstruct local state. Do not retain a response ID while dropping its local accepted messages.
 
@@ -1169,8 +1176,8 @@ fallback, creates a new canonical attempt and runs this full admission sequence
 again. The estimator computation may be reused only when the exact request hash
 and resolved capability-profile hash both match the prior attempt; the new
 attempt still records a fresh admission decision and the source attempt of the
-reuse. A context-length provider error may perform one emergency
-rebuild/compaction before that fresh admission.
+reuse. Phase 2 records a provider context-length failure and does not rebuild or
+resend that request. P5 owns emergency compaction retry.
 
 ## 18. Retry Semantics
 
@@ -1201,9 +1208,19 @@ Before emission, retry only:
 - Clean connection loss before any complete semantic provider event.
 
 Do not retry generic HTTP 400, 401, 403, 404, 409, 413, 415, or 422.
-Context-length errors use the one emergency admission path. The rejected
-`previous_response_id` fallback in Section 10 is future behavior and is not
-reachable in schema v1.
+A recognized provider context-length response is not retried in Phase 2.
+Record the failed attempt and bounded telemetry, return
+`provider_context_length`, and map it to canonical `E_PROVIDER_CONTEXT_LENGTH`
+with class `context_length`. Do not resend the request, drop history, or alter
+output. `emergency_context_retry` stays `false`.
+`ADMISSION_PROVIDER_CONTEXT_REJECTED` and the one emergency provider-context
+retry are P5 behavior in the Compaction specification. General retry for other
+approved pre-emission transient failures remains in scope.
+Schema v1 never sends `previous_response_id`. Provider `response_id` is
+audit/future metadata only. Local stateless continuation stays authoritative.
+Response-ID rejection, fallback, and `continuation_id_rejected` are reserved
+future behavior. Schema v1 has no Config key for them. The Section 10
+rejection/fallback rules are not reachable until a later schema enables them.
 
 ### 18.3 OpenAI delay and backoff
 
@@ -1289,7 +1306,7 @@ Stable v1 error code strings:
 | `provider_rate_limited` | HTTP 429 | Before emission |
 | `provider_unavailable` | Retryable 5xx | Before emission |
 | `provider_server_error` | Other 5xx | No unless profile classifies it |
-| `provider_context_length` | Provider says context is too long | One emergency admission |
+| `provider_context_length` | Provider says context is too long | No in Phase 2 |
 | `provider_content_filter` | Provider refused due to safety/filter | No |
 | `provider_response_failed` | Responses `response.failed` | Based on nested status/code |
 | `transport_error` | Network transport failure | Before emission if transient |
@@ -1302,7 +1319,7 @@ Stable v1 error code strings:
 | `stream_truncated` | EOF before valid protocol completion | Before emission only |
 | `continuation_unavailable` | Required local replay material is missing | No |
 | `continuation_incompatible` | Replay crosses an invalid boundary | No |
-| `continuation_id_rejected` | Optional response ID was rejected | One stateless fallback |
+| `continuation_id_rejected` | Reserved future response-ID rejection | Not reachable in schema v1 |
 | `aborted` | Caller cancelled | No |
 
 Adapter-to-canonical error conversion is explicit for protocol-significant
@@ -1561,8 +1578,8 @@ Run the valid framing fixtures with every byte split position and with determini
 - `retry_does_not_retry_after_reasoning_delta`
 - `retry_does_not_retry_after_tool_call_start`
 - `retry_buffers_metadata_and_usage_until_acceptance`
-- `retry_context_length_uses_one_emergency_admission`
-- `retry_response_id_rejection_uses_one_stateless_fallback`
+- `context_length_records_failure_without_retry`
+- `schema_v1_request_omits_previous_response_id`
 - `abort_before_send_makes_no_http_request`
 - `abort_during_backoff_prevents_next_attempt`
 - `abort_before_emission_discards_buffered_events`
@@ -1627,16 +1644,41 @@ This is Phase 2 sequencing. Do not pull it into Phase 0.
 13. Add pre-emission attempt controller, deterministic retry policy, and abort behavior.
 14. Add Phase 2 minimal hard request admission before auth/send: model-window
     resolution, exact `TokenEstimatorV1` component/framing accounting,
-    output/reasoning reserve, safe oversized rejection, and emergency context
-    handling. Pressure-triggered compaction remains Phase 5.
-15. Add local fake-server multi-cycle integration tests.
+    output/reasoning reserve, and safe oversized rejection. Phase 2 does not
+    retry a provider context-length response. Pressure-triggered compaction
+    and emergency provider-context retry remain Phase 5.
+15. Add local `tokio::net::TcpListener` multi-cycle integration tests. Do not add a mock-server crate.
 16. Run format, clippy, unit, fixture, integration, secret-scan, and full workspace gates.
 
 Do not start with Reqwest calls and fill in validation later. Pure request and stream fixtures must pass before live transport is connected.
 
 ### 23.1 Bounded Phase 2 packet
 
-Create/modify only `crates/praana-core/src/provider/openai/{mod,chat,responses,sse,error,usage}.rs`, provider registry/profile modules from their owner spec, and `crates/praana-core/tests/openai_v1.rs`. Check in request/SSE/continuation fixtures first. Run `cargo test -p praana-core --test openai_v1`; expected red is unresolved adapter modules. Implement pure conversion/parser code before transport, then fake-server retry/abort integration. The packet is green only when that test, protocol fixtures, fmt, clippy with warnings denied, and workspace tests exit zero. It does not implement tools, history compaction, UI, non-OpenAI providers, OAuth, or server-ID continuation.
+The P2B runtime packet may create or modify
+`crates/praana-core/src/provider/openai/{mod,chat,responses,sse,error,usage}.rs`,
+provider registry/profile modules from their owner spec, and
+`crates/praana-core/tests/openai_v1.rs`. A prerequisite packet may also touch
+the minimal tools contract (`crates/praana-core/src/tools/`), the protocol
+`Sha256Digest::digest_bytes` helper, provider and token profile types/tests,
+Cargo features required for local transport, Config runnable fixtures, and
+`tests/fixtures/rust-v2/providers/manifest.json` plus
+`tests/rust-v2-provider-fixtures.test.ts`. Normative OpenAI §21 files under
+`tests/fixtures/rust-v2/providers/v1/` are added by the later P2B runtime, not
+by the prerequisite packet. P2B may extend that test's `EXPECTED_INVENTORY`
+and `fixture_sha256_by_file` when those files land. `legacy-ts` fixtures stay
+non-normative evidence. OpenAI §21 v1 fixtures are the normative P2B behavior.
+The provider manifest fixture kind is `provider-v1`.
+
+Run `cargo test -p praana-core --test openai_v1`; expected red is unresolved
+adapter modules. Implement pure conversion/parser code before transport, then
+local `tokio::net::TcpListener` retry/abort integration. Do not add a
+mock-server crate. Builds and tests never contact OpenAI, OpenRouter, DNS, or
+any public endpoint. Transport features are Tokio `net` and `io-util`, and
+Reqwest `stream`, in addition to the P2A Reqwest features `blocking`, `json`,
+and `rustls-tls`. The packet is green only when that test, protocol fixtures,
+fmt, clippy with warnings denied, and workspace tests exit zero. It does not
+implement tool execution, history compaction, UI, non-OpenAI providers, OAuth,
+or server-ID continuation.
 
 ## 24. Common Mistakes
 

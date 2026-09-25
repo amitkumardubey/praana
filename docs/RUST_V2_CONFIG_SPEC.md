@@ -923,7 +923,7 @@ allowed extra path and only `package_install` risk permission.
 [llm]
 provider = "openai"
 protocol = "openai-responses-v1"
-model = "gpt-5"
+model = "gpt-5.6-sol"
 context_window = 200000
 max_output_tokens = 8192
 ```
@@ -931,10 +931,14 @@ max_output_tokens = 8192
 `openrouter-runnable.json`:
 
 ```json
-{"llm":{"provider":"openrouter","protocol":"openai-chat-v1","model":"openai/gpt-5","context_window":131072}}
+{"llm":{"provider":"openrouter","protocol":"openai-chat-v1","model":"openai/gpt-5.6-sol","context_window":131072}}
 ```
 
-Neither fixture contains a credential.
+These runnable fixtures identify bundled trusted profiles and may be used by
+provider-admission tests. Their configured context windows stay below the
+bundled windows. Rejection and parser-only fixtures may retain arbitrary model
+strings when model trust is irrelevant. Neither runnable fixture contains a
+credential.
 
 ### 16.5 Rejection fixtures
 

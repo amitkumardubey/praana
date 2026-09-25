@@ -162,11 +162,26 @@ P0
 - Owners: `RUST_V2_OPENAI_SPEC.md` sections 1-25; Compaction sections 2-4;
   Token request components; Protocol provider continuation.
 - Depends: P1B, P1D, P2A.
-- Output: pure request/SSE conversions then fake-server transport, local
-  Responses continuation, current OpenAI encrypted reasoning/phase behavior,
-  pre-emission retry, exact resolved output reserve and hard admission. No
-  pressure compaction.
-- Focused test: `openai_v1` plus protocol provider fixtures.
+- Output: pure request/SSE conversions then local `tokio::net::TcpListener`
+  transport, local Responses continuation, current OpenAI encrypted
+  reasoning/phase behavior, pre-emission retry for approved transient
+  failures, exact resolved output reserve and hard admission. Phase 2 does
+  not retry provider context-length responses and does not send
+  `previous_response_id`. No pressure compaction.
+- Prerequisite packet, before the OpenAI runtime: minimal
+  `crates/praana-core/src/tools/` contract and `tool_contract_p2b` tests;
+  protocol `Sha256Digest::digest_bytes` and removal of token-owned
+  `Sha256Digest` / `TurnId` shadows; provider and token profile fields and
+  tests; Tokio `net` / `io-util` and Reqwest `stream` features; Config
+  runnable model IDs `gpt-5.6-sol` and `openai/gpt-5.6-sol`; provider fixture
+  kind `provider-v1` and the inventory checker. Normative §21 fixtures under
+  `tests/fixtures/rust-v2/providers/v1/` are authorized for the later P2B
+  runtime, not this prerequisite packet. Tool execution and other P3A
+  runtime work are not authorized.
+- Focused test: `openai_v1` plus protocol provider fixtures. Prerequisite
+  focused tests: `tool_contract_p2b`, `provider_registry_v1`,
+  `token_accounting_v1`, `config_v1`, and
+  `tests/rust-v2-provider-fixtures.test.ts`.
 
 ### P3A: Redaction and Common Tool Runtime
 

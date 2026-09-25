@@ -39,7 +39,13 @@ default named by this specification.
 ## 2. Versioned Types and Exact Serialization
 
 All ID fields use protocol newtypes. Hash fields use protocol
-`Sha256Digest`. The exact serialized estimate is:
+`crate::protocol::id::Sha256Digest`. `TurnId` is
+`crate::protocol::id::TurnId`. This module re-exports those two types and
+does not define shadow newtypes. `Sha256Digest::from_bytes([u8; 32])`
+accepts an already-computed digest. `Sha256Digest::digest_bytes(&[u8])`
+hashes arbitrary bytes. Callers do not copy hex strings between digest
+newtypes. The UI Contract keeps a separate schema-1 wire digest; token
+manifests do not use it. The exact serialized estimate is:
 
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -312,6 +318,27 @@ framing_tokens = fixed_tokens
 `additional_tokens` is computed by the owning adapter only from a fixture-pinned
 rule for typed non-text items such as images or opaque continuation. It is not a
 free safety padding field. Safety margin is accounted separately by admission.
+
+Image occupancy is this type, owned here and stored by the provider profile
+when image input is supported:
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageTokenOccupancyV1 {
+    FixedPerImage { tokens_per_image: u64 },
+}
+```
+
+`tokens_per_image` is private and must be positive. `fixed_per_image` and
+`Deserialize` both reject zero as `TokenAccountingError::ProfileFixtureFailed`.
+The provider manifest `validate` rejects a supported image occupancy that is
+not positive. `image_contribution(image_count)` is
+`tokens_per_image * image_count` using checked multiplication. That product
+is the image contribution added into `FramingProfileV1.additional_tokens`.
+Overflow is `TokenAccountingError::Overflow`.
+No bundled profile may invent an occupancy value;
+unsupported image input carries no occupancy.
 
 An adapter estimate ID has the form
 `adapter-estimate:<provider>:<protocol>:<profile-version>`. Its checked-in

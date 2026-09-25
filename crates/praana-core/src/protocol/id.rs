@@ -148,6 +148,13 @@ impl Sha256Digest {
         Self(s)
     }
 
+    /// SHA-256 of arbitrary bytes. `from_bytes` remains the constructor for an
+    /// already-computed digest.
+    pub fn digest_bytes(bytes: &[u8]) -> Self {
+        use sha2::{Digest, Sha256};
+        Self::from_bytes(Sha256::digest(bytes).into())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

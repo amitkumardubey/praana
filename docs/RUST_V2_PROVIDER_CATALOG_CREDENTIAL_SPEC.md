@@ -75,8 +75,10 @@ pub struct ModelProfileRowV1 {
     pub reasoning_efforts: Vec<ReasoningEffort>,
     pub parallel_tools: bool,
     pub strict_json_schema: bool,
-    pub tokenizer_profile_id: String,
+    pub tokenizer_profile_id: Option<String>,
     pub framing_profile_id: String,
+    pub temperature_with_reasoning: bool,
+    pub image_input: ImageInputCapability,
     pub reasoning_accounting: ReasoningAccounting,
     pub reasoning_context: ReasoningContextCapability,
     pub self_compaction: SelfCompactionCapability,
@@ -92,13 +94,30 @@ pub struct ProfileEvidenceV1 {
     pub field: String,
     pub value_sha256: Sha256Digest,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageInputCapability {
+    Unsupported,
+    Supported { occupancy: crate::token::ImageTokenOccupancyV1 },
+}
 ```
 
 Rows sort by provider, protocol, model ID, revision. Duplicate keys are fatal.
 Every numeric value is nonzero, min output is no greater than max, and max is
 less than context window. `SelfCompactionCapability::Validated` requires a
 checked-in fidelity manifest and strict JSON-schema support. A model name alone
-never implies context length, tokenizer, reasoning, or compaction capability.
+never implies context length, tokenizer, reasoning, compaction, temperature, or
+image capability. `temperature_with_reasoning` records whether temperature may
+be sent while reasoning is enabled. The current bundled GPT-5.6 Sol rows set
+it to `false`. `image_input` is `ImageInputCapability::Unsupported` on those
+rows until primary provider evidence and a production occupancy fixture are
+checked in. `ImageTokenOccupancyV1` is owned by Token Accounting. The pinned
+Models.dev P2A snapshot may support the conservative temperature decision; it
+does not authorize an image occupancy value. P2B formatter tests may construct
+a synthetic supported profile with a fixture-pinned positive occupancy. Unknown
+and live conservative profiles set `temperature_with_reasoning = false` and
+`ImageInputCapability::Unsupported`.
 
 ## 4. Live Catalog
 
@@ -147,15 +166,26 @@ Model selection resolution is:
 4. explicit Config context override under Config rules;
 5. otherwise `MODEL_PROFILE_INCOMPLETE` before session creation.
 
-The resolved `ModelCapabilityProfile` includes manifest/cache hashes, endpoint
-fingerprint, and every selected field. Its RFC 8785 SHA-256 is the protocol
-capability-profile hash.
+The resolved `ModelCapabilityProfile` includes manifest/cache hashes,
+`endpoint_fingerprint`, `framing_profile_id`, `reasoning_efforts`,
+`parallel_tools`, `strict_json_schema`, `temperature_with_reasoning`,
+`image_input`, and every other selected field. `tokenizer_profile_id` on the
+manifest row is `Option<String>`. Profile, admission, catalog-cache, and
+endpoint-fingerprint hashes use protocol-owned
+`crate::protocol::id::Sha256Digest`, not the UI Contract wire digest. Its RFC
+8785 SHA-256 is the protocol capability-profile hash, so a different endpoint
+fingerprint is a different profile identity. Both bundled and live constructors
+initialize every field. Bundled resolution stamps the fingerprint of the
+endpoint being resolved, which is the provider's official base URL when the
+caller does not supply one.
 
-The runtime type is the exact `ModelCapabilityProfile` consumed by the
-Compaction specification, extended with `profile_source_sha256` and
-`catalog_cache_sha256: Option<Sha256Digest>`. This document owns its resolution
-and trust; Compaction owns admission math using the resolved value. Both hashes
-are required keys (cache hash is JSON null without trusted live data), so two
+The runtime type is the `ModelCapabilityProfile` in
+`crates/praana-core/src/provider/profile.rs`. Compaction §3 reproduces that
+same field set, including `profile_source_sha256` and
+`catalog_cache_sha256: Option<Sha256Digest>`. This document owns resolution
+and trust; Compaction owns admission math using the resolved value.
+`profile_hash` is the RFC 8785 SHA-256 of every field. Both hashes are
+required keys (cache hash is JSON null without trusted live data), so two
 different evidence sets cannot share a capability-profile hash.
 
 ## 5. Credential Store

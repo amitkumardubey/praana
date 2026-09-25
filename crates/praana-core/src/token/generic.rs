@@ -64,7 +64,7 @@ impl TokenEstimatorV1 for GenericTokenEstimatorV1 {
             .checked_add(framing_tokens)
             .ok_or(TokenAccountingError::Overflow)?;
 
-        let input_sha256 = Sha256Digest::from_bytes(exact_content);
+        let input_sha256 = Sha256Digest::digest_bytes(exact_content);
 
         Ok(TokenEstimateV1 {
             token_estimator_schema_version: 1,

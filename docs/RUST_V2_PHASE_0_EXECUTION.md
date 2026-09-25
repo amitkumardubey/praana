@@ -795,7 +795,12 @@ Provider and safety evidence each has a `manifest.json` with exactly this shape:
 }
 ```
 
-The provider manifest uses fixture kind `provider-phase-0`; the safety
+The Phase 0 provider manifest used fixture kind `provider-phase-0`. P2B
+migrates that committed manifest to `provider-v1` and updates the TypeScript
+inventory checker to expect `provider-v1`. This section does not rewrite the
+Phase 0 requirement as though `provider-v1` existed then. `legacy-ts` fixtures
+remain non-normative evidence. Normative P2B behavior is the OpenAI §21 `v1/`
+fixtures, which the later P2B implementation may add. The safety
 manifest uses `legacy-typescript-safety`. Each map key is an ASCII,
 repository-relative path with `/` separators and each value is the lowercase
 64-hex SHA-256 of the exact file bytes. `oracle_sha256_by_file` contains every

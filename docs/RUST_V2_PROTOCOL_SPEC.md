@@ -2059,9 +2059,12 @@ for one purpose and includes the initial attempt. Schema v1 allows at most three
 Provider specifications classify their
 retryable transport/status failures and own delay, jitter, and retry-hint
 handling. Invalid provider output, malformed tool calls, authentication
-failure, and cancellation are not retried. A context-length error allows at
-most one emergency retry and still counts toward the three-attempt limit. The
-context retry has `emergency_context_retry = true`. Exhaustion returns
+failure, and cancellation are not retried. Phase 2 does not retry a provider
+context-length response: `emergency_context_retry` stays `false`, the failed
+attempt is recorded, and the canonical error is `E_PROVIDER_CONTEXT_LENGTH`
+with class `context_length`. P5 may allow one emergency context retry that
+still counts toward the three-attempt limit and sets
+`emergency_context_retry = true`. Exhaustion of approved retries returns
 `E_PROVIDER_RETRY_EXHAUSTED`. Retry scheduling is not a canonical event;
 attempt starts and failures are.
 
@@ -3395,14 +3398,16 @@ earlier contract.
 - [ ] Implement OpenAI-compatible Chat Completions request/stream fixtures.
 - [ ] Implement OpenRouter reasoning text and usage compatibility fields.
 - [ ] Implement Responses ordered items, encrypted continuation, function output,
-  usage, and optional previous-response optimization.
+  and usage. Schema v1 omits `previous_response_id`; that optimization stays
+  reserved.
 - [ ] Implement Phase 2 minimal hard admission: resolve trustworthy model
   windows, account exact request components through `TokenEstimatorV1`, reserve
   output/reasoning space, reject oversized requests before auth/network, and
   bind the estimate to the request/profile hashes.
 - [ ] Persist attempt starts before HTTP and failures/acceptance after aggregate
   validation.
-- [ ] Implement bounded retries, rate hints, and one emergency context retry.
+- [ ] Implement bounded pre-emission retries and rate hints. Phase 2 does not
+      emergency-retry a provider context-length response; that one retry is P5.
 
 ### Packet F: Phase 3 artifact substrate and tool batches
 
@@ -3569,7 +3574,7 @@ boundary and no tool result is synthesized.
 | `provider_timeout` | `E_PROVIDER_TIMEOUT` | `timeout` | n/a | Conditional: before emission |
 | `provider_rate_limited` | `E_PROVIDER_RATE_LIMIT` | `rate_limit` | n/a | Conditional: before emission |
 | `auth_missing`, `provider_auth_failed`, `provider_permission_denied` | `E_PROVIDER_AUTH` | `authentication` | n/a | No |
-| `provider_context_length` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | One emergency admission retry |
+| `provider_context_length` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | No in Phase 2; one emergency retry is P5 |
 | `canonical_request_invalid`, `unsupported_protocol`, `unsupported_option`, `unsupported_content`, `base_url_invalid`, `header_invalid`, `header_forbidden`, `request_serialize_failed` | `E_PROVIDER_REQUEST_INVALID` | `invalid_request` | n/a | No |
 | `request_admission_denied` | `E_PROVIDER_REQUEST_INVALID` | `policy` | n/a | No |
 | `request_admission_loop` | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
@@ -3583,7 +3588,7 @@ boundary and no tool result is synthesized.
 | `stream_invalid_utf8`, `sse_frame_too_large`, `stream_invalid_json`, `protocol_violation`, `stream_truncated`, `provider_response_failed` | `E_PROVIDER_STREAM` | `invalid_provider_output` | n/a | Only when OpenAI's explicit pre-emission rule says yes |
 | `provider_bad_request`, `provider_not_found`, `provider_conflict`, `provider_payload_too_large` | `E_PROVIDER_REQUEST_INVALID` | `invalid_request` | n/a | No |
 | `provider_unavailable`, `provider_server_error` | `E_PROVIDER_STREAM` | `transport` | n/a | Only when profile-classified and before emission |
-| `continuation_id_rejected` | `E_CONTINUATION_INCOMPATIBLE` | `invalid_request` | n/a | One stateless fallback only |
+| `continuation_id_rejected` | `E_CONTINUATION_INCOMPATIBLE` | `invalid_request` | n/a | Not reachable in schema v1 |
 | `aborted` | `E_PROVIDER_CANCELLED` | `cancelled` | n/a | No automatic retry |
 
 ### A.3 Tool domain
@@ -3639,7 +3644,7 @@ redaction code.
 | `ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `E_ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `validation` | n/a | No until profile/config changes |
 | `ADMISSION_ARITHMETIC_OVERFLOW`, `TOKEN_ACCOUNTING_OVERFLOW` | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
 | `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE`, `TOKEN_BOUND_EXCEEDED` for protected request content | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | Yes only after caller narrows protected content |
-| `ADMISSION_PROVIDER_CONTEXT_REJECTED` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | No after emergency retry |
+| `ADMISSION_PROVIDER_CONTEXT_REJECTED` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | P5 only, after that one emergency retry |
 | `TOKEN_INVALID_UTF8`, `TOKEN_PROFILE_UNKNOWN`, `TOKEN_PROFILE_FIXTURE_FAILED` with no fallback | `E_ADMISSION_ACCOUNTING` | `validation` | n/a | No in current configuration |
 | `TOKEN_INPUT_HASH_MISMATCH` | `E_ADMISSION_ACCOUNTING` | `conflict` | n/a | Yes after re-estimation |
 | `COMPACTION_NO_ELIGIBLE_TURNS`, `COMPACTION_MISSING_TOKEN_MASS` | `E_COMPACTION_RANGE_INVALID` | `validation` | n/a | Conditional on new committed history/re-estimation |
