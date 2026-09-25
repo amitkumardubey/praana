@@ -74,7 +74,7 @@ fn digest_hashes_effective_json_without_trailing_lf() {
         load_effective_config(None, &ConfigCliOverrides::default(), &env).unwrap();
 
     let json_bytes = effective.to_canonical_json_bytes();
-    let calculated = praana_core::token::Sha256Digest::from_bytes(&json_bytes);
+    let calculated = praana_core::token::Sha256Digest::digest_bytes(&json_bytes);
     assert_eq!(digest, calculated);
 }
 
@@ -905,6 +905,7 @@ fn all_committed_fixtures_load_or_fail_as_expected() {
     )
     .unwrap();
     assert_eq!(eff.llm.provider, "openai");
+    assert_eq!(eff.llm.model, "gpt-5.6-sol");
 
     // 5. openrouter-runnable.json -> Ok
     let (eff, _, _) = load_effective_config(
@@ -914,6 +915,7 @@ fn all_committed_fixtures_load_or_fail_as_expected() {
     )
     .unwrap();
     assert_eq!(eff.llm.provider, "openrouter");
+    assert_eq!(eff.llm.model, "openai/gpt-5.6-sol");
 
     // 6. bad-clear.toml -> InvalidValue
     let res = load_effective_config(
@@ -1065,7 +1067,7 @@ fn config_snapshot_writes_mode_600_trailing_lf_and_matching_digest() {
 
     // 4. Check digest: SHA-256 of bytes without trailing LF must equal config_digest_sha256()
     let bytes_without_lf = &snapshot_bytes[..snapshot_bytes.len() - 1];
-    let computed_digest = praana_core::token::Sha256Digest::from_bytes(bytes_without_lf);
+    let computed_digest = praana_core::token::Sha256Digest::digest_bytes(bytes_without_lf);
     assert_eq!(computed_digest, expected_digest);
     assert_eq!(computed_digest, effective.config_digest_sha256());
 

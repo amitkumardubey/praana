@@ -1,6 +1,6 @@
 {
   "fixture_schema_version": 1,
-  "fixture_kind": "provider-phase-0",
+  "fixture_kind": "provider-v1",
   "oracle_sha256_by_file": {
     "src/llm/auth.ts": "41beb8db735ce7bc4103802b19965193c0d5f72668bb5aaa2ab3796c2b47420a",
     "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",

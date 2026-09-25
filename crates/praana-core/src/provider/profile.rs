@@ -8,9 +8,11 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::canonical_json::to_canonical_json_bytes;
+use crate::config::normalize_provider_url;
+use crate::protocol::id::Sha256Digest;
 use crate::protocol::models::ReasoningEffort;
-use crate::token::TokenProfileStoreV1;
-use crate::ui_contract::json_data::{ModelId, ProviderId, Sha256Digest};
+use crate::token::{ImageTokenOccupancyV1, TokenProfileStoreV1};
+use crate::ui_contract::json_data::{ModelId, ProviderId};
 
 use super::registry::{protocol_supported, provider_descriptor, ProviderProtocol};
 
@@ -43,6 +45,8 @@ pub struct ModelProfileRowV1 {
     pub strict_json_schema: bool,
     pub tokenizer_profile_id: Option<String>,
     pub framing_profile_id: String,
+    pub temperature_with_reasoning: bool,
+    pub image_input: ImageInputCapability,
     pub reasoning_accounting: ReasoningAccounting,
     pub reasoning_context: ReasoningContextCapability,
     pub self_compaction: SelfCompactionCapability,
@@ -94,6 +98,13 @@ pub enum TokenizerCapability {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageInputCapability {
+    Unsupported,
+    Supported { occupancy: ImageTokenOccupancyV1 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "type",
     content = "data",
@@ -132,6 +143,9 @@ pub struct ModelCapabilityProfile {
     pub reasoning_efforts: Vec<ReasoningEffort>,
     pub parallel_tools: bool,
     pub strict_json_schema: bool,
+    pub temperature_with_reasoning: bool,
+    pub image_input: ImageInputCapability,
+    pub endpoint_fingerprint: Sha256Digest,
     pub self_compaction: SelfCompactionCapability,
     pub continuation_after_internal_request: bool,
 }
@@ -354,6 +368,13 @@ impl ModelProfileManifestV1 {
                     "validated self-compaction requires strict JSON schema for {key}"
                 )));
             }
+            if let ImageInputCapability::Supported { occupancy } = &row.image_input {
+                if occupancy.tokens_per_image() == 0 {
+                    return Err(ProfileError::Invalid(format!(
+                        "image occupancy must be positive for {key}"
+                    )));
+                }
+            }
             if row.display_name.is_empty() || row.framing_profile_id.is_empty() {
                 return Err(ProfileError::Invalid(format!(
                     "empty profile field for {key}"
@@ -518,9 +539,23 @@ pub fn resolve_profile_from_manifest(
         reasoning_efforts: row.reasoning_efforts.clone(),
         parallel_tools: row.parallel_tools,
         strict_json_schema: row.strict_json_schema,
+        temperature_with_reasoning: row.temperature_with_reasoning,
+        image_input: row.image_input.clone(),
+        endpoint_fingerprint: official_endpoint_fingerprint(provider)?,
         self_compaction: row.self_compaction.clone(),
         continuation_after_internal_request: row.continuation_after_internal_request,
     })
+}
+
+fn official_endpoint_fingerprint(provider: &str) -> Result<Sha256Digest, ProfileError> {
+    let descriptor = provider_descriptor(provider).ok_or_else(|| {
+        ProfileError::Invalid(format!(
+            "provider is not in the closed registry: {provider}"
+        ))
+    })?;
+    let normalized = normalize_provider_url(&descriptor.default_base_url, "provider endpoint")
+        .map_err(|error| ProfileError::Invalid(error.to_string()))?;
+    Ok(Sha256Digest::digest_bytes(normalized.as_bytes()))
 }
 
 pub fn model_id(profile: &ModelCapabilityProfile) -> Result<ModelId, String> {

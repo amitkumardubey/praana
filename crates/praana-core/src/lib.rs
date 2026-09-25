@@ -26,6 +26,7 @@ pub mod redaction;
 pub mod setup;
 pub mod system_context;
 pub mod token;
+pub mod tools;
 pub mod ui_contract;
 pub mod unicode;
 

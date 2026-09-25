@@ -51,8 +51,9 @@ Admission and compaction MUST preserve these invariants:
 8. A failed compactor cannot hide source messages or alter the active projection.
 9. Core compaction has no dependency on Cognitive Memory, a memory plugin,
    embeddings, or a cross-session database.
-10. A provider context-length error receives at most one emergency retry for one
-    provider request.
+10. P5 only: a provider context-length error receives at most one emergency
+    retry for one provider request. Phase 2 records the failure and does not
+    resend it.
 
 ## 2. Terms
 
@@ -97,6 +98,13 @@ pub struct ModelCapabilityProfile {
     pub reasoning_accounting: ReasoningAccounting,
     pub reasoning_context: ReasoningContextCapability,
     pub tokenizer: TokenizerCapability,
+    pub framing_profile_id: String,
+    pub reasoning_efforts: Vec<ReasoningEffort>,
+    pub parallel_tools: bool,
+    pub strict_json_schema: bool,
+    pub temperature_with_reasoning: bool,
+    pub image_input: ImageInputCapability,
+    pub endpoint_fingerprint: Sha256Digest,
     pub self_compaction: SelfCompactionCapability,
     pub continuation_after_internal_request: bool,
 }
@@ -152,16 +160,21 @@ The capability table is data in the Rust binary, versioned, fixture-tested, and
 matched most-specific first. Marketing family names are insufficient evidence
 for `Validated` self-compaction.
 Capability-profile JSON rejects duplicate/unknown/missing keys;
-`model_revision` is always present and is JSON null when unresolved. The exact
-Serde tags shown above and RFC 8785 bytes are used for
-`capability_profile_hash`.
+`model_revision` is always present and is JSON null when unresolved. This
+struct is the provider-owned `ModelCapabilityProfile`, including
+`endpoint_fingerprint`, `framing_profile_id`, `reasoning_efforts`,
+`parallel_tools`, `strict_json_schema`, `temperature_with_reasoning`, and
+`image_input`. `ImageInputCapability` and `ImageTokenOccupancyV1` are owned by
+the provider catalog and Token Accounting specifications. `capability_profile_hash`
+is the RFC 8785 SHA-256 of this whole value. Compaction does not hash a
+smaller profile.
 
-Phase 2 implements only the profile fields required for trustworthy hard
-admission: provider/protocol/model matching, context window, output/reasoning
-limits, tokenizer/framing profile, and continuation constraints. Phase 5 adds
-pressure thresholds and `self_compaction` capability-profile selection. A Phase
+Phase 2 admission uses the resolved window, output and reasoning limits,
+tokenizer and framing profile, and continuation constraints. It does not run
+pressure compaction or self-compaction selection. Phase 5 adds those. A Phase
 2 build treats compaction as unavailable and safely rejects an oversized request
-after deterministic hard admission.
+after deterministic hard admission. The hashed profile still carries every
+field above.
 
 ## 4. Exact admission calculation
 
@@ -1158,7 +1171,14 @@ continuation, or StateGraph entry without a durable policy event.
 
 ### 14.3 Provider context-length response
 
-If a provider returns a recognized context-length error despite admission:
+Phase 2 does not run this section. The OpenAI specification records the failed
+attempt, returns `provider_context_length`, maps
+`E_PROVIDER_CONTEXT_LENGTH` / `context_length`, leaves
+`emergency_context_retry` false, and does not retry, drop history, or alter
+output.
+
+P5, after calibration exists, handles a recognized context-length error as
+follows:
 
 1. Record estimated components and the provider error as telemetry.
 2. Mark this provider/model estimator sample as underestimation at least
@@ -1169,6 +1189,7 @@ If a provider returns a recognized context-length error despite admission:
 
 Retries from other error classes do not reset this one-retry budget. The failed
 partial provider attempt is never accepted or summarized as source.
+`ADMISSION_PROVIDER_CONTEXT_REJECTED` is deferred until P5.
 
 ### 14.4 No compactor available
 
@@ -1351,7 +1372,8 @@ SQLite converges by replay, and no turn is retired twice.
 
 - Timeout, cancellation, rate limit, malformed output, repair failure, missing
   compactor, and source-change race leave projection unchanged.
-- Provider context error triggers exactly one emergency retry.
+- P5: a provider context error triggers exactly one emergency retry. Phase 2
+  does not.
 - A second context error terminates without a loop.
 - SQLite derived failure after event fsync still activates on replay.
 - Cancellation during event durability waits for fsync and reports the actual
@@ -1443,7 +1465,8 @@ Admission and compaction are accepted only when:
 1. Every provider-call path proves that admission ran against the exact request
    hash and current profile.
 2. No admitted request exceeds `U` under the selected implementation estimator;
-   recognized provider context rejection performs at most one emergency retry;
+   P5 recognized provider context rejection performs at most one emergency retry;
+   Phase 2 does not retry that response;
    `MT-ADMISSION-CONTEXT-REJECT` is recorded without an unsupported release
    percentage.
 3. Calibration bucket selection, exclusion, rounding, and margin application

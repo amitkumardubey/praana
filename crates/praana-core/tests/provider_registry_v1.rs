@@ -75,6 +75,11 @@ fn bundled_manifest_resolves_all_approved_models_dev_rows() {
         assert!(!row.continuation_after_internal_request);
         assert!(row.parallel_tools);
         assert!(row.strict_json_schema);
+        assert!(!row.temperature_with_reasoning);
+        assert!(matches!(
+            row.image_input,
+            praana_core::provider::ImageInputCapability::Unsupported
+        ));
         let resolved = resolve_bundled_profile(provider, protocol, model, None).unwrap();
         assert_eq!(resolved.context_window_tokens, 1_050_000);
         assert_eq!(resolved.framing_profile_id, *framing);
@@ -90,6 +95,12 @@ fn bundled_manifest_resolves_all_approved_models_dev_rows() {
         );
         assert!(!resolved.continuation_after_internal_request);
         assert_eq!(&resolved.reasoning_accounting, reasoning_accounting);
+        assert!(!resolved.temperature_with_reasoning);
+        assert!(matches!(
+            resolved.image_input,
+            praana_core::provider::ImageInputCapability::Unsupported
+        ));
+        assert!(!resolved.endpoint_fingerprint.as_str().is_empty());
     }
     assert!(
         resolve_bundled_profile("openai", &ProviderProtocol::Responses, "made-up", None).is_err()
@@ -187,10 +198,11 @@ fn live_catalog_is_parsed_and_refresh_falls_back_to_unexpired_cache() {
 
 #[test]
 fn live_profile_requires_explicit_context_for_custom_or_expired_catalogs() {
+    use praana_core::protocol::id::Sha256Digest;
     use praana_core::provider::catalog::{
         resolve_profile_with_catalog, CatalogCacheV1, LiveModelRowV1,
     };
-    use praana_core::ui_contract::json_data::{ModelId, ProviderId, Sha256Digest};
+    use praana_core::ui_contract::json_data::{ModelId, ProviderId};
 
     let cache = CatalogCacheV1 {
         schema_version: 1,
@@ -272,10 +284,11 @@ fn pinned_snapshot_hash_and_https_client_contract_are_checked() {
 
 #[test]
 fn openai_official_live_cache_cannot_supply_capability_facts() {
+    use praana_core::protocol::id::Sha256Digest;
     use praana_core::provider::catalog::{
         resolve_profile_with_catalog, CatalogCacheV1, LiveModelRowV1,
     };
-    use praana_core::ui_contract::json_data::{ModelId, ProviderId, Sha256Digest};
+    use praana_core::ui_contract::json_data::{ModelId, ProviderId};
     let cache = CatalogCacheV1 {
         schema_version: 1,
         provider: ProviderId::from_canonical_str("openai").unwrap(),
@@ -305,4 +318,107 @@ fn openai_official_live_cache_cannot_supply_capability_facts() {
         None,
     )
     .is_err());
+}
+
+#[test]
+fn endpoint_fingerprint_changes_profile_hash_identity() {
+    use praana_core::provider::{profile_hash, resolve_profile_with_catalog};
+
+    let official = resolve_profile_with_catalog(
+        "openai",
+        &ProviderProtocol::Responses,
+        "gpt-5.6-sol",
+        "https://api.openai.com/v1",
+        2_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let custom = resolve_profile_with_catalog(
+        "openai",
+        &ProviderProtocol::Responses,
+        "gpt-5.6-sol",
+        "http://127.0.0.1:9/v1",
+        2_000,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_ne!(official.endpoint_fingerprint, custom.endpoint_fingerprint);
+    assert_ne!(
+        profile_hash(&official).unwrap(),
+        profile_hash(&custom).unwrap()
+    );
+}
+
+#[test]
+fn image_and_temperature_change_profile_hash_identity() {
+    use praana_core::provider::{profile_hash, resolve_bundled_profile, ImageInputCapability};
+    use praana_core::token::ImageTokenOccupancyV1;
+
+    let baseline =
+        resolve_bundled_profile("openai", &ProviderProtocol::Responses, "gpt-5.6-sol", None)
+            .unwrap();
+    let baseline_hash = profile_hash(&baseline).unwrap();
+
+    let mut warmer = baseline.clone();
+    warmer.temperature_with_reasoning = true;
+    assert_ne!(profile_hash(&warmer).unwrap(), baseline_hash);
+
+    let mut imaged = baseline;
+    imaged.image_input = ImageInputCapability::Supported {
+        occupancy: ImageTokenOccupancyV1::fixed_per_image(17).unwrap(),
+    };
+    assert_ne!(profile_hash(&imaged).unwrap(), baseline_hash);
+}
+
+#[test]
+fn live_conservative_profile_gains_neither_temperature_nor_image_capability() {
+    use praana_core::protocol::id::Sha256Digest;
+    use praana_core::provider::catalog::{
+        resolve_profile_with_catalog, CatalogCacheV1, LiveModelRowV1,
+    };
+    use praana_core::provider::ImageInputCapability;
+    use praana_core::ui_contract::json_data::{ModelId, ProviderId};
+
+    let cache = CatalogCacheV1 {
+        schema_version: 1,
+        provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+        endpoint_fingerprint: endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        fetched_at_ms: 1_000,
+        expires_at_ms: 1_000 + 6 * 60 * 60 * 1000,
+        etag: None,
+        body_sha256: Sha256Digest::from_bytes([9; 32]),
+        models: vec![LiveModelRowV1 {
+            provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+            model_id: ModelId::from_canonical_str("vendor/unknown-live").unwrap(),
+            display_name: "Unknown".to_owned(),
+            context_length: Some(32_000),
+            max_completion_tokens: Some(4_000),
+            supported_parameters: vec!["tools".to_owned()],
+            reasoning_efforts: vec!["high".to_owned()],
+        }],
+    };
+    let profile = resolve_profile_with_catalog(
+        "openrouter",
+        &ProviderProtocol::Chat,
+        "vendor/unknown-live",
+        "https://openrouter.ai/api/v1",
+        2_000,
+        Some(&cache),
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!profile.temperature_with_reasoning);
+    assert!(matches!(
+        profile.image_input,
+        ImageInputCapability::Unsupported
+    ));
+    assert_eq!(
+        profile.endpoint_fingerprint,
+        endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap()
+    );
 }

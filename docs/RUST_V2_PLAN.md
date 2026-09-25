@@ -696,8 +696,8 @@ mass.
 2. Compact additional oldest committed turns.
 3. Reduce requested output allowance only within a provider-safe configured minimum.
 4. If the active turn alone cannot fit, stop cleanly with a continuation instruction.
-5. On a provider context-length error, perform at most one emergency admission/compaction retry.
-6. Never loop indefinitely on context errors.
+5. P5 only: on a provider context-length error, perform at most one emergency admission/compaction retry.
+6. Never loop indefinitely on context errors. Phase 2 returns the context-length error without a resend.
 
 ---
 
@@ -949,7 +949,7 @@ Support:
 - Never execute tool calls from a failed partial provider attempt.
 - OpenAI/OpenRouter delay, jitter, and rate-limit-hint handling are owned by
   `RUST_V2_OPENAI_SPEC.md`.
-- Context-length failure receives at most one emergency admission retry.
+- Phase 2 context-length failure is not retried. P5 may perform one emergency admission retry.
 
 Anthropic, Gemini/Vertex, Bedrock, Azure, OAuth variations, and custom provider edge cases are later parity phases.
 
@@ -1129,7 +1129,7 @@ For each supported protocol, cover:
 - Disconnect before and after accepted emission.
 - Rate limits, timeouts, and aborts.
 - Reasoning/encrypted continuation items.
-- Context-length errors and emergency retry.
+- Context-length errors without a Phase 2 resend. P5 covers emergency retry.
 - Resume of a complete active tool cycle.
 
 ### Persistence fault injection
@@ -1239,8 +1239,8 @@ orphaned tool messages or automatic side-effect replay.
 - [ ] Implement the minimal hard request-admission path required before any
       OpenAI/OpenRouter network send: trustworthy model-window resolution,
       output/reasoning reserves, exact request-component accounting through
-      `TokenEstimatorV1`, checked hard-ceiling rejection, and one bounded
-      context-length retry decision.
+      `TokenEstimatorV1`, and checked hard-ceiling rejection. A provider
+      context-length response is recorded and returned; it is not retried.
 - [ ] Implement OpenAI-compatible Chat Completions.
 - [ ] Implement OpenAI Responses with reasoning-item continuation.
 - [ ] Implement OpenRouter base URL, headers, and compatibility options.

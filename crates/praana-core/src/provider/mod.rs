@@ -13,10 +13,10 @@ pub use catalog::{
 };
 pub use profile::{
     bundled_manifest, bundled_manifest_sha256, model_id, parse_manifest, profile_hash, provider_id,
-    resolve_bundled_profile, resolve_profile_from_manifest, ModelCapabilityProfile,
-    ModelProfileManifestV1, ModelProfileRowV1, ProfileError, ProfileEvidenceV1,
-    ReasoningAccounting, ReasoningContextCapability, SelfCompactionCapability, TokenizerCapability,
-    MODELS_DEV_P2A_SNAPSHOT_PATH, MODEL_PROFILE_SCHEMA_VERSION,
+    resolve_bundled_profile, resolve_profile_from_manifest, ImageInputCapability,
+    ModelCapabilityProfile, ModelProfileManifestV1, ModelProfileRowV1, ProfileError,
+    ProfileEvidenceV1, ReasoningAccounting, ReasoningContextCapability, SelfCompactionCapability,
+    TokenizerCapability, MODELS_DEV_P2A_SNAPSHOT_PATH, MODEL_PROFILE_SCHEMA_VERSION,
 };
 pub use registry::{
     all_providers, endpoint_for, protocol_supported, provider_descriptor, provider_registry,

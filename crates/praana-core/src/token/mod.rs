@@ -11,81 +11,60 @@ pub use generic::{GenericTokenEstimatorV1, GENERIC_ESTIMATOR_ID};
 pub use profile::{TokenProfileEntryV1, TokenProfileStoreV1};
 
 use crate::canonical_json;
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
+
+pub use crate::protocol::id::{Sha256Digest, TurnId};
 
 pub const TOKEN_ESTIMATOR_SCHEMA_VERSION: u32 = 1;
 
-/// Protocol turn identifier newtype.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct TurnId(pub String);
-
-impl std::fmt::Display for TurnId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+/// Fixture-pinned image occupancy. Unsupported profiles do not carry a value.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageTokenOccupancyV1 {
+    FixedPerImage {
+        #[serde(deserialize_with = "deserialize_positive_tokens_per_image")]
+        tokens_per_image: u64,
+    },
 }
 
-/// Protocol SHA-256 digest newtype.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Sha256Digest(pub String);
+fn deserialize_positive_tokens_per_image<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let tokens_per_image = u64::deserialize(deserializer)?;
+    if tokens_per_image == 0 {
+        return Err(de::Error::custom(
+            TokenAccountingError::ProfileFixtureFailed(
+                "tokens_per_image must be positive".to_owned(),
+            )
+            .to_string(),
+        ));
+    }
+    Ok(tokens_per_image)
+}
 
-impl Sha256Digest {
-    pub fn new(hex: String) -> Result<Self, String> {
-        if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!(
-                "invalid sha256 digest: expected 64 hex characters, got {hex}"
+impl ImageTokenOccupancyV1 {
+    pub fn fixed_per_image(tokens_per_image: u64) -> Result<Self, TokenAccountingError> {
+        if tokens_per_image == 0 {
+            return Err(TokenAccountingError::ProfileFixtureFailed(
+                "tokens_per_image must be positive".to_owned(),
             ));
         }
-        Ok(Self(hex.to_ascii_lowercase()))
+        Ok(Self::FixedPerImage { tokens_per_image })
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Self(format!("{:x}", hasher.finalize()))
+    /// Checked image contribution for `FramingProfileV1.additional_tokens`.
+    pub fn tokens_per_image(&self) -> u64 {
+        match self {
+            Self::FixedPerImage { tokens_per_image } => *tokens_per_image,
+        }
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Sha256Digest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl AsRef<str> for Sha256Digest {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::str::FromStr for Sha256Digest {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s.to_string())
-    }
-}
-
-impl serde::Serialize for Sha256Digest {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Sha256Digest {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Self::new(s).map_err(serde::de::Error::custom)
+    pub fn image_contribution(&self, image_count: u64) -> Result<u64, TokenAccountingError> {
+        self.tokens_per_image()
+            .checked_mul(image_count)
+            .ok_or(TokenAccountingError::Overflow)
     }
 }
 
@@ -181,7 +160,7 @@ pub enum TokenAccountingError {
 /// Validate that input bytes match their expected SHA-256 digest per Token Accounting §11 and §13.
 /// Returns Ok(()) if the computed hash matches, or Err(TokenAccountingError::InputHashMismatch).
 pub fn check_input_hash(input: &[u8], expected: &Sha256Digest) -> Result<(), TokenAccountingError> {
-    let actual = Sha256Digest::from_bytes(input);
+    let actual = Sha256Digest::digest_bytes(input);
     if &actual != expected {
         return Err(TokenAccountingError::InputHashMismatch);
     }
@@ -206,7 +185,7 @@ pub fn calculate_request_component_manifest(
 ) -> Result<(String, Sha256Digest, u64), TokenAccountingError> {
     let json_bytes = canonical_json::to_canonical_json_bytes(&estimates)
         .map_err(|e| TokenAccountingError::ProfileUnknown(e.to_string()))?;
-    let digest = Sha256Digest::from_bytes(&json_bytes);
+    let digest = Sha256Digest::digest_bytes(&json_bytes);
     let mut total_tokens: u64 = 0;
     for est in estimates {
         total_tokens = total_tokens
