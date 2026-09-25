@@ -1,0 +1,18 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_fixture","model":"gpt-5.6-sol"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_01","phase":"final_answer"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":0,"delta":"ready"}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","output_index":0,"text":"ready"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_01"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_fixture","status":"completed","output":[{"type":"message","id":"msg_01"}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}
+

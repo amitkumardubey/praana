@@ -1,0 +1,4 @@
+data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":1,"total_tokens":10,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":5}}
+
+data: [DONE]
+

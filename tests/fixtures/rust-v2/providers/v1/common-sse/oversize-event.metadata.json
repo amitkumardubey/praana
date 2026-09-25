@@ -1,0 +1,4 @@
+{
+  "max_event_data_bytes": 8388608,
+  "generate_in_test": true
+}

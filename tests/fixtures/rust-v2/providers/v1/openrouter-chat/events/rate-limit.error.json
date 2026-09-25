@@ -1,0 +1,6 @@
+{
+  "code": "provider_rate_limited",
+  "http_status": 429,
+  "retryable": true,
+  "category": "rate_limit"
+}

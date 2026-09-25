@@ -1,6 +1,7 @@
 //! Provider registry, model catalogs, and capability profiles (P2A).
 
 pub mod catalog;
+pub mod openai;
 pub mod profile;
 pub mod registry;
 

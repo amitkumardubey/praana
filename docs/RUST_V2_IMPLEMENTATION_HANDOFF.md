@@ -182,6 +182,16 @@ P0
   focused tests: `tool_contract_p2b`, `provider_registry_v1`,
   `token_accounting_v1`, `config_v1`, and
   `tests/rust-v2-provider-fixtures.test.ts`.
+- Runtime packet lands in `crates/praana-core/src/provider/openai/`
+  (`mod`, `chat`, `responses`, `sse`, `error`, `usage`, and `attempt` for
+  durable attempt ordering), `crates/praana-core/tests/openai_v1.rs`,
+  `crates/praana-core/tests/openai_matrix.rs`, and the normative §21 files
+  under `tests/fixtures/rust-v2/providers/v1/`. Schema v1 still does not send
+  `previous_response_id`. `openai_matrix` is a second test binary, so both
+  `cargo test -p praana-core --test openai_v1` and `--test openai_matrix`
+  are required. `RetryLedger` fsyncs each retry before send in its own log
+  under three fixed attempt ids; a turn loop cannot append those retries
+  onto a caller-supplied session store through this type.
 
 ### P3A: Redaction and Common Tool Runtime
 
