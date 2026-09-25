@@ -1,0 +1,71 @@
+name: cla-check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect PR commit authors
+        id: authors
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Get all commit author logins in this PR.
+          AUTHORS=$(gh api \
+            repos/${{ github.repository }}/pulls/$PR_NUMBER/commits \
+            --paginate --jq '.[].author.login' | sort -u)
+          echo "authors<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$AUTHORS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all authors signed the CLA
+        id: verify
+        run: |
+          SIGNERS=$(grep -v '^\s*$' .github/CLA_SIGNERS.txt | grep -v '^\s*#' | sort -u)
+          MISSING=""
+          while IFS= read -r author; do
+            [ -z "$author" ] && continue
+            if ! echo "$SIGNERS" | grep -qx "$author"; then
+              MISSING="$MISSING\n- @$author"
+            fi
+          done <<< "${{ steps.authors.outputs.authors }}"
+
+          if [ -n "$MISSING" ]; then
+            echo "missing<<EOF" >> "$GITHUB_OUTPUT"
+            echo -e "$MISSING" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "All commit authors have signed the CLA."
+
+      - name: Post comment if unsigned
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MISSING: ${{ steps.verify.outputs.missing }}
+        run: |
+          BODY="## ⚠️ CLA not signed
+
+          The following commit authors have not signed the [Contributor License Agreement](../blob/main/CLA.md):
+
+          $MISSING
+
+          To sign, add your GitHub username to \`.github/CLA_SIGNERS.txt\` in this PR (or a separate PR) and the check will re-run.
+
+          See [CLA.md](../blob/main/CLA.md) for the full agreement."
+          gh pr comment "$PR_NUMBER" --body "$BODY" || true
+          exit 1
