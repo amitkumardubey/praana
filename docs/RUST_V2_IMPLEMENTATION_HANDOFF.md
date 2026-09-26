@@ -221,6 +221,20 @@ P0
 - Output: exact SQLite schema, canonical result artifactization, preview,
   spools/journals, recovery. No FTS/search/StateGraph.
 - Focused test: `history_artifacts`.
+- Landed in `praana-core`: `history::{artifact,db,error,journal,preview,spool}`
+  plus recovery integration. A fresh `history.db` is schema v1, including the
+  unused FTS tables, so P4A does not need a migration to add retrieval.
+  Artifactization follows provider `call_index` order. A referencing finish is
+  appended only after the artifact transaction commits. Recovery proves an
+  orphan before rolling a journal back, and a spool is removed only after the
+  child, one supervisor, and the process tree are proved dead.
+- Still open, and not chosen by this packet: the history schema accepts only
+  UTF-8 `application/vnd.praana.tool-result+json;version=1`, while Tool Runtime
+  §18.5 also describes `application/octet-stream`. A dangling finish stays in
+  `events.jsonl`. `projection()` replays that prefix and does not drop the
+  result. P3C must stop on a failed `run_recovery` and must not present
+  `projection()` as accepted history after `E_ARTIFACT_MISSING` or
+  `E_ARTIFACT_HASH_MISMATCH`.
 
 ### P3C: Phase 3 Built-ins and Headless Loop
 

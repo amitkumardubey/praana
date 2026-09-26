@@ -27,6 +27,25 @@ pub fn truncated_log_tail_notice(sha: &str) -> RecoveryNotice {
     truncated_tail_notice(sha)
 }
 
+fn session_workspace(session_dir: &Path) -> std::path::PathBuf {
+    let meta = session_dir.join("meta.json");
+    let Ok(bytes) = std::fs::read(&meta) else {
+        return session_dir.to_path_buf();
+    };
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return session_dir.to_path_buf();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim_end_matches('\n')) else {
+        return session_dir.to_path_buf();
+    };
+    value
+        .get("cwd")
+        .and_then(|cwd| cwd.as_str())
+        .filter(|cwd| !cwd.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| session_dir.to_path_buf())
+}
+
 pub struct SessionRecoveryEngine {
     store: EventLogStore,
     ids: MonotonicUlidGenerator,
@@ -90,6 +109,12 @@ impl SessionRecoveryEngine {
     }
 
     pub fn run_recovery(&mut self) -> HistoryResult<usize> {
+        if let Err(err) = self.verify_artifact_references() {
+            if err.code() == "E_ARTIFACT_MISSING" || err.code() == "E_ARTIFACT_HASH_MISMATCH" {
+                self.store.mark_read_only();
+            }
+            return Err(err);
+        }
         let mut appended = 0usize;
         loop {
             let events = self.store.events()?;
@@ -148,6 +173,38 @@ impl SessionRecoveryEngine {
                         step_id,
                         execution,
                     } => {
+                        if let Some(event) = self.recover_orphan_finish(
+                            turn_id, attempt_id, batch_id, step_id, &execution,
+                        )? {
+                            let started = match &event.event {
+                                CanonicalEvent::ToolExecutionFinished(finished) => {
+                                    finished.started_event_id
+                                }
+                                _ => None,
+                            };
+                            let tool_name = execution.tool_name.clone();
+                            let call_id = execution.call_id.clone();
+                            let execution_id = execution.execution_id;
+                            self.store.append_event(&event)?;
+                            crate::history::journal::retire_write_journal(
+                                self.store.session_dir(),
+                                &execution_id,
+                            )
+                            .map_err(|err| err.into_history(None, None))?;
+                            if let Some(source) = started {
+                                self.push_notice(tool_recovered_notice(
+                                    source, &tool_name, &call_id,
+                                ));
+                            }
+                            appended += 1;
+                            continue;
+                        }
+                        let rolled_back =
+                            match self.rollback_unproved_journal(&execution.execution_id) {
+                                Ok(()) => true,
+                                Err(err) if err.code() == "HISTORY_ROLLBACK_CONFLICT" => false,
+                                Err(err) => return Err(err),
+                            };
                         let event = self.tool_finish(
                             turn_id,
                             attempt_id,
@@ -163,11 +220,27 @@ impl SessionRecoveryEngine {
                             "The process stopped after this tool was marked started. Its side effects are unknown. Do not repeat the mutation until state has been inspected.",
                         )?;
                         self.store.append_event(&event)?;
+                        if rolled_back {
+                            crate::history::journal::retire_write_journal(
+                                self.store.session_dir(),
+                                &execution.execution_id,
+                            )
+                            .map_err(|err| err.into_history(None, None))?;
+                        }
                         self.push_notice(tool_uncertain_notice(
                             execution.started_event_id.expect("started execution"),
                             &execution.tool_name,
                             &execution.call_id,
                         ));
+                        if !rolled_back {
+                            self.store.mark_read_only();
+                            return Err(HistoryError::new(
+                                "HISTORY_ROLLBACK_CONFLICT",
+                                None,
+                                None,
+                                false,
+                            ));
+                        }
                     }
                     ToolRepair::Skip {
                         turn_id,
@@ -318,7 +391,133 @@ impl SessionRecoveryEngine {
             }
             break;
         }
+        self.reconcile_classified_spools()?;
+        self.gc_classified_orphans()?;
         Ok(appended)
+    }
+
+    fn gc_classified_orphans(&self) -> HistoryResult<()> {
+        let path = self.store.session_dir().join("history.db");
+        if !path.is_file() {
+            return Ok(());
+        }
+        let events = self.store.events()?;
+        let replay = replay(
+            &events,
+            self.store.raw_lines(),
+            Some(self.store.snapshot_max_steps()),
+        )?;
+        let mut classified = Vec::new();
+        for turn in replay.turns.values() {
+            for batch in turn.batches.values() {
+                for execution in batch.executions.values() {
+                    if execution.result.is_some() {
+                        classified.push(execution.execution_id);
+                    }
+                }
+            }
+        }
+        let durable: Vec<_> = events.iter().map(|event| event.event_id).collect();
+        let store = crate::history::artifact::ArtifactStore::open(
+            &path,
+            crate::history::artifact::policy_from_session(self.store.session_dir()),
+            Arc::clone(&self.clock),
+        )
+        .map_err(|err| err.into_history(None, None))?;
+        store
+            .delete_expired_classified_orphans(self.clock.now_ms(), &classified, &durable)
+            .map_err(|err| err.into_history(None, None))?;
+        Ok(())
+    }
+
+    fn verify_artifact_references(&self) -> HistoryResult<()> {
+        let path = self.store.session_dir().join("history.db");
+        if !path.is_file() {
+            return Ok(());
+        }
+        let store = crate::history::artifact::ArtifactStore::open(
+            &path,
+            crate::history::artifact::policy_from_session(self.store.session_dir()),
+            Arc::clone(&self.clock),
+        )
+        .map_err(|err| err.into_history(None, None))?;
+        store
+            .verify_references(&self.store.events()?)
+            .map_err(|err| err.into_history(Some(self.store.current_sequence()), None))
+    }
+
+    fn rollback_unproved_journal(&self, execution_id: &ToolExecutionId) -> HistoryResult<()> {
+        let path = self
+            .store
+            .session_dir()
+            .join("journals")
+            .join(format!("write-{execution_id}.json"));
+        if !path.is_file() {
+            return Ok(());
+        }
+        crate::history::journal::rollback_write_journal(
+            self.store.session_dir(),
+            &session_workspace(self.store.session_dir()),
+            execution_id,
+        )
+        .map_err(|err| err.into_history(None, None))
+    }
+
+    fn reconcile_classified_spools(&self) -> HistoryResult<()> {
+        let events = self.store.events()?;
+        let replay = replay(
+            &events,
+            self.store.raw_lines(),
+            Some(self.store.snapshot_max_steps()),
+        )?;
+        let mut classified = Vec::new();
+        for turn in replay.turns.values() {
+            for batch in turn.batches.values() {
+                for execution in batch.executions.values() {
+                    if execution.result.is_some() {
+                        classified.push(execution.execution_id);
+                    }
+                }
+            }
+        }
+        crate::history::spool::reconcile_classified_spools(self.store.session_dir(), &classified)
+            .map_err(|err| err.into_history(None, None))
+    }
+
+    fn recover_orphan_finish(
+        &self,
+        turn_id: TurnId,
+        attempt_id: AttemptId,
+        batch_id: ToolBatchId,
+        step_id: StepId,
+        execution: &crate::history::replay::ExecutionReplay,
+    ) -> HistoryResult<Option<EventEnvelope>> {
+        let path = self.store.session_dir().join("history.db");
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let store = crate::history::artifact::ArtifactStore::open(
+            &path,
+            crate::history::artifact::policy_from_session(self.store.session_dir()),
+            Arc::clone(&self.clock),
+        )
+        .map_err(|err| err.into_history(None, None))?;
+        store
+            .reconstruct_orphan(
+                &execution.execution_id,
+                turn_id,
+                attempt_id,
+                &batch_id,
+                &step_id,
+                &execution.call_id,
+                execution.call_index,
+                &execution.tool_name,
+                execution.started_event_id,
+                self.store.current_sequence() + 1,
+                *self.store.session_id(),
+                self.clock.now_ms(),
+            )
+            .map_err(|err| err.into_history(None, None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -487,6 +686,21 @@ fn attempt_lost_notice(source: EventId) -> RecoveryNotice {
         source_event_ids: vec![source],
         message: "A provider attempt was in progress when the prior process stopped. No output from that attempt was accepted.".to_owned(),
         required_action: "Continue from durable accepted history; do not assume the lost attempt completed.".to_owned(),
+    }
+}
+
+fn tool_recovered_notice(source: EventId, tool: &str, call: &ToolCallId) -> RecoveryNotice {
+    let source_key = source.to_string();
+    RecoveryNotice {
+        notice_id: derive_recovery_notice_id("tool_result_recovered", &[source_key.as_str()]),
+        kind: RecoveryKind::ToolResultRecovered,
+        source_event_ids: vec![source],
+        message: format!(
+            "Tool {tool} for call {call} completed before the prior process stopped. Its durable artifact was recovered and supplied as the result."
+        ),
+        required_action:
+            "Use the recovered result; do not repeat the tool solely because the process stopped."
+                .to_owned(),
     }
 }
 
