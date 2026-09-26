@@ -17,6 +17,8 @@
 pub mod canonical_json;
 pub mod clock;
 pub mod config;
+#[cfg(feature = "failpoints")]
+pub(crate) mod crash_point;
 pub mod credentials;
 pub mod history;
 pub mod hooks;
@@ -29,6 +31,7 @@ pub mod setup;
 pub mod system_context;
 pub mod token;
 pub mod tools;
+pub mod turn;
 pub mod ui_contract;
 pub mod unicode;
 

@@ -644,8 +644,13 @@ Any call can instead become `Rejected`, `CancelledBeforeStart`, or `Failed`. The
 5. Calls blocked before write-lock acquisition receive a finalized error result with `execution_started=false`.
 6. Acquire validated path locks for remaining calls in provider order. For a multi-path call, sort unique platform-normalized lock keys ascending and acquire all or none.
 7. Capture any required pre-edit LSP diagnostic snapshot while the write lock is held. This is preparation for the first post stage, not another safety gate.
-8. Append and fsync `ToolExecutionStarted` records in provider order for all calls that will execute.
-9. Start admitted implementations concurrently, subject to semaphores.
+8. Wait for an admitted call to acquire its concurrency semaphore. A wait is cancellable;
+   a call cancelled before it acquires a slot receives a finalized cancellation result with
+   `execution_started=false` and no `ToolExecutionStarted` record.
+9. Immediately after slot acquisition, append and fsync that call's
+   `ToolExecutionStarted` record, then start its implementation. Start records therefore
+   reflect slot acquisition order rather than provider order; no implementation starts
+   before its own start record is durable.
 
 Preflight for later calls continues after an earlier call is rejected. A declined risk prompt does not cancel safe siblings. Application or turn cancellation stops new preflight and yields `TOOL_CANCELLED` for calls not started.
 
@@ -1189,6 +1194,8 @@ Crash after:
 
 - Accepted assistant step.
 - Each pending notification boundary (non-canonical, no recovery effect).
+  This boundary is not applicable to the headless P3 runtime and is deferred
+  to the P7 notification implementation.
 - Each `ToolExecutionStarted` fsync.
 - Tool side effect before result.
 - Post-redaction before artifact commit.

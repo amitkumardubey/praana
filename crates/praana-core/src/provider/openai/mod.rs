@@ -494,6 +494,14 @@ fn stamp(
     }
 }
 
+pub fn accounted_component_bytes(body: &Value) -> Result<[Vec<u8>; 9], &'static str> {
+    let bytes = crate::canonical_json::to_canonical_json_bytes(body)
+        .map_err(|_| "request body is not accountable")?;
+    let mut parts: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
+    parts[4] = bytes;
+    Ok(parts)
+}
+
 fn components_from_wire(body: &Value) -> Option<[Vec<u8>; 9]> {
     let object = body.as_object()?;
     if !object.contains_key("messages")

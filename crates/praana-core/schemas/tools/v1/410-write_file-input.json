@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "type": "string"
+    },
+    "create_parents": {
+      "default": false,
+      "type": "boolean"
+    },
+    "expected_sha256": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "path": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "content",
+    "path"
+  ],
+  "type": "object"
+}

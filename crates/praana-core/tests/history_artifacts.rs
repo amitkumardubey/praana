@@ -841,6 +841,8 @@ fn result_commit_stages_without_writing_events() {
         canonical_bytes: bytes,
         execution_started: true,
         status: ToolResultStatus::Error,
+        execution_id: None,
+        force_binary: false,
     });
     assert_eq!(staged.len(), 1);
 }
@@ -912,6 +914,36 @@ fn journal_conflict_does_not_overwrite_external_bytes() {
     let err = reconcile_write_journal(temp.path(), temp.path(), &execution).unwrap_err();
     assert_eq!(err.code(), "HISTORY_ROLLBACK_CONFLICT");
     assert_eq!(fs::read(&target).unwrap(), b"external");
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_commit_refuses_a_parent_replaced_by_a_symlink() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    let parent = temp.path().join("parent");
+    fs::create_dir(&parent).unwrap();
+    let target = parent.join("file.txt");
+    let execution = ToolExecutionId::from_str_canonical(&ulid("K5")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("K4")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("K6")).unwrap(),
+        &ToolCallId::from_str_canonical("call_symlink_parent").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: b"inside".to_vec(),
+        }],
+    )
+    .unwrap();
+    fs::remove_dir(&parent).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &parent).unwrap();
+
+    assert!(commit_write_journal(temp.path(), temp.path(), &execution).is_err());
+    assert!(!outside.path().join("file.txt").exists());
 }
 
 #[tokio::test]

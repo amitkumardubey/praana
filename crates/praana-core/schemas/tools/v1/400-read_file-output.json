@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "type": "string"
+    },
+    "encoding": {
+      "enum": [
+        "utf8"
+      ],
+      "type": "string"
+    },
+    "end_line": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "eof": {
+      "type": "boolean"
+    },
+    "file": {
+      "additionalProperties": false,
+      "properties": {
+        "byte_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modified_at_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "byte_count",
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "start_line": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "total_lines": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content",
+    "encoding",
+    "end_line",
+    "eof",
+    "file",
+    "start_line",
+    "total_lines"
+  ],
+  "type": "object"
+}
