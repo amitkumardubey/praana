@@ -245,6 +245,42 @@ P0
   headless turn loop. No Phase 4/6/8 tools.
 - Focused tests: `builtin_tools_phase3`, tool fault/process tests, scripted fake
   provider end-to-end.
+- Landed in `praana-core`: Phase 3 built-ins register through the P3A catalog
+  (`read_file` 400 through `shell` 1100). The headless loop admits through the
+  existing `admit` function, appends `assistant_attempt_started` before the
+  provider boundary, and publishes tool results through `ArtifactStore::publish_batch`.
+  Disabled tools drop out of the provider catalog without renumbering. Non-UTF-8
+  process output is stored as base64 `BinaryDataV1` inside the JSON tool result
+  so P3B can artifactize it; history still accepts only that JSON media type.
+  Overflow keeps draining, marks truncation, and keeps the bounded prefix.
+  Non-UTF-8 captured output sets a binary marker so History stores it as a
+  binary artifact with a non-textual preview, even when the JSON result is
+  small. Admission derives component bytes from the canonical request body
+  and ignores provider-supplied component arrays. `StepProvider::complete`
+  can return success only with a send authorization for that exact body. This
+  P3C adapter boundary verifies the body presented by the adapter; it does not
+  own the provider socket or prove transmitted bytes, and transport retry
+  within a live attempt remains an explicitly deferred packet. Recovery of a
+  crash-lost provider attempt is in P3C: it creates a fresh, fully admitted
+  attempt only while the configured total-attempt budget allows it; otherwise
+  recovery interrupts the turn with `provider_failure`.
+  Provider failure text is redacted and bounded before `assistant_attempt_failed`.
+  Canonical tool-call arguments in `assistant_step_accepted` are a redacted
+  copy; `raw_arguments` is the canonical JSON of that copy so replay equality
+  holds, while execution uses the original in-memory arguments.
+  `tool_execution_started.arguments_hash` is the hash of that redacted copy.
+  A poisoned runtime rejects further turns before another user message or
+  provider call. An uncertain side effect keeps its path lease until the task
+  is proved stopped: on a live Tokio runtime the lease waits with the aborted
+  task, and off that runtime drop blocks until the task ends. Unix atomic
+  replace creates the temp mode `0600`, writes and syncs, then applies the
+  destination mode immediately before rename. Literal nested `sh -c` / `bash -c`
+  scripts are classified as command lists; a dynamic or unparsed shell script
+  fails closed. A durable tool start is written when the call enters its
+  parallel slot, so a call still waiting on that slot finishes without a start
+  id. The Windows Job Object and direct-argv `CreateProcessW` path remain
+  compiled and were not executed on the Linux host. Extra tools are registered
+  only in crate tests, not on the public loop config.
 
 ### P4A: History Retrieval and Search
 

@@ -46,6 +46,8 @@ pub enum ToolErrorCode {
 pub struct ToolError {
     code: ToolErrorCode,
     message: String,
+    details: Option<serde_json::Value>,
+    binary: bool,
 }
 
 impl ToolError {
@@ -53,7 +55,23 @@ impl ToolError {
         Self {
             code,
             message: bound_message(&message.into()),
+            details: None,
+            binary: false,
         }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    pub fn mark_binary(mut self) -> Self {
+        self.binary = true;
+        self
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.binary
     }
 
     pub fn code(&self) -> ToolErrorCode {
@@ -62,6 +80,10 @@ impl ToolError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
     }
 }
 

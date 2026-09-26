@@ -92,11 +92,11 @@ fn attempt_key(tool_name: &str, arguments: &serde_json::Value) -> String {
 }
 
 fn error_key(tool_name: &str, intent: &ToolIntent) -> String {
-    if let Some(access) = intent.path_accesses.first() {
-        return format!("err:{}", access.normalized_absolute.display());
-    }
     if let Some(command) = &intent.command {
         return format!("err:{}", command.command);
+    }
+    if let Some(access) = intent.path_accesses.first() {
+        return format!("err:{}", access.normalized_absolute.display());
     }
     format!("err:{tool_name}")
 }

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "adapter": {
+      "type": "string"
+    },
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "counts": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "failed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "passed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skipped": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "failed",
+            "passed",
+            "skipped"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duration_ms": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "exit_code": {
+      "format": "int32",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "stderr": {
+      "type": "string"
+    },
+    "stdout": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "adapter",
+    "command",
+    "duration_ms",
+    "stderr",
+    "stdout"
+  ],
+  "type": "object"
+}

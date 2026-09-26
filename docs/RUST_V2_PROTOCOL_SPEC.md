@@ -3417,8 +3417,9 @@ earlier contract.
 - [ ] Add exact orphan-artifact reconstruction only from the full finalized
   metadata required by Section 14.2; otherwise append an uncertain result.
 - [ ] Generate one batch from each accepted tool step.
-- [ ] Run pre-hooks in call order and persist every permitted start before any
-  body invocation.
+- [ ] Run pre-hooks in call order. Persist each permitted start only after that
+  call obtains its concurrency slot and before that call body invocation; a
+  queued call cancelled before slot acquisition has no start record.
 - [ ] Execute permitted tools concurrently and allow finish events in completion
   order.
 - [ ] Reorder and hash results in call order for batch completion/provider input.

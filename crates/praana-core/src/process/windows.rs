@@ -6,8 +6,11 @@
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
+use super::argv::quote_windows_command;
 use super::env::unicode_environment_block;
 use super::{SuperviseOutput, SuperviseRequest};
 use crate::tools::error::{ToolError, ToolErrorCode};
@@ -19,14 +22,20 @@ pub async fn supervise(request: SuperviseRequest) -> Result<SuperviseOutput, Too
     let stderr_read = SharedHandle::from_raw(spawned.stderr_read);
     let stdout_limit = request.stdout_limit;
     let stderr_limit = request.stderr_limit;
-    let stdout_task = tokio::task::spawn_blocking(move || read_pipe(stdout_read, stdout_limit));
-    let stderr_task = tokio::task::spawn_blocking(move || read_pipe(stderr_read, stderr_limit));
+    let hit_limit = Arc::new(AtomicBool::new(false));
+    let stdout_hit = Arc::clone(&hit_limit);
+    let stderr_hit = Arc::clone(&hit_limit);
+    let stdout_task =
+        tokio::task::spawn_blocking(move || read_pipe(stdout_read, stdout_limit, &stdout_hit));
+    let stderr_task =
+        tokio::task::spawn_blocking(move || read_pipe(stderr_read, stderr_limit, &stderr_hit));
     let cancel = request.cancel.clone();
     let timeout = request.timeout;
     let process = SharedHandle::from_raw(spawned.process);
     let mut wait_task = spawn_wait(process);
     let mut timed_out = false;
     let mut cancelled = false;
+    let mut output_limited = false;
     let status = tokio::select! {
         biased;
         _ = cancel.cancelled() => {
@@ -39,22 +48,23 @@ pub async fn supervise(request: SuperviseRequest) -> Result<SuperviseOutput, Too
             terminate_job(&spawned, 124).await;
             None
         }
+        _ = wait_for_limit(&hit_limit) => {
+            output_limited = true;
+            terminate_job(&spawned, 1).await;
+            None
+        }
         code = &mut wait_task => code.ok().flatten(),
     };
-    if timed_out || cancelled {
+    if timed_out || cancelled || output_limited {
         // TerminateJobObject has unblocked WaitForSingleObject. Join that
         // thread before this function closes the process handle.
         let _ = wait_task.await;
     }
+    let mut stdout_task = stdout_task;
+    let mut stderr_task = stderr_task;
+    let stdout = finish_pipe(&mut stdout_task, &spawned, &mut output_limited).await;
+    let stderr = finish_pipe(&mut stderr_task, &spawned, &mut output_limited).await;
     close_handle(spawned.job);
-    let (stdout, stderr) = if timed_out || cancelled {
-        tokio::join!(join_drain(stdout_task), join_drain(stderr_task))
-    } else {
-        (
-            stdout_task.await.unwrap_or((Vec::new(), true)),
-            stderr_task.await.unwrap_or((Vec::new(), true)),
-        )
-    };
     close_handle(spawned.process);
     close_handle(spawned.thread);
     Ok(SuperviseOutput {
@@ -63,8 +73,9 @@ pub async fn supervise(request: SuperviseRequest) -> Result<SuperviseOutput, Too
         exit_code: status,
         timed_out,
         cancelled,
-        truncated: stdout.1 || stderr.1,
+        truncated: stdout.1 || stderr.1 || output_limited,
         group_id,
+        signal: None,
     })
 }
 
@@ -137,11 +148,14 @@ fn spawn_suspended(request: &SuperviseRequest) -> Result<Spawned, ToolError> {
         startup.hStdError = stderr_write;
         let mut process_info: windows_sys::Win32::System::Threading::PROCESS_INFORMATION =
             std::mem::zeroed();
-        let mut command = wide(&format!("{} /D /S /C {}", comspec(), request.command));
+        let (application, mut command) = command_line(request);
         let cwd = wide(request.cwd.as_os_str());
         let environment = unicode_environment_block(&request.env);
         let created = windows_sys::Win32::System::Threading::CreateProcessW(
-            std::ptr::null(),
+            application
+                .as_ref()
+                .map(|value| value.as_ptr())
+                .unwrap_or(std::ptr::null()),
             command.as_mut_ptr(),
             std::ptr::null(),
             std::ptr::null(),
@@ -250,14 +264,29 @@ fn spawn_wait(process: SharedHandle) -> tokio::task::JoinHandle<Option<i32>> {
     })
 }
 
-async fn join_drain(task: tokio::task::JoinHandle<(Vec<u8>, bool)>) -> (Vec<u8>, bool) {
-    match tokio::time::timeout(Duration::from_millis(1000), task).await {
-        Ok(Ok(captured)) => captured,
-        _ => (Vec::new(), true),
+async fn finish_pipe(
+    task: &mut tokio::task::JoinHandle<(Vec<u8>, bool)>,
+    spawned: &Spawned,
+    output_limited: &mut bool,
+) -> (Vec<u8>, bool) {
+    match tokio::time::timeout(Duration::from_millis(1000), &mut *task).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(_)) => (Vec::new(), true),
+        Err(_) => {
+            *output_limited = true;
+            terminate_job(spawned, 1).await;
+            match tokio::time::timeout(Duration::from_millis(1000), &mut *task).await {
+                Ok(Ok(value)) => value,
+                _ => {
+                    task.abort();
+                    (Vec::new(), true)
+                }
+            }
+        }
     }
 }
 
-fn read_pipe(handle: SharedHandle, limit: usize) -> (Vec<u8>, bool) {
+fn read_pipe(handle: SharedHandle, limit: usize, hit_limit: &AtomicBool) -> (Vec<u8>, bool) {
     let mut out = Vec::new();
     let mut truncated = false;
     let mut buf = [0u8; 8192];
@@ -281,8 +310,9 @@ fn read_pipe(handle: SharedHandle, limit: usize) -> (Vec<u8>, bool) {
             }
             let take = (read as usize).min(room);
             out.extend_from_slice(&buf[..take]);
-            if take < read as usize {
+            if take < read as usize || room == 0 {
                 truncated = true;
+                hit_limit.store(true, Ordering::SeqCst);
             }
         }
         close_handle(handle.as_raw());
@@ -302,6 +332,22 @@ fn spawn_error() -> ToolError {
     ToolError::new(
         ToolErrorCode::ToolProcessSpawnFailed,
         "process spawn failed",
+    )
+}
+
+async fn wait_for_limit(hit: &AtomicBool) {
+    while !hit.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn command_line(request: &SuperviseRequest) -> (Option<Vec<u16>>, Vec<u16>) {
+    if let Some(argv) = request.argv.as_ref().filter(|argv| !argv.is_empty()) {
+        return (Some(wide(&argv[0])), wide(&quote_windows_command(argv)));
+    }
+    (
+        None,
+        wide(&format!("{} /D /S /C {}", comspec(), request.command)),
     )
 }
 

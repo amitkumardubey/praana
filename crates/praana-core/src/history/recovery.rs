@@ -46,6 +46,20 @@ fn session_workspace(session_dir: &Path) -> std::path::PathBuf {
         .unwrap_or_else(|| session_dir.to_path_buf())
 }
 
+fn session_workspace_roots(session_dir: &Path) -> Vec<std::path::PathBuf> {
+    let cwd = session_workspace(session_dir);
+    let allowed = std::fs::read(session_dir.join("config.snapshot.json"))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| {
+            serde_json::from_str::<crate::config::EffectiveConfigV1>(text.trim_end_matches('\n'))
+                .ok()
+        })
+        .map(|config| config.tools.allowed_paths)
+        .unwrap_or_default();
+    crate::hooks::validate::workspace_roots(&cwd, &allowed)
+}
+
 pub struct SessionRecoveryEngine {
     store: EventLogStore,
     ids: MonotonicUlidGenerator,
@@ -455,9 +469,9 @@ impl SessionRecoveryEngine {
         if !path.is_file() {
             return Ok(());
         }
-        crate::history::journal::rollback_write_journal(
+        crate::history::journal::rollback_write_journal_in_roots(
             self.store.session_dir(),
-            &session_workspace(self.store.session_dir()),
+            &session_workspace_roots(self.store.session_dir()),
             execution_id,
         )
         .map_err(|err| err.into_history(None, None))

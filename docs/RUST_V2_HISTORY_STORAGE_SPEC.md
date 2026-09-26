@@ -1807,7 +1807,9 @@ after each point:
 8. Blob insert before artifact transaction commit.
 9. Artifact transaction commit.
 10. `ToolExecutionFinished` write before fsync.
-11. `ToolExecutionFinished` fsync before projection transaction.
+11. `ToolExecutionFinished` fsync before projection transaction. This is not
+   applicable to P3: no projection transaction exists before P4A, which owns
+   the corresponding crash fixture.
 12. Each derived table update.
 13. Projection checkpoint upsert before commit.
 14. Compaction event fsync before summary projection.

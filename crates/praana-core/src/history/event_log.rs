@@ -362,6 +362,8 @@ impl EventLogStore {
                 false,
             ));
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(event_crash_label("event.write_before_fsync", envelope));
         if !sync {
             self.unhealthy = true;
             return Err(HistoryError::new(
@@ -380,6 +382,8 @@ impl EventLogStore {
                 false,
             ));
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(event_crash_label("event.after_fsync", envelope));
         self.replayer = candidate;
         self.current_prefix_hash =
             calculate_prefix_hash(&self.current_prefix_hash, envelope.sequence, &line);
@@ -1180,6 +1184,20 @@ fn snapshot_digest(session_dir: &Path) -> Option<String> {
     let bytes = fs::read(&path).ok()?;
     let canonical = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
     Some(calculate_sha256(canonical).to_string())
+}
+
+#[cfg(feature = "failpoints")]
+fn event_crash_label(prefix: &str, envelope: &EventEnvelope) -> String {
+    let kind = serde_json::to_value(&envelope.event)
+        .ok()
+        .and_then(|event| {
+            event
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("{prefix}:{kind}:{}", envelope.sequence)
 }
 
 fn encode_base64(bytes: &[u8]) -> String {

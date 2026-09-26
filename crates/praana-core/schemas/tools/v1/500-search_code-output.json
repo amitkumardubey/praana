@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "matches": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "before": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "column": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "line": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "after",
+          "before",
+          "column",
+          "line",
+          "path",
+          "text"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "scanned_files": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "matches",
+    "scanned_files",
+    "truncated"
+  ],
+  "type": "object"
+}
