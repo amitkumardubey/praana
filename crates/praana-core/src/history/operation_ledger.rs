@@ -181,7 +181,7 @@ fn insecure_permissions(detail: &str) -> LedgerError {
     LedgerError::Open(format!("HISTORY_INSECURE_PERMISSIONS: {detail}"))
 }
 
-fn reject_symlink(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn reject_symlink(path: &Path) -> Result<(), LedgerError> {
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
             return Err(insecure_permissions(&format!(
@@ -194,20 +194,20 @@ fn reject_symlink(path: &Path) -> Result<(), LedgerError> {
 }
 
 #[cfg(unix)]
-fn apply_private_umask() {
+pub(crate) fn apply_private_umask() {
     unsafe {
         libc::umask(0o077);
     }
 }
 
 #[cfg(not(unix))]
-fn apply_private_umask() {}
+pub(crate) fn apply_private_umask() {}
 
 /// Verify or tighten an existing path to the exact private mode. Never widens
 /// a mode. On non-Unix platforms private ACLs cannot be established here, so
 /// creation fails closed with `HISTORY_INSECURE_PERMISSIONS`.
 #[cfg(unix)]
-fn establish_private_mode(path: &Path, mode: u32) -> Result<(), LedgerError> {
+pub(crate) fn establish_private_mode(path: &Path, mode: u32) -> Result<(), LedgerError> {
     use std::os::unix::fs::PermissionsExt;
     let actual = std::fs::symlink_metadata(path)
         .map_err(|_| insecure_permissions(&format!("stat {}", path.display())))?
@@ -242,25 +242,25 @@ fn establish_private_mode(path: &Path, mode: u32) -> Result<(), LedgerError> {
 }
 
 #[cfg(not(unix))]
-fn establish_private_mode(path: &Path, _mode: u32) -> Result<(), LedgerError> {
+pub(crate) fn establish_private_mode(path: &Path, _mode: u32) -> Result<(), LedgerError> {
     Err(insecure_permissions(&format!(
         "private ACL unavailable for {}",
         path.display()
     )))
 }
 
-fn apply_private_file_permissions(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn apply_private_file_permissions(path: &Path) -> Result<(), LedgerError> {
     establish_private_mode(path, 0o600)
 }
 
-fn apply_private_dir_permissions(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn apply_private_dir_permissions(path: &Path) -> Result<(), LedgerError> {
     establish_private_mode(path, 0o700)
 }
 
 /// Pre-create a database file with no-follow semantics so a symlinked path
 /// can never be opened as the ledger. Existing regular files are reused.
 #[cfg(unix)]
-fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .write(true)
@@ -274,7 +274,7 @@ fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
 }
 
 #[cfg(not(unix))]
-fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
     if !path.exists() {
         std::fs::write(path, [])
             .map_err(|e| LedgerError::Open(format!("create {}: {e}", path.display())))?;
@@ -284,7 +284,7 @@ fn create_db_file_no_follow(path: &Path) -> Result<(), LedgerError> {
 
 /// chmod WAL/SHM sidecars when present. Creation mode is governed by the
 /// process umask (0077 on Unix); this covers sidecars that predate us.
-fn chmod_wal_shm(path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn chmod_wal_shm(path: &Path) -> Result<(), LedgerError> {
     let stem = path.to_string_lossy().into_owned();
     for suffix in ["-wal", "-shm"] {
         let sidecar = Path::new(&format!("{stem}{suffix}")).to_path_buf();
@@ -346,7 +346,7 @@ fn open_connection(path: &Path, application_id: i32) -> Result<Connection, Ledge
     Ok(conn)
 }
 
-fn apply_pragmas(conn: &Connection, path: &Path) -> Result<(), LedgerError> {
+pub(crate) fn apply_pragmas(conn: &Connection, path: &Path) -> Result<(), LedgerError> {
     let fail = |what: &str| LedgerError::Open(format!("HISTORY_SQLITE_PRAGMA_FAILED {what}"));
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;

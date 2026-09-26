@@ -309,6 +309,16 @@ impl EventLogStore {
     }
 
     pub fn append_event(&mut self, envelope: &EventEnvelope) -> HistoryResult<()> {
+        self.append_event_inner(envelope, true)
+    }
+
+    /// Test and crash-injection seam: the line is written and flushed, then
+    /// durability fails before fsync. The in-memory prefix is not advanced.
+    pub fn crash_after_event_write(&mut self, envelope: &EventEnvelope) -> HistoryResult<()> {
+        self.append_event_inner(envelope, false)
+    }
+
+    fn append_event_inner(&mut self, envelope: &EventEnvelope, sync: bool) -> HistoryResult<()> {
         if self.unhealthy {
             return Err(HistoryError::new(
                 "E_EVENT_DURABILITY_UNCERTAIN",
@@ -342,9 +352,26 @@ impl EventLogStore {
             .file
             .write_all(&line)
             .and_then(|_| self.file.flush())
-            .and_then(|_| sync_file(&self.file))
             .is_err()
         {
+            self.unhealthy = true;
+            return Err(HistoryError::new(
+                "E_EVENT_DURABILITY_UNCERTAIN",
+                Some(envelope.sequence),
+                None,
+                false,
+            ));
+        }
+        if !sync {
+            self.unhealthy = true;
+            return Err(HistoryError::new(
+                "E_EVENT_DURABILITY_UNCERTAIN",
+                Some(envelope.sequence),
+                None,
+                false,
+            ));
+        }
+        if sync_file(&self.file).is_err() {
             self.unhealthy = true;
             return Err(HistoryError::new(
                 "E_EVENT_DURABILITY_UNCERTAIN",
@@ -389,6 +416,11 @@ impl EventLogStore {
 
     pub fn is_unhealthy(&self) -> bool {
         self.unhealthy
+    }
+
+    /// A dangling durable artifact opens the session read-only. Further appends fail.
+    pub fn mark_read_only(&mut self) {
+        self.unhealthy = true;
     }
 
     pub fn raw_lines(&self) -> &[String] {
