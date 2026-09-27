@@ -173,6 +173,31 @@ fn structured_assignment_key_redacts_whole_non_exempt_value() {
 }
 
 #[test]
+fn structured_argument_replacements_mark_every_changed_leaf() {
+    let input = json!({
+        "command": format!("echo {} {}", aws(), github()),
+        "nested": [
+            {"password": "secretvalue"},
+            {"token": "plain", "note": "unchanged"}
+        ],
+        "number": 42
+    });
+    let redacted = redact_json_v1(&input).unwrap();
+    assert_eq!(redacted.summary.replacement_count, 3);
+    assert_eq!(
+        redacted.value["command"],
+        "echo [REDACTED:aws-access-key] [REDACTED:github-token]"
+    );
+    assert_eq!(
+        redacted.value["nested"][0]["password"],
+        "[REDACTED:key-assignment]"
+    );
+    assert_eq!(redacted.value["nested"][1], input["nested"][1]);
+    assert_eq!(redacted.value["number"], input["number"]);
+    assert_no_canary(&redacted.value.to_string());
+}
+
+#[test]
 fn structured_depth_failure_is_fail_closed() {
     let mut value = json!("leaf");
     for _ in 0..70 {

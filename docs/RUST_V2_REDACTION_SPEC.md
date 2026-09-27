@@ -163,6 +163,21 @@ Redaction failure blocks persistence/provider continuation for that tool result;
 it never stores unredacted bytes as fallback. A false positive is recoverable
 only from the original workspace/external source, not History.
 
+### P3C recovery invariant (Redaction-owner approved)
+
+For `praana-redaction-v1` structured tool-call arguments, every changed string
+leaf MUST gain a new `[REDACTED:<kind>]` replacement marker (a literal marker
+already present in the input is not proof). Keys, non-string leaves, array
+length and ordering MUST NOT change. At assistant-step acceptance the loop
+MUST verify this per leaf and refuse persistence if a changed leaf lacks a
+marker. On restart, an unstarted call MAY be replayed only when **every**
+durable argument leaf lacks a marker: this proves its executable arguments
+were not transformed. If any leaf contains a marker (including one present
+literally in the original input), recovery MUST cancel that call without
+running its body. A future redaction version MUST preserve this proof or
+replace it with explicit durable mutation metadata before enabling replay of
+unstarted calls. The acceptance guard and fixtures implement this invariant.
+
 ## 8. Version and Metadata
 
 Changing a pattern, precedence, exemption, replacement, traversal, or streaming

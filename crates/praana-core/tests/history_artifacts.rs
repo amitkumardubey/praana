@@ -847,6 +847,96 @@ fn result_commit_stages_without_writing_events() {
     assert_eq!(staged.len(), 1);
 }
 
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn journal_child_commits_two_files() {
+    let Ok(root) = std::env::var("PRAANA_JOURNAL_CHILD_ROOT") else {
+        return;
+    };
+    praana_core::arm_test_failpoint(&std::env::var("PRAANA_JOURNAL_CHILD_POINT").unwrap()).unwrap();
+    let root = Path::new(&root);
+    let execution = ToolExecutionId::from_str_canonical(&ulid("J9")).unwrap();
+    prepare_write_journal(
+        root,
+        root,
+        &SessionId::from_str_canonical(&ulid("J8")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("JA")).unwrap(),
+        &ToolCallId::from_str_canonical("call_two_file_crash").unwrap(),
+        &[
+            JournalWrite {
+                ordinal: 0,
+                target_path: root.join("a.txt"),
+                new_bytes: b"after-a".to_vec(),
+            },
+            JournalWrite {
+                ordinal: 1,
+                target_path: root.join("b.txt"),
+                new_bytes: b"after-b".to_vec(),
+            },
+        ],
+    )
+    .unwrap();
+    commit_write_journal(root, root, &execution).unwrap();
+    panic!("journal crash point was not hit");
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn two_file_journal_crashes_reconcile_or_preserve_conflicts() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let points = [
+        ("journal.after_prepare_durable", false),
+        ("journal.after_replacement:0", true),
+        ("journal.after_entry_durable:0", true),
+        ("journal.after_replacement:1", true),
+        ("journal.after_entry_durable:1", true),
+        ("journal.after_commit_durable", true),
+    ];
+    for (point, first_replaced) in points {
+        for conflict in [false, true] {
+            if conflict && !first_replaced {
+                continue;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let a = root.path().join("a.txt");
+            let b = root.path().join("b.txt");
+            fs::write(&a, b"before-a").unwrap();
+            fs::write(&b, b"before-b").unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("journal_child_commits_two_files")
+                .env("PRAANA_JOURNAL_CHILD_ROOT", root.path())
+                .env("PRAANA_JOURNAL_CHILD_POINT", point)
+                .status()
+                .unwrap();
+            assert_eq!(status.signal(), Some(6), "{point}: expected SIGABRT");
+            let execution = ToolExecutionId::from_str_canonical(&ulid("J9")).unwrap();
+            let journal = root.path().join(format!("journals/write-{execution}.json"));
+            assert!(journal.is_file(), "{point}: no durable journal");
+            if conflict {
+                fs::write(&a, b"external-a").unwrap();
+                for _ in 0..2 {
+                    let error =
+                        reconcile_write_journal(root.path(), root.path(), &execution).unwrap_err();
+                    assert_eq!(error.code(), "HISTORY_ROLLBACK_CONFLICT", "{point}");
+                    assert_eq!(fs::read(&a).unwrap(), b"external-a");
+                    assert!(journal.is_file(), "{point}: lost conflict evidence");
+                }
+            } else {
+                for _ in 0..2 {
+                    reconcile_write_journal(root.path(), root.path(), &execution).unwrap();
+                    assert_eq!(fs::read(&a).unwrap(), b"before-a", "{point}");
+                    assert_eq!(fs::read(&b).unwrap(), b"before-b", "{point}");
+                }
+                retire_write_journal(root.path(), &execution).unwrap();
+                assert!(!journal.exists());
+            }
+        }
+    }
+}
+
 #[test]
 fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
     let temp = tempfile::TempDir::new().unwrap();
@@ -887,6 +977,36 @@ fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
         .join("journals")
         .join(format!("write-{execution}.json"))
         .exists());
+}
+
+#[test]
+fn journal_streams_existing_targets_larger_than_tool_read_limit() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let target = temp.path().join("large.txt");
+    let before = vec![b'a'; 16 * 1024 * 1024 + 1];
+    fs::write(&target, &before).unwrap();
+    let session = SessionId::from_str_canonical(&ulid("J5")).unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("J6")).unwrap();
+    let batch = ToolBatchId::from_str_canonical(&ulid("J7")).unwrap();
+    let call = ToolCallId::from_str_canonical("call_large_journal").unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &session,
+        &execution,
+        &batch,
+        &call,
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: b"after".to_vec(),
+        }],
+    )
+    .unwrap();
+    commit_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"after");
+    rollback_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), before);
 }
 
 #[test]

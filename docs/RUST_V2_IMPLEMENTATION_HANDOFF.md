@@ -243,8 +243,8 @@ P0
 - Depends: P2B, P3A, P3B.
 - Output: file/edit/search/test/git-read/shell tools and provider-independent
   headless turn loop. No Phase 4/6/8 tools.
-- Focused tests: `builtin_tools_phase3`, tool fault/process tests, scripted fake
-  provider end-to-end.
+- Focused tests: `builtin_tools_phase3`, `crash_recovery`, tool fault/process
+  tests, scripted fake provider end-to-end.
 - Landed in `praana-core`: Phase 3 built-ins register through the P3A catalog
   (`read_file` 400 through `shell` 1100). The headless loop admits through the
   existing `admit` function, appends `assistant_attempt_started` before the
@@ -281,6 +281,30 @@ P0
   id. The Windows Job Object and direct-argv `CreateProcessW` path remain
   compiled and were not executed on the Linux host. Extra tools are registered
   only in crate tests, not on the public loop config.
+
+  The process-abort hooks are compiled only by the test-only `failpoints`
+  feature. Release compilation with that feature is a hard error. In debug
+  builds the hooks are inert until the dedicated integration-test executable
+  calls the hidden test arm; environment variables alone cannot arm them, and
+  production entrypoints do not call that arm. Packaging therefore uses the
+  normal no-feature build, while `crash_recovery` explicitly opts into the
+  feature and arm. The focused matrix enumerates all 25 event fsyncs of its
+  multi-cycle P3 scenario; recovery of a started read-only call with an
+  unstarted peer completes that peer in the original batch without replaying
+  finished calls. A two-file journal matrix aborts after prepare, replacement,
+  entry durability, and commit, checking rollback and persistent conflicts.
+  Windows write/edit/batch built-ins are omitted from the provider catalog
+  and reject direct invocation under an approved temporary Built-in Catalog
+  exception. Handle-anchored, reparse-safe Windows write/edit/batch operations
+  are required before P7 and before any editor-client release (tracking issue
+  `chronosiq/praana#402`). Durable batch completion orders references by provider
+  ordinal even when the caller supplies a permuted request vector. Linux runs
+  the event matrix locally; CI also runs it on macOS and Windows (including
+  fast-fail-versus-panic), plus Unix journal tests. CI results are required
+  before claiming platform verification. The Redaction owner approved the
+  version-scoped per-leaf invariant: recovery executes an unstarted call only
+  when every durable argument leaf lacks a marker; otherwise it cancels without
+  running the body. Acceptance fails closed on an unmarked argument mutation.
 
 ### P4A: History Retrieval and Search
 

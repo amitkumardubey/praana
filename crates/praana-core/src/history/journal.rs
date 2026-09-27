@@ -2,9 +2,11 @@
 //! A target that no longer matches the recorded identity is left untouched.
 
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use sha2::{Digest, Sha256};
 
 use super::error::{io_err, map_ledger, ArtifactError};
 use super::operation_ledger::{
@@ -15,6 +17,29 @@ use crate::protocol::id::{SessionId, Sha256Digest, ToolBatchId, ToolCallId, Tool
 use serde::{Deserialize, Serialize};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(1);
+
+// Explicit test-only interleaving for a rollback conflict inside a live batch.
+// Production builds contain neither this hook nor its call site.
+#[cfg(feature = "failpoints")]
+type TestEntryHook = (PathBuf, Box<dyn FnOnce() + Send>);
+#[cfg(feature = "failpoints")]
+static TEST_ENTRY_HOOK: std::sync::Mutex<Option<TestEntryHook>> = std::sync::Mutex::new(None);
+
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub fn set_test_after_first_entry_hook(target: PathBuf, hook: impl FnOnce() + Send + 'static) {
+    *TEST_ENTRY_HOOK.lock().expect("test hook lock poisoned") = Some((target, Box::new(hook)));
+}
+
+#[cfg(feature = "failpoints")]
+fn run_test_after_first_entry_hook(target: &Path) {
+    let mut slot = TEST_ENTRY_HOOK.lock().expect("test hook lock poisoned");
+    if slot.as_ref().is_some_and(|(armed, _)| armed == target) {
+        let (_, hook) = slot.take().expect("armed test hook");
+        drop(slot);
+        hook();
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct JournalWrite {
@@ -176,6 +201,8 @@ pub fn prepare_write_journal_in_roots(
     };
     store_journal(session_root, &journal)?;
     fsync_dir(&journals).map_err(map_ledger)?;
+    #[cfg(feature = "failpoints")]
+    crate::crash_point::hit("journal.after_prepare_durable");
     Ok(())
 }
 
@@ -214,13 +241,24 @@ pub fn commit_write_journal_in_roots(
             execution_id,
             journal.entries[index].ordinal,
         )?;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(format!("journal.after_replacement:{index}"));
         let identity = capture_identity(&target)?;
         journal.entries[index].replacement_identity = Some(identity);
         journal.next_entry += 1;
         store_journal(session_root, &journal)?;
+        #[cfg(feature = "failpoints")]
+        {
+            crate::crash_point::hit(format!("journal.after_entry_durable:{index}"));
+            if index == 0 {
+                run_test_after_first_entry_hook(&target);
+            }
+        }
     }
     journal.phase = WriteJournalPhase::Committed;
     store_journal(session_root, &journal)?;
+    #[cfg(feature = "failpoints")]
+    crate::crash_point::hit("journal.after_commit_durable");
     Ok(())
 }
 
@@ -264,13 +302,16 @@ pub fn retire_write_journal(
     if !json.exists() && !payload.exists() {
         return Ok(());
     }
-    if json.exists() {
-        reject_symlink(&json).map_err(map_ledger)?;
-        fs::remove_file(&json).map_err(|err| io_err(err.to_string()))?;
-    }
+    // Keep the manifest until last: if payload retirement fails or the
+    // process aborts, recovery must still see an unresolved journal rather
+    // than silently accepting an unfinished replacement as journal-free.
     if payload.exists() {
         reject_symlink(&payload).map_err(map_ledger)?;
         fs::remove_dir_all(&payload).map_err(|err| io_err(err.to_string()))?;
+    }
+    if json.exists() {
+        reject_symlink(&json).map_err(map_ledger)?;
+        fs::remove_file(&json).map_err(|err| io_err(err.to_string()))?;
     }
     fsync_dir(&journals_dir(session_root)).map_err(map_ledger)?;
     Ok(())
@@ -466,24 +507,46 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
 }
 
 fn copy_and_hash(src: &Path, dst: &Path) -> Result<Sha256Digest, ArtifactError> {
-    let bytes = crate::tools::builtin::confine::read_regular(src, 16 * 1024 * 1024)
+    let mut input = crate::tools::builtin::confine::open_regular(src)
         .map_err(|error| io_err(error.to_string()))?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(dst)
         .map_err(|err| io_err(err.to_string()))?;
-    output
-        .write_all(&bytes)
-        .map_err(|err| io_err(err.to_string()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|err| io_err(err.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        output
+            .write_all(&buffer[..read])
+            .map_err(|err| io_err(err.to_string()))?;
+    }
     output.sync_all().map_err(|err| io_err(err.to_string()))?;
-    Ok(Sha256Digest::digest_bytes(&bytes))
+    Ok(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
 fn hash_file(path: &Path) -> Result<Sha256Digest, ArtifactError> {
-    let bytes = crate::tools::builtin::confine::read_regular(path, 16 * 1024 * 1024)
+    let mut input = crate::tools::builtin::confine::open_regular(path)
         .map_err(|error| io_err(error.to_string()))?;
-    Ok(Sha256Digest::digest_bytes(&bytes))
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = input
+            .read(&mut buffer)
+            .map_err(|err| io_err(err.to_string()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
 fn read_rel(

@@ -129,6 +129,24 @@ impl SessionRecoveryEngine {
             }
             return Err(err);
         }
+        // A live batch may have durably classified a rollback conflict as
+        // uncertain. Its unresolved journal must not become a writable session
+        // merely because the process has restarted.
+        if self.store.events()?.iter().any(|event| {
+            matches!(&event.event, CanonicalEvent::ToolExecutionFinished(finished)
+                if finished.result.status == ToolResultStatus::Uncertain
+                    && self.store.session_dir().join("journals")
+                        .join(format!("write-{}.json", finished.execution_id))
+                        .symlink_metadata().is_ok())
+        }) {
+            self.store.mark_read_only();
+            return Err(HistoryError::new(
+                "HISTORY_ROLLBACK_CONFLICT",
+                None,
+                None,
+                false,
+            ));
+        }
         let mut appended = 0usize;
         loop {
             let events = self.store.events()?;
@@ -173,6 +191,8 @@ impl SessionRecoveryEngine {
                     }),
                 )?;
                 self.store.append_event(&event)?;
+                #[cfg(feature = "failpoints")]
+                crate::crash_point::hit("recovery.after_append:attempt_lost");
                 self.push_notice(attempt_lost_notice(attempt.started_event_id));
                 appended += 1;
                 continue;
@@ -200,6 +220,8 @@ impl SessionRecoveryEngine {
                             let call_id = execution.call_id.clone();
                             let execution_id = execution.execution_id;
                             self.store.append_event(&event)?;
+                            #[cfg(feature = "failpoints")]
+                            crate::crash_point::hit("recovery.after_append:tool_recovered");
                             crate::history::journal::retire_write_journal(
                                 self.store.session_dir(),
                                 &execution_id,
@@ -234,6 +256,8 @@ impl SessionRecoveryEngine {
                             "The process stopped after this tool was marked started. Its side effects are unknown. Do not repeat the mutation until state has been inspected.",
                         )?;
                         self.store.append_event(&event)?;
+                        #[cfg(feature = "failpoints")]
+                        crate::crash_point::hit("recovery.after_append:tool_uncertain");
                         if rolled_back {
                             crate::history::journal::retire_write_journal(
                                 self.store.session_dir(),
@@ -280,6 +304,8 @@ impl SessionRecoveryEngine {
                             "Skipped because another call in the parallel batch has uncertain side effects.",
                         )?;
                         self.store.append_event(&event)?;
+                        #[cfg(feature = "failpoints")]
+                        crate::crash_point::hit("recovery.after_append:tool_skipped");
                     }
                 }
                 appended += 1;
@@ -325,6 +351,8 @@ impl SessionRecoveryEngine {
                     }),
                 )?;
                 self.store.append_event(&event)?;
+                #[cfg(feature = "failpoints")]
+                crate::crash_point::hit("recovery.after_append:batch_completed");
                 appended += 1;
                 continue;
             }
@@ -373,6 +401,8 @@ impl SessionRecoveryEngine {
                     }),
                 )?;
                 self.store.append_event(&event)?;
+                #[cfg(feature = "failpoints")]
+                crate::crash_point::hit("recovery.after_append:turn_committed");
                 appended += 1;
                 continue;
             }
@@ -400,6 +430,8 @@ impl SessionRecoveryEngine {
                     }),
                 )?;
                 self.store.append_event(&event)?;
+                #[cfg(feature = "failpoints")]
+                crate::crash_point::hit("recovery.after_append:turn_started");
                 appended += 1;
                 continue;
             }

@@ -26,6 +26,18 @@ const LINE_LIMIT: usize = 1024 * 1024;
 const TEXT_LIMIT: usize = 4 * 1024 * 1024;
 const EDIT_LIMIT: usize = 1024 * 1024;
 
+// The Windows fallback cannot pin parent directories against junction swaps.
+// Do not offer mutating built-ins until handle-anchored operations exist.
+fn safe_writes_available() -> Result<(), ToolError> {
+    #[cfg(windows)]
+    return Err(ToolError::new(
+        ToolErrorCode::ToolUnsupported,
+        "workspace writes require handle-anchored Windows confinement",
+    ));
+    #[cfg(not(windows))]
+    Ok(())
+}
+
 pub struct ReadFileTool;
 pub struct WriteFileTool;
 pub struct EditFileTool;
@@ -288,6 +300,7 @@ impl TypedTool for WriteFileTool {
         input: &WriteFileInput,
         _: &ToolInspectContext,
     ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
         check_path(&input.path)?;
         check_text(
             &input.content,
@@ -314,6 +327,7 @@ impl TypedTool for WriteFileTool {
         input: WriteFileInput,
         _: CancellationToken,
     ) -> Result<WriteFileOutput, ToolError> {
+        safe_writes_available()?;
         let path = resolved(&context, &input.path)?.to_path_buf();
         if input.create_parents {
             if let Some(parent) = path.parent() {
@@ -335,6 +349,7 @@ pub fn write_one(
     bytes: &[u8],
     expected: Option<&Sha256Digest>,
 ) -> Result<WriteFileOutput, ToolError> {
+    safe_writes_available()?;
     let existing = existing_bytes(path)?;
     if existing.is_none() && expected.is_some() {
         return Err(validation("expected hash conflicts with a missing file"));
@@ -376,6 +391,7 @@ impl TypedTool for EditFileTool {
         input: &EditFileInput,
         _: &ToolInspectContext,
     ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
         check_path(&input.path)?;
         if input.old_text.is_empty() || input.old_text.len() > EDIT_LIMIT {
             return Err(validation("old_text must be 1..=1 MiB"));
@@ -407,6 +423,7 @@ impl TypedTool for EditFileTool {
         input: EditFileInput,
         _: CancellationToken,
     ) -> Result<EditFileOutput, ToolError> {
+        safe_writes_available()?;
         let path = resolved(&context, &input.path)?.to_path_buf();
         let before_bytes = read_bytes(&path)?;
         let before = digest(&before_bytes);
@@ -455,6 +472,7 @@ impl TypedTool for BatchWriteTool {
         input: &BatchWriteInput,
         _: &ToolInspectContext,
     ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
         let total: usize = input.writes.iter().map(|write| write.content.len()).sum();
         batch_bounds(input.writes.len(), total)?;
         let mut seen = std::collections::BTreeSet::new();
@@ -493,6 +511,7 @@ impl TypedTool for BatchWriteTool {
         input: BatchWriteInput,
         _: CancellationToken,
     ) -> Result<BatchMutationOutput, ToolError> {
+        safe_writes_available()?;
         let mut prepared = Vec::new();
         for write in input.writes {
             let path = resolved(&context, &write.path)?.to_path_buf();
@@ -569,6 +588,7 @@ impl TypedTool for BatchEditTool {
         input: &BatchEditInput,
         _: &ToolInspectContext,
     ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
         let total: usize = input
             .edits
             .iter()
@@ -615,6 +635,7 @@ impl TypedTool for BatchEditTool {
         input: BatchEditInput,
         _: CancellationToken,
     ) -> Result<BatchMutationOutput, ToolError> {
+        safe_writes_available()?;
         let mut images: Vec<(String, PathBuf, Vec<u8>, Vec<u8>)> = Vec::new();
         for edit in input.edits {
             let path = resolved(&context, &edit.path)?.to_path_buf();
@@ -664,6 +685,7 @@ fn journal_replace(
     context: &ToolExecutionContext,
     writes: &[JournalWrite],
 ) -> Result<(), ToolError> {
+    safe_writes_available()?;
     let map_err = |_| ToolError::new(ToolErrorCode::ToolIoFailed, "journal failed");
     prepare_write_journal_in_roots(
         &context.session_dir,
@@ -675,23 +697,30 @@ fn journal_replace(
         writes,
     )
     .map_err(map_err)?;
-    if let Err(error) = commit_write_journal_in_roots(
+    if commit_write_journal_in_roots(
         &context.session_dir,
         &context.workspace_roots,
         &context.execution_id,
-    ) {
-        let _ = rollback_write_journal_in_roots(
+    )
+    .is_err()
+    {
+        // Do not destroy the before-image on rollback conflict (or on any
+        // unproved rollback failure). Recovery must retain the journal for
+        // inspection and the runtime must stop accepting new mutations.
+        rollback_write_journal_in_roots(
             &context.session_dir,
             &context.workspace_roots,
             &context.execution_id,
-        );
-        let _ = retire_write_journal(&context.session_dir, &context.execution_id);
-        let _ = error;
+        )
+        .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
+        retire_write_journal(&context.session_dir, &context.execution_id)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
         return Err(ToolError::new(
             ToolErrorCode::ToolIoFailed,
-            "journal commit failed",
+            "journal commit failed (rollback proved)",
         ));
     }
-    let _ = retire_write_journal(&context.session_dir, &context.execution_id);
+    retire_write_journal(&context.session_dir, &context.execution_id)
+        .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
     Ok(())
 }

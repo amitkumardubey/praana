@@ -415,7 +415,19 @@ impl HeadlessLoop {
             }
             let open = self.open_turn()?;
             if open.tool_batch_open {
-                return Err(TurnError::failed("tool batch is incomplete"));
+                // Recovery has classified all started calls. Finish only the
+                // unstarted safe peers in the original batch, then publish a
+                // completion referencing every durable result in call order.
+                match self.resume_incomplete_tool_batch(&open).await? {
+                    Control::Continue => continue,
+                    Control::Done(report) => return Ok(report),
+                }
+            }
+            if let Some(control) = self.resume_unstarted_tool_step(&open).await? {
+                match control {
+                    Control::Continue => continue,
+                    Control::Done(report) => return Ok(report),
+                }
             }
             if matches!(
                 open.last_finish,
@@ -433,11 +445,180 @@ impl HeadlessLoop {
         }
     }
 
+    async fn resume_incomplete_tool_batch(
+        &mut self,
+        open: &OpenTurn,
+    ) -> Result<Control, TurnError> {
+        let replay = self.replay()?;
+        let index = replay
+            .turn_index(open.id)
+            .ok_or_else(|| TurnError::failed("turn index missing"))?;
+        let turn = replay
+            .turns
+            .get(&index)
+            .ok_or_else(|| TurnError::failed("turn missing"))?;
+        let batch = turn
+            .batches
+            .values()
+            .find(|batch| batch.completed.is_none())
+            .ok_or_else(|| TurnError::failed("incomplete batch missing"))?;
+        if batch
+            .executions
+            .values()
+            .any(|execution| execution.result.is_none())
+        {
+            return Err(TurnError::failed(
+                "started call was not classified by recovery",
+            ));
+        }
+        let calls: Vec<_> = batch
+            .calls
+            .iter()
+            .map(|call| DraftCall {
+                call_id: call.call_id.to_string(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            })
+            .collect();
+        let cancel = if batch.calls.iter().any(|call| {
+            !batch.executions.contains_key(&call.call_id)
+                && (call.raw_arguments.contains("[REDACTED:")
+                    || serde_json::to_string(&call.arguments)
+                        .map(|value| value.contains("[REDACTED:"))
+                        .unwrap_or(true))
+        }) {
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            cancelled
+        } else {
+            self.cancel.clone()
+        };
+        self.run_tool_batch_with_cancel_in(
+            open.id,
+            batch.attempt_id,
+            batch.step_id,
+            &calls,
+            cancel,
+            Some(batch.id),
+        )
+        .await
+    }
+
+    async fn resume_unstarted_tool_step(
+        &mut self,
+        open: &OpenTurn,
+    ) -> Result<Option<Control>, TurnError> {
+        let replay = self.replay()?;
+        let index = replay
+            .turn_index(open.id)
+            .ok_or_else(|| TurnError::failed("turn index missing"))?;
+        let turn = replay
+            .turns
+            .get(&index)
+            .ok_or_else(|| TurnError::failed("turn missing"))?;
+        let Some(step) = turn.steps.values().next_back() else {
+            return Ok(None);
+        };
+        if step.message.finish_reason != FinishReason::ToolUse
+            || turn.batches.contains_key(&step.purpose.step_id)
+        {
+            return Ok(None);
+        }
+        let mut calls = Vec::new();
+        let mut has_redacted_arguments = false;
+        for block in &step.message.blocks {
+            let AssistantBlock::ToolCall(call) = block else {
+                continue;
+            };
+            if call.raw_arguments.contains("[REDACTED:")
+                || serde_json::to_string(&call.arguments)
+                    .map(|value| value.contains("[REDACTED:"))
+                    .unwrap_or(true)
+            {
+                has_redacted_arguments = true;
+            }
+            calls.push(DraftCall {
+                call_id: call.call_id.to_string(),
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            });
+        }
+        if calls.is_empty() {
+            return Ok(None);
+        }
+        if has_redacted_arguments {
+            // Redaction is intentionally a conservative recovery boundary: the
+            // persisted call no longer proves the model's original arguments.
+            // A cancelled durable batch gives the next provider attempt an
+            // explicit result without ever invoking a tool body.
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            return Ok(Some(
+                self.run_tool_batch_with_cancel(
+                    open.id,
+                    step.attempt_id,
+                    step.purpose.step_id,
+                    &calls,
+                    cancelled,
+                )
+                .await?,
+            ));
+        }
+        Ok(Some(
+            self.run_tool_batch(open.id, step.attempt_id, step.purpose.step_id, &calls)
+                .await?,
+        ))
+    }
+
     async fn run_step(
         &mut self,
         provider: &dyn StepProvider,
         open: &OpenTurn,
     ) -> Result<Control, TurnError> {
+        let replay = self.replay()?;
+        let prior_attempts: Vec<_> = replay
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.turn_id == Some(open.id)
+                    && matches!(
+                        &attempt.purpose,
+                        ProviderAttemptPurpose::AssistantStep(purpose)
+                            if purpose.step_index == open.step_index
+                    )
+            })
+            .collect();
+        if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
+            return Ok(Control::Done(
+                self.interrupt(
+                    InterruptionReason::ProviderFailure,
+                    prior_attempts
+                        .iter()
+                        .max_by_key(|attempt| attempt.attempt_number)
+                        .map(|attempt| attempt.id),
+                )?,
+            ));
+        }
+        let attempt_number = prior_attempts
+            .iter()
+            .map(|attempt| attempt.attempt_number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let max_prior = prior_attempts
+            .iter()
+            .max_by_key(|attempt| attempt.attempt_number);
+        let retry_of = max_prior.map(|attempt| attempt.id);
+        let step_id: StepId =
+            match max_prior
+                .map(|attempt| &attempt.purpose)
+                .map(|purpose| match purpose {
+                    ProviderAttemptPurpose::AssistantStep(purpose) => purpose.step_id,
+                    _ => unreachable!("turn retries only assistant steps"),
+                }) {
+                Some(step_id) => step_id,
+                None => self.fresh()?,
+            };
         let prepared = provider.prepare(open.step_index)?;
         if self.cancel.is_cancelled() {
             return Ok(Control::Done(
@@ -455,7 +636,6 @@ impl HeadlessLoop {
                 self.interrupt(InterruptionReason::UserAbort, None)?,
             ));
         }
-        let step_id: StepId = self.fresh()?;
         let attempt_id: AttemptId = self.fresh()?;
         let purpose = AssistantStepPurpose {
             step_id,
@@ -471,19 +651,19 @@ impl HeadlessLoop {
             Some(attempt_id),
             CanonicalEvent::AssistantAttemptStarted(AssistantAttemptStarted {
                 purpose: ProviderAttemptPurpose::AssistantStep(purpose.clone()),
-                attempt_number: 1,
+                attempt_number,
                 model: self.model.clone(),
                 request_hash: admitted.request_hash,
                 admission: admitted.snapshot,
-                retry_of: None,
+                retry_of,
                 emergency_context_retry: false,
                 recovery_notices: notices,
             }),
         )?;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit(format!(
-            "turn.after_assistant_attempt_started:{}",
-            attempt_id
+            "turn.after_assistant_attempt_started:step{}:attempt{}",
+            open.step_index, attempt_number
         ));
         let draft = match provider
             .complete(open.step_index, &admitted_request, &self.cancel)
@@ -530,7 +710,10 @@ impl HeadlessLoop {
             }),
         )?;
         #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!("turn.after_assistant_step_accepted:{}", step_id));
+        crate::crash_point::hit(format!(
+            "turn.after_assistant_step_accepted:step{}",
+            open.step_index
+        ));
         if message.finish_reason != FinishReason::ToolUse {
             return Ok(Control::Continue);
         }
@@ -580,6 +763,37 @@ impl HeadlessLoop {
         step_id: StepId,
         draft_calls: &[DraftCall],
     ) -> Result<Control, TurnError> {
+        self.run_tool_batch_with_cancel(
+            turn_id,
+            attempt_id,
+            step_id,
+            draft_calls,
+            self.cancel.clone(),
+        )
+        .await
+    }
+
+    async fn run_tool_batch_with_cancel(
+        &mut self,
+        turn_id: TurnId,
+        attempt_id: AttemptId,
+        step_id: StepId,
+        draft_calls: &[DraftCall],
+        cancel: CancellationToken,
+    ) -> Result<Control, TurnError> {
+        self.run_tool_batch_with_cancel_in(turn_id, attempt_id, step_id, draft_calls, cancel, None)
+            .await
+    }
+
+    async fn run_tool_batch_with_cancel_in(
+        &mut self,
+        turn_id: TurnId,
+        attempt_id: AttemptId,
+        step_id: StepId,
+        draft_calls: &[DraftCall],
+        cancel: CancellationToken,
+        existing_batch_id: Option<ToolBatchId>,
+    ) -> Result<Control, TurnError> {
         let mut calls = Vec::new();
         for call in draft_calls {
             let provider_ordinal = calls.len() as u32;
@@ -592,7 +806,10 @@ impl HeadlessLoop {
                 provider_ordinal,
             });
         }
-        let batch_id: ToolBatchId = self.fresh()?;
+        let batch_id: ToolBatchId = match existing_batch_id {
+            Some(id) => id,
+            None => self.fresh()?,
+        };
         let request = ToolBatchRequest {
             batch_id,
             session_id: self.session_id,
@@ -602,7 +819,6 @@ impl HeadlessLoop {
             origin: ToolCallOrigin::Model,
         };
         let fault_after_body = self.config.fault == LoopFault::AfterToolBodyBeforeFinish;
-        let cancel = self.cancel.clone();
         let outcome = {
             let mut durable = DurableSession {
                 log: &mut self.log,
@@ -737,7 +953,7 @@ impl HeadlessLoop {
             }),
         )?;
         #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!("turn.after_turn_committed:{}", turn_id));
+        crate::crash_point::hit("turn.after_turn_committed");
         Ok(self.report(None))
     }
 
@@ -893,6 +1109,61 @@ fn redact_provider_message(message: &str) -> String {
     out
 }
 
+// Proof is per changed leaf, not per call: one marked secret must not mask an
+// unrelated unmarked rewrite elsewhere in the same argument object.
+fn every_argument_change_is_marked(original: &Value, redacted: &Value) -> bool {
+    match (original, redacted) {
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, value)| {
+                    right
+                        .get(key)
+                        .is_some_and(|other| every_argument_change_is_marked(value, other))
+                })
+        }
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(value, other)| every_argument_change_is_marked(value, other))
+        }
+        (Value::String(left), Value::String(right)) => {
+            left == right
+                || right.matches("[REDACTED:").count() > left.matches("[REDACTED:").count()
+        }
+        _ => original == redacted,
+    }
+}
+
+#[cfg(test)]
+mod argument_proof_tests {
+    use super::every_argument_change_is_marked;
+    use serde_json::json;
+
+    #[test]
+    fn proof_is_per_leaf_and_rejects_structural_or_unmarked_mutations() {
+        let before = json!({"nested": ["plain", "secret"], "count": 1});
+        assert!(every_argument_change_is_marked(&before, &before));
+        assert!(every_argument_change_is_marked(
+            &before,
+            &json!({"nested": ["plain", "[REDACTED:aws-access-key]"], "count": 1})
+        ));
+        assert!(!every_argument_change_is_marked(
+            &before,
+            &json!({"nested": ["rewritten", "[REDACTED:aws-access-key]"], "count": 1})
+        ));
+        assert!(!every_argument_change_is_marked(
+            &before,
+            &json!({"nested": ["plain", "[REDACTED:aws-access-key]"]})
+        ));
+        assert!(!every_argument_change_is_marked(
+            &json!("literal [REDACTED:note]"),
+            &json!("rewritten [REDACTED:note]")
+        ));
+    }
+}
+
 fn assistant_message(
     draft: &AssistantDraft,
     ids: &MonotonicUlidGenerator,
@@ -909,8 +1180,16 @@ fn assistant_message(
     }
     for call in &draft.calls {
         validate_tool_name(&call.name).map_err(|err| TurnError::failed(err.to_string()))?;
-        let redacted = redact_json_v1(&Value::Object(call.arguments.clone()))
+        let original = Value::Object(call.arguments.clone());
+        let redacted = redact_json_v1(&original)
             .map_err(|_| TurnError::failed("tool call redaction failed"))?;
+        // Fail closed at acceptance if a changed executable argument has no
+        // durable replacement marker. This check is independent of future
+        // detector implementations: an unmarked accepted call is safe to
+        // reconstruct only because acceptance verified byte-equivalence.
+        if !every_argument_change_is_marked(&original, &redacted.value) {
+            return Err(TurnError::failed("tool call redaction proof missing"));
+        }
         let Value::Object(arguments) = redacted.value else {
             return Err(TurnError::failed("tool call redaction failed"));
         };

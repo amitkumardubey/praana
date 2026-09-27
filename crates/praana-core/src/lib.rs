@@ -14,11 +14,23 @@
 //! event sink policy, and History-owned session/host operation ledgers with
 //! crash recovery (`history::operation_ledger`).
 
+#[cfg(all(feature = "failpoints", not(debug_assertions)))]
+compile_error!("the failpoints feature is test-only and cannot build a release artifact");
+
 pub mod canonical_json;
 pub mod clock;
 pub mod config;
 #[cfg(feature = "failpoints")]
 pub(crate) mod crash_point;
+
+/// Arms one process-abort boundary for the dedicated crash-recovery test
+/// executable. Production entrypoints never call this function, and failpoints
+/// cannot be armed through process environment variables.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub fn arm_test_failpoint(label: &str) -> Result<(), &'static str> {
+    crash_point::arm_for_test(label)
+}
 pub mod credentials;
 pub mod history;
 pub mod hooks;

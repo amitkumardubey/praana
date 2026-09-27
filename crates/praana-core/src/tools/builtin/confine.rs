@@ -20,6 +20,13 @@ fn io(message: &str) -> ToolError {
     ToolError::new(ToolErrorCode::ToolIoFailed, message)
 }
 
+fn unsupported_windows_write() -> ToolError {
+    ToolError::new(
+        ToolErrorCode::ToolUnsupported,
+        "workspace writes require handle-anchored Windows confinement",
+    )
+}
+
 #[cfg(all(test, unix))]
 thread_local! {
     static TEMP_MODE_BEFORE_WRITE: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
@@ -46,6 +53,9 @@ pub fn is_symlink(path: &Path) -> bool {
 }
 
 pub fn ensure_dir(path: &Path) -> Result<(), ToolError> {
+    if cfg!(windows) {
+        return Err(unsupported_windows_write());
+    }
     if path.as_os_str().is_empty() {
         return Ok(());
     }
@@ -61,9 +71,23 @@ pub fn ensure_dir(path: &Path) -> Result<(), ToolError> {
 }
 
 pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
+    let mut file = open_regular(path)?;
+    let meta = file.metadata().map_err(|_| io("read failed"))?;
+    if meta.len() > limit {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolValidationFailed,
+            "file exceeds 16 MiB",
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|_| io("read failed"))?;
+    Ok(bytes)
+}
+
+pub fn open_regular(path: &Path) -> Result<std::fs::File, ToolError> {
     #[cfg(unix)]
     {
-        unix::read_regular(path, limit)
+        unix::open_regular(path)
     }
     #[cfg(not(unix))]
     {
@@ -72,23 +96,20 @@ pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
         }
         let meta = fs::metadata(path)
             .map_err(|_| ToolError::new(ToolErrorCode::ToolPathNotFound, "path was not found"))?;
-        if meta.is_dir() {
+        if !meta.is_file() {
             return Err(ToolError::new(
                 ToolErrorCode::ToolValidationFailed,
                 "path is a directory",
             ));
         }
-        if meta.len() > limit {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolValidationFailed,
-                "file exceeds 16 MiB",
-            ));
-        }
-        fs::read(path).map_err(|_| io("read failed"))
+        fs::File::open(path).map_err(|_| io("read failed"))
     }
 }
 
 pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    if cfg!(windows) {
+        return Err(unsupported_windows_write());
+    }
     #[cfg(unix)]
     {
         unix::replace_file(path, bytes)
@@ -100,6 +121,9 @@ pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
 }
 
 pub fn remove_regular(path: &Path) -> Result<(), ToolError> {
+    if cfg!(windows) {
+        return Err(unsupported_windows_write());
+    }
     #[cfg(unix)]
     {
         unix::remove_regular(path)
@@ -203,7 +227,7 @@ mod unix {
         Ok(())
     }
 
-    pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
+    pub fn open_regular(path: &Path) -> Result<File, ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path
             .file_name()
@@ -215,24 +239,16 @@ mod unix {
             libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             0,
         )?;
-        let mut file = unsafe { File::from_raw_fd(fd.as_raw_fd()) };
+        let file = unsafe { File::from_raw_fd(fd.as_raw_fd()) };
         std::mem::forget(fd);
         let meta = file.metadata().map_err(|_| io("read failed"))?;
-        if meta.is_dir() {
+        if !meta.is_file() {
             return Err(ToolError::new(
                 ToolErrorCode::ToolValidationFailed,
                 "path is a directory",
             ));
         }
-        if meta.len() > limit {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolValidationFailed,
-                "file exceeds 16 MiB",
-            ));
-        }
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|_| io("read failed"))?;
-        Ok(bytes)
+        Ok(file)
     }
 
     pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {

@@ -4,15 +4,26 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use praana_core::clock::SystemClock;
 use praana_core::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
-use praana_core::protocol::id::{AttemptId, SessionId, ToolBatchId, ToolCallId, TurnId};
+use praana_core::history::artifact::{ArtifactPolicy, ArtifactStore};
+use praana_core::history::event_log::{
+    write_new_session_meta, EventLogStore, EMPTY_PROJECT_CONTEXT_SOURCE_SHA256,
+};
+use praana_core::id::MonotonicUlidGenerator;
+use praana_core::protocol::events::CanonicalEvent;
+use praana_core::protocol::hashes::calculate_result_messages_hash;
+use praana_core::protocol::id::{
+    AttemptId, SessionId, Sha256Digest, StepId, ToolBatchId, ToolCallId, TurnId,
+};
 use praana_core::protocol::tool_result::ToolResultStatus;
 use praana_core::tools::builtin::register_phase3;
 use praana_core::tools::{
-    BatchOrigin, ProviderToolCall, ToolBatchRequest, ToolCallOrigin, ToolErrorCode, ToolName,
-    ToolRuntime,
+    BatchOrigin, DurableBatchOutcome, DurableSession, ProviderToolCall, ToolBatchRequest,
+    ToolCallOrigin, ToolErrorCode, ToolName, ToolRuntime,
 };
 use serde_json::{json, Value};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 fn tools_config(shell: bool) -> ToolsConfig {
@@ -112,8 +123,18 @@ fn descriptors_are_strict_ordered_and_match_committed_schemas() {
     }
     let registry = register_phase3(&tools_config(true)).unwrap();
     let descriptors = registry.catalog().descriptors();
-    assert_eq!(descriptors.len(), PHASE3.len());
-    for (descriptor, (name, order)) in descriptors.iter().zip(PHASE3) {
+    let available: Vec<_> = PHASE3
+        .iter()
+        .filter(|(name, _)| {
+            !cfg!(windows)
+                || !matches!(
+                    *name,
+                    "write_file" | "edit_file" | "batch_write" | "batch_edit"
+                )
+        })
+        .collect();
+    assert_eq!(descriptors.len(), available.len());
+    for (descriptor, (name, order)) in descriptors.iter().zip(available) {
         assert_eq!(descriptor.name.as_str(), *name);
         assert_eq!(descriptor.order, *order);
         assert!(descriptor.strict);
@@ -150,6 +171,36 @@ fn descriptors_are_strict_ordered_and_match_committed_schemas() {
     assert_eq!(manifest["tools"].as_array().unwrap().len(), PHASE3.len());
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_catalog_omits_unsupported_writes_but_keeps_schema_fixtures() {
+    let registry = register_phase3(&tools_config(true)).unwrap();
+    let names: Vec<_> = registry
+        .catalog()
+        .descriptors()
+        .iter()
+        .map(|descriptor| descriptor.name.as_str())
+        .collect();
+    for unavailable in ["write_file", "edit_file", "batch_write", "batch_edit"] {
+        assert!(
+            !names.contains(&unavailable),
+            "{unavailable} was advertised"
+        );
+        assert!(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!(
+                "schemas/tools/v1/{}-{unavailable}-input.json",
+                PHASE3
+                    .iter()
+                    .find(|(name, _)| *name == unavailable)
+                    .unwrap()
+                    .1
+            ))
+            .exists());
+    }
+    assert!(names.contains(&"read_file"));
+    assert!(names.contains(&"search_code"));
+}
+
 #[test]
 fn catalog_order_is_stable_when_shell_is_disabled() {
     let enabled = register_phase3(&tools_config(true)).unwrap();
@@ -179,6 +230,141 @@ fn catalog_order_is_stable_when_shell_is_disabled() {
     reversed.reverse();
     let backward = praana_core::tools::ToolRegistry::try_from_erased(reversed).unwrap();
     assert_eq!(forward.catalog_hash(), backward.catalog_hash());
+}
+
+#[tokio::test]
+async fn durable_batch_completion_uses_provider_ordinals_not_input_vector_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("work");
+    let session = dir.path().join("session");
+    fs::create_dir_all(&workspace).unwrap();
+    fs::create_dir_all(&session).unwrap();
+    fs::write(workspace.join("a.txt"), "alpha").unwrap();
+    fs::write(workspace.join("b.txt"), "beta").unwrap();
+    // A valid accepted two-call step; the runtime receives its calls in the
+    // reverse order from their provider ordinals.
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/protocol_v2/03_parallel_results_finish_out_of_order/events.jsonl");
+    let prefix = fs::read_to_string(fixture)
+        .unwrap()
+        .lines()
+        .take(5)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(session.join("events.jsonl"), prefix).unwrap();
+    write_new_session_meta(
+        &session,
+        &session_id(),
+        &Sha256Digest::from_hex_str(EMPTY_PROJECT_CONTEXT_SOURCE_SHA256).unwrap(),
+    )
+    .unwrap();
+    let mut log = EventLogStore::open(&session, &session_id().to_string()).unwrap();
+    let clock = Arc::new(SystemClock);
+    let artifacts = ArtifactStore::open(
+        &session.join("history.db"),
+        ArtifactPolicy::defaults(),
+        clock.clone(),
+    )
+    .unwrap();
+    let ids = MonotonicUlidGenerator::system();
+    let registry = register_phase3(&tools_config(false)).unwrap();
+    let rt = ToolRuntime::new(
+        registry,
+        tools_config(false),
+        RiskConfig { allow: Vec::new() },
+        CircuitConfig {
+            loop_threshold: 3,
+            max_tokens: 0,
+            max_wall_ms: 0,
+        },
+    );
+    rt.set_workspace(workspace);
+    rt.set_session(session, session_id());
+    let request = ToolBatchRequest {
+        batch_id: ToolBatchId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FB7").unwrap(),
+        session_id: session_id(),
+        turn_id: TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAY").unwrap(),
+        attempt_id: AttemptId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FB2").unwrap(),
+        calls: vec![
+            call("read_file", "call_002", 1, json!({"path": "b.txt"})),
+            call("read_file", "call_001", 0, json!({"path": "a.txt"})),
+        ],
+        origin: ToolCallOrigin::Model,
+    };
+    let mut durable = DurableSession {
+        log: &mut log,
+        artifacts: &artifacts,
+        ids: &ids,
+        clock: clock.as_ref(),
+        session_id: session_id(),
+        step_id: StepId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FB3").unwrap(),
+        fault_after_body: false,
+    };
+    let DurableBatchOutcome::Finished(batch) = rt
+        .execute_durable_batch(
+            request,
+            BatchOrigin::Model,
+            CancellationToken::new(),
+            &mut durable,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("unexpected injected crash")
+    };
+    assert_eq!(
+        batch
+            .results
+            .iter()
+            .map(|result| result.dto.meta.tool_call_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_001", "call_002"]
+    );
+    let events = log.events().unwrap();
+    let completed = events
+        .iter()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::ToolBatchCompleted(completed) => Some(completed),
+            _ => None,
+        })
+        .expect("durable completion");
+    assert_eq!(
+        completed
+            .call_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_001", "call_002"]
+    );
+    let finishes = completed
+        .result_event_ids
+        .iter()
+        .map(|id| {
+            let event = events.iter().find(|event| event.event_id == *id).unwrap();
+            let CanonicalEvent::ToolExecutionFinished(finish) = &event.event else {
+                panic!("not a finish")
+            };
+            finish
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        finishes
+            .iter()
+            .map(|finish| finish.call_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["call_001", "call_002"]
+    );
+    assert_eq!(
+        completed.result_messages_hash,
+        calculate_result_messages_hash(
+            &finishes
+                .iter()
+                .map(|finish| finish.result.clone())
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -479,6 +665,126 @@ async fn search_honors_ignore_rules_and_result_caps() {
     let rendered = paths.to_string();
     assert!(rendered.contains("visible.txt"));
     assert!(!rendered.contains("secret.txt"));
+}
+
+#[tokio::test]
+async fn search_reports_every_same_line_match_with_a_match_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("visible.txt"), "foo foo foo\n").unwrap();
+    let rt = runtime(dir.path(), false);
+    let results = run(
+        &rt,
+        vec![call(
+            "search_code",
+            "same-line",
+            0,
+            json!({"pattern": "foo", "max_results": 2, "context_lines": 0}),
+        )],
+    )
+    .await;
+    assert!(results[0].dto.ok, "{:?}", results[0].dto.error);
+    let data = results[0].dto.data.as_ref().unwrap();
+    assert_eq!(data["truncated"], json!(true));
+    let matches = data["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["line"], json!(1));
+    assert_eq!(matches[0]["column"], json!(1));
+    assert_eq!(matches[1]["column"], json!(5));
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[tokio::test]
+async fn batch_rollback_conflict_poison_preserves_journal_and_external_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.txt");
+    let b = dir.path().join("b.txt");
+    fs::write(&a, "before-a").unwrap();
+    fs::write(&b, "before-b").unwrap();
+    let rt = runtime(dir.path(), false);
+    let a_changed = a.clone();
+    let b_changed = b.clone();
+    praana_core::history::journal::set_test_after_first_entry_hook(a.clone(), move || {
+        // Earlier replacement conflicts with rollback; later target conflicts
+        // with commit. Neither externally written byte sequence may be lost.
+        fs::write(&a_changed, "external-a").unwrap();
+        fs::write(&b_changed, "external-b").unwrap();
+    });
+    let result = run(
+        &rt,
+        vec![call(
+            "batch_write",
+            "conflicted-batch",
+            0,
+            json!({"writes": [
+                {"path": "a.txt", "content": "after-a"},
+                {"path": "b.txt", "content": "after-b"}
+            ]}),
+        )],
+    )
+    .await;
+    assert_eq!(result[0].status, ToolResultStatus::Uncertain);
+    assert_eq!(
+        result[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolInternal
+    );
+    assert_eq!(fs::read_to_string(&a).unwrap(), "external-a");
+    assert_eq!(fs::read_to_string(&b).unwrap(), "external-b");
+    let journals = dir.path().join(".session/journals");
+    assert_eq!(
+        fs::read_dir(&journals).unwrap().count(),
+        2,
+        "journal and before-image must survive"
+    );
+    assert!(
+        rt.execute_batch(
+            batch(vec![call(
+                "write_file",
+                "must-not-run",
+                0,
+                json!({"path": "c.txt", "content": "bad"})
+            )]),
+            BatchOrigin::HeadlessCommand,
+            CancellationToken::new(),
+        )
+        .await
+        .is_err(),
+        "poisoned session accepted a new batch"
+    );
+    assert!(!dir.path().join("c.txt").exists());
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_mutating_builtins_fail_closed_before_side_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "before").unwrap();
+    let rt = runtime(dir.path(), false);
+    for (name, arguments) in [
+        ("write_file", json!({"path": "a.txt", "content": "changed"})),
+        (
+            "edit_file",
+            json!({"path": "a.txt", "old_text": "before", "new_text": "changed"}),
+        ),
+        (
+            "batch_write",
+            json!({"writes": [{"path": "a.txt", "content": "changed"}, {"path": "b.txt", "content": "changed"}]}),
+        ),
+        (
+            "batch_edit",
+            json!({"edits": [{"path": "a.txt", "old_text": "before", "new_text": "changed"}]}),
+        ),
+    ] {
+        let result = run(&rt, vec![call(name, name, 0, arguments)]).await;
+        assert_eq!(
+            result[0].dto.error.as_ref().unwrap().code,
+            ToolErrorCode::ToolUnknown
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "before"
+        );
+        assert!(!dir.path().join("b.txt").exists());
+    }
 }
 
 #[tokio::test]

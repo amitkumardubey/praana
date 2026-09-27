@@ -254,7 +254,7 @@ fn search_files(
             if index % 256 == 0 && cancel.is_cancelled() {
                 return Err(ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"));
             }
-            if let Some(found) = regex.find(line) {
+            for found in regex.find_iter(line) {
                 let context = input.context_lines as usize;
                 let before = lines[index.saturating_sub(context)..index]
                     .iter()

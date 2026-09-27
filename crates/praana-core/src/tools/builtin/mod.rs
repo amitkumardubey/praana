@@ -27,18 +27,31 @@ pub use shell::ShellTool;
 pub use tests::RunTestsTool;
 
 pub fn phase3_tools(config: &ToolsConfig) -> Result<Vec<Arc<dyn ErasedTool>>, ToolError> {
-    let mut tools = vec![
-        adapt(ReadFileTool)?,
-        adapt(WriteFileTool)?,
-        adapt(EditFileTool)?,
-        adapt(BatchWriteTool)?,
-        adapt(BatchEditTool)?,
+    // Windows writes lack handle-anchored reparse-safe confinement. Do not
+    // advertise unavailable tools to the provider (Tool Runtime §8).
+    tools_with_writes(config, !cfg!(windows))
+}
+
+fn tools_with_writes(
+    config: &ToolsConfig,
+    include_writes: bool,
+) -> Result<Vec<Arc<dyn ErasedTool>>, ToolError> {
+    let mut tools = vec![adapt(ReadFileTool)?];
+    if include_writes {
+        tools.extend([
+            adapt(WriteFileTool)?,
+            adapt(EditFileTool)?,
+            adapt(BatchWriteTool)?,
+            adapt(BatchEditTool)?,
+        ]);
+    }
+    tools.extend([
         adapt(SearchCodeTool)?,
         adapt(FindFilesTool)?,
         adapt(RunTestsTool)?,
         adapt(GitStatusTool)?,
         adapt(GitDiffTool)?,
-    ];
+    ]);
     if config.shell_enabled {
         tools.push(adapt(ShellTool)?);
     }
@@ -60,16 +73,22 @@ fn adapt<T: crate::tools::contract::TypedTool>(tool: T) -> Result<Arc<dyn Erased
 
 pub fn write_schema_snapshots(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let registry = register_phase3(&ToolsConfig {
-        allowed_paths: Vec::new(),
-        default_timeout_ms: 60_000,
-        max_parallel_calls: 8,
-        max_spawned_processes: 4,
-        shell_enabled: true,
-        shell_max_timeout_ms: 600_000,
-        shell_timeout_ms: 30_000,
-    })
+    // Schema fixtures describe the full versioned catalog, regardless of
+    // which platform can currently offer every descriptor at runtime.
+    let tools = tools_with_writes(
+        &ToolsConfig {
+            allowed_paths: Vec::new(),
+            default_timeout_ms: 60_000,
+            max_parallel_calls: 8,
+            max_spawned_processes: 4,
+            shell_enabled: true,
+            shell_max_timeout_ms: 600_000,
+            shell_timeout_ms: 30_000,
+        },
+        true,
+    )
     .expect("phase 3 schemas");
+    let registry = ToolRegistry::try_from_erased(tools).expect("phase 3 schema registry");
     let mut rows = Vec::new();
     for descriptor in registry.catalog().descriptors() {
         let input_name = format!(

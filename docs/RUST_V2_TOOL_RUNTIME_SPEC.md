@@ -1077,8 +1077,10 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 
 ### 19.1 `read_file`
 
-- UTF-8 text request with optional 1-based `line_start` and positive `line_count`.
-- Maximum direct file size is 64 MiB; larger files require bounded ranges.
+The Built-in Tool Catalog owns the exact request schema and limits. The initial
+request uses one-based `start_line` and optional `max_lines` (1..=10,000,
+default 2,000). Files above 16 MiB are rejected even for a bounded range.
+
 - Return exact selected text and source line metadata.
 - Missing path is `TOOL_PATH_NOT_FOUND`.
 - Repeated unchanged reads may return an existing artifact reference plus an explicit `payload_reused=true`; they never pretend bytes were reread.
@@ -1102,7 +1104,7 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 ### 19.4 Batch operations
 
 - Validate and simulate all operations before writing.
-- Duplicate batch-write paths use last input content, but the result records all requested ordinals and unique changed paths.
+- Duplicate batch-write paths are invalid, as specified by the Built-in Tool Catalog; they are not collapsed or resolved last-write-wins.
 - Multiple edits to one file are sequential and may match text introduced by an earlier edit.
 - Acquire all unique path locks in sorted order.
 - Stage every target through the History Storage write-journal API, then commit.

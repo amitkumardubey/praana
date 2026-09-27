@@ -368,8 +368,28 @@ impl ToolRuntime {
                 "duplicate provider ordinal or call id",
             ));
         }
+        // A recovered batch may already contain durable finishes. Do not
+        // re-enter preflight/body for those calls; only admit unstarted peers.
+        let prior_events = durable
+            .log
+            .events()
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "event read failed"))?;
+        let finished_ids: BTreeSet<_> = prior_events
+            .iter()
+            .filter_map(|event| match &event.event {
+                crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finish)
+                    if finish.batch_id == request.batch_id =>
+                {
+                    Some(finish.call_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
         let mut slots = Vec::new();
-        for (call_index, call) in calls.into_iter().enumerate() {
+        for (call_index, call) in calls.iter().cloned().enumerate() {
+            if finished_ids.contains(&call.tool_call_id) {
+                continue;
+            }
             if cancel.is_cancelled() {
                 slots.push(BatchSlot::Blocked {
                     call_index: call_index as u32,
@@ -457,24 +477,25 @@ impl ToolRuntime {
         let mut messages = Vec::new();
         let mut finish_ids = Vec::new();
         let mut call_ids = Vec::new();
-        for input in &inputs {
+        // Use the same provider-ordinal order as admission and call_index.
+        // The caller's vector may have arrived permuted.
+        for call in &calls {
             let envelope = events
                 .iter()
-                .find(|event| event.event_id == input.finish_event_id)
-                .ok_or_else(|| {
-                    ToolError::new(ToolErrorCode::ToolInternal, "finish event missing")
-                })?;
+                .find(|event| matches!(
+                    &event.event,
+                    crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finish)
+                        if finish.batch_id == request.batch_id && finish.call_id == call.tool_call_id
+                ))
+                .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "finish event missing"))?;
             let crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finished) =
                 &envelope.event
             else {
-                return Err(ToolError::new(
-                    ToolErrorCode::ToolInternal,
-                    "finish event kind mismatch",
-                ));
+                unreachable!("matched finish event")
             };
             messages.push(finished.result.clone());
             finish_ids.push(envelope.event_id);
-            call_ids.push(input.call_id.clone());
+            call_ids.push(call.tool_call_id.clone());
         }
         let result_messages_hash = calculate_result_messages_hash(&messages)
             .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "result hash failed"))?;
@@ -1021,16 +1042,15 @@ impl ToolRuntime {
             }
         };
         #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!(
-            "runtime.after_tool_body_before_redaction:{}",
-            execution_id
-        ));
+        crate::crash_point::hit("runtime.after_tool_body_before_redaction");
         drop(permit);
         let duration_ms = started.elapsed().as_millis() as u64;
         if let Err(error) = &output {
             if error.code() == ToolErrorCode::ToolInternal
                 && error.message() == "side effect uncertain"
             {
+                self.poisoned.store(true, Ordering::SeqCst);
+                cancel.cancel();
                 return self.finish_uncertain(&call, execution_id);
             }
             hooks::circuit::record_error(
@@ -1131,10 +1151,7 @@ impl ToolRuntime {
             return self.finish_error(call, error, true);
         }
         #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!(
-            "runtime.after_redaction_before_artifact:{}",
-            execution_id
-        ));
+        crate::crash_point::hit("runtime.after_redaction_before_artifact");
         self.trace.push("circuit_account");
         drop(lease);
         self.trace.push("write_lock_release");

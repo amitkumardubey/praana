@@ -1,0 +1,58 @@
+name: Rust v2 crash matrix
+
+on:
+  pull_request:
+    paths:
+      - 'crates/praana-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'docs/RUST_V2_*SPEC.md'
+      - '.github/workflows/rust-v2-crash-matrix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crash-matrix-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Every P3 event fsync, tool, and batch journal boundary (Linux)
+        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3
+      - name: Workspace checks (Linux)
+        run: cargo test --workspace
+
+  crash-matrix-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Every P3 event fsync, tool, and batch journal boundary (macOS)
+        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3
+      - name: Workspace checks (macOS)
+        run: cargo test --workspace
+
+  abort-identity-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Assert real Windows fast-fail and reject ordinary test failure
+        run: |
+          cargo test -p praana-core --features failpoints --test crash_recovery windows_abort_identity_rejects_regular_panic -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --features failpoints --test crash_recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --test builtin_tools_phase3 windows_catalog_omits_unsupported_writes_but_keeps_schema_fixtures -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --test builtin_tools_phase3 windows_mutating_builtins_fail_closed_before_side_effects -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --test builtin_tools_phase3 durable_batch_completion_uses_provider_ordinals_not_input_vector_order -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --test builtin_tools_phase3 search_reports_every_same_line_match_with_a_match_cap -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

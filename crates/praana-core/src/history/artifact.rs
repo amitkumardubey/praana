@@ -561,8 +561,6 @@ impl ArtifactStore {
         }
         if crash == Some(ArtifactCrashPoint::AfterBlobCommitBeforeArtifactRow) {
             conn.execute_batch("COMMIT").map_err(map_sql)?;
-            #[cfg(feature = "failpoints")]
-            crate::crash_point::hit("artifact.after_commit_before_artifact_row");
             return Ok(PersistStatus::Committed);
         }
         if let Err(err) = insert_artifact_row(

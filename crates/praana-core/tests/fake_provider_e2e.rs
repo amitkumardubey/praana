@@ -328,7 +328,21 @@ async fn crash_restart_does_not_rerun_the_tool_body() {
     assert_eq!(lines, 1);
     let text = fs::read_to_string(resumed.session_dir().join("events.jsonl")).unwrap();
     assert_eq!(text.matches("\"user_message_accepted\"").count(), 1);
-    assert!(text.contains("E_TOOL_SIDE_EFFECT_UNCERTAIN") || text.contains("uncertain"));
+    assert!(text.contains("E_TOOL_SIDE_EFFECT_UNCERTAIN"));
+    let uncertain = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|event| {
+            event["event"]["kind"] == "tool_execution_finished"
+                && event["event"]["data"]["result"]["status"] == json!("uncertain")
+        })
+        .expect("exact uncertain finish with stable code");
+    assert_eq!(
+        uncertain["event"]["data"]["result"]["recovered"],
+        json!(true)
+    );
+    let rendered = serde_json::to_string(&uncertain).unwrap();
+    assert!(rendered.contains("E_TOOL_SIDE_EFFECT_UNCERTAIN"));
 }
 
 #[tokio::test]
@@ -660,6 +674,179 @@ impl StepProvider for DisagreeingProvider {
 
 struct LargeBodyProvider {
     completes: AtomicUsize,
+}
+
+struct CrashingProvider;
+
+#[async_trait]
+impl StepProvider for CrashingProvider {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"scripted": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        _admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        Err(TurnError::InjectedCrash)
+    }
+}
+
+fn attempt_starts(text: &str) -> Vec<Value> {
+    text.lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["event"]["kind"] == "assistant_attempt_started")
+        .collect()
+}
+
+#[tokio::test]
+async fn lost_attempt_budget_exhaustion_refuses_fresh_attempt() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let mut cfg = config(dir.path(), 3);
+    cfg.config.turn.max_attempts = 1;
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let crashed = loop_
+        .run_turn("crash", &CrashingProvider)
+        .await
+        .unwrap_err();
+    assert!(matches!(crashed, TurnError::InjectedCrash));
+    drop(loop_);
+    let resume_provider = ScriptedProvider::new(cfg.session_dir.clone(), Vec::new());
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).unwrap();
+    let report = resumed.continue_turn(&resume_provider).await.unwrap();
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    assert_eq!(resume_provider.sends.load(Ordering::SeqCst), 0);
+    let text = fs::read_to_string(cfg.session_dir.join("events.jsonl")).unwrap();
+    assert!(text.contains("E_ATTEMPT_LOST"));
+    let starts = attempt_starts(&text);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["event"]["data"]["attempt_number"], json!(1));
+    assert!(starts[0]["event"]["data"]["retry_of"].is_null());
+    assert!(!text.contains("\"assistant_step_accepted\""));
+}
+
+#[tokio::test]
+async fn lost_attempt_within_budget_starts_bounded_retry_with_linkage() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let crashed = loop_
+        .run_turn("crash", &CrashingProvider)
+        .await
+        .unwrap_err();
+    assert!(matches!(crashed, TurnError::InjectedCrash));
+    drop(loop_);
+    let resume_provider = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("recovered".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).unwrap();
+    let report = resumed.continue_turn(&resume_provider).await.unwrap();
+    assert!(report.interruption.is_none());
+    assert_eq!(resume_provider.sends.load(Ordering::SeqCst), 1);
+    let text = fs::read_to_string(cfg.session_dir.join("events.jsonl")).unwrap();
+    assert!(text.contains("E_ATTEMPT_LOST"));
+    let starts = attempt_starts(&text);
+    assert_eq!(starts.len(), 2);
+    assert_eq!(starts[0]["event"]["data"]["attempt_number"], json!(1));
+    assert!(starts[0]["event"]["data"]["retry_of"].is_null());
+    assert_eq!(starts[1]["event"]["data"]["attempt_number"], json!(2));
+    let first_id = starts[0]["attempt_id"].as_str().unwrap().to_owned();
+    assert_eq!(starts[1]["event"]["data"]["retry_of"], json!(first_id));
+    assert!(text.contains("\"turn_committed\""));
+}
+
+async fn assert_failed_artifact_resume(
+    corrupt: impl FnOnce(&rusqlite::Connection),
+    expected_code: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let provider = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-sh",
+                "shell",
+                json!({"command": "yes a | head -c 5000", "timeout_ms": 5000}),
+            ),
+            ScriptedStep {
+                text: Some("done".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    loop_.run_turn("print a lot", &provider).await.unwrap();
+    drop(loop_);
+
+    let events_path = cfg.session_dir.join("events.jsonl");
+    let before = fs::read(&events_path).unwrap();
+    assert!(String::from_utf8_lossy(&before).contains("\"storage\":\"artifact\""));
+    let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+    corrupt(&conn);
+    drop(conn);
+
+    // This is the headless caller shape: provider assembly/continuation occurs
+    // only after resume succeeds. The spy proves failed recovery crosses
+    // neither the provider nor tool-execution boundary.
+    let spy = ScriptedProvider::new(cfg.session_dir.clone(), Vec::new());
+    let err = match HeadlessLoop::resume(cfg.clone()) {
+        Ok(mut resumed) => match resumed.continue_turn(&spy).await {
+            Ok(_) => panic!("corrupt artifact recovery unexpectedly continued"),
+            Err(err) => err,
+        },
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains(expected_code),
+        "stable refusal {expected_code}, got: {err}"
+    );
+    assert_eq!(spy.sends.load(Ordering::SeqCst), 0);
+    assert_eq!(before, fs::read(&events_path).unwrap());
+    assert!(!dir.path().join("work/refusal-probe").exists());
+}
+
+#[tokio::test]
+async fn missing_artifact_resume_refuses_without_provider_or_tool_action() {
+    assert_failed_artifact_resume(
+        |conn| {
+            conn.execute("DELETE FROM artifacts", []).unwrap();
+            conn.execute("DELETE FROM artifact_blobs", []).unwrap();
+        },
+        "E_ARTIFACT_MISSING",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hash_mismatched_artifact_resume_refuses_without_provider_or_tool_action() {
+    assert_failed_artifact_resume(
+        |conn| {
+            conn.execute("UPDATE artifact_blobs SET canonical_result = x'00'", [])
+                .unwrap();
+        },
+        "E_ARTIFACT_HASH_MISMATCH",
+    )
+    .await;
 }
 
 #[async_trait]
