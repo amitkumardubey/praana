@@ -23,10 +23,13 @@ use crate::tools::intent::{
 };
 use crate::tools::ToolCapabilities;
 
-const FILE_LIMIT: u64 = 16 * 1024 * 1024;
+const READ_FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const LINE_LIMIT: usize = 1024 * 1024;
 const TEXT_LIMIT: usize = 4 * 1024 * 1024;
 const EDIT_LIMIT: usize = 1024 * 1024;
+// Total new content across one write_file/edit_file or one batch call. This
+// is unrelated to any existing-target size; owner decision 3 keeps it.
+const BATCH_INPUT_LIMIT: usize = 16 * 1024 * 1024;
 
 // The Windows fallback cannot pin parent directories against junction swaps.
 // Do not offer mutating built-ins until handle-anchored operations exist.
@@ -136,16 +139,24 @@ fn changed_file(path: &str, before: Option<Sha256Digest>, after: &[u8]) -> Chang
     }
 }
 
-fn read_bytes(path: &Path) -> Result<Vec<u8>, ToolError> {
-    let bytes = super::confine::read_regular(path, FILE_LIMIT)?;
-    if bytes.len() as u64 > FILE_LIMIT || bytes.contains(&0) || std::str::from_utf8(&bytes).is_err()
-    {
+fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
+    let bytes = super::confine::read_regular(path, limit)?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
         return Err(ToolError::new(
             ToolErrorCode::ToolUnsupported,
             "unsupported encoding",
         ));
     }
     Ok(bytes)
+}
+
+// Edit targets are existing files subject to mutation, the same category as
+// write targets. Owner decision 3 restricts the 16 MiB ceiling to read_file
+// only; editing still needs the full text for search-and-replace, so this is
+// one confined, no-follow, streaming read without an artificial cap that
+// would otherwise admit the call in preflight and then fail it once started.
+fn read_existing_edit_target(path: &Path) -> Result<Vec<u8>, ToolError> {
+    read_bytes(path, u64::MAX)
 }
 
 // Writes may replace arbitrarily large existing targets. Hash and compare
@@ -270,7 +281,7 @@ impl TypedTool for ReadFileTool {
         _: CancellationToken,
     ) -> Result<ReadFileOutput, ToolError> {
         let path = resolved(&context, &input.path)?.to_path_buf();
-        let bytes = read_bytes(&path)?;
+        let bytes = read_bytes(&path, READ_FILE_LIMIT)?;
         let text = std::str::from_utf8(&bytes).expect("utf-8 checked");
         let lines = lines_of(text)?;
         let total = lines.len() as u64;
@@ -453,7 +464,7 @@ impl TypedTool for EditFileTool {
     ) -> Result<EditFileOutput, ToolError> {
         safe_writes_available()?;
         let path = resolved(&context, &input.path)?.to_path_buf();
-        let before_bytes = read_bytes(&path)?;
+        let before_bytes = read_existing_edit_target(&path)?;
         let before = digest(&before_bytes);
         if let Some(expected) = &input.expected_sha256 {
             if before != *expected {
@@ -476,7 +487,7 @@ fn batch_bounds(count: usize, total: usize) -> Result<(), ToolError> {
     if !(1..=100).contains(&count) {
         return Err(validation("batch must contain 1..=100 items"));
     }
-    if total > FILE_LIMIT as usize {
+    if total > BATCH_INPUT_LIMIT {
         return Err(validation("batch input exceeds 16 MiB"));
     }
     Ok(())
@@ -674,7 +685,7 @@ impl TypedTool for BatchEditTool {
                 let next = apply_edit(text, &edit.old_text, &edit.new_text)?;
                 existing.3 = next.into_bytes();
             } else {
-                let original = read_bytes(&path)?;
+                let original = read_existing_edit_target(&path)?;
                 let text = std::str::from_utf8(&original).expect("utf-8 checked");
                 let next = apply_edit(text, &edit.old_text, &edit.new_text)?;
                 images.push((edit.path, path, original, next.into_bytes()));

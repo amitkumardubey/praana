@@ -8,11 +8,14 @@
 use std::fs;
 #[cfg(not(unix))]
 use std::fs::File;
+use std::io::Read;
 #[cfg(not(unix))]
 use std::path::Component;
 use std::path::Path;
 
+use crate::protocol::id::Sha256Digest;
 use crate::tools::error::{ToolError, ToolErrorCode};
+use sha2::{Digest, Sha256};
 
 fn io(message: &str) -> ToolError {
     ToolError::new(ToolErrorCode::ToolIoFailed, message)
@@ -90,6 +93,22 @@ pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
         ));
     }
     Ok(bytes)
+}
+
+pub fn hash_regular(path: &Path) -> Result<Sha256Digest, ToolError> {
+    // Callers that only need identity (not the bytes) use this streaming
+    // hash instead of a full materializing read_regular call.
+    let mut file = open_regular(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| io("hash read failed"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
 pub fn open_regular(path: &Path) -> Result<std::fs::File, ToolError> {

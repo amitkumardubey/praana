@@ -233,17 +233,19 @@ pub fn commit_write_journal_in_roots(
         verify_original(&journal.entries[index])?;
         journal.phase = WriteJournalPhase::Committing;
         store_journal(session_root, &journal)?;
-        let staged = read_rel(
+        let mut staged = crate::tools::builtin::confine::open_regular(&rel_path(
             session_root,
             execution_id,
             &journal.entries[index].staged_relpath,
-        )?;
-        if Sha256Digest::digest_bytes(&staged) != journal.entries[index].staged_sha256 {
+        )?)
+        .map_err(|error| io_err(error.to_string()))?;
+        if hash_reader(&mut staged)? != journal.entries[index].staged_sha256 {
             return Err(conflict("staged journal bytes changed"));
         }
+        staged.rewind().map_err(|err| io_err(err.to_string()))?;
         atomic_replace(
             &target,
-            &staged,
+            &mut staged,
             execution_id,
             journal.entries[index].ordinal,
         )?;
@@ -489,7 +491,7 @@ fn verify_original(entry: &WriteJournalEntryV1) -> Result<(), ArtifactError> {
 
 fn atomic_replace(
     target: &Path,
-    bytes: &[u8],
+    source: &mut impl Read,
     _execution_id: &ToolExecutionId,
     _ordinal: u32,
 ) -> Result<(), ArtifactError> {
@@ -499,7 +501,7 @@ fn atomic_replace(
         .ok_or_else(|| io_err("journal target has no parent directory"))?;
     crate::tools::builtin::confine::ensure_dir(parent)
         .map_err(|error| io_err(error.to_string()))?;
-    crate::tools::builtin::confine::replace_file(target, bytes)
+    crate::tools::builtin::confine::replace_file_from_reader(target, source)
         .map_err(|error| io_err(error.to_string()))
 }
 
@@ -575,14 +577,6 @@ fn rel_path(
         return Err(io_err("journal relpath escapes the execution directory"));
     }
     Ok(payload_dir(session_root, execution_id).join(rel))
-}
-
-fn read_rel(
-    session_root: &Path,
-    execution_id: &ToolExecutionId,
-    rel: &str,
-) -> Result<Vec<u8>, ArtifactError> {
-    fs::read(rel_path(session_root, execution_id, rel)?).map_err(|err| io_err(err.to_string()))
 }
 
 fn store_journal(session_root: &Path, journal: &WriteJournalV1) -> Result<(), ArtifactError> {

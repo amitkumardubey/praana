@@ -317,10 +317,14 @@ P0
   in the same batch. Acceptance fails closed on an unmarked argument mutation.
   After a replacement attempt is accepted, the live loop appends
   `attempt_superseded`; fresh-process recovery repairs a missing relation once.
-  Existing write targets and rollback before-images use bounded streaming
-  hashing/comparison and restoration without a 16 MiB existing-file ceiling;
-  the 16 MiB read limit and 16 MiB batch *input* limit remain. The non-Unix
-  `open_regular` fallback is not handle-anchored and stays tracked under
+  Existing write and edit targets, rollback before-images, and journal-staged
+  payloads use bounded streaming hashing/comparison and restoration through
+  confined, no-follow handles, without a 16 MiB existing-target ceiling;
+  preflight (`check_planned`) validates an existing target's hash the same way
+  before any body runs. The 16 MiB `read_file` limit and 16 MiB batch *input*
+  limit (total new content per call) remain — both are owner-specified and
+  unrelated to existing-target size. The non-Unix `open_regular` fallback is
+  not handle-anchored and stays tracked under
   [`#402`](https://github.com/chronosiq/praana/issues/402); Windows mutations
   remain unavailable until that packet lands.
 

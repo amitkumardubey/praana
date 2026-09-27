@@ -649,6 +649,134 @@ async fn batch_write_replaces_existing_target_above_read_limit() {
     assert_eq!(fs::read(dir.path().join("peer.txt")).unwrap(), b"peer");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn edit_file_replaces_existing_target_above_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("large_edit.txt");
+    fs::write(&target, b"before").unwrap();
+    let rt = runtime(dir.path(), false);
+    // Register the read while the file is small; the read_file ceiling is
+    // owner-mandated for read_file only (decision 3), not for edit targets.
+    let read = run(
+        &rt,
+        vec![call(
+            "read_file",
+            "r-large-edit",
+            0,
+            json!({"path": "large_edit.txt"}),
+        )],
+    )
+    .await;
+    assert!(read[0].dto.ok, "{:?}", read[0].dto.error);
+    // Grow the target past the read_file ceiling before editing it. The
+    // marker is unique against the filler so apply_edit's uniqueness check
+    // still holds at this size.
+    let mut grown = vec![b'x'; 16 * 1024 * 1024 + 1];
+    grown.extend_from_slice(b"TARGET_MARKER");
+    fs::write(&target, &grown).unwrap();
+    let edited = run(
+        &rt,
+        vec![call(
+            "edit_file",
+            "e-large",
+            0,
+            json!({"path": "large_edit.txt", "old_text": "TARGET_MARKER", "new_text": "EDITED_MARKER"}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        edited[0].status,
+        ToolResultStatus::Success,
+        "{:?}",
+        edited[0].dto.error
+    );
+    let after = fs::read(&target).unwrap();
+    assert!(after.ends_with(b"EDITED_MARKER"));
+    assert!(after.len() as u64 > 16 * 1024 * 1024);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn batch_edit_replaces_existing_target_above_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("large_batch_edit.txt");
+    fs::write(&target, b"before").unwrap();
+    let rt = runtime(dir.path(), false);
+    let read = run(
+        &rt,
+        vec![call(
+            "read_file",
+            "r-large-batch-edit",
+            0,
+            json!({"path": "large_batch_edit.txt"}),
+        )],
+    )
+    .await;
+    assert!(read[0].dto.ok, "{:?}", read[0].dto.error);
+    let mut grown = vec![b'y'; 16 * 1024 * 1024 + 1];
+    grown.extend_from_slice(b"BATCH_MARKER");
+    fs::write(&target, &grown).unwrap();
+    let edited = run(
+        &rt,
+        vec![call(
+            "batch_edit",
+            "be-large",
+            0,
+            json!({"edits": [{"path": "large_batch_edit.txt", "old_text": "BATCH_MARKER", "new_text": "BATCH_EDITED"}]}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        edited[0].status,
+        ToolResultStatus::Success,
+        "{:?}",
+        edited[0].dto.error
+    );
+    let after = fs::read(&target).unwrap();
+    assert!(after.ends_with(b"BATCH_EDITED"));
+    assert!(after.len() as u64 > 16 * 1024 * 1024);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn edit_file_detects_hash_mismatch_on_a_target_above_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("large_edit_hash.txt");
+    fs::write(&target, b"before").unwrap();
+    let rt = runtime(dir.path(), false);
+    let read = run(
+        &rt,
+        vec![call(
+            "read_file",
+            "r-hash",
+            0,
+            json!({"path": "large_edit_hash.txt"}),
+        )],
+    )
+    .await;
+    assert!(read[0].dto.ok, "{:?}", read[0].dto.error);
+    let mut grown = vec![b'z'; 16 * 1024 * 1024 + 1];
+    grown.extend_from_slice(b"HASH_MARKER");
+    fs::write(&target, &grown).unwrap();
+    let stale_hash = Sha256Digest::digest_bytes(b"before");
+    let edited = run(
+        &rt,
+        vec![call(
+            "edit_file",
+            "e-hash",
+            0,
+            json!({"path": "large_edit_hash.txt", "old_text": "HASH_MARKER", "new_text": "X", "expected_sha256": stale_hash}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        edited[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolValidationFailed
+    );
+    assert_eq!(fs::metadata(&target).unwrap().len(), grown.len() as u64);
+}
+
 #[tokio::test]
 async fn batch_write_honors_an_allowed_root_after_risk_approval() {
     let root = tempfile::tempdir().unwrap();

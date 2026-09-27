@@ -1055,6 +1055,45 @@ fn journal_rejects_external_growth_beyond_read_limit_as_a_conflict() {
 }
 
 #[test]
+fn journal_commit_rejects_an_externally_enlarged_staged_payload_as_a_conflict() {
+    let temp = confined_tempdir();
+    let target = temp.path().join("staged_grown.txt");
+    fs::write(&target, b"before").unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("N2")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("N1")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("N3")).unwrap(),
+        &ToolCallId::from_str_canonical("call_staged_grown").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: b"after".to_vec(),
+        }],
+    )
+    .unwrap();
+    let staged = temp
+        .path()
+        .join("journals")
+        .join(format!("write-{execution}"))
+        .join("staged-0");
+    // Grow the staged payload beyond its recorded hash before commit reads
+    // it. Streaming through the confined handle must classify this as a
+    // conflict and never replace the target with unverified bytes.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&staged)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let err = commit_write_journal(temp.path(), temp.path(), &execution).unwrap_err();
+    assert_eq!(err.code(), "HISTORY_ROLLBACK_CONFLICT");
+    assert_eq!(fs::read(&target).unwrap(), b"before");
+}
+
+#[test]
 fn journal_conflict_does_not_overwrite_external_bytes() {
     let temp = confined_tempdir();
     let target = temp.path().join("file.txt");

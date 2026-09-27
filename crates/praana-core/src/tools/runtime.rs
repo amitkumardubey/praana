@@ -766,10 +766,12 @@ impl ToolRuntime {
                     }
                     if let Some(expected) = expected_sha256 {
                         if path.is_file() {
-                            let bytes = std::fs::read(&path).map_err(|_| {
-                                ToolError::new(ToolErrorCode::ToolIoFailed, "read failed")
-                            })?;
-                            if Sha256Digest::digest_bytes(&bytes).as_str() != expected {
+                            // Streamed through a confined, no-follow handle so an
+                            // arbitrarily large existing target is never fully
+                            // materialized just to compare a hash.
+                            if crate::tools::builtin::confine::hash_regular(&path)?.as_str()
+                                != expected
+                            {
                                 return Err(ToolError::new(
                                     ToolErrorCode::ToolValidationFailed,
                                     "file changed",
@@ -804,20 +806,27 @@ impl ToolRuntime {
                             "read the file before editing it",
                         ));
                     }
-                    let bytes = std::fs::read(&path)
-                        .map_err(|_| ToolError::new(ToolErrorCode::ToolIoFailed, "read failed"))?;
                     if let Some(expected) = expected_sha256 {
-                        if Sha256Digest::digest_bytes(&bytes).as_str() != expected {
+                        // Streamed through a confined, no-follow handle: reject
+                        // a hash mismatch without materializing the target.
+                        if crate::tools::builtin::confine::hash_regular(&path)?.as_str() != expected
+                        {
                             return Err(ToolError::new(
                                 ToolErrorCode::ToolValidationFailed,
                                 "file changed",
                             ));
                         }
                     }
-                    let text = std::str::from_utf8(&bytes).map_err(|_| {
-                        ToolError::new(ToolErrorCode::ToolUnsupported, "unsupported encoding")
-                    })?;
                     if tool_name != "batch_edit" {
+                        // A single edit_file call still needs full text to prove
+                        // old_text is findable and unique. batch_edit defers this
+                        // to simulate_batch_edits so each unique target loads
+                        // once. Neither path caps an existing edit target at the
+                        // read_file-specific ceiling (owner decision 3).
+                        let bytes = crate::tools::builtin::confine::read_regular(&path, u64::MAX)?;
+                        let text = std::str::from_utf8(&bytes).map_err(|_| {
+                            ToolError::new(ToolErrorCode::ToolUnsupported, "unsupported encoding")
+                        })?;
                         let _ = super::builtin::apply_edit(text, old_text, new_text)?;
                     }
                 }
@@ -1373,8 +1382,10 @@ fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
         if let Some(existing) = images.iter_mut().find(|item| item.0 == path) {
             existing.1 = super::builtin::apply_edit(&existing.1, old_text, new_text)?;
         } else {
-            let bytes = std::fs::read(&path)
-                .map_err(|_| ToolError::new(ToolErrorCode::ToolIoFailed, "read failed"))?;
+            // No read_file-specific size ceiling: an edit target is not
+            // read_file (owner decision 3), and this is one confined,
+            // no-follow read per unique path even for a large file.
+            let bytes = crate::tools::builtin::confine::read_regular(&path, u64::MAX)?;
             let text = std::str::from_utf8(&bytes).map_err(|_| {
                 ToolError::new(ToolErrorCode::ToolUnsupported, "unsupported encoding")
             })?;
