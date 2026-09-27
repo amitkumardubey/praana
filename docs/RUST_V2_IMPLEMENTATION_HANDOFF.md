@@ -54,6 +54,8 @@ P0
                                   |
                                  P6
                                   |
+                         W403 --> W402
+                                  |
                                  P7
                                   |
                        P8 (new specs first)
@@ -298,15 +300,18 @@ P0
   exception. Handle-anchored, reparse-safe Windows write/edit/batch operations
   are required before P7 and before any editor-client release (tracking issue
   `chronosiq/praana#402`). Durable batch completion orders references by provider
-  ordinal even when the caller supplies a permuted request vector. Linux runs
-  the event matrix locally; CI also runs it on macOS and Windows (including
-  fast-fail-versus-panic), plus Unix journal tests. Windows History private
-  ACLs still fail closed at session creation; until `chronosiq/praana#403`
-  supplies secure permissions, durable Windows crash recovery cannot pass.
-  CI results are required before claiming platform verification. The Redaction owner approved the
-  version-scoped per-leaf invariant: recovery executes an unstarted call only
-  when every durable argument leaf lacks a marker; otherwise it cancels without
-  running the body. Acceptance fails closed on an unmarked argument mutation.
+  ordinal even when the caller supplies a permuted request vector. Linux and
+  macOS CI execute the event and two-file journal crash matrices; Windows CI
+  compiles the core and requires a real fast-fail, panic rejection, and the
+  fail-closed write/catalog tests. The Windows durable crash matrix is
+  explicitly skipped under the owner-approved P3C platform gap: since P1B,
+  Windows History session creation has failed closed without private ACLs.
+  Durable Windows sessions remain unsupported until `chronosiq/praana#403`;
+  this is not a P3C defect. Do not bypass the ACL check. The Redaction owner
+  approved the version-scoped per-leaf invariant: recovery executes an
+  unstarted call only when every durable argument leaf lacks a marker;
+  otherwise it cancels without running the body. Acceptance fails closed on an
+  unmarked argument mutation.
 
 ### P4A: History Retrieval and Search
 
@@ -343,10 +348,29 @@ P0
 - Focused tests: `memory_contract_v1`, `memory_builtin_sqlite_v1`,
   `memory_extraction_v1`.
 
+### W403: Windows Private History ACLs (`chronosiq/praana#403`)
+
+- Owner: `RUST_V2_HISTORY_STORAGE_SPEC.md` private History permissions.
+- Depends: P1B; may be implemented after P3C/P4A/P5/P6 on other platforms.
+- Output: private, verifiable Windows History session/ledger/artifact/spool
+  creation without a create-then-insecure window; durable session creation and
+  recovery remain fail-closed until this packet lands.
+- Gate: pass the Windows durable crash matrix with actual fast-fail evidence.
+
+### W402: Windows Handle-Anchored File Mutations (`chronosiq/praana#402`)
+
+- Owner: `RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` Phase 3 file tools;
+  Tool Runtime confinement and History journal rollback.
+- Depends: W403 (complete it first).
+- Output: reparse-safe Windows write/edit/batch operations and journal recovery;
+  restore their provider-visible descriptors only after safety tests pass.
+- Gate: W403 then W402 MUST both land before P7 and before any editor-client
+  release. The P3C approved Windows tool-catalog exception ends only then.
+
 ### P7: Temporary OpenTUI IPC
 
 - Owner: `RUST_V2_IPC_SPEC.md`; UI Contract conversion fixtures.
-- Depends: P1C and headless Phases 1-6.
+- Depends: P1C, headless Phases 1-6, W403, and W402.
 - Output: framing/handshake/conversion/ack/backpressure/restart and TypeScript
   presentation adapter. No semantic DTO duplication.
 - Focused tests: `ipc_ui_contract_v1`, `ipc_framing`, `ipc_backpressure`,

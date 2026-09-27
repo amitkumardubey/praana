@@ -55,7 +55,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 search_reports_every_same_line_match_with_a_match_cap -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Windows durable crash matrix and provider-order test
+          cargo test -p praana-core --test builtin_tools_phase3 parallel_calls_pair_results_by_call_id -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Explain owner-approved Windows durable-session gap (#403)
+        shell: pwsh
+        run: |
+          Write-Host "::notice title=Windows durable crash matrix skipped::Windows History session creation fails closed without private ACLs (https://github.com/chronosiq/praana/issues/403). P3C owner approved this temporary gap; never bypass the ACL check."
+      - name: 'SKIPPED (#403): Windows durable crash matrix and provider-order fixture require private History ACLs'
+        if: ${{ false }}
         shell: pwsh
         run: |
           cargo test -p praana-core --features failpoints --test crash_recovery
