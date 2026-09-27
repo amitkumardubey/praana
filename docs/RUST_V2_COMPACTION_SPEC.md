@@ -494,19 +494,27 @@ invalidating its continuation:
 else if a configured compactor is available and healthy:
     Configured
 else:
-    invariant violation: session creation should have rejected this config;
-    fail without changing projection and stop new turn admission
+    invariant violation for a Phase-5 compaction-eligible session: creation
+    should have rejected this config. Fail without changing the projection,
+    do not compact, and stop new turn admission. Do not run this selection
+    on a pre-Phase-5 snapshot until P5 specifies eligibility.
 ```
 
 The core never chooses a model merely because it is larger or more expensive.
 Profiles are provider/protocol/model/revision specific and backed by the
 fidelity suite in section 17.
 
-Config resolution guarantees one branch is available before a provider-capable
-session opens. Empty configured compactor fields mean the validated active-model
-branch, not "wait until pressure and try". A configured pair is health-checked
-for credentials/profile/schema support at session creation; transient network
-failure during an actual compaction still leaves the prior projection active.
+This selection runs only in Phase 5, and only for a session the P5 activation
+gate has made compaction-eligible. Before Phase 5, an empty compactor pair is
+valid, no compaction request is made, and this algorithm does not run. Starting
+with Phase 5, config resolution guarantees one branch is available before a
+new provider-capable session opens. Empty configured compactor fields then
+mean the validated active-model branch, not "wait until pressure and try". A
+configured pair is health-checked for credentials, profile, and schema support
+at that creation; transient network failure during an actual compaction still
+leaves the prior projection active. Pre-Phase-5 session snapshots keep the
+empty pair and are not rewritten. P5 must specify their compaction eligibility
+before this selection runs on a resumed turn.
 
 ### 7.2 Same-model internal request
 
@@ -1193,11 +1201,15 @@ partial provider attempt is never accepted or summarized as source.
 
 ### 14.4 No compactor available
 
-Config/session creation prevents a session with neither validated self-
-compaction nor a validated configured compactor. `COMPACTION_UNAVAILABLE` is
-therefore reserved for a post-start capability integrity failure, revoked/missing
-credential, or runtime health failure. It stops new turn admission and leaves
-the projection unchanged; it does not use Cognitive Memory or a hidden model.
+Starting with Phase 5, creation of a new provider-capable session prevents a
+configuration with neither validated self-compaction nor a validated configured
+compactor. Pre-Phase-5 sessions opened with the default empty pair are not
+rejected retroactively and are not compacted until P5 specifies their
+eligibility. `COMPACTION_UNAVAILABLE` is reserved for a post-start capability
+integrity failure, a revoked or missing credential, or a runtime health failure
+on a session that was compaction-eligible. It stops new turn admission and
+leaves the projection unchanged; it does not use Cognitive Memory or a hidden
+model.
 At the hard ceiling, request admission stops cleanly. A deterministic extractive
 summary may be added only as a separately specified and fidelity-tested
 strategy; it is not part of schema v1.
