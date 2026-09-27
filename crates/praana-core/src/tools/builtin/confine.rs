@@ -524,7 +524,7 @@ mod read_limit_tests {
     #[test]
     fn reports_the_supplied_read_limit() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("bytes.txt");
+        let path = root.path().canonicalize().unwrap().join("bytes.txt");
         std::fs::write(&path, b"sixabc").unwrap();
         let error = super::read_regular(&path, 5).unwrap_err();
         assert!(error.to_string().contains("file exceeds 5 bytes"));
