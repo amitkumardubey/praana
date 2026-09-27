@@ -13,6 +13,21 @@ pub struct ToolIntent {
     pub risk_facts: Vec<RiskFact>,
     pub timeout_ms: u64,
     pub idempotency: ToolIdempotency,
+    pub planned: Vec<PlannedChange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlannedChange {
+    Write {
+        requested_path: String,
+        expected_sha256: Option<String>,
+    },
+    Edit {
+        requested_path: String,
+        old_text: String,
+        new_text: String,
+        expected_sha256: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +106,29 @@ pub struct ToolExecutionContext {
     pub cwd: PathBuf,
     pub workspace_roots: Vec<PathBuf>,
     pub process_slots: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    pub session_dir: PathBuf,
+    pub session_id: crate::protocol::id::SessionId,
+    pub batch_id: crate::protocol::id::ToolBatchId,
+    pub call_id: crate::protocol::id::ToolCallId,
+    pub execution_id: crate::protocol::id::ToolExecutionId,
+    pub timeout: std::time::Duration,
+    pub normalized_paths: Vec<(String, PathBuf)>,
+}
+
+impl ToolExecutionContext {
+    pub fn path_for(&self, requested: &str) -> Option<&Path> {
+        self.normalized_paths
+            .iter()
+            .find(|(name, _)| name == requested)
+            .map(|(_, path)| path.as_path())
+    }
+
+    pub fn requested_for(&self, absolute: &Path) -> Option<String> {
+        self.normalized_paths
+            .iter()
+            .find(|(_, path)| path == absolute)
+            .map(|(name, _)| name.clone())
+    }
 }
 
 pub fn normalize_lexical(cwd: &Path, requested: &str) -> Result<PathBuf, ToolError> {

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "include_untracked": {
+      "default": false,
+      "type": "boolean"
+    }
+  },
+  "type": "object"
+}

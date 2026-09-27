@@ -182,6 +182,22 @@ impl<'de> Deserialize<'de> for Sha256Digest {
     }
 }
 
+impl schemars::JsonSchema for Sha256Digest {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Sha256Digest".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        serde_json::from_value(serde_json::json!({
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+        }))
+        .expect("sha256 schema")
+    }
+}
+
 /// Projection ID, fixed for event schema version 2.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]

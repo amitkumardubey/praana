@@ -362,6 +362,8 @@ impl EventLogStore {
                 false,
             ));
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(event_crash_label("event.write_before_fsync", envelope));
         if !sync {
             self.unhealthy = true;
             return Err(HistoryError::new(
@@ -380,6 +382,8 @@ impl EventLogStore {
                 false,
             ));
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(event_crash_label("event.after_fsync", envelope));
         self.replayer = candidate;
         self.current_prefix_hash =
             calculate_prefix_hash(&self.current_prefix_hash, envelope.sequence, &line);
@@ -837,26 +841,25 @@ fn process_start_time() -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        let pid = std::process::id() as libc::pid_t;
-        let mut info: libc::kinfo_proc = unsafe { std::mem::zeroed() };
-        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
-        let mut size = std::mem::size_of::<libc::kinfo_proc>();
-        let rc = unsafe {
-            libc::sysctl(
-                mib.as_mut_ptr(),
-                mib.len() as u32,
-                &mut info as *mut _ as *mut libc::c_void,
-                &mut size,
-                std::ptr::null_mut(),
+        // libc does not expose Darwin's kinfo_proc. libproc provides the
+        // documented per-PID start timestamp without guessing struct layout.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let expected = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidinfo(
+                std::process::id() as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
                 0,
+                &mut info as *mut _ as *mut libc::c_void,
+                expected,
             )
         };
-        if rc != 0 {
+        if read != expected {
             return None;
         }
         return Some(format!(
             "{}.{}",
-            info.kp_proc.p_starttime.tv_sec, info.kp_proc.p_starttime.tv_usec
+            info.pbi_start_tvsec, info.pbi_start_tvusec
         ));
     }
     #[cfg(windows)]
@@ -1180,6 +1183,20 @@ fn snapshot_digest(session_dir: &Path) -> Option<String> {
     let bytes = fs::read(&path).ok()?;
     let canonical = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
     Some(calculate_sha256(canonical).to_string())
+}
+
+#[cfg(feature = "failpoints")]
+fn event_crash_label(prefix: &str, envelope: &EventEnvelope) -> String {
+    let kind = serde_json::to_value(&envelope.event)
+        .ok()
+        .and_then(|event| {
+            event
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned());
+    format!("{prefix}:{kind}:{}", envelope.sequence)
 }
 
 fn encode_base64(bytes: &[u8]) -> String {

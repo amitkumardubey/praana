@@ -72,6 +72,19 @@ contains no NUL. Newlines are preserved; tools do not format content implicitly.
 
 ## 3. File Tools
 
+**Approved temporary Windows platform exception (Built-in Catalog owner).**
+The current Rust implementation cannot safely confine workspace writes across
+parent-directory reparse/junction swaps on Windows. Until handle-anchored,
+reparse-safe write/edit/batch operations exist, the Windows runtime omits
+`write_file` (410), `edit_file` (420), `batch_write` (430), and `batch_edit`
+(440) from its provider-visible catalog; their order slots are not reused.
+Direct invocation is also guarded against side effects. The versioned schema
+fixtures still describe all four tools for platforms where they are available.
+This approved exception does **not** approve Windows write support or change
+their DTO definitions. Handle-anchored, reparse-safe Windows write/edit/batch
+operations are required before P7 and before any editor-client release
+(tracked in `chronosiq/praana#402`).
+
 ### 3.1 `read_file` (order 400)
 
 Description: `Read a bounded UTF-8 line range from one file. Returns exact text and an immutable file identity.`
@@ -130,7 +143,8 @@ pub struct EditFileOutput {
 ```
 
 `old_text` is 1..=1 MiB and must occur exactly once. `new_text` is at most 1
-MiB. Zero/multiple matches are validation errors. Intent is Workspace +
+MiB. The existing target must be at most 16 MiB; a larger target fails
+validation before any write. Zero/multiple matches are validation errors. Intent is Workspace +
 WRITE_FILES, idempotent write, one path.
 
 ### 3.4 `batch_write` (order 430) and `batch_edit` (order 440)
@@ -147,8 +161,12 @@ pub struct BatchMutationOutput { pub changed: Vec<ChangedFileDto>, pub unchanged
 ```
 
 Arrays contain 1..=100 items, total input at most 16 MiB. Duplicate write paths
-are invalid. Duplicate edit paths are allowed and applied array-order to one
-in-memory image. Acquire sorted unique path locks, validate all, journal all,
+are invalid. Duplicate edit paths are allowed and applied array-order,
+simulated sequentially in memory. Each existing `batch_edit` target must be
+at most 16 MiB, with at most 32 MiB across distinct targets and 48 MiB across
+transformed results; these limits do not apply to `batch_write`. The result
+bound includes the maximum growth from the 16 MiB batch-input budget. Acquire
+sorted unique path locks, validate all, journal all,
 then replace all. Any failure restores the before set under Tool Runtime's
 journal contract. Intent contains every write path.
 

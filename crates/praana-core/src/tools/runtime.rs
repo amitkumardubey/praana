@@ -1,17 +1,32 @@
 //! Batch execution. Hook order is fixed in this function.
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::clock::Clock;
 use crate::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
+use crate::history::artifact::{ArtifactStore, PublishInput};
+use crate::history::preview::ArtifactContentType;
 use crate::hooks::risk::RiskDecider;
-use crate::protocol::id::{AttemptId, SessionId, Sha256Digest, ToolBatchId, TurnId};
+use crate::id::{IdGenerator, MonotonicUlidGenerator};
+use crate::protocol::events::{
+    CanonicalEvent, EventEnvelope, ToolBatchCompleted, ToolExecutionStarted, ToolMutability,
+};
+use crate::protocol::hashes::{calculate_result_messages_hash, calculate_tool_arguments_hash};
+use crate::protocol::id::{
+    AttemptId, EventId, SessionId, Sha256Digest, StepId, ToolBatchId, ToolCallId, ToolExecutionId,
+    TurnId,
+};
+use crate::protocol::tool_result::ToolResultStatus;
 
 use super::contract::{ErasedTool, PreparedToolCall};
 use super::error::{map_side_effect_uncertain, map_tool_error, ToolError, ToolErrorCode};
@@ -59,12 +74,15 @@ pub struct FinishedCall {
     pub canonical_bytes: Vec<u8>,
     pub execution_started: bool,
     pub status: crate::protocol::tool_result::ToolResultStatus,
+    pub execution_id: Option<ToolExecutionId>,
+    pub force_binary: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct BatchFinished {
     pub results: Vec<FinishedCall>,
     pub poisoned: bool,
+    pub uncertain_execution_ids: Vec<ToolExecutionId>,
 }
 
 pub trait ResultCommit: Send + Sync {
@@ -77,6 +95,8 @@ struct Admitted {
     prepared: PreparedToolCall,
     capabilities: ToolCapabilities,
     lease: PathLease,
+    execution_id: ToolExecutionId,
+    batch_id: ToolBatchId,
 }
 
 pub struct ToolRuntime {
@@ -95,7 +115,42 @@ pub struct ToolRuntime {
     risk_decider: Mutex<Option<Arc<dyn RiskDecider>>>,
     risk_gate: tokio::sync::Mutex<()>,
     commit: Mutex<Option<Arc<dyn ResultCommit>>>,
-    retained: Mutex<Vec<JoinHandle<()>>>,
+    retained: Mutex<Vec<RetainedExecution>>,
+    workspace: Mutex<PathBuf>,
+    session_dir: Mutex<PathBuf>,
+    session_id: Mutex<SessionId>,
+    reads: Mutex<BTreeSet<PathBuf>>,
+    ids: Mutex<MonotonicUlidGenerator>,
+}
+
+pub struct DurableSession<'a> {
+    pub log: &'a mut crate::history::event_log::EventLogStore,
+    pub artifacts: &'a ArtifactStore,
+    pub ids: &'a MonotonicUlidGenerator,
+    pub clock: &'a dyn Clock,
+    pub session_id: SessionId,
+    pub step_id: StepId,
+    pub fault_after_body: bool,
+    /// Recovered unstarted calls whose durable arguments cannot be replayed.
+    pub recovery_cancelled_calls: BTreeSet<ToolCallId>,
+}
+
+pub enum DurableBatchOutcome {
+    Finished(BatchFinished),
+    CrashedAfterBody,
+}
+
+enum BatchSlot {
+    Ready {
+        call_index: u32,
+        item: Admitted,
+    },
+    Blocked {
+        call_index: u32,
+        call: ProviderToolCall,
+        finished: FinishedCall,
+        execution_id: ToolExecutionId,
+    },
 }
 
 impl ToolRuntime {
@@ -124,7 +179,76 @@ impl ToolRuntime {
             risk_gate: tokio::sync::Mutex::new(()),
             commit: Mutex::new(None),
             retained: Mutex::new(Vec::new()),
+            workspace: Mutex::new(
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|path| std::fs::canonicalize(&path).ok())
+                    .unwrap_or_else(|| PathBuf::from(".")),
+            ),
+            session_dir: Mutex::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+            session_id: Mutex::new(placeholder_session()),
+            reads: Mutex::new(BTreeSet::new()),
+            ids: Mutex::new(MonotonicUlidGenerator::system()),
         }
+    }
+
+    pub fn set_workspace(&self, workspace: PathBuf) {
+        let canonical = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+        *self.workspace.lock().unwrap_or_else(|err| err.into_inner()) = canonical;
+    }
+
+    pub fn set_session(&self, session_dir: PathBuf, session_id: SessionId) {
+        let _ = std::fs::create_dir_all(&session_dir);
+        // Canonicalize like set_workspace: on macOS TMPDIR often spells /var as
+        // an alias of /private/var, and the confine layer's handle-anchored
+        // opens walk from the filesystem root, rejecting a symlinked
+        // component. Journal payload paths are session_dir-relative, so an
+        // uncanonicalized session_dir breaks every confined open beneath it.
+        let canonical = std::fs::canonicalize(&session_dir).unwrap_or(session_dir);
+        *self
+            .session_dir
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = canonical;
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = session_id;
+    }
+
+    pub fn workspace(&self) -> PathBuf {
+        self.workspace
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    pub fn session_dir(&self) -> PathBuf {
+        self.session_dir
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone()
+    }
+
+    pub fn session_id(&self) -> SessionId {
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn next_execution_id(&self) -> ToolExecutionId {
+        self.ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .next_id()
+            .expect("execution id")
+    }
+
+    fn note_read(&self, path: PathBuf) {
+        self.reads
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(path);
     }
 
     pub fn set_risk_decider(&self, decider: Arc<dyn RiskDecider>) {
@@ -158,6 +282,10 @@ impl ToolRuntime {
         Arc::clone(&self.locks)
     }
 
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::SeqCst)
+    }
+
     pub async fn execute_batch(
         &self,
         mut request: ToolBatchRequest,
@@ -173,14 +301,7 @@ impl ToolRuntime {
         let headless = self.headless.load(Ordering::SeqCst)
             || matches!(request.origin, ToolCallOrigin::HeadlessCommand)
             || matches!(origin, BatchOrigin::HeadlessCommand);
-        let mut calls = std::mem::take(&mut request.calls);
-        calls.sort_by_key(|call| call.provider_ordinal);
-        if duplicate_identity(&calls) {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolInternal,
-                "duplicate provider ordinal or call id",
-            ));
-        }
+        let calls = ordered_provider_calls(std::mem::take(&mut request.calls))?;
         let mut admitted = Vec::new();
         let mut blocked = Vec::new();
         for call in calls {
@@ -195,7 +316,7 @@ impl ToolRuntime {
                 ));
                 continue;
             }
-            match self.preflight(call, headless).await? {
+            match self.preflight(call, headless, request.batch_id).await? {
                 Preflight::Ready(item) => admitted.push(item),
                 Preflight::Blocked(ordinal, finished) => blocked.push((ordinal, finished)),
             }
@@ -204,7 +325,7 @@ impl ToolRuntime {
             let cancel = cancel.clone();
             async move {
                 let ordinal = item.call.provider_ordinal;
-                let finished = self.run_admitted(item, &cancel).await?;
+                let finished = self.run_admitted(item, &cancel, None).await?;
                 Ok::<_, ToolError>((ordinal, finished))
             }
         }))
@@ -215,16 +336,283 @@ impl ToolRuntime {
         }
         results.sort_by_key(|(ordinal, _)| *ordinal);
         let poisoned = self.poisoned.load(Ordering::SeqCst);
+        let results: Vec<FinishedCall> =
+            results.into_iter().map(|(_, finished)| finished).collect();
+        let uncertain_execution_ids = uncertain_ids(&results);
         Ok(BatchFinished {
-            results: results.into_iter().map(|(_, finished)| finished).collect(),
+            results,
             poisoned,
+            uncertain_execution_ids,
         })
+    }
+
+    pub async fn execute_durable_batch(
+        &self,
+        request: ToolBatchRequest,
+        origin: BatchOrigin,
+        cancel: CancellationToken,
+        durable: &mut DurableSession<'_>,
+    ) -> Result<DurableBatchOutcome, ToolError> {
+        if self.poisoned.load(Ordering::SeqCst) {
+            return Err(ToolError::new(
+                ToolErrorCode::ToolInternal,
+                "tool runtime is poisoned",
+            ));
+        }
+        let headless = self.headless.load(Ordering::SeqCst)
+            || matches!(request.origin, ToolCallOrigin::HeadlessCommand)
+            || matches!(origin, BatchOrigin::HeadlessCommand);
+        let calls = ordered_provider_calls(request.calls.clone())?;
+        // A recovered batch may already contain durable finishes. Do not
+        // re-enter preflight/body for those calls; only admit unstarted peers.
+        let prior_events = durable
+            .log
+            .events()
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "event read failed"))?;
+        let finished_ids: BTreeSet<_> = prior_events
+            .iter()
+            .filter_map(|event| match &event.event {
+                crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finish)
+                    if finish.batch_id == request.batch_id =>
+                {
+                    Some(finish.call_id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut slots = Vec::new();
+        for (call_index, call) in calls.iter().cloned().enumerate() {
+            if finished_ids.contains(&call.tool_call_id) {
+                continue;
+            }
+            if cancel.is_cancelled()
+                || durable
+                    .recovery_cancelled_calls
+                    .contains(&call.tool_call_id)
+            {
+                slots.push(BatchSlot::Blocked {
+                    call_index: call_index as u32,
+                    call: call.clone(),
+                    finished: self.finish_error(
+                        &call,
+                        ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"),
+                        false,
+                    )?,
+                    execution_id: fresh_id(durable.ids)?,
+                });
+                continue;
+            }
+            match self
+                .preflight(call.clone(), headless, request.batch_id)
+                .await?
+            {
+                Preflight::Ready(item) => slots.push(BatchSlot::Ready {
+                    call_index: call_index as u32,
+                    item,
+                }),
+                Preflight::Blocked(_, finished) => {
+                    slots.push(BatchSlot::Blocked {
+                        call_index: call_index as u32,
+                        call,
+                        finished,
+                        execution_id: fresh_id(durable.ids)?,
+                    });
+                }
+            }
+        }
+        let mut ready = Vec::new();
+        let mut blocked = Vec::new();
+        for slot in slots {
+            match slot {
+                BatchSlot::Ready { call_index, item } => ready.push((call_index, item)),
+                BatchSlot::Blocked {
+                    call_index,
+                    call,
+                    finished,
+                    execution_id,
+                } => blocked.push((call_index, call, finished, execution_id)),
+            }
+        }
+        let (started, finished_ready, not_started) =
+            self.drive_ready(&request, durable, ready, &cancel).await?;
+        blocked.extend(not_started);
+        if durable.fault_after_body {
+            return Ok(DurableBatchOutcome::CrashedAfterBody);
+        }
+        let mut inputs = Vec::new();
+        for (call_index, finished) in &finished_ready {
+            let start = started.iter().find(|(index, _, _)| index == call_index);
+            inputs.push(self.publish_input(
+                durable,
+                &request,
+                *call_index,
+                finished,
+                start.map(|(_, event_id, execution_id)| (*event_id, *execution_id)),
+            )?);
+        }
+        for (call_index, call, finished, execution_id) in &blocked {
+            let _ = call;
+            inputs.push(
+                self.publish_input(durable, &request, *call_index, finished, None)
+                    .map(|mut input| {
+                        input.execution_id = *execution_id;
+                        input
+                    })?,
+            );
+        }
+        inputs.sort_by_key(|input| input.call_index);
+        if !inputs.is_empty() {
+            durable
+                .artifacts
+                .publish_batch(durable.log, &inputs, None)
+                .map_err(|_| {
+                    ToolError::new(ToolErrorCode::ToolArtifactFailed, "artifact publish failed")
+                })?;
+        }
+        let events = durable
+            .log
+            .events()
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "event read failed"))?;
+        let mut messages = Vec::new();
+        let mut finish_ids = Vec::new();
+        let mut call_ids = Vec::new();
+        // Use the same provider-ordinal order as admission and call_index.
+        // The caller's vector may have arrived permuted.
+        for call in &calls {
+            let envelope = events
+                .iter()
+                .find(|event| matches!(
+                    &event.event,
+                    crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finish)
+                        if finish.batch_id == request.batch_id && finish.call_id == call.tool_call_id
+                ))
+                .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "finish event missing"))?;
+            let crate::protocol::events::CanonicalEvent::ToolExecutionFinished(finished) =
+                &envelope.event
+            else {
+                unreachable!("matched finish event")
+            };
+            messages.push(finished.result.clone());
+            finish_ids.push(envelope.event_id);
+            call_ids.push(call.tool_call_id.clone());
+        }
+        let result_messages_hash = calculate_result_messages_hash(&messages)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "result hash failed"))?;
+        self.append_durable(
+            durable,
+            Some(request.turn_id),
+            Some(request.attempt_id),
+            CanonicalEvent::ToolBatchCompleted(ToolBatchCompleted {
+                batch_id: request.batch_id,
+                step_id: durable.step_id,
+                call_ids,
+                result_event_ids: finish_ids,
+                result_messages_hash,
+            }),
+        )?;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("runtime.after_tool_batch_completed");
+        let mut results = finished_ready;
+        results.extend(
+            blocked
+                .into_iter()
+                .map(|(index, _, finished, _)| (index, finished)),
+        );
+        results.sort_by_key(|(index, _)| *index);
+        let poisoned = self.poisoned.load(Ordering::SeqCst);
+        let results: Vec<FinishedCall> =
+            results.into_iter().map(|(_, finished)| finished).collect();
+        let uncertain_execution_ids = uncertain_ids(&results);
+        Ok(DurableBatchOutcome::Finished(BatchFinished {
+            results,
+            poisoned,
+            uncertain_execution_ids,
+        }))
+    }
+
+    fn publish_input(
+        &self,
+        durable: &mut DurableSession<'_>,
+        request: &ToolBatchRequest,
+        call_index: u32,
+        finished: &FinishedCall,
+        started: Option<(EventId, ToolExecutionId)>,
+    ) -> Result<PublishInput, ToolError> {
+        let (started_event_id, execution_id) = match started {
+            Some((event_id, execution_id)) => (Some(event_id), execution_id),
+            None => (None, fresh_id(durable.ids)?),
+        };
+        let content_type = if finished.force_binary {
+            ArtifactContentType::Binary
+        } else {
+            match finished.dto.meta.tool_name.as_str() {
+                "shell" => ArtifactContentType::Log,
+                "git_diff" => ArtifactContentType::Diff,
+                "run_tests" => ArtifactContentType::TestOutput,
+                "search_code" | "find_files" => ArtifactContentType::SearchResults,
+                _ => ArtifactContentType::Json,
+            }
+        };
+        Ok(PublishInput {
+            artifact_id: fresh_id(durable.ids)?,
+            finish_event_id: fresh_id(durable.ids)?,
+            result_message_id: fresh_id(durable.ids)?,
+            canonical_bytes: finished.canonical_bytes.clone(),
+            content_type,
+            tool_name: finished.dto.meta.tool_name.as_str().to_owned(),
+            call_id: finished.dto.meta.tool_call_id.clone(),
+            call_index,
+            execution_id,
+            batch_id: request.batch_id,
+            step_id: durable.step_id,
+            turn_id: request.turn_id,
+            attempt_id: request.attempt_id,
+            execution_started: finished.execution_started,
+            started_event_id,
+            status: if finished.dto.ok {
+                ToolResultStatus::Success
+            } else {
+                finished.status.clone()
+            },
+            label: Some(finished.dto.meta.tool_name.as_str().to_owned()),
+            normalized_path: None,
+            exit_code: None,
+            redacted: finished.dto.meta.redacted,
+            redaction_json: "{\"applied\":false,\"replacement_count\":0,\"kinds\":[]}".to_owned(),
+            force_binary: finished.force_binary,
+        })
+    }
+
+    fn append_durable(
+        &self,
+        durable: &mut DurableSession<'_>,
+        turn_id: Option<TurnId>,
+        attempt_id: Option<AttemptId>,
+        event: CanonicalEvent,
+    ) -> Result<EventId, ToolError> {
+        let event_id = fresh_id(durable.ids)?;
+        let envelope = EventEnvelope {
+            schema_version: crate::protocol::constants::EVENT_SCHEMA_VERSION,
+            event_id,
+            session_id: durable.session_id,
+            sequence: durable.log.current_sequence() + 1,
+            timestamp_ms: durable.clock.now_ms(),
+            turn_id,
+            attempt_id,
+            event,
+        };
+        durable
+            .log
+            .append_event(&envelope)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "event append failed"))?;
+        Ok(event_id)
     }
 
     async fn preflight(
         &self,
         call: ProviderToolCall,
         headless: bool,
+        batch_id: ToolBatchId,
     ) -> Result<Preflight, ToolError> {
         let Some(tool) = self.registry.get(&call.tool_name) else {
             return Ok(Preflight::Blocked(
@@ -236,7 +624,7 @@ impl ToolRuntime {
                 )?,
             ));
         };
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cwd = self.workspace();
         let inspect_ctx = ToolInspectContext {
             cwd: cwd.clone(),
             plan_mode: self.plan_mode.load(Ordering::SeqCst),
@@ -261,7 +649,9 @@ impl ToolRuntime {
             ));
         }
         self.trace.push("validate");
-        if let Err(error) = hooks::validate::check(&mut prepared.intent, &cwd, &self.tools) {
+        if let Err(error) = hooks::validate::check(&mut prepared.intent, &cwd, &self.tools)
+            .and_then(|_| self.check_planned(call.tool_name.as_str(), &prepared.intent))
+        {
             hooks::circuit::record_error(
                 call.tool_name.as_str(),
                 &prepared.intent,
@@ -340,13 +730,231 @@ impl ToolRuntime {
             prepared,
             capabilities,
             lease,
+            execution_id: self.next_execution_id(),
+            batch_id,
         }))
+    }
+
+    fn check_planned(&self, tool_name: &str, intent: &ToolIntent) -> Result<(), ToolError> {
+        if tool_name == "batch_edit" {
+            crate::tools::builtin::files::validate_batch_edit_target_budget(
+                intent
+                    .path_accesses
+                    .iter()
+                    .map(|access| access.normalized_absolute.as_path()),
+            )?;
+        }
+        if tool_name == "shell" {
+            if let Some(command) = &intent.command {
+                crate::tools::shell_parse::ensure_executable(&command.command)?;
+            }
+            if let Some(access) = intent.path_accesses.first() {
+                if !access.normalized_absolute.is_dir() {
+                    return Err(ToolError::new(
+                        ToolErrorCode::ToolValidationFailed,
+                        "cwd is not a directory",
+                    ));
+                }
+            }
+        }
+        let reads = self.reads.lock().unwrap_or_else(|err| err.into_inner());
+        for change in &intent.planned {
+            match change {
+                super::intent::PlannedChange::Write {
+                    requested_path,
+                    expected_sha256,
+                } => {
+                    let path = intent
+                        .path_accesses
+                        .iter()
+                        .find(|access| access.requested == *requested_path)
+                        .map(|access| access.normalized_absolute.clone())
+                        .ok_or_else(|| {
+                            ToolError::new(ToolErrorCode::ToolInternal, "write path missing")
+                        })?;
+                    if !path.exists() && expected_sha256.is_some() {
+                        return Err(ToolError::new(
+                            ToolErrorCode::ToolValidationFailed,
+                            "expected hash conflicts with a missing file",
+                        ));
+                    }
+                    if let Some(expected) = expected_sha256 {
+                        if path.is_file() {
+                            // Streamed through a confined, no-follow handle so an
+                            // arbitrarily large existing target is never fully
+                            // materialized just to compare a hash.
+                            if crate::tools::builtin::confine::hash_regular(&path)?.as_str()
+                                != expected
+                            {
+                                return Err(ToolError::new(
+                                    ToolErrorCode::ToolValidationFailed,
+                                    "file changed",
+                                ));
+                            }
+                        }
+                    }
+                }
+                super::intent::PlannedChange::Edit {
+                    requested_path,
+                    old_text,
+                    new_text,
+                    expected_sha256,
+                } => {
+                    let path = intent
+                        .path_accesses
+                        .iter()
+                        .find(|access| access.requested == *requested_path)
+                        .map(|access| access.normalized_absolute.clone())
+                        .ok_or_else(|| {
+                            ToolError::new(ToolErrorCode::ToolInternal, "edit path missing")
+                        })?;
+                    if !path.is_file() {
+                        return Err(ToolError::new(
+                            ToolErrorCode::ToolPathNotFound,
+                            "path was not found",
+                        ));
+                    }
+                    if !reads.contains(&path) {
+                        return Err(ToolError::new(
+                            ToolErrorCode::ToolPathUnread,
+                            "read the file before editing it",
+                        ));
+                    }
+                    let bytes = crate::tools::builtin::files::read_edit_target(&path)?;
+                    if expected_sha256.as_ref().is_some_and(|expected| {
+                        crate::tools::builtin::files::digest(&bytes).as_str() != expected
+                    }) {
+                        return Err(ToolError::new(
+                            ToolErrorCode::ToolValidationFailed,
+                            "file changed",
+                        ));
+                    }
+                    if tool_name != "batch_edit" {
+                        crate::tools::builtin::files::apply_exact_edit(&bytes, old_text, new_text)?;
+                    }
+                }
+            }
+        }
+        drop(reads);
+        if tool_name == "batch_edit" {
+            simulate_batch_edits(intent)?;
+        }
+        Ok(())
+    }
+
+    async fn drive_ready(
+        &self,
+        request: &ToolBatchRequest,
+        durable: &mut DurableSession<'_>,
+        ready: Vec<(u32, Admitted)>,
+        cancel: &CancellationToken,
+    ) -> Result<
+        (
+            Vec<(u32, EventId, ToolExecutionId)>,
+            Vec<(u32, FinishedCall)>,
+            Vec<(u32, ProviderToolCall, FinishedCall, ToolExecutionId)>,
+        ),
+        ToolError,
+    > {
+        let mut waiting = FuturesUnordered::new();
+        for (call_index, item) in ready {
+            let cancel = cancel.clone();
+            let parallel = Arc::clone(&self.parallel);
+            waiting.push(async move {
+                let entered = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => None,
+                    permit = parallel.acquire_owned() => permit.ok(),
+                };
+                (call_index, item, entered)
+            });
+        }
+        let mut bodies: FuturesUnordered<ReadyBody<'_>> = FuturesUnordered::new();
+        let mut started = Vec::new();
+        let mut finished = Vec::new();
+        let mut not_started = Vec::new();
+        loop {
+            let waiting_open = !waiting.is_empty();
+            let bodies_open = !bodies.is_empty();
+            if !waiting_open && !bodies_open {
+                break;
+            }
+            tokio::select! {
+                biased;
+                next = waiting.next(), if waiting_open => {
+                    let Some((call_index, item, entered)) = next else { break };
+                    match entered {
+                        Some(permit) => {
+                            let event_id = self.record_start(durable, request, call_index, &item)?;
+                            let execution_id = item.execution_id;
+                            #[cfg(feature = "failpoints")]
+                            crate::crash_point::hit(format!(
+                                "runtime.after_tool_execution_started:{}",
+                                call_index
+                            ));
+                            started.push((call_index, event_id, execution_id));
+                            let cancel = cancel.clone();
+                            bodies.push(Box::pin(async move {
+                                let finished = self.run_admitted(item, &cancel, Some(permit)).await?;
+                                Ok((call_index, finished))
+                            }));
+                        }
+                        None => {
+                            let call = item.call.clone();
+                            let execution_id = item.execution_id;
+                            drop(item);
+                            self.trace.push("write_lock_release");
+                            let finished = self.finish_error(
+                                &call,
+                                ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"),
+                                false,
+                            )?;
+                            not_started.push((call_index, call, finished, execution_id));
+                        }
+                    }
+                }
+                next = bodies.next(), if bodies_open => {
+                    let Some(body) = next else { break };
+                    finished.push(body?);
+                }
+            }
+        }
+        Ok((started, finished, not_started))
+    }
+
+    fn record_start(
+        &self,
+        durable: &mut DurableSession<'_>,
+        request: &ToolBatchRequest,
+        call_index: u32,
+        item: &Admitted,
+    ) -> Result<EventId, ToolError> {
+        let redacted_arguments = hooks::redact::redact_value(&item.call.arguments)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "arguments hash failed"))?;
+        let arguments_hash = calculate_tool_arguments_hash(&redacted_arguments)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "arguments hash failed"))?;
+        self.append_durable(
+            durable,
+            Some(request.turn_id),
+            Some(request.attempt_id),
+            CanonicalEvent::ToolExecutionStarted(ToolExecutionStarted {
+                batch_id: request.batch_id,
+                execution_id: item.execution_id,
+                step_id: durable.step_id,
+                call_id: item.call.tool_call_id.clone(),
+                call_index,
+                tool_name: item.call.tool_name.as_str().to_owned(),
+                arguments_hash,
+                mutability: mutability_of(&item.prepared.intent),
+            }),
+        )
     }
 
     async fn run_admitted(
         &self,
         admitted: Admitted,
         cancel: &CancellationToken,
+        held: Option<OwnedSemaphorePermit>,
     ) -> Result<FinishedCall, ToolError> {
         let Admitted {
             call,
@@ -354,36 +962,59 @@ impl ToolRuntime {
             prepared,
             capabilities,
             lease,
+            execution_id,
+            batch_id,
         } = admitted;
         let started = std::time::Instant::now();
         self.trace.push("execute");
         let call_cancel = cancel.child_token();
         let timeout = resolved_timeout(&prepared.intent, capabilities, &self.tools);
+        let deadline = if capabilities.contains(ToolCapabilities::SPAWN_PROCESS) {
+            timeout.saturating_add(Duration::from_millis(1500))
+        } else {
+            timeout
+        };
+        let cwd = self.workspace();
+        let workspace_roots = hooks::validate::workspace_roots(&cwd, &self.tools.allowed_paths);
         let exec_ctx = ToolExecutionContext {
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            workspace_roots: vec![
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-            ],
+            cwd: cwd.clone(),
+            workspace_roots,
             process_slots: Some(Arc::clone(&self.spawn)),
+            session_dir: self.session_dir(),
+            session_id: self.session_id(),
+            batch_id,
+            call_id: call.tool_call_id.clone(),
+            execution_id,
+            timeout,
+            normalized_paths: prepared
+                .intent
+                .path_accesses
+                .iter()
+                .map(|access| (access.requested.clone(), access.normalized_absolute.clone()))
+                .collect(),
         };
-        let permit = tokio::select! {
-            permit = self.parallel.acquire() => permit,
-            _ = call_cancel.cancelled() => {
-                drop(lease);
-                self.trace.push("write_lock_release");
-                return self.finish_error(&call, ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"), false);
-            }
-        };
-        let permit = match permit {
-            Ok(permit) => permit,
-            Err(_) => {
-                drop(lease);
-                self.trace.push("write_lock_release");
-                return self.finish_error(
-                    &call,
-                    ToolError::new(ToolErrorCode::ToolInternal, "semaphore closed"),
-                    false,
-                );
+        let permit = if let Some(permit) = held {
+            permit
+        } else {
+            let permit = tokio::select! {
+                permit = Arc::clone(&self.parallel).acquire_owned() => permit,
+                _ = call_cancel.cancelled() => {
+                    drop(lease);
+                    self.trace.push("write_lock_release");
+                    return self.finish_error(&call, ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"), false);
+                }
+            };
+            match permit {
+                Ok(permit) => permit,
+                Err(_) => {
+                    drop(lease);
+                    self.trace.push("write_lock_release");
+                    return self.finish_error(
+                        &call,
+                        ToolError::new(ToolErrorCode::ToolInternal, "semaphore closed"),
+                        false,
+                    );
+                }
             }
         };
         let side_effect = side_effect_capable(&prepared.intent, capabilities);
@@ -396,26 +1027,36 @@ impl ToolRuntime {
             biased;
             result = &mut handle => Poll::Done(map_join(result)),
             _ = call_cancel.cancelled() => Poll::Stop { cancelled: true },
-            _ = tokio::time::sleep(timeout) => Poll::Stop { cancelled: false },
+            _ = tokio::time::sleep(deadline) => Poll::Stop { cancelled: false },
         };
+        let mut lease = Some(lease);
         let output = match polled {
             Poll::Done(value) => value,
             Poll::Stop { cancelled } => {
                 if !cancelled {
                     call_cancel.cancel();
                 }
-                self.reap(handle, side_effect, cancelled, cancel).await
+                self.reap(
+                    handle,
+                    side_effect,
+                    cancelled,
+                    cancel,
+                    lease.take().expect("path lease"),
+                )
+                .await
             }
         };
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("runtime.after_tool_body_before_redaction");
         drop(permit);
         let duration_ms = started.elapsed().as_millis() as u64;
         if let Err(error) = &output {
             if error.code() == ToolErrorCode::ToolInternal
                 && error.message() == "side effect uncertain"
             {
-                drop(lease);
-                self.trace.push("write_lock_release");
-                return self.finish_uncertain(&call);
+                self.poisoned.store(true, Ordering::SeqCst);
+                cancel.cancel();
+                return self.finish_uncertain(&call, execution_id);
             }
             hooks::circuit::record_error(
                 call.tool_name.as_str(),
@@ -425,7 +1066,12 @@ impl ToolRuntime {
                 &self.circuit_counts,
             );
         }
-        let finished = self.finish_output(&call, output, duration_ms, lease)?;
+        if output.is_ok() && call.tool_name.as_str() == "read_file" {
+            for access in &intent.path_accesses {
+                self.note_read(access.normalized_absolute.clone());
+            }
+        }
+        let finished = self.finish_output(&call, output, duration_ms, lease, execution_id)?;
         Ok(finished)
     }
 
@@ -435,9 +1081,11 @@ impl ToolRuntime {
         side_effect: bool,
         cancelled: bool,
         batch: &CancellationToken,
+        lease: PathLease,
     ) -> Result<serde_json::Value, ToolError> {
         match tokio::time::timeout(Duration::from_millis(1000), &mut handle).await {
             Ok(joined) => {
+                drop(lease);
                 let _ = map_join(joined);
                 if cancelled {
                     Err(ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"))
@@ -451,9 +1099,11 @@ impl ToolRuntime {
                 self.retained
                     .lock()
                     .unwrap_or_else(|err| err.into_inner())
-                    .push(tokio::spawn(async move {
-                        let _ = handle.await;
-                    }));
+                    .push(RetainedExecution {
+                        task: handle,
+                        lease,
+                        runtime: tokio::runtime::Handle::current(),
+                    });
                 Err(ToolError::new(
                     ToolErrorCode::ToolInternal,
                     "side effect uncertain",
@@ -461,6 +1111,7 @@ impl ToolRuntime {
             }
             Err(_) => {
                 handle.abort();
+                drop(lease);
                 Err(ToolError::new(ToolErrorCode::ToolTimedOut, "timed out"))
             }
         }
@@ -471,7 +1122,8 @@ impl ToolRuntime {
         call: &ProviderToolCall,
         output: Result<serde_json::Value, ToolError>,
         duration_ms: u64,
-        lease: PathLease,
+        lease: Option<PathLease>,
+        execution_id: ToolExecutionId,
     ) -> Result<FinishedCall, ToolError> {
         self.trace.push("lsp");
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(hooks::lsp::noop));
@@ -480,6 +1132,7 @@ impl ToolRuntime {
         self.trace.push("enrich");
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(hooks::enrich::noop));
         self.trace.push("redact");
+        let force_binary = matches!(&output, Err(error) if error.is_binary());
         let mut dto = match output {
             Ok(value) => success_dto(call, value, duration_ms),
             Err(error) => error_dto(call, &error, duration_ms),
@@ -502,6 +1155,8 @@ impl ToolRuntime {
             self.trace.push("write_lock_release");
             return self.finish_error(call, error, true);
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("runtime.after_redaction_before_artifact");
         self.trace.push("circuit_account");
         drop(lease);
         self.trace.push("write_lock_release");
@@ -516,6 +1171,8 @@ impl ToolRuntime {
             canonical_bytes,
             execution_started: true,
             status,
+            execution_id: Some(execution_id),
+            force_binary,
         };
         if let Some(commit) = self
             .commit
@@ -529,7 +1186,11 @@ impl ToolRuntime {
         Ok(finished)
     }
 
-    fn finish_uncertain(&self, call: &ProviderToolCall) -> Result<FinishedCall, ToolError> {
+    fn finish_uncertain(
+        &self,
+        call: &ProviderToolCall,
+        execution_id: ToolExecutionId,
+    ) -> Result<FinishedCall, ToolError> {
         let mapped = map_side_effect_uncertain();
         let mut dto = error_dto(
             call,
@@ -546,6 +1207,8 @@ impl ToolRuntime {
             canonical_bytes,
             execution_started: true,
             status: mapped.status,
+            execution_id: Some(execution_id),
+            force_binary: false,
         })
     }
 
@@ -585,8 +1248,46 @@ impl ToolRuntime {
             canonical_bytes,
             execution_started,
             status: mapped.status,
+            execution_id: None,
+            force_binary: false,
         })
     }
+}
+
+impl Drop for ToolRuntime {
+    fn drop(&mut self) {
+        let retained =
+            std::mem::take(&mut *self.retained.lock().unwrap_or_else(|err| err.into_inner()));
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            for item in retained {
+                item.task.abort();
+                runtime.spawn(async move {
+                    let _lease = item.lease;
+                    let _ = item.task.await;
+                });
+            }
+        } else {
+            for item in retained {
+                item.task.abort();
+                let runtime = item.runtime.clone();
+                runtime.block_on(async move {
+                    let _lease = item.lease;
+                    let _ = item.task.await;
+                });
+            }
+        }
+    }
+}
+
+type ToolTask = JoinHandle<std::thread::Result<Result<serde_json::Value, ToolError>>>;
+type ReadyBody<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(u32, FinishedCall), ToolError>> + Send + 'a>,
+>;
+
+struct RetainedExecution {
+    task: ToolTask,
+    lease: PathLease,
+    runtime: tokio::runtime::Handle,
 }
 
 enum Poll {
@@ -597,6 +1298,19 @@ enum Poll {
 enum Preflight {
     Ready(Admitted),
     Blocked(u32, FinishedCall),
+}
+
+fn ordered_provider_calls(
+    mut calls: Vec<ProviderToolCall>,
+) -> Result<Vec<ProviderToolCall>, ToolError> {
+    calls.sort_by_key(|call| call.provider_ordinal);
+    if duplicate_identity(&calls) {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolInternal,
+            "duplicate provider ordinal or call id",
+        ));
+    }
+    Ok(calls)
 }
 
 fn duplicate_identity(calls: &[ProviderToolCall]) -> bool {
@@ -629,6 +1343,75 @@ fn resolved_timeout(
         intent.timeout_ms.min(tools.default_timeout_ms)
     };
     Duration::from_millis(millis.max(1))
+}
+
+fn fresh_id<T: crate::id::ProtocolUlidId>(ids: &MonotonicUlidGenerator) -> Result<T, ToolError> {
+    ids.next_id()
+        .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "id generation failed"))
+}
+
+fn mutability_of(intent: &ToolIntent) -> ToolMutability {
+    match intent.mutation {
+        super::intent::ToolMutation::ReadOnly | super::intent::ToolMutation::PureCompute => {
+            ToolMutability::ReadOnly
+        }
+        super::intent::ToolMutation::External => ToolMutability::Outward,
+        _ => ToolMutability::Mutating,
+    }
+}
+
+fn placeholder_session() -> SessionId {
+    SessionId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").expect("session id")
+}
+
+fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
+    // Validation is read-only. Each path starts with one capped target image;
+    // aggregate target and result budgets bound the retained images.
+    let mut images: std::collections::BTreeMap<PathBuf, Vec<u8>> =
+        std::collections::BTreeMap::new();
+    let mut target_bytes = 0;
+    let mut result_bytes = 0;
+    for change in &intent.planned {
+        let super::intent::PlannedChange::Edit {
+            requested_path,
+            old_text,
+            new_text,
+            ..
+        } = change
+        else {
+            continue;
+        };
+        let path = intent
+            .path_accesses
+            .iter()
+            .find(|access| access.requested == *requested_path)
+            .map(|access| access.normalized_absolute.clone())
+            .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "edit path missing"))?;
+        if !images.contains_key(&path) {
+            let image = crate::tools::builtin::files::read_edit_target(&path)?;
+            target_bytes = crate::tools::builtin::files::add_batch_edit_target_bytes(
+                target_bytes,
+                image.len(),
+            )?;
+            result_bytes = crate::tools::builtin::files::add_batch_edit_result_bytes(
+                result_bytes,
+                image.len(),
+            )?;
+            images.insert(path.clone(), image);
+        }
+        let image = images.get_mut(&path).expect("inserted above");
+        let before_len = image.len();
+        let after = crate::tools::builtin::files::apply_exact_edit(image, old_text, new_text)?;
+        let next_result_bytes = result_bytes - before_len as u64;
+        result_bytes = crate::tools::builtin::files::add_batch_edit_result_bytes(
+            next_result_bytes,
+            after.len(),
+        )?;
+        *image = after;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("batch_edit.after_validation_stage");
+    }
+    Ok(())
 }
 
 fn map_join(
@@ -677,7 +1460,7 @@ fn error_dto(call: &ProviderToolCall, error: &ToolError, duration_ms: u64) -> To
             code: error.code(),
             message: error.message().to_owned(),
             retryable: mapped.retryable,
-            details: None,
+            details: error.details().cloned(),
         }),
         warnings: Vec::new(),
         artifacts: Vec::new(),
@@ -688,7 +1471,94 @@ fn error_dto(call: &ProviderToolCall, error: &ToolError, duration_ms: u64) -> To
             cancelled: error.code() == ToolErrorCode::ToolCancelled,
             timed_out: error.code() == ToolErrorCode::ToolTimedOut,
             redacted: false,
-            truncated: false,
+            truncated: error.code() == ToolErrorCode::ToolProcessOutputLimit,
         },
+    }
+}
+
+fn uncertain_ids(results: &[FinishedCall]) -> Vec<ToolExecutionId> {
+    results
+        .iter()
+        .filter(|finished| finished.status == ToolResultStatus::Uncertain)
+        .filter_map(|finished| finished.execution_id)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
+    use crate::tools::builtin::register_phase3;
+    use crate::tools::intent::{
+        PathAccessIntent, PathAccessMode, PlannedChange, ToolIdempotency, ToolMutation,
+    };
+
+    #[test]
+    fn batch_edit_preflight_rejects_100_near_limit_targets_before_reading_them() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let mut paths = Vec::new();
+        let mut accesses = Vec::new();
+        let mut planned = Vec::new();
+
+        for index in 0..100 {
+            let requested = format!("target-{index}.txt");
+            let path = root_path.join(&requested);
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(16 * 1024 * 1024 - 1)
+                .unwrap();
+            paths.push(path.clone());
+            accesses.push(PathAccessIntent {
+                requested: requested.clone(),
+                normalized_absolute: path,
+                mode: PathAccessMode::Write,
+            });
+            planned.push(PlannedChange::Edit {
+                requested_path: requested,
+                old_text: "x".to_owned(),
+                new_text: "y".to_owned(),
+                expected_sha256: None,
+            });
+        }
+
+        let config = ToolsConfig {
+            allowed_paths: Vec::new(),
+            default_timeout_ms: 60_000,
+            max_parallel_calls: 4,
+            max_spawned_processes: 4,
+            shell_enabled: false,
+            shell_max_timeout_ms: 600_000,
+            shell_timeout_ms: 30_000,
+        };
+        let runtime = ToolRuntime::new(
+            register_phase3(&config).unwrap(),
+            config,
+            RiskConfig { allow: Vec::new() },
+            CircuitConfig {
+                loop_threshold: 3,
+                max_tokens: 0,
+                max_wall_ms: 0,
+            },
+        );
+        for path in paths {
+            runtime.note_read(path);
+        }
+        let intent = ToolIntent {
+            mutation: ToolMutation::Workspace,
+            path_accesses: accesses,
+            command: None,
+            risk_facts: Vec::new(),
+            timeout_ms: 60_000,
+            idempotency: ToolIdempotency::IdempotentWrite,
+            planned,
+        };
+
+        let error = runtime.check_planned("batch_edit", &intent).unwrap_err();
+        assert_eq!(error.code(), ToolErrorCode::ToolValidationFailed);
+        assert_eq!(
+            error.message(),
+            "batch_edit aggregate targets exceed 33554432 bytes"
+        );
     }
 }

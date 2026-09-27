@@ -553,6 +553,8 @@ impl ArtifactStore {
             let _ = conn.execute_batch("ROLLBACK");
             return Err(err);
         }
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("artifact.after_blob_insert_before_commit");
         if crash == Some(ArtifactCrashPoint::AfterBlobInsertBeforeCommit) {
             let _ = conn.execute_batch("ROLLBACK");
             return Ok(PersistStatus::Committed);
@@ -582,6 +584,8 @@ impl ArtifactStore {
             return Err(err);
         }
         conn.execute_batch("COMMIT").map_err(map_sql)?;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("artifact.after_commit_before_event");
         Ok(PersistStatus::Committed)
     }
 

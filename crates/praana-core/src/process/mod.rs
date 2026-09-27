@@ -1,5 +1,6 @@
 //! Process-tree supervision. History spools stay in a later packet.
 
+pub mod argv;
 pub mod capture;
 pub mod env;
 
@@ -22,6 +23,8 @@ use crate::tools::error::{ToolError, ToolErrorCode};
 #[derive(Clone, Debug)]
 pub struct SuperviseRequest {
     pub command: String,
+    /// Direct argv. When set, the child is the program itself rather than a shell.
+    pub argv: Option<Vec<String>>,
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
     pub timeout: Duration,
@@ -41,12 +44,14 @@ pub struct SuperviseOutput {
     pub cancelled: bool,
     pub truncated: bool,
     pub group_id: Option<u32>,
+    pub signal: Option<String>,
 }
 
 pub async fn supervise(request: SuperviseRequest) -> Result<SuperviseOutput, ToolError> {
     let env = env::sanitize_env(&request.env, &request.session_id);
     let request = SuperviseRequest {
         command: request.command,
+        argv: request.argv,
         cwd: request.cwd,
         env,
         timeout: request.timeout,
@@ -93,8 +98,9 @@ fn redact_captured(bytes: Vec<u8>) -> Result<Vec<u8>, ToolError> {
     if bytes.is_empty() {
         return Ok(bytes);
     }
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| ToolError::new(ToolErrorCode::ToolRedactionFailed, "redaction failed"))?;
+    let Ok(text) = std::str::from_utf8(&bytes) else {
+        return Ok(bytes);
+    };
     let redacted = crate::redaction::redact_text_v1(text).map_err(|error| {
         let _ = error;
         ToolError::new(ToolErrorCode::ToolRedactionFailed, "redaction failed")

@@ -1,12 +1,11 @@
 //! Multi-file rollback journals. Replacement is write, fsync, rename, parent fsync.
 //! A target that no longer matches the recorded identity is left untouched.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::error::{io_err, map_ledger, ArtifactError};
@@ -15,14 +14,52 @@ use super::operation_ledger::{
     reject_symlink,
 };
 use crate::protocol::id::{SessionId, Sha256Digest, ToolBatchId, ToolCallId, ToolExecutionId};
+use serde::{Deserialize, Serialize};
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(1);
+
+// Explicit test-only interleaving for a rollback conflict inside a live batch.
+// Production builds contain neither this hook nor its call site.
+#[cfg(feature = "failpoints")]
+type TestEntryHook = (PathBuf, Box<dyn FnOnce() + Send>);
+#[cfg(feature = "failpoints")]
+static TEST_ENTRY_HOOK: std::sync::Mutex<Option<TestEntryHook>> = std::sync::Mutex::new(None);
+
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub fn set_test_after_first_entry_hook(target: PathBuf, hook: impl FnOnce() + Send + 'static) {
+    *TEST_ENTRY_HOOK.lock().expect("test hook lock poisoned") = Some((target, Box::new(hook)));
+}
+
+#[cfg(feature = "failpoints")]
+fn run_test_after_first_entry_hook(target: &Path) {
+    let mut slot = TEST_ENTRY_HOOK.lock().expect("test hook lock poisoned");
+    // macOS temp roots may be spelled /var/... while the confined target is
+    // stored as /private/var/...; compare the actual file in this test hook.
+    if slot.as_ref().is_some_and(|(armed, _)| {
+        armed == target
+            || matches!((fs::canonicalize(armed), fs::canonicalize(target)),
+                (Ok(a), Ok(b)) if a == b)
+    }) {
+        let (_, hook) = slot.take().expect("armed test hook");
+        drop(slot);
+        hook();
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct JournalWrite {
     pub ordinal: u32,
     pub target_path: PathBuf,
-    pub new_bytes: Vec<u8>,
+    pub new_bytes: JournalWriteSource,
+}
+
+#[derive(Clone, Debug)]
+pub enum JournalWriteSource {
+    /// Small, already-bounded new content: write_file/batch_write cap the
+    /// caller-supplied content at the owner-specified batch input limit,
+    /// so materializing it here is bounded regardless of the target's size.
+    Bytes(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +131,26 @@ pub fn prepare_write_journal(
     call_id: &ToolCallId,
     writes: &[JournalWrite],
 ) -> Result<(), ArtifactError> {
+    prepare_write_journal_in_roots(
+        session_root,
+        &[workspace_root.to_path_buf()],
+        session_id,
+        execution_id,
+        batch_id,
+        call_id,
+        writes,
+    )
+}
+
+pub fn prepare_write_journal_in_roots(
+    session_root: &Path,
+    workspace_roots: &[PathBuf],
+    session_id: &SessionId,
+    execution_id: &ToolExecutionId,
+    batch_id: &ToolBatchId,
+    call_id: &ToolCallId,
+    writes: &[JournalWrite],
+) -> Result<(), ArtifactError> {
     apply_private_umask();
     let journals = journals_dir(session_root);
     reject_symlink(&journals).map_err(map_ledger)?;
@@ -104,7 +161,7 @@ pub fn prepare_write_journal(
     fs::create_dir_all(&payload).map_err(|err| io_err(err.to_string()))?;
     apply_private_dir_permissions(&payload).map_err(map_ledger)?;
 
-    let mut planned: Vec<JournalWrite> = writes.to_vec();
+    let mut planned: Vec<&JournalWrite> = writes.iter().collect();
     planned.sort_by(|left, right| {
         display_path(&left.target_path)
             .cmp(&display_path(&right.target_path))
@@ -112,7 +169,7 @@ pub fn prepare_write_journal(
     });
     let mut entries = Vec::with_capacity(planned.len());
     for write in planned {
-        confine_target(workspace_root, &write.target_path)?;
+        confine_target(workspace_roots, &write.target_path)?;
         reject_target(&write.target_path)?;
         let target = absolute_lexical(&write.target_path)?;
         let existed = target.is_file();
@@ -133,7 +190,12 @@ pub fn prepare_write_journal(
         };
         let staged_relpath = format!("staged-{}", write.ordinal);
         let staged = payload.join(&staged_relpath);
-        write_new_file(&staged, &write.new_bytes)?;
+        let staged_sha256 = match &write.new_bytes {
+            JournalWriteSource::Bytes(bytes) => {
+                write_new_file(&staged, bytes)?;
+                Sha256Digest::digest_bytes(bytes)
+            }
+        };
         entries.push(WriteJournalEntryV1 {
             ordinal: write.ordinal,
             target_path: display_path(&target),
@@ -142,7 +204,7 @@ pub fn prepare_write_journal(
             original_sha256,
             before_relpath,
             staged_relpath,
-            staged_sha256: Sha256Digest::digest_bytes(&write.new_bytes),
+            staged_sha256,
             replacement_identity: None,
         });
     }
@@ -158,6 +220,8 @@ pub fn prepare_write_journal(
     };
     store_journal(session_root, &journal)?;
     fsync_dir(&journals).map_err(map_ledger)?;
+    #[cfg(feature = "failpoints")]
+    crate::crash_point::hit("journal.after_prepare_durable");
     Ok(())
 }
 
@@ -166,35 +230,53 @@ pub fn commit_write_journal(
     workspace_root: &Path,
     execution_id: &ToolExecutionId,
 ) -> Result<(), ArtifactError> {
+    commit_write_journal_in_roots(session_root, &[workspace_root.to_path_buf()], execution_id)
+}
+
+pub fn commit_write_journal_in_roots(
+    session_root: &Path,
+    workspace_roots: &[PathBuf],
+    execution_id: &ToolExecutionId,
+) -> Result<(), ArtifactError> {
     let mut journal = load_journal(session_root, execution_id)?;
     while (journal.next_entry as usize) < journal.entries.len() {
         let index = journal.next_entry as usize;
         let target = PathBuf::from(&journal.entries[index].target_path);
-        confine_target(workspace_root, &target)?;
+        confine_target(workspace_roots, &target)?;
         verify_original(&journal.entries[index])?;
         journal.phase = WriteJournalPhase::Committing;
         store_journal(session_root, &journal)?;
-        let staged = read_rel(
+        let mut staged = crate::tools::builtin::confine::open_regular(&rel_path(
             session_root,
             execution_id,
             &journal.entries[index].staged_relpath,
-        )?;
-        if Sha256Digest::digest_bytes(&staged) != journal.entries[index].staged_sha256 {
-            return Err(conflict("staged journal bytes changed"));
-        }
+        )?)
+        .map_err(|error| io_err(error.to_string()))?;
         atomic_replace(
             &target,
-            &staged,
+            &mut staged,
+            &journal.entries[index].staged_sha256,
             execution_id,
             journal.entries[index].ordinal,
         )?;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit(format!("journal.after_replacement:{index}"));
         let identity = capture_identity(&target)?;
         journal.entries[index].replacement_identity = Some(identity);
         journal.next_entry += 1;
         store_journal(session_root, &journal)?;
+        #[cfg(feature = "failpoints")]
+        {
+            crate::crash_point::hit(format!("journal.after_entry_durable:{index}"));
+            if index == 0 {
+                run_test_after_first_entry_hook(&target);
+            }
+        }
     }
     journal.phase = WriteJournalPhase::Committed;
     store_journal(session_root, &journal)?;
+    #[cfg(feature = "failpoints")]
+    crate::crash_point::hit("journal.after_commit_durable");
     Ok(())
 }
 
@@ -203,13 +285,21 @@ pub fn rollback_write_journal(
     workspace_root: &Path,
     execution_id: &ToolExecutionId,
 ) -> Result<(), ArtifactError> {
+    rollback_write_journal_in_roots(session_root, &[workspace_root.to_path_buf()], execution_id)
+}
+
+pub fn rollback_write_journal_in_roots(
+    session_root: &Path,
+    workspace_roots: &[PathBuf],
+    execution_id: &ToolExecutionId,
+) -> Result<(), ArtifactError> {
     let mut journal = load_journal(session_root, execution_id)?;
-    adopt_unrecorded_replacement(session_root, workspace_root, &mut journal)?;
+    adopt_unrecorded_replacement(session_root, workspace_roots, &mut journal)?;
     let mut index = journal.next_entry as usize;
     while index > 0 {
         index -= 1;
         let target = PathBuf::from(&journal.entries[index].target_path);
-        confine_target(workspace_root, &target)?;
+        confine_target(workspace_roots, &target)?;
         let entry = journal.entries[index].clone();
         confirm_or_adopt_replacement(session_root, execution_id, &mut journal.entries[index])?;
         restore_entry(session_root, execution_id, &entry)?;
@@ -230,13 +320,16 @@ pub fn retire_write_journal(
     if !json.exists() && !payload.exists() {
         return Ok(());
     }
-    if json.exists() {
-        reject_symlink(&json).map_err(map_ledger)?;
-        fs::remove_file(&json).map_err(|err| io_err(err.to_string()))?;
-    }
+    // Keep the manifest until last: if payload retirement fails or the
+    // process aborts, recovery must still see an unresolved journal rather
+    // than silently accepting an unfinished replacement as journal-free.
     if payload.exists() {
         reject_symlink(&payload).map_err(map_ledger)?;
         fs::remove_dir_all(&payload).map_err(|err| io_err(err.to_string()))?;
+    }
+    if json.exists() {
+        reject_symlink(&json).map_err(map_ledger)?;
+        fs::remove_file(&json).map_err(|err| io_err(err.to_string()))?;
     }
     fsync_dir(&journals_dir(session_root)).map_err(map_ledger)?;
     Ok(())
@@ -276,7 +369,7 @@ pub fn reconcile_write_journal(
 
 fn adopt_unrecorded_replacement(
     session_root: &Path,
-    workspace_root: &Path,
+    workspace_roots: &[PathBuf],
     journal: &mut WriteJournalV1,
 ) -> Result<(), ArtifactError> {
     let index = journal.next_entry as usize;
@@ -288,7 +381,7 @@ fn adopt_unrecorded_replacement(
         return store_journal(session_root, journal);
     }
     let target = PathBuf::from(&journal.entries[index].target_path);
-    confine_target(workspace_root, &target)?;
+    confine_target(workspace_roots, &target)?;
     reject_target(&target)?;
     if !target.exists() {
         if journal.entries[index].target_existed {
@@ -363,17 +456,20 @@ fn restore_entry(
             .before_relpath
             .as_deref()
             .ok_or_else(|| io_err("journal entry is missing before bytes"))?;
-        let before = read_rel(session_root, execution_id, rel)?;
+        let mut before = crate::tools::builtin::confine::open_regular(&rel_path(
+            session_root,
+            execution_id,
+            rel,
+        )?)
+        .map_err(|error| io_err(error.to_string()))?;
         let expected = entry
             .original_sha256
             .as_ref()
             .ok_or_else(|| io_err("journal entry is missing the original hash"))?;
-        if &Sha256Digest::digest_bytes(&before) != expected {
-            return Err(io_err("before-image hash does not match the journal"));
-        }
-        atomic_replace(&target, &before, execution_id, entry.ordinal)?;
+        atomic_replace(&target, &mut before, expected, execution_id, entry.ordinal)?;
     } else if target.exists() {
-        fs::remove_file(&target).map_err(|err| io_err(err.to_string()))?;
+        crate::tools::builtin::confine::remove_regular(&target)
+            .map_err(|error| io_err(error.to_string()))?;
         if let Some(parent) = target.parent() {
             fsync_dir(parent).map_err(map_ledger)?;
         }
@@ -400,33 +496,29 @@ fn verify_original(entry: &WriteJournalEntryV1) -> Result<(), ArtifactError> {
 
 fn atomic_replace(
     target: &Path,
-    bytes: &[u8],
-    execution_id: &ToolExecutionId,
-    ordinal: u32,
+    source: &mut impl Read,
+    expected: &Sha256Digest,
+    _execution_id: &ToolExecutionId,
+    _ordinal: u32,
 ) -> Result<(), ArtifactError> {
     let parent = target
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| io_err("journal target has no parent directory"))?;
-    reject_symlink(parent).map_err(map_ledger)?;
-    fs::create_dir_all(parent).map_err(|err| io_err(err.to_string()))?;
-    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = parent.join(format!(
-        ".praana-{}-{}-{}-{seq}.tmp",
-        std::process::id(),
-        execution_id,
-        ordinal
-    ));
-    let write_result = (|| -> Result<(), ArtifactError> {
-        write_new_file(&tmp, bytes)?;
-        fs::rename(&tmp, target).map_err(|err| io_err(err.to_string()))?;
-        fsync_dir(parent).map_err(map_ledger)?;
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    write_result
+    crate::tools::builtin::confine::ensure_dir(parent)
+        .map_err(|error| io_err(error.to_string()))?;
+    // The bytes actually copied into the target-directory temp are hashed
+    // while they are written and verified against `expected` before rename,
+    // so no separate hash-then-rewind pass exists that a mutation could slip
+    // between.
+    crate::tools::builtin::confine::replace_file_from_reader_verified(target, source, expected)
+        .map_err(|error| {
+            if error.code() == crate::tools::error::ToolErrorCode::ToolValidationFailed {
+                conflict("copied bytes did not match the recorded digest")
+            } else {
+                io_err(error.to_string())
+            }
+        })
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
@@ -446,24 +538,25 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
 }
 
 fn copy_and_hash(src: &Path, dst: &Path) -> Result<Sha256Digest, ArtifactError> {
-    let mut input = File::open(src).map_err(|err| io_err(err.to_string()))?;
+    let mut input = crate::tools::builtin::confine::open_regular(src)
+        .map_err(|error| io_err(error.to_string()))?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(dst)
         .map_err(|err| io_err(err.to_string()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
+    let mut buffer = [0_u8; 8192];
     loop {
         let read = input
-            .read(&mut buf)
+            .read(&mut buffer)
             .map_err(|err| io_err(err.to_string()))?;
         if read == 0 {
             break;
         }
-        hasher.update(&buf[..read]);
+        hasher.update(&buffer[..read]);
         output
-            .write_all(&buf[..read])
+            .write_all(&buffer[..read])
             .map_err(|err| io_err(err.to_string()))?;
     }
     output.sync_all().map_err(|err| io_err(err.to_string()))?;
@@ -471,31 +564,35 @@ fn copy_and_hash(src: &Path, dst: &Path) -> Result<Sha256Digest, ArtifactError> 
 }
 
 fn hash_file(path: &Path) -> Result<Sha256Digest, ArtifactError> {
-    let mut input = File::open(path).map_err(|err| io_err(err.to_string()))?;
+    let mut input = crate::tools::builtin::confine::open_regular(path)
+        .map_err(|error| io_err(error.to_string()))?;
+    hash_reader(&mut input)
+}
+
+fn hash_reader(input: &mut impl Read) -> Result<Sha256Digest, ArtifactError> {
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
+    let mut buffer = [0_u8; 8192];
     loop {
         let read = input
-            .read(&mut buf)
+            .read(&mut buffer)
             .map_err(|err| io_err(err.to_string()))?;
         if read == 0 {
             break;
         }
-        hasher.update(&buf[..read]);
+        hasher.update(&buffer[..read]);
     }
     Ok(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
-fn read_rel(
+fn rel_path(
     session_root: &Path,
     execution_id: &ToolExecutionId,
     rel: &str,
-) -> Result<Vec<u8>, ArtifactError> {
+) -> Result<PathBuf, ArtifactError> {
     if rel.contains("..") || rel.contains('/') || rel.contains('\\') {
         return Err(io_err("journal relpath escapes the execution directory"));
     }
-    let path = payload_dir(session_root, execution_id).join(rel);
-    fs::read(&path).map_err(|err| io_err(err.to_string()))
+    Ok(payload_dir(session_root, execution_id).join(rel))
 }
 
 fn store_journal(session_root: &Path, journal: &WriteJournalV1) -> Result<(), ArtifactError> {
@@ -543,10 +640,12 @@ fn journal_path(session_root: &Path, execution_id: &ToolExecutionId) -> PathBuf 
     journals_dir(session_root).join(format!("write-{execution_id}.json"))
 }
 
-fn confine_target(workspace_root: &Path, target: &Path) -> Result<(), ArtifactError> {
-    let workspace = absolute_lexical(workspace_root)?;
+fn confine_target(workspace_roots: &[PathBuf], target: &Path) -> Result<(), ArtifactError> {
     let target = absolute_lexical(target)?;
-    if target.starts_with(&workspace) {
+    if workspace_roots
+        .iter()
+        .any(|root| absolute_lexical(root).is_ok_and(|workspace| target.starts_with(&workspace)))
+    {
         return Ok(());
     }
     Err(super::error::insecure(format!(

@@ -54,6 +54,8 @@ P0
                                   |
                                  P6
                                   |
+                         W403 --> W402
+                                  |
                                  P7
                                   |
                        P8 (new specs first)
@@ -243,8 +245,140 @@ P0
 - Depends: P2B, P3A, P3B.
 - Output: file/edit/search/test/git-read/shell tools and provider-independent
   headless turn loop. No Phase 4/6/8 tools.
-- Focused tests: `builtin_tools_phase3`, tool fault/process tests, scripted fake
-  provider end-to-end.
+- Focused tests: `builtin_tools_phase3`, `crash_recovery`, tool fault/process
+  tests, scripted fake provider end-to-end.
+- Landed in `praana-core`: Phase 3 built-ins register through the P3A catalog
+  (`read_file` 400 through `shell` 1100). The headless loop admits through the
+  existing `admit` function, appends `assistant_attempt_started` before the
+  provider boundary, and publishes tool results through `ArtifactStore::publish_batch`.
+  Disabled tools drop out of the provider catalog without renumbering. Non-UTF-8
+  process output is stored as base64 `BinaryDataV1` inside the JSON tool result
+  so P3B can artifactize it; history still accepts only that JSON media type.
+  Overflow keeps draining, marks truncation, and keeps the bounded prefix.
+  Non-UTF-8 captured output sets a binary marker so History stores it as a
+  binary artifact with a non-textual preview, even when the JSON result is
+  small. Admission derives component bytes from the canonical request body
+  and ignores provider-supplied component arrays. `StepProvider::complete`
+  can return success only with a send authorization for that exact body. This
+  P3C adapter boundary verifies the body presented by the adapter; it does not
+  own the provider socket or prove transmitted bytes, and transport retry
+  within a live attempt remains an explicitly deferred packet. Recovery of a
+  crash-lost provider attempt is in P3C: it creates a fresh, fully admitted
+  attempt only while the configured total-attempt budget allows it; otherwise
+  recovery interrupts the turn with `provider_failure`.
+  Provider failure text is redacted and bounded before `assistant_attempt_failed`.
+  Canonical tool-call arguments in `assistant_step_accepted` are a redacted
+  copy; `raw_arguments` is the canonical JSON of that copy so replay equality
+  holds, while execution uses the original in-memory arguments.
+  `tool_execution_started.arguments_hash` is the hash of that redacted copy.
+  A poisoned runtime rejects further turns before another user message or
+  provider call. An uncertain side effect keeps its path lease until the task
+  is proved stopped: on a live Tokio runtime the lease waits with the aborted
+  task, and off that runtime drop blocks until the task ends. Unix atomic
+  replace creates the temp mode `0600`, writes and syncs, then applies the
+  destination mode immediately before rename. Literal nested `sh -c` / `bash -c`
+  scripts are classified as command lists; a dynamic or unparsed shell script
+  fails closed. A durable tool start is written when the call enters its
+  parallel slot, so a call still waiting on that slot finishes without a start
+  id. The Windows Job Object and direct-argv `CreateProcessW` path remain
+  compiled and were not executed on the Linux host. Extra tools are registered
+  only in crate tests, not on the public loop config.
+
+  The process-abort hooks are compiled only by the test-only `failpoints`
+  feature. Release compilation with that feature is a hard error. In debug
+  builds the hooks are inert until the dedicated integration-test executable
+  calls the hidden test arm; environment variables alone cannot arm them, and
+  production entrypoints do not call that arm. Packaging therefore uses the
+  normal no-feature build, while `crash_recovery` explicitly opts into the
+  feature and arm. The focused matrix enumerates all 25 event fsyncs of its
+  multi-cycle P3 scenario; recovery of a started read-only call with an
+  unstarted peer completes that peer in the original batch without replaying
+  finished calls. A two-file journal matrix aborts after prepare, replacement,
+  entry durability, and commit, checking rollback and persistent conflicts.
+  Windows write/edit/batch built-ins are omitted from the provider catalog
+  and reject direct invocation under an approved temporary Built-in Catalog
+  exception. Handle-anchored, reparse-safe Windows write/edit/batch operations
+  are required before P7 and before any editor-client release (tracking issue
+  `chronosiq/praana#402`). Durable batch completion orders references by provider
+  ordinal even when the caller supplies a permuted request vector. Linux and
+  macOS CI execute the event and two-file journal crash matrices; Windows CI
+  compiles the core and requires a real fast-fail, panic rejection, and the
+  fail-closed write/catalog tests. Windows also runs non-durable
+  `provider_ordinal_ordering_without_a_durable_session` (the same call-ordering
+  helper used by durable completion) and the crash harness tests that do not
+  create sessions. Only the named durable-session tests below
+  are skipped on Windows under the owner-approved P3C capability gap: since
+  P1B, Windows History session creation has failed closed without private ACLs.
+  Durable Windows sessions remain unsupported until `chronosiq/praana#403`;
+  this is not a P3C defect. Do not bypass the ACL check. The Redaction owner
+  approved the version-scoped per-leaf invariant: recovery executes an
+  unstarted call only when every durable argument leaf lacks a marker;
+  otherwise it cancels without running the body, independently of safe peers
+  in the same batch. Acceptance fails closed on an unmarked argument mutation.
+  After a replacement attempt is accepted, the live loop appends
+  `attempt_superseded`; fresh-process recovery repairs a missing relation once.
+  Existing `write_file`/`batch_write` targets, rollback before-images, and
+  journal-staged payloads use bounded streaming hashing/comparison and
+  restoration through confined, no-follow handles, without a 16 MiB
+  existing-target ceiling; preflight (`check_planned`) validates an existing
+  write target's hash the same way before any body runs. Journal commit and rollback verify the bytes they
+  actually copy into the target-directory temp against the recorded digest in
+  the same streamed pass that performs the copy (`confine::replace_file_from_reader_verified`),
+  so there is no separate hash-then-copy window a concurrent write could slip
+  through; a single-pass regression fails a design that would rewind and
+  reread. `edit_file` and `batch_edit` reject any existing target above 16 MiB
+  with the same stable validation error as `read_file`. They read each target
+  through a confined handle, apply exact-once edits and same-path chains in
+  memory, and install only the hashed result. `batch_edit` caps distinct
+  target images at 32 MiB aggregate and transformed results at 48 MiB
+  aggregate (including at most 16 MiB growth from batch input). Preflight
+  checks target sizes before materializing images. Batch preflight is read-only;
+  it creates no scratch or temporary workspace files before risk approval,
+  the path lease, and the durable tool start. The batch journal verifies its
+  staged digest against the transform result before reporting success;
+  cross-path rollback remains unchanged. `ToolRuntime::set_session` canonicalizes the session
+  root, mirroring `set_workspace`, so confined journal payload opens
+  (staged/before-image files, both session-root-relative) cannot fail behind
+  a symlinked path component (observed on macOS `TMPDIR`, where `/var`
+  aliases `/private/var`); a same-platform regression opens the session
+  through a manually created symlink. The 16 MiB `read_file` and edit-target
+  limits and 16 MiB batch *input* limit remain owner-specified. The non-Unix
+  `open_regular` fallback is
+  not handle-anchored and stays tracked under
+  [`#402`](https://github.com/chronosiq/praana/issues/402); Windows mutations
+  remain unavailable until that packet lands.
+
+  **Windows-only skips (each requires durable History session creation):**
+  each entry is linked to the private-ACL gate and is explicitly excluded by
+  the workflow's Windows-conditional capability step, not by an unconditional
+  disabled step. The child harness and real-abort identity tests still run.
+
+  - `crash_after_accepted_marked_step_cancels_without_starting_body` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_accepted_step_runs_unstarted_calls_once` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_artifact_blob_before_commit` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_artifact_commit_before_event_recovers_exact_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_attempt_started_durable_before_provider` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_attempt_started_write_before_fsync` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_batch_complete_write_before_fsync` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_batch_completed_runtime_boundary` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_event_write_before_fsync_is_a_real_process_abort` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_every_event_fsync_boundary` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_finish_event_write_before_fsync_preserves_exact_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_first_tool_start_marks_mutation_uncertain_and_skips_peer` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_later_tool_start_preserves_first_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_redaction_before_artifact` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_terminal_step_before_commit` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_tool_body_before_redaction` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_turn_committed` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_fragmented_provider_output_never_accepts_partial` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_batch_edit_validation_leaves_workspace_unchanged` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_recovery_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_supersession_repair_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `environment_alone_cannot_arm_failpoints` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `malformed_tail_recovers_exact_valid_prefix` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `replacement_acceptance_crash_repairs_supersession_once_in_fresh_process` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `durable_batch_completion_uses_provider_ordinals_not_input_vector_order` ([#403](https://github.com/chronosiq/praana/issues/403))
 
 ### P4A: History Retrieval and Search
 
@@ -281,10 +415,29 @@ P0
 - Focused tests: `memory_contract_v1`, `memory_builtin_sqlite_v1`,
   `memory_extraction_v1`.
 
+### W403: Windows Private History ACLs (`chronosiq/praana#403`)
+
+- Owner: `RUST_V2_HISTORY_STORAGE_SPEC.md` private History permissions.
+- Depends: P1B; may be implemented after P3C/P4A/P5/P6 on other platforms.
+- Output: private, verifiable Windows History session/ledger/artifact/spool
+  creation without a create-then-insecure window; durable session creation and
+  recovery remain fail-closed until this packet lands.
+- Gate: pass the Windows durable crash matrix with actual fast-fail evidence.
+
+### W402: Windows Handle-Anchored File Mutations (`chronosiq/praana#402`)
+
+- Owner: `RUST_V2_BUILTIN_TOOL_CATALOG_SPEC.md` Phase 3 file tools;
+  Tool Runtime confinement and History journal rollback.
+- Depends: W403 (complete it first).
+- Output: reparse-safe Windows write/edit/batch operations and journal recovery;
+  restore their provider-visible descriptors only after safety tests pass.
+- Gate: W403 then W402 MUST both land before P7 and before any editor-client
+  release. The P3C approved Windows tool-catalog exception ends only then.
+
 ### P7: Temporary OpenTUI IPC
 
 - Owner: `RUST_V2_IPC_SPEC.md`; UI Contract conversion fixtures.
-- Depends: P1C and headless Phases 1-6.
+- Depends: P1C, headless Phases 1-6, W403, and W402.
 - Output: framing/handshake/conversion/ack/backpressure/restart and TypeScript
   presentation adapter. No semantic DTO duplication.
 - Focused tests: `ipc_ui_contract_v1`, `ipc_framing`, `ipc_backpressure`,

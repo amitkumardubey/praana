@@ -644,8 +644,13 @@ Any call can instead become `Rejected`, `CancelledBeforeStart`, or `Failed`. The
 5. Calls blocked before write-lock acquisition receive a finalized error result with `execution_started=false`.
 6. Acquire validated path locks for remaining calls in provider order. For a multi-path call, sort unique platform-normalized lock keys ascending and acquire all or none.
 7. Capture any required pre-edit LSP diagnostic snapshot while the write lock is held. This is preparation for the first post stage, not another safety gate.
-8. Append and fsync `ToolExecutionStarted` records in provider order for all calls that will execute.
-9. Start admitted implementations concurrently, subject to semaphores.
+8. Wait for an admitted call to acquire its concurrency semaphore. A wait is cancellable;
+   a call cancelled before it acquires a slot receives a finalized cancellation result with
+   `execution_started=false` and no `ToolExecutionStarted` record.
+9. Immediately after slot acquisition, append and fsync that call's
+   `ToolExecutionStarted` record, then start its implementation. Start records therefore
+   reflect slot acquisition order rather than provider order; no implementation starts
+   before its own start record is durable.
 
 Preflight for later calls continues after an earlier call is rejected. A declined risk prompt does not cancel safe siblings. Application or turn cancellation stops new preflight and yields `TOOL_CANCELLED` for calls not started.
 
@@ -1072,8 +1077,10 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 
 ### 19.1 `read_file`
 
-- UTF-8 text request with optional 1-based `line_start` and positive `line_count`.
-- Maximum direct file size is 64 MiB; larger files require bounded ranges.
+The Built-in Tool Catalog owns the exact request schema and limits. The initial
+request uses one-based `start_line` and optional `max_lines` (1..=10,000,
+default 2,000). Files above 16 MiB are rejected even for a bounded range.
+
 - Return exact selected text and source line metadata.
 - Missing path is `TOOL_PATH_NOT_FOUND`.
 - Repeated unchanged reads may return an existing artifact reference plus an explicit `payload_reused=true`; they never pretend bytes were reread.
@@ -1089,6 +1096,8 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 ### 19.3 `edit_file`
 
 - Exact byte-string match, not regex.
+- Reject an existing target above 16 MiB before any write; apply the exact edit
+  to a bounded in-memory image.
 - `old_text` must occur exactly once.
 - The file must have been read in the session when the read index is active.
 - Apply through temp-file plus atomic rename while the write lock is held.
@@ -1097,8 +1106,13 @@ Raw shell output MUST NOT be written directly to the terminal or IPC stream befo
 ### 19.4 Batch operations
 
 - Validate and simulate all operations before writing.
-- Duplicate batch-write paths use last input content, but the result records all requested ordinals and unique changed paths.
+- Duplicate batch-write paths are invalid, as specified by the Built-in Tool Catalog; they are not collapsed or resolved last-write-wins.
 - Multiple edits to one file are sequential and may match text introduced by an earlier edit.
+- `batch_edit` rejects any existing target above 16 MiB, more than 32 MiB
+  across distinct targets, or more than 48 MiB across transformed results.
+  Preflight checks aggregate target sizes before materializing images, then
+  simulates each path's edits in memory before journal preparation.
+  `batch_write` retains no existing-target size ceiling.
 - Acquire all unique path locks in sorted order.
 - Stage every target through the History Storage write-journal API, then commit.
   Because multi-file filesystem rename is not globally atomic, History owns the
@@ -1189,6 +1203,8 @@ Crash after:
 
 - Accepted assistant step.
 - Each pending notification boundary (non-canonical, no recovery effect).
+  This boundary is not applicable to the headless P3 runtime and is deferred
+  to the P7 notification implementation.
 - Each `ToolExecutionStarted` fsync.
 - Tool side effect before result.
 - Post-redaction before artifact commit.
@@ -1229,6 +1245,9 @@ Resume must identify uncertain calls, never rerun side effects, resolve every ar
 - Case/drive normalization on Windows.
 - Atomic single-file replacement and preserved permissions.
 - Exact unique edit and sequential same-file batch edits.
+- Edit targets above 16 MiB fail validation without workspace side effects;
+  batch simulation remains read-only before risk and the durable start.
+- Installed edit bytes hash to the reported result and journal digest.
 - Rollback journal recovery at every multi-file commit boundary.
 - Rollback refuses to overwrite a target whose post-replacement identity/hash
   was changed externally and poisons the source session as uncertain.

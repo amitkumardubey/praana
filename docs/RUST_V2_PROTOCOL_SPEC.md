@@ -1547,14 +1547,13 @@ plan -> validation -> risk -> circuit -> write-path acquire
 
 For one batch, pre-hooks run in assistant call order. Calls blocked before body
 invocation receive a `tool_execution_finished` event with `started_event_id =
-null`; they do not receive a start event. For every permitted call, all
-`tool_execution_started` events are appended in assistant call order before any
-tool body in that batch is invoked. Permitted bodies then run concurrently.
-
-Finish events MAY appear in physical completion order. This is the only
-nondeterministic event order allowed inside a batch. Projection and provider
-formatting MUST reorder results by `call_index` and validate the ordered mapping
-against `tool_batch_completed`.
+null`; they do not receive a start event. A permitted call appends and fsyncs
+its own `tool_execution_started` event after acquiring its concurrency slot and
+before its body runs. A queued call cancelled before slot acquisition has no
+start event. Start and finish event order may therefore follow slot acquisition
+and physical completion rather than assistant call order. Projection and
+provider formatting MUST reorder results by `call_index` and validate the
+ordered mapping against `tool_batch_completed`.
 
 StateGraph-mutating tool calls are the concurrency exception. They enter one
 per-session StateGraph mutation queue in accepted provider call order. A queued
@@ -2417,7 +2416,7 @@ any attempt for that turn, sorted by first presentation.
 | `assistant_attempt_failed` | Failed attempt | Retry if policy permits; otherwise interrupt turn. | Bounded provider call only. |
 | Replacement accepted, no `attempt_superseded` | Accepted result plus old failed attempt | Append missing supersession relation, then continue. | As allowed by accepted result. |
 | Terminal `assistant_step_accepted`, no commit | Complete accepted terminal response | Recompute hash and append `turn_committed`. | No provider/tool action. |
-| Tool-using `assistant_step_accepted`, no tool starts | Calls are accepted and provably uninvoked | Run pre-hooks, persist starts, and execute normally. | Yes, including mutation after normal gates. |
+| Tool-using `assistant_step_accepted`, no tool starts | Calls are accepted and provably uninvoked | For every unmarked call, run pre-hooks, persist its start, and execute normally **only if** acceptance enforced the Redaction-owned per-leaf marker proof for the persisted redaction version; otherwise cancel without executing. Marked calls receive recovery-cancelled results. Complete the batch, then start a fresh bounded provider attempt. The Redaction owner approved the version-scoped per-leaf marker proof in the Redaction spec; recovery MUST cancel any unstarted call with a marker in any durable argument leaf, without running its body. | Only proved-unchanged calls after normal gates. |
 | Some pre-hook-blocked finishes, no starts | Block decisions durable for those calls | Do not rerun finished calls; prepare remaining calls. | Remaining calls only. |
 | One or more `tool_execution_started`, no finishes | Started calls have uncertain effects | Never rerun started calls. Emit uncertain results; skip unstarted peers if any uncertain call mutates/outward. | Only safe unstarted peers when all uncertain calls are read-only. |
 | Artifact transaction committed, no finish event | Complete result may be recoverable | Verify orphan metadata/hash; append reconstructed finish or uncertain finish. Never rerun. | No. |
@@ -3417,8 +3416,9 @@ earlier contract.
 - [ ] Add exact orphan-artifact reconstruction only from the full finalized
   metadata required by Section 14.2; otherwise append an uncertain result.
 - [ ] Generate one batch from each accepted tool step.
-- [ ] Run pre-hooks in call order and persist every permitted start before any
-  body invocation.
+- [ ] Run pre-hooks in call order. Persist each permitted start only after that
+  call obtains its concurrency slot and before that call body invocation; a
+  queued call cancelled before slot acquisition has no start record.
 - [ ] Execute permitted tools concurrently and allow finish events in completion
   order.
 - [ ] Reorder and hash results in call order for batch completion/provider input.

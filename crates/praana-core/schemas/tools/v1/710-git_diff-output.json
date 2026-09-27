@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "diff": {
+      "type": "string"
+    },
+    "exit_code": {
+      "format": "int32",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "command",
+    "diff",
+    "exit_code"
+  ],
+  "type": "object"
+}

@@ -302,7 +302,14 @@ fn owner_start_id() -> String {
             _ => "unverified".to_owned(),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        match read_start_id(std::process::id()) {
+            Ok(Some(start)) => start,
+            _ => "unverified".to_owned(),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         "unverified".to_owned()
     }
@@ -378,13 +385,50 @@ fn read_liveness(pid: u32, start_id: &str) -> Result<Liveness, ArtifactError> {
             Some(_) | None => Ok(Liveness::Dead),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        match read_start_id(pid)? {
+            Some(actual) if actual == start_id => Ok(Liveness::Alive),
+            Some(_) | None => Ok(Liveness::Dead),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (pid, start_id);
         Err(uncertain(
             "process identity cannot be proved on this platform",
         ))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn read_start_id(pid: u32) -> Result<Option<String>, ArtifactError> {
+    let pid = i32::try_from(pid).map_err(|_| uncertain("invalid process id"))?;
+    let present = unsafe { libc::kill(pid, 0) };
+    if present != 0 {
+        return match std::io::Error::last_os_error().raw_os_error() {
+            Some(libc::ESRCH) => Ok(None),
+            _ => Err(uncertain("process identity cannot be read")),
+        };
+    }
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let expected = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            expected,
+        )
+    };
+    if read != expected {
+        return Err(uncertain("process identity cannot be read"));
+    }
+    Ok(Some(format!(
+        "{}.{}",
+        info.pbi_start_tvsec, info.pbi_start_tvusec
+    )))
 }
 
 #[cfg(target_os = "linux")]
@@ -429,7 +473,22 @@ fn process_group_has_members(pgid: i32) -> Result<bool, ArtifactError> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn process_group_has_members(pgid: i32) -> Result<bool, ArtifactError> {
+    if pgid <= 0 {
+        return Err(uncertain("invalid process group id"));
+    }
+    if unsafe { libc::kill(-pgid, 0) } == 0 {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(uncertain("process tree cannot be read")),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn process_group_has_members(pgid: i32) -> Result<bool, ArtifactError> {
     let _ = pgid;
     Err(uncertain(

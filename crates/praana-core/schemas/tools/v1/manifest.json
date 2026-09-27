@@ -1,0 +1,127 @@
+{
+  "catalog_schema_version": 1,
+  "tools": [
+    {
+      "capabilities": [
+        "READ_FILES"
+      ],
+      "description_sha256": "fc4d4247467b57621234d4f503df98b91d2b9f2b46cad3bc991959c670fdf220",
+      "input_schema_sha256": "082cf58596ee21af841fad7847029a967254079303f375bcf253016e8413cb61",
+      "name": "read_file",
+      "order": 400,
+      "output_schema_sha256": "9149bce549c26edd9c26b4d614ba23b194d24218e6e578e1383ad15a90b56db9",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "WRITE_FILES"
+      ],
+      "description_sha256": "cc13f065a5585fe8d325142a0164511b2abd41295768ad997ad58eedf0160e7b",
+      "input_schema_sha256": "3bd888ae9d4830ed73b9e30b850d6d4ed301075c07b2177704eca297fc448f61",
+      "name": "write_file",
+      "order": 410,
+      "output_schema_sha256": "a23a24d882a3874361c2db6b520b1da39454033b2213565246d990ec3d5dca6f",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "WRITE_FILES"
+      ],
+      "description_sha256": "ca5a4b0c5ff0cbc0d1818a62fdcf544869a19bb4fa184d53ec3c83686c457ae1",
+      "input_schema_sha256": "948c6a2302dd2913cb1daea23d680493fc759453bec9408f5f6f9c86cf3aff56",
+      "name": "edit_file",
+      "order": 420,
+      "output_schema_sha256": "e031cf19361da644b8a21d26e38f834c19c74c8b85a9f8982fd74ac73c215f7c",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "WRITE_FILES"
+      ],
+      "description_sha256": "1c124121a955bcee6cd2e9413e4e42faf633b47d586ea80b35a605dd5106f9e4",
+      "input_schema_sha256": "7e54725ccced05ff9dc6feaadaf5aef8a80527de87b413c656b2c26527ac014f",
+      "name": "batch_write",
+      "order": 430,
+      "output_schema_sha256": "b19ad778795f24f7a85624f785e0c26713be864b0f9ee40446df863a5ce072fb",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "WRITE_FILES"
+      ],
+      "description_sha256": "0e5888b70f0078c835c8a93be507442d7a0469fd1d52315d0efe7a721b3c77a4",
+      "input_schema_sha256": "52f8b7aa3702c75b0c7169c601ff166c9c470926125b092937ec2508dd82fe86",
+      "name": "batch_edit",
+      "order": 440,
+      "output_schema_sha256": "b19ad778795f24f7a85624f785e0c26713be864b0f9ee40446df863a5ce072fb",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "READ_FILES"
+      ],
+      "description_sha256": "727e38f33456044f2f51b59dec4c0787944f336bbaf47b5e5c5871ca630aac75",
+      "input_schema_sha256": "0b218b8768225b73aec180d0389bfef33120f6aa1fd822bac9567fee1698a167",
+      "name": "search_code",
+      "order": 500,
+      "output_schema_sha256": "d3908904640571c859a9e313c08afc544d91ad5067f99068f3a5e15031d7fb9b",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "READ_FILES"
+      ],
+      "description_sha256": "467fbf158ec415bc3a5a4a56f1e13988d29db86e0e6a79289dc26d16ff6a69fb",
+      "input_schema_sha256": "8b954e596b1d86d364289795a6d86bce6ac6a3aa93feb0b40b5b71619952ef27",
+      "name": "find_files",
+      "order": 510,
+      "output_schema_sha256": "cce08792e9b633dc71e0602dec084fb105569535f299b23494161b3750e7d786",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "SPAWN_PROCESS"
+      ],
+      "description_sha256": "d7d48a190f5c09f97c3fb9d01d8cb2048cbb5650a554c674ee48a0cdf0a33e05",
+      "input_schema_sha256": "b1d57b4062c793064641e3cc921b680ef40339fcf8b789ae35e1bf14e1d9f444",
+      "name": "run_tests",
+      "order": 600,
+      "output_schema_sha256": "ef398bcca2d04428131e19a0f175b07e8ead0d9f560c8ad39c38bbb59ea6eb13",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "GIT_READ"
+      ],
+      "description_sha256": "922241c1948aa5639711bd9ca1d071d6e4c7ec652858eae8f4ef8212ffc55c43",
+      "input_schema_sha256": "db4965d89828e2f0d5f8d6cb8aa1907266d3915135d76e71b81153eed7aafbaa",
+      "name": "git_status",
+      "order": 700,
+      "output_schema_sha256": "3158b68f1211c0177e2e82e117c6a9eb52a929dca21fbf80b96721c7c8c7514a",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "GIT_READ"
+      ],
+      "description_sha256": "aefa3378124f9c7397640d9fc5e286780bb6b20f5e88a06c9f465877c9624801",
+      "input_schema_sha256": "ea72a028e7f5d175d5faa268e34a4be75782b84b41efcea29982c4560fbbb00a",
+      "name": "git_diff",
+      "order": 710,
+      "output_schema_sha256": "cf35baa47b51556a5b35b42bcfa01b56124099006d2e8d8d4b5620f01cd2738d",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "SPAWN_PROCESS",
+        "NETWORK_POSSIBLE"
+      ],
+      "description_sha256": "92bb27a66d5d184d418d96aef8a9c7adaff8df91eec36831e810bf85b6464234",
+      "input_schema_sha256": "b10678807b7e943fd679b3bff16956008be45d5eeb9d17ffa3895bd3b86d0992",
+      "name": "shell",
+      "order": 1100,
+      "output_schema_sha256": "c69a946054ca72305b97bf20b01fd885fde871a97b57247f047dea324a78456a",
+      "strict": true
+    }
+  ]
+}

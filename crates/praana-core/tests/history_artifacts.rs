@@ -14,7 +14,7 @@ use praana_core::history::db::HistoryDatabase;
 use praana_core::history::event_log::{write_new_session_meta, EventLogStore};
 use praana_core::history::journal::{
     commit_write_journal, prepare_write_journal, reconcile_write_journal, retire_write_journal,
-    rollback_write_journal, JournalWrite,
+    rollback_write_journal, JournalWrite, JournalWriteSource,
 };
 use praana_core::history::preview::{render_preview, ArtifactContentType, PreviewRequest};
 use praana_core::history::recovery::SessionRecoveryEngine;
@@ -32,6 +32,14 @@ use praana_core::token::{GenericTokenEstimatorV1, TokenEstimationContext, TokenE
 use praana_core::tools::result::{canonical_tool_result_bytes, ToolResultDto};
 use praana_core::tools::{FinishedCall, ResultCommit};
 use serde_json::json;
+
+// The confine layer intentionally refuses symlinked parent components. On
+// macOS TMPDIR may spell /var as an alias of /private/var; use the real root
+// for tests that exercise handle-anchored journal/spool IO.
+fn confined_tempdir() -> tempfile::TempDir {
+    let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+    tempfile::Builder::new().tempdir_in(base).unwrap()
+}
 
 fn fixture_history() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/history_v1")
@@ -225,7 +233,7 @@ fn symlink_database_spool_and_journal_paths_are_rejected() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target_link,
-            new_bytes: b"new".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"new".to_vec()),
         }],
     )
     .unwrap_err();
@@ -841,13 +849,105 @@ fn result_commit_stages_without_writing_events() {
         canonical_bytes: bytes,
         execution_started: true,
         status: ToolResultStatus::Error,
+        execution_id: None,
+        force_binary: false,
     });
     assert_eq!(staged.len(), 1);
 }
 
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn journal_child_commits_two_files() {
+    let Ok(root) = std::env::var("PRAANA_JOURNAL_CHILD_ROOT") else {
+        return;
+    };
+    praana_core::arm_test_failpoint(&std::env::var("PRAANA_JOURNAL_CHILD_POINT").unwrap()).unwrap();
+    let root = Path::new(&root);
+    let execution = ToolExecutionId::from_str_canonical(&ulid("J9")).unwrap();
+    prepare_write_journal(
+        root,
+        root,
+        &SessionId::from_str_canonical(&ulid("J8")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("JA")).unwrap(),
+        &ToolCallId::from_str_canonical("call_two_file_crash").unwrap(),
+        &[
+            JournalWrite {
+                ordinal: 0,
+                target_path: root.join("a.txt"),
+                new_bytes: JournalWriteSource::Bytes(b"after-a".to_vec()),
+            },
+            JournalWrite {
+                ordinal: 1,
+                target_path: root.join("b.txt"),
+                new_bytes: JournalWriteSource::Bytes(b"after-b".to_vec()),
+            },
+        ],
+    )
+    .unwrap();
+    commit_write_journal(root, root, &execution).unwrap();
+    panic!("journal crash point was not hit");
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn two_file_journal_crashes_reconcile_or_preserve_conflicts() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let points = [
+        ("journal.after_prepare_durable", false),
+        ("journal.after_replacement:0", true),
+        ("journal.after_entry_durable:0", true),
+        ("journal.after_replacement:1", true),
+        ("journal.after_entry_durable:1", true),
+        ("journal.after_commit_durable", true),
+    ];
+    for (point, first_replaced) in points {
+        for conflict in [false, true] {
+            if conflict && !first_replaced {
+                continue;
+            }
+            let root = confined_tempdir();
+            let a = root.path().join("a.txt");
+            let b = root.path().join("b.txt");
+            fs::write(&a, b"before-a").unwrap();
+            fs::write(&b, b"before-b").unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("journal_child_commits_two_files")
+                .env("PRAANA_JOURNAL_CHILD_ROOT", root.path())
+                .env("PRAANA_JOURNAL_CHILD_POINT", point)
+                .status()
+                .unwrap();
+            assert_eq!(status.signal(), Some(6), "{point}: expected SIGABRT");
+            let execution = ToolExecutionId::from_str_canonical(&ulid("J9")).unwrap();
+            let journal = root.path().join(format!("journals/write-{execution}.json"));
+            assert!(journal.is_file(), "{point}: no durable journal");
+            if conflict {
+                fs::write(&a, b"external-a").unwrap();
+                for _ in 0..2 {
+                    let error =
+                        reconcile_write_journal(root.path(), root.path(), &execution).unwrap_err();
+                    assert_eq!(error.code(), "HISTORY_ROLLBACK_CONFLICT", "{point}");
+                    assert_eq!(fs::read(&a).unwrap(), b"external-a");
+                    assert!(journal.is_file(), "{point}: lost conflict evidence");
+                }
+            } else {
+                for _ in 0..2 {
+                    reconcile_write_journal(root.path(), root.path(), &execution).unwrap();
+                    assert_eq!(fs::read(&a).unwrap(), b"before-a", "{point}");
+                    assert_eq!(fs::read(&b).unwrap(), b"before-b", "{point}");
+                }
+                retire_write_journal(root.path(), &execution).unwrap();
+                assert!(!journal.exists());
+            }
+        }
+    }
+}
+
 #[test]
 fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let session = SessionId::from_str_canonical(&ulid("J1")).unwrap();
@@ -864,7 +964,7 @@ fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
         &[JournalWrite {
             ordinal: 1,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -888,8 +988,114 @@ fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
 }
 
 #[test]
+fn journal_streams_existing_targets_larger_than_tool_read_limit() {
+    let temp = confined_tempdir();
+    let target = temp.path().join("large.txt");
+    let before = vec![b'a'; 16 * 1024 * 1024 + 1];
+    fs::write(&target, &before).unwrap();
+    let session = SessionId::from_str_canonical(&ulid("J5")).unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("J6")).unwrap();
+    let batch = ToolBatchId::from_str_canonical(&ulid("J7")).unwrap();
+    let call = ToolCallId::from_str_canonical("call_large_journal").unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &session,
+        &execution,
+        &batch,
+        &call,
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
+        }],
+    )
+    .unwrap();
+    commit_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), b"after");
+    rollback_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    assert_eq!(fs::read(&target).unwrap(), before);
+}
+
+#[test]
+fn journal_rejects_external_growth_beyond_read_limit_as_a_conflict() {
+    let temp = confined_tempdir();
+    let target = temp.path().join("grown.txt");
+    fs::write(&target, b"before").unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("M2")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("M1")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("M3")).unwrap(),
+        &ToolCallId::from_str_canonical("call_grown").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
+        }],
+    )
+    .unwrap();
+    commit_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let err = reconcile_write_journal(temp.path(), temp.path(), &execution).unwrap_err();
+    assert_eq!(err.code(), "HISTORY_ROLLBACK_CONFLICT");
+    assert_eq!(fs::metadata(&target).unwrap().len(), 16 * 1024 * 1024 + 1);
+    assert!(temp
+        .path()
+        .join("journals")
+        .join(format!("write-{execution}.json"))
+        .exists());
+}
+
+#[test]
+fn journal_commit_rejects_an_externally_enlarged_staged_payload_as_a_conflict() {
+    let temp = confined_tempdir();
+    let target = temp.path().join("staged_grown.txt");
+    fs::write(&target, b"before").unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("N2")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("N1")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("N3")).unwrap(),
+        &ToolCallId::from_str_canonical("call_staged_grown").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
+        }],
+    )
+    .unwrap();
+    let staged = temp
+        .path()
+        .join("journals")
+        .join(format!("write-{execution}"))
+        .join("staged-0");
+    // Grow the staged payload beyond its recorded hash before commit reads
+    // it. Streaming through the confined handle must classify this as a
+    // conflict and never replace the target with unverified bytes.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&staged)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let err = commit_write_journal(temp.path(), temp.path(), &execution).unwrap_err();
+    assert_eq!(err.code(), "HISTORY_ROLLBACK_CONFLICT");
+    assert_eq!(fs::read(&target).unwrap(), b"before");
+}
+
+#[test]
 fn journal_conflict_does_not_overwrite_external_bytes() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("K2")).unwrap();
@@ -903,7 +1109,7 @@ fn journal_conflict_does_not_overwrite_external_bytes() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -914,9 +1120,39 @@ fn journal_conflict_does_not_overwrite_external_bytes() {
     assert_eq!(fs::read(&target).unwrap(), b"external");
 }
 
+#[cfg(unix)]
+#[test]
+fn journal_commit_refuses_a_parent_replaced_by_a_symlink() {
+    let temp = confined_tempdir();
+    let outside = tempfile::TempDir::new().unwrap();
+    let parent = temp.path().join("parent");
+    fs::create_dir(&parent).unwrap();
+    let target = parent.join("file.txt");
+    let execution = ToolExecutionId::from_str_canonical(&ulid("K5")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("K4")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("K6")).unwrap(),
+        &ToolCallId::from_str_canonical("call_symlink_parent").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: JournalWriteSource::Bytes(b"inside".to_vec()),
+        }],
+    )
+    .unwrap();
+    fs::remove_dir(&parent).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &parent).unwrap();
+
+    assert!(commit_write_journal(temp.path(), temp.path(), &execution).is_err());
+    assert!(!outside.path().join("file.txt").exists());
+}
+
 #[tokio::test]
 async fn spool_is_private_bounded_and_removed_only_after_a_dead_owner() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let session = SessionId::from_str_canonical(&ulid("S1")).unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("S2")).unwrap();
     create_shell_spool(
@@ -1060,7 +1296,7 @@ fn journal_rejects_a_target_outside_the_workspace() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target,
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap_err();
@@ -1069,7 +1305,7 @@ fn journal_rejects_a_target_outside_the_workspace() {
 
 #[test]
 fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("G2")).unwrap();
@@ -1083,7 +1319,7 @@ fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1105,7 +1341,7 @@ fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
 
 #[test]
 fn proved_orphan_keeps_the_committed_replacement() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let (mut log, started) = session_with_fixture_start(temp.path());
     let session_dir = temp.path().join("session");
     let target = session_dir.join("replaced.txt");
@@ -1120,7 +1356,7 @@ fn proved_orphan_keeps_the_committed_replacement() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();

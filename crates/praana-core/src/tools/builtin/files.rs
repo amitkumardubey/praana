@@ -1,0 +1,849 @@
+//! File read, write, edit, and atomic batches.
+
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use async_trait::async_trait;
+use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
+
+use super::dto::*;
+use crate::history::journal::{
+    commit_write_journal_in_roots, prepare_write_journal_in_roots, retire_write_journal,
+    rollback_write_journal_in_roots, JournalWrite, JournalWriteSource,
+};
+use crate::protocol::id::Sha256Digest;
+use crate::tools::contract::TypedTool;
+use crate::tools::error::{ToolError, ToolErrorCode};
+use crate::tools::intent::{
+    PathAccessIntent, PathAccessMode, PlannedChange, ToolExecutionContext, ToolIdempotency,
+    ToolInspectContext, ToolIntent, ToolMutation,
+};
+use crate::tools::ToolCapabilities;
+
+const READ_FILE_LIMIT: u64 = 16 * 1024 * 1024;
+const LINE_LIMIT: usize = 1024 * 1024;
+const TEXT_LIMIT: usize = 4 * 1024 * 1024;
+const EDIT_LIMIT: usize = 1024 * 1024;
+// Total input content across one write or edit batch. Existing write targets
+// and journal before-images have no size cap.
+const BATCH_INPUT_LIMIT: usize = 16 * 1024 * 1024;
+// Keep batch_edit's retained images bounded even when a request names 100
+// distinct targets. The result ceiling includes the maximum aggregate edit
+// input growth (new_text is bounded by BATCH_INPUT_LIMIT).
+const BATCH_EDIT_TARGET_BYTES_LIMIT: u64 = 32 * 1024 * 1024;
+const BATCH_EDIT_RESULT_BYTES_LIMIT: u64 = BATCH_EDIT_TARGET_BYTES_LIMIT + BATCH_INPUT_LIMIT as u64;
+const BATCH_EDIT_TARGETS_LIMIT_ERROR: &str = "batch_edit aggregate targets exceed 33554432 bytes";
+const BATCH_EDIT_RESULTS_LIMIT_ERROR: &str = "batch_edit aggregate results exceed 50331648 bytes";
+
+// The Windows fallback cannot pin parent directories against junction swaps.
+// Do not offer mutating built-ins until handle-anchored operations exist.
+fn safe_writes_available() -> Result<(), ToolError> {
+    #[cfg(windows)]
+    return Err(ToolError::new(
+        ToolErrorCode::ToolUnsupported,
+        "workspace writes require handle-anchored Windows confinement",
+    ));
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+pub struct ReadFileTool;
+pub struct WriteFileTool;
+pub struct EditFileTool;
+pub struct BatchWriteTool;
+pub struct BatchEditTool;
+
+pub(crate) fn validation(message: &str) -> ToolError {
+    ToolError::new(ToolErrorCode::ToolValidationFailed, message)
+}
+
+fn display_path(path: &str) -> String {
+    path.trim_start_matches("./").to_owned()
+}
+
+fn check_path(path: &str) -> Result<(), ToolError> {
+    if path.is_empty() || path.len() > 4096 || path.contains('\0') {
+        return Err(validation("path is empty, too long, or contains NUL"));
+    }
+    Ok(())
+}
+
+fn check_text(text: &str, limit: usize, label: &str) -> Result<(), ToolError> {
+    if text.len() > limit || text.contains('\0') {
+        return Err(validation(label));
+    }
+    Ok(())
+}
+
+fn check_range(range: &LineRangeRequest) -> Result<(), ToolError> {
+    if range.start_line == 0 {
+        return Err(validation("start_line is one-based"));
+    }
+    if let Some(max_lines) = range.max_lines {
+        if !(1..=10_000).contains(&max_lines) {
+            return Err(validation("max_lines must be 1..=10000"));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn access(path: &str, mode: PathAccessMode) -> PathAccessIntent {
+    PathAccessIntent {
+        requested: path.to_owned(),
+        normalized_absolute: PathBuf::new(),
+        mode,
+    }
+}
+
+fn file_intent(
+    mutation: ToolMutation,
+    idempotency: ToolIdempotency,
+    paths: Vec<PathAccessIntent>,
+    planned: Vec<PlannedChange>,
+) -> ToolIntent {
+    ToolIntent {
+        mutation,
+        path_accesses: paths,
+        command: None,
+        risk_facts: Vec::new(),
+        timeout_ms: 60_000,
+        idempotency,
+        planned,
+    }
+}
+
+pub fn digest(bytes: &[u8]) -> Sha256Digest {
+    Sha256Digest::digest_bytes(bytes)
+}
+
+fn modified_at_ms(path: &Path) -> Option<i64> {
+    let meta = fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_millis() as i64)
+}
+
+pub fn identity(path: &str, absolute: &Path, bytes: &[u8]) -> FileIdentityDto {
+    FileIdentityDto {
+        path: display_path(path),
+        sha256: digest(bytes),
+        byte_count: bytes.len() as u64,
+        modified_at_ms: modified_at_ms(absolute),
+    }
+}
+
+fn changed_file(path: &str, before: Option<Sha256Digest>, after: &[u8]) -> ChangedFileDto {
+    ChangedFileDto {
+        path: display_path(path),
+        before_sha256: before,
+        after_sha256: digest(after),
+        bytes_written: after.len() as u64,
+    }
+}
+
+fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
+    let bytes = super::confine::read_regular(path, limit)?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolUnsupported,
+            "unsupported encoding",
+        ));
+    }
+    Ok(bytes)
+}
+
+// Edit targets are bounded before they are materialized. The result may grow
+// through a sequence of edits, but every target starts at no more than 16 MiB.
+pub(crate) fn read_edit_target(path: &Path) -> Result<Vec<u8>, ToolError> {
+    read_bytes(path, READ_FILE_LIMIT)
+}
+
+pub(crate) fn validate_batch_edit_target_budget<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<(), ToolError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0;
+    for path in paths {
+        if !seen.insert(path.to_path_buf()) {
+            continue;
+        }
+        let file = super::confine::open_regular(path)?;
+        let size = file
+            .metadata()
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolIoFailed, "read failed"))?
+            .len();
+        if size > READ_FILE_LIMIT {
+            return Err(validation(&format!("file exceeds {READ_FILE_LIMIT} bytes")));
+        }
+        total = add_batch_edit_bytes(
+            total,
+            size,
+            BATCH_EDIT_TARGET_BYTES_LIMIT,
+            BATCH_EDIT_TARGETS_LIMIT_ERROR,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn add_batch_edit_result_bytes(total: u64, additional: usize) -> Result<u64, ToolError> {
+    add_batch_edit_bytes(
+        total,
+        additional as u64,
+        BATCH_EDIT_RESULT_BYTES_LIMIT,
+        BATCH_EDIT_RESULTS_LIMIT_ERROR,
+    )
+}
+
+pub(crate) fn add_batch_edit_target_bytes(total: u64, additional: usize) -> Result<u64, ToolError> {
+    add_batch_edit_bytes(
+        total,
+        additional as u64,
+        BATCH_EDIT_TARGET_BYTES_LIMIT,
+        BATCH_EDIT_TARGETS_LIMIT_ERROR,
+    )
+}
+
+fn add_batch_edit_bytes(
+    total: u64,
+    additional: u64,
+    limit: u64,
+    error: &'static str,
+) -> Result<u64, ToolError> {
+    total
+        .checked_add(additional)
+        .filter(|combined| *combined <= limit)
+        .ok_or_else(|| validation(error))
+}
+
+pub(crate) fn apply_exact_edit(bytes: &[u8], old: &str, new: &str) -> Result<Vec<u8>, ToolError> {
+    let text = std::str::from_utf8(bytes).expect("edit target encoding checked");
+    let mut positions = text.match_indices(old).map(|(offset, _)| offset);
+    let Some(offset) = positions.next() else {
+        return Err(validation("old_text was not found"));
+    };
+    if positions.next().is_some() {
+        return Err(validation("old_text is not unique"));
+    }
+    let mut result = Vec::with_capacity(bytes.len() - old.len() + new.len());
+    result.extend_from_slice(&bytes[..offset]);
+    result.extend_from_slice(new.as_bytes());
+    result.extend_from_slice(&bytes[offset + old.len()..]);
+    Ok(result)
+}
+
+// Writes may replace arbitrarily large existing targets. Hash and compare
+// against the bounded new input through a confined handle, never fs::read.
+fn existing_write_target(
+    path: &Path,
+    new_bytes: &[u8],
+) -> Result<Option<(Sha256Digest, bool)>, ToolError> {
+    let mut file = match super::confine::open_regular(path) {
+        Ok(file) => file,
+        Err(error) if error.code() == ToolErrorCode::ToolPathNotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut hasher = Sha256::new();
+    let mut same = true;
+    let mut offset = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| {
+            ToolError::new(ToolErrorCode::ToolIoFailed, "existing file read failed")
+        })?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        if new_bytes.get(offset..offset.saturating_add(count)) != Some(&buffer[..count]) {
+            same = false;
+        }
+        offset = offset.saturating_add(count);
+    }
+    Ok(Some((
+        Sha256Digest::from_bytes(hasher.finalize().into()),
+        same && offset == new_bytes.len(),
+    )))
+}
+
+fn lines_of(text: &str) -> Result<Vec<&str>, ToolError> {
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        if ch == '\n' {
+            let line = &text[start..=index];
+            if line.len() > LINE_LIMIT {
+                return Err(validation("line exceeds 1 MiB"));
+            }
+            lines.push(line);
+            start = index + ch.len_utf8();
+        }
+    }
+    if start < text.len() {
+        let line = &text[start..];
+        if line.len() > LINE_LIMIT {
+            return Err(validation("line exceeds 1 MiB"));
+        }
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
+fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    super::confine::replace_file_from_reader_verified(
+        path,
+        &mut std::io::Cursor::new(bytes),
+        &digest(bytes),
+    )
+}
+
+fn resolved<'a>(context: &'a ToolExecutionContext, requested: &str) -> Result<&'a Path, ToolError> {
+    context
+        .path_for(requested)
+        .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "path was not normalized"))
+}
+
+#[async_trait]
+impl TypedTool for ReadFileTool {
+    type Input = ReadFileInput;
+    type Output = ReadFileOutput;
+    const NAME: &'static str = "read_file";
+    const ORDER: u16 = 400;
+    const DESCRIPTION: &'static str =
+        "Read a bounded UTF-8 line range from one file. Returns exact text and an immutable file identity.";
+
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::READ_FILES
+    }
+
+    fn inspect(
+        &self,
+        input: &ReadFileInput,
+        _: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError> {
+        check_path(&input.path)?;
+        check_range(&input.range)?;
+        Ok(file_intent(
+            ToolMutation::ReadOnly,
+            ToolIdempotency::ReadOnly,
+            vec![access(&input.path, PathAccessMode::Read)],
+            Vec::new(),
+        ))
+    }
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: ReadFileInput,
+        _: CancellationToken,
+    ) -> Result<ReadFileOutput, ToolError> {
+        let path = resolved(&context, &input.path)?.to_path_buf();
+        let bytes = read_bytes(&path, READ_FILE_LIMIT)?;
+        let text = std::str::from_utf8(&bytes).expect("utf-8 checked");
+        let lines = lines_of(text)?;
+        let total = lines.len() as u64;
+        let max_lines = input.range.max_lines.unwrap_or(2000) as u64;
+        if lines.is_empty() {
+            return Ok(ReadFileOutput {
+                file: identity(&input.path, &path, &bytes),
+                encoding: TextEncodingDto::Utf8,
+                start_line: 1,
+                end_line: 0,
+                total_lines: 0,
+                content: String::new(),
+                eof: true,
+            });
+        }
+        let start_index = input.range.start_line.saturating_sub(1);
+        let selected = if start_index >= total {
+            &[][..]
+        } else {
+            let end = ((start_index + max_lines) as usize).min(lines.len());
+            &lines[start_index as usize..end]
+        };
+        let end_line = if selected.is_empty() {
+            input.range.start_line.saturating_sub(1)
+        } else {
+            input.range.start_line + selected.len() as u64 - 1
+        };
+        Ok(ReadFileOutput {
+            file: identity(&input.path, &path, &bytes),
+            encoding: TextEncodingDto::Utf8,
+            start_line: input.range.start_line,
+            end_line,
+            total_lines: total,
+            content: selected.concat(),
+            eof: end_line >= total || selected.is_empty(),
+        })
+    }
+}
+
+#[async_trait]
+impl TypedTool for WriteFileTool {
+    type Input = WriteFileInput;
+    type Output = WriteFileOutput;
+    const NAME: &'static str = "write_file";
+    const ORDER: u16 = 410;
+    const DESCRIPTION: &'static str =
+        "Atomically create or replace one UTF-8 file after validation and risk checks.";
+
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::WRITE_FILES
+    }
+
+    fn inspect(
+        &self,
+        input: &WriteFileInput,
+        _: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
+        check_path(&input.path)?;
+        check_text(
+            &input.content,
+            TEXT_LIMIT,
+            "content exceeds 4 MiB or contains NUL",
+        )?;
+        Ok(file_intent(
+            ToolMutation::Workspace,
+            ToolIdempotency::IdempotentWrite,
+            vec![access(&input.path, PathAccessMode::Write)],
+            vec![PlannedChange::Write {
+                requested_path: input.path.clone(),
+                expected_sha256: input
+                    .expected_sha256
+                    .as_ref()
+                    .map(|digest| digest.as_str().to_owned()),
+            }],
+        ))
+    }
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: WriteFileInput,
+        _: CancellationToken,
+    ) -> Result<WriteFileOutput, ToolError> {
+        safe_writes_available()?;
+        let path = resolved(&context, &input.path)?.to_path_buf();
+        if input.create_parents {
+            if let Some(parent) = path.parent() {
+                super::confine::ensure_dir(parent)?;
+            }
+        }
+        write_one(
+            &path,
+            &input.path,
+            input.content.as_bytes(),
+            input.expected_sha256.as_ref(),
+        )
+    }
+}
+
+pub fn write_one(
+    path: &Path,
+    requested: &str,
+    bytes: &[u8],
+    expected: Option<&Sha256Digest>,
+) -> Result<WriteFileOutput, ToolError> {
+    safe_writes_available()?;
+    let existing = existing_write_target(path, bytes)?;
+    if existing.is_none() && expected.is_some() {
+        return Err(validation("expected hash conflicts with a missing file"));
+    }
+    if let (Some((current, _)), Some(expected)) = (existing.as_ref(), expected) {
+        if current != expected {
+            return Err(validation("file changed"));
+        }
+    }
+    let before = existing.as_ref().map(|(hash, _)| hash.clone());
+    if existing.is_some_and(|(_, same)| same) {
+        return Ok(WriteFileOutput {
+            changed: false,
+            file: changed_file(requested, before, bytes),
+        });
+    }
+    atomic_replace(path, bytes)?;
+    Ok(WriteFileOutput {
+        changed: true,
+        file: changed_file(requested, before, bytes),
+    })
+}
+
+#[async_trait]
+impl TypedTool for EditFileTool {
+    type Input = EditFileInput;
+    type Output = EditFileOutput;
+    const NAME: &'static str = "edit_file";
+    const ORDER: u16 = 420;
+    const DESCRIPTION: &'static str =
+        "Replace one exact unique UTF-8 string in a file using compare-and-swap identity.";
+
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::WRITE_FILES
+    }
+
+    fn inspect(
+        &self,
+        input: &EditFileInput,
+        _: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
+        check_path(&input.path)?;
+        if input.old_text.is_empty() || input.old_text.len() > EDIT_LIMIT {
+            return Err(validation("old_text must be 1..=1 MiB"));
+        }
+        check_text(
+            &input.new_text,
+            EDIT_LIMIT,
+            "new_text exceeds 1 MiB or contains NUL",
+        )?;
+        Ok(file_intent(
+            ToolMutation::Workspace,
+            ToolIdempotency::IdempotentWrite,
+            vec![access(&input.path, PathAccessMode::Write)],
+            vec![PlannedChange::Edit {
+                requested_path: input.path.clone(),
+                old_text: input.old_text.clone(),
+                new_text: input.new_text.clone(),
+                expected_sha256: input
+                    .expected_sha256
+                    .as_ref()
+                    .map(|digest| digest.as_str().to_owned()),
+            }],
+        ))
+    }
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: EditFileInput,
+        _: CancellationToken,
+    ) -> Result<EditFileOutput, ToolError> {
+        safe_writes_available()?;
+        let path = resolved(&context, &input.path)?.to_path_buf();
+        let before = read_edit_target(&path)?;
+        let before_hash = digest(&before);
+        if input
+            .expected_sha256
+            .as_ref()
+            .is_some_and(|hash| hash != &before_hash)
+        {
+            return Err(validation("file changed"));
+        }
+        let after = apply_exact_edit(&before, &input.old_text, &input.new_text)?;
+        atomic_replace(&path, &after)?;
+        Ok(EditFileOutput {
+            changed: true,
+            replacements: 1,
+            file: changed_file(&input.path, Some(before_hash), &after),
+        })
+    }
+}
+
+fn batch_bounds(count: usize, total: usize) -> Result<(), ToolError> {
+    if !(1..=100).contains(&count) {
+        return Err(validation("batch must contain 1..=100 items"));
+    }
+    if total > BATCH_INPUT_LIMIT {
+        return Err(validation("batch input exceeds 16 MiB"));
+    }
+    Ok(())
+}
+
+#[async_trait]
+impl TypedTool for BatchWriteTool {
+    type Input = BatchWriteInput;
+    type Output = BatchMutationOutput;
+    const NAME: &'static str = "batch_write";
+    const ORDER: u16 = 430;
+    const DESCRIPTION: &'static str =
+        "Atomically apply ordered writes to multiple files; all validation succeeds before any replacement.";
+
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::WRITE_FILES
+    }
+
+    fn inspect(
+        &self,
+        input: &BatchWriteInput,
+        _: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
+        let total: usize = input.writes.iter().map(|write| write.content.len()).sum();
+        batch_bounds(input.writes.len(), total)?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut paths = Vec::new();
+        let mut planned = Vec::new();
+        for write in &input.writes {
+            check_path(&write.path)?;
+            check_text(
+                &write.content,
+                TEXT_LIMIT,
+                "content exceeds 4 MiB or contains NUL",
+            )?;
+            if !seen.insert(write.path.clone()) {
+                return Err(validation("duplicate write path"));
+            }
+            paths.push(access(&write.path, PathAccessMode::Write));
+            planned.push(PlannedChange::Write {
+                requested_path: write.path.clone(),
+                expected_sha256: write
+                    .expected_sha256
+                    .as_ref()
+                    .map(|digest| digest.as_str().to_owned()),
+            });
+        }
+        Ok(file_intent(
+            ToolMutation::Workspace,
+            ToolIdempotency::IdempotentWrite,
+            paths,
+            planned,
+        ))
+    }
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: BatchWriteInput,
+        _: CancellationToken,
+    ) -> Result<BatchMutationOutput, ToolError> {
+        safe_writes_available()?;
+        let mut prepared = Vec::new();
+        for write in input.writes {
+            let path = resolved(&context, &write.path)?.to_path_buf();
+            if write.create_parents {
+                if let Some(parent) = path.parent() {
+                    super::confine::ensure_dir(parent)?;
+                }
+            }
+            let bytes = write.content.into_bytes();
+            let existing = existing_write_target(&path, &bytes)?;
+            if existing.is_none() && write.expected_sha256.is_some() {
+                return Err(validation("expected hash conflicts with a missing file"));
+            }
+            if let (Some((current, _)), Some(expected)) =
+                (existing.as_ref(), write.expected_sha256.as_ref())
+            {
+                if current != expected {
+                    return Err(validation("file changed"));
+                }
+            }
+            let same = existing.as_ref().is_some_and(|(_, same)| *same);
+            prepared.push((
+                write.path,
+                path,
+                existing.map(|(hash, _)| hash),
+                bytes,
+                same,
+            ));
+        }
+        let writes: Vec<JournalWrite> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| !item.4)
+            .map(|(ordinal, (_, path, _, bytes, _))| JournalWrite {
+                ordinal: ordinal as u32,
+                target_path: path.clone(),
+                new_bytes: JournalWriteSource::Bytes(bytes.clone()),
+            })
+            .collect();
+        if !writes.is_empty() {
+            journal_replace(&context, &writes)?;
+        }
+        let mut changed = Vec::new();
+        let mut unchanged_paths = Vec::new();
+        for (requested, _, before, bytes, same) in prepared {
+            if same {
+                unchanged_paths.push(display_path(&requested));
+            } else {
+                changed.push(changed_file(&requested, before, &bytes));
+            }
+        }
+        Ok(BatchMutationOutput {
+            changed,
+            unchanged_paths,
+        })
+    }
+}
+
+#[async_trait]
+impl TypedTool for BatchEditTool {
+    type Input = BatchEditInput;
+    type Output = BatchMutationOutput;
+    const NAME: &'static str = "batch_edit";
+    const ORDER: u16 = 440;
+    const DESCRIPTION: &'static str =
+        "Atomically apply ordered exact-string edits; edits to one file are simulated sequentially before writing.";
+
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::WRITE_FILES
+    }
+
+    fn inspect(
+        &self,
+        input: &BatchEditInput,
+        _: &ToolInspectContext,
+    ) -> Result<ToolIntent, ToolError> {
+        safe_writes_available()?;
+        let total: usize = input
+            .edits
+            .iter()
+            .map(|edit| edit.old_text.len() + edit.new_text.len())
+            .sum();
+        batch_bounds(input.edits.len(), total)?;
+        let mut paths = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut planned = Vec::new();
+        for edit in &input.edits {
+            check_path(&edit.path)?;
+            if edit.old_text.is_empty() || edit.old_text.len() > EDIT_LIMIT {
+                return Err(validation("old_text must be 1..=1 MiB"));
+            }
+            check_text(
+                &edit.new_text,
+                EDIT_LIMIT,
+                "new_text exceeds 1 MiB or contains NUL",
+            )?;
+            if seen.insert(edit.path.clone()) {
+                paths.push(access(&edit.path, PathAccessMode::Write));
+            }
+            planned.push(PlannedChange::Edit {
+                requested_path: edit.path.clone(),
+                old_text: edit.old_text.clone(),
+                new_text: edit.new_text.clone(),
+                expected_sha256: edit
+                    .expected_sha256
+                    .as_ref()
+                    .map(|digest| digest.as_str().to_owned()),
+            });
+        }
+        Ok(file_intent(
+            ToolMutation::Workspace,
+            ToolIdempotency::IdempotentWrite,
+            paths,
+            planned,
+        ))
+    }
+
+    async fn execute(
+        &self,
+        context: ToolExecutionContext,
+        input: BatchEditInput,
+        _: CancellationToken,
+    ) -> Result<BatchMutationOutput, ToolError> {
+        safe_writes_available()?;
+        // Preserve array order for display, and each path's own edits in
+        // their original order (Built-in Catalog §3.2).
+        let mut order: Vec<PathBuf> = Vec::new();
+        let mut requested_of: std::collections::BTreeMap<PathBuf, String> =
+            std::collections::BTreeMap::new();
+        let mut edits_of: std::collections::BTreeMap<PathBuf, Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
+        for edit in &input.edits {
+            let path = resolved(&context, &edit.path)?.to_path_buf();
+            if !edits_of.contains_key(&path) {
+                order.push(path.clone());
+                requested_of.insert(path.clone(), edit.path.clone());
+            }
+            edits_of
+                .entry(path)
+                .or_default()
+                .push((edit.old_text.clone(), edit.new_text.clone()));
+        }
+        validate_batch_edit_target_budget(order.iter().map(PathBuf::as_path))?;
+        // Simulate all paths in memory before the journal replaces any target.
+        let mut outcomes: Vec<(PathBuf, Sha256Digest, Vec<u8>)> = Vec::new();
+        let mut target_bytes = 0;
+        let mut result_bytes = 0;
+        for path in &order {
+            let before = read_edit_target(path)?;
+            target_bytes = add_batch_edit_target_bytes(target_bytes, before.len())?;
+            let before_hash = digest(&before);
+            let mut after = before;
+            for (old, new) in edits_of.get(path).expect("tracked alongside order") {
+                after = apply_exact_edit(&after, old, new)?;
+                add_batch_edit_result_bytes(result_bytes, after.len())?;
+            }
+            result_bytes = add_batch_edit_result_bytes(result_bytes, after.len())?;
+            outcomes.push((path.clone(), before_hash, after));
+        }
+        let writes: Vec<JournalWrite> = outcomes
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, before, after))| before != &digest(after))
+            .map(|(ordinal, (target, _, after))| JournalWrite {
+                ordinal: ordinal as u32,
+                target_path: target.clone(),
+                new_bytes: JournalWriteSource::Bytes(after.clone()),
+            })
+            .collect();
+        if !writes.is_empty() {
+            journal_replace(&context, &writes)?;
+        }
+        let mut changed = Vec::new();
+        let mut unchanged_paths = Vec::new();
+        for (path, before_hash, after) in outcomes {
+            let requested = requested_of.remove(&path).expect("tracked alongside order");
+            if before_hash == digest(&after) {
+                unchanged_paths.push(display_path(&requested));
+            } else {
+                changed.push(changed_file(&requested, Some(before_hash), &after));
+            }
+        }
+        Ok(BatchMutationOutput {
+            changed,
+            unchanged_paths,
+        })
+    }
+}
+
+fn journal_replace(
+    context: &ToolExecutionContext,
+    writes: &[JournalWrite],
+) -> Result<(), ToolError> {
+    safe_writes_available()?;
+    let map_err = |_| ToolError::new(ToolErrorCode::ToolIoFailed, "journal failed");
+    prepare_write_journal_in_roots(
+        &context.session_dir,
+        &context.workspace_roots,
+        &context.session_id,
+        &context.execution_id,
+        &context.batch_id,
+        &context.call_id,
+        writes,
+    )
+    .map_err(map_err)?;
+    if commit_write_journal_in_roots(
+        &context.session_dir,
+        &context.workspace_roots,
+        &context.execution_id,
+    )
+    .is_err()
+    {
+        // Do not destroy the before-image on rollback conflict (or on any
+        // unproved rollback failure). Recovery must retain the journal for
+        // inspection and the runtime must stop accepting new mutations.
+        rollback_write_journal_in_roots(
+            &context.session_dir,
+            &context.workspace_roots,
+            &context.execution_id,
+        )
+        .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
+        retire_write_journal(&context.session_dir, &context.execution_id)
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
+        return Err(ToolError::new(
+            ToolErrorCode::ToolIoFailed,
+            "journal commit failed (rollback proved)",
+        ));
+    }
+    retire_write_journal(&context.session_dir, &context.execution_id)
+        .map_err(|_| ToolError::new(ToolErrorCode::ToolInternal, "side effect uncertain"))?;
+    Ok(())
+}

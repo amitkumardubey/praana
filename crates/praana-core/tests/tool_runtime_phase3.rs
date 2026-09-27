@@ -140,6 +140,7 @@ impl TypedTool for WriteTool {
             risk_facts: Vec::new(),
             timeout_ms: 5_000,
             idempotency: ToolIdempotency::IdempotentWrite,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -199,6 +200,7 @@ impl TypedTool for SlowTool {
             risk_facts: Vec::new(),
             timeout_ms: 80,
             idempotency: ToolIdempotency::ReadOnly,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -223,6 +225,7 @@ fn intent(mutation: ToolMutation, paths: Vec<praana_core::tools::PathAccessInten
         risk_facts: Vec::new(),
         timeout_ms: 5_000,
         idempotency: ToolIdempotency::ReadOnly,
+        planned: Vec::new(),
     }
 }
 
@@ -580,6 +583,7 @@ async fn process_tree_is_killed_on_timeout_and_cancel() {
         session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
         stdout_limit: 4096,
         stderr_limit: 4096,
+        argv: None,
         process_slots: None,
     })
     .await
@@ -600,6 +604,7 @@ async fn process_tree_is_killed_on_timeout_and_cancel() {
             session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             stdout_limit: 4096,
             stderr_limit: 4096,
+            argv: None,
             process_slots: None,
         })
         .await
@@ -757,6 +762,7 @@ impl TypedTool for MissingReadTool {
             risk_facts: Vec::new(),
             timeout_ms: 5_000,
             idempotency: ToolIdempotency::ReadOnly,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -862,6 +868,7 @@ impl TypedTool for RiskTool {
             risk_facts: vec![praana_core::tools::RiskFact::Rm],
             timeout_ms: 5_000,
             idempotency: ToolIdempotency::NonIdempotent,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -929,6 +936,7 @@ impl TypedTool for FailingTool {
             risk_facts: Vec::new(),
             timeout_ms: 5_000,
             idempotency: ToolIdempotency::NonIdempotent,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -992,6 +1000,7 @@ impl TypedTool for StuckTool {
             risk_facts: Vec::new(),
             timeout_ms: 40,
             idempotency: ToolIdempotency::NonIdempotent,
+            planned: Vec::new(),
         })
     }
     async fn execute(
@@ -1031,6 +1040,115 @@ async fn uncooperative_side_effect_timeout_is_uncertain() {
     assert_eq!(details, "E_TOOL_SIDE_EFFECT_UNCERTAIN");
 }
 
+struct WriterTool;
+
+#[async_trait]
+impl TypedTool for WriterTool {
+    type Input = EchoInput;
+    type Output = EchoOutput;
+    const NAME: &'static str = "writer_value";
+    const ORDER: u16 = 92;
+    const DESCRIPTION: &'static str = "Writes until stopped";
+    fn static_capabilities(&self) -> ToolCapabilities {
+        ToolCapabilities::WRITE_FILES
+    }
+    fn inspect(&self, input: &EchoInput, _: &ToolInspectContext) -> Result<ToolIntent, ToolError> {
+        Ok(ToolIntent {
+            mutation: ToolMutation::Workspace,
+            path_accesses: vec![praana_core::tools::PathAccessIntent {
+                requested: input.value.clone(),
+                normalized_absolute: PathBuf::new(),
+                mode: PathAccessMode::Write,
+            }],
+            command: None,
+            risk_facts: Vec::new(),
+            timeout_ms: 80,
+            idempotency: ToolIdempotency::NonIdempotent,
+            planned: Vec::new(),
+        })
+    }
+    async fn execute(
+        &self,
+        _: ToolExecutionContext,
+        input: EchoInput,
+        _: CancellationToken,
+    ) -> Result<EchoOutput, ToolError> {
+        loop {
+            let _ = std::fs::write(&input.value, b"still-writing");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn uncooperative_writer_keeps_its_lock_and_records_the_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let note = dir.path().join("note.txt");
+    let rt = runtime_with(vec![ToolAdapter::arc(WriterTool).unwrap()]);
+    rt.set_workspace(dir.path().to_path_buf());
+    let finished = rt
+        .execute_batch(
+            batch(
+                "writer",
+                vec![call("writer_value", "writer-1", 0, note.to_str().unwrap())],
+            ),
+            BatchOrigin::Model,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(finished.poisoned);
+    assert_eq!(finished.results[0].status, ToolResultStatus::Uncertain);
+    assert_eq!(finished.uncertain_execution_ids.len(), 1);
+    assert_eq!(rt.locks().held_count(), 1);
+    assert_eq!(std::fs::read(&note).unwrap(), b"still-writing");
+    drop(rt);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    std::fs::write(&note, b"probe").unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(std::fs::read(&note).unwrap(), b"probe");
+}
+
+#[test]
+fn dropping_poisoned_runtime_outside_the_async_context_stops_the_writer() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let note = dir.path().join("note.txt");
+    let workspace = dir.path().to_path_buf();
+    let note_for_run = note.clone();
+    let tool_rt = runtime.block_on(async move {
+        let rt = runtime_with(vec![ToolAdapter::arc(WriterTool).unwrap()]);
+        rt.set_workspace(workspace);
+        let finished = rt
+            .execute_batch(
+                batch(
+                    "writer",
+                    vec![call(
+                        "writer_value",
+                        "writer-1",
+                        0,
+                        note_for_run.to_str().unwrap(),
+                    )],
+                ),
+                BatchOrigin::Model,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(finished.poisoned);
+        assert_eq!(rt.locks().held_count(), 1);
+        rt
+    });
+    assert!(tokio::runtime::Handle::try_current().is_err());
+    drop(tool_rt);
+    std::fs::write(&note, b"probe").unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(std::fs::read(&note).unwrap(), b"probe");
+}
+
 #[tokio::test]
 async fn grandchild_and_term_ignored_processes_are_reaped() {
     let cwd = std::env::temp_dir();
@@ -1043,6 +1161,7 @@ async fn grandchild_and_term_ignored_processes_are_reaped() {
         session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
         stdout_limit: 4096,
         stderr_limit: 4096,
+        argv: None,
         process_slots: None,
     })
     .await
@@ -1060,12 +1179,41 @@ async fn grandchild_and_term_ignored_processes_are_reaped() {
         session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
         stdout_limit: 4096,
         stderr_limit: 4096,
+        argv: None,
         process_slots: None,
     })
     .await
     .unwrap();
     assert!(ignored.timed_out);
     if let Some(group) = ignored.group_id {
+        assert!(!praana_core::process::unix::group_alive(group as i32));
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn descendant_holding_a_pipe_is_reaped_after_leader_exit() {
+    let started = std::time::Instant::now();
+    let output = supervise(SuperviseRequest {
+        command: "trap '' HUP; sleep 30 >/dev/fd/1 & disown; exit 0".into(),
+        cwd: std::env::temp_dir(),
+        env: std::env::vars().collect(),
+        timeout: Duration::from_secs(8),
+        cancel: CancellationToken::new(),
+        session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        stdout_limit: 4096,
+        stderr_limit: 4096,
+        argv: None,
+        process_slots: None,
+    })
+    .await
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "elapsed {:?}",
+        started.elapsed()
+    );
+    if let Some(group) = output.group_id {
         assert!(!praana_core::process::unix::group_alive(group as i32));
     }
 }
@@ -1082,6 +1230,7 @@ async fn process_stdout_is_redacted() {
         session_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
         stdout_limit: 4096,
         stderr_limit: 4096,
+        argv: None,
         process_slots: None,
     })
     .await
