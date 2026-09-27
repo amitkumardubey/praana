@@ -2,7 +2,7 @@
 //! A target that no longer matches the recorded identity is left untouched.
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -444,15 +444,22 @@ fn restore_entry(
             .before_relpath
             .as_deref()
             .ok_or_else(|| io_err("journal entry is missing before bytes"))?;
-        let before = read_rel(session_root, execution_id, rel)?;
+        let mut before = crate::tools::builtin::confine::open_regular(&rel_path(
+            session_root,
+            execution_id,
+            rel,
+        )?)
+        .map_err(|error| io_err(error.to_string()))?;
         let expected = entry
             .original_sha256
             .as_ref()
             .ok_or_else(|| io_err("journal entry is missing the original hash"))?;
-        if &Sha256Digest::digest_bytes(&before) != expected {
+        if &hash_reader(&mut before)? != expected {
             return Err(io_err("before-image hash does not match the journal"));
         }
-        atomic_replace(&target, &before, execution_id, entry.ordinal)?;
+        before.rewind().map_err(|err| io_err(err.to_string()))?;
+        crate::tools::builtin::confine::replace_file_from_reader(&target, &mut before)
+            .map_err(|error| io_err(error.to_string()))?;
     } else if target.exists() {
         crate::tools::builtin::confine::remove_regular(&target)
             .map_err(|error| io_err(error.to_string()))?;
@@ -541,6 +548,10 @@ fn copy_and_hash(src: &Path, dst: &Path) -> Result<Sha256Digest, ArtifactError> 
 fn hash_file(path: &Path) -> Result<Sha256Digest, ArtifactError> {
     let mut input = crate::tools::builtin::confine::open_regular(path)
         .map_err(|error| io_err(error.to_string()))?;
+    hash_reader(&mut input)
+}
+
+fn hash_reader(input: &mut impl Read) -> Result<Sha256Digest, ArtifactError> {
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 8192];
     loop {
@@ -555,16 +566,23 @@ fn hash_file(path: &Path) -> Result<Sha256Digest, ArtifactError> {
     Ok(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
+fn rel_path(
+    session_root: &Path,
+    execution_id: &ToolExecutionId,
+    rel: &str,
+) -> Result<PathBuf, ArtifactError> {
+    if rel.contains("..") || rel.contains('/') || rel.contains('\\') {
+        return Err(io_err("journal relpath escapes the execution directory"));
+    }
+    Ok(payload_dir(session_root, execution_id).join(rel))
+}
+
 fn read_rel(
     session_root: &Path,
     execution_id: &ToolExecutionId,
     rel: &str,
 ) -> Result<Vec<u8>, ArtifactError> {
-    if rel.contains("..") || rel.contains('/') || rel.contains('\\') {
-        return Err(io_err("journal relpath escapes the execution directory"));
-    }
-    let path = payload_dir(session_root, execution_id).join(rel);
-    fs::read(&path).map_err(|err| io_err(err.to_string()))
+    fs::read(rel_path(session_root, execution_id, rel)?).map_err(|err| io_err(err.to_string()))
 }
 
 fn store_journal(session_root: &Path, journal: &WriteJournalV1) -> Result<(), ArtifactError> {

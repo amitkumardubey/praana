@@ -1104,6 +1104,132 @@ fn crash_during_fragmented_provider_output_never_accepts_partial() {
 }
 
 #[test]
+fn replacement_acceptance_crash_repairs_supersession_once_in_fresh_process() {
+    let root = tempfile::tempdir().unwrap();
+    let first_point = "turn.after_assistant_attempt_started:step0:attempt1@1";
+    let seed = spawn_child(
+        root.path(),
+        "child_seed_and_crash",
+        "seed-and-crash",
+        "standard",
+        Some(first_point),
+        false,
+    );
+    assert_abort(&seed, first_point);
+    let accept_point = "turn.after_assistant_step_accepted:step0@1";
+    let replacement = spawn_child(
+        root.path(),
+        "child_resume_and_finish",
+        "resume-and-finish",
+        "standard",
+        Some(accept_point),
+        true,
+    );
+    assert_abort(&replacement, accept_point);
+    let prefix = read_envelopes(root.path());
+    assert!(prefix
+        .iter()
+        .any(|event| matches!(event.event, CanonicalEvent::AssistantAttemptFailed(_))));
+    assert_eq!(
+        prefix
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::AttemptSuperseded(_)))
+            .count(),
+        0
+    );
+    for _ in 0..2 {
+        let repaired = spawn_child(
+            root.path(),
+            "child_resumes_session_started_prefix",
+            "none",
+            "standard",
+            None,
+            false,
+        );
+        assert!(
+            repaired.status.success(),
+            "{}",
+            String::from_utf8_lossy(&repaired.stderr)
+        );
+    }
+    let after = read_envelopes(root.path());
+    let (position, relation) = after
+        .iter()
+        .enumerate()
+        .find_map(|(index, event)| match &event.event {
+            CanonicalEvent::AttemptSuperseded(relation) => Some((index, relation)),
+            _ => None,
+        })
+        .expect("missing supersession repair");
+    assert_eq!(
+        after
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::AttemptSuperseded(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        relation.replacement_accept_event_id,
+        after[position - 1].event_id
+    );
+    assert!(matches!(
+        after[position - 1].event,
+        CanonicalEvent::AssistantStepAccepted(_)
+    ));
+    resume_twice_and_assert(&root, "standard", true, NORMAL, 1);
+}
+
+#[test]
+fn crash_during_supersession_repair_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let first_point = "turn.after_assistant_attempt_started:step0:attempt1@1";
+    let seed = spawn_child(
+        root.path(),
+        "child_seed_and_crash",
+        "seed-and-crash",
+        "standard",
+        Some(first_point),
+        false,
+    );
+    assert_abort(&seed, first_point);
+    let accept_point = "turn.after_assistant_step_accepted:step0@1";
+    let replacement = spawn_child(
+        root.path(),
+        "child_resume_and_finish",
+        "resume-and-finish",
+        "standard",
+        Some(accept_point),
+        true,
+    );
+    assert_abort(&replacement, accept_point);
+    let repair_point = "recovery.after_append:attempt_superseded@1";
+    let repair = spawn_child(
+        root.path(),
+        "child_resume_and_finish",
+        "resume-and-finish",
+        "standard",
+        Some(repair_point),
+        true,
+    );
+    assert_abort(&repair, repair_point);
+    assert_eq!(
+        read_envelopes(root.path())
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::AttemptSuperseded(_)))
+            .count(),
+        1
+    );
+    resume_twice_and_assert(&root, "standard", true, NORMAL, 1);
+    assert_eq!(
+        read_envelopes(root.path())
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::AttemptSuperseded(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn crash_after_accepted_step_runs_unstarted_calls_once() {
     crash_boundary(
         "turn.after_assistant_step_accepted:step0@1",

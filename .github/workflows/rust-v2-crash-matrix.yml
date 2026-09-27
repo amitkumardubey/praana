@@ -57,15 +57,45 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 parallel_calls_pair_results_by_call_id -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Explain owner-approved Windows durable-session gap (#403)
-        shell: pwsh
-        run: |
-          Write-Host "::notice title=Windows durable crash matrix skipped::Windows History session creation fails closed without private ACLs (https://github.com/chronosiq/praana/issues/403). P3C owner approved this temporary gap; never bypass the ACL check."
-      - name: 'SKIPPED (#403): Windows durable crash matrix and provider-order fixture require private History ACLs'
-        if: ${{ false }}
-        shell: pwsh
-        run: |
-          cargo test -p praana-core --features failpoints --test crash_recovery
+          cargo test -p praana-core --test builtin_tools_phase3 provider_ordinal_ordering_without_a_durable_session -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p praana-core --test builtin_tools_phase3 durable_batch_completion_uses_provider_ordinals_not_input_vector_order -- --exact
+      - name: 'Windows #403 capability gate: run crash tests that do not need durable History; name every skipped test'
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # These tests create a durable History session; #403 must land before
+          # they can run. Child harness tests and Windows real-abort identity
+          # tests are NOT skipped. The History ACL check remains fail-closed.
+          $durableTests = @(
+            'crash_after_accepted_marked_step_cancels_without_starting_body',
+            'crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call',
+            'crash_after_accepted_step_runs_unstarted_calls_once',
+            'crash_after_artifact_blob_before_commit',
+            'crash_after_artifact_commit_before_event_recovers_exact_result',
+            'crash_after_attempt_started_durable_before_provider',
+            'crash_after_attempt_started_write_before_fsync',
+            'crash_after_batch_complete_write_before_fsync',
+            'crash_after_batch_completed_runtime_boundary',
+            'crash_after_event_write_before_fsync_is_a_real_process_abort',
+            'crash_after_every_event_fsync_boundary',
+            'crash_after_finish_event_write_before_fsync_preserves_exact_result',
+            'crash_after_first_tool_start_marks_mutation_uncertain_and_skips_peer',
+            'crash_after_later_tool_start_preserves_first_result',
+            'crash_after_redaction_before_artifact',
+            'crash_after_terminal_step_before_commit',
+            'crash_after_tool_body_before_redaction',
+            'crash_after_turn_committed',
+            'crash_during_fragmented_provider_output_never_accepts_partial',
+            'crash_during_recovery_is_idempotent',
+            'crash_during_supersession_repair_is_idempotent',
+            'environment_alone_cannot_arm_failpoints',
+            'malformed_tail_recovers_exact_valid_prefix',
+            'replacement_acceptance_crash_repairs_supersession_once_in_fresh_process'
+          )
+          $issue = 'https://github.com/chronosiq/praana/issues/403'
+          foreach ($test in $durableTests) { Write-Host "SKIPPED $test — $issue (requires private Windows History ACLs)" }
+          Write-Host "SKIPPED durable_batch_completion_uses_provider_ordinals_not_input_vector_order — $issue (requires a durable History session)"
+          $exclude = @()
+          foreach ($test in $durableTests) { $exclude += @('--skip', $test) }
+          cargo test -p praana-core --features failpoints --test crash_recovery -- @exclude
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

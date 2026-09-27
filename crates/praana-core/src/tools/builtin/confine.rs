@@ -9,8 +9,6 @@ use std::fs;
 #[cfg(not(unix))]
 use std::fs::File;
 #[cfg(not(unix))]
-use std::io::Write;
-#[cfg(not(unix))]
 use std::path::Component;
 use std::path::Path;
 
@@ -76,11 +74,21 @@ pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
     if meta.len() > limit {
         return Err(ToolError::new(
             ToolErrorCode::ToolValidationFailed,
-            "file exceeds 16 MiB",
+            format!("file exceeds {limit} bytes"),
         ));
     }
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut file, &mut bytes).map_err(|_| io("read failed"))?;
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(&mut file, limit.saturating_add(1)),
+        &mut bytes,
+    )
+    .map_err(|_| io("read failed"))?;
+    if bytes.len() as u64 > limit {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolValidationFailed,
+            format!("file exceeds {limit} bytes"),
+        ));
+    }
     Ok(bytes)
 }
 
@@ -107,16 +115,23 @@ pub fn open_regular(path: &Path) -> Result<std::fs::File, ToolError> {
 }
 
 pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    replace_file_from_reader(path, &mut std::io::Cursor::new(bytes))
+}
+
+pub fn replace_file_from_reader(
+    path: &Path,
+    source: &mut dyn std::io::Read,
+) -> Result<(), ToolError> {
     if cfg!(windows) {
         return Err(unsupported_windows_write());
     }
     #[cfg(unix)]
     {
-        unix::replace_file(path, bytes)
+        unix::replace_file(path, source)
     }
     #[cfg(not(unix))]
     {
-        replace_file_fallback(path, bytes)
+        replace_file_fallback(path, source)
     }
 }
 
@@ -138,7 +153,7 @@ pub fn remove_regular(path: &Path) -> Result<(), ToolError> {
 }
 
 #[cfg(not(unix))]
-fn replace_file_fallback(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+fn replace_file_fallback(path: &Path, source: &mut dyn std::io::Read) -> Result<(), ToolError> {
     let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
     reject_symlink_walk(parent)?;
     if is_symlink(path) {
@@ -157,7 +172,7 @@ fn replace_file_fallback(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
             .create_new(true)
             .open(&tmp)
             .map_err(|_| io("temp file create failed"))?;
-        file.write_all(bytes).map_err(|_| io("temp write failed"))?;
+        std::io::copy(source, &mut file).map_err(|_| io("temp write failed"))?;
         file.sync_all().map_err(|_| io("temp fsync failed"))?;
         if let Some(mode) = mode {
             fs::set_permissions(&tmp, mode).map_err(|_| io("preserving permissions failed"))?;
@@ -212,7 +227,6 @@ fn unpredictable_name() -> Result<String, ToolError> {
 mod unix {
     use std::ffi::CString;
     use std::fs::File;
-    use std::io::Write;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::ffi::OsStrExt;
     use std::path::{Component, Path};
@@ -251,7 +265,7 @@ mod unix {
         Ok(file)
     }
 
-    pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    pub fn replace_file(path: &Path, source: &mut dyn std::io::Read) -> Result<(), ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path
             .file_name()
@@ -271,7 +285,7 @@ mod unix {
         let (tmp_name, mut file) = create_temp(&dir)?;
         super::note_temp_mode(&file);
         let write_result = (|| -> Result<(), ToolError> {
-            file.write_all(bytes).map_err(|_| io("temp write failed"))?;
+            std::io::copy(source, &mut file).map_err(|_| io("temp write failed"))?;
             file.sync_all().map_err(|_| io("temp fsync failed"))?;
             let chmod = unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) };
             if chmod != 0 {
@@ -502,6 +516,18 @@ mod unix {
 
     fn c_string(name: &std::ffi::OsStr) -> Result<CString, ToolError> {
         CString::new(name.as_bytes()).map_err(|_| io("path contains NUL"))
+    }
+}
+
+#[cfg(test)]
+mod read_limit_tests {
+    #[test]
+    fn reports_the_supplied_read_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("bytes.txt");
+        std::fs::write(&path, b"sixabc").unwrap();
+        let error = super::read_regular(&path, 5).unwrap_err();
+        assert!(error.to_string().contains("file exceeds 5 bytes"));
     }
 }
 

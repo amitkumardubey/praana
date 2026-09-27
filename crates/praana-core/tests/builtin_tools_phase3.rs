@@ -233,6 +233,32 @@ fn catalog_order_is_stable_when_shell_is_disabled() {
 }
 
 #[tokio::test]
+async fn provider_ordinal_ordering_without_a_durable_session() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("first.txt"), b"first").unwrap();
+    fs::write(dir.path().join("second.txt"), b"second").unwrap();
+    let rt = runtime(dir.path(), false);
+    let results = run(
+        &rt,
+        vec![
+            call("read_file", "second", 1, json!({"path": "second.txt"})),
+            call("read_file", "first", 0, json!({"path": "first.txt"})),
+        ],
+    )
+    .await;
+    assert_eq!(
+        results
+            .iter()
+            .map(|result| result.dto.meta.tool_call_id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert!(results
+        .iter()
+        .all(|result| result.status == ToolResultStatus::Success));
+}
+
+#[tokio::test]
 async fn durable_batch_completion_uses_provider_ordinals_not_input_vector_order() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("work");
@@ -571,6 +597,56 @@ async fn allowed_root_write_outside_cwd_requires_headless_risk_allowance() {
         fs::read_to_string(outside.join("allowed.txt")).unwrap(),
         "written"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn write_file_replaces_existing_target_above_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("large.txt");
+    let old = vec![b'x'; 16 * 1024 * 1024 + 1];
+    fs::write(&target, &old).unwrap();
+    let hash = Sha256Digest::digest_bytes(&old);
+    let rt = runtime(dir.path(), false);
+    let first = run(
+        &rt,
+        vec![call(
+            "write_file",
+            "large-write",
+            0,
+            json!({"path": "large.txt", "content": "new", "expected_sha256": hash}),
+        )],
+    )
+    .await;
+    assert_eq!(first[0].status, ToolResultStatus::Success);
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn batch_write_replaces_existing_target_above_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("large.txt");
+    let old = vec![b'x'; 16 * 1024 * 1024 + 1];
+    fs::write(&target, &old).unwrap();
+    let hash = Sha256Digest::digest_bytes(&old);
+    let rt = runtime(dir.path(), false);
+    let first = run(
+        &rt,
+        vec![call(
+            "batch_write",
+            "large-batch",
+            0,
+            json!({"writes": [
+                {"path": "large.txt", "content": "new", "expected_sha256": hash},
+                {"path": "peer.txt", "content": "peer"}
+            ]}),
+        )],
+    )
+    .await;
+    assert_eq!(first[0].status, ToolResultStatus::Success);
+    assert_eq!(fs::read(&target).unwrap(), b"new");
+    assert_eq!(fs::read(dir.path().join("peer.txt")).unwrap(), b"peer");
 }
 
 #[tokio::test]

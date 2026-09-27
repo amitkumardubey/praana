@@ -295,14 +295,7 @@ impl ToolRuntime {
         let headless = self.headless.load(Ordering::SeqCst)
             || matches!(request.origin, ToolCallOrigin::HeadlessCommand)
             || matches!(origin, BatchOrigin::HeadlessCommand);
-        let mut calls = std::mem::take(&mut request.calls);
-        calls.sort_by_key(|call| call.provider_ordinal);
-        if duplicate_identity(&calls) {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolInternal,
-                "duplicate provider ordinal or call id",
-            ));
-        }
+        let calls = ordered_provider_calls(std::mem::take(&mut request.calls))?;
         let mut admitted = Vec::new();
         let mut blocked = Vec::new();
         for call in calls {
@@ -363,14 +356,7 @@ impl ToolRuntime {
         let headless = self.headless.load(Ordering::SeqCst)
             || matches!(request.origin, ToolCallOrigin::HeadlessCommand)
             || matches!(origin, BatchOrigin::HeadlessCommand);
-        let mut calls = request.calls.clone();
-        calls.sort_by_key(|call| call.provider_ordinal);
-        if duplicate_identity(&calls) {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolInternal,
-                "duplicate provider ordinal or call id",
-            ));
-        }
+        let calls = ordered_provider_calls(request.calls.clone())?;
         // A recovered batch may already contain durable finishes. Do not
         // re-enter preflight/body for those calls; only admit unstarted peers.
         let prior_events = durable
@@ -1300,6 +1286,19 @@ enum Poll {
 enum Preflight {
     Ready(Admitted),
     Blocked(u32, FinishedCall),
+}
+
+fn ordered_provider_calls(
+    mut calls: Vec<ProviderToolCall>,
+) -> Result<Vec<ProviderToolCall>, ToolError> {
+    calls.sort_by_key(|call| call.provider_ordinal);
+    if duplicate_identity(&calls) {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolInternal,
+            "duplicate provider ordinal or call id",
+        ));
+    }
+    Ok(calls)
 }
 
 fn duplicate_identity(calls: &[ProviderToolCall]) -> bool {

@@ -60,6 +60,65 @@ fn session_workspace_roots(session_dir: &Path) -> Vec<std::path::PathBuf> {
     crate::hooks::validate::workspace_roots(&cwd, &allowed)
 }
 
+fn next_supersession_repair(
+    events: &[EventEnvelope],
+    replay: &EventReplayer,
+) -> Option<(TurnId, AttemptSuperseded)> {
+    for accepted in events {
+        if !matches!(accepted.event, CanonicalEvent::AssistantStepAccepted(_)) {
+            continue;
+        }
+        let replacement_id = accepted.attempt_id?;
+        let started = events.iter().find_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptStarted(started)
+                if event.attempt_id == Some(replacement_id) =>
+            {
+                Some(started)
+            }
+            _ => None,
+        })?;
+        let old_id = match started.retry_of {
+            Some(id) => id,
+            None => continue,
+        };
+        if replay.attempts.get(&old_id)?.status != AttemptStatus::Failed
+            || replay.attempts.get(&replacement_id)?.status != AttemptStatus::Accepted
+            || events.iter().any(|event| {
+                matches!(&event.event, CanonicalEvent::AttemptSuperseded(relation)
+                    if relation.superseded_attempt_id == old_id
+                        && relation.replacement_attempt_id == replacement_id
+                        && relation.replacement_accept_event_id == accepted.event_id)
+            })
+        {
+            continue;
+        }
+        let old_model = events.iter().find_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptStarted(old) if event.attempt_id == Some(old_id) => {
+                Some(&old.model)
+            }
+            _ => None,
+        })?;
+        let reason = if started.emergency_context_retry {
+            SupersessionReason::EmergencyContextRetry
+        } else if old_model != &started.model {
+            SupersessionReason::ProviderFallback
+        } else {
+            SupersessionReason::Retry
+        };
+        return Some((
+            accepted.turn_id?,
+            AttemptSuperseded {
+                purpose: started.purpose.clone(),
+                superseded_attempt_id: old_id,
+                replacement_attempt_id: replacement_id,
+                replacement_accept_event_id: accepted.event_id,
+                reason,
+            },
+        ));
+    }
+    None
+}
+
 pub struct SessionRecoveryEngine {
     store: EventLogStore,
     ids: MonotonicUlidGenerator,
@@ -194,6 +253,19 @@ impl SessionRecoveryEngine {
                 #[cfg(feature = "failpoints")]
                 crate::crash_point::hit("recovery.after_append:attempt_lost");
                 self.push_notice(attempt_lost_notice(attempt.started_event_id));
+                appended += 1;
+                continue;
+            }
+
+            if let Some((turn_id, relation)) = next_supersession_repair(&events, &replay) {
+                let event = self.envelope(
+                    Some(turn_id),
+                    None,
+                    CanonicalEvent::AttemptSuperseded(relation),
+                )?;
+                self.store.append_event(&event)?;
+                #[cfg(feature = "failpoints")]
+                crate::crash_point::hit("recovery.after_append:attempt_superseded");
                 appended += 1;
                 continue;
             }

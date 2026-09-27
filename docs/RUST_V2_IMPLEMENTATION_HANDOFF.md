@@ -303,15 +303,57 @@ P0
   ordinal even when the caller supplies a permuted request vector. Linux and
   macOS CI execute the event and two-file journal crash matrices; Windows CI
   compiles the core and requires a real fast-fail, panic rejection, and the
-  fail-closed write/catalog tests. The Windows durable crash matrix is
-  explicitly skipped under the owner-approved P3C platform gap: since P1B,
-  Windows History session creation has failed closed without private ACLs.
+  fail-closed write/catalog tests. Windows also runs non-durable
+  `provider_ordinal_ordering_without_a_durable_session` (the same call-ordering
+  helper used by durable completion) and the crash harness tests that do not
+  create sessions. Only the named durable-session tests below
+  are skipped on Windows under the owner-approved P3C capability gap: since
+  P1B, Windows History session creation has failed closed without private ACLs.
   Durable Windows sessions remain unsupported until `chronosiq/praana#403`;
   this is not a P3C defect. Do not bypass the ACL check. The Redaction owner
   approved the version-scoped per-leaf invariant: recovery executes an
   unstarted call only when every durable argument leaf lacks a marker;
   otherwise it cancels without running the body, independently of safe peers
   in the same batch. Acceptance fails closed on an unmarked argument mutation.
+  After a replacement attempt is accepted, the live loop appends
+  `attempt_superseded`; fresh-process recovery repairs a missing relation once.
+  Existing write targets and rollback before-images use bounded streaming
+  hashing/comparison and restoration without a 16 MiB existing-file ceiling;
+  the 16 MiB read limit and 16 MiB batch *input* limit remain. The non-Unix
+  `open_regular` fallback is not handle-anchored and stays tracked under
+  [`#402`](https://github.com/chronosiq/praana/issues/402); Windows mutations
+  remain unavailable until that packet lands.
+
+  **Windows-only skips (each requires durable History session creation):**
+  each entry is linked to the private-ACL gate and is explicitly excluded by
+  the workflow's Windows-conditional capability step, not by an unconditional
+  disabled step. The child harness and real-abort identity tests still run.
+
+  - `crash_after_accepted_marked_step_cancels_without_starting_body` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_accepted_step_runs_unstarted_calls_once` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_artifact_blob_before_commit` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_artifact_commit_before_event_recovers_exact_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_attempt_started_durable_before_provider` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_attempt_started_write_before_fsync` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_batch_complete_write_before_fsync` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_batch_completed_runtime_boundary` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_event_write_before_fsync_is_a_real_process_abort` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_every_event_fsync_boundary` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_finish_event_write_before_fsync_preserves_exact_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_first_tool_start_marks_mutation_uncertain_and_skips_peer` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_later_tool_start_preserves_first_result` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_redaction_before_artifact` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_terminal_step_before_commit` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_tool_body_before_redaction` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_after_turn_committed` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_fragmented_provider_output_never_accepts_partial` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_recovery_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_supersession_repair_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `environment_alone_cannot_arm_failpoints` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `malformed_tail_recovers_exact_valid_prefix` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `replacement_acceptance_crash_repairs_supersession_once_in_fresh_process` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `durable_batch_completion_uses_provider_ordinals_not_input_vector_order` ([#403](https://github.com/chronosiq/praana/issues/403))
 
 ### P4A: History Retrieval and Search
 

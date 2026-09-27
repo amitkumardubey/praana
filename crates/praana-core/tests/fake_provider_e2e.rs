@@ -768,6 +768,41 @@ async fn lost_attempt_within_budget_starts_bounded_retry_with_linkage() {
     assert_eq!(starts[1]["event"]["data"]["attempt_number"], json!(2));
     let first_id = starts[0]["attempt_id"].as_str().unwrap().to_owned();
     assert_eq!(starts[1]["event"]["data"]["retry_of"], json!(first_id));
+    let events: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let accepted = events
+        .iter()
+        .find(|event| event["event"]["kind"] == "assistant_step_accepted")
+        .unwrap();
+    let superseded = events
+        .iter()
+        .find(|event| event["event"]["kind"] == "attempt_superseded")
+        .unwrap();
+    assert_eq!(
+        superseded["event"]["data"]["superseded_attempt_id"],
+        json!(first_id)
+    );
+    assert_eq!(
+        superseded["event"]["data"]["replacement_attempt_id"],
+        starts[1]["attempt_id"]
+    );
+    assert_eq!(
+        superseded["event"]["data"]["replacement_accept_event_id"],
+        accepted["event_id"]
+    );
+    assert_eq!(
+        superseded["sequence"].as_u64().unwrap(),
+        accepted["sequence"].as_u64().unwrap() + 1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event"]["kind"] == "attempt_superseded")
+            .count(),
+        1
+    );
     assert!(text.contains("\"turn_committed\""));
 }
 

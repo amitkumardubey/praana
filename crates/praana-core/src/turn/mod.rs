@@ -695,11 +695,11 @@ impl HeadlessLoop {
                 )?));
             }
         };
-        self.append(
+        let accept_event_id = self.append(
             Some(open.id),
             Some(attempt_id),
             CanonicalEvent::AssistantStepAccepted(AssistantStepAccepted {
-                purpose,
+                purpose: purpose.clone(),
                 message: message.clone(),
             }),
         )?;
@@ -708,6 +708,22 @@ impl HeadlessLoop {
             "turn.after_assistant_step_accepted:step{}",
             open.step_index
         ));
+        if let Some(old_id) = max_prior
+            .filter(|attempt| attempt.status == crate::history::replay::AttemptStatus::Failed)
+            .map(|attempt| attempt.id)
+        {
+            self.append(
+                Some(open.id),
+                None,
+                CanonicalEvent::AttemptSuperseded(AttemptSuperseded {
+                    purpose: ProviderAttemptPurpose::AssistantStep(purpose),
+                    superseded_attempt_id: old_id,
+                    replacement_attempt_id: attempt_id,
+                    replacement_accept_event_id: accept_event_id,
+                    reason: SupersessionReason::Retry,
+                }),
+            )?;
+        }
         if message.finish_reason != FinishReason::ToolUse {
             return Ok(Control::Continue);
         }

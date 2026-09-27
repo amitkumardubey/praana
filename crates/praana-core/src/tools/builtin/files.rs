@@ -1,10 +1,12 @@
 //! File read, write, edit, and atomic batches.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use super::dto::*;
@@ -146,12 +148,38 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, ToolError> {
     Ok(bytes)
 }
 
-fn existing_bytes(path: &Path) -> Result<Option<Vec<u8>>, ToolError> {
-    match super::confine::read_regular(path, FILE_LIMIT) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.code() == ToolErrorCode::ToolPathNotFound => Ok(None),
-        Err(error) => Err(error),
+// Writes may replace arbitrarily large existing targets. Hash and compare
+// against the bounded new input through a confined handle, never fs::read.
+fn existing_write_target(
+    path: &Path,
+    new_bytes: &[u8],
+) -> Result<Option<(Sha256Digest, bool)>, ToolError> {
+    let mut file = match super::confine::open_regular(path) {
+        Ok(file) => file,
+        Err(error) if error.code() == ToolErrorCode::ToolPathNotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut hasher = Sha256::new();
+    let mut same = true;
+    let mut offset = 0usize;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| {
+            ToolError::new(ToolErrorCode::ToolIoFailed, "existing file read failed")
+        })?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        if new_bytes.get(offset..offset.saturating_add(count)) != Some(&buffer[..count]) {
+            same = false;
+        }
+        offset = offset.saturating_add(count);
     }
+    Ok(Some((
+        Sha256Digest::from_bytes(hasher.finalize().into()),
+        same && offset == new_bytes.len(),
+    )))
 }
 
 fn lines_of(text: &str) -> Result<Vec<&str>, ToolError> {
@@ -350,17 +378,17 @@ pub fn write_one(
     expected: Option<&Sha256Digest>,
 ) -> Result<WriteFileOutput, ToolError> {
     safe_writes_available()?;
-    let existing = existing_bytes(path)?;
+    let existing = existing_write_target(path, bytes)?;
     if existing.is_none() && expected.is_some() {
         return Err(validation("expected hash conflicts with a missing file"));
     }
-    if let (Some(current), Some(expected)) = (existing.as_ref(), expected) {
-        if digest(current) != *expected {
+    if let (Some((current, _)), Some(expected)) = (existing.as_ref(), expected) {
+        if current != expected {
             return Err(validation("file changed"));
         }
     }
-    let before = existing.as_ref().map(|current| digest(current));
-    if existing.as_deref() == Some(bytes) {
+    let before = existing.as_ref().map(|(hash, _)| hash.clone());
+    if existing.is_some_and(|(_, same)| same) {
         return Ok(WriteFileOutput {
             changed: false,
             file: changed_file(requested, before, bytes),
@@ -521,22 +549,22 @@ impl TypedTool for BatchWriteTool {
                 }
             }
             let bytes = write.content.into_bytes();
-            let existing = existing_bytes(&path)?;
+            let existing = existing_write_target(&path, &bytes)?;
             if existing.is_none() && write.expected_sha256.is_some() {
                 return Err(validation("expected hash conflicts with a missing file"));
             }
-            if let (Some(current), Some(expected)) =
+            if let (Some((current, _)), Some(expected)) =
                 (existing.as_ref(), write.expected_sha256.as_ref())
             {
-                if digest(current) != *expected {
+                if current != expected {
                     return Err(validation("file changed"));
                 }
             }
-            let same = existing.as_deref() == Some(bytes.as_slice());
+            let same = existing.as_ref().is_some_and(|(_, same)| *same);
             prepared.push((
                 write.path,
                 path,
-                existing.map(|current| digest(&current)),
+                existing.map(|(hash, _)| hash),
                 bytes,
                 same,
             ));

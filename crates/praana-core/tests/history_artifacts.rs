@@ -1018,6 +1018,43 @@ fn journal_streams_existing_targets_larger_than_tool_read_limit() {
 }
 
 #[test]
+fn journal_rejects_external_growth_beyond_read_limit_as_a_conflict() {
+    let temp = confined_tempdir();
+    let target = temp.path().join("grown.txt");
+    fs::write(&target, b"before").unwrap();
+    let execution = ToolExecutionId::from_str_canonical(&ulid("M2")).unwrap();
+    prepare_write_journal(
+        temp.path(),
+        temp.path(),
+        &SessionId::from_str_canonical(&ulid("M1")).unwrap(),
+        &execution,
+        &ToolBatchId::from_str_canonical(&ulid("M3")).unwrap(),
+        &ToolCallId::from_str_canonical("call_grown").unwrap(),
+        &[JournalWrite {
+            ordinal: 0,
+            target_path: target.clone(),
+            new_bytes: b"after".to_vec(),
+        }],
+    )
+    .unwrap();
+    commit_write_journal(temp.path(), temp.path(), &execution).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let err = reconcile_write_journal(temp.path(), temp.path(), &execution).unwrap_err();
+    assert_eq!(err.code(), "HISTORY_ROLLBACK_CONFLICT");
+    assert_eq!(fs::metadata(&target).unwrap().len(), 16 * 1024 * 1024 + 1);
+    assert!(temp
+        .path()
+        .join("journals")
+        .join(format!("write-{execution}.json"))
+        .exists());
+}
+
+#[test]
 fn journal_conflict_does_not_overwrite_external_bytes() {
     let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
