@@ -199,10 +199,16 @@ impl ToolRuntime {
 
     pub fn set_session(&self, session_dir: PathBuf, session_id: SessionId) {
         let _ = std::fs::create_dir_all(&session_dir);
+        // Canonicalize like set_workspace: on macOS TMPDIR often spells /var as
+        // an alias of /private/var, and the confine layer's handle-anchored
+        // opens walk from the filesystem root, rejecting a symlinked
+        // component. Journal payload paths are session_dir-relative, so an
+        // uncanonicalized session_dir breaks every confined open beneath it.
+        let canonical = std::fs::canonicalize(&session_dir).unwrap_or(session_dir);
         *self
             .session_dir
             .lock()
-            .unwrap_or_else(|err| err.into_inner()) = session_dir;
+            .unwrap_or_else(|err| err.into_inner()) = canonical;
         *self
             .session_id
             .lock()

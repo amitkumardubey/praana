@@ -321,9 +321,15 @@ P0
   payloads use bounded streaming hashing/comparison and restoration through
   confined, no-follow handles, without a 16 MiB existing-target ceiling;
   preflight (`check_planned`) validates an existing target's hash the same way
-  before any body runs. The 16 MiB `read_file` limit and 16 MiB batch *input*
-  limit (total new content per call) remain — both are owner-specified and
-  unrelated to existing-target size. The non-Unix `open_regular` fallback is
+  before any body runs. `ToolRuntime::set_session` canonicalizes the session
+  root, mirroring `set_workspace`, so confined journal payload opens
+  (staged/before-image files, both session-root-relative) cannot fail behind
+  a symlinked path component (observed on macOS `TMPDIR`, where `/var`
+  aliases `/private/var`); a same-platform regression opens the session
+  through a manually created symlink. The 16 MiB `read_file` limit and 16 MiB
+  batch *input* limit (total new content per call) remain — both are
+  owner-specified and unrelated to existing-target size. The non-Unix
+  `open_regular` fallback is
   not handle-anchored and stays tracked under
   [`#402`](https://github.com/chronosiq/praana/issues/402); Windows mutations
   remain unavailable until that packet lands.

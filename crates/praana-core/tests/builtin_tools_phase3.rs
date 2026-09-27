@@ -624,6 +624,46 @@ async fn write_file_replaces_existing_target_above_read_limit() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn batch_write_commits_when_session_root_is_reached_through_a_symlink() {
+    // Regression: macOS TMPDIR often spells /var as a symlink to
+    // /private/var. Journal payload paths (staged/before-image files) are
+    // session_dir-relative, and the confine layer's handle-anchored opens
+    // walk from the filesystem root, rejecting a symlinked path component.
+    // set_session must canonicalize so this class of failure cannot recur
+    // on any platform whose temp root (or a caller-supplied session_dir)
+    // contains a symlink component.
+    let dir = tempfile::tempdir().unwrap();
+    let real_root = dir.path().join("real-session-root");
+    fs::create_dir_all(&real_root).unwrap();
+    let link_root = dir.path().join("linked-session-root");
+    std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+    let workspace = dir.path().join("work");
+    fs::create_dir_all(&workspace).unwrap();
+    let target = workspace.join("existing.txt");
+    fs::write(&target, "before").unwrap();
+    let rt = runtime(&workspace, false);
+    rt.set_session(link_root.join(".session"), session_id());
+    let result = run(
+        &rt,
+        vec![call(
+            "batch_write",
+            "through-symlinked-session",
+            0,
+            json!({"writes": [{"path": "existing.txt", "content": "after"}]}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        result[0].status,
+        ToolResultStatus::Success,
+        "{:?}",
+        result[0].dto.error
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"after");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn batch_write_replaces_existing_target_above_read_limit() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("large.txt");
