@@ -42,17 +42,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Assert real Windows fast-fail and reject ordinary test failure
+      - name: Prove real fast-fail, reject panic, and assert fail-closed write catalog
+        shell: pwsh
         run: |
-          cargo test -p praana-core --features failpoints --test crash_recovery windows_abort_identity_rejects_regular_panic -- --exact
+          cargo test -p praana-core --features failpoints --test crash_recovery windows_abort_identity_accepts_real_abort -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p praana-core --features failpoints --test crash_recovery
+          cargo test -p praana-core --features failpoints --test crash_recovery windows_abort_identity_rejects_regular_panic -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 windows_catalog_omits_unsupported_writes_but_keeps_schema_fixtures -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 windows_mutating_builtins_fail_closed_before_side_effects -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p praana-core --test builtin_tools_phase3 durable_batch_completion_uses_provider_ordinals_not_input_vector_order -- --exact
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 search_reports_every_same_line_match_with_a_match_cap -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows durable crash matrix and provider-order test
+        shell: pwsh
+        run: |
+          cargo test -p praana-core --features failpoints --test crash_recovery
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-core --test builtin_tools_phase3 durable_batch_completion_uses_provider_ordinals_not_input_vector_order -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

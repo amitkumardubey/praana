@@ -34,7 +34,13 @@ pub fn set_test_after_first_entry_hook(target: PathBuf, hook: impl FnOnce() + Se
 #[cfg(feature = "failpoints")]
 fn run_test_after_first_entry_hook(target: &Path) {
     let mut slot = TEST_ENTRY_HOOK.lock().expect("test hook lock poisoned");
-    if slot.as_ref().is_some_and(|(armed, _)| armed == target) {
+    // macOS temp roots may be spelled /var/... while the confined target is
+    // stored as /private/var/...; compare the actual file in this test hook.
+    if slot.as_ref().is_some_and(|(armed, _)| {
+        armed == target
+            || matches!((fs::canonicalize(armed), fs::canonicalize(target)),
+                (Ok(a), Ok(b)) if a == b)
+    }) {
         let (_, hook) = slot.take().expect("armed test hook");
         drop(slot);
         hook();

@@ -402,6 +402,29 @@ fn child_panics_instead_of_aborting() {
 
 #[cfg(windows)]
 #[test]
+fn child_aborts_now() {
+    if std::env::var_os("PRAANA_CRASH_ROOT").is_some() {
+        std::process::abort();
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_abort_identity_accepts_real_abort() {
+    let root = tempfile::tempdir().unwrap();
+    let output = spawn_child(
+        root.path(),
+        "child_aborts_now",
+        "none",
+        "standard",
+        None,
+        false,
+    );
+    assert_abort(&output, "real Windows abort without History initialization");
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_abort_identity_rejects_regular_panic() {
     let root = tempfile::tempdir().unwrap();
     let output = spawn_child(
