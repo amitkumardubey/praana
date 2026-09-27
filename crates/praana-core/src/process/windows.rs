@@ -88,6 +88,13 @@ struct Spawned {
     stderr_read: windows_sys::Win32::Foundation::HANDLE,
 }
 
+// SAFETY: these are opaque kernel HANDLE values, never dereferenced as Rust
+// pointers. Spawned is private to the supervisor; its pipes are drained before
+// the process/thread/job handles are closed, and no task closes a handle while
+// another task uses it. Immutable borrows only copy handle values and the PID.
+unsafe impl Send for Spawned {}
+unsafe impl Sync for Spawned {}
+
 /// Raw Windows handles are pointers. The wrapper makes a copied handle `Send`
 /// so pipe drains can run on blocking threads while the async worker waits.
 #[derive(Clone, Copy)]

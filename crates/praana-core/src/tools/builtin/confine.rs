@@ -325,6 +325,8 @@ mod unix {
         Other,
     }
 
+    // libc::mode_t and S_IF* are u16 on macOS and u32 on Linux.
+    #[allow(clippy::unnecessary_cast)]
     fn symlink_mode(dir: &OwnedFd, name: &std::ffi::OsStr) -> Result<Node, ToolError> {
         let c_name = c_string(name)?;
         let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
@@ -343,14 +345,16 @@ mod unix {
             }
             return Err(io("stat failed"));
         }
-        let mode = stat.st_mode;
-        if mode & libc::S_IFMT == libc::S_IFLNK {
+        // Darwin exposes mode_t as u16; Linux uses u32. Normalize before
+        // comparing with libc flags and returning the permission bits.
+        let mode = stat.st_mode as u32;
+        if mode & (libc::S_IFMT as u32) == libc::S_IFLNK as u32 {
             return Ok(Node::Symlink);
         }
-        if mode & libc::S_IFMT == libc::S_IFDIR {
+        if mode & (libc::S_IFMT as u32) == libc::S_IFDIR as u32 {
             return Ok(Node::Directory);
         }
-        if mode & libc::S_IFMT == libc::S_IFREG {
+        if mode & (libc::S_IFMT as u32) == libc::S_IFREG as u32 {
             return Ok(Node::File(mode & 0o777));
         }
         Ok(Node::Other)
