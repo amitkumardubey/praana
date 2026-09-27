@@ -438,17 +438,33 @@ credential environment variable never selects a provider or model implicitly.
 
 `history.compactor_provider` and `history.compactor_model` are both empty or
 both non-empty. A configured pair uses the provider combinations in section
-6.1. Empty means `auto`: resolve the active session provider, protocol, exact
-model, revision rule, endpoint fingerprint, and credential source as the
-compactor target. Session creation then requires that exact capability profile
-to be `SelfCompactionCapability::Validated` and support the strict
+6.1. Before Phase 5, only the default empty pair is accepted. A one-sided
+pair remains `CONFIG_INVALID_VALUE`. A complete non-empty pair is a non-default
+request for an inactive Phase-5 feature and fails with
+`CONFIG_FEATURE_NOT_IMPLEMENTED`. The empty pair does not trigger compactor
+capability, credential, or compactor-admission checks at session creation or
+resume before Phase 5; no compaction request is made. Hard admission of every
+assistant request remains mandatory before Phase 5, and its failure cannot be
+treated as a reason to compact. Resume before Phase 5 uses the frozen creation
+configuration and does not compact.
+Whether a pre-Phase-5 session can later use Phase-5 compaction requires an
+explicit P5 owner decision before that behavior is enabled.
+
+Starting with Phase 5, empty means `auto`: resolve the active session provider,
+protocol, exact model, revision rule, endpoint fingerprint, and credential
+source as the compactor target. For a **new** provider-capable Phase-5 session,
+creation requires that exact capability profile to be
+`SelfCompactionCapability::Validated` and support the strict
 `praana.compaction_candidate.v1` schema. If it does not, creation fails with
 `CONFIG_COMPACTOR_REQUIRED` and instructs the user to set both compactor fields.
 A non-empty configured pair is validated for a trusted context window, strict
-schema output, credentials, and compactor admission during session creation.
-Thus a provider-capable session never starts and later discovers at the pressure
-threshold that no compactor exists. Resolution performs no network completion
-and does not silently select a different model.
+schema output, credentials, and compactor admission during creation. Thus a
+new Phase-5 provider-capable session never discovers a missing compactor only
+at the pressure threshold. Resolution performs no network completion and
+does not silently select a different model. Legacy pre-Phase-5 sessions retain
+their immutable creation snapshot; P5 must
+specify their compaction eligibility and any required migration before enabling
+compaction on their resumed turns.
 
 ### 6.5 History mode and reasoning replay
 
@@ -475,6 +491,9 @@ The schema is implemented incrementally without silently accepting dead keys:
   artifact keys.
 - Phase 4 activates `[state]` and session retention/orphan maintenance.
 - Phase 5 activates History pressure/compaction and configured-compactor keys.
+  Before then, the default empty compactor pair is inert, a one-sided pair is
+  `CONFIG_INVALID_VALUE`, and a complete non-empty pair is rejected with
+  `CONFIG_FEATURE_NOT_IMPLEMENTED`. Assistant request admission remains active.
 - Phase 6 accepts `memory.plugin = builtin:sqlite` and activates memory options
   and timeouts. Before Phase 6, only `memory.plugin = none` is accepted.
 
@@ -807,13 +826,15 @@ System Context resume comparison.
 | `CONFIG_PATH_OUTSIDE_PLUGIN_ROOT` | Built-in memory DB escapes its fixed plugin-owned root. |
 | `CONFIG_SECRET_FORBIDDEN` | Secret-like key/header/value appears in configuration. |
 | `CONFIG_SETUP_REQUIRED` | Provider-capable session requested with empty provider/model. |
-| `CONFIG_COMPACTOR_REQUIRED` | Neither the auto-resolved active model nor the explicit compactor pair satisfies trusted context-window, credentials, and strict compaction-schema requirements. |
+| `CONFIG_COMPACTOR_REQUIRED` | At creation of a new Phase-5 provider-capable session, neither the auto-resolved active model nor the explicit compactor pair satisfies trusted context-window, credentials, and strict compaction-schema requirements. Not raised for the default empty pair before Phase 5. |
 | `CONFIG_SNAPSHOT_MISMATCH` | Session snapshot, metadata, or digest disagree. |
 | `CONFIG_RELOAD_UNSUPPORTED` | Live reload or generic config patch requested. |
 
-Fatal config errors use process exit code 78 for a direct CLI invocation. IPC
-maps them through its normal structured configuration/setup error without
-echoing a rejected value.
+Fatal config errors use process exit code 78 for a direct CLI invocation
+other than P3D `praana run` and `praana resume`. Those two commands never use
+exit 78. Every failure they report uses the exit status in the Implementation
+Handoff P3D packet. IPC maps them through its normal structured
+configuration/setup error without echoing a rejected value.
 
 ### 14.2 Warnings
 

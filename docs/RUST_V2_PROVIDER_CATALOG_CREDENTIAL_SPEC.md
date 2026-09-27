@@ -246,12 +246,23 @@ operation journal, then atomically writes the selected Config source without the
 secret, then runs full Config validation. Any mixed crash state is surfaced by
 operation recovery; it is not guessed.
 
-When the selected active profile is not a fidelity-validated self-compactor but
-does support strict compaction schema output, setup writes
-`history.compactor_provider` and `history.compactor_model` equal to that explicit
-selection. When it lacks strict output, setup requires a separate compatible
-compactor selection before completion. A provider-capable setup therefore
-cannot produce a configuration that fails only later at history pressure.
+Compactor selection is phase-gated by Config §§6.4 and 6.6. Before Phase 5,
+setup leaves `history.compactor_provider` and `history.compactor_model` empty,
+does not probe compactor capability or credentials, and never requires a
+separate compactor to complete setup. A one-sided supplied pair remains
+invalid. A complete non-default pair is rejected before Phase 5 as
+`CONFIG_FEATURE_NOT_IMPLEMENTED` rather than silently written or accepted.
+Assistant requests still pass hard admission for their own context window;
+setup does not authorize bypassing it or enable pressure compaction.
+
+Starting with Phase 5, when the selected active profile is not a
+fidelity-validated self-compactor but does support strict compaction schema
+output, setup writes `history.compactor_provider` and
+`history.compactor_model` equal to that explicit selection. When it lacks
+strict output, setup requires a separate compatible compactor selection
+before completion. A new provider-capable Phase-5 setup therefore cannot
+produce a configuration that fails only later at history pressure. Existing
+pre-Phase-5 session snapshots are not retroactively rewritten by setup.
 
 `auth.login` validates and atomically stores one API key, increments credential
 revision, emits redacted auth state, and does not test the key by default. A

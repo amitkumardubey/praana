@@ -44,23 +44,21 @@ may remove them only at the Ratatui cutover gate.
 ```text
 P0
  |
- +--> P1A --> P1B --> P1C --> P2A --> P2B --+
+ +--> P1A --> P1B --> P1C --> P2A --> P2B ------+
  |              |                               |
- |              +--> P1D --> P3A --> P3B -------+--> P3C
-                                  |
-                            P4A --> P4B
-                                  |
-                                 P5
-                                  |
-                                 P6
-                                  |
-                         W403 --> W402
-                                  |
-                                 P7
-                                  |
-                       P8 (new specs first)
-                                  |
-                                 P9
+ |              +--> P1D --> P3A --> P3B -------+--> P3C --> P3D --> P4A --> P4B
+                                                                              |
+                                                                             P5
+                                                                              |
+                                                                             P6
+                                                                              |
+                                                                        W403 --> W402
+                                                                              |
+                                                                             P7
+                                                                              |
+                                                                    P8 (new specs first)
+                                                                              |
+                                                                             P9
 ```
 
 ## 4. Packet Index
@@ -380,11 +378,315 @@ P0
   - `replacement_acceptance_crash_repairs_supersession_once_in_fresh_process` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `durable_batch_completion_uses_provider_ordinals_not_input_vector_order` ([#403](https://github.com/chronosiq/praana/issues/403))
 
+### P3D: Headless CLI and Real StepProvider Binding (`#405`)
+
+- Owners: this packet's execution contract below; Config v1 §§2–3, 6–9, 12.3;
+  Protocol §§8, 11–12, 14; OpenAI §§4, 7–9, 12–19; History §§2–4, 9, 12;
+  Provider Catalog/Credential §§5–6; UI Contract §§1, 3, 6–7; Ratatui §6
+  (sink separation only); P1D instruction slots and Phase 3 Tool Runtime risk.
+- Depends: P3C; P4A depends on P3D. Implement P3D only after this packet's
+  revision is on `main`. An unmerged working tree is not that gate.
+- Output: a real P2B-backed `StepProvider` and a bounded Rust headless CLI.
+  No IPC, TUI, setup wizard, new provider, new tools, new config key, P5
+  compaction, or TypeScript replacement. Windows durable creation/resume stays
+  fail-closed until W403; Windows mutation tools stay unavailable until W402.
+
+**CLI grammar and configuration (P3D only).** The Rust executable accepts
+`praana run "<task>" [options]` and `praana resume <session-id> [options]`.
+Exactly one nonempty positional task (literal argument, not a shell command)
+for `run`; exactly one canonical uppercase 26-character session ID or UI
+Contract 12-character uppercase `ResumeSelector` for `resume`. Resolve the
+selector against valid manifests under the *current effective* `session.root`;
+zero matches fails, multiple matches fails with sorted full IDs (never choose
+most recent). Resume takes no new task: continue an unfinished turn via P3C
+recovery, or, if the session is Ready, report its ID and exit success without
+calling the provider or creating a turn. `run` always creates a new session;
+never implicitly resumes. Capture the process cwd as the absolute normalized
+workspace before Config discovery; require an existing directory, do not create
+it and do not silently substitute git root or session root. Paths for sessions
+are `<effective session.root>/<canonical SessionId>/`; lock/manifest and
+private permissions follow History. Never create a session until CLI, workspace,
+Config and setup/phase validation pass. `run` loads Config v1 once with that cwd
+and writes its non-secret snapshot and manifest before accepting the user turn.
+`resume` loads and validates current sources, locates the existing manifest,
+and verifies the creation snapshot and digest. It then applies Config §12.3
+(`resolve_resume_config`) before History recovery and before accepted
+projection: creation semantics stay frozen, current logging, retention, and
+grace apply, incognito is the logical OR, and one warning lists changed key
+names only. Recovery, including any fresh provider attempt, uses that frozen
+composite. Resume cannot override a frozen field by CLI flag or by an
+environment override.
+
+The sole field overrides are Config §9: `--provider`, `--protocol`, `--model`,
+`--context-window`, `--reasoning`, `--max-output-tokens`, `--max-steps`,
+`--incognito`, `--debug`; `--config <path>` is a source selector, not a field
+(or use `PRAANA_CONFIG` with CLI taking precedence). Accept these flags for
+`run`; for `resume`, accept `--config` and `--debug` only, and reject every
+other field flag rather than silently ignoring it. Flags may appear before or
+after the single positional. A second positional is exit 2. `--` ends flag
+parsing; the next argument is that positional even when it begins with `-`.
+`--incognito` and `--debug` take no value. A value-taking flag without its
+value, a duplicate flag, or an unknown flag is exit 2 before session creation.
+Accepted informational forms are `praana --help`, `praana --version`, and those
+same flags on `run` and `resume`. They write to stdout, exit 0, create no
+session, and read no credential. Top-level `--help` names `run` and `resume`.
+`--version` includes the `praana-cli` package version. Remaining help prose is
+not golden. `--help` and `--version` are handled before the positional
+requirement, so `praana run --help` does not also require a task. Any other
+flag or positional beside that informational flag is exit 2. With no
+subcommand, and for unknown commands, extra positionals,
+`--prompt`, `--json`, `--quiet`, `--max-attempts`, `--yes`, `--allow-risk`,
+`--cwd`, `--session`, `--no-*`, and every other option, write usage to stderr,
+leave stdout empty, and exit 2 before session creation. No stdin task, implicit
+interactive mode, default resume selector, automatic setup, or login. This
+Rust grammar does not redefine the still-live TypeScript CLI.
+
+**Outputs and process results.** Plain UTF-8 only. For `run` and `resume`,
+stdout contains only assistant *accepted* text, in accepted block order (each
+accepted step's text once; no tool calls, reasoning summaries, refusals, tool
+outputs, provider metadata, ANSI, or boot banners). `--help` and `--version`
+are the stdout exceptions above. Render an accepted text block's exact UTF-8
+bytes; add one LF only if the last emitted byte is not LF before the next
+block or the end of stdout. Do not flush optimistic deltas to stdout:
+UI-contract provisional
+`AssistantDelta` is reversible, pipes are not. Consume deltas in a bounded
+per-attempt sink (or the UI Contract's `NullUiSink`); publish only after
+`assistant_step_accepted` is durable. Never replay earlier accepted blocks to
+stdout on `resume`; print only blocks newly accepted by this invocation.
+Diagnostics go to stderr, one LF-terminated line each: `CONFIG_*` for Config
+and setup, UI-contract `SessionNotFound` or `ResumeSelectorAmbiguous` for
+selector lookup, and canonical `E_*` code plus class for provider and protocol
+failures. The ambiguous selector then prints the sorted full session IDs, one
+per line. No diagnostic contains a raw provider body, credential, secret,
+opaque continuation, or unredacted tool bytes. `--debug` changes log level
+only. When a resume ID is required, write
+`Resume ID: <12-character selector>\n` to stderr exactly once, after
+diagnostics, never to stdout. A ready resumed session writes no stdout. Its
+only P3D status line is that resume ID. Config log records may also appear on
+stderr when `logging.stderr` is true; they are not another resume ID.
+No JSONL/stdout UI protocol is introduced; P7/P9 retain UI Contract semantics.
+
+Exit status for `run` and `resume`. These commands never use Config's exit 78.
+
+| Outcome | Exit | Resume ID |
+|---|---|---|
+| Committed turn, including one committed by recovery in this process | `0` | Yes, when the session is healthy |
+| Ready session resumed with no new turn | `0` | Yes |
+| CLI grammar, missing or non-directory workspace, selector lookup, Config, setup, or phase failure before session start is durable | `2` | No |
+| Admission rejection before `assistant_attempt_started`, including durable `turn_interrupted` / `active_turn_too_large` after `turn_started` | `2` | Yes, when that interruption is durable and the session is healthy |
+| Prepare or canonical-protocol failure before attempt start, after the open turn is interrupted | `1` | Yes, when that interruption is durable and the session is healthy |
+| `incompatible_continuation`, provider or transport failure, credential or auth failure after durable attempt start, tool or runtime failure, History write failure, exhausted retry, or `step_limit` | `1` | Yes, when the session is healthy |
+| Failed fsync of a terminal attempt or interruption event | `1` | No. Do not recover in-process merely to print an ID. A later successful `resume` recovers before any ID |
+| Irrecoverable integrity or poisoned recovery | `1` | No. Retain the directory |
+| SIGINT or other user cancellation | `130` | Yes, when the interruption or ready state is durable and the session is healthy |
+| SIGTERM shutdown | `143` | Yes, under the same durability rule |
+
+If the fsync of `turn_interrupted` or `assistant_attempt_failed` fails, the
+failed-fsync row wins over an earlier exit-2 or exit-1 row: exit `1` and do
+not print a resume ID. When cancellation is observed, the SIGINT or SIGTERM
+row wins over admission, prepare, and provider rows. A turn already committed
+still exits `0`.
+
+A committed turn exits `0` even if a signal is observed only after
+`turn_committed` is durable. Every `turn_interrupted` is nonzero. Once session
+start is durable and History can open it, a nonzero exit keeps that session
+directory for explicit resume. A valid interrupted turn follows P3C recovery
+and bounded attempts, not a fresh user turn. Before durable session start
+there is no ID and no resumable session. On irrecoverable recovery, do not
+delete the directory or report success.
+
+On SIGINT or SIGTERM, stop new attempts, cancel HTTP, backoff, and tool work,
+wait up to `session.shutdown_grace_ms` for P3C interruption and durable
+finishes, then terminate without accepting partial output. If grace expires,
+leave the started attempt or batch for normal crash recovery; do not erase it.
+A second signal may force exit but never writes a synthetic accepted step.
+Both commands are headless even on a TTY: never prompt for risk. Tool Runtime
+enforces `risk.allow` (Config arrays replace, not append). A denied
+confirm-tier action returns a redacted denied tool result, with no external
+action and no interactive fallback. Do not equate a model's final text with
+successful completion when the turn is interrupted.
+
+**StepProvider join (no parallel owners).** P3D extends the P3C boundary rather
+than defining another request DTO, history log, or admission function. `prepare`
+projects only accepted Protocol/History conversation, validates complete tool
+batches/artifact hashes and compatible active continuation, fills P1D
+`InstructionSlotsV1` and Phase 3 tool catalog, resolves P2A profile/capabilities,
+and uses P2B `format_chat_body`/`format_responses_body` for the selected OpenAI
+Chat, OpenAI Responses, or OpenRouter Chat profile. Chat tool results remain in
+provider call order; Responses preserves output item order, encrypted reasoning
+and phase in the Protocol-owned `ProviderContinuation` of the accepted step,
+never in stdout. No `previous_response_id`, OpenRouter Responses, system
+conversation message, second projection, or made-up provider call ID. The
+request body is secret-free. P3C's admission must use this *exact final body*
+for the token components and request hash, with trusted profile, image count,
+framing and effective resolved output limit (including safe reduction). Format
+again if the output reserve changes, then re-admit; never transmit the original
+body with a different reserved limit. `PreparedRequest.component_bytes` is
+not authority. One frozen `AdmittedRequest::body` is serialized for send;
+`authorize_send` verifies that value/hash, and transport verifies the exact
+serialized bytes it actually uploads. No credential or header construction
+before admission. P2A credential-store row then exact provider env fallback
+resolves only after admission **and durable attempt start**, immediately
+before the send; absence fails safely with no network. No CLI/adapter-owned auth cache or secret in events.
+
+The **session** P3C controller is the sole attempt allocator/writer: before
+*each* network send (initial, tool continuation, retry, crash-recovery retry),
+run the full OpenAI §17 admission pipeline, append/fsync Protocol
+`assistant_attempt_started` with fresh `attempt_id`, contiguous attempt number,
+`retry_of`, exact model/request hash/admission and recovery notices, then resolve
+credential and allow network bytes. On failed credential resolution after start, append/fsync
+`assistant_attempt_failed` with Protocol Appendix A's `E_PROVIDER_AUTH` /
+`authentication` (`auth_missing` when no store row or environment fallback),
+empty partial output and zero usage, `observable_delta_emitted = false`,
+`provider_may_have_completed = false`, then append/fsync `turn_interrupted`
+with `provider_failure` and the failed attempt ID. Do **not** retry, send,
+accept a step or claim success. Exit 1 and print the resume selector on stderr
+if both terminal events are durable and the session is healthy. If either
+terminal append fails, exit 1 with no new network action; retain the session
+for History recovery, but do not advertise it as resumable until recovery
+succeeds. There is no credential preflight or exit-2 missing-key path. P2B's `RetryLedger` contains a
+separate fixed-ID test log; `run_with_retry`/`dispatch_after_admission` as
+currently shaped MUST NOT be called from the live loop (they own extra starts
+and/or hidden sends). Reuse their pure HTTP/SSE/error/retry-classification and
+delay helpers only. To retry, return a typed pre-emission retryable outcome to
+P3C; it durably fails the old attempt, applies OpenAI §18 bounded jitter/hints
+and 60-second wall cap under cancellation, then calls `prepare`/admit/start
+again within `turn.max_attempts` (at most three per purpose). No retry after
+first semantic emission, invalid output, context-length failure, auth error,
+or cancellation. On crash, History/P3C first marks a started, unclosed attempt
+lost, then makes a **fresh** admitted/start attempt only if budget allows;
+never replay lost partial output. Do not count an in-memory resend as the same
+canonical attempt. Failure to fsync start means no send; failure to fsync
+terminal failure means no retry.
+
+The P2B streaming parser converts Chat/Responses/OpenRouter deltas, complete
+call IDs and JSON object arguments, finish reason and usage into Protocol-owned
+accepted assistant message blocks/continuation through the P3C controller;
+P2B never appends accepted events itself. P3C persists the full converted
+step and any Responses continuation before executing tools; next request
+uses only that accepted active continuation and completed ordered results.
+Metadata/usage alone never count as emission or an accepted empty step. First
+nonempty text, refusal, reasoning, tool-start, or argument delta crosses
+OpenAI's emission barrier; provider retry is forbidden thereafter even if no
+UI sink received it. Leave Protocol `observable_delta_emitted` false unless a
+user-visible text or reasoning-summary delta was produced. A refusal,
+tool-start, or argument delta still forbids retry and does not by itself rewind
+a delta the sink never received. Buffer provisional text separately from
+stdout. On partial
+failure/cancel, fail attempt, issue UI-contract rewind when a UI sink is used,
+interrupt without accepting partial blocks. Cancellation is observed during
+upload, streaming and backoff, not only after a blocking whole-body read;
+terminal fully parsed and accepted before cancellation wins. Never stream
+unverified output or unredacted provider error text to stdout/stderr/events.
+Redaction §1 expressly leaves user/accepted assistant conversation text intact:
+stdout is accepted assistant text, not a guaranteed secret-free channel when
+that text itself contains a secret. Tests guarantee no *application-owned*
+credential/header/tool raw secret leaks, not that the model cannot repeat a
+user-supplied secret. A stronger stdout guarantee requires separate Redaction
+owner approval; do not silently rewrite canonical assistant text.
+
+**Contradictions resolved for this packet (no silent implementation choices).**
+Config §§6.4/6.6, Provider Catalog §7, and Compaction §§7.1/14.4 defer
+compactor capability and credential checks for the default empty pair before
+Phase 5, reject a complete non-empty pair with `CONFIG_FEATURE_NOT_IMPLEMENTED`,
+and require compactor validation only for new Phase-5 sessions. A one-sided
+pair remains `CONFIG_INVALID_VALUE`. Hard assistant admission remains active
+before Phase 5; P3D never compacts. Pre-Phase-5 snapshots are not compacted
+until P5 specifies their eligibility. Config §14 no longer uses exit 78 for
+P3D `praana run` or `praana resume`; those commands use the exit table above.
+OpenAI §17 describes credentials before send, but `dispatch_after_admission`
+currently appends its own start after credential resolution, whereas P3C
+starts first. For the live loop this packet's order is the precedence rule:
+one P3C start, then credential lookup, then send. Do not call
+`dispatch_after_admission`. The other OpenAI §17 steps are unchanged. P3C's
+`AssistantDraft` drops ordered blocks,
+refusals, reasoning summaries and Responses continuation; P3D must extend
+this existing seam to carry the Protocol-owned result without inventing a
+competing canonical message. OpenAI §18 and Protocol §12.1 differ on emission
+barrier scope: any nonempty OpenAI semantic delta forbids retry; UI rewind
+rules still apply to visible deltas. P3C currently stops on every provider
+error and P2B retries inside a separate ledger; P3D routes typed retryable
+failures back into the one P3C durable loop. P3C's current `admit_request`
+passes `profile: None`, `image_count: 0`, returns the same body on
+`ReduceOutput`, and its `prepare(step_index)` has no projection/context: these
+are implementation gaps, not license for a new admission path. P2B's blocking
+`http_exchange`/aggregate parser cannot prove live cancellation/partial
+emission; use the existing P2B framing/conversion rules with cancellable
+streaming transport, not an eager whole-body read that hides the barrier.
+
+**Exact implementation allowlist.** Coding starts only after this revision is
+on `main`. This list is then the boundary.
+`crates/praana-cli/src/main.rs`; `crates/praana-core/src/turn/mod.rs` and
+`crates/praana-core/src/turn/provider.rs` (new binding module);
+`crates/praana-core/src/provider/openai/{mod,attempt,chat,responses,sse}.rs`
+only for extracting/reusing transport and conversion primitives;
+`crates/praana-core/src/config/validate.rs` only to enforce the pre-P5
+compactor phase gate using the existing `ConfigError::FeatureNotImplemented`;
+`crates/praana-core/src/setup/mod.rs` only to leave the compactor pair empty,
+reject non-default selection before P5, and remove the pre-P5 strict-compactor
+requirement;
+`crates/praana-core/src/ui_contract/` only to wire an existing sink, not change
+DTOs; `crates/praana-cli/Cargo.toml` and `crates/praana-core/Cargo.toml`
+only for required existing workspace dependencies/features. Tests:
+`crates/praana-cli/tests/headless_cli_p3d.rs`,
+`crates/praana-core/tests/step_provider_p3d.rs`, and existing
+`crates/praana-core/tests/{config_v1,setup_v1,openai_v1,openai_matrix,crash_recovery}.rs`.
+Fixture additions only under `tests/fixtures/rust-v2/providers/v1/` (local
+OpenAI Chat, Responses, OpenRouter Chat request/stream cases) and
+`tests/fixtures/rust-v2/headless/p3d/` (CLI stdout/stderr/status and recovery
+cases, no secrets or host-absolute paths). If P3D needs changes to any other
+Config or Setup source file, or to Protocol, History or semantic UI DTOs/fixtures,
+stop for owner amendment first.
+Review gate: Amit approved the three P3D policy decisions (pre-P5 compactor
+deferral, accepted-step-only stdout, and the application-owned-secret
+guarantee) and these narrow Config/Setup implementation changes. This packet's
+CLI grammar, process results, and StepProvider join are the normative
+execution contract once this revision is on `main`. Config §§6.4/6.6/14,
+Provider Catalog §7, and Compaction §§7.1/14.4 are reconciled with that
+deferral. Issue #405 records accepted-step streaming and the narrower secret
+claim. P5 still owns whether pre-Phase-5 sessions can later compact; P3D
+makes no such request.
+
+Focused red/green gates: `cargo test -p praana-core --test step_provider_p3d`,
+`cargo test -p praana-cli --test headless_cli_p3d`,
+`cargo test -p praana-core --test openai_v1`,
+`cargo test -p praana-core --test openai_matrix`,
+`cargo test -p praana-core --test config_v1`,
+`cargo test -p praana-core --test setup_v1`, and
+`cargo test -p praana-core --features failpoints --test crash_recovery`.
+Config/setup focused assertions: before P5 the default empty compactor pair
+needs no compactor credential or profile, a one-sided pair is
+`CONFIG_INVALID_VALUE`, a complete non-empty pair is
+`CONFIG_FEATURE_NOT_IMPLEMENTED`, and assistant admission still rejects
+oversized requests. Add tests within these
+existing binaries only; Phase-5 session creation gates belong to P5.
+Local fake HTTP servers only; no real keys/public network. Test each protocol
+with a multi-step tool cycle, ordered results and Responses crash-resume native
+continuation; capture exact outgoing body/hash/limit and verify durable
+admission+start precede **every** send and no send after failed fsync, missing
+credential or rejected admission. Prove pre-emission retry fresh IDs/`retry_of`
+and bounds, post-emission failure with no retry, SIGINT/SIGTERM during upload,
+stream and backoff, no partial stdout/accepted history, both selector lookup
+failure modes, changed-config freeze, workspace/Windows fail-closed, risk deny
+and allow, step-limit, setup and all exit codes/ID placements. Assert the
+credential is sent only in headers. The application must not write credential
+values, authorization-header values, or raw tool arguments or results to
+stdout, stderr, events, or logs. Accepted assistant text is copied unchanged
+and is not scanned or rewritten, including when it repeats a user-supplied
+secret. A missing credential after durable start yields exactly
+one failed authentication attempt, one provider-failure interruption, zero
+HTTP sends, exit 1, and the stderr resume ID, with empty stdout. A failed
+terminal fsync exits 1 with no resume ID; the next successful `resume`
+recovers before it prints one. Then run §2 global
+gates and Linux/macOS crash matrix; Windows compile/fail-closed smoke only
+until W403/W402. Any unowned mismatch blocks acceptance; no release claim
+before these pass.
+
 ### P4A: History Retrieval and Search
 
 - Owner: `RUST_V2_HISTORY_STORAGE_SPEC.md` Phase 4 packet; Built-in history
   tools.
-- Depends: P3C.
+- Depends: P3D.
 - Output: binary-safe retrieval, exact/regex/FTS search, authenticated cursors,
   rebuild and deletion.
 - Focused test: `history_search`.
@@ -405,6 +707,10 @@ P0
   interrupted closed-unit selection, immutable segment/handoff, activation,
   emergency retry and calibration.
 - Focused test: `compaction_v1` plus history/protocol fault fixtures.
+- Activation gate: test that newly created Phase-5 provider-capable sessions
+  enforce Config §6.4's validated/configured compactor requirements before
+  session creation succeeds. Decide and test the compaction eligibility of
+  pre-Phase-5 session snapshots before enabling compaction on their resumed turns.
 
 ### P6: Optional Memory Plugin
 
