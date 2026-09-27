@@ -1,8 +1,11 @@
 //! Phase 3 built-in tools. Schemas, confinement, search bounds, and shell supervision.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
 
 use praana_core::clock::SystemClock;
 use praana_core::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
@@ -95,6 +98,44 @@ async fn run(
     .await
     .expect("batch")
     .results
+}
+
+fn workspace_image(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, image: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                image.insert(path.strip_prefix(root).unwrap().to_path_buf(), None);
+                visit(root, &path, image);
+            } else {
+                image.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    Some(fs::read(&path).unwrap()),
+                );
+            }
+        }
+    }
+    let mut image = BTreeMap::new();
+    visit(root, root, &mut image);
+    image
+}
+
+struct DenyAfterCheckingWorkspace {
+    root: PathBuf,
+    before: BTreeMap<PathBuf, Option<Vec<u8>>>,
+}
+
+#[async_trait]
+impl praana_core::hooks::risk::RiskDecider for DenyAfterCheckingWorkspace {
+    async fn confirm(&self, _: &praana_core::hooks::risk::RiskConfirm) -> bool {
+        assert_eq!(
+            workspace_image(&self.root),
+            self.before,
+            "validation changed workspace before risk approval"
+        );
+        false
+    }
 }
 
 fn aws() -> String {
@@ -601,6 +642,57 @@ async fn allowed_root_write_outside_cwd_requires_headless_risk_allowance() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn batch_edit_risk_denial_sees_no_workspace_side_effects() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("cwd");
+    let outside = root.path().join("outside");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("target.txt");
+    fs::write(&target, "one").unwrap();
+    let mut config = tools_config(false);
+    config.allowed_paths = vec![outside.to_string_lossy().into_owned()];
+    let rt = runtime_with_config(&cwd, config, RiskConfig { allow: Vec::new() });
+    let read = run(
+        &rt,
+        vec![call(
+            "read_file",
+            "read-risk-target",
+            0,
+            json!({"path": target}),
+        )],
+    )
+    .await;
+    assert!(read[0].dto.ok);
+    let before = workspace_image(root.path());
+    rt.set_headless(false);
+    rt.set_risk_decider(Arc::new(DenyAfterCheckingWorkspace {
+        root: root.path().to_path_buf(),
+        before: before.clone(),
+    }));
+    let mut request = batch(vec![call(
+        "batch_edit",
+        "edit-risk-denied",
+        0,
+        json!({"edits": [
+            {"path": target, "old_text": "one", "new_text": "two"},
+            {"path": target, "old_text": "two", "new_text": "three"}
+        ]}),
+    )]);
+    request.origin = ToolCallOrigin::Model;
+    let result = rt
+        .execute_batch(request, BatchOrigin::Model, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.results[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolRiskDeclined
+    );
+    assert_eq!(workspace_image(root.path()), before);
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn write_file_replaces_existing_target_above_read_limit() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("large.txt");
@@ -691,13 +783,12 @@ async fn batch_write_replaces_existing_target_above_read_limit() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn edit_file_replaces_existing_target_above_read_limit() {
+async fn edit_file_rejects_existing_target_above_16_mib() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("large_edit.txt");
     fs::write(&target, b"before").unwrap();
     let rt = runtime(dir.path(), false);
-    // Register the read while the file is small; the read_file ceiling is
-    // owner-mandated for read_file only (decision 3), not for edit targets.
+    // Register the read before externally growing the target.
     let read = run(
         &rt,
         vec![call(
@@ -709,36 +800,41 @@ async fn edit_file_replaces_existing_target_above_read_limit() {
     )
     .await;
     assert!(read[0].dto.ok, "{:?}", read[0].dto.error);
-    // Grow the target past the read_file ceiling before editing it. The
-    // marker is unique against the filler so apply_edit's uniqueness check
-    // still holds at this size.
-    let mut grown = vec![b'x'; 16 * 1024 * 1024 + 1];
-    grown.extend_from_slice(b"TARGET_MARKER");
-    fs::write(&target, &grown).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
     let edited = run(
         &rt,
         vec![call(
             "edit_file",
             "e-large",
             0,
-            json!({"path": "large_edit.txt", "old_text": "TARGET_MARKER", "new_text": "EDITED_MARKER"}),
+            json!({"path": "large_edit.txt", "old_text": "before", "new_text": "EDITED_MARKER"}),
         )],
     )
     .await;
     assert_eq!(
-        edited[0].status,
-        ToolResultStatus::Success,
-        "{:?}",
-        edited[0].dto.error
+        edited[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolValidationFailed
     );
-    let after = fs::read(&target).unwrap();
-    assert!(after.ends_with(b"EDITED_MARKER"));
-    assert!(after.len() as u64 > 16 * 1024 * 1024);
+    assert_eq!(
+        edited[0].dto.error.as_ref().unwrap().message,
+        "file exceeds 16777216 bytes"
+    );
+    assert_eq!(fs::metadata(&target).unwrap().len(), 16 * 1024 * 1024 + 1);
+    assert!(fs::read_dir(dir.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .contains(".praana-")));
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn batch_edit_replaces_existing_target_above_read_limit() {
+async fn batch_edit_rejects_existing_target_above_16_mib() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("large_batch_edit.txt");
     fs::write(&target, b"before").unwrap();
@@ -754,28 +850,31 @@ async fn batch_edit_replaces_existing_target_above_read_limit() {
     )
     .await;
     assert!(read[0].dto.ok, "{:?}", read[0].dto.error);
-    let mut grown = vec![b'y'; 16 * 1024 * 1024 + 1];
-    grown.extend_from_slice(b"BATCH_MARKER");
-    fs::write(&target, &grown).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
     let edited = run(
         &rt,
         vec![call(
             "batch_edit",
             "be-large",
             0,
-            json!({"edits": [{"path": "large_batch_edit.txt", "old_text": "BATCH_MARKER", "new_text": "BATCH_EDITED"}]}),
+            json!({"edits": [{"path": "large_batch_edit.txt", "old_text": "before", "new_text": "BATCH_EDITED"}]}),
         )],
     )
     .await;
     assert_eq!(
-        edited[0].status,
-        ToolResultStatus::Success,
-        "{:?}",
-        edited[0].dto.error
+        edited[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolValidationFailed
     );
-    let after = fs::read(&target).unwrap();
-    assert!(after.ends_with(b"BATCH_EDITED"));
-    assert!(after.len() as u64 > 16 * 1024 * 1024);
+    assert_eq!(
+        edited[0].dto.error.as_ref().unwrap().message,
+        "file exceeds 16777216 bytes"
+    );
+    assert_eq!(fs::metadata(&target).unwrap().len(), 16 * 1024 * 1024 + 1);
 }
 
 #[cfg(unix)]
@@ -1284,6 +1383,71 @@ async fn batch_edit_is_atomic_and_duplicate_writes_are_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn installed_edit_bytes_match_reported_after_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".session")).unwrap();
+    fs::write(dir.path().join("single.txt"), "alpha").unwrap();
+    fs::write(dir.path().join("batch.txt"), "one").unwrap();
+    let rt = runtime(dir.path(), false);
+    let reads = run(
+        &rt,
+        vec![
+            call(
+                "read_file",
+                "read-single-hash",
+                0,
+                json!({"path": "single.txt"}),
+            ),
+            call(
+                "read_file",
+                "read-batch-hash",
+                1,
+                json!({"path": "batch.txt"}),
+            ),
+        ],
+    )
+    .await;
+    assert!(reads.iter().all(|result| result.dto.ok));
+    let single = run(
+        &rt,
+        vec![call(
+            "edit_file",
+            "single-hash",
+            0,
+            json!({"path": "single.txt", "old_text": "alpha", "new_text": "omega"}),
+        )],
+    )
+    .await;
+    assert!(single[0].dto.ok, "{:?}", single[0].dto.error);
+    let single_hash = Sha256Digest::digest_bytes(&fs::read(dir.path().join("single.txt")).unwrap());
+    assert_eq!(
+        single[0].dto.data.as_ref().unwrap()["file"]["after_sha256"],
+        json!(single_hash)
+    );
+
+    let batch_result = run(
+        &rt,
+        vec![call(
+            "batch_edit",
+            "batch-hash",
+            0,
+            json!({"edits": [
+                {"path": "batch.txt", "old_text": "one", "new_text": "two"},
+                {"path": "batch.txt", "old_text": "two", "new_text": "three"}
+            ]}),
+        )],
+    )
+    .await;
+    assert!(batch_result[0].dto.ok, "{:?}", batch_result[0].dto.error);
+    let batch_hash = Sha256Digest::digest_bytes(&fs::read(dir.path().join("batch.txt")).unwrap());
+    assert_eq!(
+        batch_result[0].dto.data.as_ref().unwrap()["changed"][0]["after_sha256"],
+        json!(batch_hash)
+    );
+}
+
 #[tokio::test]
 async fn batch_edit_leaves_every_path_unchanged_when_one_path_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -1339,7 +1503,7 @@ async fn batch_edit_leaves_every_path_unchanged_when_one_path_fails() {
 }
 
 #[tokio::test]
-async fn batch_edit_chain_streams_a_target_above_the_read_limit() {
+async fn batch_edit_chain_rejects_a_target_above_16_mib() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join(".session")).unwrap();
     let target = dir.path().join("large_chain.txt");
@@ -1355,9 +1519,12 @@ async fn batch_edit_chain_streams_a_target_above_the_read_limit() {
         )],
     )
     .await;
-    let mut grown = vec![b'q'; 16 * 1024 * 1024 + 1];
-    grown.extend_from_slice(b"CHAIN_ONE");
-    fs::write(&target, &grown).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
     let edited = run(
         &rt,
         vec![call(
@@ -1365,21 +1532,21 @@ async fn batch_edit_chain_streams_a_target_above_the_read_limit() {
             "be-chain-large",
             0,
             json!({"edits": [
-                {"path": "large_chain.txt", "old_text": "CHAIN_ONE", "new_text": "CHAIN_TWO"},
+                {"path": "large_chain.txt", "old_text": "seed", "new_text": "CHAIN_TWO"},
                 {"path": "large_chain.txt", "old_text": "CHAIN_TWO", "new_text": "CHAIN_THREE"}
             ]}),
         )],
     )
     .await;
     assert_eq!(
-        edited[0].status,
-        ToolResultStatus::Success,
-        "{:?}",
-        edited[0].dto.error
+        edited[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolValidationFailed
     );
-    let after = fs::read(&target).unwrap();
-    assert!(after.ends_with(b"CHAIN_THREE"));
-    assert!(after.len() as u64 > 16 * 1024 * 1024);
+    assert_eq!(
+        edited[0].dto.error.as_ref().unwrap().message,
+        "file exceeds 16777216 bytes"
+    );
+    assert_eq!(fs::metadata(&target).unwrap().len(), 16 * 1024 * 1024 + 1);
 }
 
 #[tokio::test]

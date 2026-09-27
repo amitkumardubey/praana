@@ -212,11 +212,66 @@ fn mixed_marked_steps() -> Vec<ScriptedStep> {
 
 fn scenario_steps(scenario: &str) -> Vec<ScriptedStep> {
     match scenario {
+        "batch-edit-validation" => vec![
+            ScriptedStep {
+                text: None,
+                calls: vec![DraftCall {
+                    call_id: "read-before-edit".into(),
+                    name: "read_file".into(),
+                    arguments: args(json!({"path": "a.txt"})),
+                }],
+                finish: FinishReason::ToolUse,
+                usage: usage(1),
+            },
+            ScriptedStep {
+                text: None,
+                calls: vec![DraftCall {
+                    call_id: "batch-edit-validation".into(),
+                    name: "batch_edit".into(),
+                    arguments: args(json!({"edits": [
+                        {"path": "a.txt", "old_text": "A", "new_text": "B"},
+                        {"path": "a.txt", "old_text": "B", "new_text": "C"}
+                    ]})),
+                }],
+                finish: FinishReason::ToolUse,
+                usage: usage(1),
+            },
+        ],
         "marked" => marked_steps(),
         "mixed-marked" => mixed_marked_steps(),
         "standard" | "fragment-crash" => standard_steps(),
         other => panic!("unknown scenario {other}"),
     }
+}
+
+#[test]
+fn crash_during_batch_edit_validation_leaves_workspace_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let point = "batch_edit.after_validation_stage@1";
+    let output = spawn_child(
+        root.path(),
+        "child_seed_and_crash",
+        "seed-and-crash",
+        "batch-edit-validation",
+        Some(point),
+        false,
+    );
+    assert_abort(&output, point);
+    let work = root.path().join("work");
+    assert_eq!(std::fs::read(work.join("a.txt")).unwrap(), b"A");
+    assert_eq!(std::fs::read(work.join("b.txt")).unwrap(), b"B");
+    assert_eq!(
+        std::fs::read_to_string(work.join("provider.log")).unwrap(),
+        "0\n1\n"
+    );
+    let names: BTreeSet<_> = std::fs::read_dir(&work)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["a.txt".into(), "b.txt".into(), "provider.log".into()])
+    );
 }
 
 fn push_sse(bytes: &mut Vec<u8>, value: Value) {

@@ -317,29 +317,29 @@ P0
   in the same batch. Acceptance fails closed on an unmarked argument mutation.
   After a replacement attempt is accepted, the live loop appends
   `attempt_superseded`; fresh-process recovery repairs a missing relation once.
-  Existing write and edit targets, rollback before-images, and journal-staged
-  payloads use bounded streaming hashing/comparison and restoration through
-  confined, no-follow handles, without a 16 MiB existing-target ceiling;
-  preflight (`check_planned`) validates an existing target's hash the same way
-  before any body runs. Journal commit and rollback verify the bytes they
+  Existing `write_file`/`batch_write` targets, rollback before-images, and
+  journal-staged payloads use bounded streaming hashing/comparison and
+  restoration through confined, no-follow handles, without a 16 MiB
+  existing-target ceiling; preflight (`check_planned`) validates an existing
+  write target's hash the same way before any body runs. Journal commit and rollback verify the bytes they
   actually copy into the target-directory temp against the recorded digest in
   the same streamed pass that performs the copy (`confine::replace_file_from_reader_verified`),
   so there is no separate hash-then-copy window a concurrent write could slip
   through; a single-pass regression fails a design that would rewind and
-  reread. `edit_file`/`batch_edit` stream the sole-match search, substitution,
-  and both hashes through a bounded sliding window
-  (`tools::builtin::stream_edit`) rather than materializing the target,
-  staging the transformed output in a private scratch file; a `batch_edit`
-  chain to the same path stages each stage through its own scratch, and
-  cross-path atomicity (stage every path, then journal-install all of them)
-  is unchanged. `ToolRuntime::set_session` canonicalizes the session
+  reread. `edit_file` and `batch_edit` reject any existing target above 16 MiB
+  with the same stable validation error as `read_file`. They read each target
+  through a confined handle, apply exact-once edits and same-path chains in
+  memory, and install only the hashed result. Batch preflight is read-only;
+  it creates no scratch or temporary workspace files before risk approval,
+  the path lease, and the durable tool start. The batch journal verifies its
+  staged digest against the transform result before reporting success;
+  cross-path rollback remains unchanged. `ToolRuntime::set_session` canonicalizes the session
   root, mirroring `set_workspace`, so confined journal payload opens
   (staged/before-image files, both session-root-relative) cannot fail behind
   a symlinked path component (observed on macOS `TMPDIR`, where `/var`
   aliases `/private/var`); a same-platform regression opens the session
-  through a manually created symlink. The 16 MiB `read_file` limit and 16 MiB
-  batch *input* limit (total new content per call) remain — both are
-  owner-specified and unrelated to existing-target size. The non-Unix
+  through a manually created symlink. The 16 MiB `read_file` and edit-target
+  limits and 16 MiB batch *input* limit remain owner-specified. The non-Unix
   `open_regular` fallback is
   not handle-anchored and stays tracked under
   [`#402`](https://github.com/chronosiq/praana/issues/402); Windows mutations
@@ -369,6 +369,7 @@ P0
   - `crash_after_tool_body_before_redaction` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `crash_after_turn_committed` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `crash_during_fragmented_provider_output_never_accepts_partial` ([#403](https://github.com/chronosiq/praana/issues/403))
+  - `crash_during_batch_edit_validation_leaves_workspace_unchanged` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `crash_during_recovery_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `crash_during_supersession_repair_is_idempotent` ([#403](https://github.com/chronosiq/praana/issues/403))
   - `environment_alone_cannot_arm_failpoints` ([#403](https://github.com/chronosiq/praana/issues/403))

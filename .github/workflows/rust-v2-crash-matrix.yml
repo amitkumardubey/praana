@@ -86,6 +86,7 @@ jobs:
             'crash_after_tool_body_before_redaction',
             'crash_after_turn_committed',
             'crash_during_fragmented_provider_output_never_accepts_partial',
+            'crash_during_batch_edit_validation_leaves_workspace_unchanged',
             'crash_during_recovery_is_idempotent',
             'crash_during_supersession_repair_is_idempotent',
             'environment_alone_cannot_arm_failpoints',

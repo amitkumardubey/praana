@@ -143,7 +143,8 @@ pub struct EditFileOutput {
 ```
 
 `old_text` is 1..=1 MiB and must occur exactly once. `new_text` is at most 1
-MiB. Zero/multiple matches are validation errors. Intent is Workspace +
+MiB. The existing target must be at most 16 MiB; a larger target fails
+validation before any write. Zero/multiple matches are validation errors. Intent is Workspace +
 WRITE_FILES, idempotent write, one path.
 
 ### 3.4 `batch_write` (order 430) and `batch_edit` (order 440)
@@ -161,9 +162,9 @@ pub struct BatchMutationOutput { pub changed: Vec<ChangedFileDto>, pub unchanged
 
 Arrays contain 1..=100 items, total input at most 16 MiB. Duplicate write paths
 are invalid. Duplicate edit paths are allowed and applied array-order,
-streamed through bounded scratch stages rather than one in-memory image (an
-edit target is not capped at the read_file limit and can be arbitrarily
-large). Acquire sorted unique path locks, validate all, journal all,
+simulated sequentially in memory. Each existing `batch_edit` target must be
+at most 16 MiB; this target limit does not apply to `batch_write`. Acquire
+sorted unique path locks, validate all, journal all,
 then replace all. Any failure restores the before set under Tool Runtime's
 journal contract. Intent contains every write path.
 

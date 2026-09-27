@@ -71,27 +71,6 @@ pub fn ensure_dir(path: &Path) -> Result<(), ToolError> {
     }
 }
 
-// A private, randomly named scratch file inside an already-confined
-// directory (the edit target's own parent). Used to stage a bounded-memory
-// streaming transform without ever holding the whole target in memory; the
-// caller reopens it read-only for the next stage or the final install, then
-// removes it via remove_regular.
-pub fn create_private_scratch(
-    dir: &Path,
-) -> Result<(std::path::PathBuf, std::fs::File), ToolError> {
-    if cfg!(windows) {
-        return Err(unsupported_windows_write());
-    }
-    #[cfg(unix)]
-    {
-        unix::create_private_scratch(dir)
-    }
-    #[cfg(not(unix))]
-    {
-        create_private_scratch_fallback(dir)
-    }
-}
-
 pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
     let mut file = open_regular(path)?;
     let meta = file.metadata().map_err(|_| io("read failed"))?;
@@ -154,15 +133,13 @@ pub fn open_regular(path: &Path) -> Result<std::fs::File, ToolError> {
     }
 }
 
-pub fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
-    replace_file_from_reader(path, &mut std::io::Cursor::new(bytes))
-}
-
-pub fn replace_file_from_reader(
-    path: &Path,
-    source: &mut dyn std::io::Read,
-) -> Result<(), ToolError> {
-    replace_file_via(path, source, None)
+#[cfg(test)]
+fn replace_file(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    replace_file_from_reader_verified(
+        path,
+        &mut std::io::Cursor::new(bytes),
+        &Sha256Digest::digest_bytes(bytes),
+    )
 }
 
 // The bytes actually copied into the target-directory temp are hashed while
@@ -174,13 +151,13 @@ pub fn replace_file_from_reader_verified(
     source: &mut dyn std::io::Read,
     expected: &Sha256Digest,
 ) -> Result<(), ToolError> {
-    replace_file_via(path, source, Some(expected))
+    replace_file_via(path, source, expected)
 }
 
 fn replace_file_via(
     path: &Path,
     source: &mut dyn std::io::Read,
-    expected: Option<&Sha256Digest>,
+    expected: &Sha256Digest,
 ) -> Result<(), ToolError> {
     if cfg!(windows) {
         return Err(unsupported_windows_write());
@@ -201,9 +178,9 @@ fn replace_file_via(
 fn copy_and_verify(
     source: &mut dyn std::io::Read,
     dest: &mut dyn std::io::Write,
-    expected: Option<&Sha256Digest>,
+    expected: &Sha256Digest,
 ) -> Result<(), ToolError> {
-    let mut hasher = expected.map(|_| Sha256::new());
+    let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
     loop {
         let read = source
@@ -212,20 +189,16 @@ fn copy_and_verify(
         if read == 0 {
             break;
         }
-        if let Some(hasher) = hasher.as_mut() {
-            hasher.update(&buffer[..read]);
-        }
+        hasher.update(&buffer[..read]);
         dest.write_all(&buffer[..read])
             .map_err(|_| io("temp write failed"))?;
     }
-    if let (Some(expected), Some(hasher)) = (expected, hasher) {
-        let actual = Sha256Digest::from_bytes(hasher.finalize().into());
-        if &actual != expected {
-            return Err(ToolError::new(
-                ToolErrorCode::ToolValidationFailed,
-                "copied bytes do not match the recorded digest",
-            ));
-        }
+    let actual = Sha256Digest::from_bytes(hasher.finalize().into());
+    if &actual != expected {
+        return Err(ToolError::new(
+            ToolErrorCode::ToolValidationFailed,
+            "copied bytes do not match the recorded digest",
+        ));
     }
     Ok(())
 }
@@ -248,30 +221,10 @@ pub fn remove_regular(path: &Path) -> Result<(), ToolError> {
 }
 
 #[cfg(not(unix))]
-fn create_private_scratch_fallback(dir: &Path) -> Result<(std::path::PathBuf, File), ToolError> {
-    reject_symlink_walk(dir)?;
-    ensure_dir(dir)?;
-    for _ in 0..8 {
-        let name = unpredictable_name()?;
-        let path = dir.join(&name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(io("temp file create failed")),
-        }
-    }
-    Err(io("temp file create failed"))
-}
-
-#[cfg(not(unix))]
 fn replace_file_fallback(
     path: &Path,
     source: &mut dyn std::io::Read,
-    expected: Option<&Sha256Digest>,
+    expected: &Sha256Digest,
 ) -> Result<(), ToolError> {
     let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
     reject_symlink_walk(parent)?;
@@ -360,12 +313,6 @@ mod unix {
         Ok(())
     }
 
-    pub fn create_private_scratch(dir: &Path) -> Result<(std::path::PathBuf, File), ToolError> {
-        let dir_fd = open_dir(dir, false)?;
-        let (name, file) = create_temp(&dir_fd)?;
-        Ok((dir.join(name), file))
-    }
-
     pub fn open_regular(path: &Path) -> Result<File, ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path
@@ -393,7 +340,7 @@ mod unix {
     pub fn replace_file(
         path: &Path,
         source: &mut dyn std::io::Read,
-        expected: Option<&crate::protocol::id::Sha256Digest>,
+        expected: &crate::protocol::id::Sha256Digest,
     ) -> Result<(), ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path

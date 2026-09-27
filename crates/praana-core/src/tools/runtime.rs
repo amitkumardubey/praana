@@ -812,48 +812,17 @@ impl ToolRuntime {
                             "read the file before editing it",
                         ));
                     }
-                    if let Some(expected) = expected_sha256 {
-                        // Streamed through a confined, no-follow handle: reject
-                        // a hash mismatch without materializing the target.
-                        if crate::tools::builtin::confine::hash_regular(&path)?.as_str() != expected
-                        {
-                            return Err(ToolError::new(
-                                ToolErrorCode::ToolValidationFailed,
-                                "file changed",
-                            ));
-                        }
+                    let bytes = crate::tools::builtin::files::read_edit_target(&path)?;
+                    if expected_sha256.as_ref().is_some_and(|expected| {
+                        crate::tools::builtin::files::digest(&bytes).as_str() != expected
+                    }) {
+                        return Err(ToolError::new(
+                            ToolErrorCode::ToolValidationFailed,
+                            "file changed",
+                        ));
                     }
                     if tool_name != "batch_edit" {
-                        // A single edit_file call still needs old_text proven
-                        // findable and unique before admission. batch_edit
-                        // defers this to simulate_batch_edits so each unique
-                        // target is scanned once. Neither path caps an
-                        // existing edit target at the read_file-specific
-                        // ceiling (owner decision 3), and neither
-                        // materializes it: the dry run streams through a
-                        // bounded sliding window into a discard sink.
-                        let mut source = crate::tools::builtin::confine::open_regular(&path)?;
-                        let outcome = crate::tools::builtin::stream_edit::stream_replace(
-                            &mut source,
-                            &mut std::io::sink(),
-                            old_text.as_bytes(),
-                            new_text.as_bytes(),
-                        )?;
-                        match outcome.matches {
-                            1 => {}
-                            0 => {
-                                return Err(ToolError::new(
-                                    ToolErrorCode::ToolValidationFailed,
-                                    "old_text was not found",
-                                ))
-                            }
-                            _ => {
-                                return Err(ToolError::new(
-                                    ToolErrorCode::ToolValidationFailed,
-                                    "old_text is not unique",
-                                ))
-                            }
-                        }
+                        crate::tools::builtin::files::apply_exact_edit(&bytes, old_text, new_text)?;
                     }
                 }
             }
@@ -1388,12 +1357,9 @@ fn placeholder_session() -> SessionId {
 }
 
 fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
-    // Preflight dry run: prove each unique path's chain of edits will find
-    // exactly one occurrence in sequence, without materializing the target
-    // or any intermediate image. Only intermediate stages need a scratch
-    // file (the next stage reads it); the final stage discards its output.
-    let mut order: Vec<PathBuf> = Vec::new();
-    let mut edits_of: std::collections::BTreeMap<PathBuf, Vec<(String, String)>> =
+    // Validation is read-only. Each path starts with one capped target image;
+    // repeated edits transform only the in-memory image in provider order.
+    let mut images: std::collections::BTreeMap<PathBuf, Vec<u8>> =
         std::collections::BTreeMap::new();
     for change in &intent.planned {
         let super::intent::PlannedChange::Edit {
@@ -1411,84 +1377,18 @@ fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
             .find(|access| access.requested == *requested_path)
             .map(|access| access.normalized_absolute.clone())
             .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "edit path missing"))?;
-        if !edits_of.contains_key(&path) {
-            order.push(path.clone());
+        if !images.contains_key(&path) {
+            images.insert(
+                path.clone(),
+                crate::tools::builtin::files::read_edit_target(&path)?,
+            );
         }
-        edits_of
-            .entry(path)
-            .or_default()
-            .push((old_text.clone(), new_text.clone()));
-    }
-    for path in order {
-        let pairs = edits_of.get(&path).expect("tracked alongside order");
-        let mut current_scratch: Option<PathBuf> = None;
-        let result = (|| -> Result<(), ToolError> {
-            for (index, (old, new)) in pairs.iter().enumerate() {
-                let is_last = index + 1 == pairs.len();
-                let mut source = match &current_scratch {
-                    Some(previous) => crate::tools::builtin::confine::open_regular(previous)?,
-                    None => crate::tools::builtin::confine::open_regular(&path)?,
-                };
-                if is_last {
-                    let outcome = crate::tools::builtin::stream_edit::stream_replace(
-                        &mut source,
-                        &mut std::io::sink(),
-                        old.as_bytes(),
-                        new.as_bytes(),
-                    )?;
-                    validate_match_count(outcome.matches)?;
-                } else {
-                    let parent = path.parent().ok_or_else(|| {
-                        ToolError::new(ToolErrorCode::ToolInternal, "edit path missing")
-                    })?;
-                    let (scratch_path, mut scratch_file) =
-                        crate::tools::builtin::confine::create_private_scratch(parent)?;
-                    let outcome = crate::tools::builtin::stream_edit::stream_replace(
-                        &mut source,
-                        &mut scratch_file,
-                        old.as_bytes(),
-                        new.as_bytes(),
-                    );
-                    drop(scratch_file);
-                    let outcome = match outcome {
-                        Ok(outcome) => outcome,
-                        Err(error) => {
-                            let _ = crate::tools::builtin::confine::remove_regular(&scratch_path);
-                            return Err(error);
-                        }
-                    };
-                    if let Err(error) = validate_match_count(outcome.matches) {
-                        let _ = crate::tools::builtin::confine::remove_regular(&scratch_path);
-                        return Err(error);
-                    }
-                    if let Some(previous) = current_scratch.take() {
-                        let _ = crate::tools::builtin::confine::remove_regular(&previous);
-                    }
-                    current_scratch = Some(scratch_path);
-                }
-            }
-            Ok(())
-        })();
-        if let Some(previous) = current_scratch.take() {
-            let _ = crate::tools::builtin::confine::remove_regular(&previous);
-        }
-        result?;
+        let image = images.get_mut(&path).expect("inserted above");
+        *image = crate::tools::builtin::files::apply_exact_edit(image, old_text, new_text)?;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("batch_edit.after_validation_stage");
     }
     Ok(())
-}
-
-fn validate_match_count(matches: usize) -> Result<(), ToolError> {
-    match matches {
-        1 => Ok(()),
-        0 => Err(ToolError::new(
-            ToolErrorCode::ToolValidationFailed,
-            "old_text was not found",
-        )),
-        _ => Err(ToolError::new(
-            ToolErrorCode::ToolValidationFailed,
-            "old_text is not unique",
-        )),
-    }
 }
 
 fn map_join(

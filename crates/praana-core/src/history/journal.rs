@@ -60,11 +60,6 @@ pub enum JournalWriteSource {
     /// caller-supplied content at the owner-specified batch input limit,
     /// so materializing it here is bounded regardless of the target's size.
     Bytes(Vec<u8>),
-    /// A private scratch file whose content becomes the new content,
-    /// streamed rather than materialized. edit_file/batch_edit's
-    /// transformed output is not owner-bounded -- it can be as large as
-    /// the target -- so it is staged on disk, never fully read into memory.
-    Path(PathBuf),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -199,11 +194,6 @@ pub fn prepare_write_journal_in_roots(
             JournalWriteSource::Bytes(bytes) => {
                 write_new_file(&staged, bytes)?;
                 Sha256Digest::digest_bytes(bytes)
-            }
-            JournalWriteSource::Path(source) => {
-                let digest = copy_and_hash(source, &staged)?;
-                apply_private_file_permissions(&staged).map_err(map_ledger)?;
-                digest
             }
         };
         entries.push(WriteJournalEntryV1 {

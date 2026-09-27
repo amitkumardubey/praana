@@ -2,11 +2,10 @@
 
 pub(crate) mod confine;
 mod dto;
-mod files;
+pub(crate) mod files;
 mod git_read;
 mod search;
 mod shell;
-pub(crate) mod stream_edit;
 mod tests;
 
 use std::path::Path;

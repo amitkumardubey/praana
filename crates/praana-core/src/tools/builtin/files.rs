@@ -27,8 +27,8 @@ const READ_FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const LINE_LIMIT: usize = 1024 * 1024;
 const TEXT_LIMIT: usize = 4 * 1024 * 1024;
 const EDIT_LIMIT: usize = 1024 * 1024;
-// Total new content across one write_file/edit_file or one batch call. This
-// is unrelated to any existing-target size; owner decision 3 keeps it.
+// Total new content across one write or edit batch. Existing write targets
+// and journal before-images have no size cap.
 const BATCH_INPUT_LIMIT: usize = 16 * 1024 * 1024;
 
 // The Windows fallback cannot pin parent directories against junction swaps.
@@ -139,20 +139,6 @@ fn changed_file(path: &str, before: Option<Sha256Digest>, after: &[u8]) -> Chang
     }
 }
 
-fn changed_file_streamed(
-    path: &str,
-    before: Option<Sha256Digest>,
-    after_sha256: Sha256Digest,
-    bytes_written: u64,
-) -> ChangedFileDto {
-    ChangedFileDto {
-        path: display_path(path),
-        before_sha256: before,
-        after_sha256,
-        bytes_written,
-    }
-}
-
 fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
     let bytes = super::confine::read_regular(path, limit)?;
     if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
@@ -164,149 +150,26 @@ fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
     Ok(bytes)
 }
 
-// Edit targets are existing files subject to mutation, the same category as
-// write targets. Owner decision 3 restricts the 16 MiB ceiling to read_file
-// only. Editing still needs the sole occurrence of old_text found and
-// substituted, but that no longer requires materializing the whole target:
-// stream_edit streams the match, substitution, and both hashes through a
-// bounded sliding window, staging the transformed output in a private
-// scratch file rather than an in-memory buffer.
-fn stream_replace_into_target(
-    path: &Path,
-    old: &str,
-    new: &str,
-    expected: Option<&Sha256Digest>,
-) -> Result<super::stream_edit::StreamEditOutcome, ToolError> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| validation("path has no parent"))?;
-    let (scratch_path, mut scratch_file) = super::confine::create_private_scratch(parent)?;
-    let outcome = (|| -> Result<super::stream_edit::StreamEditOutcome, ToolError> {
-        let mut source = super::confine::open_regular(path)?;
-        super::stream_edit::stream_replace(
-            &mut source,
-            &mut scratch_file,
-            old.as_bytes(),
-            new.as_bytes(),
-        )
-    })();
-    drop(scratch_file);
-    let outcome = match outcome {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            let _ = super::confine::remove_regular(&scratch_path);
-            return Err(error);
-        }
+// Edit targets are bounded before they are materialized. The result may grow
+// through a sequence of edits, but every target starts at no more than 16 MiB.
+pub(crate) fn read_edit_target(path: &Path) -> Result<Vec<u8>, ToolError> {
+    read_bytes(path, READ_FILE_LIMIT)
+}
+
+pub(crate) fn apply_exact_edit(bytes: &[u8], old: &str, new: &str) -> Result<Vec<u8>, ToolError> {
+    let text = std::str::from_utf8(bytes).expect("edit target encoding checked");
+    let mut positions = text.match_indices(old).map(|(offset, _)| offset);
+    let Some(offset) = positions.next() else {
+        return Err(validation("old_text was not found"));
     };
-    if let Err(error) = validate_edit_outcome(&outcome, expected) {
-        let _ = super::confine::remove_regular(&scratch_path);
-        return Err(error);
+    if positions.next().is_some() {
+        return Err(validation("old_text is not unique"));
     }
-    let install = (|| -> Result<(), ToolError> {
-        let mut reader = super::confine::open_regular(&scratch_path)?;
-        super::confine::replace_file_from_reader(path, &mut reader)
-    })();
-    let _ = super::confine::remove_regular(&scratch_path);
-    install?;
-    Ok(outcome)
-}
-
-fn validate_edit_outcome(
-    outcome: &super::stream_edit::StreamEditOutcome,
-    expected: Option<&Sha256Digest>,
-) -> Result<(), ToolError> {
-    if let Some(expected) = expected {
-        if &outcome.source_sha256 != expected {
-            return Err(validation("file changed"));
-        }
-    }
-    match outcome.matches {
-        0 => Err(validation("old_text was not found")),
-        1 => Ok(()),
-        _ => Err(validation("old_text is not unique")),
-    }
-}
-
-// Chains N edits applied array-order to one path (Built-in Catalog §3.2:
-// "applied array-order to one in-memory image"). Each stage streams into a
-// fresh private scratch file rather than growing an in-memory image, so a
-// multi-edit batch on one large target still holds only a bounded window at
-// a time. This only stages the final result (in a private scratch file);
-// the caller installs it (through the journal, for atomicity across every
-// path in one batch_edit call) and is responsible for removing the scratch
-// file afterward.
-fn stream_edit_chain(
-    target: &Path,
-    pairs: &[(String, String)],
-) -> Result<(PathBuf, super::stream_edit::StreamEditOutcome), ToolError> {
-    let parent = target
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| validation("path has no parent"))?;
-    let mut current_scratch: Option<PathBuf> = None;
-    let mut first_source_sha256: Option<Sha256Digest> = None;
-    let mut first_source_len: Option<u64> = None;
-    let mut last_dest: Option<(Sha256Digest, u64)> = None;
-    for (old, new) in pairs {
-        let (scratch_path, mut scratch_file) = super::confine::create_private_scratch(parent)?;
-        let stage = (|| -> Result<super::stream_edit::StreamEditOutcome, ToolError> {
-            let mut source = match &current_scratch {
-                Some(previous) => super::confine::open_regular(previous)?,
-                None => super::confine::open_regular(target)?,
-            };
-            super::stream_edit::stream_replace(
-                &mut source,
-                &mut scratch_file,
-                old.as_bytes(),
-                new.as_bytes(),
-            )
-        })();
-        drop(scratch_file);
-        let outcome = match stage {
-            Ok(outcome) if outcome.matches == 1 => outcome,
-            Ok(outcome) => {
-                let _ = super::confine::remove_regular(&scratch_path);
-                if let Some(previous) = current_scratch.take() {
-                    let _ = super::confine::remove_regular(&previous);
-                }
-                let message = if outcome.matches == 0 {
-                    "old_text was not found"
-                } else {
-                    "old_text is not unique"
-                };
-                return Err(validation(message));
-            }
-            Err(error) => {
-                let _ = super::confine::remove_regular(&scratch_path);
-                if let Some(previous) = current_scratch.take() {
-                    let _ = super::confine::remove_regular(&previous);
-                }
-                return Err(error);
-            }
-        };
-        if first_source_sha256.is_none() {
-            first_source_sha256 = Some(outcome.source_sha256);
-            first_source_len = Some(outcome.source_len);
-        }
-        if let Some(previous) = current_scratch.take() {
-            let _ = super::confine::remove_regular(&previous);
-        }
-        last_dest = Some((outcome.dest_sha256, outcome.dest_len));
-        current_scratch = Some(scratch_path);
-    }
-    let final_scratch = current_scratch.expect("at least one edit per grouped path");
-    let (dest_sha256, dest_len) = last_dest.expect("at least one edit per grouped path");
-    Ok((
-        final_scratch,
-        super::stream_edit::StreamEditOutcome {
-            matches: pairs.len(),
-            source_sha256: first_source_sha256.expect("captured on the first stage"),
-            source_len: first_source_len.expect("captured on the first stage"),
-            dest_sha256,
-            dest_len,
-        },
-    ))
+    let mut result = Vec::with_capacity(bytes.len() - old.len() + new.len());
+    result.extend_from_slice(&bytes[..offset]);
+    result.extend_from_slice(new.as_bytes());
+    result.extend_from_slice(&bytes[offset + old.len()..]);
+    Ok(result)
 }
 
 // Writes may replace arbitrarily large existing targets. Hash and compare
@@ -370,7 +233,11 @@ fn lines_of(text: &str) -> Result<Vec<&str>, ToolError> {
 }
 
 fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
-    super::confine::replace_file(path, bytes)
+    super::confine::replace_file_from_reader_verified(
+        path,
+        &mut std::io::Cursor::new(bytes),
+        &digest(bytes),
+    )
 }
 
 fn resolved<'a>(context: &'a ToolExecutionContext, requested: &str) -> Result<&'a Path, ToolError> {
@@ -597,21 +464,21 @@ impl TypedTool for EditFileTool {
     ) -> Result<EditFileOutput, ToolError> {
         safe_writes_available()?;
         let path = resolved(&context, &input.path)?.to_path_buf();
-        let outcome = stream_replace_into_target(
-            &path,
-            &input.old_text,
-            &input.new_text,
-            input.expected_sha256.as_ref(),
-        )?;
+        let before = read_edit_target(&path)?;
+        let before_hash = digest(&before);
+        if input
+            .expected_sha256
+            .as_ref()
+            .is_some_and(|hash| hash != &before_hash)
+        {
+            return Err(validation("file changed"));
+        }
+        let after = apply_exact_edit(&before, &input.old_text, &input.new_text)?;
+        atomic_replace(&path, &after)?;
         Ok(EditFileOutput {
             changed: true,
             replacements: 1,
-            file: changed_file_streamed(
-                &input.path,
-                Some(outcome.source_sha256),
-                outcome.dest_sha256,
-                outcome.dest_len,
-            ),
+            file: changed_file(&input.path, Some(before_hash), &after),
         })
     }
 }
@@ -826,58 +693,38 @@ impl TypedTool for BatchEditTool {
                 .or_default()
                 .push((edit.old_text.clone(), edit.new_text.clone()));
         }
-        // Stage every path's chained result (each bounded by a sliding
-        // window, never the whole target) before installing any of them, so
-        // a later path's failure cannot leave an earlier path half-applied.
-        let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
-        let mut outcomes: Vec<(PathBuf, super::stream_edit::StreamEditOutcome)> = Vec::new();
+        // Simulate all paths in memory before the journal replaces any target.
+        let mut outcomes: Vec<(PathBuf, Sha256Digest, Vec<u8>)> = Vec::new();
         for path in &order {
-            let pairs = edits_of.get(path).expect("tracked alongside order");
-            match stream_edit_chain(path, pairs) {
-                Ok((scratch, outcome)) => {
-                    staged.push((path.clone(), scratch));
-                    outcomes.push((path.clone(), outcome));
-                }
-                Err(error) => {
-                    for (_, scratch) in &staged {
-                        let _ = super::confine::remove_regular(scratch);
-                    }
-                    return Err(error);
-                }
+            let before = read_edit_target(path)?;
+            let before_hash = digest(&before);
+            let mut after = before;
+            for (old, new) in edits_of.get(path).expect("tracked alongside order") {
+                after = apply_exact_edit(&after, old, new)?;
             }
+            outcomes.push((path.clone(), before_hash, after));
         }
-        let writes: Vec<JournalWrite> = staged
+        let writes: Vec<JournalWrite> = outcomes
             .iter()
             .enumerate()
-            .filter(|(index, _)| outcomes[*index].1.source_sha256 != outcomes[*index].1.dest_sha256)
-            .map(|(ordinal, (target, scratch))| JournalWrite {
+            .filter(|(_, (_, before, after))| before != &digest(after))
+            .map(|(ordinal, (target, _, after))| JournalWrite {
                 ordinal: ordinal as u32,
                 target_path: target.clone(),
-                new_bytes: JournalWriteSource::Path(scratch.clone()),
+                new_bytes: JournalWriteSource::Bytes(after.clone()),
             })
             .collect();
-        let install = if writes.is_empty() {
-            Ok(())
-        } else {
-            journal_replace(&context, &writes)
-        };
-        for (_, scratch) in &staged {
-            let _ = super::confine::remove_regular(scratch);
+        if !writes.is_empty() {
+            journal_replace(&context, &writes)?;
         }
-        install?;
         let mut changed = Vec::new();
         let mut unchanged_paths = Vec::new();
-        for (path, outcome) in outcomes {
+        for (path, before_hash, after) in outcomes {
             let requested = requested_of.remove(&path).expect("tracked alongside order");
-            if outcome.source_sha256 == outcome.dest_sha256 {
+            if before_hash == digest(&after) {
                 unchanged_paths.push(display_path(&requested));
             } else {
-                changed.push(changed_file_streamed(
-                    &requested,
-                    Some(outcome.source_sha256),
-                    outcome.dest_sha256,
-                    outcome.dest_len,
-                ));
+                changed.push(changed_file(&requested, Some(before_hash), &after));
             }
         }
         Ok(BatchMutationOutput {

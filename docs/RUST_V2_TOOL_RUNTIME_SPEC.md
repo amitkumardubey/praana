@@ -1096,6 +1096,8 @@ default 2,000). Files above 16 MiB are rejected even for a bounded range.
 ### 19.3 `edit_file`
 
 - Exact byte-string match, not regex.
+- Reject an existing target above 16 MiB before any write; apply the exact edit
+  to a bounded in-memory image.
 - `old_text` must occur exactly once.
 - The file must have been read in the session when the read index is active.
 - Apply through temp-file plus atomic rename while the write lock is held.
@@ -1106,6 +1108,9 @@ default 2,000). Files above 16 MiB are rejected even for a bounded range.
 - Validate and simulate all operations before writing.
 - Duplicate batch-write paths are invalid, as specified by the Built-in Tool Catalog; they are not collapsed or resolved last-write-wins.
 - Multiple edits to one file are sequential and may match text introduced by an earlier edit.
+- `batch_edit` rejects any existing target above 16 MiB and simulates each
+  path's edits in memory before journal preparation. `batch_write` retains no
+  existing-target size ceiling.
 - Acquire all unique path locks in sorted order.
 - Stage every target through the History Storage write-journal API, then commit.
   Because multi-file filesystem rename is not globally atomic, History owns the
@@ -1238,6 +1243,9 @@ Resume must identify uncertain calls, never rerun side effects, resolve every ar
 - Case/drive normalization on Windows.
 - Atomic single-file replacement and preserved permissions.
 - Exact unique edit and sequential same-file batch edits.
+- Edit targets above 16 MiB fail validation without workspace side effects;
+  batch simulation remains read-only before risk and the durable start.
+- Installed edit bytes hash to the reported result and journal digest.
 - Rollback journal recovery at every multi-file commit boundary.
 - Rollback refuses to overwrite a target whose post-replacement identity/hash
   was changed externally and poisons the source session as uncertain.

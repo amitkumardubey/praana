@@ -1,6 +1,8 @@
 //! Scripted fake-provider headless turns. No network.
 
 use std::fs;
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +20,21 @@ use praana_core::turn::{
 };
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
+
+#[cfg(unix)]
+fn assert_spawned_child_stopped(pid_file: &Path) {
+    let pid = fs::read_to_string(pid_file).expect("shell recorded its child pid");
+    let pid = pid.trim();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        state.trim().is_empty() || state.trim().starts_with('Z'),
+        "spawned sleep child {pid} survived cancellation: {state}"
+    );
+}
 
 struct FixedClock(i64);
 
@@ -391,17 +408,18 @@ async fn cancellation_mid_turn_interrupts_and_releases_locks() {
         vec![tool_step(
             "call-sh",
             "shell",
-            json!({"command": "sleep 30", "timeout_ms": 8000}),
+            json!({"command": "sleep 30 & echo $! > spawned-child.pid; wait", "timeout_ms": 8000}),
         )],
     );
     let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
     let token = loop_.cancellation_token();
     let events = cfg.session_dir.join("events.jsonl");
+    let child_pid = cfg.workspace.join("spawned-child.pid");
     let watcher = tokio::spawn(async move {
         for _ in 0..200 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let text = fs::read_to_string(&events).unwrap_or_default();
-            if text.contains("\"tool_execution_started\"") {
+            if text.contains("\"tool_execution_started\"") && child_pid.exists() {
                 token.cancel();
                 return;
             }
@@ -414,12 +432,8 @@ async fn cancellation_mid_turn_interrupts_and_releases_locks() {
     assert!(text.contains("Turn aborted by user before commit."));
     assert!(!text.contains("\"turn_committed\""));
     assert_eq!(loop_.held_locks(), 0);
-    let listed = std::process::Command::new("pgrep")
-        .args(["-f", "sleep 30"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&listed.stdout);
-    assert!(stdout.trim().is_empty(), "sleep 30 still running: {stdout}");
+    #[cfg(unix)]
+    assert_spawned_child_stopped(&cfg.workspace.join("spawned-child.pid"));
 }
 
 #[tokio::test]
@@ -562,7 +576,10 @@ async fn queued_call_cancelled_before_the_semaphore_has_no_start() {
     let mut cfg = config(dir.path(), 3);
     cfg.config.tools.max_parallel_calls = 1;
     let mut sleep_args = serde_json::Map::new();
-    sleep_args.insert("command".into(), json!("sleep 30"));
+    sleep_args.insert(
+        "command".into(),
+        json!("sleep 30 & echo $! > queued-child.pid; wait"),
+    );
     sleep_args.insert("timeout_ms".into(), json!(20000));
     let mut touch_args = serde_json::Map::new();
     touch_args.insert("command".into(), json!("touch queued-ran"));
@@ -590,11 +607,12 @@ async fn queued_call_cancelled_before_the_semaphore_has_no_start() {
     let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
     let token = loop_.cancellation_token();
     let events = cfg.session_dir.join("events.jsonl");
+    let child_pid = work.join("queued-child.pid");
     let watcher = tokio::spawn(async move {
         for _ in 0..200 {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let text = fs::read_to_string(&events).unwrap_or_default();
-            if text.matches("\"tool_execution_started\"").count() == 1 {
+            if text.matches("\"tool_execution_started\"").count() == 1 && child_pid.exists() {
                 token.cancel();
                 return;
             }
@@ -616,11 +634,8 @@ async fn queued_call_cancelled_before_the_semaphore_has_no_start() {
     assert!(finishes
         .iter()
         .any(|event| event["event"]["data"]["started_event_id"].is_null()));
-    let listed = std::process::Command::new("pgrep")
-        .args(["-f", "sleep 30"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&listed.stdout).trim().is_empty());
+    #[cfg(unix)]
+    assert_spawned_child_stopped(&work.join("queued-child.pid"));
 }
 
 struct LeakyProvider {
