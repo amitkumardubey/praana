@@ -1108,9 +1108,11 @@ default 2,000). Files above 16 MiB are rejected even for a bounded range.
 - Validate and simulate all operations before writing.
 - Duplicate batch-write paths are invalid, as specified by the Built-in Tool Catalog; they are not collapsed or resolved last-write-wins.
 - Multiple edits to one file are sequential and may match text introduced by an earlier edit.
-- `batch_edit` rejects any existing target above 16 MiB and simulates each
-  path's edits in memory before journal preparation. `batch_write` retains no
-  existing-target size ceiling.
+- `batch_edit` rejects any existing target above 16 MiB, more than 32 MiB
+  across distinct targets, or more than 48 MiB across transformed results.
+  Preflight checks aggregate target sizes before materializing images, then
+  simulates each path's edits in memory before journal preparation.
+  `batch_write` retains no existing-target size ceiling.
 - Acquire all unique path locks in sorted order.
 - Stage every target through the History Storage write-journal API, then commit.
   Because multi-file filesystem rename is not globally atomic, History owns the

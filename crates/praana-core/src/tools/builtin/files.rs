@@ -27,9 +27,16 @@ const READ_FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const LINE_LIMIT: usize = 1024 * 1024;
 const TEXT_LIMIT: usize = 4 * 1024 * 1024;
 const EDIT_LIMIT: usize = 1024 * 1024;
-// Total new content across one write or edit batch. Existing write targets
+// Total input content across one write or edit batch. Existing write targets
 // and journal before-images have no size cap.
 const BATCH_INPUT_LIMIT: usize = 16 * 1024 * 1024;
+// Keep batch_edit's retained images bounded even when a request names 100
+// distinct targets. The result ceiling includes the maximum aggregate edit
+// input growth (new_text is bounded by BATCH_INPUT_LIMIT).
+const BATCH_EDIT_TARGET_BYTES_LIMIT: u64 = 32 * 1024 * 1024;
+const BATCH_EDIT_RESULT_BYTES_LIMIT: u64 = BATCH_EDIT_TARGET_BYTES_LIMIT + BATCH_INPUT_LIMIT as u64;
+const BATCH_EDIT_TARGETS_LIMIT_ERROR: &str = "batch_edit aggregate targets exceed 33554432 bytes";
+const BATCH_EDIT_RESULTS_LIMIT_ERROR: &str = "batch_edit aggregate results exceed 50331648 bytes";
 
 // The Windows fallback cannot pin parent directories against junction swaps.
 // Do not offer mutating built-ins until handle-anchored operations exist.
@@ -154,6 +161,63 @@ fn read_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
 // through a sequence of edits, but every target starts at no more than 16 MiB.
 pub(crate) fn read_edit_target(path: &Path) -> Result<Vec<u8>, ToolError> {
     read_bytes(path, READ_FILE_LIMIT)
+}
+
+pub(crate) fn validate_batch_edit_target_budget<'a>(
+    paths: impl IntoIterator<Item = &'a Path>,
+) -> Result<(), ToolError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = 0;
+    for path in paths {
+        if !seen.insert(path.to_path_buf()) {
+            continue;
+        }
+        let file = super::confine::open_regular(path)?;
+        let size = file
+            .metadata()
+            .map_err(|_| ToolError::new(ToolErrorCode::ToolIoFailed, "read failed"))?
+            .len();
+        if size > READ_FILE_LIMIT {
+            return Err(validation(&format!("file exceeds {READ_FILE_LIMIT} bytes")));
+        }
+        total = add_batch_edit_bytes(
+            total,
+            size,
+            BATCH_EDIT_TARGET_BYTES_LIMIT,
+            BATCH_EDIT_TARGETS_LIMIT_ERROR,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn add_batch_edit_result_bytes(total: u64, additional: usize) -> Result<u64, ToolError> {
+    add_batch_edit_bytes(
+        total,
+        additional as u64,
+        BATCH_EDIT_RESULT_BYTES_LIMIT,
+        BATCH_EDIT_RESULTS_LIMIT_ERROR,
+    )
+}
+
+pub(crate) fn add_batch_edit_target_bytes(total: u64, additional: usize) -> Result<u64, ToolError> {
+    add_batch_edit_bytes(
+        total,
+        additional as u64,
+        BATCH_EDIT_TARGET_BYTES_LIMIT,
+        BATCH_EDIT_TARGETS_LIMIT_ERROR,
+    )
+}
+
+fn add_batch_edit_bytes(
+    total: u64,
+    additional: u64,
+    limit: u64,
+    error: &'static str,
+) -> Result<u64, ToolError> {
+    total
+        .checked_add(additional)
+        .filter(|combined| *combined <= limit)
+        .ok_or_else(|| validation(error))
 }
 
 pub(crate) fn apply_exact_edit(bytes: &[u8], old: &str, new: &str) -> Result<Vec<u8>, ToolError> {
@@ -693,15 +757,21 @@ impl TypedTool for BatchEditTool {
                 .or_default()
                 .push((edit.old_text.clone(), edit.new_text.clone()));
         }
+        validate_batch_edit_target_budget(order.iter().map(PathBuf::as_path))?;
         // Simulate all paths in memory before the journal replaces any target.
         let mut outcomes: Vec<(PathBuf, Sha256Digest, Vec<u8>)> = Vec::new();
+        let mut target_bytes = 0;
+        let mut result_bytes = 0;
         for path in &order {
             let before = read_edit_target(path)?;
+            target_bytes = add_batch_edit_target_bytes(target_bytes, before.len())?;
             let before_hash = digest(&before);
             let mut after = before;
             for (old, new) in edits_of.get(path).expect("tracked alongside order") {
                 after = apply_exact_edit(&after, old, new)?;
+                add_batch_edit_result_bytes(result_bytes, after.len())?;
             }
+            result_bytes = add_batch_edit_result_bytes(result_bytes, after.len())?;
             outcomes.push((path.clone(), before_hash, after));
         }
         let writes: Vec<JournalWrite> = outcomes

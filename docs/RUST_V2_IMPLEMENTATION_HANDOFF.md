@@ -329,7 +329,10 @@ P0
   reread. `edit_file` and `batch_edit` reject any existing target above 16 MiB
   with the same stable validation error as `read_file`. They read each target
   through a confined handle, apply exact-once edits and same-path chains in
-  memory, and install only the hashed result. Batch preflight is read-only;
+  memory, and install only the hashed result. `batch_edit` caps distinct
+  target images at 32 MiB aggregate and transformed results at 48 MiB
+  aggregate (including at most 16 MiB growth from batch input). Preflight
+  checks target sizes before materializing images. Batch preflight is read-only;
   it creates no scratch or temporary workspace files before risk approval,
   the path lease, and the durable tool start. The batch journal verifies its
   staged digest against the transform result before reporting success;

@@ -736,6 +736,14 @@ impl ToolRuntime {
     }
 
     fn check_planned(&self, tool_name: &str, intent: &ToolIntent) -> Result<(), ToolError> {
+        if tool_name == "batch_edit" {
+            crate::tools::builtin::files::validate_batch_edit_target_budget(
+                intent
+                    .path_accesses
+                    .iter()
+                    .map(|access| access.normalized_absolute.as_path()),
+            )?;
+        }
         if tool_name == "shell" {
             if let Some(command) = &intent.command {
                 crate::tools::shell_parse::ensure_executable(&command.command)?;
@@ -1358,9 +1366,11 @@ fn placeholder_session() -> SessionId {
 
 fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
     // Validation is read-only. Each path starts with one capped target image;
-    // repeated edits transform only the in-memory image in provider order.
+    // aggregate target and result budgets bound the retained images.
     let mut images: std::collections::BTreeMap<PathBuf, Vec<u8>> =
         std::collections::BTreeMap::new();
+    let mut target_bytes = 0;
+    let mut result_bytes = 0;
     for change in &intent.planned {
         let super::intent::PlannedChange::Edit {
             requested_path,
@@ -1378,13 +1388,26 @@ fn simulate_batch_edits(intent: &ToolIntent) -> Result<(), ToolError> {
             .map(|access| access.normalized_absolute.clone())
             .ok_or_else(|| ToolError::new(ToolErrorCode::ToolInternal, "edit path missing"))?;
         if !images.contains_key(&path) {
-            images.insert(
-                path.clone(),
-                crate::tools::builtin::files::read_edit_target(&path)?,
-            );
+            let image = crate::tools::builtin::files::read_edit_target(&path)?;
+            target_bytes = crate::tools::builtin::files::add_batch_edit_target_bytes(
+                target_bytes,
+                image.len(),
+            )?;
+            result_bytes = crate::tools::builtin::files::add_batch_edit_result_bytes(
+                result_bytes,
+                image.len(),
+            )?;
+            images.insert(path.clone(), image);
         }
         let image = images.get_mut(&path).expect("inserted above");
-        *image = crate::tools::builtin::files::apply_exact_edit(image, old_text, new_text)?;
+        let before_len = image.len();
+        let after = crate::tools::builtin::files::apply_exact_edit(image, old_text, new_text)?;
+        let next_result_bytes = result_bytes - before_len as u64;
+        result_bytes = crate::tools::builtin::files::add_batch_edit_result_bytes(
+            next_result_bytes,
+            after.len(),
+        )?;
+        *image = after;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("batch_edit.after_validation_stage");
     }
@@ -1459,4 +1482,82 @@ fn uncertain_ids(results: &[FinishedCall]) -> Vec<ToolExecutionId> {
         .filter(|finished| finished.status == ToolResultStatus::Uncertain)
         .filter_map(|finished| finished.execution_id)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
+    use crate::tools::builtin::register_phase3;
+    use crate::tools::intent::{
+        PathAccessIntent, PathAccessMode, PlannedChange, ToolIdempotency, ToolMutation,
+    };
+
+    #[test]
+    fn batch_edit_preflight_rejects_100_near_limit_targets_before_reading_them() {
+        let root = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        let mut accesses = Vec::new();
+        let mut planned = Vec::new();
+
+        for index in 0..100 {
+            let requested = format!("target-{index}.txt");
+            let path = root.path().join(&requested);
+            std::fs::File::create(&path)
+                .unwrap()
+                .set_len(16 * 1024 * 1024 - 1)
+                .unwrap();
+            paths.push(path.clone());
+            accesses.push(PathAccessIntent {
+                requested: requested.clone(),
+                normalized_absolute: path,
+                mode: PathAccessMode::Write,
+            });
+            planned.push(PlannedChange::Edit {
+                requested_path: requested,
+                old_text: "x".to_owned(),
+                new_text: "y".to_owned(),
+                expected_sha256: None,
+            });
+        }
+
+        let config = ToolsConfig {
+            allowed_paths: Vec::new(),
+            default_timeout_ms: 60_000,
+            max_parallel_calls: 4,
+            max_spawned_processes: 4,
+            shell_enabled: false,
+            shell_max_timeout_ms: 600_000,
+            shell_timeout_ms: 30_000,
+        };
+        let runtime = ToolRuntime::new(
+            register_phase3(&config).unwrap(),
+            config,
+            RiskConfig { allow: Vec::new() },
+            CircuitConfig {
+                loop_threshold: 3,
+                max_tokens: 0,
+                max_wall_ms: 0,
+            },
+        );
+        for path in paths {
+            runtime.note_read(path);
+        }
+        let intent = ToolIntent {
+            mutation: ToolMutation::Workspace,
+            path_accesses: accesses,
+            command: None,
+            risk_facts: Vec::new(),
+            timeout_ms: 60_000,
+            idempotency: ToolIdempotency::IdempotentWrite,
+            planned,
+        };
+
+        let error = runtime.check_planned("batch_edit", &intent).unwrap_err();
+        assert_eq!(error.code(), ToolErrorCode::ToolValidationFailed);
+        assert_eq!(
+            error.message(),
+            "batch_edit aggregate targets exceed 33554432 bytes"
+        );
+    }
 }

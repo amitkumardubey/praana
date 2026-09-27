@@ -161,7 +161,7 @@ pub fn prepare_write_journal_in_roots(
     fs::create_dir_all(&payload).map_err(|err| io_err(err.to_string()))?;
     apply_private_dir_permissions(&payload).map_err(map_ledger)?;
 
-    let mut planned: Vec<JournalWrite> = writes.to_vec();
+    let mut planned: Vec<&JournalWrite> = writes.iter().collect();
     planned.sort_by(|left, right| {
         display_path(&left.target_path)
             .cmp(&display_path(&right.target_path))
