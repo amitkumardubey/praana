@@ -71,6 +71,27 @@ pub fn ensure_dir(path: &Path) -> Result<(), ToolError> {
     }
 }
 
+// A private, randomly named scratch file inside an already-confined
+// directory (the edit target's own parent). Used to stage a bounded-memory
+// streaming transform without ever holding the whole target in memory; the
+// caller reopens it read-only for the next stage or the final install, then
+// removes it via remove_regular.
+pub fn create_private_scratch(
+    dir: &Path,
+) -> Result<(std::path::PathBuf, std::fs::File), ToolError> {
+    if cfg!(windows) {
+        return Err(unsupported_windows_write());
+    }
+    #[cfg(unix)]
+    {
+        unix::create_private_scratch(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        create_private_scratch_fallback(dir)
+    }
+}
+
 pub fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>, ToolError> {
     let mut file = open_regular(path)?;
     let meta = file.metadata().map_err(|_| io("read failed"))?;
@@ -141,17 +162,72 @@ pub fn replace_file_from_reader(
     path: &Path,
     source: &mut dyn std::io::Read,
 ) -> Result<(), ToolError> {
+    replace_file_via(path, source, None)
+}
+
+// The bytes actually copied into the target-directory temp are hashed while
+// they are written, then verified against `expected` before rename. This
+// closes the window between a separate hash pass and the copy: no window
+// exists because there is only one pass.
+pub fn replace_file_from_reader_verified(
+    path: &Path,
+    source: &mut dyn std::io::Read,
+    expected: &Sha256Digest,
+) -> Result<(), ToolError> {
+    replace_file_via(path, source, Some(expected))
+}
+
+fn replace_file_via(
+    path: &Path,
+    source: &mut dyn std::io::Read,
+    expected: Option<&Sha256Digest>,
+) -> Result<(), ToolError> {
     if cfg!(windows) {
         return Err(unsupported_windows_write());
     }
     #[cfg(unix)]
     {
-        unix::replace_file(path, source)
+        unix::replace_file(path, source, expected)
     }
     #[cfg(not(unix))]
     {
-        replace_file_fallback(path, source)
+        replace_file_fallback(path, source, expected)
     }
+}
+
+// Shared by unix::replace_file and the non-unix fallback: hash the bytes as
+// they are copied into the destination handle, so a verified caller checks
+// identity against exactly what was written, not a separate earlier read.
+fn copy_and_verify(
+    source: &mut dyn std::io::Read,
+    dest: &mut dyn std::io::Write,
+    expected: Option<&Sha256Digest>,
+) -> Result<(), ToolError> {
+    let mut hasher = expected.map(|_| Sha256::new());
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = source
+            .read(&mut buffer)
+            .map_err(|_| io("temp write failed"))?;
+        if read == 0 {
+            break;
+        }
+        if let Some(hasher) = hasher.as_mut() {
+            hasher.update(&buffer[..read]);
+        }
+        dest.write_all(&buffer[..read])
+            .map_err(|_| io("temp write failed"))?;
+    }
+    if let (Some(expected), Some(hasher)) = (expected, hasher) {
+        let actual = Sha256Digest::from_bytes(hasher.finalize().into());
+        if &actual != expected {
+            return Err(ToolError::new(
+                ToolErrorCode::ToolValidationFailed,
+                "copied bytes do not match the recorded digest",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn remove_regular(path: &Path) -> Result<(), ToolError> {
@@ -172,7 +248,31 @@ pub fn remove_regular(path: &Path) -> Result<(), ToolError> {
 }
 
 #[cfg(not(unix))]
-fn replace_file_fallback(path: &Path, source: &mut dyn std::io::Read) -> Result<(), ToolError> {
+fn create_private_scratch_fallback(dir: &Path) -> Result<(std::path::PathBuf, File), ToolError> {
+    reject_symlink_walk(dir)?;
+    ensure_dir(dir)?;
+    for _ in 0..8 {
+        let name = unpredictable_name()?;
+        let path = dir.join(&name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(io("temp file create failed")),
+        }
+    }
+    Err(io("temp file create failed"))
+}
+
+#[cfg(not(unix))]
+fn replace_file_fallback(
+    path: &Path,
+    source: &mut dyn std::io::Read,
+    expected: Option<&Sha256Digest>,
+) -> Result<(), ToolError> {
     let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
     reject_symlink_walk(parent)?;
     if is_symlink(path) {
@@ -191,7 +291,7 @@ fn replace_file_fallback(path: &Path, source: &mut dyn std::io::Read) -> Result<
             .create_new(true)
             .open(&tmp)
             .map_err(|_| io("temp file create failed"))?;
-        std::io::copy(source, &mut file).map_err(|_| io("temp write failed"))?;
+        copy_and_verify(source, &mut file, expected)?;
         file.sync_all().map_err(|_| io("temp fsync failed"))?;
         if let Some(mode) = mode {
             fs::set_permissions(&tmp, mode).map_err(|_| io("preserving permissions failed"))?;
@@ -260,6 +360,12 @@ mod unix {
         Ok(())
     }
 
+    pub fn create_private_scratch(dir: &Path) -> Result<(std::path::PathBuf, File), ToolError> {
+        let dir_fd = open_dir(dir, false)?;
+        let (name, file) = create_temp(&dir_fd)?;
+        Ok((dir.join(name), file))
+    }
+
     pub fn open_regular(path: &Path) -> Result<File, ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path
@@ -284,7 +390,11 @@ mod unix {
         Ok(file)
     }
 
-    pub fn replace_file(path: &Path, source: &mut dyn std::io::Read) -> Result<(), ToolError> {
+    pub fn replace_file(
+        path: &Path,
+        source: &mut dyn std::io::Read,
+        expected: Option<&crate::protocol::id::Sha256Digest>,
+    ) -> Result<(), ToolError> {
         let parent = path.parent().ok_or_else(|| io("path has no parent"))?;
         let name = path
             .file_name()
@@ -304,7 +414,7 @@ mod unix {
         let (tmp_name, mut file) = create_temp(&dir)?;
         super::note_temp_mode(&file);
         let write_result = (|| -> Result<(), ToolError> {
-            std::io::copy(source, &mut file).map_err(|_| io("temp write failed"))?;
+            super::copy_and_verify(source, &mut file, expected)?;
             file.sync_all().map_err(|_| io("temp fsync failed"))?;
             let chmod = unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) };
             if chmod != 0 {
@@ -552,7 +662,9 @@ mod read_limit_tests {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::replace_file;
+    use super::{replace_file, replace_file_from_reader_verified};
+    use crate::protocol::id::Sha256Digest;
+    use std::io::Read;
 
     #[test]
     fn symlink_parent_cannot_receive_a_missing_child() {
@@ -581,5 +693,75 @@ mod tests {
         let final_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(final_mode, 0o644);
         assert_eq!(std::fs::read(&path).unwrap(), b"secret-contents");
+    }
+
+    // A reader that panics if read a second full pass after EOF. A design
+    // that hashed the source completely, rewound, then copied completely in
+    // a second pass -- the exact bug class this guards against -- would
+    // read past EOF again and hit the panic. The verified copy must obtain
+    // both the hash and the copied bytes from one single pass.
+    struct SinglePassSource {
+        data: Vec<u8>,
+        offset: usize,
+        served_eof: bool,
+    }
+
+    impl Read for SinglePassSource {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.offset < self.data.len() {
+                let n = (self.data.len() - self.offset).min(buf.len());
+                buf[..n].copy_from_slice(&self.data[self.offset..self.offset + n]);
+                self.offset += n;
+                return Ok(n);
+            }
+            if self.served_eof {
+                panic!("read() called again after EOF: verified copy is not single-pass");
+            }
+            self.served_eof = true;
+            Ok(0)
+        }
+    }
+
+    fn multi_chunk_source(byte: u8) -> (SinglePassSource, Vec<u8>) {
+        // 27,000 bytes is more than three 8 KiB copy-buffer reads, so a
+        // rewind-and-reread bug has somewhere to manifest.
+        let data = vec![byte; 27_000];
+        (
+            SinglePassSource {
+                data: data.clone(),
+                offset: 0,
+                served_eof: false,
+            },
+            data,
+        )
+    }
+
+    #[test]
+    fn replace_file_from_reader_verified_matches_a_single_pass_source() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap().join("verified.txt");
+        let (mut source, all_bytes) = multi_chunk_source(b'a');
+        let expected = Sha256Digest::digest_bytes(&all_bytes);
+        replace_file_from_reader_verified(&path, &mut source, &expected).unwrap();
+        assert!(source.served_eof);
+        assert_eq!(std::fs::read(&path).unwrap(), all_bytes);
+    }
+
+    #[test]
+    fn replace_file_from_reader_verified_rejects_a_mismatch_without_installing_it() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap().join("verified.txt");
+        std::fs::write(&path, b"unchanged").unwrap();
+        let (mut source, _all_bytes) = multi_chunk_source(b'b');
+        // Recorded digest for content the source will never actually supply.
+        let expected = Sha256Digest::digest_bytes(&vec![b'z'; 27000]);
+        let error = replace_file_from_reader_verified(&path, &mut source, &expected).unwrap_err();
+        assert_eq!(error.code(), super::ToolErrorCode::ToolValidationFailed);
+        assert_eq!(std::fs::read(&path).unwrap(), b"unchanged");
+        let leftover = std::fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().contains(".praana-"));
+        assert!(!leftover, "temp file was not cleaned up after a mismatch");
     }
 }

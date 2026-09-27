@@ -1285,6 +1285,104 @@ async fn batch_edit_is_atomic_and_duplicate_writes_are_rejected() {
 }
 
 #[tokio::test]
+async fn batch_edit_leaves_every_path_unchanged_when_one_path_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".session")).unwrap();
+    fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    fs::write(dir.path().join("b.txt"), "beta").unwrap();
+    let rt = runtime(dir.path(), false);
+    let _ = run(
+        &rt,
+        vec![
+            call("read_file", "ra", 0, json!({"path": "a.txt"})),
+            call("read_file", "rb", 1, json!({"path": "b.txt"})),
+        ],
+    )
+    .await;
+    // a.txt's edit would succeed on its own; b.txt's old_text is absent.
+    // Cross-path atomicity (Built-in Catalog §3.2: journal all, then
+    // replace all) means a.txt must stay untouched too.
+    let result = run(
+        &rt,
+        vec![call(
+            "batch_edit",
+            "be-mixed",
+            0,
+            json!({"edits": [
+                {"path": "a.txt", "old_text": "alpha", "new_text": "ALPHA"},
+                {"path": "b.txt", "old_text": "missing", "new_text": "x"}
+            ]}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        result[0].dto.error.as_ref().unwrap().code,
+        ToolErrorCode::ToolValidationFailed
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "alpha"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "beta"
+    );
+    // No scratch files leaked into either path's directory.
+    let leftover = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .any(|entry| entry.file_name().to_string_lossy().contains(".praana-"));
+    assert!(
+        !leftover,
+        "scratch file was not cleaned up after a failed batch_edit"
+    );
+}
+
+#[tokio::test]
+async fn batch_edit_chain_streams_a_target_above_the_read_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".session")).unwrap();
+    let target = dir.path().join("large_chain.txt");
+    fs::write(&target, b"seed").unwrap();
+    let rt = runtime(dir.path(), false);
+    let _ = run(
+        &rt,
+        vec![call(
+            "read_file",
+            "r",
+            0,
+            json!({"path": "large_chain.txt"}),
+        )],
+    )
+    .await;
+    let mut grown = vec![b'q'; 16 * 1024 * 1024 + 1];
+    grown.extend_from_slice(b"CHAIN_ONE");
+    fs::write(&target, &grown).unwrap();
+    let edited = run(
+        &rt,
+        vec![call(
+            "batch_edit",
+            "be-chain-large",
+            0,
+            json!({"edits": [
+                {"path": "large_chain.txt", "old_text": "CHAIN_ONE", "new_text": "CHAIN_TWO"},
+                {"path": "large_chain.txt", "old_text": "CHAIN_TWO", "new_text": "CHAIN_THREE"}
+            ]}),
+        )],
+    )
+    .await;
+    assert_eq!(
+        edited[0].status,
+        ToolResultStatus::Success,
+        "{:?}",
+        edited[0].dto.error
+    );
+    let after = fs::read(&target).unwrap();
+    assert!(after.ends_with(b"CHAIN_THREE"));
+    assert!(after.len() as u64 > 16 * 1024 * 1024);
+}
+
+#[tokio::test]
 async fn git_status_is_read_only() {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");

@@ -321,7 +321,18 @@ P0
   payloads use bounded streaming hashing/comparison and restoration through
   confined, no-follow handles, without a 16 MiB existing-target ceiling;
   preflight (`check_planned`) validates an existing target's hash the same way
-  before any body runs. `ToolRuntime::set_session` canonicalizes the session
+  before any body runs. Journal commit and rollback verify the bytes they
+  actually copy into the target-directory temp against the recorded digest in
+  the same streamed pass that performs the copy (`confine::replace_file_from_reader_verified`),
+  so there is no separate hash-then-copy window a concurrent write could slip
+  through; a single-pass regression fails a design that would rewind and
+  reread. `edit_file`/`batch_edit` stream the sole-match search, substitution,
+  and both hashes through a bounded sliding window
+  (`tools::builtin::stream_edit`) rather than materializing the target,
+  staging the transformed output in a private scratch file; a `batch_edit`
+  chain to the same path stages each stage through its own scratch, and
+  cross-path atomicity (stage every path, then journal-install all of them)
+  is unchanged. `ToolRuntime::set_session` canonicalizes the session
   root, mirroring `set_workspace`, so confined journal payload opens
   (staged/before-image files, both session-root-relative) cannot fail behind
   a symlinked path component (observed on macOS `TMPDIR`, where `/var`

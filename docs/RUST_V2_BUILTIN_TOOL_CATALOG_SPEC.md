@@ -160,8 +160,10 @@ pub struct BatchMutationOutput { pub changed: Vec<ChangedFileDto>, pub unchanged
 ```
 
 Arrays contain 1..=100 items, total input at most 16 MiB. Duplicate write paths
-are invalid. Duplicate edit paths are allowed and applied array-order to one
-in-memory image. Acquire sorted unique path locks, validate all, journal all,
+are invalid. Duplicate edit paths are allowed and applied array-order,
+streamed through bounded scratch stages rather than one in-memory image (an
+edit target is not capped at the read_file limit and can be arbitrarily
+large). Acquire sorted unique path locks, validate all, journal all,
 then replace all. Any failure restores the before set under Tool Runtime's
 journal contract. Intent contains every write path.
 

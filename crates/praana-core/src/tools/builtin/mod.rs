@@ -6,6 +6,7 @@ mod files;
 mod git_read;
 mod search;
 mod shell;
+pub(crate) mod stream_edit;
 mod tests;
 
 use std::path::Path;
@@ -19,7 +20,6 @@ use crate::tools::error::{ToolError, ToolErrorCode};
 use crate::tools::registry::{ToolAdapter, ToolRegistry};
 
 pub use dto::*;
-pub(crate) use files::apply_edit;
 pub use files::{BatchEditTool, BatchWriteTool, EditFileTool, ReadFileTool, WriteFileTool};
 pub use git_read::{GitDiffTool, GitStatusTool};
 pub use search::{FindFilesTool, SearchCodeTool};

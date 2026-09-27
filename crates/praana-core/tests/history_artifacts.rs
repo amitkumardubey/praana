@@ -14,7 +14,7 @@ use praana_core::history::db::HistoryDatabase;
 use praana_core::history::event_log::{write_new_session_meta, EventLogStore};
 use praana_core::history::journal::{
     commit_write_journal, prepare_write_journal, reconcile_write_journal, retire_write_journal,
-    rollback_write_journal, JournalWrite,
+    rollback_write_journal, JournalWrite, JournalWriteSource,
 };
 use praana_core::history::preview::{render_preview, ArtifactContentType, PreviewRequest};
 use praana_core::history::recovery::SessionRecoveryEngine;
@@ -233,7 +233,7 @@ fn symlink_database_spool_and_journal_paths_are_rejected() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target_link,
-            new_bytes: b"new".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"new".to_vec()),
         }],
     )
     .unwrap_err();
@@ -875,12 +875,12 @@ fn journal_child_commits_two_files() {
             JournalWrite {
                 ordinal: 0,
                 target_path: root.join("a.txt"),
-                new_bytes: b"after-a".to_vec(),
+                new_bytes: JournalWriteSource::Bytes(b"after-a".to_vec()),
             },
             JournalWrite {
                 ordinal: 1,
                 target_path: root.join("b.txt"),
-                new_bytes: b"after-b".to_vec(),
+                new_bytes: JournalWriteSource::Bytes(b"after-b".to_vec()),
             },
         ],
     )
@@ -964,7 +964,7 @@ fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
         &[JournalWrite {
             ordinal: 1,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1007,7 +1007,7 @@ fn journal_streams_existing_targets_larger_than_tool_read_limit() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1033,7 +1033,7 @@ fn journal_rejects_external_growth_beyond_read_limit_as_a_conflict() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1070,7 +1070,7 @@ fn journal_commit_rejects_an_externally_enlarged_staged_payload_as_a_conflict() 
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1109,7 +1109,7 @@ fn journal_conflict_does_not_overwrite_external_bytes() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1139,7 +1139,7 @@ fn journal_commit_refuses_a_parent_replaced_by_a_symlink() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"inside".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"inside".to_vec()),
         }],
     )
     .unwrap();
@@ -1296,7 +1296,7 @@ fn journal_rejects_a_target_outside_the_workspace() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target,
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap_err();
@@ -1319,7 +1319,7 @@ fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();
@@ -1356,7 +1356,7 @@ fn proved_orphan_keeps_the_committed_replacement() {
         &[JournalWrite {
             ordinal: 0,
             target_path: target.clone(),
-            new_bytes: b"after".to_vec(),
+            new_bytes: JournalWriteSource::Bytes(b"after".to_vec()),
         }],
     )
     .unwrap();

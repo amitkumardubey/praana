@@ -2,7 +2,7 @@
 //! A target that no longer matches the recorded identity is left untouched.
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -51,7 +51,20 @@ fn run_test_after_first_entry_hook(target: &Path) {
 pub struct JournalWrite {
     pub ordinal: u32,
     pub target_path: PathBuf,
-    pub new_bytes: Vec<u8>,
+    pub new_bytes: JournalWriteSource,
+}
+
+#[derive(Clone, Debug)]
+pub enum JournalWriteSource {
+    /// Small, already-bounded new content: write_file/batch_write cap the
+    /// caller-supplied content at the owner-specified batch input limit,
+    /// so materializing it here is bounded regardless of the target's size.
+    Bytes(Vec<u8>),
+    /// A private scratch file whose content becomes the new content,
+    /// streamed rather than materialized. edit_file/batch_edit's
+    /// transformed output is not owner-bounded -- it can be as large as
+    /// the target -- so it is staged on disk, never fully read into memory.
+    Path(PathBuf),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,7 +195,17 @@ pub fn prepare_write_journal_in_roots(
         };
         let staged_relpath = format!("staged-{}", write.ordinal);
         let staged = payload.join(&staged_relpath);
-        write_new_file(&staged, &write.new_bytes)?;
+        let staged_sha256 = match &write.new_bytes {
+            JournalWriteSource::Bytes(bytes) => {
+                write_new_file(&staged, bytes)?;
+                Sha256Digest::digest_bytes(bytes)
+            }
+            JournalWriteSource::Path(source) => {
+                let digest = copy_and_hash(source, &staged)?;
+                apply_private_file_permissions(&staged).map_err(map_ledger)?;
+                digest
+            }
+        };
         entries.push(WriteJournalEntryV1 {
             ordinal: write.ordinal,
             target_path: display_path(&target),
@@ -191,7 +214,7 @@ pub fn prepare_write_journal_in_roots(
             original_sha256,
             before_relpath,
             staged_relpath,
-            staged_sha256: Sha256Digest::digest_bytes(&write.new_bytes),
+            staged_sha256,
             replacement_identity: None,
         });
     }
@@ -239,13 +262,10 @@ pub fn commit_write_journal_in_roots(
             &journal.entries[index].staged_relpath,
         )?)
         .map_err(|error| io_err(error.to_string()))?;
-        if hash_reader(&mut staged)? != journal.entries[index].staged_sha256 {
-            return Err(conflict("staged journal bytes changed"));
-        }
-        staged.rewind().map_err(|err| io_err(err.to_string()))?;
         atomic_replace(
             &target,
             &mut staged,
+            &journal.entries[index].staged_sha256,
             execution_id,
             journal.entries[index].ordinal,
         )?;
@@ -456,12 +476,7 @@ fn restore_entry(
             .original_sha256
             .as_ref()
             .ok_or_else(|| io_err("journal entry is missing the original hash"))?;
-        if &hash_reader(&mut before)? != expected {
-            return Err(io_err("before-image hash does not match the journal"));
-        }
-        before.rewind().map_err(|err| io_err(err.to_string()))?;
-        crate::tools::builtin::confine::replace_file_from_reader(&target, &mut before)
-            .map_err(|error| io_err(error.to_string()))?;
+        atomic_replace(&target, &mut before, expected, execution_id, entry.ordinal)?;
     } else if target.exists() {
         crate::tools::builtin::confine::remove_regular(&target)
             .map_err(|error| io_err(error.to_string()))?;
@@ -492,6 +507,7 @@ fn verify_original(entry: &WriteJournalEntryV1) -> Result<(), ArtifactError> {
 fn atomic_replace(
     target: &Path,
     source: &mut impl Read,
+    expected: &Sha256Digest,
     _execution_id: &ToolExecutionId,
     _ordinal: u32,
 ) -> Result<(), ArtifactError> {
@@ -501,8 +517,18 @@ fn atomic_replace(
         .ok_or_else(|| io_err("journal target has no parent directory"))?;
     crate::tools::builtin::confine::ensure_dir(parent)
         .map_err(|error| io_err(error.to_string()))?;
-    crate::tools::builtin::confine::replace_file_from_reader(target, source)
-        .map_err(|error| io_err(error.to_string()))
+    // The bytes actually copied into the target-directory temp are hashed
+    // while they are written and verified against `expected` before rename,
+    // so no separate hash-then-rewind pass exists that a mutation could slip
+    // between.
+    crate::tools::builtin::confine::replace_file_from_reader_verified(target, source, expected)
+        .map_err(|error| {
+            if error.code() == crate::tools::error::ToolErrorCode::ToolValidationFailed {
+                conflict("copied bytes did not match the recorded digest")
+            } else {
+                io_err(error.to_string())
+            }
+        })
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), ArtifactError> {
