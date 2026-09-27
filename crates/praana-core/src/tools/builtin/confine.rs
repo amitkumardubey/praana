@@ -525,7 +525,9 @@ mod tests {
     fn temp_is_user_only_before_bytes_are_written() {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("secret.txt");
+        // macOS temp roots can contain the /var -> /private/var OS symlink;
+        // the handle-anchored writer intentionally rejects symlink parents.
+        let path = root.path().canonicalize().unwrap().join("secret.txt");
         std::fs::write(&path, b"old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         replace_file(&path, b"secret-contents").unwrap();
