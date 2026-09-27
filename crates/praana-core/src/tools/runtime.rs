@@ -1496,13 +1496,14 @@ mod tests {
     #[test]
     fn batch_edit_preflight_rejects_100_near_limit_targets_before_reading_them() {
         let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
         let mut paths = Vec::new();
         let mut accesses = Vec::new();
         let mut planned = Vec::new();
 
         for index in 0..100 {
             let requested = format!("target-{index}.txt");
-            let path = root.path().join(&requested);
+            let path = root_path.join(&requested);
             std::fs::File::create(&path)
                 .unwrap()
                 .set_len(16 * 1024 * 1024 - 1)
