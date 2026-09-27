@@ -300,6 +300,7 @@ async fn durable_batch_completion_uses_provider_ordinals_not_input_vector_order(
         session_id: session_id(),
         step_id: StepId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FB3").unwrap(),
         fault_after_body: false,
+        recovery_cancelled_calls: Default::default(),
     };
     let DurableBatchOutcome::Finished(batch) = rt
         .execute_durable_batch(

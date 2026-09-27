@@ -193,9 +193,27 @@ fn marked_steps() -> Vec<ScriptedStep> {
     ]
 }
 
+fn mixed_marked_steps() -> Vec<ScriptedStep> {
+    #[cfg(windows)]
+    let ledger_command = "echo hit>>ledger.log";
+    #[cfg(not(windows))]
+    let ledger_command = "printf 'hit\\n' >> ledger.log";
+    let mut steps = marked_steps();
+    steps[0].calls.insert(
+        0,
+        DraftCall {
+            call_id: "call-safe".into(),
+            name: "shell".into(),
+            arguments: args(json!({"command": ledger_command, "timeout_ms": 5000})),
+        },
+    );
+    steps
+}
+
 fn scenario_steps(scenario: &str) -> Vec<ScriptedStep> {
     match scenario {
         "marked" => marked_steps(),
+        "mixed-marked" => mixed_marked_steps(),
         "standard" | "fragment-crash" => standard_steps(),
         other => panic!("unknown scenario {other}"),
     }
@@ -769,6 +787,16 @@ const MARKED_CANCELLED: &[ExpectedCall] = &[ExpectedCall {
     recovered: false,
 }];
 
+const MIXED_MARKED: &[ExpectedCall] = &[
+    ExpectedCall {
+        id: "call-safe",
+        status: "success",
+        started: true,
+        recovered: false,
+    },
+    MARKED_CANCELLED[0],
+];
+
 fn assert_exact_final_state(root: &Path, scenario: &str, expected: &[ExpectedCall], ledger: usize) {
     assert_eq!(line_count(&root.join("work/ledger.log")), ledger);
     assert_eq!(
@@ -777,7 +805,7 @@ fn assert_exact_final_state(root: &Path, scenario: &str, expected: &[ExpectedCal
         "marked durable arguments must never execute"
     );
     let expected_provider_steps = match scenario {
-        "marked" => vec!["0", "1"],
+        "marked" | "mixed-marked" => vec!["0", "1"],
         "fragment-crash" => vec!["0", "0", "1", "2", "3"],
         _ => vec!["0", "1", "2", "3"],
     };
@@ -886,7 +914,11 @@ fn assert_exact_final_state(root: &Path, scenario: &str, expected: &[ExpectedCal
             _ => None,
         })
         .collect();
-    let expected_batches = if scenario == "marked" { 1 } else { 3 };
+    let expected_batches = if matches!(scenario, "marked" | "mixed-marked") {
+        1
+    } else {
+        3
+    };
     assert_eq!(batches.len(), expected_batches);
     for batch in batches {
         assert_eq!(batch.call_ids.len(), batch.result_event_ids.len());
@@ -1095,6 +1127,40 @@ fn crash_after_accepted_marked_step_cancels_without_starting_body() {
     );
     assert_abort(&output, point);
     resume_twice_and_assert(&root, "marked", true, MARKED_CANCELLED, 0);
+}
+
+#[test]
+fn crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call() {
+    for crash_during_recovery in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let point = "turn.after_assistant_step_accepted:step0@1";
+        let seed = spawn_child(
+            root.path(),
+            "child_seed_and_crash",
+            "seed-and-crash",
+            "mixed-marked",
+            Some(point),
+            false,
+        );
+        assert_abort(&seed, point);
+        if crash_during_recovery {
+            // The safe peer finishes durably before the marked peer is
+            // cancelled. A second recovery must not rerun the safe body.
+            let finish_point = "event.after_fsync:tool_execution_finished:7@1";
+            let recovery = spawn_child(
+                root.path(),
+                "child_resume_and_finish",
+                "resume-and-finish",
+                "mixed-marked",
+                Some(finish_point),
+                true,
+            );
+            assert_abort(&recovery, finish_point);
+            assert_eq!(line_count(&root.path().join("work/ledger.log")), 1);
+            assert_eq!(line_count(&root.path().join("work/marked-ledger.log")), 0);
+        }
+        resume_twice_and_assert(&root, "mixed-marked", true, MIXED_MARKED, 1);
+    }
 }
 
 #[test]

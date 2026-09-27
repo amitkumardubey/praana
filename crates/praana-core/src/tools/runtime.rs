@@ -23,7 +23,8 @@ use crate::protocol::events::{
 };
 use crate::protocol::hashes::{calculate_result_messages_hash, calculate_tool_arguments_hash};
 use crate::protocol::id::{
-    AttemptId, EventId, SessionId, Sha256Digest, StepId, ToolBatchId, ToolExecutionId, TurnId,
+    AttemptId, EventId, SessionId, Sha256Digest, StepId, ToolBatchId, ToolCallId, ToolExecutionId,
+    TurnId,
 };
 use crate::protocol::tool_result::ToolResultStatus;
 
@@ -130,6 +131,8 @@ pub struct DurableSession<'a> {
     pub session_id: SessionId,
     pub step_id: StepId,
     pub fault_after_body: bool,
+    /// Recovered unstarted calls whose durable arguments cannot be replayed.
+    pub recovery_cancelled_calls: BTreeSet<ToolCallId>,
 }
 
 pub enum DurableBatchOutcome {
@@ -390,7 +393,11 @@ impl ToolRuntime {
             if finished_ids.contains(&call.tool_call_id) {
                 continue;
             }
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled()
+                || durable
+                    .recovery_cancelled_calls
+                    .contains(&call.tool_call_id)
+            {
                 slots.push(BatchSlot::Blocked {
                     call_index: call_index as u32,
                     call: call.clone(),

@@ -4,6 +4,7 @@
 //! goes through the P3A runtime and P3B artifact publisher. This module does
 //! not speak a provider wire protocol.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -179,6 +180,12 @@ struct OpenTurn {
 enum Control {
     Continue,
     Done(TurnReport),
+}
+
+#[derive(Default)]
+struct RecoveryBatch {
+    id: Option<ToolBatchId>,
+    cancelled_calls: BTreeSet<ToolCallId>,
 }
 
 pub struct HeadlessLoop {
@@ -480,26 +487,25 @@ impl HeadlessLoop {
                 arguments: call.arguments.clone(),
             })
             .collect();
-        let cancel = if batch.calls.iter().any(|call| {
-            !batch.executions.contains_key(&call.call_id)
-                && (call.raw_arguments.contains("[REDACTED:")
-                    || serde_json::to_string(&call.arguments)
-                        .map(|value| value.contains("[REDACTED:"))
-                        .unwrap_or(true))
-        }) {
-            let cancelled = CancellationToken::new();
-            cancelled.cancel();
-            cancelled
-        } else {
-            self.cancel.clone()
-        };
+        let recovery_cancelled_calls = batch
+            .calls
+            .iter()
+            .filter(|call| {
+                !batch.executions.contains_key(&call.call_id)
+                    && has_durable_argument_marker(&call.raw_arguments, &call.arguments)
+            })
+            .map(|call| call.call_id.clone())
+            .collect();
         self.run_tool_batch_with_cancel_in(
             open.id,
             batch.attempt_id,
             batch.step_id,
             &calls,
-            cancel,
-            Some(batch.id),
+            self.cancel.clone(),
+            RecoveryBatch {
+                id: Some(batch.id),
+                cancelled_calls: recovery_cancelled_calls,
+            },
         )
         .await
     }
@@ -525,17 +531,13 @@ impl HeadlessLoop {
             return Ok(None);
         }
         let mut calls = Vec::new();
-        let mut has_redacted_arguments = false;
+        let mut recovery_cancelled_calls = BTreeSet::new();
         for block in &step.message.blocks {
             let AssistantBlock::ToolCall(call) = block else {
                 continue;
             };
-            if call.raw_arguments.contains("[REDACTED:")
-                || serde_json::to_string(&call.arguments)
-                    .map(|value| value.contains("[REDACTED:"))
-                    .unwrap_or(true)
-            {
-                has_redacted_arguments = true;
+            if has_durable_argument_marker(&call.raw_arguments, &call.arguments) {
+                recovery_cancelled_calls.insert(call.call_id.clone());
             }
             calls.push(DraftCall {
                 call_id: call.call_id.to_string(),
@@ -546,27 +548,19 @@ impl HeadlessLoop {
         if calls.is_empty() {
             return Ok(None);
         }
-        if has_redacted_arguments {
-            // Redaction is intentionally a conservative recovery boundary: the
-            // persisted call no longer proves the model's original arguments.
-            // A cancelled durable batch gives the next provider attempt an
-            // explicit result without ever invoking a tool body.
-            let cancelled = CancellationToken::new();
-            cancelled.cancel();
-            return Ok(Some(
-                self.run_tool_batch_with_cancel(
-                    open.id,
-                    step.attempt_id,
-                    step.purpose.step_id,
-                    &calls,
-                    cancelled,
-                )
-                .await?,
-            ));
-        }
         Ok(Some(
-            self.run_tool_batch(open.id, step.attempt_id, step.purpose.step_id, &calls)
-                .await?,
+            self.run_tool_batch_with_cancel_in(
+                open.id,
+                step.attempt_id,
+                step.purpose.step_id,
+                &calls,
+                self.cancel.clone(),
+                RecoveryBatch {
+                    id: None,
+                    cancelled_calls: recovery_cancelled_calls,
+                },
+            )
+            .await?,
         ))
     }
 
@@ -781,8 +775,15 @@ impl HeadlessLoop {
         draft_calls: &[DraftCall],
         cancel: CancellationToken,
     ) -> Result<Control, TurnError> {
-        self.run_tool_batch_with_cancel_in(turn_id, attempt_id, step_id, draft_calls, cancel, None)
-            .await
+        self.run_tool_batch_with_cancel_in(
+            turn_id,
+            attempt_id,
+            step_id,
+            draft_calls,
+            cancel,
+            RecoveryBatch::default(),
+        )
+        .await
     }
 
     async fn run_tool_batch_with_cancel_in(
@@ -792,7 +793,7 @@ impl HeadlessLoop {
         step_id: StepId,
         draft_calls: &[DraftCall],
         cancel: CancellationToken,
-        existing_batch_id: Option<ToolBatchId>,
+        recovery: RecoveryBatch,
     ) -> Result<Control, TurnError> {
         let mut calls = Vec::new();
         for call in draft_calls {
@@ -806,7 +807,7 @@ impl HeadlessLoop {
                 provider_ordinal,
             });
         }
-        let batch_id: ToolBatchId = match existing_batch_id {
+        let batch_id: ToolBatchId = match recovery.id {
             Some(id) => id,
             None => self.fresh()?,
         };
@@ -828,6 +829,7 @@ impl HeadlessLoop {
                 session_id: self.session_id,
                 step_id,
                 fault_after_body,
+                recovery_cancelled_calls: recovery.cancelled_calls,
             };
             self.runtime
                 .execute_durable_batch(request, BatchOrigin::Model, cancel, &mut durable)
@@ -1107,6 +1109,16 @@ fn redact_provider_message(message: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+fn has_durable_argument_marker(
+    raw_arguments: &str,
+    arguments: &serde_json::Map<String, Value>,
+) -> bool {
+    raw_arguments.contains("[REDACTED:")
+        || serde_json::to_string(arguments)
+            .map(|value| value.contains("[REDACTED:"))
+            .unwrap_or(true)
 }
 
 // Proof is per changed leaf, not per call: one marked secret must not mask an

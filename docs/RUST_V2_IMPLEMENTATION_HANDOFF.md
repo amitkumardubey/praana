@@ -310,8 +310,8 @@ P0
   this is not a P3C defect. Do not bypass the ACL check. The Redaction owner
   approved the version-scoped per-leaf invariant: recovery executes an
   unstarted call only when every durable argument leaf lacks a marker;
-  otherwise it cancels without running the body. Acceptance fails closed on an
-  unmarked argument mutation.
+  otherwise it cancels without running the body, independently of safe peers
+  in the same batch. Acceptance fails closed on an unmarked argument mutation.
 
 ### P4A: History Retrieval and Search
 
