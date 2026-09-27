@@ -33,6 +33,14 @@ use praana_core::tools::result::{canonical_tool_result_bytes, ToolResultDto};
 use praana_core::tools::{FinishedCall, ResultCommit};
 use serde_json::json;
 
+// The confine layer intentionally refuses symlinked parent components. On
+// macOS TMPDIR may spell /var as an alias of /private/var; use the real root
+// for tests that exercise handle-anchored journal/spool IO.
+fn confined_tempdir() -> tempfile::TempDir {
+    let base = fs::canonicalize(std::env::temp_dir()).unwrap();
+    tempfile::Builder::new().tempdir_in(base).unwrap()
+}
+
 fn fixture_history() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/history_v1")
 }
@@ -899,7 +907,7 @@ fn two_file_journal_crashes_reconcile_or_preserve_conflicts() {
             if conflict && !first_replaced {
                 continue;
             }
-            let root = tempfile::tempdir().unwrap();
+            let root = confined_tempdir();
             let a = root.path().join("a.txt");
             let b = root.path().join("b.txt");
             fs::write(&a, b"before-a").unwrap();
@@ -939,7 +947,7 @@ fn two_file_journal_crashes_reconcile_or_preserve_conflicts() {
 
 #[test]
 fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let session = SessionId::from_str_canonical(&ulid("J1")).unwrap();
@@ -981,7 +989,7 @@ fn journal_replaces_atomically_and_rolls_back_only_matching_bytes() {
 
 #[test]
 fn journal_streams_existing_targets_larger_than_tool_read_limit() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("large.txt");
     let before = vec![b'a'; 16 * 1024 * 1024 + 1];
     fs::write(&target, &before).unwrap();
@@ -1011,7 +1019,7 @@ fn journal_streams_existing_targets_larger_than_tool_read_limit() {
 
 #[test]
 fn journal_conflict_does_not_overwrite_external_bytes() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("K2")).unwrap();
@@ -1039,7 +1047,7 @@ fn journal_conflict_does_not_overwrite_external_bytes() {
 #[cfg(unix)]
 #[test]
 fn journal_commit_refuses_a_parent_replaced_by_a_symlink() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let outside = tempfile::TempDir::new().unwrap();
     let parent = temp.path().join("parent");
     fs::create_dir(&parent).unwrap();
@@ -1068,7 +1076,7 @@ fn journal_commit_refuses_a_parent_replaced_by_a_symlink() {
 
 #[tokio::test]
 async fn spool_is_private_bounded_and_removed_only_after_a_dead_owner() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let session = SessionId::from_str_canonical(&ulid("S1")).unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("S2")).unwrap();
     create_shell_spool(
@@ -1221,7 +1229,7 @@ fn journal_rejects_a_target_outside_the_workspace() {
 
 #[test]
 fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let target = temp.path().join("file.txt");
     fs::write(&target, b"before").unwrap();
     let execution = ToolExecutionId::from_str_canonical(&ulid("G2")).unwrap();
@@ -1257,7 +1265,7 @@ fn rollback_restores_the_entry_replaced_before_next_entry_was_stored() {
 
 #[test]
 fn proved_orphan_keeps_the_committed_replacement() {
-    let temp = tempfile::TempDir::new().unwrap();
+    let temp = confined_tempdir();
     let (mut log, started) = session_with_fixture_start(temp.path());
     let session_dir = temp.path().join("session");
     let target = session_dir.join("replaced.txt");

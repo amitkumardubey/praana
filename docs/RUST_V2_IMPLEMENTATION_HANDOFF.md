@@ -300,8 +300,10 @@ P0
   `chronosiq/praana#402`). Durable batch completion orders references by provider
   ordinal even when the caller supplies a permuted request vector. Linux runs
   the event matrix locally; CI also runs it on macOS and Windows (including
-  fast-fail-versus-panic), plus Unix journal tests. CI results are required
-  before claiming platform verification. The Redaction owner approved the
+  fast-fail-versus-panic), plus Unix journal tests. Windows History private
+  ACLs still fail closed at session creation; until `chronosiq/praana#403`
+  supplies secure permissions, durable Windows crash recovery cannot pass.
+  CI results are required before claiming platform verification. The Redaction owner approved the
   version-scoped per-leaf invariant: recovery executes an unstarted call only
   when every durable argument leaf lacks a marker; otherwise it cancels without
   running the body. Acceptance fails closed on an unmarked argument mutation.
