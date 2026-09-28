@@ -1,6 +1,6 @@
 # Contributing to PRAANA
 
-Thanks for your interest in PRAANA. This project is experimental — issues, docs fixes, and small features are especially welcome.
+This repository is archived and no longer accepts issues, pull requests, or other contributions. The code remains available under the MIT license.
 
 ## Quick start
 

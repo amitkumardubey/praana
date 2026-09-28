@@ -1,5 +1,7 @@
 # PRAANA
 
+> **Archived on 28 September 2026.** This repository is no longer developed. It remains public under the MIT license as a snapshot of Praana. Issues and pull requests are not accepted.
+
 [![npm](https://img.shields.io/npm/v/praana)](https://www.npmjs.com/package/praana)
 [![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
 [![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
