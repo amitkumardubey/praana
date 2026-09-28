@@ -1,4 +1,4 @@
-# Issue #303: Risk-Tiered Action Gating — Implementation Plan
+# Issue #580: Risk-Tiered Action Gating — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -343,7 +343,7 @@ git add src/risk/classes.ts src/risk/classify.ts tests/risk-classify.test.ts \
   docs/superpowers/specs/2026-08-23-risk-tiered-gating-design.md \
   docs/superpowers/plans/2026-08-23-issue-303-risk-tiered-gating.md
 git commit -m "$(cat <<'EOF'
-feat(risk): add deterministic action classifier for #303
+feat(risk): add deterministic action classifier for #580
 
 EOF
 )"
@@ -1016,7 +1016,7 @@ EOF
 
 ---
 
-### Task 7: Docs and #303 comment
+### Task 7: Docs and #580 comment
 
 **Files:**
 - Modify: `AGENTS.md`
@@ -1028,7 +1028,7 @@ EOF
 `AGENTS.md` — Architecture blurb for `plan-mode.ts` (the one-line tree): keep as plan-mode helpers; add `risk/` to the `src/` tree after `hooks/`:
 
 ```
-  risk/          — #303 classify + confirm lock (pre_tool_call after validate)
+  risk/          — #580 classify + confirm lock (pre_tool_call after validate)
 ```
 
 Replace the **Tool pre-validation** hook-order sentence with: validate then **risk confirm** then write-path.
@@ -1057,7 +1057,7 @@ Run: `bun typecheck && bun test tests/risk-classify.test.ts tests/risk-confirm-l
 
 Expected: typecheck clean, tests PASS
 
-- [ ] **Step 3: Comment on #303**
+- [ ] **Step 3: Comment on #580**
 
 ```bash
 gh issue comment 303 --body "$(cat <<'EOF'
@@ -1095,6 +1095,6 @@ EOF
 | Hook order before write-path | Tasks 3, 5 |
 | `[risk].allow` append-merge + unknown warn | Task 4 |
 | Delete Plan-Before-Execute + auto-detect; keep `/plan on` | Task 6 |
-| Docs + #303 comment | Task 7 |
+| Docs + #580 comment | Task 7 |
 | `npm ci` free; first-subcommand install | Task 1 tests |
 | `edit.confirm` unchanged | no task touches it |

@@ -1,5 +1,5 @@
 /**
- * Native capability boundary types (issues #313, #11 Phase 1).
+ * Native capability boundary types (issues #585, #418 Phase 1).
  * See docs/superpowers/specs/2026-08-11-rust-native-runtime-design.md
  * and docs/superpowers/specs/2026-08-12-tree-sitter-code-intel-design.md
  */

@@ -117,7 +117,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
             // Identical successful retry (same id + filters) → deterministic
             // card without retrieveArtifact side effects (access_count /
             // lastAccessedTurn / recordArtifactAccess). Failed keys are never
-            // recorded, so this path only runs after a prior success (#294).
+            // recorded, so this path only runs after a prior success (#571).
             if (priorCount >= 1) {
               const art = contextEngine.getArtifact(id);
               if (art) {

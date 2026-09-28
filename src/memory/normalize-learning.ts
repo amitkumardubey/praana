@@ -2,7 +2,7 @@
 // PRAANA Memory — Learning content normalization
 //
 // Deterministic post-processing so summarizer output stays
-// scannable key points (issue #196).
+// scannable key points (issue #534).
 // ============================================================
 
 /** Hard cap aligned with the summarizer system prompt. */

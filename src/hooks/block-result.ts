@@ -1,5 +1,5 @@
 /**
- * Map a pre_tool_call block onto the agent-facing tool result (#300).
+ * Map a pre_tool_call block onto the agent-facing tool result (#577).
  */
 
 import type { PreToolCallDispatchResult } from "./types.js";

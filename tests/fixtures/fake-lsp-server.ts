@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Deterministic fake LSP server for tests (issue #11 Phase 2–3).
+ * Deterministic fake LSP server for tests (issue #418 Phase 2–3).
  *
  * Env:
  *   FAKE_LSP_DELAY_MS — delay before responding to requests (except exit)

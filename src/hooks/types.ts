@@ -1,5 +1,5 @@
 /**
- * Internal turn-loop hook types (issue #297).
+ * Internal turn-loop hook types (issue #574).
  *
  * These are infrastructure only — no external plugin loading.
  */

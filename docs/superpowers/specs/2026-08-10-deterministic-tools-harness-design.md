@@ -1,8 +1,8 @@
-# Deterministic Tools Harness Design (Issue #195)
+# Deterministic Tools Harness Design (Issue #533)
 
 **Date:** 2026-08-10
 **Status:** Approved
-**First ship:** Issue #26 (`git_status` / `git_diff` / `git_commit`)
+**First ship:** Issue #432 (`git_status` / `git_diff` / `git_commit`)
 
 ## Purpose
 
@@ -42,7 +42,7 @@ Tool results still flow through the existing engine path:
 Rules:
 
 - **Prompt size control** is the artifact stub card + `retrieve_artifact`. Do
-  **not** embed distilled summaries in the prompt. Post-#275/#290, distillers
+  **not** embed distilled summaries in the prompt. Post-#567/#290, distillers
   may still fill the stored `summary` field for stats / memory promotion only.
 - New tools that emit diffs, search hits, build errors, or test output MUST
   teach `inferContentTypeFromTool` so classification stays correct.
@@ -60,25 +60,25 @@ Optional TTY confirmation for high-impact mutators may reuse `edit.confirm`
 (same pattern as `edit_file`) rather than inventing a parallel config key unless
 a tool needs distinct UX.
 
-## First ship (#26)
+## First ship (#432)
 
 `git_status`, `git_diff`, and `git_commit` establish the harness shape:
 
 - Subprocess `git` only (no new git library dependency).
 - Structured JSON responses documented in tool descriptions.
 - `git_commit` blocked in plan mode; optional TTY confirm via `edit.confirm`
-  (default `false` = auto-commit; set `true` for the #26 confirmation AC).
+  (default `false` = auto-commit; set `true` for the #432 confirmation AC).
 - Large diffs become `"diff"` artifacts with stub cards — **not** a prompt-side
   git-diff distiller path.
 
 ## Next consumers
 
-1. **#313** — Rust/napi-rs native capability runtime (OMP-style). Prerequisite for
+1. **#585** — Rust/napi-rs native capability runtime (OMP-style). Prerequisite for
    shipping tree-sitter in-process; design in
    `2026-08-11-rust-native-runtime-design.md`.
-2. **#11 Phase 1** — tree-sitter / code intelligence tools using this contract
-   (first production consumer of #313).
-3. Hook consumers (#299, #300, #302, #303) that act on structured tool facts.
+2. **#418 Phase 1** — tree-sitter / code intelligence tools using this contract
+   (first production consumer of #585).
+3. Hook consumers (#576, #577, #579, #580) that act on structured tool facts.
 4. Later native components: build-system integration, static analysis, runtime tools.
 
 ## Explicit non-goals
@@ -86,4 +86,4 @@ a tool needs distinct UX.
 - Replacing `shell` for advanced git (rebase, push, merge, hosting APIs).
 - Prompt-embedded distillers as the primary size-control mechanism.
 - A separate planner subsystem that selects tools outside the LLM turn loop.
-- Full LSP server lifecycle in the #26 ship.
+- Full LSP server lifecycle in the #432 ship.

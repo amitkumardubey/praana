@@ -31,7 +31,7 @@ function isCompound(command: string): boolean {
 /**
  * True if the command contains shell redirection operators that we refuse to
  * parse — such commands mix reads and writes and tokens like `>` or paths
- * following them should never be treated as read targets (issue #294).
+ * following them should never be treated as read targets (issue #571).
  */
 function hasRedirection(command: string): boolean {
   const withoutQuotes = stripQuotedSpans(command);

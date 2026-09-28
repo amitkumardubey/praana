@@ -1,5 +1,5 @@
 /**
- * Structured git tools (issue #26) — first ship of the deterministic tools harness (#195).
+ * Structured git tools (issue #432) — first ship of the deterministic tools harness (#533).
  *
  * Returns verified JSON instead of raw porcelain text. Large diffs are ingested as
  * lossless `"diff"` artifacts with stub cards; DiffDistiller may fill stored summary

@@ -82,7 +82,7 @@ export type SessionEndEpilogueInput = {
 };
 
 /**
- * Single post-/exit epilogue (issue #181). Honest labels, no duplicate footer,
+ * Single post-/exit epilogue (issue #519). Honest labels, no duplicate footer,
  * outcome counts only when > 0.
  */
 export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string[] {
@@ -195,7 +195,7 @@ export function getHelpLines(): string[] {
     "  /exit                    End session and save",
     "  /state                   List all state objects for this session",
     "  /stats                   Show session, working-memory, and Cognitive Memory stats",
-    "  /scorecard               Show per-session telemetry scorecard (issue #99)",
+    "  /scorecard               Show per-session telemetry scorecard (issue #488)",
     "  /digest                  Print Cognitive Memory digest",
     "  /events                  Show last 20 events",
     "  /recall <query>          Search Cognitive Memory",
@@ -229,7 +229,7 @@ export function printHelp(): void {
     "  /exit                    End session and save",
     "  /state                   List all state objects for this session",
     "  /stats                   Show session, working-memory, and Cognitive Memory stats",
-    "  /scorecard               Show per-session telemetry scorecard (issue #99)",
+    "  /scorecard               Show per-session telemetry scorecard (issue #488)",
     "  /digest                  Print Cognitive Memory digest",
     "  /events                  Show last 20 events",
     "  /recall <query>          Search Cognitive Memory",

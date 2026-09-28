@@ -52,7 +52,7 @@ async function createSessionWithMemory(): Promise<{ session: Session; memoryStor
   return { session, memoryStore };
 }
 
-describe("session-end note promotion (#129)", () => {
+describe("session-end note promotion (#504)", () => {
   it("promotes active notes to cognitive memory", async () => {
     const { session, memoryStore } = await createSessionWithMemory();
 

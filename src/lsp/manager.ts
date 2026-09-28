@@ -1,5 +1,5 @@
 /**
- * Session-scoped LSP manager (issue #11 Phases 2–4).
+ * Session-scoped LSP manager (issue #418 Phases 2–4).
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";

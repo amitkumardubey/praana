@@ -1,10 +1,10 @@
-# LSP Code Intelligence Tools Design (Issue #11 Phase 3)
+# LSP Code Intelligence Tools Design (Issue #418 Phase 3)
 
 **Date:** 2026-08-14
 **Status:** Implemented on `feat/ad/issue-11-lsp-phase3`
-**Depends on:** Issue #11 Phase 2 / `2026-08-12-lsp-phase2-design.md` (merged via #317)
-**Related epic:** Issue #195 (deterministic tools harness)
-**Follow-on:** Issue #11 Phase 4 — `2026-08-21-lsp-phase4-design.md`
+**Depends on:** Issue #418 Phase 2 / `2026-08-12-lsp-phase2-design.md` (merged via #317)
+**Related epic:** Issue #533 (deterministic tools harness)
+**Follow-on:** Issue #418 Phase 4 — `2026-08-21-lsp-phase4-design.md`
 
 ## Purpose
 
@@ -21,7 +21,7 @@ help, command-only actions, `WorkspaceEdit` resource ops, or lifecycle restart.
 | Def/refs vs `code_*` | Keep both. `code_*` = name-based in-project; `lsp_*` = position-based semantic |
 | Code actions | Two tools: `lsp_code_actions` (list) + `lsp_apply_code_action` (apply by id) |
 | Apply mutator | Text edits only (multi-file OK). Reject create / rename / delete |
-| Resource ops follow-up | Comment on #11 + this spec’s deferred list (no extra issue) |
+| Resource ops follow-up | Comment on #418 + this spec’s deferred list (no extra issue) |
 | Languages | TypeScript / JavaScript only (same mapping as Phase 2) |
 | Completions | Cap 20; `label` / `kind` / `detail` only; no insert/snippet/apply |
 | Def/refs input | Position-based: `path`, `line`, `col` (1-based) |
@@ -373,10 +373,10 @@ clears cache.
 - `AGENTS.md` — Phase 3 tools; `code_*` vs `lsp_*` guidance
 - `docs/ARCHITECTURE.md` / `docs/concepts.md`
 - Tool catalog (`src/tools/index.ts`) and TUI icons
-- Comment on GitHub issue #11 listing deferred items (no extra issue)
+- Comment on GitHub issue #418 listing deferred items (no extra issue)
 - Phase 2 spec: point follow-on at this file
 
-## Explicit non-goals / deferred (track on #11)
+## Explicit non-goals / deferred (track on #418)
 
 - Full `WorkspaceEdit` resource ops (create / rename / delete)
 - `workspace/executeCommand` / command-only code actions

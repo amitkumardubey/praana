@@ -1,10 +1,10 @@
-# Secret Redaction Design (Issue #302)
+# Secret Redaction Design (Issue #579)
 
 **Date:** 2026-08-23
 **Status:** Approved
-**Depends on:** #297 turn-loop hooks (`post_tool_call`)
-**Related epic:** #195 (deterministic tools harness)
-**Related:** #300 (validate enrich — redact **after** enrich so suggestions are scanned)
+**Depends on:** #574 turn-loop hooks (`post_tool_call`)
+**Related epic:** #533 (deterministic tools harness)
+**Related:** #577 (validate enrich — redact **after** enrich so suggestions are scanned)
 
 ## Purpose
 
@@ -94,7 +94,7 @@ Pre-block results never enter `runPostToolCall` — skip (no secrets).
   recorder)
 - Tests: `tests/redact-secrets.test.ts`, `tests/redact-hook.test.ts`
 - Spec: this file
-- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #302
+- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #579
 
 ## Explicit non-goals
 

@@ -498,7 +498,7 @@ export class ArtifactStore {
    * M4 artifact promotion: return artifacts from this session that were
    * accessed at least `minAccessCount` times. These are the ones an agent
    * had to revisit to get its job done — the kind of "high-value artifact"
-   * the spec (build-spec §4 / decisions/003 Finding #14) flags as worth
+   * the spec (build-spec §4 / decisions/003 Finding #421) flags as worth
    * promoting to Cognitive Memory.
    *
    * Caller is responsible for the actual promotion (calling

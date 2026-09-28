@@ -123,7 +123,7 @@ describe("distillers", () => {
   });
 
   it("TestDistiller caps captured lines at 4K chars", () => {
-    // Regression (#275): a single 53M-char line made failureLimit meaningless.
+    // Regression (#567): a single 53M-char line made failureLimit meaningless.
     const hugeLine = "F".repeat(10_000);
     const input = `FAIL tests/x.test.ts\n${hugeLine}\nTests: 1 failed`;
     const out = new TestDistiller().distill(input, "full");

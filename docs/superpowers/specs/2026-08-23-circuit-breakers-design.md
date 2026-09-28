@@ -1,9 +1,9 @@
-# Circuit Breakers Design (Issue #301)
+# Circuit Breakers Design (Issue #578)
 
 **Date:** 2026-08-23
 **Status:** Approved
-**Depends on:** #297 turn-loop hooks; #294 / #223 (nudges inform; this forces)
-**Related epic:** #195 (deterministic tools harness)
+**Depends on:** #574 turn-loop hooks; #571 / #549 (nudges inform; this forces)
+**Related epic:** #533 (deterministic tools harness)
 **Related:** `toolErrorKey` / `toolErrorBaseKey` in `src/context-engine/error-tracker.ts`;
 `isTestCommand` in `src/domain/coding-domain.ts`; `detectShellReads` in
 `src/tools/shell-read-detect.ts`
@@ -174,7 +174,7 @@ Numeric only. No command text in the DB.
   headless wrap-up case in `tests/headless-run.test.ts`, turn cases in
   `tests/turn.test.ts`
 - Spec: this file
-- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #301
+- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #578
 
 ## Explicit non-goals
 

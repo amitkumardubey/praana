@@ -106,7 +106,7 @@ export class TelemetryRecorder {
 }
 
 // ============================================================
-// ScorecardTracker — per-session telemetry counter (issue #99)
+// ScorecardTracker — per-session telemetry counter (issue #488)
 // ============================================================
 
 export type MemoryAveragesProvider = (
@@ -143,9 +143,9 @@ export interface ScorecardCounters {
   artifactRetrievalRetries: number;
   /** Times a recovery hint was emitted (once per path per session). */
   churnInterventions: number;
-  /** Mutating tool calls blocked by the loop gate (issue #301). */
+  /** Mutating tool calls blocked by the loop gate (issue #578). */
   circuitLoopBlocks: number;
-  /** Headless budget wrap-up streams (issue #301). */
+  /** Headless budget wrap-up streams (issue #578). */
   circuitBudgetWrapups: number;
 }
 
@@ -287,7 +287,7 @@ export class ScorecardTracker {
       this.readPathMtimes.set(digest, mtimeMs);
     }
     // Feed the cross-channel churn detector so shell/retrieve reads of the
-    // same path count toward a single intervention (issue #294).
+    // same path count toward a single intervention (issue #571).
     this.trackFileAccess(absPath, "read_file");
   }
 

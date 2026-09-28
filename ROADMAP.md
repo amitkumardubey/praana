@@ -36,7 +36,7 @@ The honest gap today is that PRAANA *stores and recalls*, but we want it to genu
 - **Memory that learns from use** — strengthening what actually helps you and letting go of what doesn't, instead of just piling up notes.
 - **Better recall out of the box** — semantic search by default, with no separate service to install.
 - **Context that adapts to the task** — surfacing the right things for what you're doing right now, and staying fast on long sessions.
-- **Knowing whether it helps** — Harbor/`praana run` give a headless substrate; the fixed A/B task suite + scoring (#17) is still the missing step. We won't claim engine beats classic until we can show it.
+- **Knowing whether it helps** — Harbor/`praana run` give a headless substrate; the fixed A/B task suite + scoring (#424) is still the missing step. We won't claim engine beats classic until we can show it.
 
 ---
 
@@ -44,7 +44,7 @@ The honest gap today is that PRAANA *stores and recalls*, but we want it to genu
 
 Smaller, concrete improvements:
 
-- ~~Git tools (`git_status`, `git_diff`, `git_commit`)~~ — shipped (#26); first child of deterministic tools harness (#195)
+- ~~Git tools (`git_status`, `git_diff`, `git_commit`)~~ — shipped (#432); first child of deterministic tools harness (#533)
 - Quality-of-life: searchable command picker, named sessions, session cost in the status bar
 
 ---

@@ -233,7 +233,7 @@ describe("visibleCheckpointAfterBoundary", () => {
     expect(visible.state.lastReconciledTurn).toBe(-1);
   });
 
-  it("keeps a post-clear checkpoint reconciled after the boundary (regression for issue #180)", () => {
+  it("keeps a post-clear checkpoint reconciled after the boundary (regression for issue #518)", () => {
     // /clear after turn 2 (boundaryTurn = 2). First post-clear turn reconciles
     // the checkpoint at turn 3. The engine must keep showing that post-clear
     // state, not discard it as stale.

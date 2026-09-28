@@ -1,10 +1,10 @@
-# Tool-Call Pre-Validation and Error Enrichment Design (Issue #300)
+# Tool-Call Pre-Validation and Error Enrichment Design (Issue #577)
 
 **Date:** 2026-08-23
 **Status:** Implemented on `feat/ad/issue-300-tool-prevalidation`
-**Depends on:** #297 turn-loop hooks (`pre_tool_call` / `post_tool_call`)
-**Related epic:** #195 (deterministic tools harness)
-**Related:** #299 (post-edit verify — different hook, after a successful write)
+**Depends on:** #574 turn-loop hooks (`pre_tool_call` / `post_tool_call`)
+**Related epic:** #533 (deterministic tools harness)
+**Related:** #576 (post-edit verify — different hook, after a successful write)
 
 ## Purpose
 
@@ -118,7 +118,7 @@ Acceptance:
 - Tests: `tests/validate-fuzzy.test.ts`, `tests/validate-hook.test.ts`,
   extend `tests/hooks.test.ts`
 - Spec: this file
-- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #300
+- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #577
 
 ## Explicit non-goals
 

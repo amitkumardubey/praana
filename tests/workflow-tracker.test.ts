@@ -1,5 +1,5 @@
 /**
- * Tests for workflow pattern tracking (issue #92).
+ * Tests for workflow pattern tracking (issue #482).
  *
  * Covers: hash stability, tool sequence extraction, artifact type extraction,
  * session pattern persistence (upsert), expiry pruning, prompt rendering, and

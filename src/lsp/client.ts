@@ -1,5 +1,5 @@
 /**
- * Stdio JSON-RPC LSP client (issue #11 Phase 2).
+ * Stdio JSON-RPC LSP client (issue #418 Phase 2).
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";

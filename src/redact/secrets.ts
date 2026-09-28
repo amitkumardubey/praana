@@ -1,5 +1,5 @@
 /**
- * Deterministic secret redaction for tool results and logged tool-call args (#302).
+ * Deterministic secret redaction for tool results and logged tool-call args (#579).
  */
 
 const MAX_DEPTH = 8;

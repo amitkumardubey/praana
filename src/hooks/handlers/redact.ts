@@ -1,5 +1,5 @@
 /**
- * Secret redaction for tool results (issue #302).
+ * Secret redaction for tool results (issue #579).
  *
  * Registered after validate enrich and before write-path release.
  */

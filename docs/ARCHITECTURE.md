@@ -19,11 +19,11 @@ src/
   turn.ts        — Per-turn orchestration (prompt → LLM → concurrent tools → banners)
   session.ts     — Session lifecycle (create/resume/end) & memory init
   hooks/         — Internal turn-loop hook registry + builtin plan-mode / validate / risk / circuit / write-path / LSP / verify / redact handlers
-  validate/      — Always-on pre-validation + error enrichment (issue #300)
-  risk/          — Risk-tier classify + confirm lock (issue #303)
-  circuit/       — Loop gate + headless token/time wrap-up (issue #301)
-  redact/        — Always-on secret detectors for tool results and logged tool-call args (issue #302)
-  verify/        — Post-edit syntax, scoped tsc, reverse-import test-impact (issue #299; `[verify]`)
+  validate/      — Always-on pre-validation + error enrichment (issue #577)
+  risk/          — Risk-tier classify + confirm lock (issue #580)
+  circuit/       — Loop gate + headless token/time wrap-up (issue #578)
+  redact/        — Always-on secret detectors for tool results and logged tool-call args (issue #579)
+  verify/        — Post-edit syntax, scoped tsc, reverse-import test-impact (issue #576; `[verify]`)
   compile-classic.ts — Classic-mode prompt assembly (full verbatim history)
   compiler.ts    — Legacy budget-band compiler (unit tests only)
   state-graph.ts — Tiered state management (active/soft/hard) & two-pass auto-hydrate (substring + BM25)
@@ -82,9 +82,9 @@ src/
     system.ts    — shell, read_file, write_file, edit_file, read_and_summarize, batch_write, batch_edit
     search-code.ts — search_code: native grep via @praana/natives (file:line:column matches with context)
     find-files.ts — find_files: fuzzy/glob path search via @praana/natives
-    code-intel.ts — code_* tree-sitter tools (issue #11 Phase 1)
-    lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #11 Phases 2–4)
-    git.ts       — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
+    code-intel.ts — code_* tree-sitter tools (issue #418 Phase 1)
+    lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #418 Phases 2–4)
+    git.ts       — git_status / git_diff / git_commit: structured git tools (issue #432; first #533 harness ship)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   git-context.ts — shared getGitContext / findGitRoot / findGitBranch helpers
@@ -325,18 +325,18 @@ Shell spawn uses `node:child_process` with `detached` (new process group on POSI
 ### Code Search (`src/tools/search-code.ts`)
 - `search_code(pattern, path?, globs?, max_results?, ...)` — native grep via `@praana/natives` (file:line:column matches)
 - `find_files(pattern, mode?, path?, max_results?, ...)` — fuzzy/glob path search via `@praana/natives`
-- `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #11; optional native addon; availability probed at session start and shown in banner/`/stats`/system frame — see Native Addon)
-- `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #11; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
-- Post-edit verification (issue #299; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
+- `code_*` — tree-sitter symbol/import/parse tools (Phase 1 of #418; optional native addon; availability probed at session start and shown in banner/`/stats`/system frame — see Native Addon)
+- `lsp_diagnostics` / `lsp_format` / `lsp_hover` / `lsp_completions` / `lsp_definition` / `lsp_references` / `lsp_code_actions` / `lsp_apply_code_action` — opt-in LSP client against configured external servers (Phases 2–4 of #418; `[lsp]` config). Dead servers restart with backoff (max 3 per root); JS workspace members and nested git repos get separate processes (cap 8). `code_*` remains the fast name-based path.
+- Post-edit verification (issue #576; `[verify]`, default off) attaches a `verify` payload on successful `write_file` / `edit_file` / `batch_*`: tree-sitter syntax, scoped `tsc --noEmit`, and reverse-import `bun test` selection. No new tools. Never runs after `lsp_format` / `lsp_apply_code_action`. Soft-fail never flips `ok: true`.
 
-### Git Tools (`src/tools/git.ts`, issues #26 + #318)
+### Git Tools (`src/tools/git.ts`, issues #432 + #586)
 - `git_status()` — structured working-tree status (branch, ahead/behind, staged/unstaged/untracked/conflicted)
 - `git_diff(staged?, path?, context?)` — structured diff (files, hunks, insertion/deletion stats); large output becomes a `"diff"` artifact with a stub card
 - `git_commit(message, paths?, all?)` — commit with guardrails (blocked in plan mode; optional TTY confirm via `edit.confirm`; does not push)
 - `git_branches(base?, include_remote?, limit?)` — branch list with last commit + ahead/behind vs base (read-only; allowed in plan mode)
 - `git_log(branch?, path?, max_count?, since?)` — recent history with structured commits (read-only; allowed in plan mode)
 
-Shared helpers live in `src/git-context.ts`. Structured git tools (`#26` + `#318`) are the harness's git surface under epic #195; see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
+Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#586`) are the harness's git surface under epic #533; see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
 
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note
@@ -396,7 +396,7 @@ The memory retrieval system fuses multiple signals into a unified search score:
 - **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
-- **Tool-outcome reinforcement** (#45): any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up; usefulness boosted only when acted on and the placeholder session-success signal is positive, neutral when acted on without that signal, and decayed when ignored. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
+- **Tool-outcome reinforcement** (#442): any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up; usefulness boosted only when acted on and the placeholder session-success signal is positive, neutral when acted on without that signal, and decayed when ignored. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
 
 ### Schema Migrations
 The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
@@ -411,7 +411,7 @@ At session start, `SkillStatsStore.loadUsefulness()` performs a dual-scope read 
 - **Decay** (β = 0.05): skill was loaded but never used.
 - **No change**: skill was never loaded this session.
 
-Co-occurrence pairs (skills resident together during a used turn) are recorded to `skill_cooccurrence(scope, skill_a, skill_b, count)` for a future ranking consumer (#161). The `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global) prevents cross-project bleed — a project's custom skill score does not pollute scores in other repos.
+Co-occurrence pairs (skills resident together during a used turn) are recorded to `skill_cooccurrence(scope, skill_a, skill_b, count)` for a future ranking consumer (#505). The `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global) prevents cross-project bleed — a project's custom skill score does not pollute scores in other repos.
 
 ## Workflow Pattern Tracking
 
@@ -442,11 +442,11 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 
 **Active when:** `context_engine.enabled = true` (always) or `measurement_mode = true` (classic/debug — scorecard-only DB, no engine tables). Counters persist across resume via `persistProgress()` called after every turn.
 
-**Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly. Headless substrate for evals: `praana run` + Harbor adapter (`harbor_eval/`). The fixed A/B task suite + scoring (#17) is not shipped yet.
+**Query:** `/scorecard` in-session shows the current session row. For cross-session A/B analysis, query the `scorecard` table in the context-engine DB directly. Headless substrate for evals: `praana run` + Harbor adapter (`harbor_eval/`). The fixed A/B task suite + scoring (#424) is not shipped yet.
 
 ## Plan Mode, Repeat-Read Interceptor, and Session UX
 
-### Plan mode (issue #221)
+### Plan mode (issue #547)
 
 `/plan on` is user-armed only (no auto-detect, no Plan-Before-Execute system-frame rule). `Session.planMode` holds the state; `src/plan-mode.ts` is the source of truth for the mutation set and approval-word detection.
 
@@ -454,24 +454,24 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 - While armed, **mutating tools are blocked** (`write_file`, `edit_file`, `git_commit`, `lsp_format`, `lsp_apply_code_action`, branch-creating shell); read-only tools stay allowed.
 - Approval words (`go` / `execute` / `proceed` / `continue`) leave an armed plan; deferral phrases ("continue reading") do not.
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
-- Always-on **risk confirm** (#303) runs after validate and before write-path: TTY `[y/N]` for `rm`, `git reset`, force-push, `git clean -f`, `gh issue close` / `gh pr merge`, package installs, and writes outside cwd. Headless fail-closes those classes unless listed in `[risk].allow`. Concurrent confirms are serialized so stdin does not interleave.
+- Always-on **risk confirm** (#580) runs after validate and before write-path: TTY `[y/N]` for `rm`, `git reset`, force-push, `git clean -f`, `gh issue close` / `gh pr merge`, package installs, and writes outside cwd. Headless fail-closes those classes unless listed in `[risk].allow`. Concurrent confirms are serialized so stdin does not interleave.
 
-### Repeat-read interceptor (issue #219)
+### Repeat-read interceptor (issue #545)
 
 `read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `false` = warn; `true` = hard-block). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
 
-### Resume hardening (issues #185, #220)
+### Resume hardening (issues #523, #546)
 
 - `praana resume` with no session id resolves the most recent session for the **current cwd**; if none exists it prints a short notice and starts a fresh session instead of exiting.
 - On resume, a **stale-task banner** lists tasks/decisions left open in the previous session, and a **scope confirmation** step re-confirms the Cognitive Memory scopes (project vs global) before the session continues.
 
-### Scorecard nudges and agent hints (issues #223, #224)
+### Scorecard nudges and agent hints (issues #549, #550)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
 - **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
 - **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
 
-### End-of-session epilogue (issue #181)
+### End-of-session epilogue (issue #519)
 
 `/exit` (and natural shutdown) prints a single honest epilogue instead of a misleading consolidation header, returns snapshotted memory stats from shutdown, and prints a **12-char resume id** that uniquely identifies the session for `praana resume <id>`.
 
@@ -481,7 +481,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#300: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#303), then the circuit loop gate (#301), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); the 3rd identical mutating call (or 3rd attempt after two path/command errors) is blocked; reads and test commands are never loop-gated; same-path concurrent writes fail fast. After execute, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, secret redaction (#302), circuit error-count, then write-path release. Headless `[circuit] max_tokens` / `max_wall_ms` skip the pending batch and run one no-tool wrap-up. Tool results and a copy of tool-call args are redacted for the prompt, `events.jsonl`, and the TUI; `execute` still receives original args. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#577: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#580), then the circuit loop gate (#578), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); the 3rd identical mutating call (or 3rd attempt after two path/command errors) is blocked; reads and test commands are never loop-gated; same-path concurrent writes fail fast. After execute, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, secret redaction (#579), circuit error-count, then write-path release. Headless `[circuit] max_tokens` / `max_wall_ms` skip the pending batch and run one no-tool wrap-up. Tool results and a copy of tool-call args are redacted for the prompt, `events.jsonl`, and the TUI; `execute` still receives original args. Independent reads, searches, and recall calls are safe to batch.
 
 ### Onboarding, credentials, and settings
 

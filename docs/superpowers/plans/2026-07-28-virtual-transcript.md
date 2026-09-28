@@ -19,7 +19,7 @@ turn groups and lazily resolves full tool/thinking content from `events.jsonl`.
 - Preserve the user’s visual anchor when paging or changing expanded height.
 - All validation uses Bun’s existing test runner and typecheck command.
 
-## Phase 1: Replace lossy #269 persistence and resume behavior
+## Phase 1: Replace lossy #562 persistence and resume behavior
 
 ### 1. Remove normal transcript clipping
 
@@ -260,7 +260,7 @@ bun test
 
 ## Deferred Follow-up: Rezi spike
 
-Do not include this in the #269 implementation. After Phase 7, create a
+Do not include this in the #562 implementation. After Phase 7, create a
 separate issue/branch to implement the large fixture in Rezi `VirtualList` with
 variable-height rows, tail-follow, detail expansion, and the PRAANA editor.
 Compare the same benchmark metrics, feature parity, portability, and migration

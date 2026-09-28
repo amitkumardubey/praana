@@ -398,7 +398,7 @@ export interface TurnFooterInput {
   model?: string;
   /** Session repeat_file_reads; shown when > threshold. */
   repeatFileReads?: number;
-  /** Session churn_interventions (issue #294); shown when > 0. */
+  /** Session churn_interventions (issue #571); shown when > 0. */
   churnInterventions?: number;
 }
 

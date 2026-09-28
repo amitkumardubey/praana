@@ -1,4 +1,4 @@
-# Issue #294: Detect Repeated-Read and Artifact-Retrieval Churn — Implementation Plan
+# Issue #571: Detect Repeated-Read and Artifact-Retrieval Churn — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,7 +12,7 @@
 - No hard gate on shell commands.
 - No hard gate on `retrieve_artifact`.
 - No fuzzy text-similarity "novel-output ratio" (exact identical-key only).
-- `read_and_summarize` remains uncovered (still #219 design).
+- `read_and_summarize` remains uncovered (still #545 design).
 - `search_code` not instrumented in this PR.
 
 **Branch:** `feat/issue-294-read-churn` off `main`.
@@ -298,7 +298,7 @@ Expected: PASS.
 ```bash
 git add src/tools/shell-read-detect.ts tests/shell-read-detect.test.ts
 git commit -m "$(cat <<'EOF'
-feat(tools): add shell read-equivalent detector for #294
+feat(tools): add shell read-equivalent detector for #571
 
 Pure parser for cat/head/tail/sed -n/rg/grep. Returns null on
 pipes and compounds so we under-count rather than false-positive.
@@ -622,7 +622,7 @@ Expected: PASS. Fix any existing scorecard tests that assert exact `formatScorec
 ```bash
 git add src/tools/read-churn.ts src/context-engine/telemetry.ts src/context-engine/db.ts tests/read-churn.test.ts tests/scorecard.test.ts
 git commit -m "$(cat <<'EOF'
-feat(scorecard): track file-access and retrieve churn for #294
+feat(scorecard): track file-access and retrieve churn for #571
 
 Adds duplicateFileAccess, artifactRetrievalRetries, churnInterventions
 counters plus session-local per-path / per-key state. No hard gates.
@@ -772,7 +772,7 @@ Expected: PASS. Existing interceptor tests must still pass (no behavior change t
 ```bash
 git add src/tools/system.ts tests/shell-read-churn.test.ts
 git commit -m "$(cat <<'EOF'
-feat(tools): instrument read-equivalent shell commands for churn (#294)
+feat(tools): instrument read-equivalent shell commands for churn (#571)
 
 Counts cat/head/tail/sed -n/rg/grep path access in the scorecard and
 attaches a soft recovery warning at the path threshold. Never blocks.
@@ -925,7 +925,7 @@ Expected: PASS.
 ```bash
 git add src/context-engine/index.ts src/tools/knowledge.ts tests/retrieve-artifact-churn.test.ts
 git commit -m "$(cat <<'EOF'
-feat(tools): return artifact card on identical retrieve_artifact retries (#294)
+feat(tools): return artifact card on identical retrieve_artifact retries (#571)
 
 Second+ call with the same id and filters yields a deterministic card
 instead of re-emitting the full payload. Different filters still retrieve.
@@ -1064,7 +1064,7 @@ Expected: PASS.
 ```bash
 git add src/compiler.ts src/turn.ts src/ui/tui/tool-icons.ts tests/compiler.test.ts tests/tool-icons.test.ts
 git commit -m "$(cat <<'EOF'
-feat(ui): surface read-churn interventions in hints and footer (#294)
+feat(ui): surface read-churn interventions in hints and footer (#571)
 
 Agent hints, per-turn tip, and turn footer all reflect churnInterventions
 so the harness can interrupt runaway re-read loops early.
@@ -1091,7 +1091,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 // Reuse createDb + createSystemTools + ScorecardTracker harness from earlier tests.
 
-describe("read-churn fixture (#294 acceptance)", () => {
+describe("read-churn fixture (#571 acceptance)", () => {
   it("emits exactly one recovery hint by the 3rd cross-channel access of the same file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-churn-fix-"));
     writeFileSync(join(dir, "run.tsx"), "export function run() {}\n".repeat(20));
@@ -1148,7 +1148,7 @@ Expected: PASS.
 ```bash
 git add tests/read-churn-fixture.test.ts
 git commit -m "$(cat <<'EOF'
-test: add #294 read-churn acceptance fixture
+test: add #571 read-churn acceptance fixture
 
 Asserts one recovery hint by the third cross-channel access of the
 same file — well before the 81-call blowup in the evidence session.
@@ -1165,14 +1165,14 @@ EOF
 
 - [ ] **Step 1: Update AGENTS.md**
 
-In the **Telemetry scorecard (issue #99)** bullet list of signals, add:
+In the **Telemetry scorecard (issue #488)** bullet list of signals, add:
 ```
-- churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions) — issue #294
+- churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions) — issue #571
 ```
 
-In the **Repeat-read interceptor (issue #219)** section, add a short note:
+In the **Repeat-read interceptor (issue #545)** section, add a short note:
 ```
-### Read / retrieve churn detection (issue #294)
+### Read / retrieve churn detection (issue #571)
 
 Cross-channel path access (read_file, read-equivalent shell commands, retrieve_artifact
 of file-read artifacts) is counted in the scorecard. At CHURN_PATH_THRESHOLD (3) accesses
@@ -1197,7 +1197,7 @@ Expected: typecheck clean, full suite green (currently ~997+ tests; expect a sma
 ```bash
 git add AGENTS.md
 git commit -m "$(cat <<'EOF'
-docs: document read-churn detection (#294) in AGENTS.md
+docs: document read-churn detection (#571) in AGENTS.md
 EOF
 )"
 ```
@@ -1217,7 +1217,7 @@ EOF
 
 1. Per-turn tool-churn detector (same path, repeated retrieval, alternating retrieve+shell, low novel-output) — **covered** via `trackFileAccess` channels + identical retrieval keys. Fuzzy novel-output ratio deliberately simplified to exact-key identity (YAGNI; noted in Out of scope).
 2. Harness-level recovery hint after threshold — **covered** (tool `warning` + per-turn tip + agent hint + footer).
-3. Improve repeat-read response with reliable artifact ID + line-range path — **already present for `read_file`** (#219); retrieve path improved in Task 4. No change to the existing interceptor.
+3. Improve repeat-read response with reliable artifact ID + line-range path — **already present for `read_file`** (#545); retrieve path improved in Task 4. No change to the existing interceptor.
 4. Instrument read-only shell equivalents; do not block — **covered** (Tasks 1, 3).
 5. Scorecard fields — **covered** (Task 2).
 

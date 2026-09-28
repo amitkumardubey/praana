@@ -1,5 +1,5 @@
 /**
- * LSP protocol mappers (issue #11 Phase 3).
+ * LSP protocol mappers (issue #418 Phase 3).
  * Agent-facing ranges are 1-based; protocol positions are 0-based.
  */
 

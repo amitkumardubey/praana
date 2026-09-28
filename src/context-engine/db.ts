@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS scorecard (
   read_path_digests         TEXT NOT NULL DEFAULT '',
   skills_ever_loaded        TEXT NOT NULL DEFAULT '',
 
-  -- read-churn detection (issue #294)
+  -- read-churn detection (issue #571)
   duplicate_file_access     INTEGER DEFAULT 0,
   artifact_retrieval_retries INTEGER DEFAULT 0,
   churn_interventions       INTEGER DEFAULT 0,
@@ -200,7 +200,7 @@ const SCORECARD_RESUME_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "circuit_budget_wrapups", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
-/** Fidelity columns added to context_artifacts (issue #293) for existing DBs. */
+/** Fidelity columns added to context_artifacts (issue #570) for existing DBs. */
 const ARTIFACT_FIDELITY_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "fidelity", ddl: "TEXT NOT NULL DEFAULT 'summarizable'" },
   { name: "source_line_start", ddl: "INTEGER" },
@@ -446,7 +446,7 @@ export function evictStaleArtifacts(
  * M4 artifact promotion: list artifacts worth promoting to Cognitive Memory.
  * Trigger: accessed at least `minAccessCount` times in this session. Articles
  * accessed multiple times are the ones an agent had to recall to do its job —
- * the ones the spec ("decisions/003 Finding #14") calls out as high-value.
+ * the ones the spec ("decisions/003 Finding #421") calls out as high-value.
  *
  * Returns rows ordered by access_count DESC so dedup can prefer the hottest one
  * if multiple promoted artifacts collide.
@@ -1024,7 +1024,7 @@ export function countArtifactAccessByType(
 }
 
 // ---------------------------------------------------------------------------
-// Workflow patterns (issue #92)
+// Workflow patterns (issue #482)
 // ---------------------------------------------------------------------------
 
 interface WorkflowPatternRow {

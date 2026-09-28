@@ -73,20 +73,20 @@ export interface EngineCompileInput extends CompileInput {
   /** Session-scoped embedding cache for context scoring. */
   embeddingCache?: EmbeddingCache;
   /**
-   * Pre-fetched workflow patterns from the context engine DB (issue #92).
+   * Pre-fetched workflow patterns from the context engine DB (issue #482).
    * The compiler filters these to the classified task type and injects a
    * compact "Workflow Context" section when matching patterns exist.
    */
   workflowPatterns?: WorkflowPattern[];
   /**
-   * Optional scorecard-driven agent hints section (issue #224).
+   * Optional scorecard-driven agent hints section (issue #550).
    * Injected after the skills catalog when non-empty.
    */
   agentHints?: string;
-  /** Loop-breaker notes (issue #301). Injected after agent hints when non-empty. */
+  /** Loop-breaker notes (issue #578). Injected after agent hints when non-empty. */
   circuitNotes?: string[];
   /**
-   * Optional "Files read this session" index section (issue #251).
+   * Optional "Files read this session" index section (issue #561).
    * Injected after the checkpoint when non-empty.
    */
   filesReadIndex?: string;
@@ -505,7 +505,7 @@ async function compileEnginePass(
   }
   metrics.skillsCatalogTokens = skillsSection ? estTokens(skillsSection) : 0;
 
-  // Agent hints (issue #224): scorecard-driven behavioral nudges injected into the LLM prompt.
+  // Agent hints (issue #550): scorecard-driven behavioral nudges injected into the LLM prompt.
   metrics.agentHintsTokens = 0;
   if (precomputed.agentHints) {
     sections.push(precomputed.agentHints);
@@ -515,7 +515,7 @@ async function compileEnginePass(
   const circuitSection = renderCircuitNotes(input.circuitNotes ?? []);
   if (circuitSection) sections.push(circuitSection);
 
-  // Workflow context (issue #92): inject matching patterns before the checkpoint.
+  // Workflow context (issue #482): inject matching patterns before the checkpoint.
   metrics.workflowContextTokens = 0;
   if (input.workflowPatterns && input.workflowPatterns.length > 0) {
     // Patterns are pre-filtered to the classified task type by
@@ -536,7 +536,7 @@ async function compileEnginePass(
   }
   metrics.checkpointTokens = checkpointRendered.tokens;
 
-  // Files read this session (issue #251): reference index after checkpoint, before verbatim turns.
+  // Files read this session (issue #561): reference index after checkpoint, before verbatim turns.
   metrics.filesReadIndexTokens = 0;
   if (precomputed.filesReadIndex) {
     sections.push(precomputed.filesReadIndex);

@@ -1,5 +1,5 @@
 /**
- * Structured test runner tool (issue #321) — part of the deterministic tools harness (#195).
+ * Structured test runner tool (issue #589) — part of the deterministic tools harness (#533).
  *
  * Dispatches test execution to language-specific adapters and returns structured pass/fail
  * counts and failure excerpts instead of unstructured terminal logs.

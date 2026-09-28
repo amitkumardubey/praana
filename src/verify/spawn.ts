@@ -1,5 +1,5 @@
 /**
- * Timed process spawn for post-edit verification (#299).
+ * Timed process spawn for post-edit verification (#576).
  */
 
 import { spawn } from "node:child_process";

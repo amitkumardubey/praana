@@ -1,5 +1,5 @@
 /**
- * Workflow pattern tracking — issue #92.
+ * Workflow pattern tracking — issue #482.
  *
  * Learns context needs from past sessions by recording which tools the agent
  * used and which artifact types were important for each task type. At session

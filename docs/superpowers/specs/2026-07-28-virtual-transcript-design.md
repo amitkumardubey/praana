@@ -10,7 +10,7 @@ Long resumed sessions make the TUI sluggish because the current transcript
 bootstrap hydrates every persisted `ui_transcript` row into a retained
 `TranscriptContainer` component tree. In a representative session, that meant
 roughly 934 components and 1.6 million characters, including large thinking
-and tool-result bodies. The current #269 branch bounds the mounted data by
+and tool-result bodies. The current #562 branch bounds the mounted data by
 truncating and windowing it, but that makes historical transcript content
 inaccessible in the normal UI and still clears and rebuilds container children
 on structural updates.
@@ -57,7 +57,7 @@ The index contains enough data to render compact rows. Large thinking text and
 tool result bodies are resolved only when a user expands a matching row.
 
 The current persistence-time truncation and normal resume entry/character
-windowing introduced by the initial #269 fix are removed. A separate explicit,
+windowing introduced by the initial #562 fix are removed. A separate explicit,
 user-visible safety response may be used only when an event log is malformed
 or cannot be read; it must not silently discard valid historical content.
 

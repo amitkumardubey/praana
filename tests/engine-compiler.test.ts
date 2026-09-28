@@ -931,7 +931,7 @@ describe("engine compiler", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Workflow context injection (issue #92)
+// Workflow context injection (issue #482)
 // ---------------------------------------------------------------------------
 
 describe("engine compiler — workflow context injection", () => {

@@ -1,21 +1,21 @@
-# Tree-Sitter Code Intel Design (Issue #11 Phase 1)
+# Tree-Sitter Code Intel Design (Issue #418 Phase 1)
 
 **Date:** 2026-08-12
 **Status:** Merged via #315; Rust grammar follow-up in #316
-**Depends on:** Issue #313 / `2026-08-11-rust-native-runtime-design.md` (skeleton shipped)
-**Related epic:** Issue #195 (deterministic tools harness)
-**Related:** Issue #299 (post-edit verification — shared parse/import API)
-**Follow-on:** Issue #11 Phase 2 — `2026-08-12-lsp-phase2-design.md`
+**Depends on:** Issue #585 / `2026-08-11-rust-native-runtime-design.md` (skeleton shipped)
+**Related epic:** Issue #533 (deterministic tools harness)
+**Related:** Issue #576 (post-edit verification — shared parse/import API)
+**Follow-on:** Issue #418 Phase 2 — `2026-08-12-lsp-phase2-design.md`
 
 ## Purpose
 
 Ship the first **production** consumer of `@praana/natives`: in-process tree-sitter
 parsing for TypeScript/TSX, JavaScript/JSX, Python, Go, and Rust, exposed as read-only
-harness tools. This is #11 Phase 1 only — no LSP servers.
+harness tools. This is #418 Phase 1 only — no LSP servers.
 
 ## Agent-facing tools
 
-Issue #11 originally named tools `lsp_*`. Phase 1 is tree-sitter, so tools use
+Issue #418 originally named tools `lsp_*`. Phase 1 is tree-sitter, so tools use
 the `code_*` prefix; `lsp_*` is reserved for Phases 2–4.
 
 | Tool | Native export | Purpose |
@@ -152,11 +152,11 @@ require = false  # reserved; Phase 1 never aborts session start on missing addon
 
 ## Relation to other work
 
-- **#195** — tools obey the harness contract (typed `{ ok }` unions, graceful
+- **#533** — tools obey the harness contract (typed `{ ok }` unions, graceful
   preconditions, factory registration).
-- **#299** — `parseFile` / `listImports` are the shared parse surface for
+- **#576** — `parseFile` / `listImports` are the shared parse surface for
   future post-edit verification.
-- **#11 Phases 2–4** — LSP lifecycle, formatting, hover/completions; out of
+- **#418 Phases 2–4** — LSP lifecycle, formatting, hover/completions; out of
   scope here.
 
 ## Explicit non-goals

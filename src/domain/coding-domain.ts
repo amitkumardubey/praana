@@ -1,7 +1,7 @@
 /**
  * Coding Domain — the single home for all coding-specific knowledge.
  *
- * ADR-005 C4 / Issue #95: every coding-specific assumption (synonym maps,
+ * ADR-005 C4 / Issue #485: every coding-specific assumption (synonym maps,
  * test-command detection, content-type predicates, tool→type mapping,
  * distiller factory, git/test-output parsers) lives behind named exports
  * in this module. The context engine and skill ranker consume it through
@@ -191,7 +191,7 @@ export function createDefaultDistillerRegistry(): DistillerRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Task type classification (Issue #89)
+// Task type classification (Issue #479)
 // ---------------------------------------------------------------------------
 
 export const CODING_TASK_CLUSTERS = {
@@ -374,7 +374,7 @@ export function scoreCodingTaskTools(input: TaskClassificationInput): TaskScoreM
 }
 
 // ---------------------------------------------------------------------------
-// Task-type-aware budget allocation (Issue #90)
+// Task-type-aware budget allocation (Issue #480)
 // ---------------------------------------------------------------------------
 
 export const CODING_DEFAULT_BUDGET_ALLOCATION: BudgetAllocation = {

@@ -1,5 +1,5 @@
 /**
- * Shell cwd + first-token PATH check for pre-validation (#300).
+ * Shell cwd + first-token PATH check for pre-validation (#577).
  */
 
 import { existsSync } from "node:fs";

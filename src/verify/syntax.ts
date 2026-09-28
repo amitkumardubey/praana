@@ -1,5 +1,5 @@
 /**
- * Tree-sitter syntax check for post-edit verification (#299).
+ * Tree-sitter syntax check for post-edit verification (#576).
  */
 
 import type { ParseDiagnostic, ParseFileResult } from "../native/types.js";

@@ -1,5 +1,5 @@
 /**
- * LSP workspace-root resolution (issue #11 Phase 4).
+ * LSP workspace-root resolution (issue #418 Phase 4).
  *
  * Extra roots partition the session tree (JS workspace members + nested git).
  * Paths outside the session root stay the session root — the manager still

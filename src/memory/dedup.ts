@@ -1,7 +1,7 @@
 // ============================================================
 // PRAANA Memory — Deduplication & Contradiction Detection
 // ============================================================
-// M7 (Issues #71, #91): Layered contradiction detection with fallthrough.
+// M7 (Issues #461, #481): Layered contradiction detection with fallthrough.
 // Three layers (cheapest → most expensive):
 //   1. Subject-aware heuristic (negation polarity + head noun match)
 //   2. Embedding distance + replacement signal (deterministic, cached, ~15ms)

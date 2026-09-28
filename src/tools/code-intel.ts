@@ -1,5 +1,5 @@
 /**
- * Tree-sitter code intelligence tools (issue #11 Phase 1).
+ * Tree-sitter code intelligence tools (issue #418 Phase 1).
  *
  * Backed by @praana/natives. Soft-fails when the addon is unavailable.
  * Name-based project queries — not type-aware / LSP resolution.

@@ -100,7 +100,7 @@ Expected: PASS.
 
 ```bash
 git add src/context-engine/telemetry.ts tests/scorecard.test.ts
-git commit -m "fix(scorecard): refresh memory end-averages on persistProgress (#226)"
+git commit -m "fix(scorecard): refresh memory end-averages on persistProgress (#552)"
 ```
 
 ---
@@ -183,7 +183,7 @@ Expected: all pass.
 
 ```bash
 git add src/context-engine/telemetry.ts tests/scorecard.test.ts
-git commit -m "fix(scorecard): hide unchanged memory delta mid-session (#226)"
+git commit -m "fix(scorecard): hide unchanged memory delta mid-session (#552)"
 ```
 
 ---

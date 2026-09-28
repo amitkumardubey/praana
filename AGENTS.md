@@ -133,7 +133,7 @@ Search availability is probed at session start and surfaced in the boot banner (
 
 **Known tradeoff:** native `grep()` is synchronous — it blocks the event loop while searching. An `AbortSignal` cannot interrupt a running grep. For very large codebases, this may cause brief TUI freezes. Use `shell rg` for searching outside the project root or when interactive abort is needed.</think>
 
-### LSP (`[lsp]`, issue #11 Phases 2–4)
+### LSP (`[lsp]`, issue #418 Phases 2–4)
 
 Opt-in Language Server Protocol client for diagnostics and formatting. Speaks
 JSON-RPC over stdio. Disabled by default (`enabled = false`).
@@ -172,7 +172,7 @@ Tree-sitter `code_*` stays the fast in-project name path. Use `lsp_definition` /
 `lsp_references` when you need types, stdlib, or node_modules. Completions are
 labels only (cap 20) — insert via `edit_file`. Apply is text edits only.
 
-### Post-edit verification (`[verify]`, issue #299)
+### Post-edit verification (`[verify]`, issue #576)
 
 Opt-in checks after a successful `write_file` / `edit_file` / `batch_write` /
 `batch_edit`. No new agent tools — results hang off the existing tool result as
@@ -196,7 +196,7 @@ toward the session root) → reverse-import affected `*.test.*` / `*.spec.*` via
 `bun test`. Unchanged file hash → `verify.cached = true`. More than
 `max_test_files` → `tests.skipped = "too_many"` (lists the first N paths).
 
-### Tool pre-validation (issue #300)
+### Tool pre-validation (issue #577)
 
 Always-on `pre_tool_call` / `post_tool_call` hooks. No config key, no new tools,
 never rewrite args. Missing `read_file` / `edit_file` paths block with up to 5
@@ -207,7 +207,7 @@ Failed path-bearing tools may get `suggestions` and `recent_writes`. Validate
 runs after plan-mode and before risk confirm and write-path acquire so a block
 cannot leak a lock.
 
-### Risk-tiered action gating (issue #303)
+### Risk-tiered action gating (issue #580)
 
 Always-on `pre_tool_call` confirm for destructive / outward actions. Never
 rewrites args. Workspace writes inside cwd are free. Confirm-tier classes:
@@ -221,7 +221,7 @@ append-merge). Hook order: plan → validate → **risk** → write-path acquire
 allow = []  # headless-only; does not skip TTY confirm
 ```
 
-### Secret redaction (issue #302)
+### Secret redaction (issue #579)
 
 Always-on. No `[redact]` config, no new tools, never flips `ok` / `isError`.
 A `post_tool_call` handler walks tool results after enrich and replaces known
@@ -233,7 +233,7 @@ turn recorder. `execute` / `pre.args` stay original. Kinds: `aws-access-key`,
 is not redacted. Hook order (post): LSP → verify → enrich → **redact** →
 circuit → write-path release.
 
-### Circuit breakers (issue #301)
+### Circuit breakers (issue #578)
 
 Always-on loop gate for **mutating** tools. Allow 2, block the 3rd identical
 tool+args, or the 3rd attempt after two errors on the same path/command.
@@ -275,7 +275,7 @@ Implementation: `loadAgentsContext()` in `src/session.ts`. Uses `git rev-parse -
 | `/exit` | End session cleanly (triggers summariser, prints honest epilogue + 12-char resume id) |
 | `/state` | List state objects and tiers, or show empty-state guidance |
 | `/stats` | Session metadata + working-memory + Cognitive Memory stats |
-| `/scorecard` | Per-session telemetry scorecard (numeric signals only; issue #99) |
+| `/scorecard` | Per-session telemetry scorecard (numeric signals only; issue #488) |
 | `/digest` | Show current Cognitive Memory digest |
 | `/events` | Show last 20 events in the event log |
 | `/recall <query>` | Search Cognitive Memory manually |
@@ -351,11 +351,11 @@ src/
   config.ts      — Multi-source JSON/TOML config loading, deep-merge (allowlists append-merge)
   plan-mode.ts   — Plan-mode helpers (`/plan on` gate); runtime gate is a pre_tool_call hook
   hooks/         — Internal turn-loop hook registry (pre/post tool-call, pre_compile, post_turn, session lifecycle; plan → validate → risk → circuit → write-path; LSP post-edit → verify → enrich → redact → circuit → write-path release)
-  validate/      — Always-on pre-validation + error enrichment (issue #300; fuzzy path suggestions, unread edit_file, shell PATH)
-  risk/          — #303 classify + confirm lock (pre_tool_call after validate)
-  circuit/       — #301 loop gate + headless token/time wrap-up
-  redact/        — #302 secret detectors (post_tool_call results + logged tool_call args)
-  verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #299; opt-in `[verify]`)
+  validate/      — Always-on pre-validation + error enrichment (issue #577; fuzzy path suggestions, unread edit_file, shell PATH)
+  risk/          — #580 classify + confirm lock (pre_tool_call after validate)
+  circuit/       — #578 loop gate + headless token/time wrap-up
+  redact/        — #579 secret detectors (post_tool_call results + logged tool_call args)
+  verify/        — Post-edit syntax / scoped tsc / reverse-import test-impact (issue #576; opt-in `[verify]`)
   interactive-setup.ts — Dispatches TTY OpenTUI setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
@@ -373,11 +373,11 @@ src/
     system.ts    — System tools (shell, read_file, write_file, edit_file)
     search-code.ts — search_code: native grep via @praana/natives (file:line:column matches with context, globs, max_results)
     find-files.ts — find_files: fuzzy/glob path search via @praana/natives
-    git.ts — git_status / git_diff / git_commit: structured git tools (issue #26; first #195 harness ship)
-    run-tests.ts — run_tests: structured test runner with multi-language adapter dispatch (issue #321)
+    git.ts — git_status / git_diff / git_commit: structured git tools (issue #432; first #533 harness ship)
+    run-tests.ts — run_tests: structured test runner with multi-language adapter dispatch (issue #589)
     test-runner/ — language-specific adapters (bun, npm/pnpm/yarn, go, cargo, pytest, generic)
-    code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #11 Phase 1)
-    lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phases 2–4)
+    code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #418 Phase 1)
+    lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #418 Phases 2–4)
     git-context.ts — shared getGitContext / findGitRoot helpers
     native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
     lsp/ — JSON-RPC LSP client + manager (stdio; crash restart + multi-root; soft-fail when disabled)
@@ -397,7 +397,7 @@ src/
 ```
 
 Harbor / Terminal-Bench adapter: [`harbor_eval/`](./harbor_eval/README.md) — installed agent that runs `praana run --incognito` inside the task container.
-### Skills (issues #96, #77, #92)
+### Skills (issues #486, #467, #482)
 
 **Pull model — engine & classic modes share a tiny catalog.** `discoverSkills()` scans project and user paths (`.agents/skills`, `.praana/skills`, `.cursor/skills`, `skills/`, plus user-level equivalents) and builds a lightweight `SkillRecord[]` catalog. Each `SkillRecord` carries a `scope` field (`context:<hash(gitRoot)>` for project skills, `""` for global). The catalog is rendered into the prompt via `buildSkillMetadataCatalog()` in both modes: a list of `- **name**: description` lines with a `Load a skill with load_skill(skill_id)` header. **Catalog order is sorted descending by usefulness score** when a usefulness map is available; falls back to discovery order. No full bodies, no file paths, no residency tiers.
 
@@ -408,24 +408,24 @@ Harbor / Terminal-Bench adapter: [`harbor_eval/`](./harbor_eval/README.md) — i
 
 **Classic mode** has no `SkillRuntime` — `load_skill` reads the body, no tracking, no eviction. Plain agent behavior (like pi/omp/opencode). When `measurement_mode=true`, classic sessions still record skill load/reload/token counters via `ScorecardTracker.trackSkillLoad()`.
 
-**Skill effectiveness feedback loop** (`src/skills/skill-stats-store.ts`): At session start, `SkillStatsStore.loadUsefulness()` reads `skill_stats(skill_id, scope, usefulness, load_count, used_count)` from `memory.db` using dual-scope lookup (global first, project overrides). At session end (engine mode only), `flush()` applies a confidence-style boost (α=0.15) when a skill was used alongside non-load-skill tool calls, decay (β=0.05) when loaded but idle, or no change when never loaded. Co-occurrence pairs are recorded in `skill_cooccurrence(scope, skill_a, skill_b, count)` for future ranking (data-collection only; consumer in #161). The `scope` isolation prevents cross-project bleed — project skill scores are scoped to `context:<hash(gitRoot)>`.
+**Skill effectiveness feedback loop** (`src/skills/skill-stats-store.ts`): At session start, `SkillStatsStore.loadUsefulness()` reads `skill_stats(skill_id, scope, usefulness, load_count, used_count)` from `memory.db` using dual-scope lookup (global first, project overrides). At session end (engine mode only), `flush()` applies a confidence-style boost (α=0.15) when a skill was used alongside non-load-skill tool calls, decay (β=0.05) when loaded but idle, or no change when never loaded. Co-occurrence pairs are recorded in `skill_cooccurrence(scope, skill_a, skill_b, count)` for future ranking (data-collection only; consumer in #505). The `scope` isolation prevents cross-project bleed — project skill scores are scoped to `context:<hash(gitRoot)>`.
 
 Config `[skills]` keys: `enabled`, `max_token_budget_ratio` (section trim ceiling), `max_loaded_skills`, `stale_threshold_turns`, `max_depth`. Resume re-discovers skills; loaded state does **not** persist across sessions.
 
-### Telemetry scorecard (issue #99)
+### Telemetry scorecard (issue #488)
 
 **Local-only numeric signals** for comparing engine vs classic and before/after changes. Rows live in the context-engine SQLite `scorecard` table (one row per session). No prompts, file contents, or paths are stored — only counts, averages, path digests, and skill catalog ids for resume deduplication.
 
 - **Active when:** `context_engine.enabled=true` (always persists) **or** `measurement_mode=true` (classic/debug — scorecard-only DB, no full engine).
-- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost), churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions — issue #294), circuit (`circuitLoopBlocks`, `circuitBudgetWrapups` — issue #301).
+- **Signals:** context (`retrieve_artifact`, repeat reads, turn-event searches, pressure/compaction), memory (recall calls, recall-used %, project-scoped validity/usefulness deltas), skills (unique loads, load events, reloads, underloads, token cost), churn (duplicate file access across read_file/shell/retrieve, artifact retrieval retries, churn interventions — issue #571), circuit (`circuitLoopBlocks`, `circuitBudgetWrapups` — issue #578).
 - **Resume:** counters + memory start averages + read-path digests + skill ids restored from DB; `persistProgress()` after each turn.
-- **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#17).
+- **Query:** `/scorecard` in-session; SQL against the context DB for cross-session A/B (#424).
 
-### Workflow pattern tracking (issue #92)
+### Workflow pattern tracking (issue #482)
 
 At session end, the context engine records which tools were called and which artifact types were produced for the session's classified task type. These patterns survive to `workflow_patterns(task_type, tool_sequence, artifact_types, hit_count, last_seen_at)` in the context-engine DB (30-day expiry pruned on shutdown). At compile time, `renderWorkflowContext()` selects matching patterns by task type and injects a compact **Workflow Context** section just before the session checkpoint — giving the engine a prior over what context items will be needed before the session starts. Patterns are filtered by the current task type classification, so a coding session does not pollute a debugging session's prompt.
 
-### Plan mode (issue #221) and risk gating (issue #303)
+### Plan mode (issue #547) and risk gating (issue #580)
 
 `/plan on` is **user-armed only** — there is no Plan-Before-Execute system-frame
 rule and no intent auto-detection. `Session.planMode` is the source of truth
@@ -445,7 +445,7 @@ until `/plan execute` or an approval word (`go` / `execute` / `proceed` /
   actions fail closed unless the class is in `[risk].allow`. Explicit `/plan on`
   is TTY-only.
 
-### Repeat-read interceptor (issue #219)
+### Repeat-read interceptor (issue #545)
 
 `read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable:
 
@@ -456,22 +456,22 @@ block_repeat_reads = false   # false = warn and return artifact card (default); 
 
 The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads in a session, the count surfaces in the turn footer as a nudge.
 
-### Read / retrieve churn detection (issue #294)
+### Read / retrieve churn detection (issue #571)
 
 Cross-channel path access (read_file, read-equivalent shell commands, retrieve_artifact of file-read artifacts) is counted in the scorecard. At `CHURN_PATH_THRESHOLD` (3) accesses of the same path, a soft recovery `warning` is attached to the tool result and `churnInterventions` increments once per path. Identical `retrieve_artifact` calls (same id + filters) return a deterministic artifact card instead of re-emitting the full payload (`artifactRetrievalRetries`). Read-equivalent shell commands (`cat`/`head`/`tail`/`less`/`more`/`bat`/`sed -n`/`rg`/`grep`) are instrumented for telemetry only — never blocked. Parser: `src/tools/shell-read-detect.ts`. Helpers: `src/tools/read-churn.ts`. Post-edit `clearReadPath` resets the repeat-read index only; session churn counts still accumulate.
 
-### Resume hardening (issues #185, #220)
+### Resume hardening (issues #523, #546)
 
 - `praana resume` with no session id resolves the most recent session for the **current cwd**; if none exists it prints a short notice and starts a fresh session instead of exiting.
 - On resume, a **stale-task banner** lists tasks/decisions left open in the previous session, and a **scope confirmation** step re-confirms the Cognitive Memory scopes (project vs global) before the session continues.
 
-### Scorecard nudges and agent hints (issues #223, #224)
+### Scorecard nudges and agent hints (issues #549, #550)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
 - **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires — prompting adjustment.
 - **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses its threshold or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The repeat-read threshold is a single exported constant (`REPEAT_FILE_READS_THRESHOLD` in `compiler.ts`) shared by the engine hint and the TUI footer nudge.
 
-### End-of-session epilogue (issue #181)
+### End-of-session epilogue (issue #519)
 
 `/exit` (and natural shutdown) prints a single honest epilogue instead of a misleading consolidation header, returns snapshotted memory stats from shutdown, and prints a **12-char resume id** that uniquely identifies the session for `praana resume <id>`.
 
@@ -545,7 +545,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 ## Security
 
 - **Shell tool:** Runs arbitrary commands with the user's permissions. Optional sandbox allowlist via `[shell]` in config (`enabled`, `allowed_paths`); off by default.
-- **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Tool results and logged tool-call args run through always-on secret redaction (#302); user/agent chat is not. Do not log API keys or secrets through tools.
+- **Event log:** `~/.praana/sessions/<session_id>/events.jsonl`. Tool results and logged tool-call args run through always-on secret redaction (#579); user/agent chat is not. Do not log API keys or secrets through tools.
 - **In-session recall:** Use `search_session_log` for earlier turns in the current session. `recall` searches cross-session Cognitive Memory only.
 - **Memory DB:** `~/.praana/memory.db` — plaintext SQLite. No encryption at rest.
 - **Provider keys:** Credential store (`~/.praana/credentials.json`) preferred; env vars as fallback. Never hardcode or log.
@@ -561,7 +561,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - Session resume replays `context_action` events to rebuild state graph. If the log is truncated or corrupted, state rebuilds empty — not an error, just blank state.
 - Config merge order is global-first, local-last. A `./praana.config.toml` always wins over `~/.praana/config.toml`. Array allowlists (`[shell] allowed_paths`, etc.) **append-merge** across layers instead of replacing.
-- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`. First ONNX weight download prompts for consent (#187). `entries_vec` is a plain BLOB table (cosine in TS); do not load sqlite-vec. Installs that still have a sqlite-vec `vec0` `entries_vec` keep that ghost table (bun:sqlite cannot DROP it without the extension) and store new vectors in `entries_vec_blob`.
+- The embedder dimension matters for the vector table schema. Switching between backends with different dims (e.g. transformers 384-dim → ollama/transformers-nomic 768-dim) triggers re-embedding in `openMemoryDb()`. Backend changes at the same dimension also trigger re-embed via `embedding_backend` tracking in `memory_meta`. First ONNX weight download prompts for consent (#525). `entries_vec` is a plain BLOB table (cosine in TS); do not load sqlite-vec. Installs that still have a sqlite-vec `vec0` `entries_vec` keep that ghost table (bun:sqlite cannot DROP it without the extension) and store new vectors in `entries_vec_blob`.
 - `applyTierManagement()` in `turn.ts` runs after every turn — objects demote based on `touchedTurn` vs `currentTurn`. If you add a new state tool, call `stateGraph.setTier()` or the object won't register as touched.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` in bun creates a real on-disk file named `:memory:` instead of a true in-memory database. Any path whose basename is `:memory:` — including cwd-joined forms like `/project/:memory:` — hits the same bug. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`, which special-cases the basename and uses the no-arg `new Database()` constructor instead. `new Database(realPath)` with a genuine file path is fine.
 - **Concurrent DB access:** Both `openMemoryDb()` and `openContextEngineDb()` configure WAL mode plus a `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Don't open these databases with raw `new Database()` and then skip the pragmas — missing `busy_timeout` makes parallel sessions fail immediately with `SQLITE_BUSY` instead of retrying.

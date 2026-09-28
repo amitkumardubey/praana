@@ -1,5 +1,5 @@
 /**
- * Skill types for the pull-model loading system (issue #96).
+ * Skill types for the pull-model loading system (issue #486).
  *
  * No BM25, no residency tiers (hot/warm/cold), no progressive section
  * hydration. The catalog is a tiny list of skill names + descriptions.

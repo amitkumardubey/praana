@@ -385,7 +385,7 @@ export function createSystemTools(ctx: SystemToolContext) {
 
         // Telemetry only — never block, never alter stdout/stderr/exitCode.
         // Detect read-equivalent commands and attach a soft recovery warning
-        // when the same path has been accessed repeatedly (issue #294).
+        // when the same path has been accessed repeatedly (issue #571).
         if (result.ok && skillScorecard?.trackFileAccess) {
           const detected = detectShellReads(command);
           if (detected) {
@@ -548,7 +548,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     }),
 
     // deliberate: read_and_summarize is not covered by the repeat-read interceptor —
-    // it returns a derived summary, not raw file bytes, and is out of scope for #219.
+    // it returns a derived summary, not raw file bytes, and is out of scope for #545.
     read_and_summarize: defineTool({
       description:
         "Read a file and return a structured summary: key exports, imports/dependencies, and basic metrics. Use instead of read_file when you need an overview of a file.",

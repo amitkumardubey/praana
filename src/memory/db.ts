@@ -658,7 +658,7 @@ export function flushReinforcements(db: Database, sessionId: string): void {
       updateUsefulness(db, entry_id, "boost");
     } else if (used === 1 && good === 0) {
       // Decision: neutral — session-success bit is too noisy to penalize a used memory.
-      // TODO(scorecard): revisit toward a small decay once #99 delivers reliable signal.
+      // TODO(scorecard): revisit toward a small decay once #488 delivers reliable signal.
       updateUsefulness(db, entry_id, "neutral");
     } else {
       // ¬used — idle decay regardless of good/bad

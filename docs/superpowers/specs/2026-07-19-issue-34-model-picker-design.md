@@ -1,6 +1,6 @@
 # Design: Pi-style `/model` selector
 
-**Issue:** [#34](https://github.com/amitkumardubey/praana/issues/34)  
+**Issue:** [#437](https://github.com/amitkumardubey/praana/issues/437)  
 **Date:** 2026-07-19  
 **Status:** Approved
 
@@ -10,7 +10,7 @@ Bare `/model` opens a Pi-style in-place model selector (search input + filtered 
 
 ## Out of scope
 
-- Issue [#48](https://github.com/amitkumardubey/praana/issues/48) — CLI `praana models [provider]`
+- Issue [#445](https://github.com/amitkumardubey/praana/issues/445) — CLI `praana models [provider]`
 - Floating overlays, editor argument-autocomplete as the primary picker UX
 
 ## UX (matches pi's ModelSelectorComponent)

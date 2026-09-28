@@ -7,7 +7,7 @@ import { ScorecardTracker } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { Database } from "bun:sqlite";
 
-describe("read-churn acceptance fixture (#294)", () => {
+describe("read-churn acceptance fixture (#571)", () => {
   let testDir: string;
   let dbPath: string;
   let db: Database;

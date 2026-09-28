@@ -1,11 +1,11 @@
-# LSP Diagnostics + Formatting Design (Issue #11 Phase 2)
+# LSP Diagnostics + Formatting Design (Issue #418 Phase 2)
 
 **Date:** 2026-08-12
 **Status:** Merged via #317
-**Depends on:** Issue #11 Phase 1 / `2026-08-12-tree-sitter-code-intel-design.md`
-**Related epic:** Issue #195 (deterministic tools harness)
-**Related:** Issue #299 (post-edit verification — can consume LSP diagnostics later)
-**Follow-on:** Issue #11 Phase 3 — `2026-08-14-lsp-phase3-design.md`; Phase 4 — `2026-08-21-lsp-phase4-design.md`
+**Depends on:** Issue #418 Phase 1 / `2026-08-12-tree-sitter-code-intel-design.md`
+**Related epic:** Issue #533 (deterministic tools harness)
+**Related:** Issue #576 (post-edit verification — can consume LSP diagnostics later)
+**Follow-on:** Issue #418 Phase 3 — `2026-08-14-lsp-phase3-design.md`; Phase 4 — `2026-08-21-lsp-phase4-design.md`
 
 ## Purpose
 
@@ -60,7 +60,7 @@ enabled = false
 diagnostics = true
 format_on_edit = false
 timeout_ms = 5000
-# Max lines per file for diagnostics / format requests (issue #11: 10k)
+# Max lines per file for diagnostics / format requests (issue #418: 10k)
 max_file_lines = 10000
 
 # Language id → argv (first element is executable). Empty / omit = no server.

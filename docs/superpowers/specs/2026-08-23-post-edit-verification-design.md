@@ -1,10 +1,10 @@
-# Automatic Post-Edit Verification Design (Issue #299)
+# Automatic Post-Edit Verification Design (Issue #576)
 
 **Date:** 2026-08-23
 **Status:** Implemented on `feat/ad/issue-299-post-edit-verification`
-**Depends on:** #297 turn-loop hooks, #11 Phase 1 tree-sitter (`parseFile` / `listImports`)
-**Related epic:** #195 (deterministic tools harness)
-**Related:** #321 (on-demand `run_tests` — out of scope)
+**Depends on:** #574 turn-loop hooks, #418 Phase 1 tree-sitter (`parseFile` / `listImports`)
+**Related epic:** #533 (deterministic tools harness)
+**Related:** #589 (on-demand `run_tests` — out of scope)
 
 ## Purpose
 
@@ -95,7 +95,7 @@ not spawn real `tsc` / `bun test` or require `@praana/natives`.
 
 ## Explicit non-goals
 
-- #321 `run_tests` tool
+- #589 `run_tests` tool
 - Full-suite auto-run, Nx/Turbo graphs
 - Default-on `[verify]`
 - Prompt-side distillers

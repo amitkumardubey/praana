@@ -1,5 +1,5 @@
 /**
- * LSP agent tools (issue #11 Phase 2).
+ * LSP agent tools (issue #418 Phase 2).
  */
 
 import { defineTool } from "./tool-def.js";

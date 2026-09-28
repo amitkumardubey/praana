@@ -1,4 +1,4 @@
-# Issue #300: Tool-Call Pre-Validation and Error Enrichment — Implementation Plan
+# Issue #577: Tool-Call Pre-Validation and Error Enrichment — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -801,7 +801,7 @@ EOF
 
 ---
 
-### Task 7: Docs and #300 comment
+### Task 7: Docs and #577 comment
 
 **Files:**
 - Modify: `AGENTS.md` (hooks / turn-flow: mention always-on validate)
@@ -811,7 +811,7 @@ EOF
 
 - [ ] **Step 1: Update docs**
 
-AGENTS.md — after the hooks bullet, add a short **Tool pre-validation (issue #300)** paragraph: always-on; missing `read_file` / unread `edit_file` / unknown `shell` first token block with `suggestions`; failed path tools may get `recent_writes`; never rewrites args.
+AGENTS.md — after the hooks bullet, add a short **Tool pre-validation (issue #577)** paragraph: always-on; missing `read_file` / unread `edit_file` / unknown `shell` first token block with `suggestions`; failed path tools may get `recent_writes`; never rewrites args.
 
 ARCHITECTURE.md — hook order string; `src/validate/` in the tree.
 
@@ -844,7 +844,7 @@ Expected: PASS. Full `bun test` may still show the known 8 env-key failures.
 ```bash
 git add AGENTS.md docs/ARCHITECTURE.md docs/concepts.md docs/superpowers/specs/2026-08-23-tool-prevalidation-design.md
 git commit -m "$(cat <<'EOF'
-docs: document always-on tool pre-validation (#300)
+docs: document always-on tool pre-validation (#577)
 
 EOF
 )"
@@ -867,4 +867,4 @@ EOF
 | `shell` cwd + first token + closed builtins | 2, 4 |
 | Soft-fail `git ls-files` throw | 4 |
 | `HookSessionLike` methods, no Session import in handler | 3, 4, 6 |
-| Docs + #300 comment | 7 |
+| Docs + #577 comment | 7 |

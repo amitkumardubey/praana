@@ -1,10 +1,10 @@
-# Risk-Tiered Action Gating Design (Issue #303)
+# Risk-Tiered Action Gating Design (Issue #580)
 
 **Date:** 2026-08-23
 **Status:** Implemented on `feat/ad/issue-303-risk-tiered-gating`
-**Depends on:** #297 turn-loop hooks (`pre_tool_call`); evolves plan mode (#221)
-**Related epic:** #195 (deterministic tools harness)
-**Related:** #300 (validate hook — different checks, same `pre_tool_call` chain)
+**Depends on:** #574 turn-loop hooks (`pre_tool_call`); evolves plan mode (#547)
+**Related epic:** #533 (deterministic tools harness)
+**Related:** #577 (validate hook — different checks, same `pre_tool_call` chain)
 
 ## Purpose
 
@@ -58,7 +58,7 @@ First match wins. Unknown tools are free. Classifier never throws.
 
 - Skip leading `sudo` and `NAME=value` env prefixes.
 - First real token is the command (`rm`, `git`, `gh`, `npm`, …).
-- No pipeline / `&&` parsing — same as #300 first-token-only.
+- No pipeline / `&&` parsing — same as #577 first-token-only.
 - `git push origin main` (no force flag) is **free**.
 - `npm ci` / `bun ci` / `yarn ci` are **free** (not `install` / `add` / `i`).
 
@@ -143,7 +143,7 @@ Inject `confirmRisk` and `cwd`. No real TTY.
 - Tests: `tests/risk-classify.test.ts`, `tests/risk-hook.test.ts`; update
   `tests/plan-mode.test.ts`, `tests/compiler.test.ts`, `tests/hooks.test.ts`
 - Spec: this file
-- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #303
+- Docs: `AGENTS.md`, `ARCHITECTURE.md`, `concepts.md`; comment on #580
 
 ## Explicit non-goals
 

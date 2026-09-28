@@ -15,7 +15,7 @@ export type ContentType =
   | "other";
 
 /**
- * Fidelity class of a stored artifact (issue #293).
+ * Fidelity class of a stored artifact (issue #570).
  * `lossless` — raw bytes are the exact source (read_file results); retained for
  * the session and never distilled or TTL-evicted. `summarizable` — everything
  * else; existing storage/card/eviction behavior applies.
@@ -35,7 +35,7 @@ export interface ContextArtifact {
   contentType: ContentType;
   lastAccessedTurn: number;
   accessCount: number;
-  /** Fidelity class (issue #293); defaults to "summarizable" for legacy rows. */
+  /** Fidelity class (issue #570); defaults to "summarizable" for legacy rows. */
   fidelity: ArtifactFidelity;
   /** First original-file line held by this artifact (1-based), if it is a source read. */
   sourceLineStart?: number;
@@ -129,7 +129,7 @@ export interface ActivityEntry {
   artifactRef?: string;
 }
 
-/** Cross-session learned pattern for a task type (issue #92). */
+/** Cross-session learned pattern for a task type (issue #482). */
 export interface WorkflowPattern {
   /** Stable ID derived from task type + tool sequence (hash). */
   id: string;

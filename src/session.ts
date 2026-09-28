@@ -110,7 +110,7 @@ export function isPromotableArtifactSummary(summary: string): boolean {
   return !trimmed.startsWith("{") && !trimmed.startsWith("[");
 }
 
-/** Outcome of the session-end memory summarization step (issue #181 epilogue). */
+/** Outcome of the session-end memory summarization step (issue #519 epilogue). */
 export type SessionEndStatus = {
   memory: "completed" | "background" | "skipped" | "failed";
   turns: number;
@@ -132,7 +132,7 @@ export class Session {
   memoryStore: MemoryStore | null = null;
   memoryEnabled: boolean;
   memoryInitError: string | null = null;
-  /** Native addon status probed at session start (issue #319). */
+  /** Native addon status probed at session start (issue #587). */
   nativeStatus: NativeAddonStatus | null = null;
   /** Whether native search (search_code / find_files) is available. */
   fffStatus: string | null = null;
@@ -155,13 +155,13 @@ export class Session {
   headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */
   planMode = false;
-  /** Internal turn-loop hook dispatcher (issue #297). */
+  /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
-  /** Mutating-tool loop breaker (issue #301). */
+  /** Mutating-tool loop breaker (issue #578). */
   loopGate: LoopGate;
-  /** Session-scoped LSP client manager (issue #11 Phase 2). */
+  /** Session-scoped LSP client manager (issue #418 Phase 2). */
   lspManager: LspManager;
-  /** Last task type classified during compilation (issue #92 — workflow tracking). */
+  /** Last task type classified during compilation (issue #482 — workflow tracking). */
   private lastKnownTaskType: string | null = null;
   private ended = false;
   private readonly startedAt: number;
@@ -575,7 +575,7 @@ export class Session {
     });
   }
 
-  /** Record the task type from the most recent compilation (issue #92). */
+  /** Record the task type from the most recent compilation (issue #482). */
   setLastKnownTaskType(taskType: string): void {
     this.lastKnownTaskType = taskType;
   }
@@ -685,7 +685,7 @@ export class Session {
     );
   }
 
-  /** Persist working-memory state for fast resume (issue #74). */
+  /** Persist working-memory state for fast resume (issue #464). */
   persistStateGraphCheckpoint(): void {
     const lastEvent = this.eventLog.getLastEvent();
     if (!lastEvent) return;
@@ -698,7 +698,7 @@ export class Session {
     saveStateGraphCheckpoint(sessionDir, checkpoint);
   }
 
-  /** Load checkpoint + replay post-checkpoint state mutations (issue #74). */
+  /** Load checkpoint + replay post-checkpoint state mutations (issue #464). */
   private restoreWorkingMemory(allEvents: Event[]): void {
     const sessionDir = join(this.config.session.log_dir, this.id);
     const checkpoint = loadStateGraphCheckpoint(sessionDir);
@@ -1027,7 +1027,7 @@ export class Session {
    * Promote surviving add_note entries from working memory to Cognitive
    * Memory at session end. Only notes that are not retracted,
    * not hard-tiered, and not activity-log quality pass through.
-   * (#129)
+   * (#504)
    */
   private async promoteSurvivingNotesToMemory(): Promise<void> {
     if (!this.memoryStore) return;
@@ -1387,7 +1387,7 @@ export class Session {
         }, consolidationConfig.run_delay_seconds * 1000).unref();
       }
 
-      // #129: promote surviving notes to cognitive memory at session end
+      // #504: promote surviving notes to cognitive memory at session end
       try {
         await this.promoteSurvivingNotesToMemory();
       } catch (err) {
@@ -1405,7 +1405,7 @@ export class Session {
           const telemetrySummary = this.contextEngine.finalizeTelemetry(this.getTurnCount());
           this.getLogger().child("context_engine").debug(renderSessionTelemetrySummary(telemetrySummary));
 
-          // Skills summary (issue #96 report card) — engine mode only
+          // Skills summary (issue #486 report card) — engine mode only
           if (this.skillRuntime) {
             const skillStats = this.skillRuntime.getLoadedSkillStats();
             this.getLogger().child("skills").debug(
@@ -1422,7 +1422,7 @@ export class Session {
         });
       }
 
-      // Workflow pattern tracking (issue #92): persist session pattern before
+      // Workflow pattern tracking (issue #482): persist session pattern before
       // the engine closes its DB, so it is available for future sessions.
       try {
         const sessionArtifacts = this.contextEngine.listSessionArtifacts();
@@ -1442,7 +1442,7 @@ export class Session {
         });
       }
 
-      // M4 artifact promotion (build-spec §4 / decisions/003 Finding #14):
+      // M4 artifact promotion (build-spec §4 / decisions/003 Finding #421):
       // high-value session artifacts (accessed >= MIN_ARTIFACT_ACCESS_COUNT
       // times) are promoted into Cognitive Memory so they survive session
       // end. Runs once at session end, before the engine closes its DB.
@@ -1457,7 +1457,7 @@ export class Session {
       }
     }
 
-    // Flush skill effectiveness (issue #77): update usefulness in skill_stats.
+    // Flush skill effectiveness (issue #467): update usefulness in skill_stats.
     // Engine mode only (skillRuntime is null in classic). Runs after memory store
     // sessionEnd (Step A) so isSessionGood has the full event log, and before
     // scorecard flush (Step C) so syncScorecardFromRuntime captures the real used count.
@@ -1515,7 +1515,7 @@ export class Session {
   }
 
   /**
-   * M4 artifact promotion (build-spec §4 / decisions/003 Finding #14).
+   * M4 artifact promotion (build-spec §4 / decisions/003 Finding #421).
    * Promote high-value session artifacts — those accessed at least
    * MIN_ARTIFACT_ACCESS_COUNT times — into Cognitive Memory. These are
    * the artifacts the agent had to revisit to do its job; the spec flags

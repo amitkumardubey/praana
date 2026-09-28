@@ -1,4 +1,4 @@
-# Issue #301: Circuit Breakers — Implementation Plan
+# Issue #578: Circuit Breakers — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -746,7 +746,7 @@ EOF
 
 ---
 
-### Task 6: Docs and #301 comment
+### Task 6: Docs and #578 comment
 
 **Files:**
 - Modify: `AGENTS.md`
@@ -755,7 +755,7 @@ EOF
 
 - [ ] **Step 1: Update docs**
 
-`AGENTS.md` — after secret redaction / risk: **Circuit breakers (issue #301)**. Always-on loop gate; reads + tests exempt; `[circuit]` tunables; headless wrap-up; hook order includes circuit; `src/` tree `circuit/`.
+`AGENTS.md` — after secret redaction / risk: **Circuit breakers (issue #578)**. Always-on loop gate; reads + tests exempt; `[circuit]` tunables; headless wrap-up; hook order includes circuit; `src/` tree `circuit/`.
 
 `ARCHITECTURE.md` — tree line + concurrent-tool paragraph: circuit after risk, before write-path; wrap-up sentence under Headless.
 
@@ -767,7 +767,7 @@ Run: `bun typecheck && bun test tests/circuit-loop.test.ts tests/circuit-hook.te
 
 Expected: typecheck clean, tests PASS
 
-- [ ] **Step 3: Comment on #301**
+- [ ] **Step 3: Comment on #578**
 
 ```bash
 gh issue comment 301 --body "$(cat <<'EOF'
@@ -807,5 +807,5 @@ EOF
 | Resume from event log | Task 4 |
 | Headless token/time wrap-up, no model switch | Task 5 |
 | Scorecard counters | Task 5 |
-| Docs + #301 comment | Task 6 |
+| Docs + #578 comment | Task 6 |
 | No disable hatch / no cheaper model | no task adds them |

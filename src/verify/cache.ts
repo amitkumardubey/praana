@@ -1,5 +1,5 @@
 /**
- * Per-session content-hash cache for post-edit verification (#299).
+ * Per-session content-hash cache for post-edit verification (#576).
  */
 
 import { createHash } from "node:crypto";

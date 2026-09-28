@@ -1,5 +1,5 @@
 /**
- * Tool-call pre-validation and error enrichment (issue #300).
+ * Tool-call pre-validation and error enrichment (issue #577).
  *
  * Registered after plan-mode and before write-path acquire.
  */

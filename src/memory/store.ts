@@ -77,7 +77,7 @@ function certaintyToValidity(c: "high" | "medium" | "low"): number {
 /**
  * Derive a coarse session-success bit from the session-end reason and events.
  * TODO(scorecard): placeholder — replace with real telemetry signal (tests passed,
- * no error-loop, commit landed, etc.) once the scorecard (ADR-005 C1 / #99) exists.
+ * no error-loop, commit landed, etc.) once the scorecard (ADR-005 C1 / #488) exists.
  * Currently: reason is "normal" AND at least one tool returned ok = true.
  */
 export function isSessionGood(
@@ -89,7 +89,7 @@ export function isSessionGood(
   // NOTE: sessions with only user/agent messages (no tool calls) return false here,
   // meaning used entries get neutral rather than boosted usefulness. This is intentional
   // for the placeholder — a tool-free session gives no signal about memory utility.
-  // TODO(scorecard): replace with real telemetry once ADR-005 C1 / #99 delivers a
+  // TODO(scorecard): replace with real telemetry once ADR-005 C1 / #488 delivers a
   // reliable success signal that covers conversational sessions too.
   return events.some((e) => {
     if (e.type !== "tool_result") return false;
@@ -252,7 +252,7 @@ export class MemoryStore {
     const now = Date.now();
 
     // Determine session-success bit for utility updates.
-    // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #99).
+    // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #488).
     const sessionGood = isSessionGood(reason, events);
 
     // Fetch surfaced entries with content in one JOIN — no N+1 getEntryById calls.
@@ -723,7 +723,7 @@ export class MemoryStore {
     }
 
     // Score & rank — multiplicative: match quality is primary, boosts scale it.
-    // Weights are A/B targets; tune once the scorecard (#99) provides a success signal.
+    // Weights are A/B targets; tune once the scorecard (#488) provides a success signal.
     const W_VALID = 0.20;  // validity 0–1 → 0–20% match boost
     const W_UTIL  = 0.30;  // usefulness 0–1 → 0–30% match boost
     // Recency: 0–0.2 based on days since last seen (max at 0 days)

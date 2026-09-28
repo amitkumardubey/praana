@@ -209,8 +209,8 @@ These are real gaps, not a roadmap dressed as marketing.
 
 | Area | What's weak |
 |---|---|
-| **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#162). |
-| **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#17) is not shipped. We don't publish benchmark claims we can't back. |
+| **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#506). |
+| **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#424) is not shipped. We don't publish benchmark claims we can't back. |
 | **Semantic recall** | ONNX weights download on first run (~25–80MB, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
 | **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
 | **Background Consolidation Processor** | Schema exists, not scalable yet. The learning loop is incomplete. |
@@ -284,7 +284,7 @@ cd website && bun run build                 # output → website/dist/
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#162), finishing the A/B eval suite on top of Harbor/`praana run` (#17), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
+See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#506), finishing the A/B eval suite on top of Harbor/`praana run` (#424), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
 
 **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions)
 

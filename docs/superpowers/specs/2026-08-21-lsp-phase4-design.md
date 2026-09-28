@@ -1,9 +1,9 @@
-# LSP Crash Restart + Multi-Root Design (Issue #11 Phase 4)
+# LSP Crash Restart + Multi-Root Design (Issue #418 Phase 4)
 
 **Date:** 2026-08-21
 **Status:** Implemented on `feat/ad/issue-11-lsp-phase4`
-**Depends on:** Issue #11 Phase 3 / `2026-08-14-lsp-phase3-design.md`
-**Related epic:** Issue #195 (deterministic tools harness)
+**Depends on:** Issue #418 Phase 3 / `2026-08-14-lsp-phase3-design.md`
+**Related epic:** Issue #533 (deterministic tools harness)
 
 ## Purpose
 
@@ -123,9 +123,9 @@ action after restart; no restart after `shutdown`.
 
 - This spec; Phase 2/3 specs point follow-on here
 - `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/concepts.md`
-- GitHub #11 comment; leave issue open for remaining follow-ons
+- GitHub #418 comment; leave issue open for remaining follow-ons
 
-## Explicit non-goals / deferred (stay on #11)
+## Explicit non-goals / deferred (stay on #418)
 
 - Full `WorkspaceEdit` resource ops (create / rename / delete)
 - `workspace/executeCommand` / command-only code actions

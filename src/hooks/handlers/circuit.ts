@@ -1,5 +1,5 @@
 /**
- * Circuit-breaker loop gate (issue #301).
+ * Circuit-breaker loop gate (issue #578).
  *
  * Registered after risk and before write-path acquire.
  */

@@ -1,6 +1,6 @@
 # Design: `/shell` slash command and `!` prefix for direct execution
 
-**Issue:** [#118](https://github.com/amitkumardubey/praana/issues/118)  
+**Issue:** [#498](https://github.com/amitkumardubey/praana/issues/498)  
 **Date:** 2026-07-06  
 **Status:** Approved
 

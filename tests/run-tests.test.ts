@@ -1,5 +1,5 @@
 /**
- * Unit and integration tests for structured test runner tool (issue #321).
+ * Unit and integration tests for structured test runner tool (issue #589).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";

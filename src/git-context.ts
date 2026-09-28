@@ -1,7 +1,7 @@
 /**
  * Shared git repository context helpers.
  *
- * Used by agent-facing git tools (#26), session scope keys, and status chrome.
+ * Used by agent-facing git tools (#432), session scope keys, and status chrome.
  * Always shells out to `git` — no isomorphic-git / simple-git dependency.
  */
 

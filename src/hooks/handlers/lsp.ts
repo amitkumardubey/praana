@@ -1,5 +1,5 @@
 /**
- * Post-edit LSP diagnostics / optional format (issue #11 Phase 2).
+ * Post-edit LSP diagnostics / optional format (issue #418 Phase 2).
  *
  * Registered so post-edit runs before write-path lock release.
  */

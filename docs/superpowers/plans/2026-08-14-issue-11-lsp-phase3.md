@@ -1,4 +1,4 @@
-# Issue #11 Phase 3: LSP Code Intelligence Tools — Implementation Plan
+# Issue #418 Phase 3: LSP Code Intelligence Tools — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -69,7 +69,7 @@ Expected: typecheck clean; full suite green (same as `main`). If anything fails,
 ```bash
 git add docs/superpowers/plans/2026-08-14-issue-11-lsp-phase3.md
 git commit -m "$(cat <<'EOF'
-docs: add issue #11 Phase 3 LSP intelligence implementation plan
+docs: add issue #418 Phase 3 LSP intelligence implementation plan
 
 EOF
 )"
@@ -1310,7 +1310,7 @@ Tree-sitter `code_*` stays the fast in-project name path. Use `lsp_definition` /
 labels only (cap 20) — insert via `edit_file`. Apply is text edits only.
 ```
 
-Architecture map line: `lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #11 Phase 3)`.
+Architecture map line: `lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #418 Phase 3)`.
 
 - [ ] **Step 2: ARCHITECTURE.md + concepts.md**
 
@@ -1325,7 +1325,7 @@ Spec status → `Plan written; implementing on feat/ad/issue-11-lsp-phase3`.
 ```bash
 git add AGENTS.md docs/ARCHITECTURE.md docs/concepts.md praana.config.example.toml docs/superpowers/specs/2026-08-14-lsp-phase3-design.md
 git commit -m "$(cat <<'EOF'
-docs: document issue #11 Phase 3 LSP intelligence tools
+docs: document issue #418 Phase 3 LSP intelligence tools
 
 EOF
 )"
@@ -1352,9 +1352,9 @@ bun test tests/lsp-map.test.ts tests/lsp-client.test.ts tests/lsp-manager.test.t
 
 Expected: PASS.
 
-- [ ] **Step 3: No extra issue; #11 already has the deferred comment**
+- [ ] **Step 3: No extra issue; #418 already has the deferred comment**
 
-Do not open a new GitHub issue. Resource ops / executeCommand / signature help / extra languages stay on #11 as already commented.
+Do not open a new GitHub issue. Resource ops / executeCommand / signature help / extra languages stay on #418 as already commented.
 
 ---
 
@@ -1375,6 +1375,6 @@ Do not open a new GitHub issue. Resource ops / executeCommand / signature help /
 | Write-path originating + extras | 6 |
 | TS/JS only | no language.ts change |
 | Fake fixture, no real tsserver | 2, 9 |
-| Docs + #11 deferred (already commented) | 8, 9 |
+| Docs + #418 deferred (already commented) | 8, 9 |
 
 No TBD/TODO placeholders. Types (`LspHover`, `ca_<n>`, `skipped: "unsupported"`) are consistent across tasks.

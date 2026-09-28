@@ -30,7 +30,7 @@ const ENGINE_CONFIG = {
   pressure: { compact_at: 0.7, emergency_at: 0.85 },
 };
 
-describe("retrieve_artifact identical-retry churn (#294)", () => {
+describe("retrieve_artifact identical-retry churn (#571)", () => {
   let dbPath: string;
   let engine: ContextEngine;
   let scorecard: ScorecardTracker;

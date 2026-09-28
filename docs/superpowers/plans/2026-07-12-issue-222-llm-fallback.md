@@ -103,7 +103,7 @@ Expected: PASS.
 
 ```bash
 git add src/types.ts src/config.ts tests/config.test.ts
-git commit -m "feat(llm): add fallback_provider and fallback_model config keys (#222)"
+git commit -m "feat(llm): add fallback_provider and fallback_model config keys (#548)"
 ```
 
 ---
@@ -252,7 +252,7 @@ Expected: PASS.
 
 ```bash
 git add src/turn.ts tests/llm-fallback.test.ts
-git commit -m "refactor(turn): extract runLlmStream helper (#222)"
+git commit -m "refactor(turn): extract runLlmStream helper (#548)"
 ```
 
 ---
@@ -422,7 +422,7 @@ Expected: PASS.
 
 ```bash
 git add src/turn.ts src/session.ts tests/llm-fallback.test.ts
-git commit -m "feat(llm): automatic provider/model fallback on recoverable errors (#222)"
+git commit -m "feat(llm): automatic provider/model fallback on recoverable errors (#548)"
 ```
 
 ---
@@ -470,7 +470,7 @@ Expected: PASS after Task 3.
 
 ```bash
 git add tests/llm-fallback.test.ts
-git commit -m "test(llm): assert fallback event logging (#222)"
+git commit -m "test(llm): assert fallback event logging (#548)"
 ```
 
 ---
@@ -504,7 +504,7 @@ When the primary model returns a timeout, empty response, or `429` rate-limit er
 
 ```bash
 git add docs/ARCHITECTURE.md
-git commit -m "docs(llm): document automatic fallback config (#222)"
+git commit -m "docs(llm): document automatic fallback config (#548)"
 ```
 
 ---

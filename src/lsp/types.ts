@@ -1,5 +1,5 @@
 /**
- * LSP client types (issue #11 Phase 2).
+ * LSP client types (issue #418 Phase 2).
  * Agent-facing ranges are 1-based; protocol positions are 0-based.
  */
 

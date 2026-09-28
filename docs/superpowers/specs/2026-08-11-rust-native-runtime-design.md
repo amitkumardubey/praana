@@ -1,9 +1,9 @@
-# Rust Native Capability Runtime Design (Issue #313)
+# Rust Native Capability Runtime Design (Issue #585)
 
 **Date:** 2026-08-11
 **Status:** Skeleton shipped (#314); Phase 1 consumer in `2026-08-12-tree-sitter-code-intel-design.md`
-**Prerequisite for:** Issue #11 Phase 1 (tree-sitter code intel)
-**Related epic:** Issue #195 (deterministic tools harness)
+**Prerequisite for:** Issue #418 Phase 1 (tree-sitter code intel)
+**Related epic:** Issue #533 (deterministic tools harness)
 
 ## Purpose
 
@@ -19,10 +19,10 @@ This is **not** a rewrite of the tool registry into Rust.
 
 ## Motivation
 
-1. **#11** needs tree-sitter for TS/JS, Python, and Go. Doing that in a native
+1. **#418** needs tree-sitter for TS/JS, Python, and Go. Doing that in a native
    crate avoids WASM grammar packaging and gives a shared parse/import API for
-   **#299** (post-edit verification).
-2. Epic **#195** already anticipates “later native components.” Establishing the
+   **#576** (post-edit verification).
+2. Epic **#533** already anticipates “later native components.” Establishing the
    runtime boundary once prevents each new harness tool from inventing its own
    FFI/process bridge.
 3. Bun implements Node-API and can load `.node` addons; napi-rs is the same path
@@ -109,7 +109,7 @@ Tool facades never crash the turn on native failure. Prefer:
 | `nativeVersion()` | API version string |
 | `ping()` | Smoke test; returns `"pong"` |
 
-### First production exports (#11 Phase 1 — after skeleton)
+### First production exports (#418 Phase 1 — after skeleton)
 
 | Export | Purpose |
 |---|---|
@@ -119,7 +119,7 @@ Tool facades never crash the turn on native failure. Prefer:
 | `findDefinition(root, symbol, opts?)` | Project-scoped definition hits |
 | `findReferences(root, symbol, opts?)` | Project-scoped reference hits |
 
-Exact Rust/TS signatures land with #11; they must remain JSON-serializable and
+Exact Rust/TS signatures land with #418; they must remain JSON-serializable and
 free of Node Buffer ownership traps where avoidable.
 
 ## Loading & fallback
@@ -170,8 +170,8 @@ glibc on PRs that touch `crates/` or `packages/praana-natives/`.
 
 ## Migration policy
 
-1. **Skeleton** (#313) — version + ping + loader + Bun smoke.
-2. **#11 Phase 1** — tree-sitter TS/JS + Python + Go; shared API for #299.
+1. **Skeleton** (#585) — version + ping + loader + Bun smoke.
+2. **#418 Phase 1** — tree-sitter TS/JS + Python + Go; shared API for #576.
 3. **Search/walk** — only if benchmarks beat `rg` / current FS paths with
    parity tests; keep `rg` fallback for one release cycle.
 4. **Shell/process** — blocked on a separate threat-model design (cancellation,
@@ -195,12 +195,12 @@ mature external binaries are acceptable until measured.
 
 - Moving Adaptive Context, Cognitive Memory, or the compiler into Rust.
 - Replacing the TypeScript tool registry.
-- Full LSP server lifecycle (#11 Phases 2–4).
+- Full LSP server lifecycle (#418 Phases 2–4).
 - Native shell / embedded bash (OMP `pi-shell`) without a dedicated ADR.
 - Requiring native for classic-mode or headless `praana run` when the addon is
   missing (unless `native.require = true`).
 
-## Relation to #195 harness contract
+## Relation to #533 harness contract
 
 Native-backed tools still obey
 `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`:

@@ -140,7 +140,7 @@ function isSymlinkUnavailable(err: unknown): boolean {
 /** Atomically create or refresh a `current.log` symlink in `dir` pointing at
  * `basename(targetFile)`. Concurrent writers target the same daily rolling file,
  * so the symlink is idempotent; we use a temp-file + rename to avoid pino-roll's
- * TOCTOU race on the shared link path (see issue #249).
+ * TOCTOU race on the shared link path (see issue #559).
  * Windows without Developer Mode / admin cannot create symlinks (EPERM) — skip
  * `current.log` rather than crashing startup. */
 export function refreshCurrentLogSymlink(dir: string, targetFile: string): void {

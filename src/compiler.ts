@@ -27,7 +27,7 @@ export interface CompileInput {
    * post-resume turn when the user's message may diverge from a stale task.
    */
   resumeNote?: string;
-  /** Native addon status probed at session start (issue #319). */
+  /** Native addon status probed at session start (issue #587). */
   nativeStatus?: NativeAddonStatus | null;
 }
 
@@ -53,11 +53,11 @@ export interface CompileMetrics {
   agentsContextTruncated: boolean;
   /** If true, skills section was trimmed to section ceiling. */
   skillsTruncated: boolean;
-  /** Tokens used by the workflow context section (issue #92). */
+  /** Tokens used by the workflow context section (issue #482). */
   workflowContextTokens?: number;
-  /** Tokens used by the scorecard-driven agent hints section (issue #224). */
+  /** Tokens used by the scorecard-driven agent hints section (issue #550). */
   agentHintsTokens?: number;
-  /** Tokens used by the "Files read this session" index section (issue #251). */
+  /** Tokens used by the "Files read this session" index section (issue #561). */
   filesReadIndexTokens?: number;
   /** Domain-agnostic classified task type (raw label from the active classifier). */
   taskType?: string;
@@ -297,7 +297,7 @@ export interface AgentHintCounters {
 /**
  * Shared threshold for the repeat_file_reads scorecard signal.
  * Drives both the engine-mode agent hint (buildAgentHints) and the TUI footer nudge,
- * so the prompt and the footer fire in lockstep. Issue #224.
+ * so the prompt and the footer fire in lockstep. Issue #550.
  */
 export const REPEAT_FILE_READS_THRESHOLD = 5;
 
@@ -330,7 +330,7 @@ export interface FileReadIndexEntry {
 /**
  * Build a compact "Files Read This Session" section for the compiled prompt.
  * The index helps the agent discover already-read files and use retrieve_artifact(id)
- * instead of re-calling read_file. Issue #251.
+ * instead of re-calling read_file. Issue #561.
  */
 export function buildFilesReadIndexSection(
   reads: FileReadIndexEntry[],

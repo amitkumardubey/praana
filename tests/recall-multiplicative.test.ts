@@ -3,7 +3,7 @@ import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { MemoryStore } from "../src/memory/index.js";
 
 /**
- * M3 — Multiplicative recall ranking (#85).
+ * M3 — Multiplicative recall ranking (#475).
  *
  * Core invariant: match quality is always primary. A high-match entry must
  * never be outranked purely by pin/recency/confidence boosts on a low match.

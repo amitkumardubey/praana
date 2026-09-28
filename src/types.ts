@@ -121,7 +121,7 @@ export interface LlmConfig {
   /**
    * Default reasoning effort for reasoning-capable models.
    * One of: off | minimal | low | medium | high | xhigh (or none → off).
-   * Session `/reasoning` overrides this; see issue #38.
+   * Session `/reasoning` overrides this; see issue #439.
    */
   reasoning_effort?: string;
   /** AWS region for amazon-bedrock catalog + invoke. Ignored by other providers. */
@@ -293,7 +293,7 @@ export interface SearchCodeConfig {
   scan_timeout_ms?: number;
 }
 
-/** Native capability layer (@praana/natives) — issue #313 / #11. */
+/** Native capability layer (@praana/natives) — issue #585 / #418. */
 export interface NativeConfig {
   /** When false, never load the addon; code_* tools return unavailable. Default: true. */
   enabled: boolean;
@@ -304,7 +304,7 @@ export interface NativeConfig {
   require: boolean;
 }
 
-/** LSP client layer (issue #11 Phase 2) — external language servers via stdio. */
+/** LSP client layer (issue #418 Phase 2) — external language servers via stdio. */
 export interface LspConfig {
   /** When false, never spawn servers; lsp_* tools return disabled. Default: false. */
   enabled: boolean;
@@ -322,7 +322,7 @@ export interface LspConfig {
   auto_install?: boolean;
 }
 
-/** Post-edit verification (issue #299) — syntax / scoped tsc / test-impact. */
+/** Post-edit verification (issue #576) — syntax / scoped tsc / test-impact. */
 export interface VerifyConfig {
   /** When false, skip the verify hook. Default: false. */
   enabled: boolean;

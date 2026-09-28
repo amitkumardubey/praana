@@ -1,5 +1,5 @@
 /**
- * Scoped tsc --noEmit for post-edit verification (#299).
+ * Scoped tsc --noEmit for post-edit verification (#576).
  */
 
 import { existsSync } from "node:fs";

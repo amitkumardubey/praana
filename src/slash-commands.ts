@@ -178,7 +178,7 @@ async function applySettingToSession(
       session.debug = Boolean(value);
       break;
     case "theme":
-      // Persisted only — theming UI lands in #43.
+      // Persisted only — theming UI lands in #441.
       break;
     case "auto_update":
       break;

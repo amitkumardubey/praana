@@ -1,5 +1,5 @@
 /**
- * Language id resolution for LSP (issue #11 Phase 2).
+ * Language id resolution for LSP (issue #418 Phase 2).
  */
 
 import { extname } from "node:path";

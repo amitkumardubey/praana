@@ -653,7 +653,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     }
   }
 
-  // lsp config validation (issue #11 Phase 2)
+  // lsp config validation (issue #418 Phase 2)
   const lspDefaults: LspConfig = {
     enabled: false,
     diagnostics: true,
@@ -728,7 +728,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     }
   }
 
-  // verify config validation (issue #299)
+  // verify config validation (issue #576)
   const verifyDefaults: VerifyConfig = {
     enabled: false,
     syntax: true,

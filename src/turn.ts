@@ -618,7 +618,7 @@ export async function runTurn(
       session.embeddingCache = new EmbeddingCache();
     }
     // Pre-fetch all stored workflow patterns for injection into the compiled prompt
-    // (issue #92). The compiler filters them to the classified task type internally.
+    // (issue #482). The compiler filters them to the classified task type internally.
     const workflowPatterns = session.contextEngine!.listAllWorkflowPatterns();
     const fileReads = session.contextEngine!.store.listFileReads();
     const filesReadIndex = fileReads.length > 0
@@ -655,7 +655,7 @@ export async function runTurn(
       ...engineResult.metrics,
       taskType: engineResult.taskType,
     };
-    // Track task type for workflow pattern persistence at session end (issue #92).
+    // Track task type for workflow pattern persistence at session end (issue #482).
     session.setLastKnownTaskType(engineResult.taskType);
     session.setLastCompileScoreRecords(
       engineResult.scoreRecords,
@@ -1614,9 +1614,9 @@ export interface MemoryBannerStats {
   outputTokens: number;
   /** Session-scoped scorecard repeat_file_reads (for footer nudge). */
   repeatFileReads?: number;
-  /** Session-scoped churn interventions (issue #294, for footer nudge). */
+  /** Session-scoped churn interventions (issue #571, for footer nudge). */
   churnInterventions?: number;
-  /** Per-turn tip when scorecard signals fire this turn (issue #223 / #294). */
+  /** Per-turn tip when scorecard signals fire this turn (issue #549 / #571). */
   nudge?: string;
 }
 

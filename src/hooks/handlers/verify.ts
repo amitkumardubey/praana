@@ -1,5 +1,5 @@
 /**
- * Post-edit verification: syntax, scoped tsc, test-impact (issue #299).
+ * Post-edit verification: syntax, scoped tsc, test-impact (issue #576).
  *
  * Registered after LSP post-edit and before write-path lock release.
  */

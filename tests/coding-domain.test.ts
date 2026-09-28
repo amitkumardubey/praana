@@ -202,7 +202,7 @@ describe("inferContentTypeFromTool", () => {
   });
 
   it("search_code inference ignores command content — query may mention tests", () => {
-    // Regression (#275): search_code results fell through to content-based
+    // Regression (#567): search_code results fell through to content-based
     // classification and were mislabeled test_output when the output
     // contained PASS/FAIL markers.
     expect(inferContentTypeFromTool("search_code", "npm test")).toBe("search_results");
@@ -282,7 +282,7 @@ describe("createDefaultDistillerRegistry", () => {
 // ---------------------------------------------------------------------------
 
 describe("CODING_TASK_CLUSTERS", () => {
-  it("defines all coding task types from issue #89", () => {
+  it("defines all coding task types from issue #479", () => {
     expect(Object.keys(CODING_TASK_CLUSTERS).sort()).toEqual(
       ["debugging", "implementing", "refactoring", "reviewing", "testing"].sort(),
     );

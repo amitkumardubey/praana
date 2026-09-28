@@ -1,8 +1,8 @@
-# Onboarding Experience Sweep — Issue #187
+# Onboarding Experience Sweep — Issue #525
 
 ## Context
 
-Issue #187 is an umbrella for remaining onboarding friction after the initial first-run fixes (#101, #102, #104). A code audit found 37 friction points. Additionally, the user wants PRAANA to support **all pi-ai providers** (33+ `KnownProvider` types) plus PRAANA-specific providers like `umans` — not just the curated 13 in `PROVIDER_REGISTRY`.
+Issue #525 is an umbrella for remaining onboarding friction after the initial first-run fixes (#490, #491, #493). A code audit found 37 friction points. Additionally, the user wants PRAANA to support **all pi-ai providers** (33+ `KnownProvider` types) plus PRAANA-specific providers like `umans` — not just the curated 13 in `PROVIDER_REGISTRY`.
 
 The runtime already handles pi-ai providers: `buildFromPiAiCatalog()` (`llm.ts:170-196`), `isProviderAvailable()` (`llm.ts:106-130`), and `getMissingKeyMessage()` (`llm.ts:132-147`) all fall through to pi-ai for non-registry providers. The gap is the onboarding layer: detection (`DETECTION_PRECEDENCE` only lists 13), display (`listKnownProviders()` only returns 13), and defaults (`DEFAULT_MODELS` only covers 13).
 

@@ -1,4 +1,4 @@
-# Issue #31 — TUI `/exit` immediate feedback and non-blocking shutdown
+# Issue #434 — TUI `/exit` immediate feedback and non-blocking shutdown
 
 ## Problem
 

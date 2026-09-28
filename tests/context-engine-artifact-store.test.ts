@@ -305,7 +305,7 @@ describe("context-engine artifact store", () => {
   });
 
   it("classifyContentType scans only the first 4K chars — a deep PASS does not misclassify", () => {
-    // Regression (#275): a 53M-char search result containing "PASS" at
+    // Regression (#567): a 53M-char search result containing "PASS" at
     // position 42.9M was classified as test_output and "distilled" into a
     // summary larger than the input.
     const head = "src/a.ts:1:export function foo()\n".repeat(200); // ~6.6K chars

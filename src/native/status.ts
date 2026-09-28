@@ -1,5 +1,5 @@
 /**
- * Native addon status formatting and probing (issue #319).
+ * Native addon status formatting and probing (issue #587).
  *
  * `loadNative()` never throws — it always returns a `NativeLoadResult`.
  * These helpers keep the session/compiler layers decoupled from that fact.
@@ -30,7 +30,7 @@ export type NativeAddonStatus =
  * Format a `NativeLoadResult` into a structured `NativeAddonStatus`.
  *
  * Uses `error.code` (not message string-matching) to distinguish
- * "disabled" from "unavailable" (issue #319 fix).
+ * "disabled" from "unavailable" (issue #587 fix).
  */
 export function formatNativeStatus(result: NativeLoadResult): NativeAddonStatus {
   if (result.available && result.bindings) {

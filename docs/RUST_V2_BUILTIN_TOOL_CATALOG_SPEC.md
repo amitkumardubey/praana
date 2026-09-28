@@ -83,7 +83,7 @@ fixtures still describe all four tools for platforms where they are available.
 This approved exception does **not** approve Windows write support or change
 their DTO definitions. Handle-anchored, reparse-safe Windows write/edit/batch
 operations are required before P7 and before any editor-client release
-(tracked in `chronosiq/praana#402`).
+(tracked in `amitkumardubey/praana#621`).
 
 ### 3.1 `read_file` (order 400)
 

@@ -1,4 +1,4 @@
-# Issue #302: Secret Redaction — Implementation Plan
+# Issue #579: Secret Redaction — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -182,7 +182,7 @@ git add src/redact/secrets.ts tests/redact-secrets.test.ts \
   docs/superpowers/specs/2026-08-23-secret-redaction-design.md \
   docs/superpowers/plans/2026-08-23-issue-302-secret-redaction.md
 git commit -m "$(cat <<'EOF'
-feat(redact): add secret detectors and object walker for #302
+feat(redact): add secret detectors and object walker for #579
 
 EOF
 )"
@@ -362,7 +362,7 @@ EOF
 
 ---
 
-### Task 4: Docs and #302 comment
+### Task 4: Docs and #579 comment
 
 **Files:**
 - Modify: `AGENTS.md`
@@ -373,9 +373,9 @@ EOF
 
 `AGENTS.md`:
 
-- After the risk-gating subsection, add **Secret redaction (issue #302)**: always-on `post_tool_call` + logged args copy; kinds listed; execute args unchanged; no config.
+- After the risk-gating subsection, add **Secret redaction (issue #579)**: always-on `post_tool_call` + logged args copy; kinds listed; execute args unchanged; no config.
 - Hook-order sentences: `post = lsp → verify → enrich → redact → write-path`.
-- `src/` tree: `redact/ — #302 secret detectors (post_tool_call + logged tool_call args)`.
+- `src/` tree: `redact/ — #579 secret detectors (post_tool_call + logged tool_call args)`.
 
 `docs/ARCHITECTURE.md`:
 
@@ -390,7 +390,7 @@ Run: `bun typecheck && bun test tests/redact-secrets.test.ts tests/redact-hook.t
 
 Expected: typecheck clean, tests PASS
 
-- [ ] **Step 3: Comment on #302**
+- [ ] **Step 3: Comment on #579**
 
 ```bash
 gh issue comment 302 --body "$(cat <<'EOF'
@@ -425,5 +425,5 @@ EOF
 | Detectors + walk + soft-fail | Task 1 |
 | `post_tool_call` after enrich | Task 2 |
 | Args copy at log / TUI / recorder; execute raw | Task 3 |
-| Docs + #302 comment | Task 4 |
+| Docs + #579 comment | Task 4 |
 | No config; no chat redaction | no task adds them |

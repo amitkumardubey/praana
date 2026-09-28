@@ -59,11 +59,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test -p praana-core --test builtin_tools_phase3 provider_ordinal_ordering_without_a_durable_session -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: 'Windows #403 capability gate: run crash tests that do not need durable History; name every skipped test'
+      - name: 'Windows #622 capability gate: run crash tests that do not need durable History; name every skipped test'
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # These tests create a durable History session; #403 must land before
+          # These tests create a durable History session; #622 must land before
           # they can run. Child harness tests and Windows real-abort identity
           # tests are NOT skipped. The History ACL check remains fail-closed.
           $durableTests = @(
@@ -93,7 +93,7 @@ jobs:
             'malformed_tail_recovers_exact_valid_prefix',
             'replacement_acceptance_crash_repairs_supersession_once_in_fresh_process'
           )
-          $issue = 'https://github.com/chronosiq/praana/issues/403'
+          $issue = 'https://github.com/amitkumardubey/praana/issues/622'
           foreach ($test in $durableTests) { Write-Host "SKIPPED $test — $issue (requires private Windows History ACLs)" }
           Write-Host "SKIPPED durable_batch_completion_uses_provider_ordinals_not_input_vector_order — $issue (requires a durable History session)"
           $exclude = @()

@@ -1,5 +1,5 @@
 /**
- * Types and interfaces for the structured test runner (issue #321).
+ * Types and interfaces for the structured test runner (issue #589).
  */
 
 import type { SandboxConfig } from "../../types.js";

@@ -1,4 +1,4 @@
-# Source Artifact Fidelity Design (Issue #293)
+# Source Artifact Fidelity Design (Issue #570)
 
 **Date:** 2026-08-06
 **Status:** Approved
@@ -91,4 +91,4 @@ Artifacts are classified at ingest:
 - Cross-session retention policy for terminated sessions (DB growth is bounded
   by user pruning of session data).
 - Distiller behaviour for `summarizable` artifacts.
-- `read_and_summarize` (deliberately returns derived summaries; issue #219 scope).
+- `read_and_summarize` (deliberately returns derived summaries; issue #545 scope).

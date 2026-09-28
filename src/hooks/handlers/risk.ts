@@ -1,5 +1,5 @@
 /**
- * Risk-tiered action gating (issue #303).
+ * Risk-tiered action gating (issue #580).
  *
  * Registered after validate and before write-path acquire.
  */

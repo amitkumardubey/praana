@@ -1,5 +1,5 @@
 /**
- * Reverse import graph for post-edit test-impact (#299).
+ * Reverse import graph for post-edit test-impact (#576).
  */
 
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";

@@ -1,5 +1,5 @@
 /**
- * Fuzzy path suggestions for missing-file pre-validation (#300).
+ * Fuzzy path suggestions for missing-file pre-validation (#577).
  */
 
 import { basename } from "node:path";

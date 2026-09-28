@@ -1,4 +1,4 @@
-# Issue #11 Phase 2: LSP Diagnostics + Formatting — Implementation Plan
+# Issue #418 Phase 2: LSP Diagnostics + Formatting — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -72,7 +72,7 @@ Expected: typecheck clean. Note any pre-existing failing setup-wizard tests (env
 git add docs/superpowers/specs/2026-08-12-lsp-phase2-design.md \
         docs/superpowers/plans/2026-08-12-issue-11-lsp-phase2.md
 git commit -m "$(cat <<'EOF'
-docs: add issue #11 Phase 2 LSP design and plan
+docs: add issue #418 Phase 2 LSP design and plan
 
 EOF
 )"
@@ -454,7 +454,7 @@ Compare failures to Task 0 baseline.
 - [ ] **Step 3: Final commit (docs)**
 
 ```bash
-git commit -m "docs: document issue #11 Phase 2 LSP tier"
+git commit -m "docs: document issue #418 Phase 2 LSP tier"
 ```
 
 Do not push / open PR unless the user asks.
