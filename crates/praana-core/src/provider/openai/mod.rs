@@ -21,7 +21,9 @@ pub use responses::{
     continuation_for_scope, drop_incompatible_continuation, format_responses_body,
     parse_responses_frames, parse_responses_stream, ResponsesFormatInput, ResponsesStreamOutcome,
 };
-pub use sse::{parse_sse_bytes, SseFrame, SseParser, MAX_EVENT_DATA_BYTES, MAX_LINE_BYTES};
+pub use sse::{
+    parse_sse_bytes, SseFailure, SseFrame, SseParser, MAX_EVENT_DATA_BYTES, MAX_LINE_BYTES,
+};
 pub use usage::{usage_from_chat, usage_from_responses, OpenAiUsageAccumulator, UsageConversion};
 
 use std::collections::BTreeMap;
@@ -400,14 +402,9 @@ fn decide(
         .checked_sub(rout)
         .and_then(|value| value.checked_sub(rreason))
         .and_then(|value| value.checked_sub(margin))
-        .ok_or_else(|| {
-            ProviderError::new(
-                ProviderErrorCode::AdmissionArithmeticOverflow,
-                "openai",
-                "openai-chat-v1",
-                "usable input underflow",
-            )
-        })?;
+        // Reserves + margin that exceed the window cannot fit: reject as a
+        // context-length decision instead of an accounting error.
+        .unwrap_or(0);
     let fill = fill_ppm(total, usable)?;
     let protocol_ok = total
         .checked_add(rout)
@@ -918,7 +915,7 @@ where
     }
 }
 
-fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
+pub fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
     let Ok(text) = std::str::from_utf8(body) else {
         return ProviderErrorCode::StreamInvalidUtf8;
     };
@@ -934,7 +931,7 @@ fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
     error::http_status_code(status)
 }
 
-fn http_error(
+pub fn http_error(
     code: ProviderErrorCode,
     status: u16,
     headers: &[(String, String)],

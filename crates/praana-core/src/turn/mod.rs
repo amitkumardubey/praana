@@ -43,6 +43,8 @@ use crate::tools::{
     ToolBatchRequest, ToolCallOrigin, ToolName, ToolRegistry, ToolRuntime,
 };
 
+pub mod provider;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopFault {
     None,
@@ -65,6 +67,11 @@ pub struct LoopConfig {
 pub enum TurnError {
     InjectedCrash,
     Failed(String),
+    /// A History fsync/append failure. Surfaces as exit 1 with no resume ID.
+    Durability(String),
+    /// Typed provider/protocol failure carrying the canonical diagnostic and
+    /// the emission state needed for retry policy and durable attempt failure.
+    Provider(Box<ProviderFailure>),
 }
 
 impl TurnError {
@@ -78,16 +85,56 @@ impl std::fmt::Display for TurnError {
         match self {
             Self::InjectedCrash => write!(f, "injected crash"),
             Self::Failed(message) => write!(f, "{message}"),
+            Self::Durability(message) => write!(f, "{message}"),
+            Self::Provider(failure) => write!(f, "{}", failure.error),
         }
     }
 }
 
 impl std::error::Error for TurnError {}
 
+/// Provider-side failure detail routed from `StepProvider` into the P3C loop.
+#[derive(Clone, Debug)]
+pub struct ProviderFailure {
+    /// Canonical protocol error (E_* code + class). Message must be redacted
+    /// and free of raw provider bodies before it reaches events or stderr.
+    pub error: ProtocolError,
+    /// First nonempty semantic delta was observed: retry is forbidden.
+    pub emission_crossed: bool,
+    /// A user-visible text or reasoning-summary delta reached the sink layer.
+    pub observable_delta: bool,
+    /// Ordered partial blocks for the durable attempt-failure payload.
+    pub partial_blocks: Vec<AssistantBlock>,
+    pub provider_response_id: Option<String>,
+    pub usage: ProviderUsage,
+    pub may_have_completed: bool,
+    pub cancelled: bool,
+    /// Provider-hinted retry delay (`retry-after` / `retry-after-ms`).
+    pub retry_after_ms: Option<u64>,
+}
+
+impl ProviderFailure {
+    fn retry_allowed(&self) -> bool {
+        !self.emission_crossed
+            && !self.cancelled
+            && self.error.retryable
+            && matches!(
+                self.error.class,
+                ErrorClass::Transport
+                    | ErrorClass::Timeout
+                    | ErrorClass::RateLimit
+                    | ErrorClass::Unavailable
+            )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TurnReport {
     pub interruption: Option<InterruptionReason>,
     pub admission_count: u32,
+    /// Canonical `E_*` diagnostic for provider/protocol failures and admission
+    /// errors surfaced before or during the turn. Printed on stderr by the CLI.
+    pub diagnostic: Option<ProtocolError>,
 }
 
 #[derive(Clone, Debug)]
@@ -158,15 +205,113 @@ pub struct ScriptedStep {
     pub usage: ProviderUsage,
 }
 
+/// Per-prepare context handed to the provider by the session controller.
+pub struct PrepareContext<'a> {
+    /// Active turn's user input text (projection remains the provider's job).
+    pub input: &'a str,
+    /// Recovery notices durable for the upcoming attempt start.
+    pub notices: Vec<RecoveryNotice>,
+}
+
+/// Everything the controller needs from `prepare`: the exact final body plus
+/// the resolved capability profile used by admission.
+pub struct PreparedStep {
+    pub request: PreparedRequest,
+    pub profile: Option<crate::provider::profile::ModelCapabilityProfile>,
+    pub image_count: usize,
+    pub resolved_max_output_tokens: Option<u64>,
+}
+
+/// Admission outcome for a fully prepared request.
+#[allow(clippy::large_enum_variant)]
+enum AdmissionOutcome {
+    Admitted(Admitted),
+    Reject,
+    ReduceOutput(u64),
+}
+
+/// Protocol-owned result of one completed provider attempt. `blocks` carries
+/// the ordered assistant blocks (including refusals) when the wire adapter
+/// converted them; `None` falls back to the legacy draft conversion.
+pub struct StepOutcome {
+    pub draft: AssistantDraft,
+    pub blocks: Option<Vec<AssistantBlock>>,
+    pub continuation: Option<crate::protocol::continuation::ProviderContinuation>,
+    pub phase: Option<crate::protocol::messages::AssistantPhase>,
+    pub authorization: SendAuthorization,
+}
+
+/// Receives accepted assistant text blocks in order, only after
+/// `assistant_step_accepted` is durable. Never sees provisional deltas.
+pub trait AcceptedStepSink: Send {
+    fn on_accepted_text(&mut self, text: &str);
+}
+
+pub(crate) struct NullSink;
+
+impl AcceptedStepSink for NullSink {
+    fn on_accepted_text(&mut self, _text: &str) {}
+}
+
 #[async_trait]
 pub trait StepProvider: Send + Sync {
-    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError>;
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        let _ = step_index;
+        Err(TurnError::failed("prepare is not implemented"))
+    }
     async fn complete(
         &self,
         step_index: u32,
         admitted: &AdmittedRequest,
         cancel: &CancellationToken,
-    ) -> Result<ProviderOutput, TurnError>;
+    ) -> Result<ProviderOutput, TurnError> {
+        let _ = (step_index, admitted, cancel);
+        Err(TurnError::failed("complete is not implemented"))
+    }
+
+    /// Preferred seam: full projection/format/profile in one call. The default
+    /// wraps the legacy `prepare` pair with no profile.
+    fn prepare_admitted(
+        &self,
+        step_index: u32,
+        _ctx: &PrepareContext<'_>,
+    ) -> Result<PreparedStep, TurnError> {
+        Ok(PreparedStep {
+            request: self.prepare(step_index)?,
+            profile: None,
+            image_count: 0,
+            resolved_max_output_tokens: None,
+        })
+    }
+
+    /// Preferred completion seam returning ordered blocks/continuation. The
+    /// default wraps the legacy `complete` pair.
+    async fn complete_step(
+        &self,
+        step_index: u32,
+        admitted: &AdmittedRequest,
+        cancel: &CancellationToken,
+    ) -> Result<StepOutcome, TurnError> {
+        let output = self.complete(step_index, admitted, cancel).await?;
+        Ok(StepOutcome {
+            draft: output.draft,
+            blocks: None,
+            continuation: None,
+            phase: None,
+            authorization: output.authorization,
+        })
+    }
+
+    /// Called before each drive with the live session directory so a real
+    /// provider can project accepted conversation. Default: no session.
+    fn bind_session(&self, _session_dir: &Path) {}
+
+    /// Admission `ReduceOutput` reserve override for the next re-prepare.
+    fn set_output_reserve(&self, _tokens: u64) {}
+
+    /// Clears the reserve override after a successful admission so later
+    /// steps format with the normal profile/config output window.
+    fn clear_output_reserve(&self) {}
 }
 
 struct OpenTurn {
@@ -200,6 +345,7 @@ pub struct HeadlessLoop {
     admissions: u32,
     cancel: CancellationToken,
     pending_notices: Vec<RecoveryNotice>,
+    pending_diagnostic: Option<ProtocolError>,
 }
 
 impl HeadlessLoop {
@@ -210,10 +356,20 @@ impl HeadlessLoop {
             .map_err(|err| TurnError::failed(err.to_string()))?;
         write_config_snapshot_durable(&config.session_dir, &config.config)
             .map_err(|err| TurnError::failed(err.to_string()))?;
-        let session_id: SessionId = config
-            .ids
-            .next_id()
-            .map_err(|err| TurnError::failed(err.to_string()))?;
+        // The session directory is named after its session id when it is
+        // canonical (`<session.root>/<SessionId>/`); otherwise a fresh id is
+        // generated so tests and legacy layouts keep working.
+        let session_id: SessionId = match std::path::Path::new(&config.session_dir)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| SessionId::from_str_canonical(name).ok())
+        {
+            Some(id) => id,
+            None => config
+                .ids
+                .next_id()
+                .map_err(|err| TurnError::failed(err.to_string()))?,
+        };
         let log = EventLogStore::create_or_open(&config.session_dir, &session_id.to_string())
             .map_err(|err| TurnError::failed(err.to_string()))?;
         let mut loop_ = Self::assemble(config, log, session_id, Vec::new())?;
@@ -272,20 +428,47 @@ impl HeadlessLoop {
         text: &str,
         provider: &dyn StepProvider,
     ) -> Result<TurnReport, TurnError> {
+        let mut sink = NullSink;
+        self.run_turn_with_sink(text, provider, &mut sink).await
+    }
+
+    pub async fn run_turn_with_sink(
+        &mut self,
+        text: &str,
+        provider: &dyn StepProvider,
+        sink: &mut dyn AcceptedStepSink,
+    ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        provider.bind_session(self.log.session_dir());
         self.begin_turn(text)?;
-        self.drive(provider).await
+        self.drive(provider, sink).await
     }
 
     pub async fn continue_turn(
         &mut self,
         provider: &dyn StepProvider,
     ) -> Result<TurnReport, TurnError> {
+        let mut sink = NullSink;
+        self.continue_turn_with_sink(provider, &mut sink).await
+    }
+
+    pub async fn continue_turn_with_sink(
+        &mut self,
+        provider: &dyn StepProvider,
+        sink: &mut dyn AcceptedStepSink,
+    ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        provider.bind_session(self.log.session_dir());
         if self.replay()?.active_turn_id().is_none() {
             return Err(TurnError::failed("no active turn to continue"));
         }
-        self.drive(provider).await
+        self.drive(provider, sink).await
+    }
+
+    /// True when replay reports an unfinished turn that
+    /// [`HeadlessLoop::continue_turn_with_sink`] would drive to completion.
+    pub fn has_active_turn(&self) -> Result<bool, TurnError> {
+        Ok(self.replay()?.active_turn_id().is_some())
     }
 
     fn install_test_tools(tools: &mut Vec<std::sync::Arc<dyn ErasedTool>>, config: &LoopConfig) {
@@ -342,6 +525,7 @@ impl HeadlessLoop {
             admissions: 0,
             cancel: CancellationToken::new(),
             pending_notices,
+            pending_diagnostic: None,
         })
     }
 
@@ -382,6 +566,7 @@ impl HeadlessLoop {
         if self.replay()?.active_turn_id().is_some() {
             return Err(TurnError::failed("a turn is already active"));
         }
+        self.pending_diagnostic = None;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -415,7 +600,11 @@ impl HeadlessLoop {
         Ok(())
     }
 
-    async fn drive(&mut self, provider: &dyn StepProvider) -> Result<TurnReport, TurnError> {
+    async fn drive(
+        &mut self,
+        provider: &dyn StepProvider,
+        sink: &mut dyn AcceptedStepSink,
+    ) -> Result<TurnReport, TurnError> {
         loop {
             if self.cancel.is_cancelled() {
                 return self.interrupt(InterruptionReason::UserAbort, None);
@@ -445,7 +634,7 @@ impl HeadlessLoop {
             if open.step_index >= open.max_steps {
                 return self.interrupt(InterruptionReason::StepLimit, None);
             }
-            match self.run_step(provider, &open).await? {
+            match self.run_step(provider, &open, sink).await? {
                 Control::Continue => {}
                 Control::Done(report) => return Ok(report),
             }
@@ -568,201 +757,405 @@ impl HeadlessLoop {
         &mut self,
         provider: &dyn StepProvider,
         open: &OpenTurn,
+        sink: &mut dyn AcceptedStepSink,
     ) -> Result<Control, TurnError> {
         let replay = self.replay()?;
-        let prior_attempts: Vec<_> = replay
-            .attempts
-            .values()
-            .filter(|attempt| {
-                attempt.turn_id == Some(open.id)
-                    && matches!(
-                        &attempt.purpose,
-                        ProviderAttemptPurpose::AssistantStep(purpose)
-                            if purpose.step_index == open.step_index
-                    )
+        let index = replay
+            .turn_index(open.id)
+            .ok_or_else(|| TurnError::failed("turn index missing"))?;
+        let input_text: String = replay
+            .turns
+            .get(&index)
+            .map(|turn| {
+                turn.user
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        UserBlock::Text(text) => Some(text.text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
-            .collect();
-        if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
-            return Ok(Control::Done(
-                self.interrupt(
-                    InterruptionReason::ProviderFailure,
-                    prior_attempts
-                        .iter()
-                        .max_by_key(|attempt| attempt.attempt_number)
-                        .map(|attempt| attempt.id),
-                )?,
-            ));
-        }
-        let attempt_number = prior_attempts
-            .iter()
-            .map(|attempt| attempt.attempt_number)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        let max_prior = prior_attempts
-            .iter()
-            .max_by_key(|attempt| attempt.attempt_number);
-        let retry_of = max_prior.map(|attempt| attempt.id);
-        let step_id: StepId =
-            match max_prior
-                .map(|attempt| &attempt.purpose)
-                .map(|purpose| match purpose {
-                    ProviderAttemptPurpose::AssistantStep(purpose) => purpose.step_id,
-                    _ => unreachable!("turn retries only assistant steps"),
-                }) {
-                Some(step_id) => step_id,
+            .unwrap_or_default();
+        drop(replay);
+        loop {
+            if self.cancel.is_cancelled() {
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::UserAbort, None)?,
+                ));
+            }
+            let replay = self.replay()?;
+            #[derive(Clone)]
+            struct PriorAttempt {
+                id: AttemptId,
+                attempt_number: u32,
+                status: crate::history::replay::AttemptStatus,
+                step_id: StepId,
+            }
+            let prior_attempts: Vec<PriorAttempt> = replay
+                .attempts
+                .values()
+                .filter_map(|attempt| {
+                    let ProviderAttemptPurpose::AssistantStep(purpose) = &attempt.purpose else {
+                        return None;
+                    };
+                    if attempt.turn_id != Some(open.id) || purpose.step_index != open.step_index {
+                        return None;
+                    }
+                    Some(PriorAttempt {
+                        id: attempt.id,
+                        attempt_number: attempt.attempt_number,
+                        status: attempt.status.clone(),
+                        step_id: purpose.step_id,
+                    })
+                })
+                .collect();
+            if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
+                let last_id = prior_attempts
+                    .iter()
+                    .max_by_key(|attempt| attempt.attempt_number)
+                    .map(|attempt| attempt.id);
+                // The last failed attempt durably recorded its canonical
+                // diagnostic; report() picks it up from the loop.
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::ProviderFailure, last_id)?,
+                ));
+            }
+            let attempt_number = prior_attempts
+                .iter()
+                .map(|attempt| attempt.attempt_number)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let max_prior = prior_attempts
+                .iter()
+                .max_by_key(|attempt| attempt.attempt_number)
+                .cloned();
+            let retry_of = max_prior.as_ref().map(|attempt| attempt.id);
+            let step_id: StepId = match &max_prior {
+                Some(attempt) => attempt.step_id,
                 None => self.fresh()?,
             };
-        let prepared = provider.prepare(open.step_index)?;
-        if self.cancel.is_cancelled() {
-            return Ok(Control::Done(
-                self.interrupt(InterruptionReason::UserAbort, None)?,
-            ));
-        }
-        let admitted = self.admit_request(&prepared)?;
-        let Some(admitted) = admitted else {
-            return Ok(Control::Done(
-                self.interrupt(InterruptionReason::ActiveTurnTooLarge, None)?,
-            ));
-        };
-        if self.cancel.is_cancelled() {
-            return Ok(Control::Done(
-                self.interrupt(InterruptionReason::UserAbort, None)?,
-            ));
-        }
-        let attempt_id: AttemptId = self.fresh()?;
-        let purpose = AssistantStepPurpose {
-            step_id,
-            step_index: open.step_index,
-        };
-        let notices = std::mem::take(&mut self.pending_notices);
-        let admitted_request = AdmittedRequest {
-            body: admitted.request_body.clone(),
-            request_hash: admitted.request_hash.clone(),
-        };
-        self.append(
-            Some(open.id),
-            Some(attempt_id),
-            CanonicalEvent::AssistantAttemptStarted(AssistantAttemptStarted {
-                purpose: ProviderAttemptPurpose::AssistantStep(purpose.clone()),
-                attempt_number,
-                model: self.model.clone(),
-                request_hash: admitted.request_hash,
-                admission: admitted.snapshot,
-                retry_of,
-                emergency_context_retry: false,
-                recovery_notices: notices,
-            }),
-        )?;
-        #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!(
-            "turn.after_assistant_attempt_started:step{}:attempt{}",
-            open.step_index, attempt_number
-        ));
-        let draft = match provider
-            .complete(open.step_index, &admitted_request, &self.cancel)
-            .await
-        {
-            Ok(output) => output.draft,
-            Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
-            Err(error) => {
-                self.fail_attempt(open.id, attempt_id, purpose, &error.to_string(), false)?;
-                return Ok(Control::Done(self.interrupt(
-                    InterruptionReason::ProviderFailure,
-                    Some(attempt_id),
-                )?));
+            let prepare_ctx = PrepareContext {
+                input: &input_text,
+                notices: self.pending_notices.clone(),
+            };
+            let prepared = match provider.prepare_admitted(open.step_index, &prepare_ctx) {
+                Ok(prepared) => prepared,
+                Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
+                Err(TurnError::Durability(message)) => return Err(TurnError::Durability(message)),
+                Err(error) => {
+                    let failure = prepare_failure(error);
+                    return self.failure_interrupt(
+                        failure,
+                        InterruptionReason::ProviderFailure,
+                        None,
+                    );
+                }
+            };
+            let mut admission = match self.admit_prepared(&prepared) {
+                Ok(admission) => admission,
+                Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
+                Err(TurnError::Durability(message)) => return Err(TurnError::Durability(message)),
+                Err(error) => {
+                    let failure = prepare_failure(error);
+                    return self.failure_interrupt(
+                        failure,
+                        InterruptionReason::ProviderFailure,
+                        None,
+                    );
+                }
+            };
+            if let AdmissionOutcome::ReduceOutput(new_max_output_tokens) = admission {
+                provider.set_output_reserve(new_max_output_tokens);
+                let reprepared = match provider.prepare_admitted(open.step_index, &prepare_ctx) {
+                    Ok(prepared) => prepared,
+                    Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
+                    Err(TurnError::Durability(message)) => {
+                        return Err(TurnError::Durability(message))
+                    }
+                    Err(error) => {
+                        let failure = prepare_failure(error);
+                        return self.failure_interrupt(
+                            failure,
+                            InterruptionReason::ProviderFailure,
+                            None,
+                        );
+                    }
+                };
+                admission = match self.admit_prepared(&reprepared) {
+                    Ok(admission) => admission,
+                    Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
+                    Err(TurnError::Durability(message)) => {
+                        return Err(TurnError::Durability(message))
+                    }
+                    Err(error) => {
+                        let failure = prepare_failure(error);
+                        return self.failure_interrupt(
+                            failure,
+                            InterruptionReason::ProviderFailure,
+                            None,
+                        );
+                    }
+                };
             }
-        };
-        if self.cancel.is_cancelled() {
-            self.fail_attempt(open.id, attempt_id, purpose, "cancelled", true)?;
-            return Ok(Control::Done(
-                self.interrupt(InterruptionReason::UserAbort, Some(attempt_id))?,
-            ));
-        }
-        let message = match assistant_message(
-            &draft,
-            self.config.ids.as_ref(),
-            open.id,
-            step_id,
-            &self.model,
-        ) {
-            Ok(message) => message,
-            Err(error) => {
-                self.fail_attempt(open.id, attempt_id, purpose, &error.to_string(), false)?;
-                return Ok(Control::Done(self.interrupt(
-                    InterruptionReason::ProviderFailure,
-                    Some(attempt_id),
-                )?));
+            let admitted = match admission {
+                AdmissionOutcome::Admitted(admitted) => admitted,
+                AdmissionOutcome::Reject => {
+                    self.pending_diagnostic = Some(ProtocolError {
+                        code: "E_ACTIVE_TURN_TOO_LARGE".to_owned(),
+                        class: ErrorClass::ContextLength,
+                        message: "the active turn cannot fit the provider context window"
+                            .to_owned(),
+                        retryable: false,
+                        http_status: None,
+                        retry_after_ms: None,
+                    });
+                    return Ok(Control::Done(
+                        self.interrupt(InterruptionReason::ActiveTurnTooLarge, None)?,
+                    ));
+                }
+                AdmissionOutcome::ReduceOutput(_) => {
+                    self.pending_diagnostic = Some(ProtocolError {
+                        code: "E_ADMISSION_ACCOUNTING".to_owned(),
+                        class: ErrorClass::Internal,
+                        message: "output reserve still exceeds admission budget after re-prepare"
+                            .to_owned(),
+                        retryable: false,
+                        http_status: None,
+                        retry_after_ms: None,
+                    });
+                    return Ok(Control::Done(
+                        self.interrupt(InterruptionReason::ProviderFailure, None)?,
+                    ));
+                }
+            };
+            if self.cancel.is_cancelled() {
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::UserAbort, None)?,
+                ));
             }
-        };
-        let accept_event_id = self.append(
-            Some(open.id),
-            Some(attempt_id),
-            CanonicalEvent::AssistantStepAccepted(AssistantStepAccepted {
-                purpose: purpose.clone(),
-                message: message.clone(),
-            }),
-        )?;
-        #[cfg(feature = "failpoints")]
-        crate::crash_point::hit(format!(
-            "turn.after_assistant_step_accepted:step{}",
-            open.step_index
-        ));
-        if let Some(old_id) = max_prior
-            .filter(|attempt| attempt.status == crate::history::replay::AttemptStatus::Failed)
-            .map(|attempt| attempt.id)
-        {
+            // The admitted body carries the final reserve; drop the override.
+            provider.clear_output_reserve();
+            let attempt_id: AttemptId = self.fresh()?;
+            let purpose = AssistantStepPurpose {
+                step_id,
+                step_index: open.step_index,
+            };
+            let notices = std::mem::take(&mut self.pending_notices);
+            let admitted_request = AdmittedRequest {
+                body: admitted.request_body.clone(),
+                request_hash: admitted.request_hash.clone(),
+            };
             self.append(
                 Some(open.id),
-                None,
-                CanonicalEvent::AttemptSuperseded(AttemptSuperseded {
-                    purpose: ProviderAttemptPurpose::AssistantStep(purpose),
-                    superseded_attempt_id: old_id,
-                    replacement_attempt_id: attempt_id,
-                    replacement_accept_event_id: accept_event_id,
-                    reason: SupersessionReason::Retry,
+                Some(attempt_id),
+                CanonicalEvent::AssistantAttemptStarted(AssistantAttemptStarted {
+                    purpose: ProviderAttemptPurpose::AssistantStep(purpose.clone()),
+                    attempt_number,
+                    model: self.model.clone(),
+                    request_hash: admitted.request_hash,
+                    admission: admitted.snapshot,
+                    retry_of,
+                    emergency_context_retry: false,
+                    recovery_notices: notices,
                 }),
             )?;
+            #[cfg(feature = "failpoints")]
+            crate::crash_point::hit(format!(
+                "turn.after_assistant_attempt_started:step{}:attempt{}",
+                open.step_index, attempt_number
+            ));
+            let outcome = match provider
+                .complete_step(open.step_index, &admitted_request, &self.cancel)
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(TurnError::InjectedCrash) => return Err(TurnError::InjectedCrash),
+                Err(TurnError::Durability(message)) => return Err(TurnError::Durability(message)),
+                Err(TurnError::Provider(failure)) => {
+                    let cancelled = failure.cancelled;
+                    self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    if failure.retry_allowed() {
+                        self.backoff_before_retry(attempt_number, &failure).await?;
+                        continue;
+                    }
+                    let reason = if cancelled {
+                        InterruptionReason::UserAbort
+                    } else {
+                        InterruptionReason::ProviderFailure
+                    };
+                    return Ok(Control::Done(self.interrupt(reason, Some(attempt_id))?));
+                }
+                Err(TurnError::Failed(message)) => {
+                    let failure = output_failure(&message);
+                    self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    return Ok(Control::Done(self.interrupt(
+                        InterruptionReason::ProviderFailure,
+                        Some(attempt_id),
+                    )?));
+                }
+            };
+            if self.cancel.is_cancelled() {
+                let failure = cancelled_failure();
+                self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::UserAbort, Some(attempt_id))?,
+                ));
+            }
+            let draft = outcome.draft;
+            let message = match assistant_message_with(
+                &draft,
+                outcome.blocks,
+                outcome.phase,
+                outcome.continuation,
+                self.config.ids.as_ref(),
+                open.id,
+                step_id,
+                &self.model,
+            ) {
+                Ok(message) => message,
+                Err(error) => {
+                    let failure = output_failure(&error.to_string());
+                    self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    return Ok(Control::Done(self.interrupt(
+                        InterruptionReason::ProviderFailure,
+                        Some(attempt_id),
+                    )?));
+                }
+            };
+            let accept_event_id = self.append(
+                Some(open.id),
+                Some(attempt_id),
+                CanonicalEvent::AssistantStepAccepted(AssistantStepAccepted {
+                    purpose: purpose.clone(),
+                    message: message.clone(),
+                }),
+            )?;
+            // The step is durable: drop any diagnostic from a retried attempt
+            // so a later success never reports a stale failure line.
+            self.pending_diagnostic = None;
+            // Accepted text reaches the sink only after the barrier above.
+            for block in &message.blocks {
+                if let AssistantBlock::Text(text) = block {
+                    sink.on_accepted_text(&text.text);
+                }
+            }
+            #[cfg(feature = "failpoints")]
+            crate::crash_point::hit(format!(
+                "turn.after_assistant_step_accepted:step{}",
+                open.step_index
+            ));
+            if let Some(old_id) = max_prior
+                .filter(|attempt| attempt.status == crate::history::replay::AttemptStatus::Failed)
+                .map(|attempt| attempt.id)
+            {
+                self.append(
+                    Some(open.id),
+                    None,
+                    CanonicalEvent::AttemptSuperseded(AttemptSuperseded {
+                        purpose: ProviderAttemptPurpose::AssistantStep(purpose),
+                        superseded_attempt_id: old_id,
+                        replacement_attempt_id: attempt_id,
+                        replacement_accept_event_id: accept_event_id,
+                        reason: SupersessionReason::Retry,
+                    }),
+                )?;
+            }
+            if message.finish_reason != FinishReason::ToolUse {
+                return Ok(Control::Continue);
+            }
+            return self
+                .run_tool_batch(open.id, attempt_id, step_id, &draft.calls)
+                .await;
         }
-        if message.finish_reason != FinishReason::ToolUse {
-            return Ok(Control::Continue);
-        }
-        self.run_tool_batch(open.id, attempt_id, step_id, &draft.calls)
-            .await
     }
 
-    fn admit_request(&mut self, prepared: &PreparedRequest) -> Result<Option<Admitted>, TurnError> {
+    /// Cancellable backoff before the next prepare/admit round. Delay comes
+    /// from the provider `retry-after` hint or full jitter (<= 8s), clamped
+    /// to the 60s wall cap.
+    async fn backoff_before_retry(
+        &self,
+        attempt_number: u32,
+        failure: &ProviderFailure,
+    ) -> Result<(), TurnError> {
+        let headers: Vec<(String, String)> = failure
+            .retry_after_ms
+            .map(|ms| ("retry-after-ms".to_owned(), ms.to_string()))
+            .into_iter()
+            .collect();
+        let now_ms = self.config.clock.now_ms();
+        let seed = now_ms as u64 ^ ((attempt_number as u64) << 32);
+        let mut rng = |cap: u64| {
+            if cap == 0 {
+                0
+            } else {
+                seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) % cap
+            }
+        };
+        let delay = crate::provider::openai::retry_delay_ms(
+            attempt_number.saturating_sub(1),
+            &headers,
+            now_ms,
+            &mut rng,
+        )
+        .min(60_000);
+        tokio::select! {
+            _ = self.cancel.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}
+        }
+        Ok(())
+    }
+
+    fn failure_interrupt(
+        &mut self,
+        failure: ProviderFailure,
+        reason: InterruptionReason,
+        attempt: Option<AttemptId>,
+    ) -> Result<Control, TurnError> {
+        self.pending_diagnostic = Some(failure.error);
+        Ok(Control::Done(self.interrupt(reason, attempt)?))
+    }
+
+    fn admit_prepared(&mut self, prepared: &PreparedStep) -> Result<AdmissionOutcome, TurnError> {
         self.admissions = self.admissions.saturating_add(1);
         let llm = &self.config.config.llm;
         let history = &self.config.config.history;
+        let component_bytes =
+            crate::provider::openai::accounted_component_bytes(&prepared.request.request_body)
+                .map_err(TurnError::failed)?;
+        let requested_max_output = prepared
+            .resolved_max_output_tokens
+            .unwrap_or(llm.max_output_tokens);
         let decision = admit(&AdmissionRequest {
-            profile: None,
+            profile: prepared.profile.as_ref(),
             configured_context_window: llm.context_window,
             unsafe_increase: llm.unsafe_allow_context_window_increase,
-            requested_max_output: llm.max_output_tokens,
+            requested_max_output,
             configured_min_output: llm.min_output_tokens,
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
             calibration_margin: 0,
-            component_bytes: crate::provider::openai::accounted_component_bytes(
-                &prepared.request_body,
-            )
-            .map_err(TurnError::failed)?,
+            component_bytes,
             framing: self.framing.clone(),
-            image_count: 0,
-            request_body: &prepared.request_body,
+            image_count: prepared.image_count as u64,
+            request_body: &prepared.request.request_body,
             estimate_reused_from: None,
         })
-        .map_err(|err| TurnError::failed(err.to_string()))?;
+        .map_err(|err| TurnError::Provider(Box::new(provider_failure_from_provider_error(&err))))?;
         Ok(match decision {
-            AdmissionDecision::Admit(estimate)
-            | AdmissionDecision::ReduceOutput { estimate, .. } => Some(Admitted {
+            AdmissionDecision::Admit(estimate) => AdmissionOutcome::Admitted(Admitted {
                 request_hash: estimate.request_hash,
                 snapshot: estimate.snapshot,
-                request_body: prepared.request_body.clone(),
+                request_body: prepared.request.request_body.clone(),
             }),
-            AdmissionDecision::Reject { .. } => None,
+            AdmissionDecision::ReduceOutput {
+                new_max_output_tokens,
+                ..
+            } => AdmissionOutcome::ReduceOutput(new_max_output_tokens),
+            AdmissionDecision::Reject { .. } => AdmissionOutcome::Reject,
         })
     }
 
@@ -870,38 +1263,32 @@ impl HeadlessLoop {
         turn_id: TurnId,
         attempt_id: AttemptId,
         purpose: AssistantStepPurpose,
-        message: &str,
-        cancelled: bool,
+        failure: &ProviderFailure,
     ) -> Result<(), TurnError> {
-        let message = redact_provider_message(message);
         self.append(
             Some(turn_id),
             Some(attempt_id),
             CanonicalEvent::AssistantAttemptFailed(AssistantAttemptFailed {
                 purpose: ProviderAttemptPurpose::AssistantStep(purpose),
-                error: ProtocolError::provider(
-                    if cancelled {
-                        "E_CANCELLED"
-                    } else {
-                        "E_PROVIDER_OUTPUT_INVALID"
-                    },
-                    if cancelled {
-                        ErrorClass::Cancelled
-                    } else {
-                        ErrorClass::InvalidProviderOutput
-                    },
-                    message,
-                    false,
-                ),
+                error: failure.error.clone(),
                 partial_output: PartialAssistantOutput {
-                    blocks: Vec::new(),
-                    provider_response_id: None,
+                    blocks: failure
+                        .partial_blocks
+                        .iter()
+                        .filter_map(partial_block_from_block)
+                        .collect(),
+                    provider_response_id: failure.provider_response_id.as_deref().and_then(|id| {
+                        crate::protocol::id::ProviderResponseId::from_str_canonical(id).ok()
+                    }),
                 },
-                observable_delta_emitted: false,
-                provider_may_have_completed: !cancelled,
-                usage: ProviderUsage::default(),
+                observable_delta_emitted: failure.observable_delta,
+                provider_may_have_completed: failure.may_have_completed,
+                usage: failure.usage.clone(),
             }),
         )?;
+        // The canonical diagnostic is durable with the attempt; surface it on
+        // the eventual report (and clear it again if a retry succeeds).
+        self.pending_diagnostic = Some(failure.error.clone());
         Ok(())
     }
 
@@ -972,6 +1359,7 @@ impl HeadlessLoop {
         )?;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("turn.after_turn_committed");
+        self.pending_diagnostic = None;
         Ok(self.report(None))
     }
 
@@ -1029,6 +1417,7 @@ impl HeadlessLoop {
         TurnReport {
             interruption,
             admission_count: self.admissions,
+            diagnostic: self.pending_diagnostic.clone(),
         }
     }
 
@@ -1092,7 +1481,7 @@ impl HeadlessLoop {
         };
         self.log
             .append_event(&envelope)
-            .map_err(|err| TurnError::failed(format!("append: {err}")))?;
+            .map_err(|err| TurnError::Durability(format!("append: {err}")))?;
         Ok(event_id)
     }
 
@@ -1125,6 +1514,153 @@ fn redact_provider_message(message: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Canonical protocol error for a `ProviderError` raised during preparation
+/// or admission (before any durable attempt exists).
+fn provider_protocol_error(error: &crate::provider::openai::ProviderError) -> ProtocolError {
+    use crate::provider::openai::ProviderErrorCode;
+    let (code, class) = match error.code {
+        ProviderErrorCode::AdmissionContextWindowUnknown => {
+            ("E_ADMISSION_CONTEXT_WINDOW_UNKNOWN", ErrorClass::Validation)
+        }
+        ProviderErrorCode::AdmissionArithmeticOverflow
+        | ProviderErrorCode::CompactionProfileInvalid
+        | ProviderErrorCode::PersistenceFailed => ("E_ADMISSION_ACCOUNTING", ErrorClass::Internal),
+        _ => {
+            let mapped = error.to_protocol_error().unwrap_or_else(|| {
+                ProtocolError::provider(
+                    "E_PROVIDER_REQUEST_INVALID",
+                    ErrorClass::InvalidRequest,
+                    error.safe_message.clone(),
+                    false,
+                )
+            });
+            return mapped;
+        }
+    };
+    ProtocolError {
+        code: code.to_owned(),
+        class,
+        message: error.safe_message.clone(),
+        retryable: error.retryable,
+        http_status: error.http_status,
+        retry_after_ms: error.retry_after_ms,
+    }
+}
+
+fn provider_failure_from_provider_error(
+    error: &crate::provider::openai::ProviderError,
+) -> ProviderFailure {
+    ProviderFailure {
+        error: provider_protocol_error(error),
+        emission_crossed: false,
+        observable_delta: false,
+        partial_blocks: Vec::new(),
+        provider_response_id: None,
+        usage: ProviderUsage::default(),
+        may_have_completed: false,
+        cancelled: false,
+        retry_after_ms: error.retry_after_ms,
+    }
+}
+
+/// Prep/prepare-side failure from the legacy `StepProvider::prepare` seam or
+/// a non-provider error. No emission is possible before the attempt starts.
+fn prepare_failure(error: TurnError) -> ProviderFailure {
+    match error {
+        TurnError::Provider(failure) => *failure,
+        TurnError::Failed(message) => ProviderFailure {
+            error: ProtocolError::provider(
+                "E_PROVIDER_REQUEST_INVALID",
+                ErrorClass::InvalidRequest,
+                redact_provider_message(&message),
+                false,
+            ),
+            emission_crossed: false,
+            observable_delta: false,
+            partial_blocks: Vec::new(),
+            provider_response_id: None,
+            usage: ProviderUsage::default(),
+            may_have_completed: false,
+            cancelled: false,
+            retry_after_ms: None,
+        },
+        other => ProviderFailure {
+            error: ProtocolError::provider(
+                "E_PROVIDER_REQUEST_INVALID",
+                ErrorClass::InvalidRequest,
+                redact_provider_message(&other.to_string()),
+                false,
+            ),
+            emission_crossed: false,
+            observable_delta: false,
+            partial_blocks: Vec::new(),
+            provider_response_id: None,
+            usage: ProviderUsage::default(),
+            may_have_completed: false,
+            cancelled: false,
+            retry_after_ms: None,
+        },
+    }
+}
+
+/// Post-attempt failure with no typed detail (draft conversion errors, legacy
+/// `StepProvider::complete` errors). Never retryable.
+fn output_failure(message: &str) -> ProviderFailure {
+    ProviderFailure {
+        error: ProtocolError::provider(
+            "E_PROVIDER_OUTPUT_INVALID",
+            ErrorClass::InvalidProviderOutput,
+            redact_provider_message(message),
+            false,
+        ),
+        emission_crossed: false,
+        observable_delta: false,
+        partial_blocks: Vec::new(),
+        provider_response_id: None,
+        usage: ProviderUsage::default(),
+        may_have_completed: true,
+        cancelled: false,
+        retry_after_ms: None,
+    }
+}
+
+/// Attempt failed because the turn was cancelled while the provider ran.
+fn cancelled_failure() -> ProviderFailure {
+    ProviderFailure {
+        error: ProtocolError::provider("E_CANCELLED", ErrorClass::Cancelled, "cancelled", false),
+        emission_crossed: false,
+        observable_delta: false,
+        partial_blocks: Vec::new(),
+        provider_response_id: None,
+        usage: ProviderUsage::default(),
+        may_have_completed: false,
+        cancelled: true,
+        retry_after_ms: None,
+    }
+}
+
+/// Lossy projection for the durable partial-output record: a refusal has no
+/// partial form and is represented by the accepted path instead.
+fn partial_block_from_block(
+    block: &AssistantBlock,
+) -> Option<crate::protocol::events::PartialAssistantBlock> {
+    use crate::protocol::events::PartialAssistantBlock;
+    match block {
+        AssistantBlock::Text(text) => Some(PartialAssistantBlock::Text(text.clone())),
+        AssistantBlock::ReasoningSummary(summary) => {
+            Some(PartialAssistantBlock::ReasoningSummary(summary.clone()))
+        }
+        AssistantBlock::ToolCall(call) => Some(PartialAssistantBlock::ToolCallFragment(
+            crate::protocol::events::PartialToolCall {
+                call_id: Some(call.call_id.clone()),
+                name: Some(call.name.clone()),
+                raw_arguments: call.raw_arguments.clone(),
+            },
+        )),
+        AssistantBlock::Refusal(_) | AssistantBlock::Image(_) => None,
+    }
 }
 
 fn has_durable_argument_marker(
@@ -1192,53 +1728,40 @@ mod argument_proof_tests {
     }
 }
 
-fn assistant_message(
+#[allow(clippy::too_many_arguments)]
+fn assistant_message_with(
     draft: &AssistantDraft,
+    blocks_override: Option<Vec<AssistantBlock>>,
+    phase: Option<crate::protocol::messages::AssistantPhase>,
+    continuation: Option<crate::protocol::continuation::ProviderContinuation>,
     ids: &MonotonicUlidGenerator,
     turn_id: TurnId,
     step_id: StepId,
     model: &ModelSelection,
 ) -> Result<AssistantMessage, TurnError> {
-    let mut blocks = Vec::new();
-    if let Some(text) = &draft.text {
-        if text.is_empty() {
-            return Err(TurnError::failed("assistant text is empty"));
-        }
-        blocks.push(AssistantBlock::Text(TextBlock { text: text.clone() }));
-    }
-    for call in &draft.calls {
-        validate_tool_name(&call.name).map_err(|err| TurnError::failed(err.to_string()))?;
-        let original = Value::Object(call.arguments.clone());
-        let redacted = redact_json_v1(&original)
-            .map_err(|_| TurnError::failed("tool call redaction failed"))?;
-        // Fail closed at acceptance if a changed executable argument has no
-        // durable replacement marker. This check is independent of future
-        // detector implementations: an unmarked accepted call is safe to
-        // reconstruct only because acceptance verified byte-equivalence.
-        if !every_argument_change_is_marked(&original, &redacted.value) {
-            return Err(TurnError::failed("tool call redaction proof missing"));
-        }
-        let Value::Object(arguments) = redacted.value else {
-            return Err(TurnError::failed("tool call redaction failed"));
-        };
-        let raw_arguments = serialize_canonical_string(&Value::Object(arguments.clone()))
-            .map_err(|err| TurnError::failed(err.to_string()))?;
-        blocks.push(AssistantBlock::ToolCall(ToolCall {
-            call_id: ToolCallId::from_str_canonical(&call.call_id)
-                .map_err(|err| TurnError::failed(err.to_string()))?,
-            name: call.name.clone(),
-            arguments,
-            raw_arguments,
-        }));
-    }
+    let blocks = match blocks_override {
+        Some(blocks) => blocks
+            .into_iter()
+            .map(|block| match block {
+                AssistantBlock::ToolCall(call) => {
+                    sanitize_tool_call(call.call_id.as_str(), &call.name, call.arguments.clone())
+                }
+                other => Ok(other),
+            })
+            .collect::<Result<Vec<_>, TurnError>>()?,
+        None => draft_to_blocks(draft)?,
+    };
     if blocks.is_empty() {
         return Err(TurnError::failed("assistant step has no blocks"));
     }
+    let has_tool_calls = blocks
+        .iter()
+        .any(|block| matches!(block, AssistantBlock::ToolCall(_)));
     match draft.finish_reason {
-        FinishReason::ToolUse if draft.calls.is_empty() => {
+        FinishReason::ToolUse if !has_tool_calls => {
             return Err(TurnError::failed("tool use step has no calls"));
         }
-        FinishReason::Stop | FinishReason::Length if !draft.calls.is_empty() => {
+        FinishReason::Stop | FinishReason::Length if has_tool_calls => {
             return Err(TurnError::failed("terminal step still requests tools"));
         }
         _ => {}
@@ -1251,12 +1774,60 @@ fn assistant_message(
         step_id,
         provider: model.provider.clone(),
         model: model.model.clone(),
-        phase: None,
+        phase,
         blocks,
         finish_reason: draft.finish_reason.clone(),
-        continuation: None,
+        continuation,
         usage: draft.usage.clone(),
     })
+}
+
+fn draft_to_blocks(draft: &AssistantDraft) -> Result<Vec<AssistantBlock>, TurnError> {
+    let mut blocks = Vec::new();
+    if let Some(text) = &draft.text {
+        if text.is_empty() {
+            return Err(TurnError::failed("assistant text is empty"));
+        }
+        blocks.push(AssistantBlock::Text(TextBlock { text: text.clone() }));
+    }
+    for call in &draft.calls {
+        blocks.push(sanitize_tool_call(
+            &call.call_id,
+            &call.name,
+            call.arguments.clone(),
+        )?);
+    }
+    Ok(blocks)
+}
+
+/// Validate, redact, and canonicalize one tool call at acceptance time. The
+/// redaction proof is independent of the call's origin (draft or wire
+/// adapter): an unmarked accepted call is safe to reconstruct only because
+/// acceptance verified byte-equivalence.
+fn sanitize_tool_call(
+    call_id: &str,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+) -> Result<AssistantBlock, TurnError> {
+    validate_tool_name(name).map_err(|err| TurnError::failed(err.to_string()))?;
+    let original = Value::Object(arguments);
+    let redacted =
+        redact_json_v1(&original).map_err(|_| TurnError::failed("tool call redaction failed"))?;
+    if !every_argument_change_is_marked(&original, &redacted.value) {
+        return Err(TurnError::failed("tool call redaction proof missing"));
+    }
+    let Value::Object(arguments) = redacted.value else {
+        return Err(TurnError::failed("tool call redaction failed"));
+    };
+    let raw_arguments = serialize_canonical_string(&Value::Object(arguments.clone()))
+        .map_err(|err| TurnError::failed(err.to_string()))?;
+    Ok(AssistantBlock::ToolCall(ToolCall {
+        call_id: ToolCallId::from_str_canonical(call_id)
+            .map_err(|err| TurnError::failed(err.to_string()))?,
+        name: name.to_owned(),
+        arguments,
+        raw_arguments,
+    }))
 }
 
 fn resolved_framing(config: &EffectiveConfigV1) -> FramingProfileV1 {
@@ -1284,9 +1855,16 @@ fn resolved_framing(config: &EffectiveConfigV1) -> FramingProfileV1 {
 }
 
 fn model_selection(config: &EffectiveConfigV1) -> ModelSelection {
-    let fingerprint = Sha256Digest::digest_bytes(
-        format!("{}|{}", config.llm.protocol, config.llm.model).as_bytes(),
-    );
+    // The endpoint fingerprint identifies the provider endpoint, not the
+    // model. Fall back to a digest of the raw base URL if normalization
+    // rejects it (admission still fails later with a typed error).
+    let endpoint = if config.llm.provider == "openrouter" {
+        &config.providers.openrouter.base_url
+    } else {
+        &config.providers.openai.base_url
+    };
+    let fingerprint = crate::provider::endpoint_fingerprint(endpoint)
+        .unwrap_or_else(|_| Sha256Digest::digest_bytes(endpoint.as_bytes()));
     ModelSelection {
         provider: config.llm.provider.clone(),
         protocol: config.llm.protocol.clone(),

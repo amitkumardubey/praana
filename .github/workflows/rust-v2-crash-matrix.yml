@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'crates/praana-core/**'
+      - 'crates/praana-cli/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'docs/RUST_V2_*SPEC.md'
@@ -99,4 +100,12 @@ jobs:
           $exclude = @()
           foreach ($test in $durableTests) { $exclude += @('--skip', $test) }
           cargo test -p praana-core --features failpoints --test crash_recovery -- @exclude
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 'P3D #405 CLI Windows compile and fail-closed smoke'
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test -p praana-cli --test headless_cli_p3d windows_run_fails_closed_before_durable_session -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-cli --test headless_cli_p3d windows_resume_fails_closed_before_session_lock -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

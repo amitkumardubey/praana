@@ -1329,3 +1329,31 @@ fn dangling_symlink_in_discovery_is_rejected() {
     let res = load_effective_config(None, &ConfigCliOverrides::default(), &env);
     assert!(matches!(res, Err(ConfigError::SourceInvalid(_))));
 }
+
+#[test]
+fn complete_non_empty_compactor_pair_is_feature_not_implemented_before_p5() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    let env = make_test_env(&home, &cwd, HashMap::new());
+    let res = load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env);
+    let error = res.expect_err("complete compactor pair must be rejected before P5");
+    assert!(
+        matches!(error, ConfigError::FeatureNotImplemented(_)),
+        "expected FeatureNotImplemented, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "diagnostic carries the canonical code: {error}"
+    );
+}

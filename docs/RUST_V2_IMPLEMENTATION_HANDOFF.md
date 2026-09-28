@@ -637,6 +637,14 @@ OpenAI Chat, Responses, OpenRouter Chat request/stream cases) and
 cases, no secrets or host-absolute paths). If P3D needs changes to any other
 Config or Setup source file, or to Protocol, History or semantic UI DTOs/fixtures,
 stop for owner amendment first.
+**Owner amendment (P3D).** Two out-of-list files are authorized, narrowly:
+`.github/workflows/rust-v2-crash-matrix.yml` only for the P3D CLI Windows
+compile/fail-closed step and a `crates/praana-cli/**` PR path filter, and
+`crates/praana-core/tests/fake_provider_e2e.rs` only for mechanical updates
+required by the P3D seam changes (no behavioral edits). The Windows smoke
+test itself stays in the already-allowlisted
+`crates/praana-cli/tests/headless_cli_p3d.rs`. Every other file still stops
+for owner amendment first.
 Review gate: Amit approved the three P3D policy decisions (pre-P5 compactor
 deferral, accepted-step-only stdout, and the application-owned-secret
 guarantee) and these narrow Config/Setup implementation changes. This packet's
@@ -646,6 +654,14 @@ Provider Catalog §7, and Compaction §§7.1/14.4 are reconciled with that
 deferral. Issue #405 records accepted-step streaming and the narrower secret
 claim. P5 still owns whether pre-Phase-5 sessions can later compact; P3D
 makes no such request.
+
+**Implementation note (P3D).** The headless CLI implements this grammar with
+a hand-rolled parser in `crates/praana-cli/src/main.rs` (no clap), so the
+exact informational forms, duplicate-flag rejection, resume-only flag set, and
+usage-to-stderr exit 2 match this contract byte for byte. `HeadlessLoop::create`
+derives the session id from a canonical `<session.root>/<SessionId>/` directory
+name when present and falls back to the id generator for legacy layouts, so
+the printed resume selector always derives from the committed meta manifest.
 
 Focused red/green gates: `cargo test -p praana-core --test step_provider_p3d`,
 `cargo test -p praana-cli --test headless_cli_p3d`,
