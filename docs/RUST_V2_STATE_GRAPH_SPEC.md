@@ -1385,41 +1385,164 @@ missing checkpoint only increases replay work.
 
 ### 10.3 Idle tiering
 
-Immediately after each durable `TurnCommitted`, increment the epoch's committed
-turn ordinal and evaluate current objects.
+The projector applies `TurnCommitted` by incrementing
+`committed_turn_ordinal` (section 6.1). Idle tiering runs after that apply
+and reads the ordinal. It never increments the ordinal itself.
 
-Protected from idle tiering:
+Evaluation is a pure function of `(graph, committed_turn_ordinal)`. The
+ordinal is the graph field. The same inputs always select the same
+operations. A demotion uses `touch = false`, so age is unchanged, and the
+selected tier is the final tier for that age. That result is a fixed point:
+a second run appends nothing. Crash repair therefore needs no marker scan,
+unlike auto-hydration (section 10.2). One evaluation at the current ordinal
+covers every missed turn, because age is the ordinal difference and not a
+count of earlier evaluations.
 
-- Focused object.
-- Active hard constraints.
-- Open errors.
-- Todo, in-progress, and blocked tasks.
-
-For every other object, age is:
+Age of a current object:
 
 ```text
 idle_turns = committed_turn_ordinal - last_touched_turn_ordinal
 ```
 
-Rules:
+Create and touch store the ordinal at that moment, and reset clears the
+graph (section 6.1), so `last_touched_turn_ordinal` is at most
+`committed_turn_ordinal` on every current object. The subtraction does not
+wrap.
 
-- Active to soft when `idle_turns >= state.idle_soft_after_turns`.
-- Soft to hard when `idle_turns >= state.idle_hard_after_turns`.
-- Done/cancelled tasks become soft in the explicit completion/cancellation
-  event; the idle policy later makes them hard at the configured hard threshold.
-- Satisfied/waived constraints and resolved/ignored errors are unprotected.
-- Hard objects never change automatically.
+**Protection.** One reason per object, in this priority order. A protected
+object is not a candidate, at any tier.
 
-Automation sorts operations by state ID and appends one or more
-`StateChanged` events with at most 256 operations each. `SetTier` has
-`touch = false`, so automatic demotion does not reset idle age. Its source is the
-just-committed turn and reason is `auto_idle_tier`. No-change evaluation writes
-telemetry only.
+1. The focused object (`focus`).
+2. Else an active hard constraint (`hard_constraint`).
+3. Else an open error (`open_error`).
+4. Else a todo, in-progress, or blocked task (`active_task`).
 
-Manual update, tier change, hydration, and touch set the current committed turn
-ordinal. Focus-only does not touch payload age. This prevents repeatedly
-focusing an object from disguising stale content unless the caller explicitly
-touches it.
+Hard objects never change and are not candidates. Retracted objects are not
+candidates. Every other current object is a candidate, including one too
+young to move.
+
+**Final tier** of a candidate:
+
+- Active and `idle_turns >= state.idle_hard_after_turns`: hard, in one
+  `SetTier`. An active object already past the hard threshold does not stop
+  at soft.
+- Else active and `idle_turns >= state.idle_soft_after_turns`: soft.
+- Else soft and `idle_turns >= state.idle_hard_after_turns`: hard.
+- Else unchanged.
+
+Satisfied and waived constraints, and resolved and ignored errors, are
+unprotected. A done task is unprotected. `complete_task` sets that task soft
+in its own event (section 11.1). No v1 producer writes
+`TaskStatus::Cancelled` (Implementation Handoff section 4A). A cancelled
+task that is already in the log is unprotected, the same as a done task.
+The idle policy then makes an unprotected soft task hard at the hard
+threshold. A manual update, tier change, hydration, or touch sets
+`last_touched_turn_ordinal` to the ordinal at that moment. Focus-only does
+not.
+
+**Operations.** One `SetTier` per candidate whose tier changes, sorted by
+state ID ascending, `touch = false`, `expected_revision` the object's
+current revision. The signal is `idle_soft` when the new tier is soft and
+`idle_hard` when it is hard. `score_millis` is 0.
+
+An empty list writes no `StateChanged`. Section 10.5 counters still update,
+and no samples are written. A non-empty list is appended as one or more
+events of at most 256 operations, taking the sorted list in order. 257
+operations are a first event of 256 and a second of 1. A crash after the
+first event's fsync is repaired by a later evaluation: those 256 objects are
+already at their final tier, so the repair appends one event for the
+remainder. The graph matches a clean run.
+
+Each event:
+
+- `reason = auto_idle_tier`.
+- A fresh `mutation_id`. `expected_graph_sequence` is the log sequence
+  immediately before this event.
+- The `SetTier` operations of this chunk only.
+- Source kind `system`. `event_id` and `sequence` name the trigger
+  `TurnCommitted` event. `turn_id` is that event's envelope turn ID.
+  `attempt_id`, `tool_call_id`, `artifact_id`, and `summary_segment_id`
+  are null.
+- Envelope `turn_id` and `attempt_id` are null (`commit_origin` writes that
+  pair for every non-tool origin; Protocol section 6).
+- `automation.policy_version` is the effective
+  `state.automation_policy_version` (`state-lexical-v1` in schema v1).
+- `automation.trigger_event_id` is that same `TurnCommitted` event ID.
+- `automation.candidate_count` is the full candidate count, repeated on
+  every chunk.
+- `automation.selected_count` is this chunk's operation count.
+- `automation.scores_millis` is one entry per operation in this chunk, in
+  operation order.
+
+The trigger is the `TurnCommitted` whose apply produced the ordinal under
+evaluation: the event just appended on the live path, and the latest
+`TurnCommitted` in the current reset epoch on the open path. Replay does
+not check `automation` (section 6.1). The writer still fills it as above.
+
+**Placement.** Two call sites. `recovery.rs` is not one of them. Recovery
+appends `TurnCommitted` only while the turn is non-terminal, and it runs
+before `open_state`.
+
+1. `HeadlessLoop::commit`, after the `TurnCommitted` append has returned
+   and the projector has applied it, before `Ok(report)`.
+2. Once at open, at the end of `HeadlessLoop::assemble`, after
+   `open_state`. The open call hits `state.idle_tier.at_open` before any
+   idle append. Resume runs recovery first, so a `TurnCommitted` that
+   recovery just appended is already in the restored graph. A crash at
+   `recovery.after_append:turn_committed` is repaired by the next open.
+
+Order at the live site: `TurnCommitted` fsync, then the idle
+`StateChanged` fsyncs, then the section 10.5 telemetry transaction, then
+`Ok(report)`, then the CLI resume ID when the log is healthy, then process
+exit.
+
+No checkpoint is written for these events. Section 7's write points stay
+the tool-batch flush and the open repair of a missing or rejected
+checkpoint. `commit_origin` may set `checkpoint_due`. Neither call site
+flushes it. A crash before a later tool-batch flush only increases replay
+work.
+
+The section 5 tail bound cannot fail. These operations remove an active
+object from the tail or leave the tail unchanged, so `after > before` is
+false. `commit_origin` still runs the check. The 4096 current-object cap
+and the 256 active-object cap cannot fail either, because a tier change
+adds no object and does not increase the active count. Auto-hydration in
+the same turn touches its objects before this commit, so they have
+`idle_turns = 1` on this pass and move only when the configured soft
+threshold is 1. The request-time guard has already run before
+`TurnCommitted`.
+
+**Cancellation.** The controller passes `&|| cancel.is_cancelled()` into
+`commit_origin`. When the predicate is already true, the call appends
+nothing, writes no telemetry, and logs nothing. `commit` still returns the
+committed report. The process exits 0. The next open evaluates. A
+cancellation after the last pre-append check follows section 14: that
+chunk's append finishes, and a later chunk is not started.
+
+**Failures after `TurnCommitted` is durable.** The section 10.2 mapping
+applies only before the turn is committed. After it is durable, every
+idle-tier error logs exactly
+
+```text
+state idle-tier skipped: <state_code>
+```
+
+with no object text, and `commit` returns `Ok` with no interruption. The
+CLI exits 0. This includes `STATE_PERSISTENCE`,
+`STATE_PROJECTION_INTEGRITY`, `STATE_GRAPH_SEQUENCE_CONFLICT`,
+`STATE_ACTIVE_BUDGET_EXCEEDED`, and any other code. The same swallow
+applies at the open call site, so a tiering failure does not fail
+`assemble`, `create`, or `resume`.
+
+A failed fsync of an idle event marks the log unhealthy
+(`E_EVENT_DURABILITY_UNCERTAIN` inside `append_event`). Exit stays 0. On
+the committed-turn path, `finish_report` prints a resume ID only when the
+session is healthy, so this exit is 0 with no resume ID. That is the P3D
+committed-turn row. Events that already fsynced stay. The next open, once
+the log can be opened, repairs any object that is not yet at its final
+tier. A ready `praana resume` (no active turn) keeps its existing printer,
+which writes the resume ID without consulting log health. This packet does
+not change that branch.
 
 ### 10.4 Deterministic error capture
 
@@ -1452,18 +1575,121 @@ fingerprint is not itself an object ID.
 
 ### 10.5 Observability
 
-Record counters/samples for:
+Telemetry is non-authoritative (History Storage section 2). A write failure
+never changes a tier, an event, a turn result, or a process exit code
+(History Storage section 8).
 
-- Evaluations, soft candidate count, selected count, method, and score bucket.
-- Active-to-soft and soft-to-hard counts by kind/status.
-- Protected objects by protection reason.
-- Manual reversals within three turns of an automatic change.
-- Active-tail tokens before/after automation.
-- Automation policy version.
+**Counters.** These keys only. No other key is written.
 
-Canonical automation events carry policy version and selected decisions.
-Telemetry does not store user query or object text. The P4B-2c amendment
-pins the exact keys. The reversal metric is deferred (section 16.1).
+```text
+state.auto_hydrate.evaluations
+state.auto_hydrate.candidates
+state.auto_hydrate.selected
+state.auto_hydrate.signal.exact_identifier
+state.auto_hydrate.signal.phrase
+state.auto_hydrate.signal.lexical_overlap
+state.idle.evaluations
+state.idle.candidates
+state.idle.active_to_soft
+state.idle.soft_to_hard
+state.idle.protected.focus
+state.idle.protected.hard_constraint
+state.idle.protected.open_error
+state.idle.protected.active_task
+```
+
+There is no `state.idle.selected` key. Moves to soft and moves to hard are
+the two transition counters. Per-kind and per-status transition counts, the
+auto-hydrate score bucket, and manual reversals within three turns are
+deferred together (section 16.1 and Implementation Handoff section 4A).
+
+On an `Ok` auto-hydrate outcome, including when no event is written:
+
+- `state.auto_hydrate.evaluations` increases by 1.
+- `state.auto_hydrate.candidates` increases by
+  `AutoHydrateOutcome.candidate_count`.
+- `state.auto_hydrate.selected` increases by `selected_count`.
+- Each selected object increases its `state.auto_hydrate.signal.*` key by 1.
+  Signal and score bucket are different: a lexical match can score 900
+  (section 10.2), and the bucket is deferred, so only the signal key is
+  written.
+
+An auto-hydrate error writes no telemetry. The section 10.2 failure mapping
+is unchanged. A telemetry failure after `Ok` stays `Ok`.
+
+When an idle evaluation finishes and the predicate was not already
+cancelled:
+
+- `state.idle.evaluations` increases by 1.
+- `state.idle.candidates` increases by the full candidate count.
+- `state.idle.active_to_soft` and `state.idle.soft_to_hard` increase by the
+  number of those operations this call actually appended. A planned
+  operation that was not appended is counted by the later repair, not by
+  this call.
+- Each protected object increases exactly one `state.idle.protected.*` key,
+  using the section 10.3 priority.
+
+A call cancelled before any append writes no counters and no samples. The
+later open is the evaluation that records them. A repeated evaluation,
+including crash repair and a later resume, increments the counters again.
+That double-count is accepted. History Storage section 8's no-inflation
+rule is the projection replay transaction. This writer is not that
+transaction.
+
+A no-change idle evaluation, including open on a new empty session, writes
+the counter updates and no `StateChanged` and no samples. On that empty
+open, `state.idle.evaluations` is 1 and the other idle keys stay absent.
+
+**Samples.** These names only, both or neither:
+
+```text
+state.active_tail_tokens_before
+state.active_tail_tokens_after
+```
+
+Write them only when this evaluation appended at least one `StateChanged`.
+`value_integer` is `estimate_tail`'s `total_tokens`
+(`GenericTokenEstimatorV1`, `TokenEstimationContext::StateGraph`, the
+all-zero framing profile). Before is the tail before the first appended
+event of this evaluation. After is the tail after the last event this call
+successfully appended. `event_sequence` is the trigger event: the turn's
+`UserMessageAccepted` for auto-hydrate, the trigger `TurnCommitted` for
+idle tiering. `dimensions_json` is a JSON object with exactly these keys,
+`automation` then `policy_version`, and no others:
+
+```json
+{"automation":"idle_tier","policy_version":"state-lexical-v1"}
+```
+
+Auto-hydrate uses `"auto_hydrate"`. `policy_version` is the effective
+`state.automation_policy_version`. The sample carries no query text, object
+text, state ID, or path. The before/after distinction is the sample name.
+It is not a dimension.
+
+**Write.** Use the state service's read-write connection to `history.db`,
+the same second connection as the checkpoint. Do not use the artifact-store
+connection or a read-only handle. One `BEGIN IMMEDIATE` transaction covers
+that call's counter updates and samples. Insert a counter only when its
+increment is non-zero:
+
+```sql
+INSERT INTO telemetry_counters(key, value, updated_at_ms)
+VALUES(?1, ?2, ?3)
+ON CONFLICT(key) DO UPDATE SET
+  value = value + excluded.value,
+  updated_at_ms = excluded.updated_at_ms
+```
+
+Insert each sample with `name`, `event_sequence`, `value_integer`,
+`dimensions_json`, and `occurred_at_ms`. Increments use checked conversion
+into the signed integer SQLite stores. On overflow or any other error,
+`ROLLBACK`, log the fixed line `state telemetry write failed`, and return
+success. A connection with `query_only` on is a silent no-op: no write and
+no log line. The canonical log is left as it was. `checkpoint_due` is left
+as it was.
+
+Canonical automation events carry the policy version and the selected
+decisions. Telemetry stores neither the user query nor object text.
 
 ## 11. Tool contracts
 
@@ -1943,14 +2169,100 @@ Auto-hydration (P4B-2b):
 - Results are independent of any future engine mode and embeddings.
 - The required cases and checks below.
 
-Idle tiering and telemetry (P4B-2c):
+Idle tiering and telemetry (P4B-2c). Defaults are soft 20 and hard 50
+unless a row says otherwise. `idle` is
+`committed_turn_ordinal - last_touched_turn_ordinal`. Objects are unfocused
+unless the row says focused. The final tier is section 10.3, so an active
+object at idle 50 goes hard in one `SetTier`.
 
-- Protected focus/constraint/error/task matrix for idle tiering.
-- Boundaries immediately below and at both Config-spec default idle thresholds.
-- Auto-demotion `touch = false` permits later hard demotion.
-- Manual reversal/touch resets ordinal.
-- `state.auto_hydrate = false` produces no hydration event; idle tiering
-  still runs.
+| Case | Object | Tier before | `idle` | Tier after |
+|---|---|---|---|---|
+| P focus | any current object, focused | active | 50 | active |
+| P hard constraint | constraint, strength hard, status active | active | 50 | active |
+| P open error | error, status open | active | 50 | active |
+| P task | task, status todo, in_progress, or blocked | active or soft | 50 | unchanged |
+| U soft constraint | constraint, strength soft, status active | active | 20 | soft |
+| U satisfied | constraint, status satisfied or waived | active | 20 | soft |
+| U resolved | error, status resolved or ignored | active | 20 | soft |
+| U decision | decision, active or superseded | active | 20 | soft |
+| U note | note | active | 20 | soft |
+| U done | task, status done or cancelled, unfocused | active | 20 | soft |
+| H hard stays | note | hard | 100 | hard |
+| R retracted | note, retracted | active | 100 | active |
+| B19 | note | active | 19 | active |
+| B20 | note | active | 20 | soft |
+| B49 | note | soft | 49 | soft |
+| B50 | note | soft | 50 | hard |
+| B50 active | note | active | 50 | hard |
+
+Also required:
+
+- **Touch flag.** The B20 event is one `SetTier` to soft with
+  `touch = false`. `last_touched_turn_ordinal` is unchanged, revision
+  increases by 1, and `source` is the section 10.3 source. A later
+  evaluation at idle 50 moves that object to hard.
+- **Manual touch.** After B20, a `Touch` at the current ordinal stores that
+  ordinal. The next evaluation sees idle 0 and does not demote. This checks
+  the age reset. It does not record the deferred three-turn reversal counter.
+- **Same-turn age.** An object created or touched while the ordinal is 0,
+  evaluated after the next `TurnCommitted`, has idle 1. At the default
+  threshold it stays active.
+- **Hydration resets age.** An idle-demoted soft note is then auto-hydrated
+  (`SetTier` active, `touch = true`). `last_touched_turn_ordinal` becomes
+  the ordinal at hydration. The next idle evaluation does not demote it.
+- **`auto_hydrate = false`.** Hydration case A writes no hydration event.
+  The idle pass still writes B20 when that object is due.
+- **Metadata.** One selected note: `candidate_count` equals the candidate
+  set, `selected_count = 1`, one `scores_millis` entry with `score_millis = 0`
+  and signal `idle_soft` or `idle_hard`. The event matches every field of
+  the section 10.3 shape, including null envelope IDs, source kind `system`,
+  and `policy_version = state-lexical-v1`.
+- **Split.** 257 unfocused active notes, idle 20, sorted by state ID. Two
+  events, 256 operations then 1. `selected_count` is 256 and 1.
+  `candidate_count` is 257 on both. State IDs ascend across the pair.
+- **Split crash.** Arm `event.after_fsync:state_changed:<first-chunk-sequence>`.
+  The next open appends exactly one event for the remaining object. Final
+  tiers match a clean run. No second demotion of the first 256.
+- **No change.** Ordinal equal to `last_touched`, or every object protected.
+  No `StateChanged`, no samples. `state.idle.evaluations` increases by 1.
+- **Empty open.** `assemble` on a newly created session writes no
+  `StateChanged` and no sample rows. `state.idle.evaluations` is 1. The
+  other idle counter keys are absent.
+- **Open repair.** Crash at `recovery.after_append:turn_committed`. The next
+  open appends the idle events once and does not append a second
+  `TurnCommitted`. Crash at `state.idle_tier.at_open` before any idle
+  append. The following open evaluates once.
+- **Cancellation.** The predicate is already true after `TurnCommitted`.
+  No idle event, no telemetry, no skip line. The committed report is `Ok`.
+  Exit is 0. The next open tiers.
+- **Failures.** Each section 10.3 post-commit error logs
+  `state idle-tier skipped: <state_code>` and `commit` returns `Ok`. A
+  failed idle-event fsync leaves the log unhealthy. On that committed-turn
+  path the exit is 0 and stderr has no `Resume ID:` line. A telemetry
+  fault logs `state telemetry write failed` and does not change the report
+  or the exit code.
+- **Counters.** A finished idle evaluation writes only the section 10.5
+  idle keys, with one protected reason per protected object. An `Ok`
+  auto-hydrate writes only its section 10.5 keys, including a no-event
+  outcome. Signal `lexical_overlap` is the key for a lexical selection,
+  including one whose score is 900.
+- **Samples.** A no-event evaluation writes none. An evaluation that
+  appends writes `state.active_tail_tokens_before` and
+  `state.active_tail_tokens_after` with `dimensions_json` exactly
+  `{"automation":"idle_tier","policy_version":"state-lexical-v1"}` (or
+  `auto_hydrate`), `event_sequence` the trigger, and `value_integer` the
+  section 5 generic estimate. A repeated evaluation may insert another pair
+  and increment counters again.
+- **Privacy.** No object or query text appears in the idle events, the
+  sample dimensions, the skip line, or the telemetry failure line.
+- **CLI.** `crates/praana-cli/tests/headless_cli_p4b2c.rs`, using the same
+  local fake HTTP server as `headless_cli_p3d.rs`. Config sets
+  `idle_soft_after_turns = 1` and `idle_hard_after_turns = 2`. The scripted
+  model calls `add_note` once and a later completion stops. `praana run`
+  exits 0, stderr contains one `Resume ID:` line, and the session log
+  contains exactly one `StateChanged` with `reason = auto_idle_tier`. The
+  note's tier is `soft`. Its idle age is 1, which is below the hard
+  threshold, so the tier is not hard.
 
 Error capture (deferred, section 10.4):
 
@@ -2236,28 +2548,174 @@ P4B-2b acceptance: section 18 item 8 for auto-hydration, and items 10 and 12
 for the auto-hydration paths. Telemetry is not part of P4B-2b. No counter or
 sample is written.
 
-**P4B-2c: idle tiering and telemetry.** This packet covers section 10.3,
-section 10.5 counters, and step 8. It needs its own amendment first. That
-amendment must close:
+**P4B-2c: idle tiering and telemetry.** Amended 2026-10-03. This packet
+covers section 10.3, section 10.5, the idle rows of section 15.4, and step
+8. Decisions are recorded in the Implementation Handoff P4B row.
 
-- idle-tier metadata and candidate count;
-- idle tiering after every `TurnCommitted`, including recovery and once at
-  open, with crash repair;
-- exact counter and sample keys in the History `telemetry_counters` and
-  `telemetry_samples` tables, including the auto-hydration counters;
-- telemetry write failure, which never affects behavior (History section 2).
-
-Already decided (2026-10-01 and 2026-10-02):
+Already decided, and still in force (2026-10-01 and 2026-10-02):
 
 - the idle-tier source kind is `system`;
-- no new config key; automation disabled means `state.auto_hydrate = false`
-  and stops hydration only;
-- telemetry ships pinned counters, with tail tokens before and after as
-  samples;
-- the "manual reversal within three turns" metric is deferred (Implementation
-  Handoff section 4A).
+- no new config key; `state.auto_hydrate = false` stops hydration only;
+- the "manual reversal within three turns" metric is deferred, and the
+  2026-10-03 amendment adds the per-kind/status breakdowns and the score
+  bucket to that same deferral (Implementation Handoff section 4A).
+
+New files:
+
+- `crates/praana-core/src/state/idle.rs`
+- `crates/praana-core/src/state/telemetry.rs`
+- `crates/praana-cli/tests/headless_cli_p4b2c.rs`
+
+Changed files:
+
+- `crates/praana-core/src/state/mod.rs`: export the idle and telemetry modules
+- `crates/praana-core/src/state/service.rs`:
+  `StateService::record_automation_telemetry`
+- `crates/praana-core/src/tools/runtime.rs`: `ToolRuntime::idle_tier`, and
+  the auto-hydrate `Ok` path writes section 10.5 telemetry
+- `crates/praana-core/src/turn/mod.rs`: the section 10.3 call at the end of
+  `commit`, and the open call at the end of `assemble`
+- `crates/praana-core/tests/state_graph_v1.rs`: the section 15.4 idle table,
+  metadata, split, empty-open counters, hydration age reset, and telemetry
+  keys
+- `crates/praana-core/tests/fake_provider_e2e.rs`: placement after
+  `TurnCommitted`, `auto_hydrate = false` still tiers, cancellation, and
+  the post-commit error swallow
+- `crates/praana-core/tests/crash_recovery.rs`: the section 15.4 crash rows,
+  under the `failpoints` feature
+
+No other file. In particular, do not change `history/db.rs` (the telemetry
+tables already exist), `recovery.rs`, `crash_point.rs`, the P3D CLI test,
+or any golden fixture. `commit_origin` is reused unchanged.
+
+Exact functions:
+
+```rust
+// state/idle.rs
+pub struct IdleTierSelection {
+    pub candidate_count: u32,
+    pub operations: Vec<StateOperationV1>, // state-id order; may exceed 256
+    pub scores_millis: Vec<AutomationScoreV1>, // parallel to operations
+    pub active_to_soft: u32,
+    pub soft_to_hard: u32,
+    pub protected_focus: u32,
+    pub protected_hard_constraint: u32,
+    pub protected_open_error: u32,
+    pub protected_active_task: u32,
+}
+
+pub fn select_idle_tiers(
+    graph: &StateGraphV1,
+    soft_after: u64,
+    hard_after: u64,
+) -> IdleTierSelection;
+
+// state/telemetry.rs — one u64 per pinned section 10.5 key, and no other key
+pub struct AutomationCounterIncrements {
+    pub auto_hydrate_evaluations: u64,
+    pub auto_hydrate_candidates: u64,
+    pub auto_hydrate_selected: u64,
+    pub auto_hydrate_signal_exact_identifier: u64,
+    pub auto_hydrate_signal_phrase: u64,
+    pub auto_hydrate_signal_lexical_overlap: u64,
+    pub idle_evaluations: u64,
+    pub idle_candidates: u64,
+    pub idle_active_to_soft: u64,
+    pub idle_soft_to_hard: u64,
+    pub idle_protected_focus: u64,
+    pub idle_protected_hard_constraint: u64,
+    pub idle_protected_open_error: u64,
+    pub idle_protected_active_task: u64,
+}
+
+pub struct AutomationTailSample {
+    pub name: &'static str, // the two section 10.5 sample names only
+    pub event_sequence: u64,
+    pub total_tokens: u64,
+    pub automation: &'static str, // "idle_tier" or "auto_hydrate"
+    pub policy_version: String,
+}
+
+// state/service.rs
+impl StateService {
+    pub fn record_automation_telemetry(
+        &self,
+        now_ms: i64,
+        increments: &AutomationCounterIncrements,
+        samples: &[AutomationTailSample],
+    );
+}
+
+// tools/runtime.rs
+pub struct IdleTierOutcome {
+    pub candidate_count: u32,
+    pub appended: u32,
+    pub active_to_soft: u32, // operations this call appended
+    pub soft_to_hard: u32,
+}
+
+impl ToolRuntime {
+    pub fn idle_tier(
+        &self,
+        log: &mut EventLogStore,
+        ids: &MonotonicUlidGenerator,
+        clock: &dyn Clock,
+        cancelled: &dyn Fn() -> bool, // live; never a snapshot
+        state: &StateConfig,
+    ) -> Result<IdleTierOutcome, StateServiceError>;
+}
+```
+
+`select_idle_tiers` reads `graph.committed_turn_ordinal` and performs no
+I/O. `idle_tier` holds the state mutex for the whole call, catches the
+graph up, chunks `operations` at 256, and commits each chunk through
+`commit_origin`. It finds the trigger `TurnCommitted` by scanning the log.
+A non-empty selection with no such event in the current epoch is
+`STATE_PROJECTION_INTEGRITY`. Before `idle_tier` returns, it calls
+`record_automation_telemetry` for the prefix it appended. A
+`STATE_CANCELLED` return before any append does not call it. A later-chunk
+error calls it for the appended prefix, then returns that error.
+`record_automation_telemetry` returns no error to its caller. The
+auto-hydrate `Ok` path calls it the same way, and an auto-hydrate `Err`
+does not. Both idle call sites swallow `idle_tier`'s `Err` as section 10.3
+specifies. `STATE_CANCELLED` is silent.
+
+Failpoints, armed as `<label>@<occurrence>`:
+
+| Point | Label |
+|---|---|
+| Before an idle event fsync | `event.write_before_fsync:state_changed:<sequence>` |
+| After that fsync | `event.after_fsync:state_changed:<sequence>` |
+| Between chunk 1 and chunk 2 | the first chunk's `event.after_fsync:state_changed:<sequence>` |
+| Start of the open evaluation, before any append | `state.idle_tier.at_open` |
+| Recovered commit before open | `recovery.after_append:turn_committed` (existing) |
+
+The open label is hit only from `assemble`, not from `commit`. Do not hit
+`state.after_state_changed_before_finish`. `commit_origin` does not.
+
+Tests are the section 15.4 idle list. Focused red, after the new
+`state_graph_v1` cases are added and before the implementation:
+
+```text
+cargo test -p praana-core --test state_graph_v1 idle_tier
+```
+
+Expected red: `select_idle_tiers` is unresolved. The CLI test is behavior-red
+until the commit path tiers:
+
+```text
+cargo test -p praana-cli --test headless_cli_p4b2c
+```
+
+Expected red: the note is still active, or the `auto_idle_tier` event is
+absent. Green requires both, plus fmt, clippy with warnings denied, and
+workspace tests.
 
 P4B-2c acceptance: section 18 item 8 for idle tiering, and items 10 and 12.
+Item 8's auto-hydration half stays as P4B-2b left it. Item 10: these paths
+perform no historical context scoring and no embedding call. Item 12: the
+suite passes with the memory plugin disabled, no embedding runtime, and no
+engine runtime.
 
 **Deferred beyond P4B:**
 
