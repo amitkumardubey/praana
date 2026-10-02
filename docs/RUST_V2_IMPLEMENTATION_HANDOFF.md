@@ -882,8 +882,8 @@ before these pass.
     the history and state tools (StateGraph §16.1, catalog §1.1).
   - **P4B-2b** (amended 2026-10-02): the Unicode letter/number table (Token
     Accounting §10.3) and lexical auto-hydration (StateGraph §10.1, §10.2).
-  - **P4B-2c:** idle tiering and telemetry. It needs its own spec amendment
-    first.
+  - **P4B-2c** (amended 2026-10-03): idle tiering and telemetry
+    (StateGraph §10.3, §10.5, §15.4, §16.1).
 - Decisions:
   - P4B-2 decisions (Amit, 2026-10-01):
     - Register the history and state tools in production in P4B-2a.
@@ -978,6 +978,55 @@ before these pass.
     - State service (`crates/praana-core/src/state/service.rs`): added `commit_origin` accepting reason, source, automation metadata, operations, and live cancellation closure; `catch_up` updated to return `StateServiceError` and mapped via `to_tool_error()`.
     - Tool runtime (`crates/praana-core/src/tools/runtime.rs`): added `ToolRuntime::auto_hydrate` and `AutoHydrateOutcome`, holding state mutex for duration, validating UMA trigger and turn_id, returning `STATE_PROJECTION_INTEGRITY` on invalid state/trigger.
     - Controller placement (`crates/praana-core/src/turn/mod.rs`): placed in `HeadlessLoop::drive` after `open_turn` and cancel check, guarded by `auto_hydrate` enabled and `auto_hydrate_max > 0`, running only if no AssistantAttemptStarted for current turn and no prior `StateChanged` with `auto_hydrate` reason for the trigger. Failure mapping: CANCELLED skips auto-hydrate; PERSISTENCE / unhealthy log maps to `TurnError::Durability`; PROJECTION_INTEGRITY maps to `TurnError::failed`; any other error logs warning and continues.
+  - P4B-2c decisions (Amit, 2026-10-03):
+    - `candidate_count` is the unprotected, non-hard, non-retracted objects
+      evaluated, including those too young to move.
+    - `scores_millis` is one entry per operation, signal `idle_soft` or
+      `idle_hard`, `score_millis` 0.
+    - Every split chunk repeats the full `candidate_count`.
+      `selected_count` is that chunk's operation count.
+    - An active object with `idle_turns >= idle_hard_after_turns` moves
+      straight to hard in one `SetTier`. Evaluation is a pure function of
+      `(graph, committed_turn_ordinal)`. No marker. One open evaluation
+      covers every missed turn.
+    - Counters are the pinned StateGraph §10.5 list and nothing else.
+      Per-kind/status breakdowns and the score bucket join the deferred
+      reversal metric.
+    - Tail-token samples are written only when that evaluation appended at
+      least one `StateChanged`. `dimensions_json` is exactly
+      `{"automation":"idle_tier"|"auto_hydrate","policy_version":"<effective>"}`.
+      `event_sequence` is the trigger event.
+    - A protected object increments one counter, in priority order: focus,
+      then active hard constraint, then open error, then active task.
+    - Double-counting telemetry on a repeated evaluation is accepted.
+    - Idle events store the effective `state.automation_policy_version`
+      (`state-lexical-v1`).
+    - After a durable `TurnCommitted`, an idle-tier error logs
+      `state idle-tier skipped: <state_code>` and the turn still returns
+      `Ok`. Exit is 0. A failed idle-event fsync leaves the log unhealthy,
+      so that committed-turn exit is 0 with no resume ID. That is the P3D
+      committed-turn row.
+  - P4B-2c amendment choices (coordinator, 2026-10-03):
+    - Source and envelope fields are the StateGraph §10.3 table. The tierer
+      reads the ordinal after the projector's `TurnCommitted` apply and
+      does not increment it.
+    - Live `commit` after the append, and once at the end of `assemble`.
+      `recovery.rs` does not tier. No new checkpoint write.
+    - A live cancellation predicate. Already cancelled means no event, no
+      telemetry, exit 0, and the next open tiers.
+    - Sample names are `state.active_tail_tokens_before` and
+      `state.active_tail_tokens_after`, because the closed
+      `dimensions_json` cannot carry before/after.
+    - Transition counters count operations this call appended. A call
+      cancelled before any append writes no telemetry.
+    - Failpoints are the existing `state_changed` fsync labels plus
+      `state.idle_tier.at_open`.
+    - The CLI case lives in a new `headless_cli_p4b2c.rs`, not in the P3D
+      test file.
+    - The no-resume-ID row is the committed-turn path (`finish_report`
+      already skips the ID when the log is unhealthy). A ready `praana
+      resume` keeps its existing printer, which writes the ID without
+      consulting log health. `praana-cli/src/main.rs` stays unchanged.
 
 ### P5: Pressure and Compaction
 
@@ -1062,9 +1111,10 @@ anything adds a row before it merges.
 | Slash-command origins for StateGraph mutations (StateGraph §14.1, §16.1) | 2026-10-01, P4B-2 amendment review | Later packet with the Rust slash-command surface | none |
 | No `ResetBoundary` producer exists in v1 (`/clear` equivalent); replay only consumes it | 2026-10-01, P4B-2 amendment review | Later CLI/UI packet | none |
 | A recovered `TurnStarted` records the session's last toolset hash, not the runtime's current catalog hash (`history/recovery.rs`). Visible now that P4B-2a grows the catalog | 2026-10-01, P4B-2 amendment review | Follow-up recovery packet | none |
-| P4B-2b: the Unicode letter/number table and auto-hydration (amended; StateGraph §16.1) | 2026-10-02, P4B-2b amendment | P4B-2b | P4B-2b packet |
-| P4B-2c: idle tiering and telemetry. Needs an amendment for idle-tier metadata and candidate count, idle tiering after every `TurnCommitted` (including recovery and once at open) with crash repair, and exact telemetry keys. Decided: idle source `system`, no new config key, pinned counters plus before/after tail-token samples | 2026-10-02, P4B-2b amendment | P4B-2c | P4B-2c packet |
-| StateGraph telemetry "manual reversal within three turns of an automatic change" (§10.5) | 2026-10-02, Amit | Later telemetry packet | none |
+| StateGraph telemetry deferred from §10.5: manual reversal within three turns of an automatic change; per-kind and per-status idle-transition counts; auto-hydrate score buckets | 2026-10-02, Amit; widened 2026-10-03, P4B-2c amendment | Later telemetry packet | none |
+| No v1 producer writes `TaskStatus::Cancelled`. `complete_task` sets done and soft. `apply.rs` accepts the cancelled transition, and idle tiering treats a cancelled task as unprotected, but no tool emits it | 2026-10-03, P4B-2c amendment | Later state-tool packet | none |
+| Idle tiering has no CLI effect at the default thresholds. `praana run` commits one user turn. `praana resume` takes no prompt: it continues an active turn, or prints the resume ID and exits 0. One committed turn yields `idle_turns = 1`, below `idle_soft_after_turns = 20`. A configured threshold of 1 demotes on that commit | 2026-10-03, P4B-2c amendment | P3E | `amitkumardubey/praana#632` |
+| A ready `praana resume` prints the resume ID without checking log health. Since P4B-2c, the open idle evaluation in `assemble` can append, so a failed idle-event fsync at open can print an ID for an unhealthy log (StateGraph §10.3) | 2026-10-03, P4B-2c amendment review | P3E (it rewrites the resume path in `praana-cli/src/main.rs`) | `amitkumardubey/praana#632` |
 | `praana-cli` `headless_cli_p3d` signal tests (`sigint`/`sigterm_during_stream`) failed once under load (6 s `wait_for_send` wait); both passed alone and in two full reruns | 2026-10-02, P4B-2b baseline | Test hygiene | none |
 | The state tool commit path snapshots cancellation once (`StateWriteContext.cancelled = cancel.is_cancelled()`, `tools/runtime.rs`), so its pre-append re-check (`state/service.rs`) cannot see a later cancellation. P4B-2b's `commit_origin` takes a live predicate; the tool path should do the same | 2026-10-02, P4B-2b amendment review | Later state packet | none |
 | StateGraph §4.7 payload normalization trims with Rust `str::trim`, so its `White_Space` set follows the toolchain's Unicode version, not 15.1. Pinning it changes stored payloads, so it needs a schema decision | 2026-10-02, P4B-2b amendment review | Later state packet | none |
