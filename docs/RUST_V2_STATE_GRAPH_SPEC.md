@@ -1421,6 +1421,12 @@ Hard objects never change and are not candidates. Retracted objects are not
 candidates. Every other current object is a candidate, including one too
 young to move.
 
+Protection is checked first, on every current object at every tier. A
+protected hard object (for example a hard-unloaded active hard constraint)
+counts toward its section 10.5 `state.idle.protected.*` key and is not a
+candidate. An unprotected hard object counts toward neither the protected
+keys nor `candidate_count`. Retracted objects count toward nothing.
+
 **Final tier** of a candidate:
 
 - Active and `idle_turns >= state.idle_hard_after_turns`: hard, in one
@@ -1542,7 +1548,9 @@ committed-turn row. Events that already fsynced stay. The next open, once
 the log can be opened, repairs any object that is not yet at its final
 tier. A ready `praana resume` (no active turn) keeps its existing printer,
 which writes the resume ID without consulting log health. This packet does
-not change that branch.
+not change that branch. Because the open evaluation can now append, a
+failed idle-event fsync at open can leave that branch printing an ID for an
+unhealthy log. That gap is recorded in Implementation Handoff section 4A.
 
 ### 10.4 Deterministic error capture
 
@@ -2242,7 +2250,10 @@ Also required:
   fault logs `state telemetry write failed` and does not change the report
   or the exit code.
 - **Counters.** A finished idle evaluation writes only the section 10.5
-  idle keys, with one protected reason per protected object. An `Ok`
+  idle keys, with one protected reason per protected object. A hard-tier
+  active hard constraint increments `state.idle.protected.hard_constraint`
+  and not `state.idle.candidates`. An unprotected hard note increments
+  neither. An `Ok`
   auto-hydrate writes only its section 10.5 keys, including a no-event
   outcome. Signal `lexical_overlap` is the key for a lexical selection,
   including one whose score is 900.
