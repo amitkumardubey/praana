@@ -99,6 +99,19 @@ fn inline_in(node: &mut Value, defs: &Value, stack: &mut Vec<String>) -> Result<
     Ok(())
 }
 
+fn normalize_properties(node: &Value, request: bool) -> Result<Value, SchemaError> {
+    let Value::Object(map) = node else {
+        return Err(SchemaError::Normalize);
+    };
+    let mut out = Map::new();
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    for key in keys {
+        out.insert(key.clone(), normalize_node(&map[key], request)?);
+    }
+    Ok(Value::Object(out))
+}
+
 fn normalize_node(node: &Value, request: bool) -> Result<Value, SchemaError> {
     match node {
         Value::Object(map) => {
@@ -106,10 +119,16 @@ fn normalize_node(node: &Value, request: bool) -> Result<Value, SchemaError> {
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
             for key in keys {
+                // Property names are data. A field named `title` is not the
+                // schema-annotation `title` that this pass strips.
+                if key == "properties" {
+                    out.insert(key.clone(), normalize_properties(&map[key], request)?);
+                    continue;
+                }
                 if key == "title" || key == "$defs" {
                     continue;
                 }
-                let mut child = if key == "enum" {
+                let child = if key == "enum" {
                     map[key].clone()
                 } else if matches!(key.as_str(), "oneOf" | "anyOf" | "prefixItems") {
                     normalize_node(&map[key], request)?
@@ -118,9 +137,6 @@ fn normalize_node(node: &Value, request: bool) -> Result<Value, SchemaError> {
                 } else {
                     normalize_node(&map[key], request && key != "enum")?
                 };
-                if key == "properties" {
-                    child = normalize_node(&map[key], request)?;
-                }
                 out.insert(key.clone(), child);
             }
             if request

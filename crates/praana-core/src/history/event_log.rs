@@ -439,6 +439,17 @@ impl EventLogStore {
         Ok(self.events.clone())
     }
 
+    /// Borrowed envelopes in sequence order. Prefer this over [`Self::events`]
+    /// when the caller only needs to scan.
+    pub(crate) fn events_slice(&self) -> &[EventEnvelope] {
+        &self.events
+    }
+
+    /// Graph the replayer already holds after every accepted append.
+    pub fn state_graph(&self) -> &crate::protocol::state_graph::StateGraphV1 {
+        &self.replayer.state
+    }
+
     pub fn warnings(&self) -> &[HistoryError] {
         &self.warnings
     }
@@ -1178,6 +1189,25 @@ pub fn read_project_context_source_sha256(session_dir: &Path) -> HistoryResult<S
     Ok(meta.project_context_source_sha256)
 }
 
+/// Read the session search-cursor HMAC key from `meta.json` (History §11.3
+/// cursor authentication). The creation metadata is never rewritten.
+pub fn read_cursor_hmac_key(session_dir: &Path) -> HistoryResult<[u8; 32]> {
+    let path = session_dir.join("meta.json");
+    reject_symlink(&path)?;
+    let bytes = fs::read(&path)
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let meta: SessionMetaV1 = serde_json::from_str(text.trim_end_matches('\n'))
+        .map_err(|_| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let decoded = decode_base64(&meta.cursor_hmac_key_base64)
+        .filter(|bytes| bytes.len() == 32)
+        .ok_or_else(|| HistoryError::new("HISTORY_META_MISMATCH", None, None, false))?;
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&decoded);
+    Ok(key)
+}
+
 fn snapshot_digest(session_dir: &Path) -> Option<String> {
     let path = session_dir.join("config.snapshot.json");
     let bytes = fs::read(&path).ok()?;
@@ -1224,6 +1254,58 @@ fn encode_base64(bytes: &[u8]) -> String {
         index += 3;
     }
     out
+}
+
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    fn value(byte: u8) -> Option<u32> {
+        match byte {
+            b'A'..=b'Z' => Some((byte - b'A') as u32),
+            b'a'..=b'z' => Some((byte - b'a') as u32 + 26),
+            b'0'..=b'9' => Some((byte - b'0') as u32 + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = text.as_bytes();
+    let (groups, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    let mut out = Vec::with_capacity(groups.len() * 3);
+    for (index, group) in groups.iter().enumerate() {
+        let [b0, b1, b2, b3] = *group;
+        let pad = |b: u8| b == b'=';
+        if pad(b2) && !pad(b3) {
+            return None;
+        }
+        let v0 = value(b0)?;
+        let v1 = value(b1)?;
+        out.push(((v0 << 2) | (v1 >> 4)) as u8);
+        if pad(b2) {
+            if v1 & 0x0f != 0 {
+                return None;
+            }
+            if index + 1 != groups.len() {
+                return None;
+            }
+            break;
+        }
+        let v2 = value(b2)?;
+        out.push((((v1 & 0x0f) << 4) | (v2 >> 2)) as u8);
+        if pad(b3) {
+            if v2 & 0x03 != 0 {
+                return None;
+            }
+            if index + 1 != groups.len() {
+                return None;
+            }
+            break;
+        }
+        let v3 = value(b3)?;
+        out.push((((v2 & 0x03) << 6) | v3) as u8);
+    }
+    Some(out)
 }
 
 fn quarantine_tail_bytes(session_dir: &Path, bytes: &[u8]) -> HistoryResult<String> {

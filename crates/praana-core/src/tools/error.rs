@@ -183,6 +183,176 @@ pub fn map_side_effect_uncertain() -> MappedToolError {
     }
 }
 
+/// Appendix A.4 canonical mapping, catalog §6.4 `ToolErrorCode`, and the
+/// optional Appendix A.4 tool-surface class/status/retryability override.
+type HistoryCodeRow = (
+    &'static str,
+    ToolErrorCode,
+    Option<(ErrorClass, ToolResultStatus, bool)>,
+);
+
+/// History code → (canonical code, catalog §6.4 `ToolErrorCode`,
+/// Appendix A.4 tool-surface override). The override is `Some` exactly when
+/// Appendix A.4 assigns a status to the code when it is called as a tool;
+/// every other code takes class/status/retryability from its `ToolErrorCode`
+/// in Appendix A.3 (catalog §6.4).
+fn history_code_row(history_code: &str) -> Option<HistoryCodeRow> {
+    use ToolErrorCode as E;
+    let row = match history_code {
+        "HISTORY_ARTIFACT_NOT_FOUND" => (
+            "E_ARTIFACT_NOT_FOUND",
+            E::ToolValidationFailed,
+            Some((ErrorClass::NotFound, ToolResultStatus::Error, false)),
+        ),
+        "HISTORY_SOURCE_NOT_FOUND" => (
+            "E_HISTORY_SOURCE_NOT_FOUND",
+            E::ToolValidationFailed,
+            Some((ErrorClass::NotFound, ToolResultStatus::Error, false)),
+        ),
+        "HISTORY_SEARCH_QUERY"
+        | "HISTORY_REGEX_INVALID"
+        | "HISTORY_REGEX_UNSUPPORTED"
+        | "HISTORY_ARTIFACT_RANGE"
+        | "HISTORY_JSON_POINTER"
+        | "HISTORY_SELECTOR_UNSUPPORTED" => (
+            "E_HISTORY_QUERY_INVALID",
+            E::ToolValidationFailed,
+            Some((ErrorClass::Validation, ToolResultStatus::Error, false)),
+        ),
+        "HISTORY_ARTIFACT_TOO_LARGE" => (
+            "E_HISTORY_RESULT_TOO_LARGE",
+            E::ToolValidationFailed,
+            Some((ErrorClass::Validation, ToolResultStatus::Error, true)),
+        ),
+        "HISTORY_PREVIEW_BOUND" => (
+            "E_HISTORY_RESULT_TOO_LARGE",
+            E::ToolInternal,
+            Some((ErrorClass::Validation, ToolResultStatus::Error, false)),
+        ),
+        "HISTORY_SEARCH_CURSOR_STALE" => (
+            "E_HISTORY_CURSOR_STALE",
+            E::ToolValidationFailed,
+            Some((ErrorClass::Conflict, ToolResultStatus::Error, true)),
+        ),
+        "HISTORY_ROLLBACK_CONFLICT" => (
+            "E_TOOL_SIDE_EFFECT_UNCERTAIN",
+            E::ToolInternal,
+            Some((ErrorClass::Integrity, ToolResultStatus::Uncertain, false)),
+        ),
+        "HISTORY_OPERATIONAL_RECOVERY_UNCERTAIN" => (
+            "E_TOOL_SIDE_EFFECT_UNCERTAIN",
+            E::ToolInternal,
+            Some((ErrorClass::ProcessCrash, ToolResultStatus::Uncertain, false)),
+        ),
+        "HISTORY_CANCELLED" => ("E_HISTORY_CANCELLED", E::ToolCancelled, None),
+        "HISTORY_SESSION_LOCKED" => ("E_SESSION_LOCKED", E::ToolInternal, None),
+        "HISTORY_SQLITE_BUSY" => ("E_HISTORY_BUSY", E::ToolUnavailable, None),
+        "HISTORY_SQLITE_PRAGMA_FAILED" => ("E_HISTORY_UNAVAILABLE", E::ToolInternal, None),
+        "HISTORY_EVENT_INTEGRITY"
+        | "HISTORY_INSECURE_PERMISSIONS"
+        | "HISTORY_META_MISMATCH"
+        | "HISTORY_CANONICAL_DB_CORRUPT" => ("E_SESSION_INTEGRITY_FAILED", E::ToolInternal, None),
+        "HISTORY_SCHEMA_UNSUPPORTED" => ("E_SCHEMA_VERSION_UNSUPPORTED", E::ToolInternal, None),
+        "HISTORY_DANGLING_ARTIFACT" => ("E_ARTIFACT_MISSING", E::ToolInternal, None),
+        "HISTORY_IO" => ("E_HISTORY_PERSISTENCE", E::ToolIoFailed, None),
+        _ => return None,
+    };
+    Some(row)
+}
+
+/// Appendix A.4 canonical mapping for History codes on the tool surface,
+/// with catalog §6.4 tool-surface class and retryability.
+pub fn map_history_error(history_code: &str) -> MappedToolError {
+    let Some((canonical, code, override_class)) = history_code_row(history_code) else {
+        return map_tool_error(ToolErrorCode::ToolInternal);
+    };
+    if let Some((class, status, retryable)) = override_class {
+        return MappedToolError {
+            canonical_code: canonical,
+            class,
+            status,
+            retryable,
+        };
+    }
+    let base = map_tool_error(code);
+    MappedToolError {
+        canonical_code: canonical,
+        class: base.class,
+        status: base.status,
+        retryable: base.retryable,
+    }
+}
+
+/// Catalog §6.4 tool-surface mapping: a History code that Appendix A.4 marks
+/// `error when called as a tool` keeps A.4's class, status, and retryability;
+/// every other code (history or not) takes class/status/retryability from its
+/// `ToolErrorCode`'s Appendix A.3 mapping. History codes carry their mapping
+/// in `ToolErrorDto.details.history_code`.
+pub fn map_result_error_surface(
+    code: ToolErrorCode,
+    details: Option<&serde_json::Value>,
+) -> MappedToolError {
+    if let Some(history_code) = details
+        .and_then(|details| details.get("history_code"))
+        .and_then(|value| value.as_str())
+    {
+        return map_history_error(history_code);
+    }
+    if let Some(state_code) = details
+        .and_then(|details| details.get("state_code"))
+        .and_then(|value| value.as_str())
+    {
+        return map_state_error(state_code);
+    }
+    map_tool_error(code)
+}
+
+/// Catalog §7.3 / Protocol Appendix A.6. `STATE_PERSISTENCE` is not retryable
+/// on the tool surface.
+pub fn map_state_error(state_code: &str) -> MappedToolError {
+    use ErrorClass as C;
+    use ToolResultStatus as S;
+    let (class, status, retryable) = match state_code {
+        "STATE_NOT_FOUND" => (C::NotFound, S::Error, false),
+        "STATE_RETRACTED"
+        | "STATE_KIND_MISMATCH"
+        | "STATE_INVALID_TRANSITION"
+        | "STATE_INVALID_SOURCE"
+        | "STATE_DUPLICATE_ID"
+        | "STATE_NO_CHANGE"
+        | "STATE_FOCUS_INVALID"
+        | "STATE_FIELD_LIMIT"
+        | "STATE_OBJECT_LIMIT" => (C::Validation, S::Error, false),
+        "STATE_REVISION_CONFLICT" | "STATE_GRAPH_SEQUENCE_CONFLICT" | "STATE_CURSOR_STALE" => {
+            (C::Conflict, S::Error, true)
+        }
+        "STATE_ACTIVE_BUDGET_EXCEEDED" => (C::ContextLength, S::Error, true),
+        "STATE_CANCELLED" => (C::Cancelled, S::Cancelled, true),
+        "STATE_PERSISTENCE" => (C::Persistence, S::Error, false),
+        "STATE_PROJECTION_INTEGRITY" => (C::Integrity, S::Error, false),
+        _ => (C::Internal, S::Error, false),
+    };
+    MappedToolError {
+        canonical_code: code_name(crate::state::outer_tool_code(state_code)),
+        class,
+        status,
+        retryable,
+    }
+}
+
+/// Catalog §6.4: `ToolErrorDto.details` is exactly
+/// `{"canonical_code": <A.4 E_* code>, "history_code": <HISTORY_* code>}`.
+pub fn history_tool_error(history_code: &str, message: impl Into<String>) -> ToolError {
+    let mapped = map_history_error(history_code);
+    let code = history_code_row(history_code)
+        .map(|(_, code, _)| code)
+        .unwrap_or(ToolErrorCode::ToolInternal);
+    ToolError::new(code, message).with_details(serde_json::json!({
+        "canonical_code": mapped.canonical_code,
+        "history_code": history_code,
+    }))
+}
+
 pub fn code_name(code: ToolErrorCode) -> &'static str {
     match code {
         ToolErrorCode::ToolUnknown => "TOOL_UNKNOWN",
@@ -217,5 +387,43 @@ pub fn code_name(code: ToolErrorCode) -> &'static str {
         ToolErrorCode::MemoryInvalidInput => "MEMORY_INVALID_INPUT",
         ToolErrorCode::MemoryNotFound => "MEMORY_NOT_FOUND",
         ToolErrorCode::MemoryPluginFailed => "MEMORY_PLUGIN_FAILED",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_a4_rows_keep_class_status_and_retryability_on_the_tool_surface() {
+        let error = history_tool_error("HISTORY_SEARCH_CURSOR_STALE", "stale");
+        let mapped = map_result_error_surface(error.code(), error.details());
+        assert_eq!(mapped.canonical_code, "E_HISTORY_CURSOR_STALE");
+        assert_eq!(mapped.class, ErrorClass::Conflict);
+        assert_eq!(mapped.status, ToolResultStatus::Error);
+        assert!(mapped.retryable);
+        assert!(!map_tool_error(ToolErrorCode::ToolValidationFailed).retryable);
+    }
+
+    #[test]
+    fn non_history_errors_take_a3_class_from_their_tool_error_code() {
+        let mapped = map_result_error_surface(ToolErrorCode::ToolValidationFailed, None);
+        let base = map_tool_error(ToolErrorCode::ToolValidationFailed);
+        assert_eq!(mapped.canonical_code, base.canonical_code);
+        assert_eq!(mapped.class, base.class);
+        assert_eq!(mapped.status, base.status);
+        assert_eq!(mapped.retryable, base.retryable);
+    }
+
+    #[test]
+    fn history_tool_error_details_are_exactly_the_catalog_keys() {
+        let error = history_tool_error("HISTORY_ARTIFACT_NOT_FOUND", "missing");
+        assert_eq!(
+            error.details().unwrap(),
+            &serde_json::json!({
+                "canonical_code": "E_ARTIFACT_NOT_FOUND",
+                "history_code": "HISTORY_ARTIFACT_NOT_FOUND",
+            })
+        );
     }
 }

@@ -17,6 +17,76 @@
       "output": "hello world 123!"
     }
   ],
+  "letter_or_number_samples": [
+    {
+      "code_point": "U+0041",
+      "expected": true
+    },
+    {
+      "code_point": "U+00E9",
+      "expected": true
+    },
+    {
+      "code_point": "U+01C5",
+      "expected": true
+    },
+    {
+      "code_point": "U+02B0",
+      "expected": true
+    },
+    {
+      "code_point": "U+4E2D",
+      "expected": true
+    },
+    {
+      "code_point": "U+0663",
+      "expected": true
+    },
+    {
+      "code_point": "U+216B",
+      "expected": true
+    },
+    {
+      "code_point": "U+00BD",
+      "expected": true
+    },
+    {
+      "code_point": "U+20000",
+      "expected": true
+    },
+    {
+      "code_point": "U+2EBF0",
+      "expected": true
+    },
+    {
+      "code_point": "U+005F",
+      "expected": false
+    },
+    {
+      "code_point": "U+0020",
+      "expected": false
+    },
+    {
+      "code_point": "U+2014",
+      "expected": false
+    },
+    {
+      "code_point": "U+0301",
+      "expected": false
+    },
+    {
+      "code_point": "U+1F642",
+      "expected": false
+    },
+    {
+      "code_point": "U+0378",
+      "expected": false
+    },
+    {
+      "code_point": "U+E000",
+      "expected": false
+    }
+  ],
   "nfkc_casefold_samples": [
     {
       "input": "K",

@@ -991,8 +991,11 @@ keeps every required null/empty field, uses LF line endings, and emits no final
 LF after the closing tag. No raw summary text appears in XML attributes. IDs and
 labels are host-generated; the fixed recovery line is always present.
 
-The current StateGraph tail appears after recent messages as volatile current
-state. If handoff and StateGraph disagree, the newer StateGraph projection wins
+The current StateGraph tail appears in the `CurrentState` instruction slot,
+after the historical handoff slot, as volatile current state. Each provider
+spec places that slot; OpenAI places it in the instruction string, not among
+the messages (StateGraph section 8.1). If handoff and StateGraph disagree, the
+newer StateGraph projection wins
 for current task status, errors, and constraints. Neither can override system
 or current user authority.
 

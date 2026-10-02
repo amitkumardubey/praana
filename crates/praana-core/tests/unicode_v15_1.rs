@@ -1,6 +1,7 @@
 use praana_core::unicode::{
-    default_casefold_v1, default_casefold_v1_with_offsets, nfkc_casefold_v1,
-    scalar_token_units_v15_1, UnicodeScalarCategory, UnicodeUtilityInfo, UNICODE_UTILITY_VERSION,
+    default_casefold_v1, default_casefold_v1_with_offsets, is_letter_or_number_v15_1,
+    nfkc_casefold_v1, scalar_token_units_v15_1, UnicodeScalarCategory, UnicodeUtilityInfo,
+    UNICODE_UTILITY_VERSION,
 };
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -266,5 +267,57 @@ fn unicode_fixtures_json_verification() {
             }
             UnicodeScalarCategory::OtherScalar => assert_eq!(expected_category, "other_scalar"),
         }
+    }
+
+    // Test letter or number samples
+    if let Some(samples) = fixture_val
+        .get("letter_or_number_samples")
+        .and_then(|v| v.as_array())
+    {
+        for sample in samples {
+            let cp_str = sample["code_point"].as_str().unwrap();
+            let expected = sample["expected"].as_bool().unwrap();
+            let hex_str = cp_str.strip_prefix("U+").unwrap();
+            let cp = u32::from_str_radix(hex_str, 16).unwrap();
+            let ch = char::from_u32(cp).unwrap();
+            assert_eq!(
+                is_letter_or_number_v15_1(ch),
+                expected,
+                "mismatch for code point {cp_str}"
+            );
+        }
+    }
+}
+
+#[test]
+fn is_letter_or_number_v15_1_sample_assertions() {
+    let samples = [
+        ("U+0041", true),
+        ("U+00E9", true),
+        ("U+01C5", true),
+        ("U+02B0", true),
+        ("U+4E2D", true),
+        ("U+0663", true),
+        ("U+216B", true),
+        ("U+00BD", true),
+        ("U+20000", true),
+        ("U+2EBF0", true),
+        ("U+005F", false),
+        ("U+0020", false),
+        ("U+2014", false),
+        ("U+0301", false),
+        ("U+1F642", false),
+        ("U+0378", false),
+        ("U+E000", false),
+    ];
+    for (cp_str, expected) in samples {
+        let hex = cp_str.strip_prefix("U+").unwrap();
+        let cp = u32::from_str_radix(hex, 16).unwrap();
+        let ch = char::from_u32(cp).unwrap();
+        assert_eq!(
+            is_letter_or_number_v15_1(ch),
+            expected,
+            "failed on {cp_str}"
+        );
     }
 }

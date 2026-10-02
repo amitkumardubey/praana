@@ -4,8 +4,10 @@ pub(crate) mod confine;
 mod dto;
 pub(crate) mod files;
 mod git_read;
+pub mod history;
 mod search;
 mod shell;
+pub mod state;
 mod tests;
 
 use std::path::Path;
@@ -21,6 +23,10 @@ use crate::tools::registry::{ToolAdapter, ToolRegistry};
 pub use dto::*;
 pub use files::{BatchEditTool, BatchWriteTool, EditFileTool, ReadFileTool, WriteFileTool};
 pub use git_read::{GitDiffTool, GitStatusTool};
+pub use history::{
+    phase4_history_tools, register_phase4_history, ReadSessionSourceInput, ReadSessionSourceOutput,
+    RetrieveArtifactInput, RetrieveArtifactOutput, SearchSessionLogInput, SearchSessionLogOutput,
+};
 pub use search::{FindFilesTool, SearchCodeTool};
 pub use shell::ShellTool;
 pub use tests::RunTestsTool;
@@ -29,6 +35,13 @@ pub fn phase3_tools(config: &ToolsConfig) -> Result<Vec<Arc<dyn ErasedTool>>, To
     // Windows writes lack handle-anchored reparse-safe confinement. Do not
     // advertise unavailable tools to the provider (Tool Runtime §8).
     tools_with_writes(config, !cfg!(windows))
+}
+
+pub fn production_tools(config: &ToolsConfig) -> Result<Vec<Arc<dyn ErasedTool>>, ToolError> {
+    let mut tools = phase3_tools(config)?;
+    tools.extend(history::phase4_history_tools()?);
+    tools.extend(state::phase4_state_tools()?);
+    Ok(tools)
 }
 
 fn tools_with_writes(
@@ -74,7 +87,7 @@ pub fn write_schema_snapshots(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     // Schema fixtures describe the full versioned catalog, regardless of
     // which platform can currently offer every descriptor at runtime.
-    let tools = tools_with_writes(
+    let mut tools = tools_with_writes(
         &ToolsConfig {
             allowed_paths: Vec::new(),
             default_timeout_ms: 60_000,
@@ -87,7 +100,9 @@ pub fn write_schema_snapshots(dir: &Path) -> std::io::Result<()> {
         true,
     )
     .expect("phase 3 schemas");
-    let registry = ToolRegistry::try_from_erased(tools).expect("phase 3 schema registry");
+    tools.extend(history::phase4_history_tools().expect("phase 4 history schemas"));
+    tools.extend(state::phase4_state_tools().expect("phase 4 state schemas"));
+    let registry = ToolRegistry::try_from_erased(tools).expect("catalog schema registry");
     let mut rows = Vec::new();
     for descriptor in registry.catalog().descriptors() {
         let input_name = format!(

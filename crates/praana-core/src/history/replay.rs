@@ -211,11 +211,18 @@ impl EventReplayer {
 
         let mut next = self.clone();
         next.apply_event(envelope, line, raw_lines)?;
+        crate::state::project_logged_event(&mut next.state, envelope).map_err(|_| {
+            HistoryError::new(
+                "STATE_PROJECTION_INTEGRITY",
+                Some(envelope.sequence),
+                line,
+                false,
+            )
+        })?;
         next.seen_event_ids.insert(envelope.event_id);
         next.known_event_sequences
             .insert(envelope.event_id, envelope.sequence);
         next.current_sequence = envelope.sequence;
-        next.state.applied_through_sequence = envelope.sequence;
         *self = next;
         Ok(())
     }
@@ -716,12 +723,6 @@ impl EventReplayer {
                 self.active_handoff = None;
                 self.turns.clear();
                 self.turn_by_id.clear();
-                self.state = StateGraphV1 {
-                    schema_version: 1,
-                    reset_epoch: v.reset_epoch,
-                    applied_through_sequence: e.sequence,
-                    ..StateGraphV1::default()
-                };
             }
             CanonicalEvent::SystemNote(v) => {
                 for id in &v.references {
@@ -1016,7 +1017,6 @@ impl EventReplayer {
         }
         self.turn_mut(e.turn_id.unwrap(), e, line)?.terminal =
             Some(TurnTerminal::Committed(v.clone()));
-        self.state.committed_turn_ordinal = self.state.committed_turn_ordinal.saturating_add(1);
         Ok(())
     }
 
@@ -1026,18 +1026,10 @@ impl EventReplayer {
         v: &StateChangedV1,
         line: Option<usize>,
     ) -> HistoryResult<()> {
-        if v.state_schema_version != 1
-            || v.expected_graph_sequence != self.current_sequence
-            || v.source.sequence >= e.sequence
-            || self.known_event_sequences.get(&v.source.event_id).copied()
-                != Some(v.source.sequence)
-        {
-            return Err(self.error("STATE_PROJECTION_INTEGRITY", e, line));
-        }
+        // §6.1 step 1: protocol identity checks keep their own codes.
         if self.seen_local_ids.contains(&v.mutation_id.to_string()) {
             return Err(self.error("E_REFERENCE_DUPLICATE", e, line));
         }
-        let mut graph = self.state.clone();
         for operation in &v.operations {
             if let StateOperationV1::Create { state_id, .. } = operation {
                 if self.seen_local_ids.contains(&state_id.to_string()) {
@@ -1045,18 +1037,20 @@ impl EventReplayer {
                 }
             }
         }
-        for operation in &v.operations {
-            apply_state_operation(&mut graph, operation, v, e)
-                .map_err(|_| self.error("STATE_PROJECTION_INTEGRITY", e, line))?;
+        // Steps 2–5. Step 5's turn/attempt pairing is the protocol context check.
+        if v.state_schema_version != 1
+            || v.expected_graph_sequence != self.state.applied_through_sequence
+            || v.source.sequence >= e.sequence
+            || self.known_event_sequences.get(&v.source.event_id).copied()
+                != Some(v.source.sequence)
+        {
+            return Err(self.error("STATE_PROJECTION_INTEGRITY", e, line));
         }
-        graph.objects.sort_by_key(|object| object.state_id);
-        graph.applied_through_sequence = e.sequence;
         for operation in &v.operations {
             if let StateOperationV1::Create { state_id, .. } = operation {
                 self.seen_local_ids.insert(state_id.to_string());
             }
         }
-        self.state = graph;
         self.introduce(&v.mutation_id.to_string(), e, line)?;
         Ok(())
     }
@@ -1220,7 +1214,7 @@ pub fn accepted_messages(
                     .executions
                     .get(&call.call_id)
                     .and_then(|execution| execution.result.clone())
-                    .ok_or_else(&incomplete)?;
+                    .ok_or_else(incomplete)?;
                 messages.push(ConversationMessage::ToolResult(result));
             }
         } else {
@@ -1307,311 +1301,4 @@ fn validate_assistant_message(message: &AssistantMessage) -> Result<Vec<ToolCall
         }
     }
     Ok(calls)
-}
-
-fn apply_state_operation(
-    graph: &mut StateGraphV1,
-    op: &StateOperationV1,
-    event: &StateChangedV1,
-    envelope: &EventEnvelope,
-) -> Result<(), ()> {
-    let touch = |object: &mut StateObjectV1| {
-        object.last_touched_at_ms = envelope.timestamp_ms;
-        object.last_touched_sequence = envelope.sequence;
-        object.last_touched_turn_ordinal = graph.committed_turn_ordinal;
-    };
-    match op {
-        StateOperationV1::Create {
-            state_id,
-            tier,
-            value,
-        } => {
-            if graph.objects.iter().any(|o| o.state_id == *state_id) {
-                return Err(());
-            }
-            graph.objects.push(StateObjectV1 {
-                state_id: *state_id,
-                revision: 1,
-                tier: tier.clone(),
-                lifecycle: ObjectLifecycle::Current,
-                value: value.clone(),
-                created_at_ms: envelope.timestamp_ms,
-                created_sequence: envelope.sequence,
-                updated_at_ms: envelope.timestamp_ms,
-                updated_sequence: envelope.sequence,
-                last_touched_at_ms: envelope.timestamp_ms,
-                last_touched_sequence: envelope.sequence,
-                last_touched_turn_ordinal: graph.committed_turn_ordinal,
-                source: event.source.clone(),
-                retracted_reason: None,
-            });
-        }
-        StateOperationV1::SetFocus { patch } => match patch {
-            FocusPatchV1::Clear => graph.focus = None,
-            FocusPatchV1::Set(id) => {
-                let object = graph
-                    .objects
-                    .iter()
-                    .find(|o| o.state_id == *id && o.lifecycle == ObjectLifecycle::Current)
-                    .ok_or(())?;
-                if object.tier != StateTier::Active {
-                    return Err(());
-                }
-                graph.focus = Some(FocusV1 {
-                    state_id: *id,
-                    set_at_ms: envelope.timestamp_ms,
-                    set_sequence: envelope.sequence,
-                });
-            }
-        },
-        _ => {
-            let (id, revision) = operation_target(op).ok_or(())?;
-            let supersession_valid = match op {
-                StateOperationV1::SupersedeDecision { by_state_id, .. } => {
-                    id != *by_state_id
-                        && graph.objects.iter().any(|candidate| {
-                            candidate.state_id == *by_state_id
-                                && candidate.lifecycle == ObjectLifecycle::Current
-                                && matches!(candidate.value, StateValueV1::Decision(_))
-                        })
-                }
-                _ => true,
-            };
-            if !supersession_valid {
-                return Err(());
-            }
-            let object = graph
-                .objects
-                .iter_mut()
-                .find(|o| o.state_id == id)
-                .ok_or(())?;
-            if object.lifecycle != ObjectLifecycle::Current || object.revision != revision {
-                return Err(());
-            }
-            let should_touch;
-            match op {
-                StateOperationV1::UpdateTask { patch, touch, .. } => {
-                    let StateValueV1::Task(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    if let Some(v) = &patch.title {
-                        value.title = v.trim().to_owned();
-                    }
-                    apply_optional(&mut value.description, &patch.description);
-                    if let Some(v) = &patch.status {
-                        value.status = v.clone();
-                    }
-                    apply_optional(&mut value.blocker, &patch.blocker);
-                    should_touch = *touch;
-                }
-                StateOperationV1::ReopenTask { status, touch, .. } => {
-                    let StateValueV1::Task(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    value.status = match status {
-                        ReopenTaskStatus::Todo => TaskStatus::Todo,
-                        ReopenTaskStatus::InProgress => TaskStatus::InProgress,
-                    };
-                    value.blocker = None;
-                    should_touch = *touch;
-                }
-                StateOperationV1::UpdateDecision {
-                    summary,
-                    rationale,
-                    touch,
-                    ..
-                } => {
-                    let StateValueV1::Decision(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    if let Some(v) = summary {
-                        value.summary = v.trim().to_owned();
-                    }
-                    if let Some(v) = rationale {
-                        value.rationale = v.trim().to_owned();
-                    }
-                    should_touch = *touch;
-                }
-                StateOperationV1::SupersedeDecision {
-                    by_state_id, touch, ..
-                } => {
-                    let StateValueV1::Decision(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    value.status = DecisionStatus::Superseded {
-                        by_state_id: *by_state_id,
-                    };
-                    should_touch = *touch;
-                }
-                StateOperationV1::UpdateConstraint { patch, touch, .. } => {
-                    let StateValueV1::Constraint(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    if let Some(v) = &patch.text {
-                        value.text = v.trim().to_owned();
-                    }
-                    if let Some(v) = &patch.strength {
-                        value.strength = v.clone();
-                    }
-                    if let Some(v) = &patch.status {
-                        value.status = v.clone();
-                    }
-                    apply_optional(&mut value.status_reason, &patch.status_reason);
-                    should_touch = *touch;
-                }
-                StateOperationV1::ReactivateConstraint { touch, .. } => {
-                    let StateValueV1::Constraint(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    value.status = ConstraintStatus::Active;
-                    value.status_reason = None;
-                    should_touch = *touch;
-                }
-                StateOperationV1::UpdateNote {
-                    text, tags, touch, ..
-                } => {
-                    let StateValueV1::Note(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    if let Some(v) = text {
-                        value.text = v.trim().to_owned();
-                    }
-                    if let Some(v) = tags {
-                        value.tags = v.clone();
-                    }
-                    should_touch = *touch;
-                }
-                StateOperationV1::UpdateError { patch, touch, .. } => {
-                    let StateValueV1::Error(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    if let Some(v) = &patch.message {
-                        value.message = v.trim().to_owned();
-                    }
-                    apply_optional(&mut value.code, &patch.code);
-                    if let Some(v) = &patch.severity {
-                        value.severity = v.clone();
-                    }
-                    if let Some(v) = &patch.status {
-                        value.status = v.clone();
-                    }
-                    apply_optional(&mut value.tool_name, &patch.tool_name);
-                    apply_optional(&mut value.command_label, &patch.command_label);
-                    apply_optional(&mut value.resolution, &patch.resolution);
-                    if let Some(v) = patch.occurrence_count {
-                        value.occurrence_count = v;
-                    }
-                    if let Some(v) = patch.last_observed_event_id {
-                        value.last_observed_event_id = v;
-                    }
-                    should_touch = *touch;
-                }
-                StateOperationV1::ReopenError { touch, .. } => {
-                    let StateValueV1::Error(value) = &mut object.value else {
-                        return Err(());
-                    };
-                    value.status = ErrorStatus::Open;
-                    value.resolution = None;
-                    should_touch = *touch;
-                }
-                StateOperationV1::SetTier { tier, touch, .. } => {
-                    object.tier = tier.clone();
-                    should_touch = *touch;
-                }
-                StateOperationV1::Touch { .. } => should_touch = true,
-                StateOperationV1::Retract { reason, .. } => {
-                    object.lifecycle = ObjectLifecycle::Retracted;
-                    object.retracted_reason = Some(reason.trim().to_owned());
-                    if graph.focus.as_ref().is_some_and(|f| f.state_id == id) {
-                        graph.focus = None;
-                    }
-                    should_touch = true;
-                }
-                StateOperationV1::Create { .. } | StateOperationV1::SetFocus { .. } => {
-                    unreachable!()
-                }
-            }
-            object.revision = object.revision.checked_add(1).ok_or(())?;
-            object.updated_at_ms = envelope.timestamp_ms;
-            object.updated_sequence = envelope.sequence;
-            object.source = event.source.clone();
-            if should_touch {
-                touch(object);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn operation_target(op: &StateOperationV1) -> Option<(StateId, u64)> {
-    match op {
-        StateOperationV1::UpdateTask {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::ReopenTask {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::UpdateDecision {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::SupersedeDecision {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::UpdateConstraint {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::ReactivateConstraint {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::UpdateNote {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::UpdateError {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::ReopenError {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::SetTier {
-            state_id,
-            expected_revision,
-            ..
-        }
-        | StateOperationV1::Touch {
-            state_id,
-            expected_revision,
-        }
-        | StateOperationV1::Retract {
-            state_id,
-            expected_revision,
-            ..
-        } => Some((*state_id, *expected_revision)),
-        _ => None,
-    }
-}
-
-fn apply_optional(target: &mut Option<String>, patch: &OptionalStringPatch) {
-    match patch {
-        OptionalStringPatch::Keep => {}
-        OptionalStringPatch::Set(value) => *target = Some(value.trim().to_owned()),
-        OptionalStringPatch::Clear => *target = None,
-    }
 }

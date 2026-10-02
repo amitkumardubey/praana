@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,8 +13,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::clock::Clock;
-use crate::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
+use crate::config::types::{CircuitConfig, RiskConfig, StateConfig, ToolsConfig};
 use crate::history::artifact::{ArtifactStore, PublishInput};
+use crate::history::event_log::EventLogStore;
 use crate::history::preview::ArtifactContentType;
 use crate::hooks::risk::RiskDecider;
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
@@ -29,7 +30,7 @@ use crate::protocol::id::{
 use crate::protocol::tool_result::ToolResultStatus;
 
 use super::contract::{ErasedTool, PreparedToolCall};
-use super::error::{map_side_effect_uncertain, map_tool_error, ToolError, ToolErrorCode};
+use super::error::{map_result_error_surface, map_side_effect_uncertain, ToolError, ToolErrorCode};
 use super::intent::{side_effect_capable, ToolExecutionContext, ToolInspectContext, ToolIntent};
 use super::locks::{PathLease, PathLockTable};
 use super::result::{canonical_tool_result_bytes, ToolResultDto};
@@ -99,6 +100,13 @@ struct Admitted {
     batch_id: ToolBatchId,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoHydrateOutcome {
+    pub candidate_count: u32,
+    pub selected_count: u32,
+    pub mutation: Option<crate::state::StateMutationToolOutput>,
+}
+
 pub struct ToolRuntime {
     registry: ToolRegistry,
     tools: ToolsConfig,
@@ -121,6 +129,10 @@ pub struct ToolRuntime {
     session_id: Mutex<SessionId>,
     reads: Mutex<BTreeSet<PathBuf>>,
     ids: Mutex<MonotonicUlidGenerator>,
+    state: Mutex<Option<crate::state::StateService>>,
+    state_active_max_tokens: AtomicU64,
+    /// Invoked after pre-hooks, immediately before a state ticket's start record.
+    state_ticket_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 pub struct DurableSession<'a> {
@@ -189,7 +201,145 @@ impl ToolRuntime {
             session_id: Mutex::new(placeholder_session()),
             reads: Mutex::new(BTreeSet::new()),
             ids: Mutex::new(MonotonicUlidGenerator::system()),
+            state: Mutex::new(None),
+            state_active_max_tokens: AtomicU64::new(4096),
+            state_ticket_probe: Mutex::new(None),
         }
+    }
+
+    /// Test seam: runs after admission and before the state start record.
+    pub fn set_state_ticket_probe(&self, probe: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .state_ticket_probe
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Some(probe);
+    }
+
+    /// Restore or create the StateGraph checkpoint when a session opens.
+    pub fn open_state(
+        &self,
+        log: &crate::history::event_log::EventLogStore,
+    ) -> Result<(), ToolError> {
+        let service =
+            crate::state::StateService::open(log).map_err(|error| error.to_tool_error())?;
+        *self.state.lock().unwrap_or_else(|err| err.into_inner()) = Some(service);
+        Ok(())
+    }
+
+    pub fn auto_hydrate(
+        &self,
+        log: &mut EventLogStore,
+        ids: &MonotonicUlidGenerator,
+        clock: &dyn Clock,
+        cancelled: &dyn Fn() -> bool, // live; never a snapshot
+        trigger: &EventEnvelope,      // the turn's UserMessageAccepted
+        state: &StateConfig,          // auto_hydrate, auto_hydrate_max, policy version
+    ) -> Result<AutoHydrateOutcome, crate::state::StateServiceError> {
+        if cancelled() {
+            return Err(crate::state::StateServiceError::new(
+                "STATE_CANCELLED",
+                "cancelled",
+            ));
+        }
+        let mut slot = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        let Some(service) = slot.as_mut() else {
+            return Err(crate::state::StateServiceError::new(
+                "STATE_PROJECTION_INTEGRITY",
+                "state service is missing",
+            ));
+        };
+        let CanonicalEvent::UserMessageAccepted(uma) = &trigger.event else {
+            return Err(crate::state::StateServiceError::new(
+                "STATE_PROJECTION_INTEGRITY",
+                "trigger is not UserMessageAccepted",
+            ));
+        };
+        let Some(turn_id) = trigger.turn_id else {
+            return Err(crate::state::StateServiceError::new(
+                "STATE_PROJECTION_INTEGRITY",
+                "trigger turn_id is null",
+            ));
+        };
+        if uma.message.turn_id != turn_id {
+            return Err(crate::state::StateServiceError::new(
+                "STATE_PROJECTION_INTEGRITY",
+                "trigger turn_id mismatch",
+            ));
+        }
+
+        service.catch_up(log)?;
+
+        let query_text = uma
+            .message
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                crate::protocol::messages::UserBlock::Text(text_block) => {
+                    Some(text_block.text.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let active_max_tokens = self.state_active_max_tokens.load(Ordering::SeqCst);
+        let (candidate_count, operations, scores_millis) =
+            crate::state::hydrate::select_auto_hydrate_candidates(
+                service.graph(),
+                &query_text,
+                state.auto_hydrate_max,
+                active_max_tokens,
+                log.current_sequence(),
+                trigger.event_id,
+                trigger.sequence,
+                turn_id,
+                cancelled,
+            )?;
+
+        if operations.is_empty() {
+            return Ok(AutoHydrateOutcome {
+                candidate_count,
+                selected_count: 0,
+                mutation: None,
+            });
+        }
+
+        let automation = crate::protocol::state_graph::StateAutomationV1 {
+            policy_version: state.automation_policy_version.clone(),
+            trigger_event_id: trigger.event_id,
+            candidate_count,
+            selected_count: operations.len() as u32,
+            scores_millis,
+        };
+        let source = crate::protocol::state_graph::StateSourceV1 {
+            source_kind: crate::protocol::state_graph::StateSourceKind::UserMessage,
+            event_id: trigger.event_id,
+            sequence: trigger.sequence,
+            turn_id: Some(turn_id),
+            attempt_id: None,
+            tool_call_id: None,
+            artifact_id: None,
+            summary_segment_id: None,
+        };
+
+        let selected_count = operations.len() as u32;
+        let mutation = service.commit_origin(
+            log,
+            ids,
+            clock,
+            cancelled,
+            active_max_tokens,
+            crate::protocol::state_graph::StateChangeReason::AutoHydrate,
+            source,
+            Some(automation),
+            operations,
+        )?;
+
+        Ok(AutoHydrateOutcome {
+            candidate_count,
+            selected_count,
+            mutation: Some(mutation),
+        })
     }
 
     pub fn set_workspace(&self, workspace: PathBuf) {
@@ -270,6 +420,10 @@ impl ToolRuntime {
         self.headless.store(headless, Ordering::SeqCst);
     }
 
+    pub fn set_state_active_max_tokens(&self, limit: u64) {
+        self.state_active_max_tokens.store(limit, Ordering::SeqCst);
+    }
+
     pub fn set_trace(&self, trace: HookTrace) {
         self.trace.replace_from(&trace);
     }
@@ -325,6 +479,19 @@ impl ToolRuntime {
             let cancel = cancel.clone();
             async move {
                 let ordinal = item.call.provider_ordinal;
+                if crate::tools::builtin::state::is_state_tool(item.call.tool_name.as_str()) {
+                    let call = item.call.clone();
+                    drop(item);
+                    let finished = self.finish_error(
+                        &call,
+                        ToolError::new(
+                            ToolErrorCode::ToolUnavailable,
+                            "state tools require a durable session",
+                        ),
+                        false,
+                    )?;
+                    return Ok::<_, ToolError>((ordinal, finished));
+                }
                 let finished = self.run_admitted(item, &cancel, None).await?;
                 Ok::<_, ToolError>((ordinal, finished))
             }
@@ -468,6 +635,14 @@ impl ToolRuntime {
                 .map_err(|_| {
                     ToolError::new(ToolErrorCode::ToolArtifactFailed, "artifact publish failed")
                 })?;
+        }
+        if let Some(service) = self
+            .state
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_mut()
+        {
+            service.persist_checkpoint(durable.log);
         }
         let events = durable
             .log
@@ -856,8 +1031,32 @@ impl ToolRuntime {
         ),
         ToolError,
     > {
+        let mut state_items = Vec::new();
+        let mut other = Vec::new();
+        for entry in ready {
+            if crate::tools::builtin::state::is_state_tool(entry.1.call.tool_name.as_str()) {
+                state_items.push(entry);
+            } else {
+                other.push(entry);
+            }
+        }
+        let mut started = Vec::new();
+        let mut finished = Vec::new();
+        let mut not_started = Vec::new();
+        // State tickets run inline before other calls are spawned. That uses no
+        // concurrency slot and lets a later state call see an earlier commit.
+        // The start-record fsync is synchronous, so the whole batch waits.
+        self.drive_state_tickets(
+            request,
+            durable,
+            state_items,
+            cancel,
+            &mut started,
+            &mut finished,
+            &mut not_started,
+        )?;
         let mut waiting = FuturesUnordered::new();
-        for (call_index, item) in ready {
+        for (call_index, item) in other {
             let cancel = cancel.clone();
             let parallel = Arc::clone(&self.parallel);
             waiting.push(async move {
@@ -870,9 +1069,6 @@ impl ToolRuntime {
             });
         }
         let mut bodies: FuturesUnordered<ReadyBody<'_>> = FuturesUnordered::new();
-        let mut started = Vec::new();
-        let mut finished = Vec::new();
-        let mut not_started = Vec::new();
         loop {
             let waiting_open = !waiting.is_empty();
             let bodies_open = !bodies.is_empty();
@@ -920,6 +1116,103 @@ impl ToolRuntime {
             }
         }
         Ok((started, finished, not_started))
+    }
+
+    fn ensure_state(
+        &self,
+        log: &crate::history::event_log::EventLogStore,
+    ) -> Result<(), ToolError> {
+        let mut slot = self.state.lock().unwrap_or_else(|err| err.into_inner());
+        if slot.is_none() {
+            *slot =
+                Some(crate::state::StateService::open(log).map_err(|error| error.to_tool_error())?);
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn drive_state_tickets(
+        &self,
+        request: &ToolBatchRequest,
+        durable: &mut DurableSession<'_>,
+        items: Vec<(u32, Admitted)>,
+        cancel: &CancellationToken,
+        started: &mut Vec<(u32, EventId, ToolExecutionId)>,
+        finished: &mut Vec<(u32, FinishedCall)>,
+        not_started: &mut Vec<(u32, ProviderToolCall, FinishedCall, ToolExecutionId)>,
+    ) -> Result<(), ToolError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.ensure_state(durable.log)?;
+        for (call_index, item) in items {
+            if let Some(probe) = self
+                .state_ticket_probe
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .clone()
+            {
+                probe();
+            }
+            if cancel.is_cancelled() {
+                let call = item.call.clone();
+                let execution_id = item.execution_id;
+                drop(item);
+                let finished_call = self.finish_error(
+                    &call,
+                    ToolError::new(ToolErrorCode::ToolCancelled, "cancelled"),
+                    false,
+                )?;
+                not_started.push((call_index, call, finished_call, execution_id));
+                continue;
+            }
+            let event_id = self.record_start(durable, request, call_index, &item)?;
+            let execution_id = item.execution_id;
+            #[cfg(feature = "failpoints")]
+            crate::crash_point::hit(format!("runtime.after_tool_execution_started:{call_index}"));
+            started.push((call_index, event_id, execution_id));
+            let started_at = std::time::Instant::now();
+            let intent = item.prepared.intent.clone();
+            let capabilities = item.capabilities;
+            let active_max_tokens = self.state_active_max_tokens.load(Ordering::SeqCst);
+            let mut ctx = crate::state::StateWriteContext {
+                log: durable.log,
+                ids: durable.ids,
+                clock: durable.clock,
+                turn_id: request.turn_id,
+                attempt_id: request.attempt_id,
+                call_id: item.call.tool_call_id.clone(),
+                cancelled: cancel.is_cancelled(),
+                active_max_tokens,
+            };
+            let output = {
+                let mut slot = self.state.lock().unwrap_or_else(|err| err.into_inner());
+                let service = slot.as_mut().expect("state service");
+                crate::tools::builtin::state::run_state_tool(
+                    service,
+                    &mut ctx,
+                    item.call.tool_name.as_str(),
+                    &item.call.arguments,
+                )
+            };
+            if let Err(error) = &output {
+                hooks::circuit::record_error(
+                    item.call.tool_name.as_str(),
+                    &intent,
+                    capabilities,
+                    error.code(),
+                    &self.circuit_counts,
+                );
+            }
+            let duration_ms = started_at.elapsed().as_millis() as u64;
+            let call = item.call.clone();
+            let lease = item.lease;
+            finished.push((
+                call_index,
+                self.finish_output(&call, output, duration_ms, Some(lease), execution_id)?,
+            ));
+        }
+        Ok(())
     }
 
     fn record_start(
@@ -1163,7 +1456,7 @@ impl ToolRuntime {
         let status = dto
             .error
             .as_ref()
-            .map(|error| map_tool_error(error.code).status)
+            .map(|error| map_result_error_surface(error.code, error.details.as_ref()).status)
             .unwrap_or(crate::protocol::tool_result::ToolResultStatus::Success);
         let canonical_bytes = canonical_tool_result_bytes(&dto)?;
         let finished = FinishedCall {
@@ -1240,7 +1533,7 @@ impl ToolRuntime {
         error: ToolError,
         execution_started: bool,
     ) -> Result<FinishedCall, ToolError> {
-        let mapped = map_tool_error(error.code());
+        let mapped = map_result_error_surface(error.code(), error.details());
         let dto = error_dto(call, &error, 0);
         let canonical_bytes = canonical_tool_result_bytes(&dto)?;
         Ok(FinishedCall {
@@ -1452,7 +1745,7 @@ fn success_dto(
 }
 
 fn error_dto(call: &ProviderToolCall, error: &ToolError, duration_ms: u64) -> ToolResultDto {
-    let mapped = map_tool_error(error.code());
+    let mapped = map_result_error_surface(error.code(), error.details());
     ToolResultDto {
         ok: false,
         data: None,

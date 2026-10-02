@@ -19,6 +19,24 @@ Phase 8 code-intel/LSP/git-write/skill tools remain reserved names in Tool
 Runtime but require a later catalog schema before implementation; this document
 does not leave their schemas to an implementer.
 
+### 1.1 Production catalog
+
+From P4B-2a on, the provider-visible catalog of a session contains:
+
+- the history tools (orders 100 through 120, section 6);
+- the eleven StateGraph tools (orders 200 through 300, section 7);
+- the Phase 3 tools (section 3 onward), under the section 3 Windows exception
+  and the `shell` config gate.
+
+Descriptors are ordered by `order`, as Tool Runtime specifies. One production
+catalog function, `tools::builtin::production_tools(&ToolsConfig)`, builds
+this list. Both the turn loop's tool runtime and the
+provider request's tool schemas use it, so the request lists exactly the tools
+the runtime can execute. History and StateGraph tools have no workspace
+writes, so the Windows exception does not remove them. Without a durable
+session context, state tools return `TOOL_UNAVAILABLE` (StateGraph section
+14.1); history tools keep their section 6 behavior.
+
 All request structs deny unknown fields. Optional request keys may be absent and
 use the defaults stated here. Success structs are serialized beneath
 `ToolResultDto.data`. Paths are UTF-8 strings normalized/validated by Tool
@@ -323,7 +341,12 @@ Description: `Search accepted session history, audit events, artifacts, summarie
 pub struct SearchSessionLogInput {
     pub query: String,
     pub mode: Option<SessionSearchMode>,
+    #[serde(default)] pub case_sensitive: bool,
     #[serde(default)] pub source_kinds: Vec<SearchSourceKind>,
+    #[serde(default)] pub event_ids: Vec<EventId>,
+    #[serde(default)] pub artifact_ids: Vec<ArtifactId>,
+    #[serde(default)] pub summary_segment_ids: Vec<SummarySegmentId>,
+    #[serde(default)] pub state_ids: Vec<StateId>,
     #[serde(default)] pub include_prior_epochs: bool,
     #[serde(default = "default_session_search_limit")] pub limit: u32,
     pub cursor: Option<String>,
@@ -332,9 +355,18 @@ pub struct SearchSessionLogOutput { pub page: SessionSearchPage }
 ```
 
 Exact request/response/cursor/source semantics are imported from History and
-not redeclared. Absent mode defaults to `Fts`. Query 1..=4,096 bytes, limit
-1..=100 default 20. Intent is
-ReadOnly session storage.
+not redeclared. Absent mode defaults to `Fts`. Query 0..=4,096 bytes; an empty
+query is valid only as History section 11.2 allows. Limit 1..=100 default 20.
+Intent is ReadOnly session storage, with an empty capability set.
+
+The input maps to History `SessionSearchRequest` field for field: `mode`
+(resolved), `case_sensitive`, `query`, `limit`, `cursor`, and filters
+`source_kinds`, `event_ids`, `artifact_ids`, `summary_segment_ids`,
+`state_ids`, and `include_prior_epochs`. Every other `SessionSearchFilters`
+field is empty or absent. The four ID filters are the four ID lists of
+Compaction `EvidenceRefV1`, so a cited handoff source can be searched directly.
+`case_sensitive = true` with mode `Fts` is `ToolValidationFailed` with
+`history_code = HISTORY_SEARCH_QUERY` (section 6.4).
 
 ### 6.2 `retrieve_artifact` (order 110)
 
@@ -348,17 +380,79 @@ The tool input is exactly History `RetrieveArtifactRequest`; the success value
 wraps its exact `RetrieveArtifactResponse`. Selector/defaults/bounds are imported from History.
 Intent is ReadOnly + ARTIFACT_READ.
 
+### 6.3 `read_session_source` (order 120)
+
+Description: `Read a bounded byte window of one event-sourced session search result by its result_id.`
+
+```rust
+pub struct ReadSessionSourceInput {
+    pub result_id: SearchResultId,
+    #[serde(default)] pub byte_offset: u64,
+}
+pub struct ReadSessionSourceOutput { pub source: ReadSessionSourceResponse }
+```
+
+The input maps field for field to History `ReadSessionSourceRequest` (History
+section 10.3), and the output is bounded by History section 10.4. Intent is
+ReadOnly session storage, with an empty capability set. Search results for
+event sources name this tool in `SearchRetrieval`.
+
+### 6.4 History tool schemas and error mapping
+
+In tool schemas, every ULID newtype (`EventId`, `ArtifactId`,
+`SummarySegmentId`, `StateId`, `SearchResultId`) is
+`{"type":"string","pattern":"^[0-9A-HJKMNP-TV-Z]{26}$"}`. `SessionSearchMode`
+and `SearchSourceKind` are snake_case string enums.
+
+History tools return Tool Runtime's implemented `ToolErrorCode` values, and
+`ToolErrorDto.details` is exactly
+`{"canonical_code": <Protocol Appendix A E_* code>, "history_code": <HISTORY_* code>}`.
+
+| History code(s) | `ToolErrorCode` |
+|---|---|
+| `HISTORY_SEARCH_QUERY`, `HISTORY_REGEX_INVALID`, `HISTORY_REGEX_UNSUPPORTED`, `HISTORY_ARTIFACT_RANGE`, `HISTORY_JSON_POINTER`, `HISTORY_SELECTOR_UNSUPPORTED`, `HISTORY_ARTIFACT_TOO_LARGE`, `HISTORY_SEARCH_CURSOR_STALE`, `HISTORY_ARTIFACT_NOT_FOUND`, `HISTORY_SOURCE_NOT_FOUND` | `ToolValidationFailed` |
+| `HISTORY_CANCELLED` | `ToolCancelled` |
+| `HISTORY_SQLITE_BUSY` | `ToolUnavailable` |
+| `HISTORY_IO` | `ToolIoFailed` |
+| `HISTORY_SQLITE_PRAGMA_FAILED`, `HISTORY_EVENT_INTEGRITY`, `HISTORY_CANONICAL_DB_CORRUPT`, `HISTORY_DANGLING_ARTIFACT` | `ToolInternal` |
+
+Any other History code reaching a history tool is `ToolInternal`. As with the
+StateGraph rows of Protocol Appendix A.6, a History code that A.4 marks
+`error when called as a tool` keeps A.4's class and retryability on the tool
+surface; for example, `HISTORY_SEARCH_CURSOR_STALE` is `conflict` and
+retryable from a fresh first page. Every other mapped code takes the class and
+retryability of its `ToolErrorCode` in A.3.
+
 ## 7. StateGraph Tools
 
 Convenience requests compile to the exact StateOperationV1 array and use the
 current graph sequence. Provider-facing convenience tools do not expose raw
 revision overrides; explicit revision APIs remain internal StateGraph services.
 
+### 7.1 Descriptions, DTOs, and defaults
+
+| Order | Tool | Description |
+|---|---|---|
+| 200 | `create_task` | `Create a current-session task with status todo in the active StateGraph tier.` |
+| 210 | `complete_task` | `Mark one current-session task done and move it to the soft StateGraph tier.` |
+| 220 | `retract_task` | `Retract any current-session StateGraph object by ID with a reason; it remains searchable.` |
+| 230 | `add_constraint` | `Record a current-session constraint in the active StateGraph tier; strength defaults to hard.` |
+| 240 | `decide` | `Record a current-session decision with its rationale, optionally superseding an active decision.` |
+| 250 | `add_note` | `Record a semantic current-session note or finding, with optional lowercase tags.` |
+| 260 | `soft_unload` | `Move one StateGraph object to the soft tier; it stays listed and can be hydrated.` |
+| 270 | `hard_unload` | `Archive one StateGraph object to the hard tier; its content then requires hydrate.` |
+| 280 | `hydrate` | `Move one StateGraph object to the active tier and return its complete content.` |
+| 290 | `list_state` | `List current-session StateGraph objects with bounded summaries, filtered by kind, tier, and status.` |
+| 300 | `focus_task` | `Make one current StateGraph object the single focus, activating it if needed, and return its content.` |
+
 ```rust
 pub struct CreateTaskInput { pub title: String, pub description: Option<String> }
 pub struct CompleteTaskInput { pub id: StateId }
-pub struct RetractStateInput { pub id: StateId, pub reason: Option<String> }
-pub struct AddConstraintInput { pub text: String, pub strength: Option<ConstraintStrength> }
+pub struct RetractStateInput { pub id: StateId, pub reason: String }
+pub struct AddConstraintInput {
+    pub text: String,
+    #[serde(default = "default_constraint_strength")] pub strength: ConstraintStrength,
+}
 pub struct DecideInput { pub summary: String, pub rationale: String, pub supersedes_id: Option<StateId> }
 pub struct AddNoteInput { pub text: String, #[serde(default)] pub tags: Vec<String> }
 pub struct StateIdInput { pub id: StateId }
@@ -366,8 +460,7 @@ pub struct FocusTaskInput { pub id: StateId }
 pub struct ListStateInput {
     #[serde(default)] pub kinds: Vec<StateKind>,
     #[serde(default)] pub tiers: Vec<StateTier>,
-    #[serde(default)] pub statuses: Vec<String>,
-    #[serde(default)] pub include_hard: bool,
+    #[serde(default)] pub statuses: Vec<StateStatusFilter>,
     #[serde(default)] pub include_retracted: bool,
     #[serde(default = "default_state_limit")] pub limit: u32,
     pub cursor: Option<String>,
@@ -378,12 +471,31 @@ pub struct StateMutationToolOutput {
     pub sequence: u64,
     pub affected: Vec<StateMutationObjectDto>,
 }
+pub struct StateObjectViewDto {
+    pub id: StateId,
+    pub kind: StateKind,
+    pub tier: StateTier,
+    pub lifecycle: ObjectLifecycle,
+    pub focused: bool,
+    pub revision: u64,
+    pub created_sequence: u64,
+    pub updated_sequence: u64,
+    pub source_sequence: u64,
+    pub value: StateValueV1,
+}
+pub struct StateObjectToolOutput {
+    pub mutation: StateMutationToolOutput,
+    pub object: StateObjectViewDto,
+}
 pub struct StateListItemDto {
     pub id: StateId,
     pub kind: StateKind,
     pub tier: StateTier,
-    pub status: String,
+    pub lifecycle: ObjectLifecycle,
+    pub status: Option<String>,
+    pub focused: bool,
     pub revision: u64,
+    pub updated_sequence: u64,
     pub summary: Option<String>,
 }
 pub struct StateListToolOutput {
@@ -393,26 +505,103 @@ pub struct StateListToolOutput {
 }
 ```
 
-Mappings:
+Defaults and bounds:
 
-| Tool | Request | Operation/result |
+- `default_constraint_strength` is `hard`.
+- `list_state` `limit` is 1..=200 with default 50; any other value is
+  `STATE_FIELD_LIMIT`.
+- Text bounds are StateGraph section 5 byte bounds, enforced by the state
+  service after StateGraph section 4.7 normalization. They are not JSON Schema
+  `maxLength`, which counts characters. A violation is `STATE_FIELD_LIMIT`.
+- Tool schemas carry no `minimum`/`maximum` on `limit`, no length bounds, and
+  no tag pattern, so those failures are the service's `STATE_FIELD_LIMIT` and
+  never `ToolSchemaInvalid`.
+- In tool schemas, `StateId`/`EventId` use the section 6.4 ULID pattern.
+  `StateKind`, `StateTier`, `ObjectLifecycle`, `ConstraintStrength`, and
+  `StateStatusFilter` (StateGraph section 11.2) are snake_case string enums.
+  `StateValueV1` is StateGraph's exact adjacently tagged shape.
+
+Output fields:
+
+- `affected` has one entry per distinct object the event changed, sorted by
+  `id` ascending, with its revision after the event.
+- `StateObjectViewDto` is the object after the event. `source_sequence` is
+  `StateObjectV1.source.sequence`.
+- `StateListItemDto.status` is the StateGraph section 11.2 status string, or
+  null for notes. `summary` follows StateGraph section 11.2.
+- `projection_sequence` is the graph's `applied_through_sequence` at the call's
+  snapshot.
+
+Intent:
+
+- The ten mutation tools are `SessionState` + `STATE_WRITE`,
+  `ToolIdempotency::NonIdempotent`, with `timeout_ms = 30_000` and no path or
+  command intent.
+- `list_state` is `ReadOnly` + `STATE_READ`, `ToolIdempotency::ReadOnly`, with
+  `timeout_ms = 30_000`.
+- Plan mode does not block any of them (Tool Runtime section 14.1).
+- The mutation tools are mutating tools for the circuit loop gate.
+
+Results:
+
+- No state tool result is artifactized (History section 6.1 rule 5).
+- `list_state` fills its page greedily under the History section 10.4 bound,
+  in the StateGraph section 11.2 order. `next_cursor` points after the last
+  included item.
+- Mutation and object outputs are bounded by construction by the StateGraph
+  section 5 field bounds. For every kind a P4B-1 tool can create, the RFC 8785
+  bytes of `StateObjectToolOutput` are below 65,536 even when every text byte
+  is a control character. Tests MUST assert this at maximum field sizes.
+- State results have no per-batch cap, unlike history results.
+
+### 7.2 Exact operations
+
+Each call builds one `StateChangedV1` whose `operations` are exactly the
+following. Checks run in this order: text normalization and input bounds
+(StateGraph sections 4.6 and 4.7), then target preconditions, then the section
+4 transition and section 5 object-count rules on the candidate graph. The first
+failure is returned. The target object is looked up in the current reset epoch.
+Precondition failures append nothing:
+
+- An absent ID is `STATE_NOT_FOUND`.
+- A retracted target is `STATE_RETRACTED`.
+- A wrong kind is `STATE_KIND_MISMATCH`.
+
+`r` is the target's current revision at queue head, and `N` is a fresh state
+ID.
+
+| Tool | Preconditions | `operations` |
 |---|---|---|
-| `create_task` | `CreateTaskInput` | create Task/Active/Open; mutation result |
-| `complete_task` | `CompleteTaskInput` | set task status Completed; mutation result |
-| `retract_task` | `RetractStateInput` | retract any kind; name retained for parity; mutation result |
-| `add_constraint` | `AddConstraintInput` | create Constraint/Active; mutation result |
-| `decide` | `DecideInput` | create Decision/Active; mutation result |
-| `add_note` | `AddNoteInput` | create Note/Active; mutation result |
-| `soft_unload` | `StateIdInput` | set Soft; mutation result |
-| `hard_unload` | `StateIdInput` | set Hard; mutation result |
-| `hydrate` | `StateIdInput` | set Active and return complete payload; mutation result |
-| `list_state` | `ListStateInput` | state-list output |
-| `focus_task` | `FocusTaskInput` | hydrate if needed, focus any current kind; mutation result |
+| `create_task` | none | `Create{N, active, Task{title, description, status: todo, blocker: null}}` |
+| `complete_task` | Task. `done` is `STATE_NO_CHANGE`; `cancelled` is `STATE_INVALID_TRANSITION`. | `UpdateTask{id, r, {title: null, description: keep, status: done, blocker: clear}, touch: true}`, then `SetTier{id, r+1, soft, touch: true}` |
+| `retract_task` | any kind | `Retract{id, r, reason}` |
+| `add_constraint` | none | `Create{N, active, Constraint{text, strength, status: active, status_reason: null}}` |
+| `decide` | With `supersedes_id`: a Decision whose status is `active`, else `STATE_INVALID_TRANSITION` | `Create{N, active, Decision{summary, rationale, status: active}}`, then, with `supersedes_id`, `SupersedeDecision{supersedes_id, r, by: N, touch: true}` |
+| `add_note` | none | `Create{N, active, Note{text, tags}}` with tags sorted and deduplicated |
+| `soft_unload` | any kind | `SetTier{id, r, soft, touch: true}` |
+| `hard_unload` | any kind | `SetTier{id, r, hard, touch: true}` |
+| `hydrate` | any kind | `SetTier{id, r, active, touch: true}` |
+| `focus_task` | any kind | tier `active`: `Touch{id, r}`, then `SetFocus{set id}`; otherwise `SetTier{id, r, active, touch: true}`, then `SetFocus{set id}` |
 
-Text/title/rationale/tag bounds, revisions, statuses, cursor encoding, event
-payload, and result DTOs are exactly StateGraph's specification. State mutations
-are SessionState + STATE_WRITE; list is ReadOnly + STATE_READ. Provider batch
-order is serialized by Tool Runtime.
+Unloading, completing, or retracting the focused object clears focus by the
+StateGraph section 4.1 focus invariant. `focus_task` accepts any current
+object, including a done or cancelled task and a superseded decision. `decide`
+with `supersedes_id` leaves the superseded decision's tier unchanged. `hydrate` and `focus_task` return
+`StateObjectToolOutput`, and the other mutation tools return
+`StateMutationToolOutput`. A mutation that would leave more than 256 active or
+4096 current objects is `STATE_OBJECT_LIMIT`. `list_state` appends nothing and
+returns `StateListToolOutput`.
+
+### 7.3 Error mapping
+
+State tools return the implemented `ToolErrorCode` named by Protocol Appendix
+A.6 for the state code, with `ToolErrorDto.details` exactly as StateGraph
+section 11 defines. The tool result's canonical result code is that outer
+`TOOL_*` string. Class, status, and retryability are A.6's row for
+`details.state_code`, overriding A.3 in the same way as section 6.4 does for
+history codes. A.6's conditional retryability for `STATE_PERSISTENCE` is
+`false` on the tool surface. Redaction failure (StateGraph section 4.7) is
+`ToolRedactionFailed` with no details. Any other failure is `ToolInternal`.
 
 ## 8. Descriptors and Snapshots
 
@@ -425,7 +614,8 @@ Tool Runtime and fails on any unlisted tool.
 
 ## 9. Error Mapping
 
-Tool-specific validation maps to common stable codes: `TOOL_INVALID_INPUT`,
+Sections 6.4 and 7.3 supersede this paragraph for history and StateGraph
+tools, whose codes are the implemented Tool Runtime `ToolErrorCode` values. Tool-specific validation maps to common stable codes: `TOOL_INVALID_INPUT`,
 `TOOL_PATH_NOT_FOUND`, `TOOL_PATH_OUTSIDE_ROOT`, `TOOL_FILE_CHANGED`,
 `TOOL_TEXT_NOT_UNIQUE`, `TOOL_OUTPUT_TOO_LARGE`, `TOOL_UNSUPPORTED_ENCODING`,
 `TOOL_PROCESS_FAILED`, `TOOL_SEARCH_INVALID`, `TOOL_CURSOR_INVALID`, and the
@@ -446,7 +636,11 @@ crates/praana-core/src/tools/builtin/shell.rs
 crates/praana-core/tests/builtin_tools_phase3.rs
 ```
 
-Phase 4 adds `history.rs`, `state.rs`, and `builtin_tools_phase4.rs`.
+Phase 4 adds `history.rs`, `state.rs`, and `builtin_tools_phase4.rs`. Packet
+P4A adds `history.rs` (orders 100, 110, 120) and the history cases of
+`builtin_tools_phase4.rs`; P4B-1 adds `state.rs` (orders 200 through 300) and
+the state cases. P4B-2a adds both families to the production catalog
+(section 1.1).
 
 For each phase, check in exact schema/description/result fixtures first; the
 test initially fails on missing built-ins. Implement one tool family at a time,

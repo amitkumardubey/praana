@@ -21,7 +21,9 @@ pub use responses::{
     continuation_for_scope, drop_incompatible_continuation, format_responses_body,
     parse_responses_frames, parse_responses_stream, ResponsesFormatInput, ResponsesStreamOutcome,
 };
-pub use sse::{parse_sse_bytes, SseFrame, SseParser, MAX_EVENT_DATA_BYTES, MAX_LINE_BYTES};
+pub use sse::{
+    parse_sse_bytes, SseFailure, SseFrame, SseParser, MAX_EVENT_DATA_BYTES, MAX_LINE_BYTES,
+};
 pub use usage::{usage_from_chat, usage_from_responses, OpenAiUsageAccumulator, UsageConversion};
 
 use std::collections::BTreeMap;
@@ -250,6 +252,8 @@ pub struct AdmissionRequest<'a> {
     pub image_count: u64,
     pub request_body: &'a Value,
     pub estimate_reused_from: Option<crate::protocol::id::AttemptId>,
+    pub state_tail: &'a str,
+    pub state_tail_offset: Option<usize>,
 }
 
 pub fn admit(request: &AdmissionRequest<'_>) -> Result<AdmissionDecision, ProviderError> {
@@ -305,8 +309,7 @@ pub fn admit(request: &AdmissionRequest<'_>) -> Result<AdmissionDecision, Provid
                     })?;
         }
     }
-    let parts = components_from_wire(request.request_body)
-        .unwrap_or_else(|| request.component_bytes.clone());
+    let parts = derive_components(request)?;
     let estimates = estimate_components(&parts, &framing)?;
     let (manifest, digest, total) =
         calculate_request_component_manifest(&estimates).map_err(|_| {
@@ -500,6 +503,142 @@ pub fn accounted_component_bytes(body: &Value) -> Result<[Vec<u8>; 9], &'static 
     let mut parts: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
     parts[4] = bytes;
     Ok(parts)
+}
+
+fn derive_components(request: &AdmissionRequest<'_>) -> Result<[Vec<u8>; 9], ProviderError> {
+    let body = request.request_body;
+    let object = body.as_object();
+    let has_shape = object
+        .map(|obj| {
+            obj.contains_key("messages")
+                || obj.contains_key("input")
+                || obj.contains_key("instructions")
+                || obj.contains_key("tools")
+        })
+        .unwrap_or(false);
+
+    if let Some(offset) = request.state_tail_offset {
+        if !has_shape {
+            return Err(ProviderError::new(
+                ProviderErrorCode::AdmissionStateTailMismatch,
+                "openai",
+                "openai-chat-v1",
+                "state tail offset does not match the instruction string",
+            ));
+        }
+
+        let obj = object.unwrap();
+        let mut is_responses = false;
+        let mut instruction_str: Option<&str> = None;
+
+        if let Some(instructions) = obj.get("instructions").and_then(Value::as_str) {
+            is_responses = true;
+            instruction_str = Some(instructions);
+        } else if let Some(messages) = obj.get("messages").and_then(Value::as_array) {
+            if let Some(first_msg) = messages.first() {
+                if first_msg.get("role").and_then(Value::as_str) == Some("system") {
+                    if let Some(content) = first_msg.get("content").and_then(Value::as_str) {
+                        instruction_str = Some(content);
+                    }
+                }
+            }
+        }
+
+        let s = match instruction_str {
+            Some(s) => s,
+            None => {
+                return Err(ProviderError::new(
+                    ProviderErrorCode::AdmissionStateTailMismatch,
+                    "openai",
+                    "openai-chat-v1",
+                    "state tail offset does not match the instruction string",
+                ));
+            }
+        };
+
+        let r = request.state_tail;
+        let r_bytes = r.as_bytes();
+        let s_bytes = s.as_bytes();
+
+        let matches_tail = if offset <= s_bytes.len() && offset + r_bytes.len() <= s_bytes.len() {
+            &s_bytes[offset..offset + r_bytes.len()] == r_bytes
+        } else {
+            false
+        };
+
+        if !matches_tail {
+            return Err(ProviderError::new(
+                ProviderErrorCode::AdmissionStateTailMismatch,
+                "openai",
+                "openai-chat-v1",
+                "state tail offset does not match the instruction string",
+            ));
+        }
+
+        let before = &s[..offset];
+        let after = &s[offset + r_bytes.len()..];
+        let s_prime = format!("{}{}", before, after);
+
+        let mut parts: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
+        parts[5] = r_bytes.to_vec();
+
+        if is_responses {
+            parts[0] = s_prime.into_bytes();
+        } else {
+            let messages = obj.get("messages").and_then(Value::as_array).unwrap();
+            let mut modified_first = messages[0].clone();
+            modified_first["content"] = Value::String(s_prime);
+            parts[0] = serde_json::to_vec(&modified_first).unwrap_or_default();
+        }
+
+        if let Some(messages) = obj.get("messages").and_then(Value::as_array) {
+            let index = if !is_responses
+                && messages
+                    .first()
+                    .and_then(|m| m.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("system")
+            {
+                1
+            } else {
+                0
+            };
+            for message in messages.iter().skip(index) {
+                let slot = if message.get("role").and_then(Value::as_str) == Some("tool") {
+                    6
+                } else {
+                    4
+                };
+                parts[slot].extend(serde_json::to_vec(message).unwrap_or_default());
+            }
+        }
+        if let Some(input) = obj.get("input").and_then(Value::as_array) {
+            for item in input {
+                let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+                let slot = if kind == "reasoning" || kind == "function_call" {
+                    7
+                } else if kind == "function_call_output" {
+                    6
+                } else {
+                    4
+                };
+                parts[slot].extend(serde_json::to_vec(item).unwrap_or_default());
+            }
+        }
+        if let Some(tools) = obj.get("tools") {
+            parts[1] = serde_json::to_vec(tools).unwrap_or_default();
+        }
+
+        Ok(parts)
+    } else {
+        let mut parts = if let Some(parts) = components_from_wire(body) {
+            parts
+        } else {
+            request.component_bytes.clone()
+        };
+        parts[5].clear();
+        Ok(parts)
+    }
 }
 
 fn components_from_wire(body: &Value) -> Option<[Vec<u8>; 9]> {
@@ -918,7 +1057,7 @@ where
     }
 }
 
-fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
+pub fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
     let Ok(text) = std::str::from_utf8(body) else {
         return ProviderErrorCode::StreamInvalidUtf8;
     };
@@ -934,7 +1073,7 @@ fn classify_http(status: u16, body: &[u8]) -> ProviderErrorCode {
     error::http_status_code(status)
 }
 
-fn http_error(
+pub fn http_error(
     code: ProviderErrorCode,
     status: u16,
     headers: &[(String, String)],
@@ -1565,6 +1704,8 @@ impl RetryLedger {
             image_count: 0,
             request_body: &value,
             estimate_reused_from: None,
+            state_tail: "",
+            state_tail_offset: None,
         })?;
         let estimate = match decision {
             AdmissionDecision::Admit(estimate)

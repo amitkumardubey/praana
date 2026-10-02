@@ -4,15 +4,21 @@
 //! result artifactization, previews, shell spools, and rollback journals.
 
 pub mod artifact;
+pub mod checkpoint;
+pub mod cursor;
 pub mod db;
+pub mod deletion;
 pub mod error;
 pub mod event_log;
 pub mod journal;
 pub mod operation_ledger;
 pub mod preview;
 pub mod projection;
+pub mod rebuild;
 pub mod recovery;
 pub mod replay;
+pub mod retrieve;
+pub mod search;
 pub mod spool;
 
 pub use error::ArtifactError;

@@ -49,6 +49,7 @@ pub enum ProviderErrorCode {
     AdmissionContextWindowUnknown,
     AdmissionArithmeticOverflow,
     CompactionProfileInvalid,
+    AdmissionStateTailMismatch,
     PersistenceFailed,
 }
 
@@ -97,6 +98,7 @@ impl ProviderErrorCode {
             Self::AdmissionContextWindowUnknown => "ADMISSION_CONTEXT_WINDOW_UNKNOWN",
             Self::AdmissionArithmeticOverflow => "ADMISSION_ARITHMETIC_OVERFLOW",
             Self::CompactionProfileInvalid => "COMPACTION_PROFILE_INVALID",
+            Self::AdmissionStateTailMismatch => "ADMISSION_STATE_TAIL_MISMATCH",
             Self::PersistenceFailed => "persistence_failed",
         }
     }
@@ -245,6 +247,7 @@ impl ProviderError {
             ProviderErrorCode::AdmissionContextWindowUnknown
             | ProviderErrorCode::AdmissionArithmeticOverflow
             | ProviderErrorCode::CompactionProfileInvalid
+            | ProviderErrorCode::AdmissionStateTailMismatch
             | ProviderErrorCode::PersistenceFailed => return None,
         };
         Some(ProtocolError {

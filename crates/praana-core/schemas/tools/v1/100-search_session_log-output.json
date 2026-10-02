@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Built-in Tool Catalog §6.1 success value.",
+  "properties": {
+    "page": {
+      "additionalProperties": false,
+      "properties": {
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "projection_through_sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "results": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "content_sha256": {
+                "maxLength": 64,
+                "minLength": 64,
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "event_id": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "event_kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "event_sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "excerpt": {
+                "type": "string"
+              },
+              "excerpt_complete": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "exact",
+                  "regex",
+                  "fts"
+                ],
+                "type": "string"
+              },
+              "occurrences": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "end_column": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "line": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "start_column": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "end_column",
+                    "line",
+                    "start_column"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "result_id": {
+                "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                "type": "string"
+              },
+              "retrieval": {
+                "additionalProperties": false,
+                "properties": {
+                  "arguments": true,
+                  "tool": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "arguments",
+                  "tool"
+                ],
+                "type": "object"
+              },
+              "score": {
+                "additionalProperties": false,
+                "properties": {
+                  "primary_micros": {
+                    "format": "int64",
+                    "type": "integer"
+                  },
+                  "rank_reason": {
+                    "type": "string"
+                  },
+                  "raw_bm25_micros": {
+                    "format": "int64",
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "primary_micros",
+                  "rank_reason"
+                ],
+                "type": "object"
+              },
+              "source_field": {
+                "type": "string"
+              },
+              "source_kind": {
+                "enum": [
+                  "event",
+                  "artifact",
+                  "summary_segment",
+                  "state"
+                ],
+                "type": "string"
+              },
+              "state_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary_segment_id": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "turn_id": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "content_sha256",
+              "excerpt",
+              "excerpt_complete",
+              "mode",
+              "occurrences",
+              "result_id",
+              "retrieval",
+              "score",
+              "source_field",
+              "source_kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "projection_through_sequence",
+        "results"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "page"
+  ],
+  "type": "object"
+}

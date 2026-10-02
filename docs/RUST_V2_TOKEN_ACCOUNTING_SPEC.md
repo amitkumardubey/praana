@@ -231,6 +231,11 @@ directory and byte-compares all outputs. A Unicode update changes the directory,
 utility version, estimator ID, manifest, fixtures, and schema version when
 serialized behavior changes; in-place source replacement is forbidden.
 
+Adding a table derived from the existing sources, with no change to any
+existing table, mapping, or classification, is not a Unicode update. It keeps
+the directory, utility version, and estimator ID. Only the generated Rust,
+fixture, and their manifest hashes change. Section 10.3 is such an addition.
+
 ### 4.3 Scalar weights and rounding
 
 Each Unicode scalar contributes integer twelfths of a token. Classification is
@@ -424,6 +429,36 @@ telemetry DTO, but the estimator computes and records every component above.
 framing tokens. Checked sum of all component totals is the estimated request
 input occupancy.
 
+**StateGraph split of the instruction string.** The provider places the
+StateGraph tail `R` (StateGraph section 8.1) in its assembled instruction
+string `S` and reports the byte offset where it placed it. Admission locates
+`R` only by that offset and never searches `S`, so identical bytes elsewhere,
+for example in an `AGENTS.md`, do not move the split. Admission checks that
+`S` has the bytes of `R` at that offset. A mismatch is internal code
+`ADMISSION_STATE_TAIL_MISMATCH` (Protocol Appendix A.5,
+`E_ADMISSION_ACCOUNTING`). `admit()` returns it as a `ProviderError`, and the
+controller ends the turn through its existing admission-error path
+(`InterruptionReason::ProviderFailure`, no attempt). No
+`AssistantAttemptStarted` is appended and no provider call is made. The same
+code applies when an offset is reported but the wire derivation finds no
+recognized body shape, or the body has neither an `instructions` string nor a
+first `messages` entry with role `system` and string content. Then:
+
+- `state_graph` is exactly the raw UTF-8 bytes of `R`;
+- `system` is the bytes the wire derivation already produces for the system
+  component (the Responses `instructions` string, or the serialized Chat
+  system message), computed from the same body with `S` replaced by `S'`. `S'`
+  is `S` with that one span of `R` removed, the bytes before it joined to the
+  bytes after it.
+
+For Responses, `system` and `state_graph` together are exactly the bytes of
+`S`. For Chat, `system` also keeps the existing JSON escaping and message
+wrapper of the serialized system message. In both cases each component is
+rounded separately and no shared wrapper text is subtracted. When the provider
+reports no offset, `state_graph` is empty and `system` is unchanged. Until
+their owner packets land, the memory and handoff slots stay inside `system`.
+Splitting them out is P5 and P6 work (Implementation Handoff section 4A).
+
 The request estimate manifest is the ordered RFC 8785 canonical JSON array of
 the nine complete `TokenEstimateV1` objects above, in exactly that order.
 `estimated_input_sha256` in admission DTOs is SHA-256 of those manifest bytes.
@@ -532,6 +567,33 @@ StateGraph lexical matching applies `nfkc_casefold_v1` before its pinned token
 split and stop-word rules. It MUST NOT call platform lowercase, locale-aware
 case conversion, an unversioned regex Unicode class, or the host filesystem's
 case behavior.
+
+### 10.3 `is_letter_or_number_v15_1`
+
+`unicode::is_letter_or_number_v15_1(c: char) -> bool` is true exactly when the
+scalar's Unicode 15.1 `General_Category` is a letter (`Lu`, `Ll`, `Lt`, `Lm`,
+`Lo`) or a number (`Nd`, `Nl`, `No`). Unassigned scalars (`Cn`) are false. It
+is a binary search over the generated table `LETTER_OR_NUMBER_RANGES` in
+`generated_v15_1.rs`.
+
+`praana-xtask unicode generate` builds that table from the checked-in
+`UnicodeData.txt`. It expands every `<..., First>`/`<..., Last>` range pair,
+and merges adjacent ranges as the other tables do. Adding the table and its
+samples regenerates `generated_v15_1.rs`, `unicode_v15_1.json`, and the
+manifest hashes. No source file changes, so `praana-unicode-15.1-v1` and the
+token estimator ID stay the same: no existing classification changes.
+
+The generated fixture gains a `letter_or_number_samples` array of
+`{"code_point": "U+XXXX", "expected": bool}` rows. Like the existing sample
+arrays, the rows are literals in `generate_artifacts`, with hand-written
+expected values. They are never computed from the new table, so a wrong table
+fails the test. The test asserts each row against the function. Review checks
+that the `generated_v15_1.rs` diff only adds the table and that the existing
+fixture arrays are unchanged. Required rows:
+
+| True | False |
+|---|---|
+| U+0041 (`Lu`), U+00E9 (`Ll`), U+01C5 (`Lt`), U+02B0 (`Lm`), U+4E2D (`Lo`), U+0663 (`Nd`), U+216B (`Nl`), U+00BD (`No`), U+20000 (range start), U+2EBF0 (CJK Extension I, new in 15.1) | U+005F (`Pc`), U+0020 (`Zs`), U+2014 (`Pd`), U+0301 (`Mn`), U+1F642 (`So`), U+0378 (`Cn`), U+E000 (`Co`, range) |
 
 SQLite FTS is a ranked discovery facility, not the implementation of exact
 search or StateGraph matching. Its SQLite build/version and tokenizer options

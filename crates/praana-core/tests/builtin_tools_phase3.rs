@@ -209,7 +209,12 @@ fn descriptors_are_strict_ordered_and_match_committed_schemas() {
     )
     .unwrap();
     assert_eq!(manifest["catalog_schema_version"], json!(1));
-    assert_eq!(manifest["tools"].as_array().unwrap().len(), PHASE3.len());
+    // The versioned catalog also carries the P4A history rows (orders 100–120)
+    // and the P4B-1 state rows (orders 200–300).
+    assert_eq!(
+        manifest["tools"].as_array().unwrap().len(),
+        PHASE3.len() + 3 + 11
+    );
 }
 
 #[cfg(windows)]

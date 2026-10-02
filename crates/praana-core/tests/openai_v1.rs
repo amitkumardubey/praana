@@ -666,6 +666,8 @@ fn admission_unknown_model_requires_trusted_context_window() {
         image_count: 0,
         request_body: &body,
         estimate_reused_from: None,
+        state_tail: "",
+        state_tail_offset: None,
     };
     let error = admit(&request).unwrap_err();
     assert_eq!(error.code, ProviderErrorCode::AdmissionContextWindowUnknown);
@@ -702,6 +704,8 @@ fn admission_rejects_active_cycle_that_cannot_fit() {
         image_count: 0,
         request_body: &body,
         estimate_reused_from: None,
+        state_tail: "",
+        state_tail_offset: None,
     };
     let decision = admit(&request).unwrap();
     assert!(matches!(
@@ -1069,6 +1073,8 @@ fn fitting_request(body: &serde_json::Value) -> AdmissionRequest<'_> {
         image_count: 0,
         request_body: body,
         estimate_reused_from: None,
+        state_tail: "",
+        state_tail_offset: None,
     }
 }
 
@@ -1245,6 +1251,8 @@ fn rejected_admission_does_not_read_credentials_or_send() {
         image_count: 0,
         request_body: &body,
         estimate_reused_from: None,
+        state_tail: "",
+        state_tail_offset: None,
     });
     let error = dispatch_after_admission(
         &mut store,
@@ -2087,6 +2095,8 @@ fn admission_counts_system_tools_images_and_active_cycle() {
         image_count: 2,
         request_body: &body,
         estimate_reused_from: None,
+        state_tail: "",
+        state_tail_offset: None,
     };
     let AdmissionDecision::Admit(estimate) = admit(&request).unwrap() else {
         panic!("admit");
@@ -2182,4 +2192,214 @@ fn model_switch_reruns_admission_with_target_window() {
         admit(&narrow).unwrap(),
         AdmissionDecision::Reject { .. }
     ));
+}
+
+#[test]
+fn admission_split_responses_and_chat_with_agents_md_and_none_and_mismatch() {
+    use praana_core::protocol::errors::ErrorClass;
+    use praana_core::state::{estimate_tail, zero_framing};
+    use praana_core::token::{
+        calculate_request_component_manifest, GenericTokenEstimatorV1, RequestComponentKind,
+        TokenEstimationContext, TokenEstimatorV1,
+    };
+    use praana_core::turn::provider_protocol_error;
+
+    let tail_r = include_str!("fixtures/state_graph_v1/tail_two_objects.txt");
+    let expected_tail_est = estimate_tail(tail_r).unwrap();
+
+    // AGENTS.md also contains R's exact bytes to prove identical bytes elsewhere do not move the split
+    let agents_md = format!("Project instructions with tail copy:\n{tail_r}\nend of instructions");
+
+    // 1. Responses format
+    let s = format!("{agents_md}\n\n[PRAANA:CURRENT_STATE_DATA]\n{tail_r}\n\nRuntime Facts\n[/PRAANA:CURRENT_STATE_DATA]");
+    // Locate R in CURRENT_STATE_DATA (not the first one in AGENTS.md)
+    let offset = s.rfind(tail_r).unwrap();
+    assert_ne!(offset, s.find(tail_r).unwrap()); // Proves R appears earlier too
+
+    let s_prime = format!("{}{}", &s[..offset], &s[offset + tail_r.len()..]);
+    let expected_system_responses = GenericTokenEstimatorV1
+        .estimate(
+            TokenEstimationContext::ProviderRequestComponent {
+                component: RequestComponentKind::System,
+            },
+            s_prime.as_bytes(),
+            &zero_framing(),
+        )
+        .unwrap();
+
+    let mut expected_parts_resp: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
+    expected_parts_resp[0] = s_prime.as_bytes().to_vec();
+    expected_parts_resp[5] = tail_r.as_bytes().to_vec();
+    let kinds = [
+        RequestComponentKind::System,
+        RequestComponentKind::ToolSchema,
+        RequestComponentKind::MemoryBootstrap,
+        RequestComponentKind::Handoff,
+        RequestComponentKind::RetainedMessages,
+        RequestComponentKind::StateGraph,
+        RequestComponentKind::ActiveToolCycle,
+        RequestComponentKind::Continuation,
+        RequestComponentKind::ProviderFraming,
+    ];
+    let resp_estimates: Vec<_> = expected_parts_resp
+        .iter()
+        .enumerate()
+        .map(|(idx, bytes)| {
+            GenericTokenEstimatorV1
+                .estimate(
+                    TokenEstimationContext::ProviderRequestComponent {
+                        component: kinds[idx],
+                    },
+                    bytes,
+                    &zero_framing(),
+                )
+                .unwrap()
+        })
+        .collect();
+    let (_, expected_digest_resp, expected_total_resp) =
+        calculate_request_component_manifest(&resp_estimates).unwrap();
+
+    let body_responses = serde_json::json!({
+        "instructions": s,
+        "input": []
+    });
+    let mut req_responses = fitting_request(&body_responses);
+    req_responses.state_tail = tail_r;
+    req_responses.state_tail_offset = Some(offset);
+
+    let decision = admit(&req_responses).unwrap();
+    let AdmissionDecision::Admit(estimate) = decision else {
+        panic!("expected admit for responses");
+    };
+    assert_eq!(estimate.state_graph_tokens, expected_tail_est.total_tokens);
+    assert_eq!(
+        estimate.system_tokens,
+        expected_system_responses.total_tokens
+    );
+    assert_eq!(estimate.total_input_tokens, expected_total_resp);
+    assert_eq!(estimate.estimated_input_sha256, expected_digest_resp);
+
+    // 2. Chat format
+    let modified_first = serde_json::json!({
+        "role": "system",
+        "content": s_prime
+    });
+    let parts0 = serde_json::to_vec(&modified_first).unwrap();
+    let expected_system_chat = GenericTokenEstimatorV1
+        .estimate(
+            TokenEstimationContext::ProviderRequestComponent {
+                component: RequestComponentKind::System,
+            },
+            &parts0,
+            &zero_framing(),
+        )
+        .unwrap();
+
+    let user_msg = serde_json::json!({"role": "user", "content": "hello"});
+    let mut expected_parts_chat: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
+    expected_parts_chat[0] = parts0;
+    expected_parts_chat[4] = serde_json::to_vec(&user_msg).unwrap();
+    expected_parts_chat[5] = tail_r.as_bytes().to_vec();
+    let chat_estimates: Vec<_> = expected_parts_chat
+        .iter()
+        .enumerate()
+        .map(|(idx, bytes)| {
+            GenericTokenEstimatorV1
+                .estimate(
+                    TokenEstimationContext::ProviderRequestComponent {
+                        component: kinds[idx],
+                    },
+                    bytes,
+                    &zero_framing(),
+                )
+                .unwrap()
+        })
+        .collect();
+    let (_, expected_digest_chat, expected_total_chat) =
+        calculate_request_component_manifest(&chat_estimates).unwrap();
+
+    let body_chat = serde_json::json!({
+        "messages": [
+            {
+                "role": "system",
+                "content": s
+            },
+            user_msg
+        ]
+    });
+    let mut req_chat = fitting_request(&body_chat);
+    req_chat.state_tail = tail_r;
+    req_chat.state_tail_offset = Some(offset);
+
+    let decision = admit(&req_chat).unwrap();
+    let AdmissionDecision::Admit(estimate_chat) = decision else {
+        panic!("expected admit for chat");
+    };
+    assert_eq!(
+        estimate_chat.state_graph_tokens,
+        expected_tail_est.total_tokens
+    );
+    assert_eq!(
+        estimate_chat.system_tokens,
+        expected_system_chat.total_tokens
+    );
+    assert_eq!(estimate_chat.total_input_tokens, expected_total_chat);
+    assert_eq!(estimate_chat.estimated_input_sha256, expected_digest_chat);
+
+    // 3. None offset leaves state_graph empty
+    let mut req_none = fitting_request(&body_responses);
+    req_none.state_tail = tail_r;
+    req_none.state_tail_offset = None;
+    let decision = admit(&req_none).unwrap();
+    let AdmissionDecision::Admit(estimate_none) = decision else {
+        panic!("expected admit for none offset");
+    };
+    assert_eq!(estimate_none.state_graph_tokens, 0);
+
+    // 4. None offset clears caller-supplied state_graph component on unrecognized body fallback
+    let body_unrec = serde_json::json!({"custom_unrecognized_field": 42});
+    let mut req_unrec = fitting_request(&body_unrec);
+    req_unrec.component_bytes[5] = b"caller_supplied_state_bytes".to_vec();
+    req_unrec.state_tail = tail_r;
+    req_unrec.state_tail_offset = None;
+    let decision_unrec = admit(&req_unrec).unwrap();
+    let AdmissionDecision::Admit(estimate_unrec) = decision_unrec else {
+        panic!("expected admit for unrecognized body");
+    };
+    assert_eq!(estimate_unrec.state_graph_tokens, 0);
+
+    // 5. Offset mismatch fails with ADMISSION_STATE_TAIL_MISMATCH -> E_ADMISSION_ACCOUNTING
+    let mut req_mismatch = fitting_request(&body_responses);
+    req_mismatch.state_tail = tail_r;
+    req_mismatch.state_tail_offset = Some(offset + 1);
+    let err = admit(&req_mismatch).unwrap_err();
+    assert_eq!(err.code, ProviderErrorCode::AdmissionStateTailMismatch);
+    assert_eq!(
+        err.safe_message,
+        "state tail offset does not match the instruction string"
+    );
+    assert!(err.to_protocol_error().is_none());
+    let mapped = provider_protocol_error(&err);
+    assert_eq!(mapped.code, "E_ADMISSION_ACCOUNTING");
+    assert_eq!(mapped.class, ErrorClass::Internal);
+
+    // 6. Offset reported with unrecognized body shape
+    let unrecognized_body = serde_json::json!({"other": 42});
+    let mut req_bad_shape = fitting_request(&unrecognized_body);
+    req_bad_shape.state_tail = tail_r;
+    req_bad_shape.state_tail_offset = Some(10);
+    let err = admit(&req_bad_shape).unwrap_err();
+    assert_eq!(err.code, ProviderErrorCode::AdmissionStateTailMismatch);
+
+    // 7. Offset reported with no system instruction/message
+    let no_sys_body = serde_json::json!({
+        "messages": [
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let mut req_no_sys = fitting_request(&no_sys_body);
+    req_no_sys.state_tail = tail_r;
+    req_no_sys.state_tail_offset = Some(0);
+    let err = admit(&req_no_sys).unwrap_err();
+    assert_eq!(err.code, ProviderErrorCode::AdmissionStateTailMismatch);
 }

@@ -164,6 +164,11 @@ pub fn validate_effective_config(
             "history.compactor: compactor_provider and compactor_model must both be empty or both non-empty".to_string(),
         ));
     }
+    if !compactor_provider_empty && !compactor_model_empty {
+        return Err(ConfigError::FeatureNotImplemented(
+            "history.compactor: a separate compactor selection requires P5".to_string(),
+        ));
+    }
 
     // 2. State cross-field validation
     if config.state.idle_hard_after_turns <= config.state.idle_soft_after_turns {

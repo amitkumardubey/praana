@@ -400,9 +400,10 @@ pub fn generate_artifacts(
         }
     }
 
-    // 3. Parse UnicodeData.txt for General_Category starting with 'S' (Sm, Sc, Sk, So), CCC, and Canonical Decomposition
+    // 3. Parse UnicodeData.txt for General_Category starting with 'S' (Sm, Sc, Sk, So), 'L'/'N' (Letter or Number), CCC, and Canonical Decomposition
     let udata_content = fs::read_to_string(source_dir.join("UnicodeData.txt"))?;
     let mut symbol_ranges: Vec<(u32, u32)> = ext_pict_ranges;
+    let mut letter_or_number_ranges: Vec<(u32, u32)> = Vec::new();
     let mut ccc_map: BTreeMap<u32, u8> = BTreeMap::new();
     let mut decomp_map: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     let mut comp_map: BTreeMap<(u32, u32), u32> = BTreeMap::new();
@@ -449,6 +450,9 @@ pub fn generate_artifacts(
                 if start_cat.starts_with('S') {
                     symbol_ranges.push((start_cp, cp));
                 }
+                if start_cat.starts_with('L') || start_cat.starts_with('N') {
+                    letter_or_number_ranges.push((start_cp, cp));
+                }
             }
             continue;
         }
@@ -456,8 +460,12 @@ pub fn generate_artifacts(
         if cat.starts_with('S') {
             symbol_ranges.push((cp, cp));
         }
+        if cat.starts_with('L') || cat.starts_with('N') {
+            letter_or_number_ranges.push((cp, cp));
+        }
     }
     symbol_ranges = merge_ranges(symbol_ranges);
+    letter_or_number_ranges = merge_ranges(letter_or_number_ranges);
 
     // Filter Full_Composition_Exclusions from comp_map using DerivedNormalizationProps.txt
     let norm_props_content = fs::read_to_string(source_dir.join("DerivedNormalizationProps.txt"))?;
@@ -597,6 +605,14 @@ pub fn generate_artifacts(
             ));
         }
     }
+    code.push_str("];\n\n");
+
+    // LETTER_OR_NUMBER_RANGES: sorted (u32, u32)
+    code.push_str("#[rustfmt::skip]\n");
+    code.push_str("pub const LETTER_OR_NUMBER_RANGES: &[(u32, u32)] = &[\n");
+    for (start, end) in &letter_or_number_ranges {
+        code.push_str(&format!("    (0x{start:X}, 0x{end:X}),\n"));
+    }
     code.push_str("];\n");
 
     // Fixture JSON
@@ -639,6 +655,25 @@ pub fn generate_artifacts(
             {"input": "\u{FB03}", "output": "ffi"},
             {"input": "\u{FF21}/\u{FF22}", "output": "a/b"},
             {"input": "Straße", "output": "strasse"}
+        ],
+        "letter_or_number_samples": [
+            {"code_point": "U+0041", "expected": true},
+            {"code_point": "U+00E9", "expected": true},
+            {"code_point": "U+01C5", "expected": true},
+            {"code_point": "U+02B0", "expected": true},
+            {"code_point": "U+4E2D", "expected": true},
+            {"code_point": "U+0663", "expected": true},
+            {"code_point": "U+216B", "expected": true},
+            {"code_point": "U+00BD", "expected": true},
+            {"code_point": "U+20000", "expected": true},
+            {"code_point": "U+2EBF0", "expected": true},
+            {"code_point": "U+005F", "expected": false},
+            {"code_point": "U+0020", "expected": false},
+            {"code_point": "U+2014", "expected": false},
+            {"code_point": "U+0301", "expected": false},
+            {"code_point": "U+1F642", "expected": false},
+            {"code_point": "U+0378", "expected": false},
+            {"code_point": "U+E000", "expected": false}
         ]
     });
 

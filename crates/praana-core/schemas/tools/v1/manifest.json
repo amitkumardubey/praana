@@ -2,6 +2,156 @@
   "catalog_schema_version": 1,
   "tools": [
     {
+      "capabilities": [],
+      "description_sha256": "ebeb0cba0d75fd470d01f8f8de6c25fcb2d3117fe59c4bac45793272a631b1aa",
+      "input_schema_sha256": "77420f95cc21489fde5233a83065f5ddf4572e568a0ac7b9b9bdf1af12d0321e",
+      "name": "search_session_log",
+      "order": 100,
+      "output_schema_sha256": "7b261df574aa8103a3873af18ab7e1402f22505d8c328b25d6ae0b858b9a5ea1",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "ARTIFACT_READ"
+      ],
+      "description_sha256": "226407a71365adea62b7d97587bbcf4cf713ff44232f12ba95a3da412a517627",
+      "input_schema_sha256": "08b695a4c3f3145152a9d4b3a12e6f109dd45114607369e4b3694444477e5620",
+      "name": "retrieve_artifact",
+      "order": 110,
+      "output_schema_sha256": "c65ac19d9f6ff9df761da2d9e0efd3c1fcde52c8de8208f0f39eae6e06a57ecc",
+      "strict": true
+    },
+    {
+      "capabilities": [],
+      "description_sha256": "4e662cbdc41a6b08b6ad59428755ecb0a89215e03a7b67c63ca9bd4c41dd3c74",
+      "input_schema_sha256": "613261a881ee48d8bac5f9f08fa38f351200d9416f64cc1d87ed72f2236b5189",
+      "name": "read_session_source",
+      "order": 120,
+      "output_schema_sha256": "1d98c782534d52bfc1ba2d6d6f92b4d76bec08cc8c20d533f4e0a077d49872a1",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "83715eed5a6f64f246418b2d34e3dbf9c57254f89f396deb96a14cfd53231830",
+      "input_schema_sha256": "e06de938e1bd5c27a13037fa907691d3e73d052bfe0cfed06fcb4faa2b2a4691",
+      "name": "create_task",
+      "order": 200,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "2d469657cf4029eb0ed6fd4c9ebd3e40005f01fabccf1d16a996694fc655f134",
+      "input_schema_sha256": "d899069cd7bbb7879ca4565acffd0b4cf90ba21f6f5fdc92a1d67b99097ce8dc",
+      "name": "complete_task",
+      "order": 210,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "e8dec700dbcaf6f5d14ddc0e2afc5c55dc675bb9c67f7b0678795031b9bcbedb",
+      "input_schema_sha256": "f5c7ab1a5f8df4ba1b3a597bd699803f8ce31d6728a64f60c295db32888577df",
+      "name": "retract_task",
+      "order": 220,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "ba2ce50887b2e537a0dec93d1b646e71a5f543408ae273150e8e99b2c159feb3",
+      "input_schema_sha256": "637ac584ad64e7378a4eb1511e2a098f5458ae398dde7b5c0b13f8179e80931d",
+      "name": "add_constraint",
+      "order": 230,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "545be08e1d61e0115d0684b3d2c664157d80566dfd568a5ddc7ec371db819235",
+      "input_schema_sha256": "9c3bfc86ccb3ae0287f68807e52e4a5d91c13e20c47076740677a562691bff1f",
+      "name": "decide",
+      "order": 240,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "6ffc8f006184f7ea2195bed3cc199dec2a720c9f9ad2065cea960bab8bab56f4",
+      "input_schema_sha256": "aa1bef9359357dd0952884af53e6de4eac70d5682a7132ef9c4e87a7dd49b4df",
+      "name": "add_note",
+      "order": 250,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "53c02dffb2d2132c3712c8374f1aca1f253b4881056152846ad58986e6b5566c",
+      "input_schema_sha256": "d899069cd7bbb7879ca4565acffd0b4cf90ba21f6f5fdc92a1d67b99097ce8dc",
+      "name": "soft_unload",
+      "order": 260,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "68d262f506ca57b917a1335cd41ea1ec5a0a6e35024eb8e1ee832d3333bc836e",
+      "input_schema_sha256": "d899069cd7bbb7879ca4565acffd0b4cf90ba21f6f5fdc92a1d67b99097ce8dc",
+      "name": "hard_unload",
+      "order": 270,
+      "output_schema_sha256": "fa2afa5d76ae17cea9e99c27c555334f8ec2befa438cd44a248812f547af1bc8",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "48537fa0bf4e0b33a4dff07dea12b657e59b722de0c242df6f967adcb26b69a1",
+      "input_schema_sha256": "d899069cd7bbb7879ca4565acffd0b4cf90ba21f6f5fdc92a1d67b99097ce8dc",
+      "name": "hydrate",
+      "order": 280,
+      "output_schema_sha256": "fe4e3a6c9e6ef7605ecd8d3b38fa17889a1f3ae6b777f8848c56c83da751700b",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_READ"
+      ],
+      "description_sha256": "0a71d9b6ccdda83aed404e52c6fb0e914beaffe7c7a78c65d1f551b919b54e17",
+      "input_schema_sha256": "a451ffeca2a3937231dba77c72f0c189f0cee81b5658c27480658e342f1ef558",
+      "name": "list_state",
+      "order": 290,
+      "output_schema_sha256": "3a2855b6ad7eb6d183615339edfaa6697ebe07da4d72fa00e3e5dbfb6bfaf5ff",
+      "strict": true
+    },
+    {
+      "capabilities": [
+        "STATE_WRITE"
+      ],
+      "description_sha256": "552662d97d029f77cfe279dcf899d7c0a405dae2ec7a4e5cca89bcd9ceb018fe",
+      "input_schema_sha256": "d899069cd7bbb7879ca4565acffd0b4cf90ba21f6f5fdc92a1d67b99097ce8dc",
+      "name": "focus_task",
+      "order": 300,
+      "output_schema_sha256": "fe4e3a6c9e6ef7605ecd8d3b38fa17889a1f3ae6b777f8848c56c83da751700b",
+      "strict": true
+    },
+    {
       "capabilities": [
         "READ_FILES"
       ],

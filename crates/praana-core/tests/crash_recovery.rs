@@ -13,11 +13,20 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use praana_core::clock::{Clock, ThreadSleeper};
 use praana_core::config::build_defaults;
-use praana_core::id::{IdGenerationError, MonotonicUlidGenerator, RandomSource};
+use praana_core::history::event_log::EventLogStore;
+use praana_core::history::recovery::SessionRecoveryEngine;
+use praana_core::id::{IdGenerationError, IdGenerator, MonotonicUlidGenerator, RandomSource};
+use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
 use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
 use praana_core::protocol::hashes::calculate_result_messages_hash;
+use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
 use praana_core::protocol::messages::FinishReason;
 use praana_core::protocol::models::ProviderUsage;
+use praana_core::protocol::state_graph::{
+    NoteStateV1, StateChangeReason, StateChangedV1, StateOperationV1, StateSourceKind,
+    StateSourceV1, StateTier, StateValueV1,
+};
+use praana_core::protocol::tool_result::ToolResultStatus;
 use praana_core::provider::openai::parse_chat_stream;
 use praana_core::turn::{
     AdmittedRequest, AssistantDraft, DraftCall, HeadlessLoop, LoopConfig, LoopFault,
@@ -615,7 +624,7 @@ fn spawn_child(
 ) -> std::process::Output {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", test])
+        .args(["--exact", test, "--nocapture"])
         .env("PRAANA_CRASH_ROOT", root)
         .env("PRAANA_CRASH_MODE", mode)
         .env("PRAANA_SCENARIO", scenario)
@@ -1658,4 +1667,807 @@ fn malformed_tail_recovers_exact_valid_prefix() {
     let repaired = std::fs::read(&events_path).unwrap();
     assert!(repaired.starts_with(&durable_prefix));
     assert!(!String::from_utf8_lossy(&repaired).contains("\"partial\""));
+}
+
+/// StateChanged is durable before the finish record. Recovery must mark the
+/// call uncertain and must not append another StateChanged.
+#[test]
+fn crash_after_state_changed_before_finish_is_uncertain() {
+    let root = tempfile::tempdir().unwrap();
+    let output = spawn_child(
+        root.path(),
+        "child_state_changed_before_finish",
+        "state-crash",
+        "state",
+        Some("state.after_state_changed_before_finish"),
+        false,
+    );
+    assert_abort(&output, "state.after_state_changed_before_finish");
+    let events = read_envelopes(root.path());
+    assert_eq!(count_state_changed(&events), 1);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event.event, CanonicalEvent::ToolExecutionStarted(_))));
+    assert!(events
+        .iter()
+        .all(|event| !matches!(event.event, CanonicalEvent::ToolExecutionFinished(_))));
+    let mut engine =
+        SessionRecoveryEngine::new(&root.path().join("session"), "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+            .unwrap();
+    assert!(engine.run_recovery().unwrap() >= 1);
+    let recovered = engine.store().events().unwrap();
+    assert_eq!(count_state_changed(&recovered), 1);
+    assert!(recovered.iter().any(|event| matches!(
+        &event.event,
+        CanonicalEvent::ToolExecutionFinished(finished)
+            if finished.result.status == ToolResultStatus::Uncertain
+    )));
+    assert_eq!(engine.run_recovery().unwrap(), 0);
+    assert_eq!(count_state_changed(&engine.store().events().unwrap()), 1);
+}
+
+fn count_state_changed(events: &[EventEnvelope]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event.event, CanonicalEvent::StateChanged(_)))
+        .count()
+}
+
+#[test]
+fn child_state_changed_before_finish() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("state-crash") {
+        return;
+    }
+    arm_from_env();
+    state_crash_child::seed_and_abort(PathBuf::from(root).join("session"));
+}
+
+struct AutoHydrateCrashProvider {
+    _root: PathBuf,
+}
+
+impl AutoHydrateCrashProvider {
+    fn new(root: PathBuf) -> Self {
+        Self { _root: root }
+    }
+}
+
+#[async_trait]
+impl StepProvider for AutoHydrateCrashProvider {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"scripted": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("done".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(1),
+            },
+            authorization,
+        })
+    }
+}
+
+#[test]
+fn child_auto_hydrate_seed_and_crash() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("auto-hydrate-crash") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    setup_work(&root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_cfg = config(root.clone());
+        loop_cfg.config.state.auto_hydrate = true;
+        loop_cfg.config.state.auto_hydrate_max = 5;
+
+        // Initialize session and write SessionStarted (seq 1)
+        let loop_init = HeadlessLoop::create(loop_cfg.clone()).unwrap();
+        let session_dir = loop_init.session_dir().to_path_buf();
+        drop(loop_init);
+
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(session_dir.join("meta.json")).unwrap())
+                .unwrap();
+        let session_id =
+            SessionId::from_str_canonical(meta["session_id"].as_str().unwrap()).unwrap();
+
+        // Append soft note as seq 2
+        let mut log = EventLogStore::open(&session_dir, &session_id.as_str()).unwrap();
+        let events = log.events().unwrap();
+        let first_seq = events[0].sequence;
+        let first_event_id = events[0].event_id;
+        let note_id = StateId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FA1").unwrap();
+        let event_id: EventId = loop_cfg.ids.next_id().unwrap();
+        let mutation_id: StateMutationId = loop_cfg.ids.next_id().unwrap();
+        log.append_event(&EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id,
+            session_id,
+            sequence: log.current_sequence() + 1,
+            timestamp_ms: 1_700_000_000_100,
+            turn_id: None,
+            attempt_id: None,
+            event: CanonicalEvent::StateChanged(StateChangedV1 {
+                state_schema_version: 1,
+                mutation_id,
+                expected_graph_sequence: log.current_sequence(),
+                reason: StateChangeReason::System,
+                source: StateSourceV1 {
+                    source_kind: StateSourceKind::System,
+                    event_id: first_event_id,
+                    sequence: first_seq,
+                    turn_id: None,
+                    attempt_id: None,
+                    tool_call_id: None,
+                    artifact_id: None,
+                    summary_segment_id: None,
+                },
+                automation: None,
+                operations: vec![StateOperationV1::Create {
+                    state_id: note_id,
+                    tier: StateTier::Soft,
+                    value: StateValueV1::Note(NoteStateV1 {
+                        text: "quantum algorithm optimization".into(),
+                        tags: Vec::new(),
+                    }),
+                }],
+            }),
+        })
+        .unwrap();
+        drop(log);
+
+        let mut resumed = HeadlessLoop::resume(loop_cfg).unwrap();
+        let provider = AutoHydrateCrashProvider::new(root);
+        let _ = resumed.run_turn("quantum algorithm query", &provider).await;
+    });
+}
+
+#[test]
+fn child_auto_hydrate_resume_and_finish() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("auto-hydrate-resume") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_cfg = resume_config(root.clone());
+        loop_cfg.config.state.auto_hydrate = true;
+        loop_cfg.config.state.auto_hydrate_max = 5;
+        let mut loop_ = HeadlessLoop::resume(loop_cfg).unwrap();
+        let provider = AutoHydrateCrashProvider::new(root);
+        let report = loop_.continue_turn(&provider).await.unwrap();
+        assert!(report.interruption.is_none());
+    });
+}
+
+#[test]
+fn crash_auto_hydrate_recovery_matrix() {
+    // 1. Crash at event.after_fsync:state_changed:5@1
+    // (after the event is durable, before AssistantAttemptStarted)
+    let root_state = tempfile::tempdir().unwrap();
+    let point_state = "event.after_fsync:state_changed:5@1";
+    let output = spawn_child(
+        root_state.path(),
+        "child_auto_hydrate_seed_and_crash",
+        "auto-hydrate-crash",
+        "auto-hydrate",
+        Some(point_state),
+        false,
+    );
+    assert_abort(&output, point_state);
+    let crashed_events = read_envelopes(root_state.path());
+    assert_eq!(crashed_events.len(), 5);
+    let auto_hydrated_before = crashed_events
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.event,
+                CanonicalEvent::StateChanged(sc) if sc.reason == StateChangeReason::AutoHydrate
+            )
+        })
+        .count();
+    assert_eq!(auto_hydrated_before, 1);
+
+    // Continue turn: no second event appended
+    let resumed = spawn_child(
+        root_state.path(),
+        "child_auto_hydrate_resume_and_finish",
+        "auto-hydrate-resume",
+        "auto-hydrate",
+        None,
+        true,
+    );
+    assert!(
+        resumed.status.success(),
+        "continue_turn must succeed: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let final_events = read_envelopes(root_state.path());
+    let auto_hydrated_after = final_events
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.event,
+                CanonicalEvent::StateChanged(sc) if sc.reason == StateChangeReason::AutoHydrate
+            )
+        })
+        .count();
+    assert_eq!(
+        auto_hydrated_after, 1,
+        "no second event appended during continue_turn"
+    );
+
+    // 2. Crash at event.after_fsync:turn_started:4@1
+    // (before the event)
+    let root_turn = tempfile::tempdir().unwrap();
+    let point_turn = "event.after_fsync:turn_started:4@1";
+    let output2 = spawn_child(
+        root_turn.path(),
+        "child_auto_hydrate_seed_and_crash",
+        "auto-hydrate-crash",
+        "auto-hydrate",
+        Some(point_turn),
+        false,
+    );
+    assert_abort(&output2, point_turn);
+    let crashed_events2 = read_envelopes(root_turn.path());
+    assert_eq!(crashed_events2.len(), 4);
+    let auto_hydrated_before2 = crashed_events2
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.event,
+                CanonicalEvent::StateChanged(sc) if sc.reason == StateChangeReason::AutoHydrate
+            )
+        })
+        .count();
+    assert_eq!(auto_hydrated_before2, 0);
+
+    // Continue turn: the event is appended exactly once
+    let resumed2 = spawn_child(
+        root_turn.path(),
+        "child_auto_hydrate_resume_and_finish",
+        "auto-hydrate-resume",
+        "auto-hydrate",
+        None,
+        true,
+    );
+    assert!(
+        resumed2.status.success(),
+        "continue_turn must succeed: {}",
+        String::from_utf8_lossy(&resumed2.stderr)
+    );
+    let final_events2 = read_envelopes(root_turn.path());
+    let auto_hydrated_after2 = final_events2
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.event,
+                CanonicalEvent::StateChanged(sc) if sc.reason == StateChangeReason::AutoHydrate
+            )
+        })
+        .count();
+    assert_eq!(
+        auto_hydrated_after2, 1,
+        "the event is appended exactly once"
+    );
+}
+
+#[test]
+fn child_auto_hydrate_controller_other_error() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("auto-hydrate-other-error") {
+        return;
+    }
+    let root = PathBuf::from(root);
+    setup_work(&root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_cfg = config(root.clone());
+        loop_cfg.config.state.auto_hydrate = true;
+        loop_cfg.config.state.auto_hydrate_max = 5;
+
+        // Initialize session and write SessionStarted (seq 1)
+        let loop_init = HeadlessLoop::create(loop_cfg.clone()).unwrap();
+        let session_dir = loop_init.session_dir().to_path_buf();
+        drop(loop_init);
+
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(session_dir.join("meta.json")).unwrap())
+                .unwrap();
+        let session_id =
+            SessionId::from_str_canonical(meta["session_id"].as_str().unwrap()).unwrap();
+
+        // Append soft note as seq 2
+        let mut log = EventLogStore::open(&session_dir, &session_id.as_str()).unwrap();
+        let events = log.events().unwrap();
+        let first_seq = events[0].sequence;
+        let first_event_id = events[0].event_id;
+        let note_id = StateId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FA1").unwrap();
+        let event_id: EventId = loop_cfg.ids.next_id().unwrap();
+        let mutation_id: StateMutationId = loop_cfg.ids.next_id().unwrap();
+        log.append_event(&EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id,
+            session_id,
+            sequence: log.current_sequence() + 1,
+            timestamp_ms: 1_700_000_000_100,
+            turn_id: None,
+            attempt_id: None,
+            event: CanonicalEvent::StateChanged(StateChangedV1 {
+                state_schema_version: 1,
+                mutation_id,
+                expected_graph_sequence: log.current_sequence(),
+                reason: StateChangeReason::System,
+                source: StateSourceV1 {
+                    source_kind: StateSourceKind::System,
+                    event_id: first_event_id,
+                    sequence: first_seq,
+                    turn_id: None,
+                    attempt_id: None,
+                    tool_call_id: None,
+                    artifact_id: None,
+                    summary_segment_id: None,
+                },
+                automation: None,
+                operations: vec![StateOperationV1::Create {
+                    state_id: note_id,
+                    tier: StateTier::Soft,
+                    value: StateValueV1::Note(NoteStateV1 {
+                        text: "quantum algorithm optimization".into(),
+                        tags: Vec::new(),
+                    }),
+                }],
+            }),
+        })
+        .unwrap();
+        drop(log);
+
+        let mut resumed = HeadlessLoop::resume(loop_cfg).unwrap();
+        let provider = AutoHydrateCrashProvider::new(root);
+        praana_core::state::inject_commit_origin_error("STATE_GRAPH_SEQUENCE_CONFLICT");
+        let rep = resumed
+            .run_turn("quantum algorithm query", &provider)
+            .await
+            .unwrap();
+        praana_core::state::reset_commit_origin_injection();
+        assert!(rep.interruption.is_none());
+    });
+}
+
+#[test]
+fn auto_hydrate_controller_other_error_warning_and_continue() {
+    let root = tempfile::tempdir().unwrap();
+    let output = spawn_child(
+        root.path(),
+        "child_auto_hydrate_controller_other_error",
+        "auto-hydrate-other-error",
+        "auto-hydrate",
+        None,
+        false,
+    );
+    assert!(
+        output.status.success(),
+        "child must exit 0, got status {:?}, stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("state auto-hydrate skipped: STATE_GRAPH_SEQUENCE_CONFLICT"),
+        "stderr must contain warning with state code, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("quantum"),
+        "stderr must not contain query text"
+    );
+    assert!(
+        !stderr.contains("optimization"),
+        "stderr must not contain object text"
+    );
+
+    let final_events = read_envelopes(root.path());
+    let auto_hydrated = final_events.iter().any(|e| {
+        matches!(
+            &e.event,
+            CanonicalEvent::StateChanged(sc) if sc.reason == StateChangeReason::AutoHydrate
+        )
+    });
+    assert!(
+        !auto_hydrated,
+        "auto_hydrate event must not be committed on error"
+    );
+}
+
+#[test]
+fn auto_hydrate_controller_failure_projection_integrity() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().to_path_buf();
+    setup_work(&root_path);
+    let mut loop_cfg = config(root_path.clone());
+    loop_cfg.config.state.auto_hydrate = true;
+    loop_cfg.config.state.auto_hydrate_max = 5;
+
+    let loop_init = HeadlessLoop::create(loop_cfg.clone()).unwrap();
+    let session_dir = loop_init.session_dir().to_path_buf();
+    drop(loop_init);
+
+    let meta: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(session_dir.join("meta.json")).unwrap())
+            .unwrap();
+    let session_id = SessionId::from_str_canonical(meta["session_id"].as_str().unwrap()).unwrap();
+
+    let mut log = EventLogStore::open(&session_dir, &session_id.as_str()).unwrap();
+    let events = log.events().unwrap();
+    let first_seq = events[0].sequence;
+    let first_event_id = events[0].event_id;
+    let note_id = StateId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FA1").unwrap();
+    let event_id: EventId = loop_cfg.ids.next_id().unwrap();
+    let mutation_id: StateMutationId = loop_cfg.ids.next_id().unwrap();
+    log.append_event(&EventEnvelope {
+        schema_version: EVENT_SCHEMA_VERSION,
+        event_id,
+        session_id,
+        sequence: log.current_sequence() + 1,
+        timestamp_ms: 1_700_000_000_100,
+        turn_id: None,
+        attempt_id: None,
+        event: CanonicalEvent::StateChanged(StateChangedV1 {
+            state_schema_version: 1,
+            mutation_id,
+            expected_graph_sequence: log.current_sequence(),
+            reason: StateChangeReason::System,
+            source: StateSourceV1 {
+                source_kind: StateSourceKind::System,
+                event_id: first_event_id,
+                sequence: first_seq,
+                turn_id: None,
+                attempt_id: None,
+                tool_call_id: None,
+                artifact_id: None,
+                summary_segment_id: None,
+            },
+            automation: None,
+            operations: vec![StateOperationV1::Create {
+                state_id: note_id,
+                tier: StateTier::Soft,
+                value: StateValueV1::Note(NoteStateV1 {
+                    text: "quantum algorithm optimization".into(),
+                    tags: Vec::new(),
+                }),
+            }],
+        }),
+    })
+    .unwrap();
+    drop(log);
+
+    let mut resumed = HeadlessLoop::resume(loop_cfg).unwrap();
+    let provider = AutoHydrateCrashProvider::new(root_path);
+    praana_core::state::inject_commit_origin_error("STATE_PROJECTION_INTEGRITY");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let err = rt
+        .block_on(async { resumed.run_turn("quantum algorithm query", &provider).await })
+        .unwrap_err();
+    praana_core::state::reset_commit_origin_injection();
+
+    assert!(
+        matches!(err, TurnError::Failed(ref msg) if msg == "STATE_PROJECTION_INTEGRITY"),
+        "STATE_PROJECTION_INTEGRITY must map to TurnError::failed, got {err:?}"
+    );
+}
+
+mod state_crash_child {
+    use std::collections::BTreeSet;
+
+    use praana_core::clock::SystemClock;
+    use praana_core::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
+    use praana_core::history::artifact::{policy_from_session, ArtifactStore};
+    use praana_core::history::event_log::EventLogStore;
+    use praana_core::id::MonotonicUlidGenerator;
+    use praana_core::protocol::constants::*;
+    use praana_core::protocol::events::*;
+    use praana_core::protocol::id::*;
+    use praana_core::protocol::messages::*;
+    use praana_core::protocol::models::*;
+    use praana_core::tools::builtin::state::phase4_state_tools;
+    use praana_core::tools::{
+        BatchOrigin, DurableSession, ProviderToolCall, ToolBatchRequest, ToolCallOrigin, ToolName,
+        ToolRegistry, ToolRuntime,
+    };
+    use serde_json::json;
+    use tokio_util::sync::CancellationToken;
+
+    const SESSION: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+    fn ulid(suffix: &str) -> String {
+        let mut id = String::from("01ARZ3NDEKTSV4RRFFQ69G5F");
+        id.push_str(suffix);
+        assert_eq!(id.len(), 26, "{id}");
+        id
+    }
+
+    fn eid(suffix: &str) -> EventId {
+        EventId::from_str_canonical(&ulid(suffix)).unwrap()
+    }
+
+    fn session_id() -> SessionId {
+        SessionId::from_str_canonical(SESSION).unwrap()
+    }
+
+    fn digest(hex: &str) -> Sha256Digest {
+        Sha256Digest::from_hex_str(hex).unwrap()
+    }
+
+    pub fn seed_and_abort(dir: std::path::PathBuf) {
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut log = EventLogStore::create_or_open(&dir, SESSION).unwrap();
+        let artifacts = ArtifactStore::open(
+            &dir.join("history.db"),
+            policy_from_session(&dir),
+            std::sync::Arc::new(SystemClock),
+        )
+        .unwrap();
+        let runtime = ToolRuntime::new(
+            ToolRegistry::try_from_erased(phase4_state_tools().unwrap()).unwrap(),
+            ToolsConfig {
+                allowed_paths: Vec::new(),
+                default_timeout_ms: 60_000,
+                max_parallel_calls: 1,
+                max_spawned_processes: 1,
+                shell_enabled: false,
+                shell_max_timeout_ms: 600_000,
+                shell_timeout_ms: 30_000,
+            },
+            RiskConfig { allow: Vec::new() },
+            CircuitConfig {
+                loop_threshold: 3,
+                max_tokens: 0,
+                max_wall_ms: 0,
+            },
+        );
+        runtime.set_workspace(dir.clone());
+        runtime.set_session(dir.clone(), session_id());
+        let ids = MonotonicUlidGenerator::system();
+        let clock = SystemClock;
+        let turn_id = TurnId::from_str_canonical(&ulid("T1")).unwrap();
+        let attempt_id = AttemptId::from_str_canonical(&ulid("AT")).unwrap();
+        let step_id = StepId::from_str_canonical(&ulid("ST")).unwrap();
+        let batch_id = ToolBatchId::from_str_canonical(&ulid("BT")).unwrap();
+        let arguments = json!({"title": "crash task"});
+        let call_id = ToolCallId::from_str_canonical("call_000").unwrap();
+        let mut seq = 0u64;
+        {
+            let mut append =
+                |event: CanonicalEvent, turn: Option<TurnId>, attempt: Option<AttemptId>| {
+                    seq += 1;
+                    log.append_event(&EventEnvelope {
+                        schema_version: EVENT_SCHEMA_VERSION,
+                        event_id: eid(&format!("{seq:02X}")),
+                        session_id: session_id(),
+                        sequence: seq,
+                        timestamp_ms: 1_700_000_000_000 + seq as i64,
+                        turn_id: turn,
+                        attempt_id: attempt,
+                        event,
+                    })
+                    .unwrap();
+                };
+            append(
+                CanonicalEvent::SessionStarted(session_started()),
+                None,
+                None,
+            );
+            let user_message = MessageId::from_str_canonical(&ulid("M1")).unwrap();
+            append(
+                CanonicalEvent::UserMessageAccepted(UserMessageAccepted {
+                    message: UserMessage {
+                        message_id: user_message,
+                        turn_id,
+                        blocks: vec![UserBlock::Text(TextBlock { text: "go".into() })],
+                    },
+                }),
+                Some(turn_id),
+                None,
+            );
+            append(
+                CanonicalEvent::TurnStarted(TurnStarted {
+                    turn_index: 1,
+                    user_message_id: user_message,
+                    model: model_selection(),
+                    toolset_hash: digest(
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    ),
+                    max_steps: 10,
+                }),
+                Some(turn_id),
+                None,
+            );
+            append(
+                CanonicalEvent::AssistantAttemptStarted(AssistantAttemptStarted {
+                    purpose: ProviderAttemptPurpose::AssistantStep(AssistantStepPurpose {
+                        step_id,
+                        step_index: 0,
+                    }),
+                    attempt_number: 1,
+                    model: model_selection(),
+                    request_hash: digest(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    ),
+                    admission: admission(),
+                    retry_of: None,
+                    emergency_context_retry: false,
+                    recovery_notices: vec![],
+                }),
+                Some(turn_id),
+                Some(attempt_id),
+            );
+            append(
+                CanonicalEvent::AssistantStepAccepted(AssistantStepAccepted {
+                    purpose: AssistantStepPurpose {
+                        step_id,
+                        step_index: 0,
+                    },
+                    message: AssistantMessage {
+                        message_id: MessageId::from_str_canonical(&ulid("AM")).unwrap(),
+                        turn_id,
+                        step_id,
+                        provider: "openai".into(),
+                        model: "gpt-5".into(),
+                        phase: Some(AssistantPhase::FinalAnswer),
+                        blocks: vec![AssistantBlock::ToolCall(ToolCall {
+                            call_id: call_id.clone(),
+                            name: "create_task".into(),
+                            arguments: arguments.as_object().unwrap().clone(),
+                            raw_arguments: arguments.to_string(),
+                        })],
+                        finish_reason: FinishReason::ToolUse,
+                        continuation: None,
+                        usage: ProviderUsage {
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            reasoning_tokens: 0,
+                            total_tokens: 0,
+                            cache_read_tokens: 0,
+                            cache_write_tokens: 0,
+                        },
+                    },
+                }),
+                Some(turn_id),
+                Some(attempt_id),
+            );
+        }
+        let request = ToolBatchRequest {
+            batch_id,
+            session_id: session_id(),
+            turn_id,
+            attempt_id,
+            calls: vec![ProviderToolCall {
+                tool_call_id: call_id,
+                tool_name: ToolName::new("create_task").unwrap(),
+                arguments,
+                provider_ordinal: 0,
+            }],
+            origin: ToolCallOrigin::Model,
+        };
+        let mut durable = DurableSession {
+            log: &mut log,
+            artifacts: &artifacts,
+            ids: &ids,
+            clock: &clock,
+            session_id: session_id(),
+            step_id,
+            fault_after_body: false,
+            recovery_cancelled_calls: BTreeSet::new(),
+        };
+        let runtime = &runtime;
+        let _ = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(runtime.execute_durable_batch(
+                request,
+                BatchOrigin::Model,
+                CancellationToken::new(),
+                &mut durable,
+            ));
+        panic!("state failpoint did not abort");
+    }
+
+    fn session_started() -> SessionStarted {
+        SessionStarted {
+            cwd: "/workspace/praana".into(),
+            agent: "praana".into(),
+            config_schema_version: 1,
+            config_digest_sha256: digest(
+                "1aecaa286f1f61128b79b8ff623dfc99bf40a786ce0997bb6d7a00f101328760",
+            ),
+            history_mode: HistoryMode::Append,
+            projection_version: ProjectionId::from_str_canonical(PROJECTION_VERSION).unwrap(),
+            compaction_policy_version: COMPACTION_POLICY_VERSION.into(),
+            artifact_policy_version: ARTIFACT_POLICY_VERSION.into(),
+            token_estimator_schema_version: TOKEN_ESTIMATOR_SCHEMA_VERSION,
+            unicode_utility_version: UNICODE_UTILITY_VERSION.into(),
+            system_context_schema_version: SYSTEM_CONTEXT_SCHEMA_VERSION,
+            provider_registry_schema_version: PROVIDER_REGISTRY_SCHEMA_VERSION,
+            builtin_tool_catalog_schema_version: BUILTIN_TOOL_CATALOG_SCHEMA_VERSION,
+            redaction_version: REDACTION_VERSION.into(),
+            ui_contract_schema_version: UI_CONTRACT_SCHEMA_VERSION,
+            initial_model: model_selection(),
+            initial_toolset_hash: digest(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        }
+    }
+
+    fn model_selection() -> ModelSelection {
+        ModelSelection {
+            provider: "openai".into(),
+            protocol: "openai-responses-v1".into(),
+            model: "gpt-5".into(),
+            model_revision: None,
+            model_family: "gpt-5".into(),
+            endpoint_fingerprint: digest(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            reasoning_effort: ReasoningEffort::Medium,
+        }
+    }
+
+    fn admission() -> AdmissionSnapshot {
+        AdmissionSnapshot {
+            token_estimator_schema_version: 1,
+            estimator_id: "generic".into(),
+            estimated_input_sha256: digest(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            context_window_tokens: 128_000,
+            estimated_input_tokens: 0,
+            resolved_output_tokens: 0,
+            requested_reasoning_tokens: 0,
+            safety_margin_tokens: 0,
+            projected_fill_millionths: 0,
+            capability_profile_hash: digest(
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            ),
+            estimate_reused_from_attempt_id: None,
+        }
+    }
 }

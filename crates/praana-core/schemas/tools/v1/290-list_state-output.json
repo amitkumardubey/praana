@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "focused": {
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "task",
+              "decision",
+              "constraint",
+              "note",
+              "error"
+            ],
+            "type": "string"
+          },
+          "lifecycle": {
+            "enum": [
+              "current",
+              "retracted"
+            ],
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tier": {
+            "enum": [
+              "active",
+              "soft",
+              "hard"
+            ],
+            "type": "string"
+          },
+          "updated_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "focused",
+          "id",
+          "kind",
+          "lifecycle",
+          "revision",
+          "tier",
+          "updated_sequence"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "projection_sequence": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "items",
+    "projection_sequence"
+  ],
+  "type": "object"
+}

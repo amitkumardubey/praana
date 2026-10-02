@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Built-in Tool Catalog §6.2 success value.",
+  "properties": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+          "type": "string"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "data": {
+                  "type": "string"
+                },
+                "encoding": {
+                  "const": "utf8",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "data",
+                "encoding"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "data": {
+                  "type": "string"
+                },
+                "encoding": {
+                  "const": "base64",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "data",
+                "encoding"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "continuation": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "artifact_id": {
+                  "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+                  "type": "string"
+                },
+                "byte_offset": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "head_lines": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "json_pointer": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "line_range": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "end": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "start": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "end",
+                        "start"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "max_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "regex": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "case_sensitive": {
+                          "type": "boolean"
+                        },
+                        "context_after": {
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "context_before": {
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "max_matches": {
+                          "format": "uint32",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "pattern": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "case_sensitive",
+                        "context_after",
+                        "context_before",
+                        "max_matches",
+                        "pattern"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "selector": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "default",
+                        "complete_result",
+                        "stdout",
+                        "stderr"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tail_lines": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "artifact_id"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "matches": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "end_column": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "line": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start_column": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "end_column",
+              "line",
+              "start_column"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "returned_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selected_line_end": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selected_line_start": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selector": {
+          "enum": [
+            "default",
+            "complete_result",
+            "stdout",
+            "stderr"
+          ],
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "total_lines": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "complete",
+        "content",
+        "matches",
+        "returned_bytes",
+        "selector",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "artifact"
+  ],
+  "type": "object"
+}
