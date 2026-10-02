@@ -760,6 +760,13 @@ is a diagnostic result and **not** a fix; if that step also fails, the race
 survives serialization and the next change belongs to the lock lifetime,
 which is outside this packet's allowlist until that result exists.
 
+The Linux crash matrix later failed the same way in
+`deletion_keeps_a_locked_or_recent_session`: after `delete_session` dropped its
+writer, the next `create_or_open` returned `E_SESSION_LOCKED`. `flock` stays
+with a child that inherited the descriptor across `fork` until that child
+execs. `EventLogStore` now unlocks `session.lock` before closing it, so the
+next writer can take the lock while that child is still between fork and exec.
+
 Focused red/green gates: `cargo test -p praana-core --test step_provider_p3d`,
 `cargo test -p praana-cli --test headless_cli_p3d`,
 `cargo test -p praana-core --test openai_v1`,

@@ -1,10 +1,13 @@
 //! Canonical append-only event store, exclusive writer lock, and startup repair.
 //!
 //! Platform notes: Unix enforces private modes (`0700`/`0600`), `O_NOFOLLOW`,
-//! and single-writer ownership via advisory locks (`fs2`). Outside Unix, private
-//! ACLs are not yet implemented in std: permission establishment fails closed
-//! with `HISTORY_INSECURE_PERMISSIONS`, while the cross-process writer lock
-//! is maintained via `fs2`. Directory fsync outside Unix remains a no-op.
+//! and single-writer ownership via advisory locks (`fs2`). The lock is released
+//! with an explicit unlock before the descriptor is closed: `flock` follows the
+//! open file description, and `fork` shares that description, so `close` alone
+//! leaves the lock held until the child execs. Outside Unix, private ACLs are
+//! not yet implemented in std: permission establishment fails closed with
+//! `HISTORY_INSECURE_PERMISSIONS`, while the cross-process writer lock is
+//! maintained via `fs2`. Directory fsync outside Unix remains a no-op.
 
 /// Internal diagnostic code emitted as a recoverable warning when an existing session
 /// file or directory had wider permissions and was tightened to the required private mode.
@@ -104,11 +107,39 @@ pub struct SessionMetaV1 {
     pub creator_version: String,
 }
 
+/// Exclusive owner of `session.lock`.
+///
+/// `flock` is tied to the open file description. `fork` duplicates the
+/// descriptor onto that same description, so closing the parent's descriptor
+/// does not release the lock while the child still has it. Unlocking first does.
+struct SessionLock {
+    file: File,
+}
+
+impl SessionLock {
+    fn try_acquire(file: File) -> std::io::Result<Self> {
+        use fs2::FileExt;
+        file.try_lock_exclusive()?;
+        Ok(Self { file })
+    }
+
+    fn file_mut(&mut self) -> &mut File {
+        &mut self.file
+    }
+}
+
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // Same flock primitive as `try_lock_exclusive`.
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
 pub struct EventLogStore {
     session_dir: PathBuf,
     session_id: SessionId,
     file: File,
-    _lock_file: File,
+    _lock_file: SessionLock,
     replayer: EventReplayer,
     current_sequence: u64,
     current_prefix_hash: [u8; 32],
@@ -181,16 +212,14 @@ impl EventLogStore {
         lock_options
             .mode(0o600)
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
-        let mut lock_file = lock_options.open(&lock_path).map_err(|_| history_io())?;
+        let lock_file = lock_options.open(&lock_path).map_err(|_| history_io())?;
         if let Some(w) = establish_mode(&lock_path, 0o600)? {
             warnings.push(w);
         }
 
-        use fs2::FileExt;
-        if lock_file.try_lock_exclusive().is_err() {
-            return Err(HistoryError::new("E_SESSION_LOCKED", None, None, false));
-        }
-        write_lock_metadata(&mut lock_file)?;
+        let mut lock_file = SessionLock::try_acquire(lock_file)
+            .map_err(|_| HistoryError::new("E_SESSION_LOCKED", None, None, false))?;
+        write_lock_metadata(lock_file.file_mut())?;
 
         let events_path = session_dir.join("events.jsonl");
         reject_symlink(&events_path)?;

@@ -254,7 +254,10 @@ no-follow semantics. It is never opened with truncate during normal operation.
 The incomplete-final-record recovery procedure in section 9.1 is the sole
 exception.
 
-`session.lock` holds an exclusive advisory lock for the mutating owner. Lock
+`session.lock` holds an exclusive advisory lock for the mutating owner. The
+owner releases that lock with an explicit unlock before closing the descriptor.
+Closing alone does not release it while a child still shares the descriptor
+across `fork`, and that child would block the next writer until it execs. Lock
 metadata is diagnostic only and contains PID, process start time, and a random
 owner nonce. A second writer receives `HISTORY_SESSION_LOCKED`. Read-only
 clients do not take this lock, open SQLite read-only, and parse only the event
