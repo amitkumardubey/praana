@@ -16,7 +16,7 @@
 - Live catalog: TEXT chat-capable only; hard-exclude `responseStreamingSupported === false`; prefer inference profiles via `foundation-model/` ARN suffix.
 - Never log bearer tokens or secret keys.
 - Conventional commits; `bun typecheck && bun test` before each commit when practical.
-- Update repo docs + `~/win_documents/Github/praana-internal` before commits that change user-facing behavior.
+- Update repo docs before commits that change user-facing behavior.
 
 ---
 
@@ -890,7 +890,6 @@ EOF
 - Modify: `AGENTS.md` (provider keys / Bedrock notes)
 - Modify: `docs/ARCHITECTURE.md` (live catalog line for Bedrock control plane; `llm.region`)
 - Modify: `praana.config.example.toml` (commented `region`, auth notes for Bedrock API key)
-- Mirror: `~/win_documents/Github/praana-internal/technical/` (short note or copy of user-facing bullets)
 
 - [ ] **Step 1: Edit docs**
 
@@ -905,21 +904,13 @@ EOF
 
 `AGENTS.md` — mention `AWS_*` / Bedrock API key and `llm.region`.
 
-- [ ] **Step 2: Sync internal docs copy**
-
-```bash
-cp docs/superpowers/specs/2026-07-23-amazon-bedrock-support-design.md \
-  ~/win_documents/Github/praana-internal/technical/
-# Plus a short STATE/ROADMAP note if that repo tracks shipped work
-```
-
-- [ ] **Step 3: Full verify**
+- [ ] **Step 2: Full verify**
 
 Run: `bun typecheck && bun test`
 
 Expected: clean
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add AGENTS.md docs/ARCHITECTURE.md praana.config.example.toml

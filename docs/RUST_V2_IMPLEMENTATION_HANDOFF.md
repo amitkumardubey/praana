@@ -1074,7 +1074,6 @@ anything adds a row before it merges.
 | `HISTORY_EVENT_INTEGRITY` canonical is conditional (Protocol A.4): narrow replay `E_JSONL_*`/`E_EVENT_*`/`E_REFERENCE_*` is never classified at the tool boundary; always the otherwise branch `E_SESSION_INTEGRITY_FAILED` | 2026-09-29, P4A | Follow-up (needs replay classification context at the error site) | none |
 | `HISTORY_DANGLING_ARTIFACT` canonical is conditional (Protocol A.4): always `E_ARTIFACT_MISSING`; the `E_ARTIFACT_HASH_MISMATCH` branch is never classified | 2026-09-29, P4A | Follow-up (`ArtifactError` carries no hash evidence) | none |
 | `HISTORY_IO` canonical is conditional (Protocol A.4): always `E_HISTORY_PERSISTENCE`; the `E_EVENT_DURABILITY_UNCERTAIN` append-began branch is never classified | 2026-09-29, P4A | Follow-up (append-began state not plumbed to the error site) | none |
-| P4A has no issue in the private tracker yet | 2026-09-29 | Amit (issue recreation) | none |
 
 
 - Diff changes only listed files or an owner-required fixture/data file.
