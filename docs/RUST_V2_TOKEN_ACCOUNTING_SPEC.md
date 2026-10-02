@@ -455,9 +455,13 @@ For Responses, `system` and `state_graph` together are exactly the bytes of
 `S`. For Chat, `system` also keeps the existing JSON escaping and message
 wrapper of the serialized system message. In both cases each component is
 rounded separately and no shared wrapper text is subtracted. When the provider
-reports no offset, `state_graph` is empty and `system` is unchanged. Until
-their owner packets land, the memory and handoff slots stay inside `system`.
-Splitting them out is P5 and P6 work (Implementation Handoff section 4A).
+reports no offset, `state_graph` is empty and `system` is unchanged.
+
+Amended by P5 reconciliation, 2026-10-03. When the provider reports a handoff
+offset, `handoff` is the raw UTF-8 of that slot and `system` is the wire
+system component with that span removed, using the same mismatch rule as the
+state tail. With no handoff offset, the handoff bytes stay inside `system`.
+Memory stays inside `system` until P6.
 
 The request estimate manifest is the ordered RFC 8785 canonical JSON array of
 the nine complete `TokenEstimateV1` objects above, in exactly that order.
