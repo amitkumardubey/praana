@@ -450,21 +450,32 @@ configuration and does not compact.
 Whether a pre-Phase-5 session can later use Phase-5 compaction requires an
 explicit P5 owner decision before that behavior is enabled.
 
-Starting with Phase 5, empty means `auto`: resolve the active session provider,
-protocol, exact model, revision rule, endpoint fingerprint, and credential
-source as the compactor target. For a **new** provider-capable Phase-5 session,
-creation requires that exact capability profile to be
-`SelfCompactionCapability::Validated` and support the strict
-`praana.compaction_candidate.v1` schema. If it does not, creation fails with
-`CONFIG_COMPACTOR_REQUIRED` and instructs the user to set both compactor fields.
-A non-empty configured pair is validated for a trusted context window, strict
-schema output, credentials, and compactor admission during creation. Thus a
-new Phase-5 provider-capable session never discovers a missing compactor only
-at the pressure threshold. Resolution performs no network completion and
-does not silently select a different model. Legacy pre-Phase-5 sessions retain
-their immutable creation snapshot; P5 must
-specify their compaction eligibility and any required migration before enabling
-compaction on their resumed turns.
+Amended by P5 reconciliation, 2026-10-03.
+
+Starting with Phase 5, a non-empty configured pair is validated at creation
+for a trusted context window, `strict_json_schema`, credential presence, and
+compactor admission. Resolution performs no network completion and does not
+silently select a different model. It does not require
+`SelfCompactionCapability::Validated` or a fidelity manifest. Confirmed
+against `resolve_profile_from_manifest`: the bundled row `openai` /
+`openai-chat-v1` / `gpt-5.6-sol` loads with `strict_json_schema: true`, a
+trusted context window, and `self_compaction: Unvalidated`. The bundled
+`openai-responses-v1` row for the same model loads the same way.
+`ModelProfileManifestV1::validate` does not read a fidelity manifest for
+`Unvalidated`. Until P5-7, `validate_effective_config` still rejects every
+complete pair with `CONFIG_FEATURE_NOT_IMPLEMENTED`.
+
+Until a bundled profile is `SelfCompactionCapability::Validated` under
+Compaction §17, a new Phase-5 session may still be created with the empty
+pair. That pair does not select a same-model compactor. It stays legal and
+inert. `CONFIG_COMPACTOR_REQUIRED` applies only after at least one bundled
+profile is Validated and the empty pair still cannot resolve to it.
+
+A session whose creation snapshot predates Phase 5 is not
+compaction-eligible. Resume keeps that snapshot's empty compactor pair inert
+and does not rewrite it. Credential presence for a configured pair is checked
+at creation. The secret is resolved only after the durable compaction attempt
+start, immediately before send (Compaction §12).
 
 ### 6.5 History mode and reasoning replay
 
@@ -494,6 +505,8 @@ The schema is implemented incrementally without silently accepting dead keys:
   Before then, the default empty compactor pair is inert, a one-sided pair is
   `CONFIG_INVALID_VALUE`, and a complete non-empty pair is rejected with
   `CONFIG_FEATURE_NOT_IMPLEMENTED`. Assistant request admission remains active.
+  Amended by P5 reconciliation, 2026-10-03: after that gate, section 6.4
+  applies. The empty pair stays legal until a bundled profile is Validated.
 - Phase 6 accepts `memory.plugin = builtin:sqlite` and activates memory options
   and timeouts. Before Phase 6, only `memory.plugin = none` is accepted.
 
@@ -826,7 +839,7 @@ System Context resume comparison.
 | `CONFIG_PATH_OUTSIDE_PLUGIN_ROOT` | Built-in memory DB escapes its fixed plugin-owned root. |
 | `CONFIG_SECRET_FORBIDDEN` | Secret-like key/header/value appears in configuration. |
 | `CONFIG_SETUP_REQUIRED` | Provider-capable session requested with empty provider/model. |
-| `CONFIG_COMPACTOR_REQUIRED` | At creation of a new Phase-5 provider-capable session, neither the auto-resolved active model nor the explicit compactor pair satisfies trusted context-window, credentials, and strict compaction-schema requirements. Not raised for the default empty pair before Phase 5. |
+| `CONFIG_COMPACTOR_REQUIRED` | Amended by P5 reconciliation, 2026-10-03. Raised only after at least one bundled profile is `SelfCompactionCapability::Validated` and a new Phase-5 session's empty pair still cannot resolve to it. Not raised for the default empty pair before that, and not raised for a pre-Phase-5 snapshot. A complete pair that fails the section 6.4 window, strict-schema, credential-presence, or admission checks fails with this code once P5-7 replaces `CONFIG_FEATURE_NOT_IMPLEMENTED`. |
 | `CONFIG_SNAPSHOT_MISMATCH` | Session snapshot, metadata, or digest disagree. |
 | `CONFIG_RELOAD_UNSUPPORTED` | Live reload or generic config patch requested. |
 
