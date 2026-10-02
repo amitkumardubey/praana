@@ -339,6 +339,39 @@ fn session_lock_prevents_concurrent_writers() {
     assert_eq!(store2_res.unwrap_err().code(), "E_SESSION_LOCKED");
 }
 
+/// `flock` follows the open file description. `fork` shares that description
+/// with the child, so closing the parent's descriptor leaves the lock held
+/// until the child execs. Drop must unlock first.
+///
+/// `Command::spawn` waits until exec, which closes the inherited descriptor,
+/// so this uses `fork` directly. The child only calls `pause`. An empty
+/// session that acquires the lock returns `E_SESSION_NOT_STARTED`; a lock
+/// that is still held returns `E_SESSION_LOCKED`.
+#[cfg(unix)]
+#[test]
+fn session_lock_is_released_while_a_forked_child_still_holds_the_descriptor() {
+    let temp_dir = TempDir::new().unwrap();
+    let session_dir = temp_dir.path().join("session_fork");
+    let store = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+
+    let pid = unsafe { libc::fork() };
+    assert!(pid >= 0, "fork");
+    if pid == 0 {
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
+    drop(store);
+    let reopened = EventLogStore::create_or_open(&session_dir, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+    match reopened {
+        Err(err) if err.code() == "E_SESSION_NOT_STARTED" => {}
+        Err(err) => panic!("session lock still held after drop ({})", err.code()),
+        Ok(_) => panic!("empty session reopened as a live writer"),
+    }
+}
+
 #[test]
 fn recovery_is_idempotent_after_each_repair_event() {
     let dir = fixture_root().join("09_terminal_accept_crash_repair");

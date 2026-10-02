@@ -153,6 +153,7 @@ string bytes. Tool Runtime then RFC-8785 serializes the finalized
 | Tool execution | original model arguments | no mutation |
 | Canonical tool-call event | copied arguments | redact |
 | Tool-result DTO/artifact/search | finalized result | redact before hash/store |
+| StateGraph payload text | caller-supplied state strings | redact before the `StateChanged` event is built (StateGraph section 4.7) |
 | UI/IPC tool rows | canonical redacted copy | no second mutation |
 | Logs/errors/tracing fields | any dynamic string | redact, then length bound |
 | User/assistant messages | accepted text | do not rewrite; restrict diagnostics |

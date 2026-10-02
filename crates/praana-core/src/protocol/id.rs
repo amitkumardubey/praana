@@ -90,6 +90,20 @@ macro_rules! define_ulid_newtype {
                 Self::from_str_canonical(&s).map_err(de::Error::custom)
             }
         }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                serde_json::from_value(serde_json::json!({
+                    "type": "string",
+                    "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$"
+                }))
+                .expect("ulid schema")
+            }
+        }
     };
 }
 

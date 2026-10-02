@@ -1,9 +1,13 @@
-//! Exact `history_schema_version = 1` database. Search tables are created so the
-//! schema matches the owner; this packet does not query or maintain them.
+//! Exact `history_schema_version = 1` database: canonical artifact tables,
+//! derived turn/search tables, checkpoints, and telemetry. The writer owns the
+//! read-write connection; search and retrieval tools use separate read-only
+//! connections (History §12) via [`HistoryDatabase::open_read_only`]. Derived
+//! projection and rebuild live in `history/checkpoint.rs` and
+//! `history/rebuild.rs`.
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use std::sync::Mutex;
 
 use super::error::{map_ledger, schema_unsupported, ArtifactError};
@@ -19,7 +23,7 @@ use crate::protocol::constants::{
 };
 use crate::token::TOKEN_ESTIMATOR_SCHEMA_VERSION;
 
-const SCHEMA_SQL: &str = r#"
+pub(crate) const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_meta (
   key                 TEXT PRIMARY KEY NOT NULL,
   value               TEXT NOT NULL
@@ -352,23 +356,22 @@ impl HistoryDatabase {
         }
         reject_symlink(path).map_err(map_ledger)?;
         let preexisting = path.is_file();
+        // A rebuild interrupted between its step-6 renames leaves only the
+        // rebuilt file; complete the rename before any creation.
+        if !preexisting {
+            super::rebuild::complete_interrupted_rename(path)?;
+        }
+        let preexisting = path.is_file();
         create_db_file_no_follow(path).map_err(map_ledger)?;
         apply_private_file_permissions(path).map_err(map_ledger)?;
         let conn = Connection::open(path)
             .map_err(|err| super::error::io_err(format!("open {}: {err}", path.display())))?;
         apply_pragmas(&conn, path).map_err(map_ledger)?;
-        let application_id: i32 = pragma_i32(&conn, "application_id")?;
-        let user_version: i32 = pragma_i32(&conn, "user_version")?;
-        if user_version != 0 && user_version != 1 {
-            return Err(schema_unsupported(format!("user_version {user_version}")));
-        }
-        if application_id != 0 && application_id != HISTORY_APPLICATION_ID {
-            return Err(schema_unsupported(format!(
-                "application_id {application_id}"
-            )));
-        }
-        let fresh = !preexisting
-            || (user_version == 0 && application_id == 0 && !table_exists(&conn, "schema_meta")?);
+        let fresh = !preexisting || {
+            let application_id = pragma_i32(&conn, "application_id")?;
+            let user_version = pragma_i32(&conn, "user_version")?;
+            user_version == 0 && application_id == 0 && !table_exists(&conn, "schema_meta")?
+        };
         if fresh {
             conn.execute_batch(&format!(
                 "PRAGMA application_id = {HISTORY_APPLICATION_ID}; PRAGMA user_version = 1;"
@@ -383,12 +386,7 @@ impl HistoryDatabase {
             conn.execute_batch(SCHEMA_SQL)
                 .map_err(|err| super::error::io_err(format!("schema: {err}")))?;
             insert_schema_meta(&conn)?;
-        } else if let Some(version) = meta_value(&conn, "history_schema_version")? {
-            if version != "1" {
-                return Err(schema_unsupported(format!(
-                    "history_schema_version {version}"
-                )));
-            }
+        } else {
             // A P1C ledger may already own schema_meta and operation_records at
             // version 1. Creating the remaining tables is schema completion.
             if !table_exists(&conn, "artifacts")? {
@@ -397,13 +395,7 @@ impl HistoryDatabase {
                 insert_schema_meta(&conn)?;
             }
         }
-        let busy: i32 = pragma_i32(&conn, "busy_timeout")?;
-        if busy != 5000 {
-            return Err(ArtifactError::new(
-                "HISTORY_SQLITE_PRAGMA_FAILED",
-                format!("busy_timeout {busy}"),
-            ));
-        }
+        check_open_connection(&conn)?;
         apply_private_file_permissions(path).map_err(map_ledger)?;
         chmod_wal_shm(path).map_err(map_ledger)?;
         assert_canonical_integrity(&conn)?;
@@ -411,6 +403,59 @@ impl HistoryDatabase {
             conn: Mutex::new(conn),
             path: path.to_path_buf(),
         })
+    }
+
+    /// History §12: a separate read-only connection for search and retrieval.
+    /// WAL permits these readers while the writer commits. The file must
+    /// already be an initialized history database; nothing is created.
+    pub fn open_read_only(path: &Path) -> Result<Self, ArtifactError> {
+        reject_symlink(path).map_err(map_ledger)?;
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|err| super::error::io_err(format!("open {}: {err}", path.display())))?;
+        // History §5.1: a read-only connection also sets `query_only`, so a
+        // statement cannot write even through a path that is not the file
+        // mode itself.
+        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+            .map_err(|err| super::error::io_err(format!("busy_timeout: {err}")))?;
+        check_open_connection(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Re-open the connection after the database file was atomically replaced
+    /// (History §9.4 step 6). The old handle keeps reading the renamed file;
+    /// this swaps in a handle on the new path.
+    pub(crate) fn reopen(&self) -> Result<(), ArtifactError> {
+        let conn = Connection::open(&self.path)
+            .map_err(|err| super::error::io_err(format!("open {}: {err}", self.path.display())))?;
+        apply_pragmas(&conn, &self.path).map_err(map_ledger)?;
+        check_open_connection(&conn)?;
+        assert_canonical_integrity(&conn)?;
+        *self.conn.lock().unwrap_or_else(|err| err.into_inner()) = conn;
+        Ok(())
+    }
+
+    /// History §15.2 point 15: checkpoint WAL frames into the database file
+    /// and truncate the log. The caller holds the writer with no other
+    /// connection on this file, so an incomplete checkpoint is a busy failure.
+    pub(crate) fn wal_checkpoint_truncate(&self) -> Result<(), ArtifactError> {
+        let conn = self.lock();
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("history.wal_checkpoint");
+        let (busy, _log_frames, _checkpointed): (i32, i32, i32) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE);", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(super::error::map_sqlite)?;
+        if busy != 0 {
+            return Err(ArtifactError::new(
+                "HISTORY_SQLITE_BUSY",
+                "wal checkpoint could not complete",
+            ));
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -478,6 +523,41 @@ impl HistoryDatabase {
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|err| err.into_inner())
     }
+}
+
+/// Version and timeout checks shared by read-write open, read-only open, and
+/// post-replace reopen: the handle must point at an initialized
+/// `history_schema_version = 1` database with the 5000 ms busy timeout.
+fn check_open_connection(conn: &Connection) -> Result<(), ArtifactError> {
+    let application_id: i32 = pragma_i32(conn, "application_id")?;
+    let user_version: i32 = pragma_i32(conn, "user_version")?;
+    if user_version != 1 {
+        return Err(schema_unsupported(format!("user_version {user_version}")));
+    }
+    if application_id != HISTORY_APPLICATION_ID {
+        return Err(schema_unsupported(format!(
+            "application_id {application_id}"
+        )));
+    }
+    match meta_value(conn, "history_schema_version")? {
+        Some(version) if version == "1" => {}
+        Some(version) => {
+            return Err(schema_unsupported(format!(
+                "history_schema_version {version}"
+            )));
+        }
+        None => {
+            return Err(schema_unsupported("history_schema_version is absent"));
+        }
+    }
+    let busy: i32 = pragma_i32(conn, "busy_timeout")?;
+    if busy != 5000 {
+        return Err(ArtifactError::new(
+            "HISTORY_SQLITE_PRAGMA_FAILED",
+            format!("busy_timeout {busy}"),
+        ));
+    }
+    Ok(())
 }
 
 fn pragma_i32(conn: &Connection, name: &str) -> Result<i32, ArtifactError> {

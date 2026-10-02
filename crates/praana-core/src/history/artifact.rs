@@ -28,6 +28,34 @@ use crate::tools::{FinishedCall, ResultCommit};
 
 pub const RESULT_MEDIA_TYPE: &str = "application/vnd.praana.tool-result+json;version=1";
 
+/// History tools are never artifactized and never re-indexed (History §6.1
+/// rule 5, §11.1.1).
+pub(crate) const HISTORY_RESULT_TOOLS: [&str; 3] = [
+    "search_session_log",
+    "retrieve_artifact",
+    "read_session_source",
+];
+
+/// StateGraph results are never artifactized and are excluded from the batch
+/// inline sum (History §6.1 rule 5). They are not part of the history batch cap.
+pub(crate) const STATE_RESULT_TOOLS: [&str; 11] = [
+    "create_task",
+    "complete_task",
+    "retract_task",
+    "add_constraint",
+    "decide",
+    "add_note",
+    "soft_unload",
+    "hard_unload",
+    "hydrate",
+    "list_state",
+    "focus_task",
+];
+
+pub(crate) fn exempt_inline_tool(name: &str) -> bool {
+    HISTORY_RESULT_TOOLS.contains(&name) || STATE_RESULT_TOOLS.contains(&name)
+}
+
 #[derive(Clone, Debug)]
 pub struct ArtifactPolicy {
     pub inline_tokens: u64,
@@ -148,7 +176,10 @@ pub fn plan_storage(
     let mut eligible_tokens = Vec::new();
     for index in &order {
         let item = &items[*index];
-        if item.tool_name == "retrieve_artifact" {
+        // History §6.1 rule 5: history-tool results are never artifactized,
+        // bypass rules 2 through 4, and are excluded from the batch inline
+        // sum below.
+        if exempt_inline_tool(item.tool_name.as_str()) {
             forced[*index] = Some(StorageClass::Inline);
         } else if item.binary {
             forced[*index] = Some(StorageClass::Artifact);

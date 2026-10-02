@@ -532,8 +532,7 @@ impl SetupService {
                     && row.protocol == protocol
             })
             .ok_or_else(|| SetupError::ModelUnknown(model_id.to_string()))?;
-        let (compactor_provider, compactor_model) =
-            resolve_compactor_selection(&values, provider_name, profile_row, &manifest)?;
+        let (compactor_provider, compactor_model) = resolve_compactor_selection(&values)?;
         let reasoning = choice_value(&values, FIELD_REASONING_EFFORT)?;
         let reasoning_value = reasoning_protocol(reasoning)
             .ok_or_else(|| SetupError::InvalidInput("unsupported reasoning effort".to_owned()))?;
@@ -684,9 +683,6 @@ fn optional_text_value(
 
 fn resolve_compactor_selection(
     values: &BTreeMap<SetupFieldId, SetupValueDto>,
-    primary_provider: &str,
-    primary_row: &crate::provider::ModelProfileRowV1,
-    manifest: &crate::provider::ModelProfileManifestV1,
 ) -> Result<(String, String), SetupError> {
     let compactor_provider = optional_text_value(values, FIELD_COMPACTOR_PROVIDER)?;
     let compactor_model = optional_text_value(values, FIELD_COMPACTOR_MODEL)?;
@@ -695,41 +691,14 @@ fn resolve_compactor_selection(
             "compactor_provider and compactor_model must be supplied together".to_owned(),
         ));
     }
-    let Some(compactor_provider) = compactor_provider else {
-        if !primary_row.strict_json_schema {
-            return Err(SetupError::Config(
-                "a separate strict compactor selection is required".to_owned(),
-            ));
-        }
-        return Ok((
-            primary_provider.to_owned(),
-            primary_row.model_id.to_string(),
-        ));
-    };
-    let compactor_model = compactor_model.expect("compactor model checked with provider");
-    if crate::provider::provider_descriptor(&compactor_provider).is_none() {
-        return Err(SetupError::ProviderUnknown(compactor_provider));
-    }
-    let compactor_protocol = if compactor_provider == "openai" {
-        ProviderProtocol::Responses
-    } else {
-        ProviderProtocol::Chat
-    };
-    let compactor_row = manifest
-        .profiles
-        .iter()
-        .find(|row| {
-            row.provider.as_str() == compactor_provider
-                && row.model_id.as_str() == compactor_model
-                && row.protocol == compactor_protocol
-        })
-        .ok_or_else(|| SetupError::ModelUnknown(compactor_model.clone()))?;
-    if !compactor_row.strict_json_schema {
+    if compactor_provider.is_some() {
+        // A non-default compactor selection stays gated until P5 compaction work lands.
         return Err(SetupError::Config(
-            "selected compactor does not support strict compaction output".to_owned(),
+            "CONFIG_FEATURE_NOT_IMPLEMENTED: compactor selection requires P5".to_owned(),
         ));
     }
-    Ok((compactor_provider, compactor_model))
+    // P3D pre-state: no separate compactor selection; the pair stays empty.
+    Ok((String::new(), String::new()))
 }
 
 fn validate_written_config(praana_home: &Path, config_path: &Path) -> Result<(), SetupError> {

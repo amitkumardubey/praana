@@ -9,6 +9,7 @@ use crate::protocol::errors::HistoryError;
 pub struct ArtifactError {
     code: String,
     message: String,
+    details: Option<serde_json::Value>,
 }
 
 impl ArtifactError {
@@ -16,11 +17,28 @@ impl ArtifactError {
         Self {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
+    }
+
+    /// History §13 structured detail (for example §10.1
+    /// `{"line_start","line_end"}`). Never propagated to tool details, which
+    /// catalog §6.4 fixes to exactly `{canonical_code, history_code}`.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn code(&self) -> &str {
         &self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        self.details.as_ref()
     }
 
     pub fn into_history(self, sequence: Option<u64>, line: Option<usize>) -> HistoryError {
@@ -47,6 +65,19 @@ pub(crate) fn io_err(detail: impl Into<String>) -> ArtifactError {
 
 pub(crate) fn schema_unsupported(detail: impl Into<String>) -> ArtifactError {
     ArtifactError::new("HISTORY_SCHEMA_UNSUPPORTED", detail.into())
+}
+
+/// History §12/§13: a SQLite busy failure after the 5000 ms timeout is
+/// `HISTORY_SQLITE_BUSY`, never `HISTORY_IO` or a query error.
+pub(crate) fn map_sqlite(err: rusqlite::Error) -> ArtifactError {
+    match &err {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::DatabaseBusy =>
+        {
+            ArtifactError::new("HISTORY_SQLITE_BUSY", "sqlite busy timeout expired")
+        }
+        _ => io_err(err.to_string()),
+    }
 }
 
 pub(crate) fn map_ledger(err: crate::history::operation_ledger::LedgerError) -> ArtifactError {

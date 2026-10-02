@@ -117,7 +117,8 @@ present exactly once. An empty project or handoff has empty content but retains
 its markers. `CrossSessionMemory` is the sole optional slot and appears at most
 once. `CurrentState` uses the StateGraph owner's empty-state rendering when
 needed; applicable protocol recovery/model-switch control is appended inside
-that same slot after exactly two LF bytes. A later slot never replaces or merges
+that same slot after the Runtime Facts block (System Context section 6), after
+exactly two LF bytes. A later slot never replaces or merges
 into an earlier kind.
 
 The adapter serializes the blocks to one instruction string with these exact ASCII markers:
@@ -164,8 +165,12 @@ When the Config-selected memory boundary is none, or when no digest is returned,
 the slot is absent and no memory initialization or fallback occurs.
 
 Compaction supplies the exact rendered `HistoricalHandoffV1`; StateGraph
-supplies its exact rendered tail; and Protocol supplies any recovery-control
-container. The OpenAI adapter only wraps and orders those strings. It does not
+supplies its exact rendered tail, fresh for every turn-loop iteration
+(StateGraph section 8.3); and Protocol supplies any recovery-control
+container. The adapter
+reports the tail's byte offset in the instruction string for admission (Token
+Accounting section 7.3). The OpenAI adapter only wraps and orders those
+strings. It does not
 reinterpret their payload schemas.
 
 No timestamp, turn number, token count, session ID, response ID, or random value may appear in the stable policy/project prefix unless it is actual user-provided project content.

@@ -3629,7 +3629,8 @@ redaction code.
 | `HISTORY_CANONICAL_DB_CORRUPT` | `E_SESSION_INTEGRITY_FAILED` | `integrity` | n/a | No |
 | `HISTORY_DANGLING_ARTIFACT` | `E_ARTIFACT_MISSING` or `E_ARTIFACT_HASH_MISMATCH` | `integrity` | n/a | No |
 | `HISTORY_ARTIFACT_NOT_FOUND` | `E_ARTIFACT_NOT_FOUND` | `not_found` | `error` when called as a tool | No |
-| `HISTORY_ARTIFACT_RANGE`, `HISTORY_JSON_POINTER`, `HISTORY_REGEX_INVALID`, `HISTORY_REGEX_UNSUPPORTED`, `HISTORY_SEARCH_QUERY` | `E_HISTORY_QUERY_INVALID` | `validation` | `error` when called as a tool | No |
+| `HISTORY_SOURCE_NOT_FOUND` | `E_HISTORY_SOURCE_NOT_FOUND` | `not_found` | `error` when called as a tool | No |
+| `HISTORY_ARTIFACT_RANGE`, `HISTORY_SELECTOR_UNSUPPORTED`, `HISTORY_JSON_POINTER`, `HISTORY_REGEX_INVALID`, `HISTORY_REGEX_UNSUPPORTED`, `HISTORY_SEARCH_QUERY` | `E_HISTORY_QUERY_INVALID` | `validation` | `error` when called as a tool | No |
 | `HISTORY_ARTIFACT_TOO_LARGE` | `E_HISTORY_RESULT_TOO_LARGE` | `validation` | `error` when called as a tool | Yes with a narrower request |
 | `HISTORY_PREVIEW_BOUND` | `E_HISTORY_RESULT_TOO_LARGE` | `validation` | `error` for the source tool | No in current artifact policy |
 | `HISTORY_SEARCH_CURSOR_STALE` | `E_HISTORY_CURSOR_STALE` | `conflict` | `error` when called as a tool | Yes from a fresh first page |
@@ -3644,6 +3645,8 @@ redaction code.
 | `ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `E_ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `validation` | n/a | No until profile/config changes |
 | `ADMISSION_ARITHMETIC_OVERFLOW`, `TOKEN_ACCOUNTING_OVERFLOW` | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
 | `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE`, `TOKEN_BOUND_EXCEEDED` for protected request content | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | Yes only after caller narrows protected content |
+| `STATE_ACTIVE_BUDGET_EXCEEDED` at the request-time guard (StateGraph section 8.3) | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | No in this session; recover with a new session (or a state-clearing reset, once a `ResetBoundary` producer exists) |
+| `ADMISSION_STATE_TAIL_MISMATCH` (Token Accounting section 7.3) | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
 | `ADMISSION_PROVIDER_CONTEXT_REJECTED` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | P5 only, after that one emergency retry |
 | `TOKEN_INVALID_UTF8`, `TOKEN_PROFILE_UNKNOWN`, `TOKEN_PROFILE_FIXTURE_FAILED` with no fallback | `E_ADMISSION_ACCOUNTING` | `validation` | n/a | No in current configuration |
 | `TOKEN_INPUT_HASH_MISMATCH` | `E_ADMISSION_ACCOUNTING` | `conflict` | n/a | Yes after re-estimation |
@@ -3659,9 +3662,11 @@ redaction code.
 
 ### A.6 StateGraph domain
 
-State service codes are retained in redacted `ToolErrorDto.details.state` and
-map to the outer tool result as follows. They are not substituted directly for
-the outer `ToolErrorCode`.
+State service codes are retained in `ToolErrorDto.details.state_code`
+(StateGraph section 11) and map to the outer tool result as follows. They are
+not substituted directly for the outer `ToolErrorCode`. The canonical result
+code is the outer `TOOL_*` string. Class, status, and retryability are this
+table's, not A.3's (Built-in Tool Catalog section 7.3).
 
 | Internal state code(s) | Outer tool code | Class | Status | Retryable |
 |---|---|---|---|---|

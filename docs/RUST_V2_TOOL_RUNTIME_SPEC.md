@@ -361,6 +361,7 @@ the Memory Plugin specification when capability-enabled.
 |---:|---|---:|---|
 | 100 | `search_session_log` | 4 | Session history read |
 | 110 | `retrieve_artifact` | 4 | Artifact read |
+| 120 | `read_session_source` | 4 | Session history read |
 | 200 | `create_task` | 4 | StateGraph write |
 | 210 | `complete_task` | 4 | StateGraph write |
 | 220 | `retract_task` | 4 | StateGraph write |
@@ -674,7 +675,12 @@ its graph-sequence/revision snapshot only at queue head after all earlier ordere
 state mutations have committed, then holds the session writer through event
 append. Convenience tools therefore observe prior same-batch state revisions;
 explicit caller-supplied stale revisions still fail. Non-state calls remain
-concurrent. StateGraph owns the exact snapshot and revision rules.
+concurrent. StateGraph owns the exact snapshot and revision rules. StateGraph
+section 14.1 places the queue on the batch driver, which holds the event log,
+and includes `list_state` in it. State calls take no `tools.max_parallel_calls`
+slot. The driver appends each state call's `ToolExecutionStarted` when its
+ticket reaches the head, which takes the place of steps 8 and 9 of section
+13.1 for those calls.
 
 ### 13.3 Per-path locking
 
@@ -704,7 +710,7 @@ Hooks are core internal components, not externally registered callbacks in v1. T
 ### 14.1 Pre stage 1: plan
 
 - If user-armed plan mode is off, continue.
-- If on, block `Workspace`, `External`, and mutating `SessionState` calls according to the plan-mode tool policy.
+- If on, block `Workspace` and `External` calls. `SessionState` calls (the StateGraph tools, orders 200 through 300) are allowed: they change only current-session scratch state, which planning uses.
 - Read-only calls continue.
 - Explicit plan execution/approval transitions plan mode before a batch, never midway through one.
 - Error: `TOOL_PLAN_BLOCKED`.

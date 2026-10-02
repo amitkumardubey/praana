@@ -18,8 +18,8 @@ pub use contract::{
     ToolName, TypedTool,
 };
 pub use error::{
-    map_side_effect_uncertain, map_skipped_uncertain_peer, map_tool_error, MappedToolError,
-    ToolError, ToolErrorCode,
+    history_tool_error, map_history_error, map_result_error_surface, map_side_effect_uncertain,
+    map_skipped_uncertain_peer, map_tool_error, MappedToolError, ToolError, ToolErrorCode,
 };
 pub use intent::{
     canonical_lock_key, normalize_lexical, CommandIntent, PathAccessIntent, PathAccessMode,
@@ -29,6 +29,6 @@ pub use locks::PathLockTable;
 pub use registry::{normalize_schema, SchemaError, ToolAdapter, ToolRegistry};
 pub use result::{canonical_tool_result_bytes, ToolResultDto};
 pub use runtime::{
-    BatchFinished, BatchOrigin, DurableBatchOutcome, DurableSession, FinishedCall,
-    ProviderToolCall, ResultCommit, ToolBatchRequest, ToolCallOrigin, ToolRuntime,
+    AutoHydrateOutcome, BatchFinished, BatchOrigin, DurableBatchOutcome, DurableSession,
+    FinishedCall, ProviderToolCall, ResultCommit, ToolBatchRequest, ToolCallOrigin, ToolRuntime,
 };

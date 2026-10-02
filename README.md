@@ -1,11 +1,5 @@
 # PRAANA
 
-> **Archived on 28 September 2026.** This repository is no longer developed. It remains public under the MIT license as a snapshot of Praana. Issues and pull requests are not accepted.
-
-[![npm](https://img.shields.io/npm/v/praana)](https://www.npmjs.com/package/praana)
-[![GitHub](https://img.shields.io/badge/github-amitkumardubey/praana-blue)](https://github.com/amitkumardubey/praana)
-[![docs](https://img.shields.io/badge/docs-GitHub%20Pages-2ea44f)](https://amitkumardubey.github.io/praana/)
-
 **A terminal coding agent that manages context like memory — curating what the model sees on every turn, and carrying learnings across sessions in a local database.**
 
 <p align="center">

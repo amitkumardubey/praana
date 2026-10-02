@@ -254,7 +254,10 @@ no-follow semantics. It is never opened with truncate during normal operation.
 The incomplete-final-record recovery procedure in section 9.1 is the sole
 exception.
 
-`session.lock` holds an exclusive advisory lock for the mutating owner. Lock
+`session.lock` holds an exclusive advisory lock for the mutating owner. The
+owner releases that lock with an explicit unlock before closing the descriptor.
+Closing alone does not release it while a child still shares the descriptor
+across `fork`, and that child would block the next writer until it execs. Lock
 metadata is diagnostic only and contains PID, process start time, and a random
 owner nonce. A second writer receives `HISTORY_SESSION_LOCKED`. Read-only
 clients do not take this lock, open SQLite read-only, and parse only the event
@@ -708,6 +711,47 @@ ASCII `praana-projection-checkpoint-v1`, NUL, UTF-8 `projection_name`, NUL,
 32-byte decoded `event_prefix_hash`, and RFC 8785 canonical JSON bytes parsed
 from `payload_json`. Writers store compact RFC 8785 JSON in `payload_json`.
 
+The turn and search projections of section 8 share one checkpoint row because
+they commit in one derived transaction. Its `projection_name` is exactly
+`history_derived` and its `checkpoint_schema_version` is `1`. Its payload is:
+
+```rust
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryDerivedCheckpointV1 {
+    pub checkpoint_schema_version: u32,
+    pub session_id: SessionId,
+    pub projection_version: ProjectionId,
+    pub search_schema_version: u32,
+    pub reset_epoch: u32,
+    pub applied_through_sequence: u64,
+    pub event_prefix_hash: Sha256Digest,
+}
+```
+
+`search_schema_version` is `SEARCH_SCHEMA_VERSION = 1` (section 11.2).
+`reset_epoch` is the current reset epoch after applying
+`applied_through_sequence`. Payload `checkpoint_schema_version`,
+`applied_through_sequence`, and `event_prefix_hash` must equal the row columns.
+A checkpoint that fails that check, or whose
+session, projection version, or search schema version differs from the current
+build, or whose prefix hash does not match the canonical log, is discarded and
+the derived tables are rebuilt by full replay (section 9.4); it is never an
+empty-state authority. StateGraph keeps its separate `state_graph` row, but
+state search documents (P4B) are written in the `history_derived` transaction.
+The projection sequence used by search snapshots and cursors is this row's
+`applied_through_sequence`.
+
+`search_documents.document_id` is the document's `result_id` (section 11.3) in
+its 26-character uppercase Crockford form. One row exists per indexed logical
+field. `search_documents.created_at_ms` is the owning event's envelope
+`timestamp_ms`, never wall-clock time at projection. Re-applying the same event
+recomputes the same row. Replay executes
+`INSERT ... ON CONFLICT(document_id) DO NOTHING`. When a row already exists,
+every column except `rowid` must equal the recomputed value, otherwise the
+result is `HISTORY_EVENT_INTEGRITY`, and no `search_fts` insert is issued for
+it.
+
 ### 5.3 Host UI operation database and journals
 
 `ui-operations.db` applies section 5.1 pragmas and uses:
@@ -866,8 +910,17 @@ have completed post-tool processing:
 3. For each otherwise eligible result, inline it only if adding it keeps the
    batch inline sum at or under `history.artifact_batch_inline_tokens`.
 4. Artifactize every other result. Error results receive exactly the same test.
-5. Retrieval results that already name an artifact are never ingested as new
-   source artifacts.
+5. Results of `search_session_log`, `retrieve_artifact`, and
+   `read_session_source` are never artifactized and bypass rules 2 through 4;
+   they are excluded from the batch inline sum. Each is bounded instead by
+   `HISTORY_TOOL_RESULT_MAX_BYTES = 65,536`, as section 10.4 defines. In one
+   batch, the history-tool results together are capped at
+   `4 * HISTORY_TOOL_RESULT_MAX_BYTES`. Counting in provider order, each call
+   that would exceed that cap returns `HISTORY_ARTIFACT_TOO_LARGE` instead.
+   Results of the StateGraph tools (orders 200 through 300) are likewise never
+   artifactized and are excluded from the batch inline sum. They are bounded
+   by the Built-in Tool Catalog section 7.1 rules and are not counted toward
+   the history-tool batch cap.
 6. Preview tokens do not count toward the aggregate inline-payload budget, but
    all previews count in request admission. If a preview exceeds
    `history.artifact_preview_tokens` it is
@@ -1390,6 +1443,7 @@ pub struct RetrieveArtifactRequest {
     pub tail_lines: Option<u32>,
     pub regex: Option<RegexFilter>,
     pub json_pointer: Option<String>,
+    pub byte_offset: Option<u64>,
     pub max_bytes: Option<u64>,
 }
 
@@ -1424,6 +1478,41 @@ Defaults and limits:
   backreferences return `HISTORY_REGEX_UNSUPPORTED`.
 - A response that would exceed a bound returns a partial response with
   `complete = false` and a continuation request. It never claims completeness.
+- The selected view is the section 6.2 text view of the value chosen by
+  `selector` and `json_pointer` for UTF-8 content, or the decoded bytes for
+  binary content. Within it, an LF belongs to the line it terminates.
+- `head_lines` and `tail_lines` are first normalized to the equivalent
+  `line_range`. Continuations always carry `line_range` and never `head_lines`
+  or `tail_lines`. `max_bytes` is a per-call limit and is carried unchanged into
+  every continuation.
+- `byte_offset` cannot be combined with `head_lines`, `tail_lines`, or `regex`
+  (`HISTORY_ARTIFACT_RANGE`). Without `line_range`, the selection is
+  `[byte_offset, end of view)`, and the offset must be less than the view
+  length unless the view is empty and the offset is 0. With `line_range`, the
+  offset must lie inside line `line_range.start`, and the selection is
+  `[byte_offset, end of line line_range.end]`. For UTF-8 content the offset
+  must be a scalar boundary. Any violation is `HISTORY_ARTIFACT_RANGE`.
+- Continuation is exact. A line-selected partial response holds the rest of the
+  start line and then whole lines that fit. Its continuation is
+  `line_range = {start: next unreturned line, end: original end}` with
+  `byte_offset` absent. If the start line's remainder alone does not fit, the
+  response holds its longest scalar-boundary prefix that fits, and the
+  continuation keeps `line_range` unchanged and sets `byte_offset` to the next
+  unreturned byte.
+- A regex-filtered partial response holds the whole merged context groups that
+  fit. Its continuation is `line_range = {start: line after the last included
+  group, end: original end, or total_lines}`. If the first remaining group
+  alone does not fit, the result is `HISTORY_ARTIFACT_TOO_LARGE` with details
+  `{"line_start": g1, "line_end": g2}` for that group. The caller then
+  retrieves the group with a non-regex `line_range` request, which the rules
+  above can always page.
+- An unselected or `byte_offset`-only partial response is cut at the longest
+  scalar-boundary prefix that fits (any byte count for binary content) and
+  continues at the next byte.
+- `complete` is true only when the response starts at the selection start and
+  reaches its end. For a UTF-8 `byte_offset` response, `selected_line_start`
+  and `selected_line_end` are the lines containing the first and last returned
+  bytes. They are null for binary content.
 
 ### 10.2 Response
 
@@ -1460,7 +1549,7 @@ pub struct ArtifactRegexMatch {
 `Utf8` is used for selected JSON/text views. `Base64` uses RFC 4648 standard
 alphabet with required padding and represents exact decoded source bytes;
 `returned_bytes` counts decoded bytes. Binary content permits only
-`selector=complete_result` with byte `max_bytes`; line, regex, JSON-pointer,
+`selector=complete_result` with optional `max_bytes` and `byte_offset`; line, regex, JSON-pointer,
 stdout/stderr, head, and tail selectors return `HISTORY_SELECTOR_UNSUPPORTED`.
 Its line fields and total are JSON null.
 
@@ -1474,6 +1563,85 @@ storage API always returns the requested bytes. There is no `skipped_payload`
 field in this storage DTO. A UI/tool caller choosing to suppress a duplicate
 payload must return its own explicitly typed duplicate-reference result; it may
 not mutate this response or masquerade as complete retrieval.
+
+### 10.3 Session source retrieval
+
+Event-sourced search documents have no artifact, so the complete text of one
+indexed event field is read by its search `result_id`, paged by byte offset.
+Paging by byte offset is required because a canonical tool-call argument field
+is a single JSON line of up to several MiB.
+
+```rust
+pub struct ReadSessionSourceRequest {
+    pub result_id: SearchResultId,
+    pub byte_offset: u64,
+}
+
+pub struct ReadSessionSourceResponse {
+    pub result_id: SearchResultId,
+    pub source_kind: SearchSourceKind,
+    pub source_field: String,
+    pub event_id: Option<EventId>,
+    pub event_sequence: Option<u64>,
+    pub turn_id: Option<TurnId>,
+    pub content_sha256: Sha256Digest,
+    pub text: String,
+    pub byte_offset: u64,
+    pub returned_bytes: u64,
+    pub total_bytes: u64,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub total_lines: u64,
+    pub complete: bool,
+    pub continuation: Option<ReadSessionSourceRequest>,
+}
+```
+
+`byte_offset` defaults to 0 and must be a scalar boundary strictly less than
+`total_bytes`; otherwise the result is `HISTORY_ARTIFACT_RANGE`. Indexed text
+is never empty (section 11.1.1). Lines split at LF as in section 6.2, an LF belongs to the line it
+terminates, and `start_line`/`end_line` are the one-based lines containing the first and last
+returned bytes. The returned window starts at `byte_offset`. It is the longest
+scalar-boundary prefix of the remaining text that fits the bound. If that
+prefix does not reach the end and contains an LF, it is shortened to end just
+after its last LF. `complete` is true only when `byte_offset = 0` and the whole
+text is returned. `continuation` is `{result_id, byte_offset: byte_offset +
+returned_bytes}`, and it is null exactly when the window reaches the end. The
+storage bound is the 2 MiB hard cap; the tool bound is section 10.4.
+
+The document is looked up in the caller's projection snapshot without
+reset-epoch filtering. An absent `result_id`, or one whose source kind is not
+`event` or `state`, returns `HISTORY_SOURCE_NOT_FOUND`; artifact sources are read with
+`retrieve_artifact`. Before any window is returned, the complete stored text
+must hash to `content_sha256`, otherwise `HISTORY_EVENT_INTEGRITY`.
+Cancellation and snapshot rules follow section 12. The response is never
+artifactized.
+
+### 10.4 Tool-surface result bound
+
+The `search_session_log`, `retrieve_artifact`, and `read_session_source` tools
+bound their success value so that the RFC 8785 bytes of the complete tool
+output DTO (catalog section 6), including any continuation or `next_cursor`,
+are at most `HISTORY_TOOL_RESULT_MAX_BYTES = 65,536`. This bound replaces the
+256 KiB full-retrieval rule and the 2 MiB hard cap for tool callers, which
+still apply to other storage callers. A candidate fits when the RFC 8785 bytes
+of the output DTO, serialized with every field at the value it would have for
+that candidate, are at most the bound. That includes the `continuation` or
+`next_cursor` computed for the candidate, or null when nothing remains.
+Filling is greedy and deterministic:
+
+- Search adds results in rank order and stops before the first result that
+  would exceed the bound. `next_cursor` then points after the last included
+  result, so paging returns every result exactly once.
+- Retrieval and session-source reads first test the complete remainder. If it
+  does not fit, they take the largest candidate that fits under the
+  continuation rules of sections 10.1 and 10.3. Output size is monotonic in
+  candidate length within one request, so a binary search over candidates is
+  valid.
+
+A response that fits nothing, not even one search result or one scalar value,
+is `HISTORY_ARTIFACT_TOO_LARGE`. That cannot occur for search pages or
+non-regex reads; section 10.1 covers the regex case.
 
 ## 11. Unified session search
 
@@ -1497,6 +1665,54 @@ the matched field exactly. Artifact text is indexed only after an event
 references the artifact. A reset changes default visibility but does not delete
 documents.
 
+#### 11.1.1 Source fields and document text
+
+`source_field` is one value from this closed v1 vocabulary. `<i>` is the
+zero-based decimal index of the block in its message's ordered `blocks`
+vector, without leading zeros. Every row stores the owning event's
+`event_id`, `event_sequence`, `event_kind` (the snake_case `CanonicalEvent`
+tag), `turn_id`, and the current `reset_epoch` at that event.
+
+| Source kind | Origin | `source_field` | Document `text` |
+|---|---|---|---|
+| `event` | `user_message_accepted`, `UserBlock::Text` | `user.blocks[<i>].text` | `TextBlock.text` |
+| `event` | `assistant_step_accepted`, `AssistantBlock::Text` | `assistant.blocks[<i>].text` | `TextBlock.text` |
+| `event` | same, `AssistantBlock::ReasoningSummary` | `assistant.blocks[<i>].reasoning_summary` | `ReasoningSummaryBlock.text` |
+| `event` | same, `AssistantBlock::Refusal` | `assistant.blocks[<i>].refusal` | `RefusalBlock.text` |
+| `event` | same, `AssistantBlock::ToolCall` | `assistant.blocks[<i>].tool_call.name` | `ToolCall.name` |
+| `event` | same, `AssistantBlock::ToolCall` | `assistant.blocks[<i>].tool_call.arguments` | RFC 8785 JSON of `redact_json_v1` applied, under the session's `SessionStarted.redaction_version`, to a copy of `ToolCall.arguments` |
+| `event` | `tool_execution_finished`, `ToolResultContent::Inline` | `tool_result.inline.text` | `InlineToolResult.text` |
+| `artifact` | `tool_execution_finished`, `ToolResultContent::Artifact` | `artifact.text_view` | The complete section 6.2 text view of the referenced artifact |
+| `summary_segment` | Reserved for P5 | `summary_segment.segment`, `summary_segment.handoff` | Defined by the Compaction owner |
+| `state` | `state_changed` | `state.<kind>.<field>` or `state.retracted_reason`, exactly as StateGraph section 13.2 lists | The normalized field value stored in the event (StateGraph section 13.2) |
+
+`ImageBlock`, `ArtifactReferenceBlock`, the artifact preview string,
+`ToolCall.raw_arguments`, and every event kind not listed produce no row. An
+empty text produces no row. An artifact whose `artifacts.content_type` is
+`binary` produces no row. Results of `search_session_log`, `retrieve_artifact`,
+and `read_session_source` produce no `tool_result.inline.text` or
+`artifact.text_view` row, so search output is never re-indexed; their
+tool-call name and argument rows are still produced. P4B defines `state` rows
+from `state_changed` events. That is the only extension point, and every other
+unlisted kind stays unindexed unless this table is amended.
+
+`content_sha256` is the lowercase hex SHA-256 of the UTF-8 bytes of the row's
+`text`, for every source kind, including `artifact.text_view`. Tool-call name, argument, inline-result, and
+artifact rows store `tool_name`. `search_documents.normalized_path` copies
+`artifacts.normalized_path` for `artifact.text_view` rows and is NULL for every
+other row. A non-empty `path_globs` filter therefore matches only artifact rows
+with a non-null path.
+
+An assistant step's rows are written when its `assistant_step_accepted` event
+is applied. `attempt_superseded` relates a failed attempt to its accepted
+replacement (protocol section 5), so it never removes an accepted step's rows.
+Failed attempts have no accepted step and are never indexed.
+
+The canonical source ID used in `result_id` is the `event_id` for `event`, the
+`artifact_id` for `artifact`, the `segment_id` for `summary_segment`, and the
+StateGraph-owned state document ID for `state`. Each is its 26-character
+uppercase Crockford text.
+
 ### 11.2 Request and filters
 
 ```rust
@@ -1518,6 +1734,7 @@ pub enum SearchSourceKind { Event, Artifact, SummarySegment, State }
 pub struct SessionSearchFilters {
     pub source_kinds: Vec<SearchSourceKind>,
     pub event_kinds: Vec<String>,
+    pub event_ids: Vec<EventId>,
     pub turn_ids: Vec<TurnId>,
     pub sequence_start: Option<u64>,
     pub sequence_end: Option<u64>,
@@ -1536,10 +1753,58 @@ epoch. Explicit audit clients may set it true. Path globs match normalized `/`
 separated paths, are case-sensitive on every platform, and support `*`, `?`,
 and `**`; they never read the filesystem.
 
+Filter semantics are exact. Different non-empty filters combine with AND, and
+values within one filter combine with OR. `event_kinds` values are snake_case
+`CanonicalEvent` tags; an unknown value is `HISTORY_SEARCH_QUERY`. `event_ids`
+matches a row's `event_id`, so it selects every field of a cited event,
+including its artifact rows. `artifact_ids`, `summary_segment_ids`, and
+`state_ids` match the row's own ID column. Each filter vector holds at most 100
+values, and at most 32 path globs of at most 4,096 bytes each are allowed;
+exceeding either bound is `HISTORY_SEARCH_QUERY`.
+
+In `Fts` mode, `case_sensitive` must be false because the tokenizer folds
+case; true is `HISTORY_SEARCH_QUERY`.
+
+`query` is 1..=4,096 bytes, with one exception. An empty query is allowed only
+in `Exact` mode when at least one of `event_ids`, `artifact_ids`,
+`summary_segment_ids`, or `state_ids` is non-empty. It then matches every row
+that passes the filters, with zero occurrences; this is how a cited ID is
+looked up directly. Any other empty query is `HISTORY_SEARCH_QUERY`.
+
+Regex mode compiles the pattern with `multi_line(true)`,
+`dot_matches_new_line(false)`, and `case_insensitive(!case_sensitive)`. That
+uses the crate's simple case folding, not `default_casefold_v1`. Empty matches
+are skipped.
+
+`SEARCH_SCHEMA_VERSION` is `1`. The cursor `request_sha256` is SHA-256 over
+ASCII `praana-search-request-v1`, NUL, then the RFC 8785 bytes of the JSON
+object
+`{"case_sensitive","filters","mode","query","search_schema_version"}` built
+from the request. `filters` serializes every field of `SessionSearchFilters`,
+with each vector sorted ascending by its JSON string value and deduplicated,
+and absent `Option` fields as `null`. `mode` uses the snake_case tag;
+`SessionSearchMode` and `SearchSourceKind` serialize as snake_case strings. `limit` is excluded, so a client may change
+page size between pages. The projection sequence is bound separately by the
+cursor payload.
+
 `limit` defaults to 20 and is capped at 100. Query and cursor together are
 capped at 64 KiB. The cursor is an authenticated opaque encoding of the last
-sort tuple plus a hash of query, mode, filters, projection sequence, and search
-schema. A changed projection returns `HISTORY_SEARCH_CURSOR_STALE`.
+sort tuple plus a hash of query, mode, filters, and search schema, the
+snapshot sequence, and the reset epoch.
+
+**Snapshot pages.** A first page (no cursor) captures the snapshot sequence
+`P = history_derived.applied_through_sequence` after catch-up, and every
+cursor it issues carries `P`. Every page of that search, first and
+continuation, considers only `search_documents` rows with
+`event_sequence <= P`, in addition to the request filters and the current
+reset epoch. Continuation pages use the cursor's `P`, not the current
+projection sequence, and return it as `SessionSearchPage.projection_through_sequence`.
+Events appended after `P`, including the search call's own tool events, never
+make a cursor stale. This is sound because every `search_documents` row carries
+the non-null sequence of the canonical event that made it indexable (P4B and
+P5 rows included), and within one reset epoch no row with `event_sequence <= P`
+is inserted, changed, or deleted after the projection has applied `P`. A
+derived rebuild reproduces the same rows. A reset after `P` makes the cursor stale.
 
 Exact mode is literal substring search over Unicode scalar values. Case-sensitive
 mode uses original scalar values. Case-insensitive mode applies
@@ -1608,10 +1873,11 @@ pub struct SessionSearchPage {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct SessionSearchCursorV1 {
+pub struct SessionSearchCursorV2 {
     pub cursor_schema_version: u32,
     pub session_id: SessionId,
     pub projection_through_sequence: u64,
+    pub reset_epoch: u32,
     pub request_sha256: Sha256Digest,
     pub last_primary_micros: i64,
     pub last_event_sequence: u64,
@@ -1624,8 +1890,11 @@ pub struct SessionSearchCursorV1 {
 The returned cursor is ASCII
 `base64url_no_pad(rfc8785(cursor_payload)) + "." +
 base64url_no_pad(HMAC-SHA256(cursor_hmac_key, rfc8785(cursor_payload)))`.
-Decode, verify HMAC in constant time, require schema 1/session/request hash, and
-require the current projection sequence to equal the payload. Any failure is
+Decode, verify HMAC in constant time, and require `cursor_schema_version = 2`,
+the session, and the request hash to match. Also require `reset_epoch` to equal
+the current reset epoch and `projection_through_sequence` to be `<=` the current
+`history_derived.applied_through_sequence`. Schema 1 cursors issued before this
+amendment fail the schema check. Any failure is
 `HISTORY_SEARCH_CURSOR_STALE` without revealing which check failed. Page results
 begin strictly after the stored complete sort tuple and contain at most request
 `limit`; `next_cursor` is null exactly when no later result exists.
@@ -1641,6 +1910,57 @@ line boundaries. `excerpt_complete` is true only when it contains the complete
 matched source field. Artifact retrieval arguments include artifact ID and a
 line range around the match. Event/summary/state retrieval arguments identify
 the source ID and field.
+
+**Occurrences.** Lines are one-based and split at LF, as in section 6.2.
+Columns are one-based Unicode scalar positions; `end_column` is exclusive. In
+`Exact` and `Regex` mode, occurrences are the non-overlapping matches in the
+document text, found left to right. In case-insensitive `Exact` mode, the
+`default_casefold_v1` offset map projects each match back to complete original
+scalar ranges. A match that spans an LF is one occurrence on its start line,
+with `end_column` equal to that line's scalar length plus 1. In `Fts` mode, the
+document is selected by FTS5 alone. Occurrences are then the case-insensitive
+exact-mode matches, in that same text, of each positive bare term, each
+positive quoted phrase taken as one literal string, and each positive prefix
+term without its `*`. Terms in the right operand of `NOT` are ignored. The
+per-term matches are unioned, identical `(line, start_column, end_column)`
+triples are deduplicated, and overlaps across terms are kept. Because
+tokenizer diacritic folding is not replicated, an FTS result may have zero
+occurrences. In every mode, occurrences are ordered by line, `start_column`,
+then `end_column`, and capped at 100 per result. When a result has no
+occurrences, its cursor tuple uses `last_line = 0` and `last_column = 0`.
+
+**Excerpt.** Let `T` be the document text and `B = 800`. If
+`len(T) <= B`, the excerpt is `T` and `excerpt_complete = true`. Otherwise,
+let `[s, e)` be the byte range of the first occurrence, or `[0, 0)` when there
+is none, and let `L` be the byte after the last LF before `s`, or `0`:
+
+1. If `e - L <= B`, `start = L`. Otherwise `start` is the smallest scalar
+   boundary that is `>= e - B` and `<= s`, or `s` if none exists.
+2. `end` is the largest scalar boundary `<= start + B`. If an LF byte occurs at
+   or after `e` and before `end`, `end` becomes the byte after the last such
+   LF.
+3. `excerpt = T[start..end]`, with no ellipsis or marker added.
+   `excerpt_complete = (start == 0 && end == len(T))`.
+
+Example: a 2,000-byte ASCII field whose only match starts on line 7 at byte
+1,210 and ends at 1,215, where line 7 starts at 1,180 and the last LF before
+1,980 is at 1,950. Then `start = 1,180`, `end = 1,951`, and the excerpt is
+771 bytes with `excerpt_complete = false`.
+
+**Retrieval.** `SearchRetrieval` is exact per source kind:
+
+- `artifact`: tool `retrieve_artifact` with arguments
+  `{"artifact_id": <id>, "line_range": {"start": a, "end": b}}`. Here
+  `a = max(1, l - 20)`, `b = min(total_lines, l + 20)`, and `l` is the first
+  occurrence line, or 1 when there are no occurrences. `selector` is omitted,
+  so `default` applies, and those lines are exactly the section 6.2 text view
+  the document indexes.
+- `event`: tool `read_session_source` with arguments
+  `{"result_id": <result_id>, "byte_offset": o}`, where `o` is the byte offset
+  of the start of line `a` and `a` is defined as for artifacts.
+- `state`: the same form as `event`: tool `read_session_source` with
+  `{"result_id": <result_id>, "byte_offset": o}`.
+- `summary_segment`: defined by the P5 owner. Until then, no such row exists.
 
 ### 11.4 Ranking
 
@@ -1659,6 +1979,26 @@ v1. Filters are applied before limiting. Duplicate matches in the same source
 field are one result with bounded occurrences. The same blob produced by two
 tool calls remains two artifact sources because provenance differs.
 
+### 11.5 Search implementation manifest
+
+`crates/praana-core/tests/fixtures/history_search/implementation_manifest.json`
+is RFC 8785 JSON with exactly these keys:
+
+| Key | Value |
+|---|---|
+| `search_schema_version` | `SEARCH_SCHEMA_VERSION` |
+| `regex_crate_version` | Resolved `regex` version from `Cargo.lock` |
+| `regex_syntax_crate_version` | Resolved `regex-syntax` version from `Cargo.lock`; it pins the Unicode tables |
+| `rusqlite_crate_version` | Resolved `rusqlite` version from `Cargo.lock` |
+| `sqlite_version` | Runtime `SELECT sqlite_version()` on the bundled library |
+| `fts5_declaration` | The `sqlite_master.sql` of `search_fts`, normalized with the same whitespace rule as `sqlite_master_sha256` |
+| `sqlite_master_sha256` | SHA-256 of the normalized schema: for each row of `SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY type, name`, the bytes `type NUL name NUL tbl_name NUL sql LF`, where `sql` is empty when NULL and every run of ASCII whitespace is replaced by one space and trimmed. FTS5 shadow tables are included. |
+| `unicode_utility_version` | `praana-unicode-15.1-v1` (casefold authority) |
+
+`history_search` fails when any runtime or lockfile value differs from the
+manifest. Changing a value requires regenerating the golden search and ranking
+fixtures in the same change.
+
 ## 12. Concurrency and cancellation
 
 All mutating history operations pass through one per-session async writer task.
@@ -1675,10 +2015,10 @@ order, and provider projection uses that order regardless of finish-event
 sequence.
 
 Search and retrieval use separate read-only SQLite connections. WAL permits
-them while the writer commits. Each request captures a projection sequence and
-SQLite read transaction. It either returns a single-snapshot result or
-`HISTORY_SEARCH_CURSOR_STALE`; it never combines rows from two projection
-versions.
+them while the writer commits. Each request runs in one SQLite read
+transaction and filters rows to its snapshot sequence `P` (section 11.2). It
+either returns a result for exactly the rows at or below `P` or
+`HISTORY_SEARCH_CURSOR_STALE`; it never combines rows from two snapshots.
 
 A cancellation token is checked:
 
@@ -1713,14 +2053,16 @@ as if they were identical.
 | `HISTORY_CANONICAL_DB_CORRUPT` | Artifact canonical data cannot be trusted | No |
 | `HISTORY_DANGLING_ARTIFACT` | Durable event reference does not resolve | No |
 | `HISTORY_ARTIFACT_NOT_FOUND` | Artifact ID is absent or not visible | No |
+| `HISTORY_SOURCE_NOT_FOUND` | Session-source `result_id` is absent or not an event source | No |
 | `HISTORY_ARTIFACT_RANGE` | Requested line/range/selector is invalid | No |
+| `HISTORY_SELECTOR_UNSUPPORTED` | Selector is not valid for the artifact's content (for example, a line selector on binary content) | No |
 | `HISTORY_ARTIFACT_TOO_LARGE` | Unbounded response exceeds safe return size | Yes |
 | `HISTORY_PREVIEW_BOUND` | Fixed artifact metadata cannot fit preview budget | No in current policy |
 | `HISTORY_JSON_POINTER` | Pointer is invalid or does not resolve | No |
 | `HISTORY_REGEX_INVALID` | Regex cannot compile | No |
 | `HISTORY_REGEX_UNSUPPORTED` | Regex requests unsupported semantics | No |
 | `HISTORY_SEARCH_QUERY` | Exact/FTS query or filter is invalid | No |
-| `HISTORY_SEARCH_CURSOR_STALE` | Search projection changed after cursor issue | Yes |
+| `HISTORY_SEARCH_CURSOR_STALE` | Cursor invalid, tampered, for another request/session/schema, or its snapshot is no longer valid (reset after issue) | Yes |
 | `HISTORY_ROLLBACK_CONFLICT` | Workspace target changed after journaled replacement; safe rollback cannot be proved | No |
 | `HISTORY_OPERATIONAL_RECOVERY_UNCERTAIN` | Journal/spool owner or process outcome cannot be proved safe | No |
 | `HISTORY_IO` | Other filesystem durability failure | Depends on OS error |
@@ -1765,6 +2107,11 @@ deletion-intent or terminal event exists or is required; a record needed by an
 external retention scheduler belongs outside the session directory and is not
 conversation history. Secure erasure is not promised on SSDs, copy-on-write
 filesystems, or backups. The CLI states this explicitly.
+
+In P4A, whole-session deletion, orphan GC, `inspect`, and the section 9.4
+rebuild are core library operations only; no CLI grammar is added. A later
+packet that exposes them on a command line owns the grammar, product command
+name, and the secure-erasure notice above.
 
 Row-level deletion is limited to unreferenced orphans as specified in section
 9.2 and telemetry cleanup. Deleting telemetry never cascades to canonical rows.
@@ -1895,7 +2242,7 @@ dangling reference, and idempotent projection replay.
 
 ### 16.1 Bounded packets
 
-Phase 1 packet creates `history/{event_log,replay,projection,operation_ledger}.rs` and `tests/history_phase1.rs`; fixtures are written first and `cargo test -p praana-core --test history_phase1` initially fails on missing modules. Phase 3 packet adds `history/{db,artifact,preview,journal,spool}.rs` and `tests/history_artifacts.rs`; Phase 4 adds `history/{retrieve,search,cursor,checkpoint}.rs` and `tests/history_search.rs`. Each packet implements only its listed sequence slice and turns its named red test green before integration. Every packet ends with fmt, clippy with warnings denied, and workspace tests. No packet treats SQLite as event authority, migrates old data, or enables a tool before its artifact/recovery substrate is green.
+Phase 1 packet creates `history/{event_log,replay,projection,operation_ledger}.rs` and `tests/history_phase1.rs`; fixtures are written first and `cargo test -p praana-core --test history_phase1` initially fails on missing modules. Phase 3 packet adds `history/{db,artifact,preview,journal,spool}.rs` and `tests/history_artifacts.rs`; Phase 4 packet P4A adds `history/{retrieve,search,cursor,checkpoint}.rs` and `tests/history_search.rs`; it implements §16 steps 6, 8, and 9, and step 7 for the `history_derived` turn/search projection only. The StateGraph checkpoint and state documents belong to P4B, and summary projections to P5. Each packet implements only its listed sequence slice and turns its named red test green before integration. Every packet ends with fmt, clippy with warnings denied, and workspace tests. No packet treats SQLite as event authority, migrates old data, or enables a tool before its artifact/recovery substrate is green.
 
 ## 17. Common implementation mistakes
 

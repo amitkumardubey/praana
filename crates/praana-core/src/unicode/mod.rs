@@ -6,7 +6,7 @@ pub mod generated_v15_1;
 
 use generated_v15_1::{
     CANONICAL_COMP_TABLE, CANONICAL_DECOMP_TABLE, CASEFOLD_TABLE, CCC_TABLE, CJK_RANGES,
-    NFKC_CF_TABLE, SYMBOL_OR_EMOJI_RANGES,
+    LETTER_OR_NUMBER_RANGES, NFKC_CF_TABLE, SYMBOL_OR_EMOJI_RANGES,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,12 @@ pub fn scalar_token_units_v15_1(c: char) -> (u32, UnicodeScalarCategory) {
 
     // 4. Other scalar -> 3 units
     (3, UnicodeScalarCategory::OtherScalar)
+}
+
+/// Returns true if the scalar's Unicode 15.1 General_Category is a letter (Lu, Ll, Lt, Lm, Lo)
+/// or a number (Nd, Nl, No).
+pub fn is_letter_or_number_v15_1(c: char) -> bool {
+    in_ranges(c as u32, LETTER_OR_NUMBER_RANGES)
 }
 
 fn in_ranges(cp: u32, ranges: &[(u32, u32)]) -> bool {

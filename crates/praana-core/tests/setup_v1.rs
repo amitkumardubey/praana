@@ -163,3 +163,86 @@ fn setup_apply_replays_same_operation_id_without_reapplying() {
     let credentials = load_store(&home.join("credentials.json")).unwrap();
     assert_eq!(credentials.revision, first.revision);
 }
+
+fn openai_setup_values() -> BTreeMap<SetupFieldId, SetupValueDto> {
+    let mut values = BTreeMap::new();
+    values.insert(
+        SetupFieldId("api_key".to_owned()),
+        SetupValueDto::Secret(SensitiveStringDto::from("credential-value-123".to_owned())),
+    );
+    values.insert(
+        SetupFieldId("base_url".to_owned()),
+        SetupValueDto::Text("https://api.openai.com/v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("protocol".to_owned()),
+        SetupValueDto::Choice("openai-responses-v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("reasoning_effort".to_owned()),
+        SetupValueDto::Choice("high".to_owned()),
+    );
+    values
+}
+
+#[test]
+fn setup_apply_writes_empty_compactor_pair_before_p5() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let result = service
+        .apply(
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            openai_setup_values(),
+            2_000,
+        )
+        .unwrap();
+    assert_eq!(result.revision, 1);
+
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("praana.config.json")).unwrap())
+            .unwrap();
+    let history = config.get("history").expect("history section");
+    assert_eq!(
+        history.get("compactor_provider").and_then(|v| v.as_str()),
+        Some(""),
+        "compactor_provider must be empty before P5: {config}"
+    );
+    assert_eq!(
+        history.get("compactor_model").and_then(|v| v.as_str()),
+        Some(""),
+        "compactor_model must be empty before P5: {config}"
+    );
+}
+
+#[test]
+fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let mut values = openai_setup_values();
+    values.insert(
+        SetupFieldId("compactor_provider".to_owned()),
+        SetupValueDto::Text("openai".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("compactor_model".to_owned()),
+        SetupValueDto::Text("gpt-5.6-sol".to_owned()),
+    );
+
+    let error = service
+        .apply(
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            values,
+            2_000,
+        )
+        .expect_err("non-default compactor selection must be rejected before P5");
+    assert!(
+        error.to_string().contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "diagnostic carries the canonical code: {error}"
+    );
+}

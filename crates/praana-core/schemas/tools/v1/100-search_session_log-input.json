@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Built-in Tool Catalog §6.1 input.",
+  "properties": {
+    "artifact_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "case_sensitive": {
+      "default": false,
+      "type": "boolean"
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "event_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "include_prior_epochs": {
+      "default": false,
+      "type": "boolean"
+    },
+    "limit": {
+      "default": 20,
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "enum": [
+            "exact",
+            "regex",
+            "fts"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "query": {
+      "type": "string"
+    },
+    "source_kinds": {
+      "default": [],
+      "items": {
+        "enum": [
+          "event",
+          "artifact",
+          "summary_segment",
+          "state"
+        ],
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "state_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "summary_segment_ids": {
+      "default": [],
+      "items": {
+        "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "type": "object"
+}

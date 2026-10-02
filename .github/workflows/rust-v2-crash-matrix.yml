@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'crates/praana-core/**'
+      - 'crates/praana-cli/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'docs/RUST_V2_*SPEC.md'
@@ -20,8 +21,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Every P3 event fsync, tool, and batch journal boundary (Linux)
-        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3
+      - name: P3 event fsync, tool, batch, and P4A projection/rebuild/deletion boundaries (Linux)
+        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3 --test history_search --test builtin_tools_phase4
       - name: Workspace checks (Linux)
         run: cargo test --workspace
 
@@ -31,10 +32,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Every P3 event fsync, tool, and batch journal boundary (macOS)
-        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3
+      - name: P3 event fsync, tool, batch, and P4A projection/rebuild/deletion boundaries (macOS)
+        run: cargo test -p praana-core --features failpoints --test crash_recovery --test history_artifacts --test builtin_tools_phase3 --test history_search --test builtin_tools_phase4
       - name: Workspace checks (macOS)
         run: cargo test --workspace
+      # Diagnostic only: the parallel step above is authoritative. Because a
+      # failed step skips later steps by default, this one is conditioned to
+      # run even when the workspace step fails — that is exactly when its
+      # result matters. Both binaries run even when the first is non-zero, so
+      # the failure cannot hide in one binary when it has already moved
+      # between them. A green result here is NOT a fix.
+      - name: Crash-and-resume tests, serialized (macOS, diagnostic)
+        if: success() || failure()
+        run: |
+          status=0
+          cargo test -p praana-core --test fake_provider_e2e -- --test-threads=1 --nocapture || status=1
+          cargo test -p praana-core --test step_provider_p3d -- --test-threads=1 --nocapture || status=1
+          exit $status
 
   abort-identity-windows:
     runs-on: windows-latest
@@ -67,6 +81,8 @@ jobs:
           # they can run. Child harness tests and Windows real-abort identity
           # tests are NOT skipped. The History ACL check remains fail-closed.
           $durableTests = @(
+            'auto_hydrate_controller_failure_projection_integrity',
+            'auto_hydrate_controller_other_error_warning_and_continue',
             'crash_after_accepted_marked_step_cancels_without_starting_body',
             'crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call',
             'crash_after_accepted_step_runs_unstarted_calls_once',
@@ -82,9 +98,11 @@ jobs:
             'crash_after_first_tool_start_marks_mutation_uncertain_and_skips_peer',
             'crash_after_later_tool_start_preserves_first_result',
             'crash_after_redaction_before_artifact',
+            'crash_after_state_changed_before_finish_is_uncertain',
             'crash_after_terminal_step_before_commit',
             'crash_after_tool_body_before_redaction',
             'crash_after_turn_committed',
+            'crash_auto_hydrate_recovery_matrix',
             'crash_during_fragmented_provider_output_never_accepts_partial',
             'crash_during_batch_edit_validation_leaves_workspace_unchanged',
             'crash_during_recovery_is_idempotent',
@@ -99,4 +117,12 @@ jobs:
           $exclude = @()
           foreach ($test in $durableTests) { $exclude += @('--skip', $test) }
           cargo test -p praana-core --features failpoints --test crash_recovery -- @exclude
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 'P3D #624 CLI Windows compile and fail-closed smoke'
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test -p praana-cli --test headless_cli_p3d windows_run_fails_closed_before_durable_session -- --exact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p praana-cli --test headless_cli_p3d windows_resume_fails_closed_before_session_lock -- --exact
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

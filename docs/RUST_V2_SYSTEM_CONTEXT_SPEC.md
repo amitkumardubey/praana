@@ -139,8 +139,9 @@ rendered; the tool catalog provides `load_skill` only when Phase 8 enables it.
 
 ## 6. Volatile Runtime Facts
 
-`current_state` begins with StateGraph's exact rendering. Append one blank line
-and this exact block:
+`current_state` begins with StateGraph's exact rendering, which is rebuilt for
+every turn-loop iteration and is never empty in a session (StateGraph sections
+8.1 and 8.3). Append one blank line and this exact block:
 
 ```text
 ## Runtime Facts

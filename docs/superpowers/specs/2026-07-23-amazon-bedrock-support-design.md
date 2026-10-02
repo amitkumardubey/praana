@@ -190,7 +190,6 @@ Update before implementation commit:
 - `AGENTS.md` — Bedrock among providers; `llm.region`; auth options including API key.
 - `docs/ARCHITECTURE.md` — live catalog note for Bedrock (control plane, not `/models`).
 - `praana.config.example.toml` — commented `region` + Bedrock auth notes.
-- Internal docs under `~/win_documents/Github/praana-internal` (mirror the user-facing notes).
 
 ## Success criteria
 
