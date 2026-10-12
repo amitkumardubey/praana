@@ -830,105 +830,215 @@ mod candidate {
     }
 
     // ---- JSON Schema ----------------------------------------------------
+    //
+    // Compaction §7.4: Draft 2020-12, local $defs recursively inlined, no
+    // `title`, additionalProperties:false on every object, object keys and each
+    // `required` array sorted by ASCII bytes, RFC 8785 bytes, no trailing LF.
+
+    fn schema_path() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("schemas/compaction_candidate_v1.schema.json")
+    }
+
+    fn walk(value: &Value, visit: &mut impl FnMut(&Value)) {
+        visit(value);
+        match value {
+            Value::Array(items) => items.iter().for_each(|v| walk(v, visit)),
+            Value::Object(map) => map.values().for_each(|v| walk(v, visit)),
+            _ => {}
+        }
+    }
 
     #[test]
-    fn candidate_schema_matches_the_checked_in_file() {
-        use praana_core::compaction::schema::candidate_json_schema;
-        let generated = candidate_json_schema();
-        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("schemas/compaction_candidate_v1.schema.json");
+    fn candidate_schema_bytes_match_the_checked_in_file_exactly() {
+        use praana_core::compaction::schema::candidate_schema_bytes;
+        let generated = candidate_schema_bytes();
         if std::env::var_os("PRAANA_WRITE_COMPACTION_FIXTURES").is_some() {
-            std::fs::write(
-                &path,
-                format!("{}\n", serde_json::to_string_pretty(&generated).unwrap()),
-            )
-            .unwrap();
+            std::fs::write(schema_path(), &generated).unwrap();
         }
-        let checked_in: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("schema is checked in"))
-                .unwrap();
+        let checked_in = std::fs::read(schema_path()).expect("schema is checked in");
         assert_eq!(
-            generated, checked_in,
+            String::from_utf8_lossy(&generated),
+            String::from_utf8_lossy(&checked_in),
             "regenerate with PRAANA_WRITE_COMPACTION_FIXTURES=1"
         );
+        assert!(!checked_in.ends_with(b"\n"), "no trailing LF");
+    }
+
+    #[test]
+    fn candidate_schema_bytes_are_rfc_8785_canonical() {
+        let bytes = std::fs::read(schema_path()).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        let again = praana_core::canonical_json::to_canonical_json_bytes(&value).unwrap();
+        assert_eq!(bytes, again, "file is not its own RFC 8785 form");
+    }
+
+    #[test]
+    fn candidate_schema_is_normalized_per_section_7_4() {
+        let schema: Value = serde_json::from_slice(&std::fs::read(schema_path()).unwrap()).unwrap();
+        assert_eq!(
+            schema["$schema"],
+            json!("https://json-schema.org/draft/2020-12/schema")
+        );
+        let mut objects = 0;
+        walk(&schema, &mut |v| {
+            if let Value::Object(map) = v {
+                assert!(!map.contains_key("$ref"), "unresolved $ref");
+                assert!(!map.contains_key("$defs"), "$defs must be inlined");
+                if map.get("type") == Some(&json!("object")) {
+                    objects += 1;
+                    assert_eq!(map.get("additionalProperties"), Some(&json!(false)));
+                }
+                if let Some(required) = map.get("required").and_then(Value::as_array) {
+                    let names: Vec<&str> = required.iter().map(|r| r.as_str().unwrap()).collect();
+                    let mut sorted = names.clone();
+                    sorted.sort_unstable();
+                    assert_eq!(names, sorted, "required must be sorted by ASCII bytes");
+                }
+            }
+        });
+        assert!(
+            objects > 10,
+            "expected the inlined object types, saw {objects}"
+        );
+        // `title` is removed. No candidate field is called `title`, so any
+        // occurrence is the schema keyword.
+        walk(&schema, &mut |v| {
+            if let Value::Object(map) = v {
+                assert!(!map.contains_key("title"), "title must be removed");
+            }
+        });
     }
 
     #[test]
     fn candidate_schema_is_strict() {
-        use praana_core::compaction::schema::candidate_json_schema;
-        let schema = candidate_json_schema();
-        // Top level takes exactly `segment` and `handoff`, nothing core-owned.
+        let schema: Value = serde_json::from_slice(&std::fs::read(schema_path()).unwrap()).unwrap();
         assert_eq!(schema["additionalProperties"], json!(false));
-        let required: Vec<&str> = schema["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert_eq!(required, ["segment", "handoff"]);
-        let defs = schema["$defs"].as_object().unwrap();
-        // Every object type is closed, and Option keys are required, not omittable.
-        for (name, def) in defs {
-            if def["type"] == json!("object") {
-                assert_eq!(def["additionalProperties"], json!(false), "{name} is open");
+        assert_eq!(schema["required"], json!(["handoff", "segment"]));
+        // No core-owned field is offered to the provider.
+        let mut names = Vec::new();
+        walk(&schema, &mut |v| {
+            if let Some(props) = v.get("properties").and_then(Value::as_object) {
+                names.extend(props.keys().cloned());
             }
-        }
-        let has_required = |def: &str, key: &str| {
-            defs[def]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == key)
-        };
-        assert!(has_required("HistoricalStatementV1", "uncertainty"));
-        assert!(has_required("ContradictionV1", "resolution"));
-        // No core-owned field leaks into the provider-facing schema.
-        let text = schema.to_string();
+        });
         for owned in [
             "segment_id",
             "handoff_id",
+            "source",
             "source_hash",
             "estimated_tokens",
             "epoch",
             "label",
+            "estimator_id",
+            "lineage_through_epoch",
         ] {
-            assert!(
-                !text.contains(&format!("\"{owned}\"")),
-                "{owned} is core-owned"
-            );
+            assert!(!names.iter().any(|n| n == owned), "{owned} is core-owned");
         }
     }
 
     #[test]
     fn candidate_schema_allows_null_for_required_option_keys() {
-        use praana_core::compaction::schema::candidate_json_schema;
-        let schema = candidate_json_schema();
-        let defs = &schema["$defs"];
-        for (def, key) in [
-            ("HistoricalStatementV1", "uncertainty"),
-            ("ContradictionV1", "resolution"),
-        ] {
-            let prop = &defs[def]["properties"][key];
-            let accepts_null = prop["type"] == json!("null")
-                || prop["type"]
-                    .as_array()
-                    .is_some_and(|t| t.contains(&json!("null")))
-                || prop["anyOf"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v["type"] == json!("null")));
-            assert!(accepts_null, "{def}.{key} must accept null, got {prop}");
+        let schema: Value = serde_json::from_slice(&std::fs::read(schema_path()).unwrap()).unwrap();
+        let statement = &schema["properties"]["segment"]["properties"]["user_goals"]["items"];
+        let contradiction =
+            &schema["properties"]["segment"]["properties"]["contradictions"]["items"];
+        for (def, key) in [(statement, "uncertainty"), (contradiction, "resolution")] {
+            let types = &def["properties"][key]["type"];
             assert!(
-                defs[def]["required"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!(key)),
-                "{def}.{key} must stay a required key"
+                types.as_array().is_some_and(|t| t.contains(&json!("null"))),
+                "{key} must accept null, got {types}"
+            );
+            assert!(
+                def["required"].as_array().unwrap().contains(&json!(key)),
+                "{key} must stay a required key"
             );
         }
-        // The golden candidates carry null for these keys, so the schema must admit them.
         let golden = std::fs::read_to_string(golden_path("candidate_full.json")).unwrap();
         assert!(golden.contains("\"uncertainty\":null"));
         assert!(golden.contains("\"resolution\":null"));
+    }
+
+    #[test]
+    fn candidate_schema_sha256_is_the_hash_of_the_file_bytes() {
+        use praana_core::compaction::schema::{
+            candidate_schema_sha256, CANDIDATE_OUTPUT_SCHEMA_ID,
+        };
+        use sha2::{Digest, Sha256};
+        assert_eq!(CANDIDATE_OUTPUT_SCHEMA_ID, "praana.compaction_candidate.v1");
+        let want = format!(
+            "{:x}",
+            Sha256::digest(std::fs::read(schema_path()).unwrap())
+        );
+        assert_eq!(candidate_schema_sha256().0, want);
+    }
+
+    // ---- shape: arrays are not objects ----------------------------------
+
+    #[test]
+    fn positional_arrays_are_not_accepted_for_structs() {
+        // Serde would read [segment, handoff] as a tuple-style struct.
+        let c = full_candidate();
+        let as_array = json!([c["segment"], c["handoff"]]);
+        assert_eq!(parse_code(&bytes(&as_array)), CandidateIssueCode::Schema);
+
+        // Root array that also omits the required null keys must not slip past.
+        let mut c = full_candidate();
+        c["segment"]["user_goals"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("uncertainty");
+        c["segment"]["contradictions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("resolution");
+        let as_array = json!([c["segment"], c["handoff"]]);
+        assert_eq!(parse_code(&bytes(&as_array)), CandidateIssueCode::Schema);
+
+        // An array standing in for a nested struct (an evidence object).
+        let mut c = full_candidate();
+        c["segment"]["user_goals"][0]["evidence"] = json!([[ev(1).to_string()], [], [], []]);
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
+
+        // The segment and handoff sections themselves, and a statement.
+        let mut c = full_candidate();
+        let seg = c["segment"]
+            .as_object()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        c["segment"] = Value::Array(seg);
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
+        let mut c = full_candidate();
+        c["handoff"]["current_goals"][0] = json!(["x", "direct", evidence_json(&[1]), null]);
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
+    }
+
+    #[test]
+    fn wrong_scalar_and_container_types_are_schema_errors() {
+        for (path_edit, label) in [
+            (("segment", "user_goals", json!({})), "list as object"),
+            (("segment", "omissions", json!("none")), "list as string"),
+            (("handoff", "next_actions", json!(null)), "list as null"),
+        ] {
+            let mut c = full_candidate();
+            c[path_edit.0][path_edit.1] = path_edit.2;
+            assert_eq!(
+                parse_code(&bytes(&c)),
+                CandidateIssueCode::Schema,
+                "{label}"
+            );
+        }
+        let mut c = full_candidate();
+        c["segment"]["omissions"][0]["count"] = json!(1.5);
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
+        let mut c = full_candidate();
+        c["segment"]["omissions"][0]["count"] = json!("3");
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
+        let mut c = full_candidate();
+        c["segment"]["user_goals"][0]["text"] = json!(7);
+        assert_eq!(parse_code(&bytes(&c)), CandidateIssueCode::Schema);
     }
 
     // ---- validation ----------------------------------------------------
