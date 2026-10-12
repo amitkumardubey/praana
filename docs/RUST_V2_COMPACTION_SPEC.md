@@ -302,6 +302,9 @@ Overflow is `ADMISSION_ARITHMETIC_OVERFLOW`.
 The exact keys, defaults, ranges, and cross-field validation are owned by
 `RUST_V2_CONFIG_SPEC.md`.
 
+`ratio_to_ppm` rounds to nearest: `round(ratio * 1_000_000)`. It rejects a
+non-finite ratio or one outside `0.0..=1.0` (Amit, 2026-10-12).
+
 The pressure state is deterministic:
 
 ```text
@@ -1590,12 +1593,15 @@ The attempt envelope `turn_id` is null. Credential resolution is after the
 durable start. Do not call `dispatch_after_admission`. Do not flip the config
 gate. Fake HTTP only.
 
-Open before wiring (raised 2026-10-12 in the P5-1 review; not decided, needs
-Amit): P5-1 supplies pure `select_turns` over `ProjectedTurn` but no producer.
-Settle first where `ProjectedTurn` is built from History replay (closure
-sequence, capsule validity, per-turn token mass under the target model), and
-where section 4.2's "most recent attempt at the same projection sequence"
-state is kept so `should_launch` can be given its inputs.
+Decided (Amit, 2026-10-12, P5-1 review): P5-1 supplies pure `select_turns`
+over `ProjectedTurn` but no producer. P5-3 builds `ProjectedTurn` on demand
+from History replay (closure sequence, capsule validity, per-turn token mass
+under the target model) and persists nothing new. Section 4.2's "most recent
+attempt at the same projection sequence" is derived from replay: the latest
+compaction-purpose `AssistantAttemptFailed` or `HistoryCompacted` and the
+source turns it considered (section 14.1 records both durably). Those turns
+and that sequence are the `has_unconsidered_eligible_turn` input to
+`should_launch`.
 
 Run `cargo test -p praana-core --test compaction_v1 fake_compactor_activates_after_fsync`.
 Expected red: no `HistoryCompacted` writer. It depends on P5-2.
