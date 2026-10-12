@@ -112,6 +112,14 @@ enum Container {
 }
 
 pub fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryError> {
+    check_raw_duplicate_keys_with_max_depth(json_str, MAX_JSON_DEPTH)
+}
+
+/// Same scan with a caller-chosen nesting limit (Compaction §8 uses 16).
+pub fn check_raw_duplicate_keys_with_max_depth(
+    json_str: &str,
+    max_depth: usize,
+) -> Result<(), HistoryError> {
     let bytes = json_str.as_bytes();
     let mut i = 0;
     let len = bytes.len();
@@ -124,7 +132,7 @@ pub fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryE
                 i += 1;
             }
             b'{' => {
-                if stack.len() >= MAX_JSON_DEPTH {
+                if stack.len() >= max_depth {
                     return Err(HistoryError::new(
                         "E_EVENT_SCHEMA_INVALID",
                         None,
@@ -153,7 +161,7 @@ pub fn check_raw_duplicate_keys_and_depth(json_str: &str) -> Result<(), HistoryE
                 i += 1;
             }
             b'[' => {
-                if stack.len() >= MAX_JSON_DEPTH {
+                if stack.len() >= max_depth {
                     return Err(HistoryError::new(
                         "E_EVENT_SCHEMA_INVALID",
                         None,

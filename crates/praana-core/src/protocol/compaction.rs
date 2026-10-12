@@ -12,7 +12,7 @@ pub enum HandoffReason {
     ModelSwitch,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum StatementConfidence {
     Direct,
@@ -20,7 +20,7 @@ pub enum StatementConfidence {
     Uncertain,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceRefV1 {
     pub event_ids: Vec<EventId>,
@@ -29,12 +29,13 @@ pub struct EvidenceRefV1 {
     pub summary_segment_ids: Vec<SummarySegmentId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HistoricalStatementV1 {
     pub text: String,
     pub confidence: StatementConfidence,
     pub evidence: EvidenceRefV1,
+    #[schemars(required, extend("type" = ["string", "null"]))]
     pub uncertainty: Option<String>,
 }
 
@@ -55,7 +56,7 @@ pub struct SourceRangeV1 {
     pub source_input_sha256: Sha256Digest,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum DecisionSummaryStatus {
     ActiveAtSourceEnd,
@@ -63,7 +64,7 @@ pub enum DecisionSummaryStatus {
     Uncertain,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionSummaryV1 {
     pub decision: String,
@@ -72,7 +73,7 @@ pub struct DecisionSummaryV1 {
     pub evidence: EvidenceRefV1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileChangeV1 {
     pub path: String,
@@ -81,7 +82,7 @@ pub struct FileChangeV1 {
     pub evidence: EvidenceRefV1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandOutcomeKind {
     Passed,
@@ -90,7 +91,7 @@ pub enum CommandOutcomeKind {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommandOutcomeV1 {
     pub command_label: String,
@@ -99,7 +100,7 @@ pub struct CommandOutcomeV1 {
     pub evidence: EvidenceRefV1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CompactionOmissionV1 {
     pub category: String,
@@ -107,7 +108,7 @@ pub struct CompactionOmissionV1 {
     pub recovery_query: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SummarySegmentContentV1 {
     pub user_goals: Vec<HistoricalStatementV1>,
@@ -136,16 +137,17 @@ pub struct SummarySegmentV1 {
     pub state_ids: Vec<StateId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContradictionV1 {
     pub claim_a: String,
     pub claim_b: String,
+    #[schemars(required, extend("type" = ["string", "null"]))]
     pub resolution: Option<String>,
     pub evidence: EvidenceRefV1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HistoricalHandoffContentV1 {
     pub current_goals: Vec<HistoricalStatementV1>,
