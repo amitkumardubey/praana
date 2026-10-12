@@ -4,6 +4,10 @@ Status: Normative implementation specification for Rust v2
 
 Date: 2026-08-31
 
+Amended by P5 reconciliation, 2026-10-03. Decisions dated 2026-10-03 are
+Amit's unless this document marks them coordinator. Issue
+`amitkumardubey/praana#633`.
+
 This document is the direct and final authority for provider request admission,
 history pressure, complete-turn compaction, immutable summary segments, and the
 bounded model-visible historical handoff. The TypeScript classic compactor,
@@ -52,8 +56,17 @@ Admission and compaction MUST preserve these invariants:
 9. Core compaction has no dependency on Cognitive Memory, a memory plugin,
    embeddings, or a cross-session database.
 10. P5 only: a provider context-length error receives at most one emergency
-    retry for one provider request. Phase 2 records the failure and does not
-    resend it.
+    retry for one provider request. That retry counts toward
+    `turn.max_attempts` for the assistant purpose. If that cap is already
+    exhausted, P5 records the failure and does not send. Phase 2 records the
+    failure and does not resend it.
+
+`praana run` creates one session and one outer turn. Resume of a ready
+session does not start another. Invariant 3 therefore gives that session no
+retired turns. When the active turn itself exceeds the hard ceiling, admission
+ends `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE`. In-turn tool-cycle compaction is a
+later packet (`amitkumardubey/praana#634`). P5 does not retire cycles inside
+the active turn.
 
 ## 2. Terms
 
@@ -260,15 +273,26 @@ ceiling, not another config default; reaching it emits an estimator-health
 alert.
 
 `Tsystem` includes stable system policy, project instructions, and environment
-facts. `Tmemory` is an enabled memory-plugin bootstrap. `Ttools` is the exact
+facts. `Tmemory` is an enabled memory-plugin bootstrap and stays inside
+`system` until P6. `Ttools` is the exact
 ordered tool schema representation. `Tmessages` includes retained accepted real
 messages. `Tactive` includes the latest user message, inline tool results,
-artifact previews, and the active tool cycle. Handoff and StateGraph have their
-own components. `Tcontinuation` includes provider-native
+artifact previews, and the active tool cycle. `Tcontinuation` includes provider-native
 reasoning/continuation items replayed in this request. Component rendering,
 rounding, and hash binding follow `RUST_V2_TOKEN_ACCOUNTING_SPEC.md`; the sum
 MUST equal its request-component sum. `estimated_input_sha256` is the ordered
 request-component manifest hash defined there.
+
+The request-time StateGraph tail guard (StateGraph §8.3) runs before this
+calculation and is not a compaction trigger (coordinator, 2026-10-03).
+`state_graph` is the tail bytes located only by the provider-reported offset
+(Token Accounting §7.3). A mismatch is `ADMISSION_STATE_TAIL_MISMATCH`.
+
+Handoff split (Amit, 2026-10-03): when the provider reports a handoff offset,
+`handoff` is that slot's raw UTF-8 and `system` is the wire system component
+with that span removed, using the same mismatch rule as the state tail. With
+no handoff offset, those bytes stay inside `system`. An empty handoff slot
+that is already rendered stays inside `system` until a handoff exists.
 
 The sum MUST equal `total_input_tokens`; checked arithmetic is mandatory.
 Overflow is `ADMISSION_ARITHMETIC_OVERFLOW`.
@@ -365,6 +389,23 @@ retired, compaction returns `COMPACTION_NO_ELIGIBLE_TURNS`.
 State changes embedded in a selected event sequence remain canonical and still
 project into the current StateGraph. Retirement affects conversation messages,
 not StateGraph replay, session search, artifacts, safety events, or telemetry.
+
+### 5.3 Single-turn sessions
+
+Amended by P5 reconciliation, 2026-10-03 (Amit).
+
+`praana run` creates one session and one outer turn. Resume of a ready session
+does not start a second turn. Section 5.1 excludes that active turn, so a
+session that has never committed an earlier turn has nothing to retire.
+Closed-turn compaction then returns `COMPACTION_NO_ELIGIBLE_TURNS` and the
+request still faces the hard ceiling. When the active turn, protected
+StateGraph tail, tools, and system prefix do not fit, admission returns
+`ADMISSION_ACTIVE_CONTEXT_TOO_LARGE`.
+
+P5 ships this closed-turn behavior only. Compacting completed tool cycles
+inside the active turn is deferred (`amitkumardubey/praana#634`). Replay
+already rejects a `HistoryCompacted` whose `source_turn_ids` contain the
+active turn. P5 does not add an intra-turn source range.
 
 ## 6. Complete-turn selection algorithm
 
@@ -482,41 +523,50 @@ pub enum CompactorStrategy {
 }
 ```
 
-Selection is:
+Selection is amended by P5 reconciliation, 2026-10-03 (Amit). Same-model
+internal compaction is deferred (`amitkumardubey/praana#635`). No bundled
+profile is marked `Validated` in P5. The three bundled GPT-5.6 Sol rows stay
+`Unvalidated`.
 
 ```text
-if exact active capability profile is SelfCompactionCapability::Validated
-and the provider supports an internal synthetic request
-and compaction admission succeeds
-and either no active tool cycle exists or the provider can branch without
-invalidating its continuation:
-    SameModelInternal
+if the session's creation snapshot predates Phase 5:
+    do not compact. Leave the snapshot unchanged.
+else if both compactor fields are empty:
+    do not compact. The empty pair is legal and inert until a bundled
+    profile is SelfCompactionCapability::Validated.
 else if a configured compactor is available and healthy:
     Configured
 else:
-    invariant violation for a Phase-5 compaction-eligible session: creation
-    should have rejected this config. Fail without changing the projection,
-    do not compact, and stop new turn admission. Do not run this selection
-    on a pre-Phase-5 snapshot until P5 specifies eligibility.
+    COMPACTION_UNAVAILABLE. Fail without changing the projection.
+    Stop new turn admission.
 ```
+
+`SameModelInternal` is not selected by P5-1 through P5-7. When a later packet
+marks a profile `Validated` from a checked-in fidelity manifest, selection
+gains that branch again: exact profile `Validated`, internal synthetic request
+supported, compaction admission succeeds, and either no active tool cycle
+exists or `continuation_after_internal_request` is true. Until that manifest
+exists, an empty pair does not mean "use the active model."
 
 The core never chooses a model merely because it is larger or more expensive.
 Profiles are provider/protocol/model/revision specific and backed by the
 fidelity suite in section 17.
 
-This selection runs only in Phase 5, and only for a session the P5 activation
-gate has made compaction-eligible. Before Phase 5, an empty compactor pair is
-valid, no compaction request is made, and this algorithm does not run. Starting
-with Phase 5, config resolution guarantees one branch is available before a
-new provider-capable session opens. Empty configured compactor fields then
-mean the validated active-model branch, not "wait until pressure and try". A
-configured pair is health-checked for credentials, profile, and schema support
-at that creation; transient network failure during an actual compaction still
-leaves the prior projection active. Pre-Phase-5 session snapshots keep the
-empty pair and are not rewritten. P5 must specify their compaction eligibility
-before this selection runs on a resumed turn.
+This selection runs only for a session created after the P5-7 gate with a
+non-empty configured pair. Before Phase 5, an empty pair is valid, no
+compaction request is made, and this algorithm does not run. A configured
+pair is checked at creation for a trusted window, `strict_json_schema`,
+credential presence, and compactor admission. That check does not require
+`Validated`. Transient network failure during an actual compaction still
+leaves the prior projection active. Pre-Phase-5 snapshots keep the empty
+pair, are not rewritten, and are never compaction-eligible (Amit,
+2026-10-03).
 
 ### 7.2 Same-model internal request
+
+Deferred (`amitkumardubey/praana#635`). P5-1 through P5-7 do not send this
+request and do not mark a bundled profile `Validated`. The contract below
+applies when a later packet enables the branch.
 
 The same-model strategy appends an internal compaction control query to the
 existing retained cached prefix. The query is not a canonical user message and
@@ -909,6 +959,11 @@ compaction attempt with `retry_of` pointing to the failed attempt; it is never a
 second provider request inside one attempt. A second invalid response fails the
 compaction operation. The core never truncates an LLM JSON string into validity.
 
+Coordinator, 2026-10-03: that repair consumes one slot of `turn.max_attempts`
+for the compaction purpose (`compaction_id` plus epoch). The assistant-step
+counter is separate. If no compaction-purpose slot remains, the operation
+fails and no repair is sent.
+
 ## 9. Source hashes and validation
 
 ### 9.1 Source hash
@@ -1052,13 +1107,21 @@ Accounting.
 
 Compaction attempts use protocol events, not `SystemNote`. Append
 `AssistantAttemptStarted` with `ProviderAttemptPurpose::Compaction` before any
-network bytes. Append `AssistantAttemptFailed` with the same purpose on provider,
-timeout, cancellation, parse, validation, or source-change failure. A successful
-attempt is accepted only by `HistoryCompacted`. If a retry replaces a failed
-attempt, append `AttemptSuperseded` after `HistoryCompacted`. Trigger, frozen
-source hash, strategy, candidate hash, and validation stage are stored in
-non-authoritative compaction telemetry when not represented by the protocol
-attempt DTO. Attempt events never become conversation messages.
+network bytes. The envelope `turn_id` is null and `attempt_id` is required
+(Protocol §6; coordinator, 2026-10-03). StateGraph §10.2 auto-hydrate ignores
+that attempt. Append `AssistantAttemptFailed` with the same purpose and a null
+envelope `turn_id` on provider, timeout, cancellation, parse, validation, or
+source-change failure. A successful attempt is accepted only by
+`HistoryCompacted`, whose envelope `turn_id` is also null. If a retry replaces
+a failed attempt, append `AttemptSuperseded` after `HistoryCompacted`, with a
+null envelope `turn_id` and a null `attempt_id`. The assistant-step
+supersession repair, which looks only for `AssistantStepAccepted`, does not
+emit that event. P5-3 adds the compaction-purpose repair in
+`history/recovery.rs`. Trigger, frozen source hash, strategy, candidate hash,
+and validation stage are stored in non-authoritative compaction telemetry when
+not represented by the protocol attempt DTO. Attempt events never become
+conversation messages. Do not call `dispatch_after_admission`. It writes an
+assistant `turn_id` and resolves credentials before the start.
 
 ## 12. Atomic activation across JSONL and SQLite
 
@@ -1073,9 +1136,14 @@ The exact sequence is:
 2. Compute selection and source hash.
 3. Build the exact internal control request and admit it against its resolved
    model/profile. No candidate exists yet.
-4. Append/fsync `AssistantAttemptStarted` with compaction purpose. Release the
-   lock while generating.
-5. Generate and parse a candidate with timeout/cancellation.
+4. Append/fsync `AssistantAttemptStarted` with compaction purpose and a null
+   envelope `turn_id`. Resolve the compactor credential only after that fsync,
+   immediately before send: credential-store row, then the provider env var
+   (Amit, 2026-10-03). A miss appends `AssistantAttemptFailed` with
+   `E_PROVIDER_AUTH` / `authentication`, does not send, and does not activate.
+   Release the lock while generating.
+5. Generate and parse a candidate with timeout/cancellation. The session
+   controller owns this send. `dispatch_after_admission` is not used.
 6. Reacquire the session writer lock.
 7. Validate candidate structure and provenance.
 8. Confirm the reset epoch, previous handoff hash, selected turn statuses,
@@ -1090,7 +1158,11 @@ The exact sequence is:
     retired and replace the active handoff.
 13. In one idempotent `BEGIN IMMEDIATE` transaction, insert summary metadata,
     mark derived turns retired, index segment/handoff search documents, and
-    advance the projection checkpoint to the compaction event hash.
+    advance the existing `history_derived` projection checkpoint to the
+    compaction event hash. Coordinator, 2026-10-03: the checkpoint payload and
+    `checkpoint_schema_version` stay the History §5.2 value. Summary documents
+    are inserts. Their `summary_segment_id` must match on the full-row compare.
+    Retrieval is History §11.3 `read_session_source` (Amit, 2026-10-03).
 14. Commit SQLite and publish the new projection to UI/provider orchestration.
 15. Re-run admission on the exact next provider request.
 
@@ -1157,13 +1229,21 @@ purpose and leaves all source turns retained. The previous handoff remains
 active. Normal turns may continue if the exact request still passes hard
 admission.
 
-Only one schema-repair request is allowed per attempt. Backoff for repeated
+Only one schema-repair request is allowed per compaction operation. It is a
+new compaction-purpose attempt, so it needs a free `turn.max_attempts` slot.
+Backoff for repeated
 proactive failures is projection based: do not retry the same source hash until
 at least one new committed turn, model/config change, or manual command.
 
 ### 14.2 Hard-ceiling recovery
 
-Before refusing a request, perform these steps exactly once per admission cycle:
+The StateGraph request-time tail guard has already run. Over
+`state.active_max_tokens` it interrupts with `ActiveTurnTooLarge` and does not
+enter this section. Protected state is not compacted to satisfy that guard.
+
+Before refusing a request for `I > U`, perform these steps exactly once per
+admission cycle. OpenAI's two-rebuild cap applies to `pre_request` hook
+`Rebuild` results, not to these epochs (coordinator, 2026-10-03).
 
 1. Ensure every eligible large result in the active request is represented by
    an already durable artifact preview.
@@ -1178,7 +1258,8 @@ Before refusing a request, perform these steps exactly once per admission cycle:
    identifying which user/tool input must be narrowed or retrieved in parts.
 
 No emergency path drops a user message, tool result, tool schema, active
-continuation, or StateGraph entry without a durable policy event.
+continuation, or StateGraph entry without a durable policy event. A one-turn
+session has no eligible closed turn, so step 2 does not shrink it (section 5.3).
 
 ### 14.3 Provider context-length response
 
@@ -1188,27 +1269,44 @@ attempt, returns `provider_context_length`, maps
 `emergency_context_retry` false, and does not retry, drop history, or alter
 output.
 
-P5, after calibration exists, handles a recognized context-length error as
-follows:
+P5 handles a recognized context-length error as follows (Amit, 2026-10-03):
 
 1. Record estimated components and the provider error as telemetry.
-2. Mark this provider/model estimator sample as underestimation at least
-   `max(1, W - I + 1)` tokens when exact usage is unavailable.
-3. Run one emergency recovery cycle with the increased calibration margin.
-4. Retry the provider request once with a new attempt ID.
-5. If it fails again, return `ADMISSION_PROVIDER_CONTEXT_REJECTED`.
+2. Record an underestimation of at least `max(1, W - I + 1)` tokens when exact
+   usage is unavailable. That figure is telemetry. It is not a
+   `TokenCalibrationSampleV1` and it does not enter the 128-sample bucket.
+3. Run one emergency recovery cycle. Compaction epochs spend the compaction
+   purpose budget, not the assistant-purpose budget. The calibration margin
+   `C` is the Token Accounting value: 0 before 20 comparable samples, then
+   nearest-rank p95 of positive error plus 128.
+4. If the assistant purpose still has a free `turn.max_attempts` slot, retry
+   the provider request once. The new attempt has a new attempt id,
+   `retry_of` set to the failed attempt, and `emergency_context_retry = true`.
+   If the cap is already exhausted, do not send.
+5. If the retry fails with context length again, or the cap blocked the
+   retry, return `ADMISSION_PROVIDER_CONTEXT_REJECTED`.
 
 Retries from other error classes do not reset this one-retry budget. The failed
 partial provider attempt is never accepted or summarized as source.
-`ADMISSION_PROVIDER_CONTEXT_REJECTED` is deferred until P5.
+A context-length response after a durable start is P3D exit 1 when the
+terminal events are durable. A later commit is exit 0. A hard-ceiling
+`ActiveTurnTooLarge` before any attempt start is exit 2. No new exit number
+is added.
 
 ### 14.4 No compactor available
 
-Starting with Phase 5, creation of a new provider-capable session prevents a
-configuration with neither validated self-compaction nor a validated configured
-compactor. Pre-Phase-5 sessions opened with the default empty pair are not
-rejected retroactively and are not compacted until P5 specifies their
-eligibility. `COMPACTION_UNAVAILABLE` is reserved for a post-start capability
+Amended by P5 reconciliation, 2026-10-03 (Amit).
+
+A new Phase-5 session may keep the empty compactor pair. That pair is inert
+and does not select a same-model compactor until a bundled profile is
+`Validated` (`amitkumardubey/praana#635`). A complete pair is validated at
+creation for a trusted window, `strict_json_schema`, credential presence, and
+compactor admission. The bundled `openai` / `openai-chat-v1` / `gpt-5.6-sol`
+row satisfies the window and strict-schema checks without a fidelity
+manifest. Pre-Phase-5 sessions are never compaction-eligible. Their snapshots
+are not rewritten.
+
+`COMPACTION_UNAVAILABLE` is reserved for a post-start capability
 integrity failure, a revoked or missing credential, or a runtime health failure
 on a session that was compaction-eligible. It stops new turn admission and
 leaves the projection unchanged; it does not use Cognitive Memory or a hidden
@@ -1228,8 +1326,14 @@ those algorithms.
 Admission consumes the resulting checked component counts and calibration value
 `C` in section 4. Phase 2 must implement enough of that authority for hard
 request admission and model-window resolution. Phase 5 activates pressure
-hysteresis, calibration feedback, compaction turn-mass accounting, and
-capability-profile strategy selection.
+hysteresis, compaction turn-mass accounting, and configured-compactor
+selection.
+
+Amended by P5 reconciliation, 2026-10-03 (Amit). P5 records comparable
+`TokenCalibrationSampleV1` values and feeds `C` into admission. Before 20
+samples, `C` is 0. Defaults in the Config specification stay unchanged. The
+section 14.3 underestimation figure is telemetry and is excluded from the
+bucket. Threshold sweeps that would change defaults are a later packet.
 
 ## 16. Telemetry
 
@@ -1398,30 +1502,178 @@ SQLite converges by replay, and no turn is retired twice.
 
 ## 19. Implementation sequence
 
-1. In Phase 2, implement trustworthy model-window/profile resolution, exact
-   `TokenEstimatorV1` request component accounting, output/reasoning reserve,
-   hard admission, and admission telemetry without pressure compaction.
-2. In Phase 5 after Phase 4 retrieval/FTS/StateGraph is available, implement
-   pressure state, committed-turn token mass, and pure selection with property
-   tests.
-3. Define semantic-only candidate Rust/JSON schemas, host finalization,
-   canonical hashes, structural/provenance validator,
-   and hostile-content renderer.
-4. Implement configured compactor against a fake provider and deterministic
-   golden fixtures.
-5. Implement attempt events and JSONL-authoritative activation with derived
-   summary/turn/search projection updates.
-6. Implement repeated compaction and bounded handoff replacement.
-7. Add same-model internal strategy only for one fixture-validated capability
-   profile.
-8. Add hard-ceiling reserve reduction, active-context refusal, and one-shot
-   provider context recovery.
-9. Add Token Accounting calibration consumption and run threshold sweeps before
-   changing defaults.
+1. Phase 2 already implements model-window resolution, request-component
+   accounting, output reserve, and hard admission without pressure compaction.
+2. P5-1: pressure state, committed-turn token mass, and pure selection.
+3. P5-2: semantic-only candidate schema, validator, and hostile-content renderer.
+4. P5-3: configured compactor against a fake provider, JSONL activation, and
+   the handoff admission split. Same-model internal is not in this step.
+5. P5-4: derived summary rows, search, and `read_session_source` retrieval.
+6. P5-5: repeated compaction and bounded handoff replacement.
+7. Same-model internal waits for a checked-in fidelity manifest
+   (`amitkumardubey/praana#635`). P5 does not mark a bundled profile
+   `Validated`.
+8. P5-6: hard-ceiling reserve reduction, the one emergency context retry, and
+   calibration records. Defaults stay at the Config values.
+9. P5-7: the creation gate. It lands last.
 
-### 19.1 Bounded Phase 5 packet
+### 19.1 Bounded Phase 5 packets
 
-Create `crates/praana-core/src/compaction/{mod,admission,selection,prompt,schema,validate,activate}.rs`, the exact candidate schema, and `crates/praana-core/tests/compaction_v1.rs`. Check in request/handoff/selection/activation fault fixtures first. Run `cargo test -p praana-core --test compaction_v1`; expected red is unresolved compaction modules. Implement pure integer admission/selection and renderers before provider calls, then fake compactor validation and JSONL-authoritative activation. Green requires the named test, protocol/history integration, fmt, clippy with warnings denied, and workspace tests. It does not tune defaults, add embeddings, use Cognitive Memory, or enable an unvalidated self-compactor.
+Amended by P5 reconciliation, 2026-10-03. P5 ships as seven packets. Each one
+ends in a testable increment. P5-1 and P5-2 do not change `praana run`. P5-3
+through P5-6 no-op on a one-turn session when selection finds no eligible
+turn. P5-7 is the first packet that changes session creation. None of them
+tune defaults, add embeddings, use Cognitive Memory, or enable an unvalidated
+self-compactor.
+
+**P5-1: pressure and selection.** This packet covers sections 4.2 through 6
+and the pure parts of sections 18.1 and 18.2. It does not wire the turn loop.
+
+New files:
+
+- `crates/praana-core/src/compaction/{mod,admission,selection}.rs`
+- `crates/praana-core/tests/compaction_v1.rs`
+
+Check in selection fixtures first: closed prefix, interrupted-capsule barrier,
+active-turn barrier, one oversized turn, reset-epoch split, and ppm just
+below, at, and above the trigger and the clear threshold. No failpoints.
+
+Run `cargo test -p praana-core --test compaction_v1 pressure_selects_oldest_closed_prefix`.
+Expected red: unresolved `compaction` module. A cheap-model implementer can
+finish this packet. It depends only on P4B already being on `main`.
+
+**P5-2: candidate schema, validator, and renderer.** This packet covers
+sections 8 through 10 and section 18.3.
+
+New files:
+
+- `crates/praana-core/src/compaction/{schema,validate,render}.rs`
+- `crates/praana-core/schemas/compaction_candidate_v1.schema.json`
+
+Tests stay in `compaction_v1.rs`. Check in golden candidate JSON, duplicate-key
+rejection, hostile XML and role-header strings, and bound failures first. No
+failpoints.
+
+Run `cargo test -p praana-core --test compaction_v1 hostile_handoff_cannot_escape`.
+Expected red: missing schema file, or the renderer test has no function. Copy
+the renderer bytes from section 10. A cheap-model implementer can finish this
+packet. It depends on P5-1.
+
+**P5-3: fake compactor and JSONL activation.** Needs a strong-model
+implementer. This packet covers sections 7.3 through 7.4, sections 11 through
+12 for epoch 1, the handoff slot, and the handoff/`system` offset split. It
+proves StateGraph replay and the state checkpoint survive `HistoryCompacted`,
+and that a handoff may cite state ids without becoming the graph.
+
+New files:
+
+- `crates/praana-core/src/compaction/{activate,control}.rs`
+
+Changed files:
+
+- `crates/praana-core/src/turn/mod.rs` and `turn/provider.rs`, only for a
+  test-called activate path and the handoff offset
+- `crates/praana-core/src/provider/openai/mod.rs`, only for the handoff
+  component span
+- `crates/praana-core/src/history/recovery.rs`, for the compaction-purpose
+  supersession repair. The existing repair looks only for
+  `AssistantStepAccepted` and returns that event's `TurnId`
+- `crates/praana-core/src/history/replay.rs` only if a checked-in fixture
+  cannot replay that supersession without a change. Otherwise leave it
+
+Tests stay in `compaction_v1.rs`. Use protocol fixtures `e25` through `e27`.
+Failpoints: `compaction.after_attempt_started`,
+`compaction.after_history_compacted_fsync`,
+`compaction.before_projection_publish`.
+
+The attempt envelope `turn_id` is null. Credential resolution is after the
+durable start. Do not call `dispatch_after_admission`. Do not flip the config
+gate. Fake HTTP only.
+
+Run `cargo test -p praana-core --test compaction_v1 fake_compactor_activates_after_fsync`.
+Expected red: no `HistoryCompacted` writer. It depends on P5-2.
+
+**P5-4: derived summary projection.** This packet covers History summary rows,
+section 11.3 retrieval, History §18 items 9 and 12 for summaries and compaction
+epochs, and crash point 14.
+
+Changed files:
+
+- `crates/praana-core/src/history/{checkpoint,search,retrieve,projection}.rs`,
+  only for summary rows and retrieval
+- `crates/praana-core/tests/history_search.rs` and `compaction_v1.rs`
+
+The `history_derived` payload and `checkpoint_schema_version` stay at History
+§5.2. A valid stale checkpoint replays and inserts the new row. Do not add a
+checkpoint payload field. Failpoint:
+`history.after_summary_insert_before_checkpoint`.
+
+Run `cargo test -p praana-core --test history_search summary_segment_roundtrip`.
+Expected red: `search.rs` still returns an empty tool for `summary_segment`.
+A cheap-model implementer can finish this packet if retrieval stays
+`read_session_source`. It depends on P5-3.
+
+**P5-5: repeated compaction.** This packet covers section 13 and section 18.4.
+
+Changed files:
+
+- `crates/praana-core/src/compaction/activate.rs`
+- `crates/praana-core/tests/compaction_v1.rs`
+
+Epoch 2 input is the previous handoff, the newly selected turns, and the
+current StateGraph. One handoff is model-visible. Source ranges do not
+overlap. Search from P5-4 finds epoch 1. Reuse the P5-3 failpoints.
+
+Run `cargo test -p praana-core --test compaction_v1 second_epoch_replaces_handoff`.
+Expected red: epoch 2 still feeds the raw retired turns, or two handoffs are
+both model-visible. A cheap-model implementer can finish this packet. It
+depends on P5-3 and P5-4.
+
+**P5-6: live pressure, hard ceiling, emergency retry, and calibration.**
+Needs a strong-model implementer. This packet covers sections 4.3, 14.1
+through 14.3, and 15 through 16, including the assistant-purpose budget for
+the one emergency retry.
+
+Changed files:
+
+- `crates/praana-core/src/turn/mod.rs` and `turn/provider.rs`
+- `crates/praana-core/src/provider/openai/error.rs`, only so the one emergency
+  retry is classified without becoming a generic retry
+- the `token/calibration.rs` call site
+- `crates/praana-core/src/history/recovery.rs`, for
+  `SupersessionReason::EmergencyContextRetry`
+- `crates/praana-core/tests/step_provider_p3d.rs` and `compaction_v1.rs`
+
+Failpoints: `turn.before_emergency_resend`,
+`compaction.after_calibration_sample`. A second context-length does not send.
+An exhausted `turn.max_attempts` does not send a further assistant attempt.
+The section 14.3 underestimation figure stays out of the calibration bucket.
+Defaults do not change.
+
+Run `cargo test -p praana-core --test step_provider_p3d context_length_emergency_retries_once`.
+Expected red: `retry_allowed` still excludes `ContextLength`, and
+`openai_v1.rs` `context_length_records_failure_without_retry` still describes
+the loop. It depends on P5-5.
+
+**P5-7: activation gate.** This packet covers Config §§6.4 and 6.6 and Catalog
+§7 for the Phase-5 branch. It lands last.
+
+Changed files:
+
+- `crates/praana-core/src/config/validate.rs`
+- `crates/praana-core/src/setup/mod.rs`
+- `crates/praana-core/tests/config_v1.rs` and `setup_v1.rs`
+
+The empty pair stays legal and inert. A one-sided pair stays
+`CONFIG_INVALID_VALUE`. A complete pair is validated for a trusted window,
+`strict_json_schema`, credential presence, and compactor admission. It does
+not require a fidelity manifest. Pre-Phase-5 snapshots are not
+compaction-eligible and are not rewritten. No failpoints.
+
+Run `cargo test -p praana-core --test config_v1 phase5_compactor_gate`.
+Expected red: a complete pair still returns `CONFIG_FEATURE_NOT_IMPLEMENTED`
+from `validate.rs`. It depends on P5-3. User-visible. A cheap-model
+implementer can finish it from this text.
 
 ## 20. Common implementation mistakes
 
@@ -1462,7 +1714,7 @@ identical across those surfaces.
 | `ADMISSION_PROVIDER_CONTEXT_REJECTED` | Provider rejected emergency retry | No |
 | `COMPACTION_NO_ELIGIBLE_TURNS` | No complete retained prefix exists | No |
 | `COMPACTION_MISSING_TOKEN_MASS` | Eligible turn lacks model-specific estimate | No |
-| `COMPACTION_UNAVAILABLE` | No validated/configured strategy | No |
+| `COMPACTION_UNAVAILABLE` | Post-start integrity, credential, or health failure on an eligible session | No |
 | `COMPACTION_CANCELLED` | Cancelled before activation | No |
 | `COMPACTION_TIMEOUT` | Compactor exceeded deadline | No |
 | `COMPACTION_PROVIDER` | Provider request failed | No |
@@ -1480,7 +1732,8 @@ Admission and compaction are accepted only when:
 1. Every provider-call path proves that admission ran against the exact request
    hash and current profile.
 2. No admitted request exceeds `U` under the selected implementation estimator;
-   P5 recognized provider context rejection performs at most one emergency retry;
+   P5 recognized provider context rejection performs at most one emergency retry
+   and only when the assistant purpose still has a `turn.max_attempts` slot;
    Phase 2 does not retry that response;
    `MT-ADMISSION-CONTEXT-REJECT` is recorded without an unsupported release
    percentage.

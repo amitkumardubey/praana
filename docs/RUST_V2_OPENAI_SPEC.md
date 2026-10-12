@@ -1153,6 +1153,13 @@ Required sequence for every initial, tool-continuation, model-switch, fallback, 
 10. Resolve credentials and construct secret-bearing headers.
 11. Send.
 
+Amended by P5 reconciliation, 2026-10-03. The live session controller inserts
+durable `assistant_attempt_started` after step 9 and before step 10, for
+assistant and compaction requests. Compaction attempts use a null envelope
+`turn_id`. Credential resolution stays step 10. `dispatch_after_admission` is
+not on this path. The two-rebuild cap applies to `pre_request` `Rebuild`
+results. Compaction epochs follow the Compaction specification.
+
 `pre_request` returns exactly one of:
 
 - `Allow`

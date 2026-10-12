@@ -1960,7 +1960,13 @@ Example: a 2,000-byte ASCII field whose only match starts on line 7 at byte
   of the start of line `a` and `a` is defined as for artifacts.
 - `state`: the same form as `event`: tool `read_session_source` with
   `{"result_id": <result_id>, "byte_offset": o}`.
-- `summary_segment`: defined by the P5 owner. Until then, no such row exists.
+- `summary_segment`: amended by P5 reconciliation, 2026-10-03. Tool
+  `read_session_source` with arguments
+  `{"result_id": <result_id>, "byte_offset": o}`, where `o` is the byte
+  offset of the start of line `a`, and `a` is defined as for events. The
+  document text is the indexed `summary_segment.segment` or
+  `summary_segment.handoff` field. Until P5-4 writes those rows, no such row
+  exists.
 
 ### 11.4 Ranking
 

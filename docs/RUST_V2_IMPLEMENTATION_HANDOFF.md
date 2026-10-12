@@ -556,8 +556,12 @@ delay helpers only. To retry, return a typed pre-emission retryable outcome to
 P3C; it durably fails the old attempt, applies OpenAI §18 bounded jitter/hints
 and 60-second wall cap under cancellation, then calls `prepare`/admit/start
 again within `turn.max_attempts` (at most three per purpose). No retry after
-first semantic emission, invalid output, context-length failure, auth error,
-or cancellation. On crash, History/P3C first marks a started, unclosed attempt
+first semantic emission, invalid output, auth error, or cancellation.
+Amended by P5 reconciliation, 2026-10-03. A provider context-length failure
+gets the one P5 emergency retry in Compaction §14.3: it counts toward that
+same assistant-purpose cap, sets `emergency_context_retry = true`, and does
+not send when the cap is already exhausted. A second context-length failure
+is not retried. On crash, History/P3C first marks a started, unclosed attempt
 lost, then makes a **fresh** admitted/start attempt only if budget allows;
 never replay lost partial output. Do not count an in-memory resend as the same
 canonical attempt. Failure to fsync start means no send; failure to fsync
@@ -1030,16 +1034,53 @@ before these pass.
 
 ### P5: Pressure and Compaction
 
-- Owner: `RUST_V2_COMPACTION_SPEC.md` complete document.
-- Depends: P2B, P4A, P4B.
-- Output: pressure/hysteresis, exact control prompt/schema, committed and
-  interrupted closed-unit selection, immutable segment/handoff, activation,
-  emergency retry and calibration.
-- Focused test: `compaction_v1` plus history/protocol fault fixtures.
-- Activation gate: test that newly created Phase-5 provider-capable sessions
-  enforce Config §6.4's validated/configured compactor requirements before
-  session creation succeeds. Decide and test the compaction eligibility of
-  pre-Phase-5 session snapshots before enabling compaction on their resumed turns.
+Amended by P5 reconciliation, 2026-10-03. Split into P5-1 through P5-7
+(`RUST_V2_COMPACTION_SPEC.md` §19.1). P5-3 and P5-6 need a strong-model
+implementer. Issue `amitkumardubey/praana#633`.
+
+- Owner: `RUST_V2_COMPACTION_SPEC.md`, as amended 2026-10-03. Config §6.4,
+  OpenAI §17, Token Accounting §7.3, and History §11.3 carry the same
+  amendment.
+- Depends: P2B, P4A, P4B. Inside the split, P5-1, then P5-2, then P5-3, then
+  P5-4 and P5-5, then P5-6, then P5-7 last.
+- Output: closed-turn pressure and selection, candidate schema and renderer,
+  fake-compactor JSONL activation, summary projection, repeated handoff
+  replacement, one budgeted emergency retry, calibration records, and the
+  creation gate. No in-turn tool-cycle compaction. No same-model internal
+  compactor.
+- Focused tests: the per-packet commands in Compaction §19.1.
+- Activation gate (P5-7): the empty pair stays legal and inert for a new
+  Phase-5 session until a bundled profile is `Validated`. A complete pair is
+  validated for a trusted window, `strict_json_schema`, credential presence,
+  and compactor admission, without a fidelity manifest. Pre-Phase-5 snapshots
+  are never compaction-eligible and are not rewritten.
+- Decisions (Amit, 2026-10-03):
+  - T2 (d): P5 retires closed turns only. The single-turn limit is Compaction
+    §1 and §5.3. In-turn tool-cycle compaction is a later packet
+    (`amitkumardubey/praana#634`).
+  - D1 (a): pre-Phase-5 sessions are never compaction-eligible.
+  - D2 (a): one emergency context retry, counted toward `turn.max_attempts`
+    for the assistant purpose. No send when that cap is exhausted. A second
+    context-length is not retried.
+  - D3 (c): same-model internal compaction is deferred
+    (`amitkumardubey/praana#635`). Confirmed: `resolve_profile_from_manifest`
+    loads `openai` / `openai-chat-v1` / `gpt-5.6-sol` with
+    `strict_json_schema: true` and `self_compaction: Unvalidated`, and does
+    not read a fidelity manifest. `validate_effective_config` still rejects a
+    complete pair with `CONFIG_FEATURE_NOT_IMPLEMENTED` until P5-7.
+  - D4 (a): credential presence at creation; the secret is resolved after the
+    durable compaction start.
+  - D5 (a): the handoff slot leaves `system` in P5-3. Memory stays in
+    `system` until P6.
+  - D6 (a): record comparable calibration samples and apply `C`. The
+    context-length underestimation figure is telemetry, not a bucket sample.
+    Defaults stay unchanged.
+  - D7 (a): `summary_segment` retrieval is `read_session_source`.
+- Coordinator choices accepted 2026-10-03: null compaction `turn_id`; no
+  `dispatch_after_admission`; the state-tail guard is not a compaction
+  trigger; a schema repair consumes a compaction-purpose slot; summary rows
+  use the existing `history_derived` checkpoint; the OpenAI two-rebuild cap
+  is the `pre_request` hook cap; no bundled profile is marked `Validated`.
 
 ### P6: Optional Memory Plugin
 
@@ -1126,11 +1167,15 @@ anything adds a row before it merges.
 | StateGraph retracted objects are unbounded (the 4,096 limit counts current objects only), so the graph and its checkpoint grow without limit in a long session | 2026-10-01, P4B amendment review | StateGraph owner decision (bound, or exclude retracted payloads from the checkpoint) | none |
 | `tests/main.test.ts` entrypoint guard tests time out under load | 2026-09-29 | Bun test hygiene | `amitkumardubey/praana#626` |
 | Per-batch cap on history-tool results (`4 * 64 KiB`, History §6.1 rule 5) awaits Amit's confirmation | 2026-09-29 | Amit, in the review of PR `amitkumardubey/praana#625` | `amitkumardubey/praana#625` |
-| `summary_segment` search rows and retrieval, summary projections | 2026-09-29, P4A scope | P5 | P5 packet |
-| History §18 items 9 and 12: summary, StateGraph-checkpoint, and compaction-epoch parts (P4A checks turns, search, and reset only) | 2026-09-29, P4A scope | P4B and P5 | P4B / P5 packets |
+| `summary_segment` search rows and retrieval, summary projections | 2026-09-29, P4A scope; routed 2026-10-03, P5 reconciliation | P5-4 | P5-4 packet |
+| History §18 items 9 and 12: summary and compaction-epoch parts close in P5-4. The state-checkpoint position at a compaction event closes in P5-3. P4A checked turns, search, and reset only | 2026-09-29, P4A scope; routed 2026-10-03, P5 reconciliation | P5-3 and P5-4 | P5-3 / P5-4 packets |
 | `HISTORY_EVENT_INTEGRITY` canonical is conditional (Protocol A.4): narrow replay `E_JSONL_*`/`E_EVENT_*`/`E_REFERENCE_*` is never classified at the tool boundary; always the otherwise branch `E_SESSION_INTEGRITY_FAILED` | 2026-09-29, P4A | Follow-up (needs replay classification context at the error site) | none |
 | `HISTORY_DANGLING_ARTIFACT` canonical is conditional (Protocol A.4): always `E_ARTIFACT_MISSING`; the `E_ARTIFACT_HASH_MISMATCH` branch is never classified | 2026-09-29, P4A | Follow-up (`ArtifactError` carries no hash evidence) | none |
 | `HISTORY_IO` canonical is conditional (Protocol A.4): always `E_HISTORY_PERSISTENCE`; the `E_EVENT_DURABILITY_UNCERTAIN` append-began branch is never classified | 2026-09-29, P4A | Follow-up (append-began state not plumbed to the error site) | none |
+| In-turn tool-cycle compaction. P5 retires closed turns only. A one-turn `praana run` gets no compaction savings and can still end `ActiveTurnTooLarge` | 2026-10-03, Amit | Later packet | `amitkumardubey/praana#634` |
+| Same-model internal compaction. The empty compactor pair stays legal and inert for new Phase-5 sessions until a bundled profile is `SelfCompactionCapability::Validated` from a checked-in fidelity manifest. P5 does not mark GPT-5.6 Sol `Validated` | 2026-10-03, Amit | Later packet | `amitkumardubey/praana#635` |
+| Handoff instruction slot leaves the `system` admission component when the provider reports a handoff offset (Token Accounting §7.3, amended 2026-10-03). Memory stays inside `system` until P6 | 2026-10-03, Amit | P5-3 (handoff), P6 (memory) | P5-3 / P6 packets |
+| P5 closes StateGraph §13.1, the compaction bullets of §15.6, §15.2 at a compaction event, §16 step 9's compaction half, and §18 item 9's compaction half. §13.4 stays Phase 10. §13.5 stays P6 | 2026-10-03, Amit | P5-3 | P5-3 packet |
 
 
 - Diff changes only listed files or an owner-required fixture/data file.
