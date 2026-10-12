@@ -19,6 +19,7 @@ compile_error!("the failpoints feature is test-only and cannot build a release a
 
 pub mod canonical_json;
 pub mod clock;
+pub mod compaction;
 pub mod config;
 #[cfg(feature = "failpoints")]
 pub(crate) mod crash_point;
