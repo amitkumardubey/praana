@@ -1590,6 +1590,13 @@ The attempt envelope `turn_id` is null. Credential resolution is after the
 durable start. Do not call `dispatch_after_admission`. Do not flip the config
 gate. Fake HTTP only.
 
+Open before wiring (raised 2026-10-12 in the P5-1 review; not decided, needs
+Amit): P5-1 supplies pure `select_turns` over `ProjectedTurn` but no producer.
+Settle first where `ProjectedTurn` is built from History replay (closure
+sequence, capsule validity, per-turn token mass under the target model), and
+where section 4.2's "most recent attempt at the same projection sequence"
+state is kept so `should_launch` can be given its inputs.
+
 Run `cargo test -p praana-core --test compaction_v1 fake_compactor_activates_after_fsync`.
 Expected red: no `HistoryCompacted` writer. It depends on P5-2.
 
