@@ -1,0 +1,425 @@
+{
+  "$defs": {
+    "ArtifactId": {
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "CommandOutcomeKind": {
+      "enum": [
+        "passed",
+        "failed",
+        "interrupted",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "CommandOutcomeV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command_label": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "outcome": {
+          "$ref": "#/$defs/CommandOutcomeKind"
+        }
+      },
+      "required": [
+        "command_label",
+        "outcome",
+        "detail",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "CompactionOmissionV1": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recovery_query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "category",
+        "count",
+        "recovery_query"
+      ],
+      "type": "object"
+    },
+    "ContradictionV1": {
+      "additionalProperties": false,
+      "properties": {
+        "claim_a": {
+          "type": "string"
+        },
+        "claim_b": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "claim_a",
+        "claim_b",
+        "resolution",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "DecisionSummaryStatus": {
+      "enum": [
+        "active_at_source_end",
+        "superseded",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "DecisionSummaryV1": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/DecisionSummaryStatus"
+        }
+      },
+      "required": [
+        "decision",
+        "rationale",
+        "status",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "EventId": {
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "EvidenceRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "$ref": "#/$defs/ArtifactId"
+          },
+          "type": "array"
+        },
+        "event_ids": {
+          "items": {
+            "$ref": "#/$defs/EventId"
+          },
+          "type": "array"
+        },
+        "state_ids": {
+          "items": {
+            "$ref": "#/$defs/StateId"
+          },
+          "type": "array"
+        },
+        "summary_segment_ids": {
+          "items": {
+            "$ref": "#/$defs/SummarySegmentId"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_ids",
+        "artifact_ids",
+        "state_ids",
+        "summary_segment_ids"
+      ],
+      "type": "object"
+    },
+    "FileChangeV1": {
+      "additionalProperties": false,
+      "properties": {
+        "change": {
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "path": {
+          "type": "string"
+        },
+        "symbols": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "symbols",
+        "change",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "HistoricalHandoffContentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "active_constraints": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "active_decisions": {
+          "items": {
+            "$ref": "#/$defs/DecisionSummaryV1"
+          },
+          "type": "array"
+        },
+        "completed_milestones": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "current_goals": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "failed_approaches_to_avoid": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "files_in_play": {
+          "items": {
+            "$ref": "#/$defs/FileChangeV1"
+          },
+          "type": "array"
+        },
+        "next_actions": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "items": {
+            "$ref": "#/$defs/CompactionOmissionV1"
+          },
+          "type": "array"
+        },
+        "open_questions": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "test_status": {
+          "items": {
+            "$ref": "#/$defs/CommandOutcomeV1"
+          },
+          "type": "array"
+        },
+        "unresolved_errors": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "current_goals",
+        "completed_milestones",
+        "active_decisions",
+        "active_constraints",
+        "files_in_play",
+        "test_status",
+        "unresolved_errors",
+        "open_questions",
+        "failed_approaches_to_avoid",
+        "next_actions",
+        "omissions"
+      ],
+      "type": "object"
+    },
+    "HistoricalStatementV1": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/StatementConfidence"
+        },
+        "evidence": {
+          "$ref": "#/$defs/EvidenceRefV1"
+        },
+        "text": {
+          "type": "string"
+        },
+        "uncertainty": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text",
+        "confidence",
+        "evidence",
+        "uncertainty"
+      ],
+      "type": "object"
+    },
+    "StateId": {
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    },
+    "StatementConfidence": {
+      "enum": [
+        "direct",
+        "inferred",
+        "uncertain"
+      ],
+      "type": "string"
+    },
+    "SummarySegmentContentV1": {
+      "additionalProperties": false,
+      "properties": {
+        "commands_and_tests": {
+          "items": {
+            "$ref": "#/$defs/CommandOutcomeV1"
+          },
+          "type": "array"
+        },
+        "completed_work": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "constraints": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "contradictions": {
+          "items": {
+            "$ref": "#/$defs/ContradictionV1"
+          },
+          "type": "array"
+        },
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/DecisionSummaryV1"
+          },
+          "type": "array"
+        },
+        "failed_approaches": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "files_and_symbols_changed": {
+          "items": {
+            "$ref": "#/$defs/FileChangeV1"
+          },
+          "type": "array"
+        },
+        "omissions": {
+          "items": {
+            "$ref": "#/$defs/CompactionOmissionV1"
+          },
+          "type": "array"
+        },
+        "scope_changes": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "unresolved_errors": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "unresolved_questions": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        },
+        "user_goals": {
+          "items": {
+            "$ref": "#/$defs/HistoricalStatementV1"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "user_goals",
+        "scope_changes",
+        "completed_work",
+        "files_and_symbols_changed",
+        "decisions",
+        "constraints",
+        "commands_and_tests",
+        "failed_approaches",
+        "unresolved_errors",
+        "unresolved_questions",
+        "contradictions",
+        "omissions"
+      ],
+      "type": "object"
+    },
+    "SummarySegmentId": {
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "handoff": {
+      "$ref": "#/$defs/HistoricalHandoffContentV1"
+    },
+    "segment": {
+      "$ref": "#/$defs/SummarySegmentContentV1"
+    }
+  },
+  "required": [
+    "segment",
+    "handoff"
+  ],
+  "title": "CompactionCandidateV1",
+  "type": "object"
+}

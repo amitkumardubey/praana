@@ -1,10 +1,16 @@
 //! Admission pressure and complete-turn compaction (Compaction spec §4.2–§6).
 //!
-//! P5-1 scope: pure pressure state and closed-turn selection. Nothing here
-//! touches History, a provider, or the turn loop.
+//! P5-1 scope: pure pressure state and closed-turn selection.
+//! P5-2 scope: candidate type, strict parsing, structural and provenance
+//! validation, and the handoff renderer's token bound.
+//!
+//! Nothing here touches History, a provider, or the turn loop.
 
 pub mod admission;
+pub mod render;
+pub mod schema;
 pub mod selection;
+pub mod validate;
 
 use crate::protocol::id::TurnId;
 
