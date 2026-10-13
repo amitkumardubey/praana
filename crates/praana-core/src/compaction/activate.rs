@@ -172,6 +172,9 @@ pub struct ConfiguredCompactor {
     pub selection: ModelSelection,
     pub config_id: String,
     pub home: PathBuf,
+    /// One client for the first attempt and its repair, so the connection and
+    /// TLS session can be reused.
+    pub client: reqwest::Client,
     /// Credential environment. `None` reads the process environment at send
     /// time; tests pin it so an ambient key cannot change the outcome.
     pub env: Option<BTreeMap<String, String>>,
@@ -228,6 +231,11 @@ impl ConfiguredCompactor {
                 "compactor model has no trusted window: {error}"
             ))
         })?;
+        if profile.min_output_tokens > profile.max_output_tokens {
+            return Err(CompactionRunError::Unavailable(
+                "compactor profile output range is empty".into(),
+            ));
+        }
         if !profile.strict_json_schema {
             return Err(CompactionRunError::Unavailable(
                 "compactor model does not support strict JSON schema output".into(),
@@ -266,6 +274,7 @@ impl ConfiguredCompactor {
             selection,
             config_id,
             home: home.to_path_buf(),
+            client: reqwest::Client::new(),
             env: None,
         })
     }
@@ -1040,7 +1049,8 @@ async fn send_once(
         "chat/completions"
     };
     let url = format!("{}/{path}", compactor.base_url.trim_end_matches('/'));
-    let send = reqwest::Client::new()
+    let send = compactor
+        .client
         .post(url)
         .headers(header_map)
         .body(body)
@@ -1438,10 +1448,11 @@ pub fn begin(
     // §12 step 4: the credential is resolved only after the durable start.
     let store = load_store(&credentials_path(&compactor.home))
         .unwrap_or_else(|_| CredentialStoreV1::empty());
-    let env = compactor
-        .env
-        .clone()
-        .unwrap_or_else(|| std::env::vars().collect());
+    let env = compactor.env.clone().unwrap_or_else(|| {
+        std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect()
+    });
     match resolve_provider_credential(&store, &compactor.provider, None, &env) {
         Ok(token) => Ok(Begun::Started(Box::new(StartedAttempt {
             snapshot,
@@ -1459,7 +1470,14 @@ pub fn begin(
                 ErrorClass::Authentication,
                 "The compactor credential is missing.",
             );
-            fail_attempt(ctx, &purpose, attempt_id, error.clone(), false)?;
+            fail_attempt(
+                ctx,
+                &purpose,
+                attempt_id,
+                error.clone(),
+                false,
+                ProviderUsage::default(),
+            )?;
             Ok(Begun::Failed(CompactionOutcome::Failed {
                 compaction_id: purpose.compaction_id,
                 attempt_id,
@@ -1475,6 +1493,7 @@ fn fail_attempt(
     attempt_id: AttemptId,
     error: ProtocolError,
     sent: bool,
+    usage: ProviderUsage,
 ) -> Result<(), CompactionRunError> {
     ctx.append(
         Some(attempt_id),
@@ -1487,7 +1506,7 @@ fn fail_attempt(
             },
             observable_delta_emitted: false,
             provider_may_have_completed: sent,
-            usage: ProviderUsage::default(),
+            usage,
         }),
     )?;
     Ok(())
@@ -1514,16 +1533,20 @@ fn candidate_invalid(issues: &[CandidateIssue]) -> ProtocolError {
     if issues.len() > 8 {
         summary.push(format!("and {} more", issues.len() - 8));
     }
-    let mut error = compaction_error(
+    let mut message = format!(
+        "The compaction candidate is invalid: {}.",
+        summary.join("; ")
+    );
+    let mut end = message.len().min(512);
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.truncate(end);
+    compaction_error(
         "E_COMPACTION_CANDIDATE_INVALID",
         ErrorClass::InvalidProviderOutput,
-        format!(
-            "The compaction candidate is invalid: {}.",
-            summary.join("; ")
-        ),
-    );
-    error.message.truncate(512);
-    error
+        message,
+    )
 }
 
 /// §12 steps 6-12: validate the candidate, recheck the frozen source, attach
@@ -1535,7 +1558,8 @@ pub fn finish(
     generated: Result<GeneratedCandidate, ProtocolError>,
 ) -> Result<Finished, CompactionRunError> {
     let failed = |ctx: &mut ActivationContext<'_>,
-                  error: ProtocolError|
+                  error: ProtocolError,
+                  usage: ProviderUsage|
      -> Result<CompactionOutcome, CompactionRunError> {
         fail_attempt(
             ctx,
@@ -1543,6 +1567,7 @@ pub fn finish(
             started.attempt_id,
             error.clone(),
             true,
+            usage,
         )?;
         Ok(CompactionOutcome::Failed {
             compaction_id: started.purpose.compaction_id,
@@ -1552,9 +1577,16 @@ pub fn finish(
     };
     let generated = match generated {
         Ok(generated) => generated,
-        Err(error) => return Ok(Finished::Done(failed(ctx, error)?)),
+        Err(error) => {
+            return Ok(Finished::Done(failed(
+                ctx,
+                error,
+                ProviderUsage::default(),
+            )?))
+        }
     };
 
+    let usage = generated.usage.clone();
     let mut candidate_digest = None;
     let validated = parse_candidate(generated.text.as_bytes())
         .map_err(|issue| vec![issue])
@@ -1565,7 +1597,7 @@ pub fn finish(
     let candidate = match validated {
         Ok(candidate) => candidate,
         Err(issues) => {
-            let outcome = failed(ctx, candidate_invalid(&issues))?;
+            let outcome = failed(ctx, candidate_invalid(&issues), usage.clone())?;
             return Ok(Finished::Invalid {
                 outcome,
                 note: RepairNote {
@@ -1583,7 +1615,7 @@ pub fn finish(
             ErrorClass::Conflict,
             format!("The frozen compaction source changed: {reason}."),
         );
-        return Ok(Finished::Done(failed(ctx, error)?));
+        return Ok(Finished::Done(failed(ctx, error, usage.clone())?));
     }
 
     let ids = FinalizeIds {
@@ -1595,7 +1627,7 @@ pub fn finish(
     let compacted = match finalize(&started.snapshot, &candidate, compactor, ctx.config, ids) {
         Ok(compacted) => compacted,
         Err(issues) => {
-            let outcome = failed(ctx, candidate_invalid(&issues))?;
+            let outcome = failed(ctx, candidate_invalid(&issues), usage.clone())?;
             return Ok(Finished::Invalid {
                 outcome,
                 note: RepairNote {

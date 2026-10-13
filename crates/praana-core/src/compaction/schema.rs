@@ -109,6 +109,20 @@ pub fn parse_candidate(raw: &[u8]) -> Result<CompactionCandidateV1, CandidateIss
         .map_err(|e| CandidateIssue::new(CandidateIssueCode::Schema, "candidate", e.to_string()))
 }
 
+/// A model-chosen object key rendered for an issue path or message. Only a
+/// short identifier passes through; anything else is withheld so rejected
+/// candidate text never reaches the durable log or a repair request (§8.4).
+fn safe_name(key: &str) -> String {
+    let identifier = !key.is_empty()
+        && key.len() <= 64
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if identifier {
+        key.to_owned()
+    } else {
+        "<invalid name>".to_owned()
+    }
+}
+
 fn find_nul_string(value: &Value, path: &str) -> Option<String> {
     match value {
         Value::String(s) if s.contains('\0') => Some(path.to_owned()),
@@ -117,10 +131,11 @@ fn find_nul_string(value: &Value, path: &str) -> Option<String> {
             .enumerate()
             .find_map(|(i, v)| find_nul_string(v, &format!("{path}[{i}]"))),
         Value::Object(map) => map.iter().find_map(|(k, v)| {
+            let name = safe_name(k);
             if k.contains('\0') {
-                Some(format!("{path}.{k}"))
+                Some(format!("{path}.{name}"))
             } else {
-                find_nul_string(v, &format!("{path}.{k}"))
+                find_nul_string(v, &format!("{path}.{name}"))
             }
         }),
         _ => None,
@@ -191,7 +206,7 @@ fn check_shape(value: &Value, schema: &Value, path: &str) -> Result<(), Candidat
                         };
                         check_shape(child, child_schema, &child_path)?;
                     }
-                    None if closed => return fail(format!("unknown field `{key}`")),
+                    None if closed => return fail(format!("unknown field `{}`", safe_name(key))),
                     None => {}
                 }
             }

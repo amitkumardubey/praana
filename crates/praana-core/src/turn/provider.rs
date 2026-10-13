@@ -1080,6 +1080,9 @@ fn read_events(session_dir: &Path) -> Option<(Vec<EventEnvelope>, Vec<String>)> 
     let mut events = Vec::new();
     let mut raw = Vec::new();
     for line in text.split_inclusive('\n') {
+        if line.trim().is_empty() {
+            continue;
+        }
         // A partially flushed final line has no LF and is ignored; appends
         // write whole lines, so everything else parses.
         if !line.ends_with('\n') {
