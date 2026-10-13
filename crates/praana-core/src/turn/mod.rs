@@ -562,8 +562,6 @@ impl HeadlessLoop {
         self.drive(provider, sink).await
     }
 
-    /// True when replay reports an unfinished turn that
-    /// [`HeadlessLoop::continue_turn_with_sink`] would drive to completion.
     /// Runs one compaction operation against a configured compactor
     /// (Compaction §12). Called explicitly; live pressure wiring is P5-6. The
     /// projection the next provider request sees is rebuilt from the durable
@@ -592,6 +590,8 @@ impl HeadlessLoop {
             })
     }
 
+    /// True when replay reports an unfinished turn that
+    /// [`HeadlessLoop::continue_turn_with_sink`] would drive to completion.
     pub fn has_active_turn(&self) -> Result<bool, TurnError> {
         Ok(self.replay()?.active_turn_id().is_some())
     }
