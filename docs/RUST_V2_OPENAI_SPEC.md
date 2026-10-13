@@ -702,6 +702,12 @@ output can become canonical only through `HistoryCompactedV1`. The five-slot
 instruction string remains one string and is not modified to impersonate a
 current user message.
 
+Amended by P5-3, 2026-10-13. A configured compactor sends a standalone request:
+the instruction field carries the Compaction §7.4 system policy, the projected
+source prefix is empty, and the control message is the only input. A schema
+repair attempt appends one more ephemeral user message after it, in the same
+role and item shape, carrying the Compaction §8.4 repair block.
+
 Strict candidate output uses the checked-in schema and hash from Compaction.
 Chat Completions adds this field only for an internal compaction attempt:
 

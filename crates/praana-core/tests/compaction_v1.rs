@@ -1571,3 +1571,1160 @@ mod candidate {
         let _ = BTreeSet::<u8>::new();
     }
 }
+
+// ============================================================ P5-3: control
+
+mod control {
+    use praana_core::compaction::control::*;
+    use praana_core::compaction::schema::{candidate_schema_sha256, CANDIDATE_OUTPUT_SCHEMA_ID};
+    use praana_core::protocol::id::{Sha256Digest, TurnId};
+    use ulid::Ulid;
+
+    fn turn(n: u64, start: u64, end: u64) -> CompactionSourceTurnV1 {
+        CompactionSourceTurnV1 {
+            turn_id: TurnId(Ulid::from_parts(1, u128::from(n))),
+            start_sequence: start,
+            end_sequence: end,
+            interrupted: None,
+            messages: Vec::new(),
+            artifact_previews: Vec::new(),
+        }
+    }
+
+    fn control() -> CompactionControlV1 {
+        let state = "state tail".to_owned();
+        CompactionControlV1 {
+            request_schema_version: 1,
+            previous_handoff: None,
+            source_turns: vec![turn(1, 2, 5), turn(2, 6, 9)],
+            current_state: CompactionStateInputV1 {
+                graph_sequence: 9,
+                rendered_input_sha256: Sha256Digest::digest_bytes(state.as_bytes()),
+                rendered_active_state: state,
+            },
+            output_schema_id: CANDIDATE_OUTPUT_SCHEMA_ID.to_owned(),
+            output_schema_sha256: candidate_schema_sha256(),
+        }
+    }
+
+    #[test]
+    fn control_bytes_are_canonical_with_null_keys_and_no_trailing_lf() {
+        let text = render_compaction_control_v1(&control()).unwrap();
+        assert!(!text.ends_with('\n'));
+        assert!(text.contains(r#""previous_handoff":null"#));
+        assert!(text.contains(r#""interrupted":null"#));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let canonical = praana_core::canonical_json::to_canonical_json_string(&value).unwrap();
+        assert_eq!(text, canonical);
+    }
+
+    #[test]
+    fn control_rejects_version_schema_order_and_state_digest() {
+        let mut c = control();
+        c.request_schema_version = 2;
+        assert_eq!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::SchemaVersion(2))
+        );
+
+        let mut c = control();
+        c.output_schema_sha256 = Sha256Digest::digest_bytes(b"other");
+        assert_eq!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::OutputSchemaMismatch)
+        );
+
+        let mut c = control();
+        c.source_turns.swap(0, 1);
+        assert!(matches!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::SourceTurnsOutOfOrder(_))
+        ));
+
+        let mut c = control();
+        c.source_turns[1].start_sequence = 5;
+        assert!(matches!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::SourceTurnsOutOfOrder(_))
+        ));
+
+        let mut c = control();
+        c.source_turns.clear();
+        assert_eq!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::NoSourceTurns)
+        );
+
+        let mut c = control();
+        c.current_state.rendered_active_state.push('x');
+        assert_eq!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::StateDigestMismatch)
+        );
+    }
+
+    #[test]
+    fn control_rejects_one_event_cited_by_two_messages() {
+        use praana_core::protocol::id::{EventId, MessageId};
+        use praana_core::protocol::messages::{
+            ConversationMessage, TextBlock, UserBlock, UserMessage,
+        };
+        let event = EventId(Ulid::from_parts(2, 1));
+        let message = |n: u128, turn_id: TurnId| CompactionSourceMessageV1 {
+            event_id: event,
+            message: ConversationMessage::User(UserMessage {
+                message_id: MessageId(Ulid::from_parts(3, n)),
+                turn_id,
+                blocks: vec![UserBlock::Text(TextBlock { text: "hi".into() })],
+            }),
+        };
+        let mut c = control();
+        let (a, b) = (c.source_turns[0].turn_id, c.source_turns[1].turn_id);
+        c.source_turns[0].messages.push(message(1, a));
+        assert!(render_compaction_control_v1(&c).is_ok());
+        c.source_turns[1].messages.push(message(2, b));
+        assert_eq!(
+            render_compaction_control_v1(&c),
+            Err(ControlError::DuplicateEventId(event))
+        );
+    }
+
+    #[test]
+    fn system_policy_is_ascii_lf_with_one_final_lf() {
+        assert!(COMPACTOR_SYSTEM_POLICY.is_ascii());
+        assert!(!COMPACTOR_SYSTEM_POLICY.contains('\r'));
+        assert!(COMPACTOR_SYSTEM_POLICY.ends_with(".\n"));
+        assert!(!COMPACTOR_SYSTEM_POLICY.ends_with("\n\n"));
+        assert_eq!(COMPACTOR_SYSTEM_POLICY.lines().count(), 9);
+        assert!(COMPACTOR_SYSTEM_POLICY.starts_with("You are PRAANA's history compactor.\n"));
+    }
+
+    #[test]
+    fn prompt_version_hashes_policy_schema_and_renderer() {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"praana-compaction-prompt-v1\0");
+        hasher.update(COMPACTOR_SYSTEM_POLICY.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(praana_core::compaction::schema::candidate_schema_bytes());
+        hasher.update(b"\0compaction-control-rfc8785-v1");
+        let expected: [u8; 32] = hasher.finalize().into();
+        assert_eq!(
+            prompt_version(),
+            format!(
+                "compaction-v1:{}",
+                Sha256Digest::from_bytes(expected).as_str()
+            )
+        );
+    }
+
+    #[test]
+    fn config_id_is_lowercase_hex_of_the_credential_free_identity() {
+        let fingerprint = Sha256Digest::digest_bytes(b"https://api.openai.com/v1");
+        let identity = CompactorConfigIdentity {
+            provider: "openai",
+            protocol: "openai-responses-v1",
+            model: "gpt-5.6-sol",
+            base_url_fingerprint: &fingerprint,
+            max_output_tokens: 4096,
+            timeout_ms: 60_000,
+        };
+        let id = compactor_config_id(&identity);
+        assert_eq!(id.len(), 64);
+        assert!(id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+        let other = CompactorConfigIdentity {
+            timeout_ms: 1,
+            ..identity.clone()
+        };
+        assert_ne!(compactor_config_id(&other), id);
+    }
+}
+
+// ============================================================ P5-3: handoff split
+
+mod handoff_split {
+    use praana_core::provider::openai::{admit, AdmissionDecision, AdmissionRequest};
+    use praana_core::token::FramingProfileV1;
+    use serde_json::json;
+
+    fn framing() -> FramingProfileV1 {
+        FramingProfileV1 {
+            framing_profile_schema_version: 1,
+            framing_profile_id: "adapter-estimate:generic:default:v1".into(),
+            fixed_tokens: 0,
+            per_item_tokens: 0,
+            item_count: 0,
+            additional_tokens: 0,
+        }
+    }
+
+    fn admit_with(
+        body: &serde_json::Value,
+        handoff: &str,
+        offset: Option<usize>,
+    ) -> Result<praana_core::provider::openai::AdmissionEstimate, String> {
+        let request = AdmissionRequest {
+            profile: None,
+            configured_context_window: 100_000,
+            unsafe_increase: false,
+            requested_max_output: 1_000,
+            configured_min_output: 1,
+            reasoning_reserve_tokens: 0,
+            safety_margin_min_tokens: 0,
+            safety_margin_ratio: 0.0,
+            calibration_margin: 0,
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+            framing: framing(),
+            image_count: 0,
+            request_body: body,
+            estimate_reused_from: None,
+            state_tail: "",
+            state_tail_offset: None,
+            handoff,
+            handoff_offset: offset,
+        };
+        match admit(&request).map_err(|e| e.code.as_str().to_owned())? {
+            AdmissionDecision::Admit(estimate) => Ok(estimate),
+            other => Err(format!("{other:?}")),
+        }
+    }
+
+    #[test]
+    fn handoff_offset_moves_the_slot_out_of_system() {
+        let handoff = "NON-AUTHORITATIVE HISTORICAL EVIDENCE\n<praana_historical_handoff>x</praana_historical_handoff>";
+        let instructions =
+            format!("[PRAANA:SYSTEM_POLICY]\npolicy\n[/PRAANA:SYSTEM_POLICY]\n\n[PRAANA:HISTORICAL_HANDOFF_DATA]\n{handoff}\n[/PRAANA:HISTORICAL_HANDOFF_DATA]");
+        let offset = instructions.find(handoff).unwrap();
+        let body = json!({"instructions": instructions, "input": [], "model": "m"});
+
+        let inside = admit_with(&body, "", None).unwrap();
+        assert_eq!(inside.handoff_tokens, 0);
+
+        let split = admit_with(&body, handoff, Some(offset)).unwrap();
+        assert!(split.handoff_tokens > 0);
+        assert!(split.system_tokens < inside.system_tokens);
+    }
+
+    #[test]
+    fn mismatched_handoff_offset_is_a_tail_mismatch() {
+        let body = json!({"instructions": "[PRAANA:SYSTEM_POLICY]\npolicy\n[/PRAANA:SYSTEM_POLICY]", "input": []});
+        assert_eq!(
+            admit_with(&body, "absent handoff", Some(3)).unwrap_err(),
+            "ADMISSION_STATE_TAIL_MISMATCH"
+        );
+    }
+}
+
+// ============================================================ P5-3: activation
+
+mod activation {
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use praana_core::clock::{Clock, SystemClock};
+    use praana_core::compaction::activate::{
+        has_unconsidered_eligible_turn, projected_turns, recheck_source, snapshot,
+        CompactionOutcome, ConfiguredCompactor,
+    };
+    use praana_core::compaction::control::COMPACTOR_SYSTEM_POLICY;
+    use praana_core::compaction::schema::candidate_json_schema;
+    use praana_core::config::{build_defaults, EffectiveConfigV1};
+    use praana_core::credentials::store::{
+        credentials_path, save_store, upsert_credential, CredentialStoreV1,
+    };
+    use praana_core::history::event_log::EventLogStore;
+    use praana_core::history::projection::ConversationProjection;
+    use praana_core::history::recovery::SessionRecoveryEngine;
+    use praana_core::history::replay::EventReplayer;
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
+    use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
+    use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
+    use praana_core::protocol::state_graph::{
+        NoteStateV1, StateChangeReason, StateChangedV1, StateOperationV1, StateSourceKind,
+        StateSourceV1, StateTier, StateValueV1,
+    };
+    use praana_core::turn::provider::OpenAiStepProvider;
+    use praana_core::turn::{HeadlessLoop, LoopConfig, LoopFault};
+    use serde_json::{json, Value};
+
+    const MODEL: &str = "gpt-5.6-sol";
+    const CONTROL_OPEN: &str = "[PRAANA:INTERNAL_COMPACTION_CONTROL]\n";
+    const CONTROL_CLOSE: &str = "\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n";
+
+    // ------------------------------------------------------------ fake HTTP
+
+    #[derive(Clone, Debug)]
+    struct Recorded {
+        headers: String,
+        body: String,
+        /// Kind and envelope turn of the last durable event when the request
+        /// arrived: proves the attempt start preceded the send.
+        last_event: Option<(String, bool)>,
+    }
+
+    #[derive(Clone, Debug)]
+    enum Reply {
+        Valid,
+        Raw(String),
+        Http(u16),
+        Sleep(u64),
+    }
+
+    struct Script {
+        session: PathBuf,
+        replies: Mutex<VecDeque<Reply>>,
+        cite_state: Mutex<Option<StateId>>,
+        compactor: Mutex<Vec<Recorded>>,
+        main: Mutex<Vec<Recorded>>,
+    }
+
+    struct Fake {
+        addr: std::net::SocketAddr,
+        script: Arc<Script>,
+    }
+
+    impl Fake {
+        fn base_url(&self) -> String {
+            format!("http://{}/v1", self.addr)
+        }
+        fn compactor_requests(&self) -> Vec<Recorded> {
+            self.script.compactor.lock().unwrap().clone()
+        }
+        fn main_requests(&self) -> Vec<Recorded> {
+            self.script.main.lock().unwrap().clone()
+        }
+        fn push(&self, reply: Reply) {
+            self.script.replies.lock().unwrap().push_back(reply);
+        }
+    }
+
+    fn read_request(stream: &mut TcpStream) -> (String, String) {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 8192];
+        let split = loop {
+            let n = stream.read(&mut tmp).unwrap_or(0);
+            if n == 0 {
+                return (String::new(), String::new());
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break split;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buf[..split]).to_string();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while buf.len() < split + 4 + length {
+            let n = stream.read(&mut tmp).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        }
+        (
+            headers,
+            String::from_utf8_lossy(&buf[split + 4..]).to_string(),
+        )
+    }
+
+    fn http(status: u16, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn responses_sse(text: &str) -> String {
+        let delta = serde_json::to_string(text).unwrap();
+        format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_c\",\"model\":\"{MODEL}\"}}}}\n\n\
+event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg_c\",\"phase\":\"final_answer\"}}}}\n\n\
+event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":{delta}}}\n\n\
+event: response.output_text.done\ndata: {{\"type\":\"response.output_text.done\",\"output_index\":0,\"text\":{delta}}}\n\n\
+event: response.output_item.done\ndata: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg_c\"}}}}\n\n\
+event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_c\",\"status\":\"completed\",\"output\":[{{\"type\":\"message\",\"id\":\"msg_c\"}}],\"usage\":{{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}}}}\n\n"
+        )
+    }
+
+    fn last_event(session: &Path) -> Option<(String, bool)> {
+        let events = read_events(session);
+        let last = events.last()?;
+        Some((
+            last.pointer("/event/kind")?.as_str()?.to_owned(),
+            last["turn_id"].is_null(),
+        ))
+    }
+
+    fn control_of(body: &Value) -> Option<Value> {
+        let items = body.get("input")?.as_array()?;
+        items.iter().find_map(|item| {
+            let text = item.pointer("/content/0/text")?.as_str()?;
+            let inner = text
+                .strip_prefix(CONTROL_OPEN)?
+                .strip_suffix(CONTROL_CLOSE)?;
+            serde_json::from_str(inner).ok()
+        })
+    }
+
+    /// A candidate that cites the user-message event of each source turn.
+    /// A candidate that cites, from the request alone, the accepting event of
+    /// each source turn's user message.
+    fn valid_candidate(control: &Value, state: Option<StateId>) -> String {
+        let cited: Vec<String> = control["source_turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["messages"][0]["event_id"].as_str().unwrap().to_owned())
+            .collect();
+        let evidence = json!({"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []});
+        let statement = json!({"text": "The user asked for greetings.", "confidence": "direct", "evidence": evidence, "uncertainty": null});
+        let mut candidate: Value =
+            serde_json::from_str(include_str!("fixtures/compaction_v1/candidate_empty.json"))
+                .unwrap();
+        candidate["segment"]["user_goals"] = json!([statement.clone()]);
+        candidate["handoff"]["current_goals"] = json!([statement]);
+        if let Some(state) = state {
+            candidate["handoff"]["next_actions"] = json!([{
+                "text": "Continue the tracked note.",
+                "confidence": "inferred",
+                "evidence": {"event_ids": [], "artifact_ids": [], "state_ids": [state.to_string()], "summary_segment_ids": []},
+                "uncertainty": "Inferred from the current note."
+            }]);
+        }
+        serde_json::to_string(&candidate).unwrap()
+    }
+
+    fn spawn(session: &Path) -> Fake {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let script = Arc::new(Script {
+            session: session.to_path_buf(),
+            replies: Mutex::new(VecDeque::new()),
+            cite_state: Mutex::new(None),
+            compactor: Mutex::new(Vec::new()),
+            main: Mutex::new(Vec::new()),
+        });
+        let thread_script = script.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let (headers, body) = read_request(&mut stream);
+                let recorded = Recorded {
+                    headers,
+                    body: body.clone(),
+                    last_event: last_event(&thread_script.session),
+                };
+                let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                let response = match control_of(&parsed) {
+                    None => {
+                        thread_script.main.lock().unwrap().push(recorded);
+                        http(200, &responses_sse("ready"))
+                    }
+                    Some(control) => {
+                        thread_script.compactor.lock().unwrap().push(recorded);
+                        let reply = thread_script
+                            .replies
+                            .lock()
+                            .unwrap()
+                            .pop_front()
+                            .unwrap_or(Reply::Valid);
+                        match reply {
+                            Reply::Valid => {
+                                let state = *thread_script.cite_state.lock().unwrap();
+                                http(200, &responses_sse(&valid_candidate(&control, state)))
+                            }
+                            Reply::Raw(text) => http(200, &responses_sse(&text)),
+                            Reply::Http(status) => http(status, "{\"error\":{}}"),
+                            Reply::Sleep(ms) => {
+                                std::thread::sleep(Duration::from_millis(ms));
+                                http(200, &responses_sse("{}"))
+                            }
+                        }
+                    }
+                };
+                let _ = stream.write_all(&response);
+                let _ = stream.flush();
+            }
+        });
+        Fake { addr, script }
+    }
+
+    // ------------------------------------------------------------ session
+
+    struct Session {
+        _temp: tempfile::TempDir,
+        home: PathBuf,
+        workspace: PathBuf,
+        session: PathBuf,
+        config: EffectiveConfigV1,
+        fake: Fake,
+    }
+
+    fn read_events(session: &Path) -> Vec<Value> {
+        std::fs::read_to_string(session.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn kinds(session: &Path) -> Vec<String> {
+        read_events(session)
+            .iter()
+            .map(|event| event["event"]["kind"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    fn of_kind(session: &Path, kind: &str) -> Vec<Value> {
+        read_events(session)
+            .into_iter()
+            .filter(|event| event["event"]["kind"] == kind)
+            .collect()
+    }
+
+    fn private(home: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    fn loop_config(s: &Session) -> LoopConfig {
+        LoopConfig {
+            session_dir: s.session.clone(),
+            workspace: s.workspace.clone(),
+            config: s.config.clone(),
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(MonotonicUlidGenerator::system()),
+            fault: LoopFault::None,
+        }
+    }
+
+    fn session() -> Session {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        let session = temp.path().join("session");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        private(&home);
+        let mut store = CredentialStoreV1::empty();
+        upsert_credential(&mut store, "openai", "p5-secret".into(), 1_700_000_000_000).unwrap();
+        save_store(&credentials_path(&home), &store).unwrap();
+        let fake = spawn(&session);
+        let mut config = build_defaults(&home);
+        config.llm.provider = "openai".into();
+        config.llm.protocol = "openai-responses-v1".into();
+        config.llm.model = MODEL.into();
+        config.llm.min_output_tokens = 16;
+        config.llm.max_output_tokens = 256;
+        config.providers.openai.base_url = fake.base_url();
+        config.turn.max_steps = 4;
+        config.turn.max_attempts = 3;
+        Session {
+            _temp: temp,
+            home,
+            workspace,
+            session,
+            config,
+            fake,
+        }
+    }
+
+    async fn run_turns(s: &Session, texts: &[&str]) -> HeadlessLoop {
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = if s.session.join("events.jsonl").exists() {
+            HeadlessLoop::resume(loop_config(s)).unwrap()
+        } else {
+            HeadlessLoop::create(loop_config(s)).unwrap()
+        };
+        for text in texts {
+            let report = loop_.run_turn(text, &provider).await.unwrap();
+            assert!(report.interruption.is_none(), "turn {text:?} commits");
+        }
+        loop_
+    }
+
+    fn compactor(s: &Session) -> ConfiguredCompactor {
+        let mut config = s.config.clone();
+        config.history.compactor_provider = "openai".into();
+        config.history.compactor_model = MODEL.into();
+        config.history.compactor_timeout_ms = 5_000;
+        let mut compactor = ConfiguredCompactor::resolve(&config, &s.home, SystemClock.now_ms())
+            .expect("bundled compactor profile resolves");
+        compactor.env = Some(Default::default());
+        compactor
+    }
+
+    /// Reads the log without the session writer lock, which a live loop holds.
+    fn read_log(session: &Path) -> (Vec<EventEnvelope>, Vec<String>) {
+        let path = session.join("events.jsonl");
+        let events = EventLogStore::read_and_validate_from_path(&path).unwrap();
+        let raw = std::fs::read_to_string(&path)
+            .unwrap()
+            .split_inclusive('\n')
+            .map(str::to_owned)
+            .collect();
+        (events, raw)
+    }
+
+    fn projection(session: &Path) -> ConversationProjection {
+        let (events, raw) = read_log(session);
+        ConversationProjection::project_with_context(&events, Some(&raw), &[], None).unwrap()
+    }
+
+    fn session_id(session: &Path) -> SessionId {
+        let meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(session.join("meta.json")).unwrap())
+                .unwrap();
+        SessionId::from_str_canonical(meta["session_id"].as_str().unwrap()).unwrap()
+    }
+
+    fn turn_user_text(projection: &ConversationProjection) -> String {
+        serde_json::to_string(&projection.messages).unwrap()
+    }
+
+    // ------------------------------------------------------------ tests
+
+    #[tokio::test]
+    async fn fake_compactor_activates_after_fsync() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let before = projection(&s.session);
+        assert!(before.active_handoff.is_none());
+
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        let CompactionOutcome::Activated {
+            epoch,
+            retired_turn_ids,
+            ..
+        } = outcome
+        else {
+            panic!("expected activation, got {outcome:?}");
+        };
+        assert_eq!(epoch, 1);
+        assert_eq!(
+            retired_turn_ids.len(),
+            2,
+            "half the mass of three equal turns"
+        );
+
+        // The attempt start is durable before the compactor sees a byte.
+        let requests = s.fake.compactor_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].last_event,
+            Some(("assistant_attempt_started".to_owned(), true))
+        );
+        assert!(requests[0]
+            .headers
+            .to_ascii_lowercase()
+            .contains("authorization: bearer p5-secret"));
+        assert!(!requests[0].body.contains("p5-secret"));
+
+        // Exact request shape: policy instructions, one control message, the
+        // checked-in schema verbatim, and no tools.
+        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(body["instructions"], COMPACTOR_SYSTEM_POLICY);
+        assert_eq!(body["input"].as_array().unwrap().len(), 1);
+        assert!(body.get("tools").is_none());
+        assert_eq!(body["text"]["format"]["strict"], true);
+        assert_eq!(&body["text"]["format"]["schema"], candidate_json_schema());
+        let control = control_of(&body).unwrap();
+        assert_eq!(control["request_schema_version"], 1);
+        assert!(control["previous_handoff"].is_null());
+        assert_eq!(control["source_turns"].as_array().unwrap().len(), 2);
+        // Every source message carries its accepting event, which is in range.
+        let events = read_events(&s.session);
+        for turn in control["source_turns"].as_array().unwrap() {
+            let (lo, hi) = (
+                turn["start_sequence"].as_u64().unwrap(),
+                turn["end_sequence"].as_u64().unwrap(),
+            );
+            let messages = turn["messages"].as_array().unwrap();
+            assert!(messages.len() >= 2, "user and assistant messages");
+            for message in messages {
+                let event = events
+                    .iter()
+                    .find(|e| e["event_id"] == message["event_id"])
+                    .expect("cited event exists");
+                let sequence = event["sequence"].as_u64().unwrap();
+                assert!((lo..=hi).contains(&sequence));
+            }
+            assert_eq!(
+                events
+                    .iter()
+                    .find(|e| e["event_id"] == messages[0]["event_id"])
+                    .unwrap()["event"]["kind"],
+                "user_message_accepted"
+            );
+        }
+
+        // Durable shape: compaction attempt with a null turn, then the event.
+        let started = of_kind(&s.session, "assistant_attempt_started");
+        let compaction_start = started.last().unwrap();
+        assert!(compaction_start["turn_id"].is_null());
+        assert_eq!(
+            compaction_start["event"]["data"]["purpose"]["type"],
+            "compaction"
+        );
+        let compacted = of_kind(&s.session, "history_compacted");
+        assert_eq!(compacted.len(), 1);
+        let data = &compacted[0]["event"]["data"];
+        assert!(compacted[0]["turn_id"].is_null());
+        assert_eq!(compacted[0]["attempt_id"], compaction_start["attempt_id"]);
+        assert_eq!(
+            data["attempt_started_event_id"],
+            compaction_start["event_id"]
+        );
+        assert_eq!(data["policy_version"], "rust-v2-compaction-1");
+        assert!(data["prompt_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("compaction-v1:"));
+        assert_eq!(data["strategy"]["type"], "configured");
+        assert_eq!(
+            data["handoff"]["label"],
+            "NON-AUTHORITATIVE HISTORICAL EVIDENCE"
+        );
+        assert_eq!(data["handoff"]["lineage_through_epoch"], 1);
+
+        // Reopening validates the source hash, epoch, and range by replay.
+        let after = projection(&s.session);
+        assert!(after.active_handoff.is_some());
+        assert_eq!(after.compacted_turn_ids, retired_turn_ids);
+        let visible = turn_user_text(&after);
+        assert!(!visible.contains("alpha one"));
+        assert!(!visible.contains("bravo two"));
+        assert!(visible.contains("charlie three"));
+        assert!(
+            of_kind(&s.session, "user_message_accepted").len() == 3,
+            "sources stay canonical"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_request_carries_the_handoff_slot() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Activated { .. }
+        ));
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn("delta four", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let last = s.fake.main_requests().last().unwrap().clone();
+        let body: Value = serde_json::from_str(&last.body).unwrap();
+        let instructions = body["instructions"].as_str().unwrap();
+        let slot = instructions
+            .split("[PRAANA:HISTORICAL_HANDOFF_DATA]\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[/PRAANA:HISTORICAL_HANDOFF_DATA]").next())
+            .unwrap();
+        assert!(
+            slot.starts_with("NON-AUTHORITATIVE HISTORICAL EVIDENCE\n<praana_historical_handoff")
+        );
+        let input = body["input"].to_string();
+        assert!(!input.contains("alpha one"));
+        assert!(input.contains("charlie three"));
+        assert!(input.contains("delta four"));
+    }
+
+    #[tokio::test]
+    async fn state_survives_compaction_and_the_handoff_may_cite_it() {
+        let s = session();
+        drop(run_turns(&s, &["alpha one", "bravo two"]).await);
+
+        // A system note between turns, then a state checkpoint at that point.
+        let sid = session_id(&s.session);
+        let ids = MonotonicUlidGenerator::system();
+        let note: StateId = ids.next_id().unwrap();
+        {
+            let mut log = EventLogStore::open(&s.session, &sid.as_str()).unwrap();
+            let first = log.events().unwrap()[0].clone();
+            let event_id: EventId = ids.next_id().unwrap();
+            let mutation_id: StateMutationId = ids.next_id().unwrap();
+            log.append_event(&EventEnvelope {
+                schema_version: EVENT_SCHEMA_VERSION,
+                event_id,
+                session_id: sid,
+                sequence: log.current_sequence() + 1,
+                timestamp_ms: SystemClock.now_ms(),
+                turn_id: None,
+                attempt_id: None,
+                event: CanonicalEvent::StateChanged(StateChangedV1 {
+                    state_schema_version: 1,
+                    mutation_id,
+                    expected_graph_sequence: log.current_sequence(),
+                    reason: StateChangeReason::System,
+                    source: StateSourceV1 {
+                        source_kind: StateSourceKind::System,
+                        event_id: first.event_id,
+                        sequence: first.sequence,
+                        turn_id: None,
+                        attempt_id: None,
+                        tool_call_id: None,
+                        artifact_id: None,
+                        summary_segment_id: None,
+                    },
+                    automation: None,
+                    operations: vec![StateOperationV1::Create {
+                        state_id: note,
+                        tier: StateTier::Soft,
+                        value: StateValueV1::Note(NoteStateV1 {
+                            text: "tracked note".into(),
+                            tags: Vec::new(),
+                        }),
+                    }],
+                }),
+            })
+            .unwrap();
+            let db = praana_core::history::db::HistoryDatabase::open(&s.session.join("history.db"))
+                .unwrap();
+            praana_core::state::write_checkpoint(
+                &db,
+                &log,
+                log.state_graph(),
+                SystemClock.now_ms(),
+            )
+            .unwrap();
+        }
+
+        let mut loop_ = run_turns(&s, &["charlie three"]).await;
+        *s.fake.script.cite_state.lock().unwrap() = Some(note);
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        assert!(
+            matches!(outcome, CompactionOutcome::Activated { .. }),
+            "{outcome:?}"
+        );
+        drop(loop_);
+
+        let compacted = of_kind(&s.session, "history_compacted");
+        let data = &compacted[0]["event"]["data"];
+        assert_eq!(data["handoff"]["state_ids"], json!([note.to_string()]));
+        assert_eq!(data["state_ids"], json!([note.to_string()]));
+
+        // Replay and the checkpoint both still carry the note.
+        let log = EventLogStore::open(&s.session, &sid.as_str()).unwrap();
+        assert!(log.state_graph().objects.iter().any(|o| o.state_id == note));
+        assert!(projection(&s.session)
+            .current_state
+            .objects
+            .iter()
+            .any(|o| o.state_id == note));
+        let db =
+            praana_core::history::db::HistoryDatabase::open(&s.session.join("history.db")).unwrap();
+        let checkpoint = praana_core::state::load_checkpoint(&db, &log)
+            .expect("checkpoint stays valid after history_compacted")
+            .expect("checkpoint present");
+        let through = checkpoint.applied_through_sequence;
+        let rebuilt =
+            praana_core::state::replay_state_from_checkpoint(&log, checkpoint, through).unwrap();
+        assert_eq!(rebuilt.objects, log.state_graph().objects);
+    }
+
+    #[tokio::test]
+    async fn missing_credential_fails_after_the_durable_start_without_sending() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        std::fs::remove_file(credentials_path(&s.home)).unwrap();
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        let CompactionOutcome::Failed { error, .. } = outcome else {
+            panic!("expected failure");
+        };
+        assert_eq!(error.code, "E_PROVIDER_AUTH");
+        assert!(s.fake.compactor_requests().is_empty());
+        let tail: Vec<String> = kinds(&s.session).into_iter().rev().take(2).collect();
+        assert_eq!(
+            tail,
+            ["assistant_attempt_failed", "assistant_attempt_started"]
+        );
+        let failed = of_kind(&s.session, "assistant_attempt_failed");
+        assert_eq!(
+            failed[0]["event"]["data"]["provider_may_have_completed"],
+            false
+        );
+        assert_eq!(
+            failed[0]["event"]["data"]["error"]["class"],
+            "authentication"
+        );
+        assert!(projection(&s.session).active_handoff.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_candidate_gets_one_repair_then_activates() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        s.fake.push(Reply::Raw(
+            "{\"segment\": \"<secret candidate text>\"}".into(),
+        ));
+        s.fake.push(Reply::Valid);
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        assert!(
+            matches!(outcome, CompactionOutcome::Activated { .. }),
+            "{outcome:?}"
+        );
+
+        let requests = s.fake.compactor_requests();
+        assert_eq!(requests.len(), 2);
+        let repair: Value = serde_json::from_str(&requests[1].body).unwrap();
+        let input = repair["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "control plus one repair note");
+        let note = input[1]
+            .pointer("/content/0/text")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(note.starts_with("[PRAANA:COMPACTION_REPAIR]\n"));
+        assert!(note.contains(r#""issues":[{"code":"COMPACTION_"#), "{note}");
+        assert!(!requests[1].body.contains("secret candidate text"));
+
+        let tail: Vec<String> = kinds(&s.session).into_iter().rev().take(5).collect();
+        assert_eq!(
+            tail,
+            [
+                "attempt_superseded",
+                "history_compacted",
+                "assistant_attempt_started",
+                "assistant_attempt_failed",
+                "assistant_attempt_started",
+            ]
+        );
+        let failed = of_kind(&s.session, "assistant_attempt_failed");
+        assert_eq!(
+            failed[0]["event"]["data"]["error"]["code"],
+            "E_COMPACTION_CANDIDATE_INVALID"
+        );
+        assert!(!failed[0].to_string().contains("secret candidate text"));
+        let starts = of_kind(&s.session, "assistant_attempt_started");
+        let repair_start = starts.last().unwrap();
+        assert_eq!(repair_start["event"]["data"]["attempt_number"], 2);
+        assert_eq!(
+            repair_start["event"]["data"]["retry_of"],
+            starts[starts.len() - 2]["attempt_id"]
+        );
+        let superseded = of_kind(&s.session, "attempt_superseded");
+        assert!(superseded[0]["turn_id"].is_null() && superseded[0]["attempt_id"].is_null());
+        assert!(projection(&s.session).active_handoff.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_second_invalid_candidate_fails_the_operation() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Raw("still not json".into()));
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        assert!(matches!(outcome, CompactionOutcome::Failed { .. }));
+        assert_eq!(s.fake.compactor_requests().len(), 2);
+        assert_eq!(of_kind(&s.session, "assistant_attempt_failed").len(), 2);
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+        assert!(projection(&s.session).active_handoff.is_none());
+    }
+
+    #[tokio::test]
+    async fn repair_needs_a_free_attempt_slot() {
+        let mut s = session();
+        s.config.turn.max_attempts = 1;
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        s.fake.push(Reply::Raw("not json".into()));
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        assert!(matches!(outcome, CompactionOutcome::Failed { .. }));
+        assert_eq!(s.fake.compactor_requests().len(), 1, "no repair is sent");
+    }
+
+    #[tokio::test]
+    async fn provider_failure_and_timeout_leave_the_projection() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        s.fake.push(Reply::Http(500));
+        let outcome = loop_.compact_now(&compactor(&s)).await.unwrap();
+        let CompactionOutcome::Failed { error, .. } = outcome else {
+            panic!("expected failure");
+        };
+        assert!(error.code.starts_with("E_PROVIDER"), "{}", error.code);
+        assert_eq!(
+            s.fake.compactor_requests().len(),
+            1,
+            "provider errors are not repaired"
+        );
+
+        let mut slow = compactor(&s);
+        slow.timeout_ms = 200;
+        s.fake.push(Reply::Sleep(2_000));
+        let outcome = loop_.compact_now(&slow).await.unwrap();
+        let CompactionOutcome::Failed { error, .. } = outcome else {
+            panic!("expected timeout");
+        };
+        assert_eq!(error.code, "E_COMPACTION_TIMEOUT");
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+        assert!(projection(&s.session).active_handoff.is_none());
+        assert_eq!(projection(&s.session).compacted_turn_ids.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_session_without_a_closed_turn_has_nothing_to_compact() {
+        let s = session();
+        let loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        let mut loop_ = loop_;
+        let before = kinds(&s.session);
+        let error = loop_.compact_now(&compactor(&s)).await.unwrap_err();
+        assert!(
+            error.to_string().contains("COMPACTION_NO_ELIGIBLE_TURNS"),
+            "{error}"
+        );
+        assert_eq!(kinds(&s.session), before, "no event is written");
+        assert!(s.fake.compactor_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn source_recheck_rejects_a_snapshot_another_epoch_overtook() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let stale = {
+            let (events, raw) = read_log(&s.session);
+            snapshot(&events, &raw, &s.config, &compactor(&s).framing).unwrap()
+        };
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Activated { .. }
+        ));
+        let (events, raw) = read_log(&s.session);
+        let reason = recheck_source(&stale, &events, &raw).unwrap_err();
+        assert_eq!(reason, "compaction epoch changed");
+
+        let mut tampered = stale.clone();
+        tampered.epoch = 2;
+        tampered.previous_handoff_hash = projection(&s.session).active_handoff.as_ref().map(|h| {
+            praana_core::protocol::hashes::calculate_sha256(
+                &praana_core::protocol::json::serialize_canonical(h).unwrap(),
+            )
+        });
+        let reason = recheck_source(&tampered, &events, &raw).unwrap_err();
+        assert!(reason.contains("already retired"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_waits_for_a_new_closed_turn() {
+        let mut s = session();
+        s.config.turn.max_attempts = 1;
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        let unconsidered = |session: &Path| {
+            let (events, raw) = read_log(session);
+            let mut replay = EventReplayer::new();
+            for (i, e) in events.iter().enumerate() {
+                replay.process_event(e, Some(i + 1), Some(&raw)).unwrap();
+            }
+            let turns: Vec<_> = projected_turns(&events, &raw, &replay, &compactor(&s).framing)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.turn)
+                .collect();
+            has_unconsidered_eligible_turn(
+                &events,
+                &turns,
+                replay.active_turn_id(),
+                replay.reset_epoch,
+            )
+        };
+        assert!(unconsidered(&s.session), "no attempt yet");
+        s.fake.push(Reply::Raw("not json".into()));
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Failed { .. }
+        ));
+        assert!(!unconsidered(&s.session), "same source after a failure");
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn("charlie three", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert!(
+            unconsidered(&s.session),
+            "a newly closed turn is unconsidered"
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_writes_a_missing_compaction_supersession() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Valid);
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Activated { .. }
+        ));
+        drop(loop_);
+        // Crash between history_compacted and attempt_superseded.
+        let path = s.session.join("events.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let removed = lines.pop().unwrap();
+        assert!(removed.contains("\"attempt_superseded\""));
+        std::fs::write(&path, lines.concat()).unwrap();
+
+        let sid = session_id(&s.session);
+        let mut engine = SessionRecoveryEngine::new(&s.session, &sid.as_str()).unwrap();
+        assert_eq!(engine.run_recovery().unwrap(), 1);
+        drop(engine);
+        let repaired = of_kind(&s.session, "attempt_superseded");
+        assert_eq!(repaired.len(), 1);
+        assert!(repaired[0]["turn_id"].is_null());
+        assert_eq!(
+            repaired[0]["event"]["data"]["purpose"]["type"],
+            "compaction"
+        );
+        let compacted = of_kind(&s.session, "history_compacted");
+        assert_eq!(
+            repaired[0]["event"]["data"]["replacement_accept_event_id"],
+            compacted[0]["event_id"]
+        );
+        // Idempotent.
+        let mut again = SessionRecoveryEngine::new(&s.session, &sid.as_str()).unwrap();
+        assert_eq!(again.run_recovery().unwrap(), 0);
+    }
+
+    #[test]
+    fn protocol_rejections_e25_to_e27_still_hold() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/protocol_v2");
+        for name in [
+            "e25_compaction_open_turn",
+            "e26_compaction_hash_mismatch",
+            "e27_compaction_epoch_skip",
+        ] {
+            let expected: Value = serde_json::from_str(
+                &std::fs::read_to_string(root.join(name).join("expected_error.json")).unwrap(),
+            )
+            .unwrap();
+            let error =
+                EventLogStore::read_and_validate_from_path(&root.join(name).join("events.jsonl"))
+                    .expect_err(name);
+            assert_eq!(error.code(), expected["code"].as_str().unwrap(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_empty_pair_is_inert() {
+        let home = tempfile::tempdir().unwrap();
+        let config = build_defaults(home.path());
+        let error = ConfiguredCompactor::resolve(&config, home.path(), 0).unwrap_err();
+        assert_eq!(error.code(), "COMPACTION_UNAVAILABLE");
+    }
+}

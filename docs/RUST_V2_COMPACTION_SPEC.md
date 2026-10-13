@@ -624,12 +624,19 @@ their bytes.
 ```rust
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+pub struct CompactionSourceMessageV1 {
+    pub event_id: EventId,
+    pub message: ConversationMessage,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CompactionSourceTurnV1 {
     pub turn_id: TurnId,
     pub start_sequence: u64,
     pub end_sequence: u64,
     pub interrupted: Option<InterruptedTurnCapsuleV1>,
-    pub messages: Vec<ConversationMessage>,
+    pub messages: Vec<CompactionSourceMessageV1>,
     pub artifact_previews: Vec<ArtifactPreviewV1>,
 }
 
@@ -660,7 +667,16 @@ ordered by producing canonical sequence. The selected source range is exactly
 the union of `source_turns`. `interrupted` is JSON null for committed turns and
 the exact Protocol capsule for interrupted turns. The prior handoff key is
 present as JSON null when there is none.
-`request_schema_version` is exactly 1. Any other value is rejected before
+`request_schema_version` is exactly 1.
+
+Amended by P5-3, 2026-10-13 (Amit). Each source message carries `event_id`,
+the canonical event that accepted it: `UserMessageAccepted` for the user
+message, `AssistantStepAccepted` for an assistant step, and
+`ToolExecutionFinished` for a tool result. Without it the compactor could not
+cite the source events that section 8.1 `Direct` evidence and section 9.2
+item 2 require. An event ID cited by two messages is rejected before provider
+formatting. This changes the control bytes and therefore `prompt_version`.
+ Any other value is rejected before
 provider formatting.
 
 The compactor system policy is the following ASCII UTF-8 bytes with LF line
@@ -928,7 +944,14 @@ the active compaction handoff or retire turns.
 
 For both reasons, `label` is exactly `NON-AUTHORITATIVE HISTORICAL EVIDENCE` and
 `estimated_tokens`, `estimator_id`, and `rendered_input_sha256` equal the
-deterministic model rendering estimate from Token Accounting. All wrapper IDs,
+deterministic model rendering estimate from Token Accounting.
+
+Amended by P5-3, 2026-10-13 (Amit). Those three fields cannot describe a
+rendering that contains them. The estimate is therefore taken over the
+rendering of the finalized handoff with `estimated_tokens = 0`,
+`estimator_id = ""`, and `rendered_input_sha256` set to 64 zero hex digits.
+The resulting values are then stored, and `handoff_max_tokens` is enforced on
+the estimate of the final rendering, which includes them. All wrapper IDs,
 lineage/source fields, unions, versions, label, and estimate metadata are
 attached by core after candidate validation.
 
@@ -957,7 +980,14 @@ schema v1 safety limits. The handoff renderer is deterministic and its
 handoff content plus searchable immutable segments prevents prompt growth.
 
 If a candidate exceeds a bound, the core may issue one repair request containing
-only validation errors and the candidate hash. The repair is a fresh durable
+only validation errors and the candidate hash.
+
+Amended by P5-3, 2026-10-13 (Amit). The repair request is the original request
+plus one more ephemeral user message after the control message. Its content
+is ASCII `[PRAANA:COMPACTION_REPAIR]` LF, the RFC 8785 JSON
+`{"candidate_sha256": <hex or null>, "issues": [{"code", "path", "message"}]}`,
+LF, `[/PRAANA:COMPACTION_REPAIR]` LF. The rejected candidate text is never
+resent. `candidate_sha256` is null when the output did not parse. The repair is a fresh durable
 compaction attempt with `retry_of` pointing to the failed attempt; it is never a
 second provider request inside one attempt. A second invalid response fails the
 compaction operation. The core never truncates an LLM JSON string into validity.

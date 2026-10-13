@@ -1261,6 +1261,8 @@ fn admission_runs_before_auth_resolution() {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     });
     assert!(decision.is_err());
     let _ = AdmissionDecision::Reject {

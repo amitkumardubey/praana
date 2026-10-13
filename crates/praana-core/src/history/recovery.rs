@@ -60,15 +60,23 @@ fn session_workspace_roots(session_dir: &Path) -> Vec<std::path::PathBuf> {
     crate::hooks::validate::workspace_roots(&cwd, &allowed)
 }
 
+/// Finds an accepted retry whose `attempt_superseded` was never written. The
+/// assistant purpose is accepted by `assistant_step_accepted`; the compaction
+/// purpose is accepted by `history_compacted`, whose envelope `turn_id` is
+/// null (Compaction §11). Returns the envelope `turn_id` for the repair.
 fn next_supersession_repair(
     events: &[EventEnvelope],
     replay: &EventReplayer,
-) -> Option<(TurnId, AttemptSuperseded)> {
+) -> Option<(Option<TurnId>, AttemptSuperseded)> {
     for accepted in events {
-        if !matches!(accepted.event, CanonicalEvent::AssistantStepAccepted(_)) {
+        let compaction = match accepted.event {
+            CanonicalEvent::AssistantStepAccepted(_) => false,
+            CanonicalEvent::HistoryCompacted(_) => true,
+            _ => continue,
+        };
+        let Some(replacement_id) = accepted.attempt_id else {
             continue;
-        }
-        let replacement_id = accepted.attempt_id?;
+        };
         let started = events.iter().find_map(|event| match &event.event {
             CanonicalEvent::AssistantAttemptStarted(started)
                 if event.attempt_id == Some(replacement_id) =>
@@ -105,8 +113,13 @@ fn next_supersession_repair(
         } else {
             SupersessionReason::Retry
         };
+        let turn_id = if compaction {
+            None
+        } else {
+            Some(accepted.turn_id?)
+        };
         return Some((
-            accepted.turn_id?,
+            turn_id,
             AttemptSuperseded {
                 purpose: started.purpose.clone(),
                 superseded_attempt_id: old_id,
@@ -258,11 +271,8 @@ impl SessionRecoveryEngine {
             }
 
             if let Some((turn_id, relation)) = next_supersession_repair(&events, &replay) {
-                let event = self.envelope(
-                    Some(turn_id),
-                    None,
-                    CanonicalEvent::AttemptSuperseded(relation),
-                )?;
+                let event =
+                    self.envelope(turn_id, None, CanonicalEvent::AttemptSuperseded(relation))?;
                 self.store.append_event(&event)?;
                 #[cfg(feature = "failpoints")]
                 crate::crash_point::hit("recovery.after_append:attempt_superseded");
