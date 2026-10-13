@@ -668,6 +668,8 @@ fn admission_unknown_model_requires_trusted_context_window() {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     };
     let error = admit(&request).unwrap_err();
     assert_eq!(error.code, ProviderErrorCode::AdmissionContextWindowUnknown);
@@ -706,6 +708,8 @@ fn admission_rejects_active_cycle_that_cannot_fit() {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     };
     let decision = admit(&request).unwrap();
     assert!(matches!(
@@ -1075,6 +1079,8 @@ fn fitting_request(body: &serde_json::Value) -> AdmissionRequest<'_> {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     }
 }
 
@@ -1253,6 +1259,8 @@ fn rejected_admission_does_not_read_credentials_or_send() {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     });
     let error = dispatch_after_admission(
         &mut store,
@@ -2097,6 +2105,8 @@ fn admission_counts_system_tools_images_and_active_cycle() {
         estimate_reused_from: None,
         state_tail: "",
         state_tail_offset: None,
+        handoff: "",
+        handoff_offset: None,
     };
     let AdmissionDecision::Admit(estimate) = admit(&request).unwrap() else {
         panic!("admit");

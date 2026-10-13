@@ -21,6 +21,7 @@ use crate::config::EffectiveConfigV1;
 use crate::credentials::store::{credentials_path, load_store, CredentialStoreV1};
 use crate::history::projection::ConversationProjection;
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
+use crate::protocol::compaction::{render_historical_handoff, HistoricalHandoffV1};
 use crate::protocol::events::EventEnvelope;
 use crate::protocol::id::{MessageId, SessionId, TurnId};
 use crate::protocol::messages::{
@@ -53,6 +54,14 @@ use super::{
 };
 
 const ZERO_OUTPUT_RESERVE: u64 = 0;
+
+/// The accepted conversation plus the provider-visible extras the projection
+/// carries: the active continuation and the active compaction handoff.
+struct ProjectedConversation {
+    messages: Vec<ConversationMessage>,
+    continuation: Option<crate::protocol::continuation::ProviderContinuation>,
+    handoff: Option<HistoricalHandoffV1>,
+}
 
 pub struct OpenAiStepProvider {
     config: EffectiveConfigV1,
@@ -196,29 +205,24 @@ impl OpenAiStepProvider {
         .ok()
     }
 
-    fn conversation(
-        &self,
-        ctx: &PrepareContext<'_>,
-    ) -> Result<
-        (
-            Vec<ConversationMessage>,
-            Option<crate::protocol::continuation::ProviderContinuation>,
-        ),
-        TurnError,
-    > {
+    fn conversation(&self, ctx: &PrepareContext<'_>) -> Result<ProjectedConversation, TurnError> {
         let session_dir = self.session.read().unwrap().clone();
         if let Some(dir) = session_dir {
-            if let Some(events) = read_events(&dir) {
+            if let Some((events, raw)) = read_events(&dir) {
                 if !events.is_empty() {
                     let projection = ConversationProjection::project_with_context(
                         &events,
-                        None,
+                        Some(&raw),
                         &ctx.notices,
                         Some(&self.target),
                     )
                     .map_err(|error| TurnError::failed(format!("projection: {error}")))?;
                     if !projection.messages.is_empty() {
-                        return Ok((projection.messages, projection.active_continuation));
+                        return Ok(ProjectedConversation {
+                            messages: projection.messages,
+                            continuation: projection.active_continuation,
+                            handoff: projection.active_handoff,
+                        });
                     }
                 }
             }
@@ -232,16 +236,17 @@ impl OpenAiStepProvider {
         let turn_id = ids
             .next_id::<TurnId>()
             .map_err(|error| TurnError::failed(error.to_string()))?;
-        Ok((
-            vec![ConversationMessage::User(UserMessage {
+        Ok(ProjectedConversation {
+            messages: vec![ConversationMessage::User(UserMessage {
                 message_id,
                 turn_id,
                 blocks: vec![UserBlock::Text(TextBlock {
                     text: ctx.input.to_owned(),
                 })],
             })],
-            None,
-        ))
+            continuation: None,
+            handoff: None,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -564,7 +569,11 @@ impl StepProvider for OpenAiStepProvider {
     ) -> Result<PreparedStep, TurnError> {
         let _ = step_index;
         let profile = self.resolve_profile();
-        let (messages, continuation) = self.conversation(ctx)?;
+        let ProjectedConversation {
+            messages,
+            continuation,
+            handoff,
+        } = self.conversation(ctx)?;
         let session_id = *self.session_id.read().unwrap();
         let input = SystemContextInputV1 {
             praana_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -581,37 +590,46 @@ impl StepProvider for OpenAiStepProvider {
             skills: Vec::new(),
         };
         let mut slots = self.slots.read().unwrap().clone();
+        // The active compaction handoff fills its own slot (Compaction §10).
+        // An absent handoff leaves the empty slot inside `system`.
+        let rendered_handoff = handoff
+            .as_ref()
+            .map(render_historical_handoff)
+            .transpose()
+            .map_err(|error| TurnError::failed(format!("handoff render: {error}")))?
+            .map(|text| crate::provider::openai::normalize_newlines(&text));
+        slots.historical_handoff = rendered_handoff.clone();
         let current_state =
             crate::system_context::render::render_current_state(ctx.state_tail, &input)
                 .map_err(|error| TurnError::failed(error.to_string()))?;
+        let mut prefix_blocks = vec![
+            format!(
+                "[PRAANA:SYSTEM_POLICY]\n{}\n[/PRAANA:SYSTEM_POLICY]",
+                crate::provider::openai::normalize_newlines(&slots.system_policy)
+            ),
+            format!(
+                "[PRAANA:PROJECT_CONTEXT_DATA]\n{}\n[/PRAANA:PROJECT_CONTEXT_DATA]",
+                crate::provider::openai::normalize_newlines(&slots.project_context)
+            ),
+        ];
+        if let Some(memory) = &slots.cross_session_memory {
+            prefix_blocks.push(format!(
+                "[PRAANA:CROSS_SESSION_MEMORY_DATA]\n{}\n[/PRAANA:CROSS_SESSION_MEMORY_DATA]",
+                crate::provider::openai::normalize_newlines(memory)
+            ));
+        }
+        let handoff_offset = rendered_handoff.as_ref().map(|_| {
+            prefix_blocks.join("\n\n").len() + "\n\n[PRAANA:HISTORICAL_HANDOFF_DATA]\n".len()
+        });
+        let handoff_text = rendered_handoff.unwrap_or_default();
+        prefix_blocks.push(format!(
+            "[PRAANA:HISTORICAL_HANDOFF_DATA]\n{handoff_text}\n[/PRAANA:HISTORICAL_HANDOFF_DATA]"
+        ));
         let state_tail_offset = if ctx.state_tail.is_empty() {
             None
         } else {
-            let mut prefix_blocks = vec![
-                format!(
-                    "[PRAANA:SYSTEM_POLICY]\n{}\n[/PRAANA:SYSTEM_POLICY]",
-                    crate::provider::openai::normalize_newlines(&slots.system_policy)
-                ),
-                format!(
-                    "[PRAANA:PROJECT_CONTEXT_DATA]\n{}\n[/PRAANA:PROJECT_CONTEXT_DATA]",
-                    crate::provider::openai::normalize_newlines(&slots.project_context)
-                ),
-            ];
-            if let Some(memory) = &slots.cross_session_memory {
-                prefix_blocks.push(format!(
-                    "[PRAANA:CROSS_SESSION_MEMORY_DATA]\n{}\n[/PRAANA:CROSS_SESSION_MEMORY_DATA]",
-                    crate::provider::openai::normalize_newlines(memory)
-                ));
-            }
-            let handoff = slots.historical_handoff.as_deref().unwrap_or("");
-            prefix_blocks.push(format!(
-                "[PRAANA:HISTORICAL_HANDOFF_DATA]\n{}\n[/PRAANA:HISTORICAL_HANDOFF_DATA]",
-                crate::provider::openai::normalize_newlines(handoff)
-            ));
-
             let prefix = prefix_blocks.join("\n\n");
-            let offset = prefix.len() + "\n\n[PRAANA:CURRENT_STATE_DATA]\n".len();
-            Some(offset)
+            Some(prefix.len() + "\n\n[PRAANA:CURRENT_STATE_DATA]\n".len())
         };
         slots.current_state = current_state;
         let instructions = compile_instructions(&slots).map_err(|error| {
@@ -621,6 +639,12 @@ impl StepProvider for OpenAiStepProvider {
             debug_assert_eq!(
                 &instructions.as_bytes()[offset..offset + ctx.state_tail.len()],
                 ctx.state_tail.as_bytes()
+            );
+        }
+        if let Some(offset) = handoff_offset {
+            debug_assert_eq!(
+                &instructions.as_bytes()[offset..offset + handoff_text.len()],
+                handoff_text.as_bytes()
             );
         }
         let reserve = self.output_reserve.load(Ordering::SeqCst);
@@ -655,6 +679,7 @@ impl StepProvider for OpenAiStepProvider {
             image_count: Self::image_count(&messages),
             resolved_max_output_tokens: Some(resolved_max_output_tokens),
             state_tail_offset,
+            handoff: handoff_offset.map(|offset| (offset, handoff_text)),
         })
     }
 
@@ -1048,24 +1073,33 @@ fn endpoint_url(endpoint: &str, path: &str) -> String {
     format!("{}/{}", endpoint.trim_end_matches('/'), path)
 }
 
-fn read_events(session_dir: &Path) -> Option<Vec<EventEnvelope>> {
+/// Reads the durable events with their exact line bytes. Replay needs the
+/// bytes to verify a `history_compacted` source hash (Compaction §9.1).
+fn read_events(session_dir: &Path) -> Option<(Vec<EventEnvelope>, Vec<String>)> {
     let text = std::fs::read_to_string(session_dir.join("events.jsonl")).ok()?;
     let mut events = Vec::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        match serde_json::from_str::<EventEnvelope>(line) {
-            Ok(envelope) => events.push(envelope),
-            // A partially flushed final line is ignored; appends write whole
-            // lines, so everything else parses.
+    let mut raw = Vec::new();
+    for line in text.split_inclusive('\n') {
+        // A partially flushed final line has no LF and is ignored; appends
+        // write whole lines, so everything else parses.
+        if !line.ends_with('\n') {
+            break;
+        }
+        match serde_json::from_str::<EventEnvelope>(line.trim_end_matches('\n')) {
+            Ok(envelope) => {
+                events.push(envelope);
+                raw.push(line.to_owned());
+            }
             Err(_) => break,
         }
     }
-    Some(events)
+    Some((events, raw))
 }
 
 /// Lenient read of the on-disk catalog cache. Trust decisions (endpoint
 /// fingerprint, expiry, official endpoint) happen inside
 /// `resolve_profile_with_catalog`; untrusted rows never leak their window.
-fn read_catalog_cache(path: &Path) -> Option<CatalogCacheV1> {
+pub(crate) fn read_catalog_cache(path: &Path) -> Option<CatalogCacheV1> {
     let text = std::fs::read_to_string(path).ok()?;
     let cache: CatalogCacheV1 = serde_json::from_str(&text).ok()?;
     (cache.schema_version == CATALOG_CACHE_SCHEMA_VERSION).then_some(cache)

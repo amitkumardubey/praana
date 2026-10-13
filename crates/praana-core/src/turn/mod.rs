@@ -251,6 +251,9 @@ pub struct PreparedStep {
     pub image_count: usize,
     pub resolved_max_output_tokens: Option<u64>,
     pub state_tail_offset: Option<usize>,
+    /// Rendered handoff slot and its instruction-string offset when a handoff
+    /// exists. `None` keeps an empty slot inside `system` (Compaction §4.1).
+    pub handoff: Option<(usize, String)>,
 }
 
 /// Admission outcome for a fully prepared request.
@@ -313,6 +316,7 @@ pub trait StepProvider: Send + Sync {
             image_count: 0,
             resolved_max_output_tokens: None,
             state_tail_offset: None,
+            handoff: None,
         })
     }
 
@@ -560,6 +564,34 @@ impl HeadlessLoop {
 
     /// True when replay reports an unfinished turn that
     /// [`HeadlessLoop::continue_turn_with_sink`] would drive to completion.
+    /// Runs one compaction operation against a configured compactor
+    /// (Compaction §12). Called explicitly; live pressure wiring is P5-6. The
+    /// projection the next provider request sees is rebuilt from the durable
+    /// log, so a `HistoryCompacted` that reached fsync is the activation.
+    pub async fn compact_now(
+        &mut self,
+        compactor: &crate::compaction::activate::ConfiguredCompactor,
+    ) -> Result<crate::compaction::activate::CompactionOutcome, TurnError> {
+        self.ensure_live()?;
+        let config = self.config.config.clone();
+        let mut ctx = crate::compaction::activate::ActivationContext {
+            log: &mut self.log,
+            ids: &self.config.ids,
+            clock: self.config.clock.as_ref(),
+            session_id: self.session_id,
+            config: &config,
+            framing: &self.framing,
+        };
+        crate::compaction::activate::run(&mut ctx, compactor, &self.cancel)
+            .await
+            .map_err(|error| match error {
+                crate::compaction::activate::CompactionRunError::History(message) => {
+                    TurnError::Durability(message)
+                }
+                other => TurnError::failed(other.to_string()),
+            })
+    }
+
     pub fn has_active_turn(&self) -> Result<bool, TurnError> {
         Ok(self.replay()?.active_turn_id().is_some())
     }
@@ -1355,6 +1387,11 @@ impl HeadlessLoop {
             estimate_reused_from: None,
             state_tail,
             state_tail_offset: prepared.state_tail_offset,
+            handoff: prepared
+                .handoff
+                .as_ref()
+                .map_or("", |(_, text)| text.as_str()),
+            handoff_offset: prepared.handoff.as_ref().map(|(offset, _)| *offset),
         })
         .map_err(|err| TurnError::Provider(Box::new(provider_failure_from_provider_error(&err))))?;
         Ok(match decision {
@@ -2277,13 +2314,18 @@ fn sanitize_tool_call(
 }
 
 fn resolved_framing(config: &EffectiveConfigV1) -> FramingProfileV1 {
+    framing_for(
+        config.llm.provider.as_str(),
+        config.llm.protocol.as_str(),
+        config.llm.model.as_str(),
+    )
+}
+
+/// Bundled framing profile for one provider/protocol/model, falling back to
+/// the conservative generic profile. The compactor uses its own model's row.
+pub(crate) fn framing_for(provider: &str, protocol: &str, model: &str) -> FramingProfileV1 {
     if let Ok(store) = TokenProfileStoreV1::load_bundled() {
-        if let Ok(entry) = store.resolve(
-            config.llm.provider.as_str(),
-            config.llm.protocol.as_str(),
-            config.llm.model.as_str(),
-            None,
-        ) {
+        if let Ok(entry) = store.resolve(provider, protocol, model, None) {
             return entry.framing_profile.clone();
         }
         if let Ok(entry) = store.resolve_conservative_generic() {

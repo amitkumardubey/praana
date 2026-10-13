@@ -254,6 +254,10 @@ pub struct AdmissionRequest<'a> {
     pub estimate_reused_from: Option<crate::protocol::id::AttemptId>,
     pub state_tail: &'a str,
     pub state_tail_offset: Option<usize>,
+    /// Rendered handoff slot bytes and their offset in the instruction string.
+    /// `None` keeps the slot inside `system` (Compaction §4.1, handoff split).
+    pub handoff: &'a str,
+    pub handoff_offset: Option<usize>,
 }
 
 pub fn admit(request: &AdmissionRequest<'_>) -> Result<AdmissionDecision, ProviderError> {
@@ -517,7 +521,7 @@ fn derive_components(request: &AdmissionRequest<'_>) -> Result<[Vec<u8>; 9], Pro
         })
         .unwrap_or(false);
 
-    if let Some(offset) = request.state_tail_offset {
+    if request.state_tail_offset.is_some() || request.handoff_offset.is_some() {
         if !has_shape {
             return Err(ProviderError::new(
                 ProviderErrorCode::AdmissionStateTailMismatch,
@@ -556,31 +560,40 @@ fn derive_components(request: &AdmissionRequest<'_>) -> Result<[Vec<u8>; 9], Pro
             }
         };
 
-        let r = request.state_tail;
-        let r_bytes = r.as_bytes();
-        let s_bytes = s.as_bytes();
-
-        let matches_tail = if offset <= s_bytes.len() && offset + r_bytes.len() <= s_bytes.len() {
-            &s_bytes[offset..offset + r_bytes.len()] == r_bytes
-        } else {
-            false
-        };
-
-        if !matches_tail {
-            return Err(ProviderError::new(
-                ProviderErrorCode::AdmissionStateTailMismatch,
-                "openai",
-                "openai-chat-v1",
-                "state tail offset does not match the instruction string",
-            ));
+        // Token Accounting §7.3: each reported slot is located only by its
+        // provider-reported offset and removed from `system`. The handoff slot
+        // precedes the state slot in the one instruction string.
+        let mut spans: Vec<(usize, &str, usize, &str)> = Vec::new();
+        if let Some(offset) = request.handoff_offset {
+            spans.push((offset, request.handoff, 3, "handoff"));
         }
-
-        let before = &s[..offset];
-        let after = &s[offset + r_bytes.len()..];
-        let s_prime = format!("{}{}", before, after);
-
+        if let Some(offset) = request.state_tail_offset {
+            spans.push((offset, request.state_tail, 5, "state tail"));
+        }
+        let s_bytes = s.as_bytes();
         let mut parts: [Vec<u8>; 9] = std::array::from_fn(|_| Vec::new());
-        parts[5] = r_bytes.to_vec();
+        let mut s_prime = String::with_capacity(s.len());
+        let mut cursor = 0usize;
+        for (offset, slot, component, label) in spans {
+            let end = offset.checked_add(slot.len());
+            let matches = offset >= cursor
+                && end.is_some_and(|end| end <= s_bytes.len())
+                && s.is_char_boundary(offset)
+                && end.is_some_and(|end| s.is_char_boundary(end))
+                && end.is_some_and(|end| &s_bytes[offset..end] == slot.as_bytes());
+            if !matches {
+                return Err(ProviderError::new(
+                    ProviderErrorCode::AdmissionStateTailMismatch,
+                    "openai",
+                    "openai-chat-v1",
+                    format!("{label} offset does not match the instruction string"),
+                ));
+            }
+            s_prime.push_str(&s[cursor..offset]);
+            parts[component] = slot.as_bytes().to_vec();
+            cursor = offset + slot.len();
+        }
+        s_prime.push_str(&s[cursor..]);
 
         if is_responses {
             parts[0] = s_prime.into_bytes();
@@ -1706,6 +1719,8 @@ impl RetryLedger {
             estimate_reused_from: None,
             state_tail: "",
             state_tail_offset: None,
+            handoff: "",
+            handoff_offset: None,
         })?;
         let estimate = match decision {
             AdmissionDecision::Admit(estimate)

@@ -1130,6 +1130,7 @@ impl StepProvider for ReduceOutputTestProvider {
             image_count: 0,
             resolved_max_output_tokens: Some(resolved_max_output_tokens),
             state_tail_offset: None,
+            handoff: None,
         })
     }
 
@@ -1283,6 +1284,7 @@ impl StepProvider for TailTrackingProvider {
             image_count: 0,
             resolved_max_output_tokens: None,
             state_tail_offset: None,
+            handoff: None,
         })
     }
 

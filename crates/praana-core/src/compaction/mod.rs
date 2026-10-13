@@ -3,10 +3,13 @@
 //! P5-1 scope: pure pressure state and closed-turn selection.
 //! P5-2 scope: candidate type, strict parsing, structural and provenance
 //! validation, and the handoff renderer's token bound.
-//!
-//! Nothing here touches History, a provider, or the turn loop.
+//! P5-3 scope: exact compactor request bytes (`control`) and epoch-1 activation
+//! against a configured compactor (`activate`). Activation is test-called only;
+//! live pressure wiring is P5-6.
 
+pub mod activate;
 pub mod admission;
+pub mod control;
 pub mod render;
 pub mod schema;
 pub mod selection;

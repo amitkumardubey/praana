@@ -3655,7 +3655,7 @@ redaction code.
 | `COMPACTION_CANCELLED` | `E_COMPACTION_CANCELLED` | `cancelled` | n/a | Yes only from a new trigger |
 | `COMPACTION_TIMEOUT` | `E_COMPACTION_TIMEOUT` | `timeout` | n/a | Conditional on retry policy |
 | `COMPACTION_PROVIDER` | Mapped provider `E_*` code | Provider mapping | n/a | Provider mapping |
-| `COMPACTION_PARSE`, `COMPACTION_SCHEMA`, `COMPACTION_PROVENANCE` | `E_COMPACTION_CANDIDATE_INVALID` | `invalid_provider_output` | n/a | One schema repair within the attempt |
+| `COMPACTION_PARSE`, `COMPACTION_SCHEMA`, `COMPACTION_PROVENANCE` | `E_COMPACTION_CANDIDATE_INVALID` | `invalid_provider_output` | n/a | One schema repair as a fresh attempt with `retry_of` (Compaction §8.4; amended 2026-10-13) |
 | `COMPACTION_SOURCE_CHANGED` | `E_COMPACTION_SOURCE_HASH_MISMATCH` | `conflict` | n/a | Yes with fresh snapshot and attempt |
 | `COMPACTION_PERSISTENCE` | `E_EVENT_DURABILITY_UNCERTAIN` | `persistence` | n/a | Only after recovery determines outcome |
 | `COMPACTION_DERIVED_STALE` | `E_HISTORY_DERIVED_STALE` | `persistence` | n/a | Yes; canonical activation remains active |
