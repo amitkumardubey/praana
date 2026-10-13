@@ -83,6 +83,9 @@ jobs:
           $durableTests = @(
             'auto_hydrate_controller_failure_projection_integrity',
             'auto_hydrate_controller_other_error_warning_and_continue',
+            'compaction_crash_after_attempt_started_records_attempt_lost',
+            'compaction_crash_after_history_compacted_fsync_activates_on_resume',
+            'compaction_crash_before_projection_publish_activates_on_resume',
             'crash_after_accepted_marked_step_cancels_without_starting_body',
             'crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call',
             'crash_after_accepted_step_runs_unstarted_calls_once',

@@ -353,6 +353,9 @@ P0
 
   - `auto_hydrate_controller_failure_projection_integrity` ([#622](https://github.com/amitkumardubey/praana/issues/622))
   - `auto_hydrate_controller_other_error_warning_and_continue` ([#622](https://github.com/amitkumardubey/praana/issues/622))
+  - `compaction_crash_after_attempt_started_records_attempt_lost` ([#622](https://github.com/amitkumardubey/praana/issues/622))
+  - `compaction_crash_after_history_compacted_fsync_activates_on_resume` ([#622](https://github.com/amitkumardubey/praana/issues/622))
+  - `compaction_crash_before_projection_publish_activates_on_resume` ([#622](https://github.com/amitkumardubey/praana/issues/622))
   - `crash_after_accepted_marked_step_cancels_without_starting_body` ([#622](https://github.com/amitkumardubey/praana/issues/622))
   - `crash_after_accepted_mixed_step_replays_safe_peer_and_cancels_marked_call` ([#622](https://github.com/amitkumardubey/praana/issues/622))
   - `crash_after_accepted_step_runs_unstarted_calls_once` ([#622](https://github.com/amitkumardubey/praana/issues/622))
