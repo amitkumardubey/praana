@@ -22,6 +22,7 @@ use praana_core::history::retrieve::{
 use praana_core::history::search::{
     search_session, SearchSourceKind, SessionSearchFilters, SessionSearchMode, SessionSearchRequest,
 };
+use praana_core::history::ArtifactError;
 use praana_core::id::MonotonicUlidGenerator;
 use praana_core::protocol::compaction::{
     CompactorStrategy, EvidenceRefV1, HandoffReason, HistoricalHandoffContentV1,
@@ -656,6 +657,11 @@ impl TestSession {
     fn project(&self) {
         let projector = HistoryProjector::new(&self.db);
         projector.project(&self.log).unwrap();
+    }
+
+    fn try_project(&self) -> Result<(), ArtifactError> {
+        let projector = HistoryProjector::new(&self.db);
+        projector.project(&self.log)
     }
 
     fn search_conn(&self) -> rusqlite::Connection {
@@ -3748,6 +3754,17 @@ fn append_history_compacted(
     session: &mut TestSession,
     spec: CompactionAppend<'_>,
 ) -> AppendedCompaction {
+    append_history_compacted_with(session, spec, |_| {})
+}
+
+/// Like [`append_history_compacted`], but runs `tamper` on the fully-built
+/// `HistoryCompactedV1` just before it is appended. Used by the integrity
+/// tests to drive the projection's rejection branches.
+fn append_history_compacted_with(
+    session: &mut TestSession,
+    spec: CompactionAppend<'_>,
+    tamper: impl FnOnce(&mut HistoryCompactedV1),
+) -> AppendedCompaction {
     let CompactionAppend {
         epoch,
         reset_epoch,
@@ -3841,8 +3858,8 @@ fn append_history_compacted(
         None,
         Some(attempt_id),
     );
-    let event_id = session.append(
-        CanonicalEvent::HistoryCompacted(HistoryCompactedV1 {
+    let event_id = {
+        let mut compacted = HistoryCompactedV1 {
             compaction_schema_version: 1,
             compaction_id: CompactionId::from_str_canonical(ids.compaction).unwrap(),
             policy_version: "rust-v2-compaction-1".to_owned(),
@@ -3877,10 +3894,14 @@ fn append_history_compacted(
             artifact_ids: Vec::new(),
             state_ids: Vec::new(),
             attempt_started_event_id: started,
-        }),
-        None,
-        Some(attempt_id),
-    );
+        };
+        tamper(&mut compacted);
+        session.append(
+            CanonicalEvent::HistoryCompacted(compacted),
+            None,
+            Some(attempt_id),
+        )
+    };
     AppendedCompaction {
         segment_id,
         event_id,
@@ -4125,6 +4146,110 @@ fn summary_segment_roundtrip() {
     assert_eq!(source.results.len(), 1);
     assert_eq!(source.results[0].source_kind, SearchSourceKind::Event);
     assert_checkpoint_payload_unchanged(dir.path());
+}
+
+/// History §5.2: the derived projection re-checks that the embedded segment
+/// source range agrees with the top-level compaction fields. The event-log
+/// replayer validates `segment_hash`/`handoff_hash` and the source hash, but
+/// it never cross-checks the segment's own `source` block against the
+/// compaction header, so this is the projection's own guard. We mutate the
+/// segment's source range and recompute `segment_hash` so replay accepts the
+/// event and the mismatch only surfaces inside `summary_from_event`.
+#[test]
+fn summary_segment_source_mismatch_is_rejected_by_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    append_history_compacted_with(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+        |compacted| {
+            // Diverge the segment's own estimator id from the compaction
+            // header, then re-seal `segment_hash` so the replayer still
+            // accepts the event. Only the projection notices the mismatch.
+            compacted.segment.source.source_estimator_id = "tampered-estimator".to_owned();
+            let bytes = serialize_canonical_string(&compacted.segment).unwrap();
+            compacted.segment_hash = Sha256Digest::digest_bytes(bytes.as_bytes());
+        },
+    );
+
+    let err = session
+        .try_project()
+        .expect_err("a segment that disagrees with the compaction header must be rejected");
+    assert_eq!(err.code(), "HISTORY_EVENT_INTEGRITY");
+    assert_eq!(
+        err.message(),
+        "summary segment does not match the compaction event"
+    );
+    assert_eq!(summary_count(dir.path()), 0);
+}
+
+/// Defense in depth: a `segment_hash` that does not seal the segment bytes
+/// never reaches the projection. The event log validates the compaction
+/// against §8 replay on append, so the tampered event is refused at write
+/// time and `summary_from_event` never sees it.
+#[test]
+#[should_panic(expected = "E_COMPACTION_SOURCE_HASH_MISMATCH")]
+fn summary_segment_hash_tamper_is_rejected_before_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    // The event log refuses to append a compaction whose `segment_hash` does
+    // not seal the segment bytes; this call panics inside `append`.
+    append_history_compacted_with(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+        |compacted| {
+            // Flip the sealed hash without touching the segment bytes.
+            compacted.segment_hash = Sha256Digest::from_bytes([9; 32]);
+        },
+    );
 }
 
 #[test]
