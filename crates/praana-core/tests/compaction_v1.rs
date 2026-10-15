@@ -1838,10 +1838,16 @@ mod activation {
     use praana_core::credentials::store::{
         credentials_path, save_store, upsert_credential, CredentialStoreV1,
     };
+    use praana_core::history::checkpoint::{HistoryDerivedCheckpointV1, HistoryProjector};
+    use praana_core::history::db::HistoryDatabase;
     use praana_core::history::event_log::EventLogStore;
     use praana_core::history::projection::ConversationProjection;
     use praana_core::history::recovery::SessionRecoveryEngine;
     use praana_core::history::replay::EventReplayer;
+    use praana_core::history::retrieve::{read_session_source, ReadSessionSourceRequest};
+    use praana_core::history::search::{
+        search_session, SearchSourceKind, SessionSearchMode, SessionSearchRequest,
+    };
     use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
     use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
     use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
@@ -2318,6 +2324,151 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             of_kind(&s.session, "user_message_accepted").len() == 3,
             "sources stay canonical"
         );
+    }
+
+    #[tokio::test]
+    async fn derived_summary_projects_from_history_compacted() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let CompactionOutcome::Activated {
+            retired_turn_ids, ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("expected activation");
+        };
+        drop(loop_);
+
+        let db_path = s.session.join("history.db");
+        let count = |path: &std::path::Path| -> i64 {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM summary_segments", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(
+            count(&db_path),
+            0,
+            "the durable event is ahead of the summary row"
+        );
+
+        let sid = session_id(&s.session).to_string();
+        let log = EventLogStore::open(&s.session, &sid).unwrap();
+        let db = HistoryDatabase::open(&db_path).unwrap();
+        HistoryProjector::new(&db).project(&log).unwrap();
+        HistoryProjector::new(&db).project(&log).unwrap();
+        assert_eq!(count(&db_path), 1);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let (version, payload, segment_json, segment_hash, handoff_json, handoff_hash): (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT c.checkpoint_schema_version, c.payload_json, s.segment_json, s.segment_hash, \
+                        s.handoff_json, s.handoff_hash \
+                 FROM projection_checkpoints c, summary_segments s \
+                 WHERE c.projection_name = 'history_derived'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(version, 1);
+        let parsed: HistoryDerivedCheckpointV1 = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed.checkpoint_schema_version, 1);
+        assert!(segment_json.contains("The user asked for greetings."));
+        assert_eq!(
+            segment_hash,
+            praana_core::protocol::id::Sha256Digest::digest_bytes(segment_json.as_bytes()).as_str()
+        );
+        assert_eq!(
+            handoff_hash,
+            praana_core::protocol::id::Sha256Digest::digest_bytes(handoff_json.as_bytes()).as_str()
+        );
+        let retired: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM turns WHERE retired_by_epoch = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retired, retired_turn_ids.len() as i64);
+
+        let key = praana_core::history::event_log::read_cursor_hmac_key(&s.session).unwrap();
+        let page = search_session(
+            &conn,
+            &SessionSearchRequest {
+                query: "asked".to_owned(),
+                mode: SessionSearchMode::Fts,
+                case_sensitive: false,
+                filters: praana_core::history::search::SessionSearchFilters {
+                    source_kinds: vec![SearchSourceKind::SummarySegment],
+                    ..Default::default()
+                },
+                limit: 20,
+                cursor: None,
+            },
+            &key,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(page.results.len(), 2);
+        assert!(page
+            .results
+            .iter()
+            .all(|hit| hit.retrieval.tool == "read_session_source"));
+        let segment = page
+            .results
+            .iter()
+            .find(|hit| hit.source_field == "summary_segment.segment")
+            .unwrap();
+        let response = read_session_source(
+            &conn,
+            &ReadSessionSourceRequest {
+                result_id: segment.result_id,
+                byte_offset: 0,
+            },
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(response.text, segment_json);
+        assert_eq!(
+            response.source_kind,
+            praana_core::history::retrieve::SearchSourceKind::SummarySegment
+        );
+
+        let source = search_session(
+            &conn,
+            &SessionSearchRequest {
+                query: "alpha one".to_owned(),
+                mode: SessionSearchMode::Exact,
+                case_sensitive: true,
+                filters: Default::default(),
+                limit: 20,
+                cursor: None,
+            },
+            &key,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(source
+            .results
+            .iter()
+            .any(|hit| hit.source_kind == SearchSourceKind::Event));
     }
 
     #[tokio::test]

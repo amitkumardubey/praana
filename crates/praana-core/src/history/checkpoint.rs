@@ -58,6 +58,7 @@ struct DocRow {
     created_at_ms: i64,
     source_id: String,
     state_id: Option<String>,
+    summary_segment_id: Option<String>,
 }
 
 struct TurnRow {
@@ -68,6 +69,8 @@ struct TurnRow {
     end_sequence: Option<u64>,
     protocol_complete: bool,
     interrupted: bool,
+    retired_by_epoch: Option<u32>,
+    source_hash: Option<String>,
 }
 
 impl<'a> HistoryProjector<'a> {
@@ -357,6 +360,7 @@ fn apply_projection(
     let mut epoch: u32 = 0;
     let mut turns: BTreeMap<TurnId, TurnRow> = BTreeMap::new();
     let mut docs: Vec<DocRow> = Vec::new();
+    let mut summaries: Vec<SummaryRow> = Vec::new();
 
     for envelope in events {
         match &envelope.event {
@@ -377,6 +381,7 @@ fn apply_projection(
                             text: text.text.clone(),
                             created_at_ms: envelope.timestamp_ms,
                             state_id: None,
+                            summary_segment_id: None,
                             source_id: envelope.event_id.to_string(),
                         });
                     }
@@ -399,6 +404,7 @@ fn apply_projection(
                             text: text.text.clone(),
                             created_at_ms: envelope.timestamp_ms,
                             state_id: None,
+                            summary_segment_id: None,
                             source_id: envelope.event_id.to_string(),
                         }),
                         AssistantBlock::ReasoningSummary(summary) => docs.push(DocRow {
@@ -415,6 +421,7 @@ fn apply_projection(
                             text: summary.text.clone(),
                             created_at_ms: envelope.timestamp_ms,
                             state_id: None,
+                            summary_segment_id: None,
                             source_id: envelope.event_id.to_string(),
                         }),
                         AssistantBlock::Refusal(refusal) => docs.push(DocRow {
@@ -431,6 +438,7 @@ fn apply_projection(
                             text: refusal.text.clone(),
                             created_at_ms: envelope.timestamp_ms,
                             state_id: None,
+                            summary_segment_id: None,
                             source_id: envelope.event_id.to_string(),
                         }),
                         AssistantBlock::ToolCall(call) => {
@@ -448,6 +456,7 @@ fn apply_projection(
                                 text: call.name.clone(),
                                 created_at_ms: envelope.timestamp_ms,
                                 state_id: None,
+                                summary_segment_id: None,
                                 source_id: envelope.event_id.to_string(),
                             });
                             let arguments = serde_json::Value::Object(call.arguments.clone());
@@ -488,6 +497,7 @@ fn apply_projection(
                                 text,
                                 created_at_ms: envelope.timestamp_ms,
                                 state_id: None,
+                                summary_segment_id: None,
                                 source_id: envelope.event_id.to_string(),
                             });
                         }
@@ -513,6 +523,7 @@ fn apply_projection(
                             text: inline.text.clone(),
                             created_at_ms: envelope.timestamp_ms,
                             state_id: None,
+                            summary_segment_id: None,
                             source_id: envelope.event_id.to_string(),
                         }),
                         ToolResultContent::Artifact(artifact) => {
@@ -555,6 +566,7 @@ fn apply_projection(
                                     text: view.text,
                                     created_at_ms: envelope.timestamp_ms,
                                     state_id: None,
+                                    summary_segment_id: None,
                                     source_id: artifact_id.to_string(),
                                 });
                             }
@@ -574,6 +586,8 @@ fn apply_projection(
                             end_sequence: None,
                             protocol_complete: false,
                             interrupted: false,
+                            retired_by_epoch: None,
+                            source_hash: None,
                         },
                     );
                 }
@@ -588,6 +602,8 @@ fn apply_projection(
                         end_sequence: None,
                         protocol_complete: false,
                         interrupted: false,
+                        retired_by_epoch: None,
+                        source_hash: None,
                     });
                     // §9.4: rebuild never upgrades an interrupted turn.
                     if entry.status == "in_flight" {
@@ -608,6 +624,8 @@ fn apply_projection(
                         end_sequence: None,
                         protocol_complete: false,
                         interrupted: false,
+                        retired_by_epoch: None,
+                        source_hash: None,
                     });
                     if entry.status == "in_flight" {
                         entry.status = "interrupted";
@@ -621,6 +639,50 @@ fn apply_projection(
             }
             CanonicalEvent::ResetBoundary(v) => {
                 epoch = v.reset_epoch;
+            }
+            CanonicalEvent::HistoryCompacted(compacted) => {
+                if compacted.reset_epoch != epoch {
+                    return Err(ArtifactError::new(
+                        "HISTORY_EVENT_INTEGRITY",
+                        "compaction reset epoch does not match the projected epoch",
+                    ));
+                }
+                let summary = summary_from_event(envelope, compacted)?;
+                let segment_id = summary.segment_id.clone();
+                docs.push(summary_doc(
+                    envelope,
+                    epoch,
+                    &segment_id,
+                    "summary_segment.segment",
+                    summary.segment_json.clone(),
+                ));
+                docs.push(summary_doc(
+                    envelope,
+                    epoch,
+                    &segment_id,
+                    "summary_segment.handoff",
+                    summary.handoff_json.clone(),
+                ));
+                for turn_id in &compacted.source_turn_ids {
+                    let entry = turns.get_mut(turn_id).ok_or_else(|| {
+                        ArtifactError::new(
+                            "HISTORY_EVENT_INTEGRITY",
+                            "compaction retires a turn that has no derived row",
+                        )
+                    })?;
+                    if entry
+                        .retired_by_epoch
+                        .is_some_and(|existing| existing != compacted.epoch)
+                    {
+                        return Err(ArtifactError::new(
+                            "HISTORY_EVENT_INTEGRITY",
+                            "a turn is retired by two compaction epochs",
+                        ));
+                    }
+                    entry.retired_by_epoch = Some(compacted.epoch);
+                    entry.source_hash = Some(compacted.source_hash.as_str().to_owned());
+                }
+                summaries.push(summary);
             }
             CanonicalEvent::StateChanged(event) => {
                 for row in crate::state::state_search_rows(&envelope.event_id, event) {
@@ -639,11 +701,20 @@ fn apply_projection(
                         created_at_ms: envelope.timestamp_ms,
                         source_id: row.source_id,
                         state_id: Some(row.state_id.to_string()),
+                        summary_segment_id: None,
                     });
                 }
             }
             _ => {}
         }
+    }
+
+    for summary in &summaries {
+        insert_summary(conn, summary)?;
+    }
+    #[cfg(feature = "failpoints")]
+    if !summaries.is_empty() {
+        crate::crash_point::hit("history.after_summary_insert_before_checkpoint");
     }
 
     // History §15.2 point 12: crash before each derived table update.
@@ -679,7 +750,7 @@ fn apply_projection(
                   accepted_message_estimator_id, accepted_message_input_sha256, \
                   interruption_capsule_json, interruption_capsule_sha256, \
                   retired_by_epoch, source_hash) \
-              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL, NULL, ?8, ?9, NULL, NULL) \
+              VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, NULL, NULL, ?8, ?9, ?10, ?11) \
               ON CONFLICT(turn_id) DO UPDATE SET \
                   reset_epoch = excluded.reset_epoch, \
                   start_sequence = excluded.start_sequence, \
@@ -688,7 +759,9 @@ fn apply_projection(
                   status = excluded.status, \
                   protocol_complete = excluded.protocol_complete, \
                   interruption_capsule_json = excluded.interruption_capsule_json, \
-                  interruption_capsule_sha256 = excluded.interruption_capsule_sha256",
+                  interruption_capsule_sha256 = excluded.interruption_capsule_sha256, \
+                  retired_by_epoch = excluded.retired_by_epoch, \
+                  source_hash = excluded.source_hash",
             params![
                 turn_id.to_string(),
                 turn.reset_epoch as i64,
@@ -699,6 +772,8 @@ fn apply_projection(
                 i64::from(turn.protocol_complete),
                 capsule,
                 capsule_sha,
+                turn.retired_by_epoch.map(|value| value as i64),
+                turn.source_hash,
             ],
         )
         .map_err(turn_upsert_err)?;
@@ -734,7 +809,7 @@ fn apply_projection(
                  document_id, source_kind, source_field, event_id, event_sequence, \
                  event_kind, turn_id, reset_epoch, artifact_id, summary_segment_id, \
                  state_id, tool_name, normalized_path, content_sha256, text, created_at_ms) \
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11, ?12, ?13, ?14, ?15) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(document_id) DO NOTHING",
                 params![
                     document_id.to_string(),
@@ -746,6 +821,7 @@ fn apply_projection(
                     turn_id,
                     doc.reset_epoch as i64,
                     artifact_id,
+                    doc.summary_segment_id,
                     doc.state_id,
                     doc.tool_name,
                     doc.normalized_path,
@@ -795,7 +871,7 @@ fn compare_document_row(
     content_sha: &str,
 ) -> Result<(), ArtifactError> {
     // History §5.2: every column except `rowid` must equal the recomputed
-    // value. `summary_segment_id` stays NULL until P5. State rows set `state_id`.
+    // value. Summary rows set `summary_segment_id`; state rows set `state_id`.
     type DocCompareRow = (
         String,
         String,
@@ -857,7 +933,7 @@ fn compare_document_row(
         turn_id.map(str::to_owned),
         doc.reset_epoch as i64,
         artifact_id.map(str::to_owned),
-        None,
+        doc.summary_segment_id.clone(),
         doc.state_id.clone(),
         doc.tool_name.clone(),
         doc.normalized_path.clone(),
@@ -887,6 +963,246 @@ fn compare_document_row(
         ));
     }
     Ok(())
+}
+
+#[derive(PartialEq, Eq)]
+struct SummaryRow {
+    segment_id: String,
+    compaction_event_id: String,
+    compaction_sequence: i64,
+    epoch: i64,
+    reset_epoch: i64,
+    source_start_sequence: i64,
+    source_end_sequence: i64,
+    source_hash: String,
+    source_tokens: i64,
+    source_estimator_id: String,
+    source_input_sha256: String,
+    segment_hash: String,
+    handoff_hash: String,
+    segment_json: String,
+    handoff_json: String,
+    output_tokens: i64,
+    output_estimator_id: String,
+    output_input_sha256: String,
+    provider: String,
+    model: String,
+    prompt_version: String,
+    created_at_ms: i64,
+}
+
+fn sqlite_u64(value: u64, what: &str) -> Result<i64, ArtifactError> {
+    i64::try_from(value).map_err(|_| {
+        ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            format!("{what} does not fit a sqlite integer"),
+        )
+    })
+}
+
+fn summary_from_event(
+    envelope: &EventEnvelope,
+    compacted: &crate::protocol::compaction::HistoryCompactedV1,
+) -> Result<SummaryRow, ArtifactError> {
+    let source = &compacted.segment.source;
+    if source.source_hash != compacted.source_hash
+        || source.start_sequence != compacted.source_start_sequence
+        || source.end_sequence != compacted.source_end_sequence
+        || source.reset_epoch != compacted.reset_epoch
+        || compacted.segment.epoch != compacted.epoch
+        || source.source_estimator_id != compacted.estimator_id
+    {
+        return Err(ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            "summary segment does not match the compaction event",
+        ));
+    }
+    let segment_json = crate::protocol::json::serialize_canonical_string(&compacted.segment)
+        .map_err(|_| {
+            ArtifactError::new(
+                "HISTORY_EVENT_INTEGRITY",
+                "summary segment cannot be canonicalized",
+            )
+        })?;
+    let handoff_json = crate::protocol::json::serialize_canonical_string(&compacted.handoff)
+        .map_err(|_| {
+            ArtifactError::new(
+                "HISTORY_EVENT_INTEGRITY",
+                "historical handoff cannot be canonicalized",
+            )
+        })?;
+    if Sha256Digest::digest_bytes(segment_json.as_bytes()) != compacted.segment_hash
+        || Sha256Digest::digest_bytes(handoff_json.as_bytes()) != compacted.handoff_hash
+    {
+        return Err(ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            "summary canonical bytes do not match the compaction hashes",
+        ));
+    }
+    Ok(SummaryRow {
+        segment_id: compacted.segment.segment_id.to_string(),
+        compaction_event_id: envelope.event_id.to_string(),
+        compaction_sequence: sqlite_u64(envelope.sequence, "compaction sequence")?,
+        epoch: sqlite_u64(u64::from(compacted.epoch), "compaction epoch")?,
+        reset_epoch: sqlite_u64(u64::from(compacted.reset_epoch), "reset epoch")?,
+        source_start_sequence: sqlite_u64(source.start_sequence, "source start")?,
+        source_end_sequence: sqlite_u64(source.end_sequence, "source end")?,
+        source_hash: compacted.source_hash.as_str().to_owned(),
+        source_tokens: sqlite_u64(source.source_tokens, "source tokens")?,
+        source_estimator_id: source.source_estimator_id.clone(),
+        source_input_sha256: source.source_input_sha256.as_str().to_owned(),
+        segment_hash: compacted.segment_hash.as_str().to_owned(),
+        handoff_hash: compacted.handoff_hash.as_str().to_owned(),
+        segment_json,
+        handoff_json,
+        output_tokens: sqlite_u64(compacted.output_tokens, "output tokens")?,
+        output_estimator_id: compacted.handoff.estimator_id.clone(),
+        output_input_sha256: compacted.output_input_sha256.as_str().to_owned(),
+        provider: compacted.provider.clone(),
+        model: compacted.model.clone(),
+        prompt_version: compacted.prompt_version.clone(),
+        created_at_ms: envelope.timestamp_ms,
+    })
+}
+
+fn summary_doc(
+    envelope: &EventEnvelope,
+    reset_epoch: u32,
+    segment_id: &str,
+    field: &str,
+    text: String,
+) -> DocRow {
+    DocRow {
+        source_kind: "summary_segment",
+        source_field: field.to_owned(),
+        event_id: envelope.event_id,
+        event_sequence: envelope.sequence,
+        event_kind: "history_compacted",
+        turn_id: envelope.turn_id,
+        reset_epoch,
+        artifact_id: None,
+        tool_name: None,
+        normalized_path: None,
+        text,
+        created_at_ms: envelope.timestamp_ms,
+        source_id: segment_id.to_owned(),
+        state_id: None,
+        summary_segment_id: Some(segment_id.to_owned()),
+    }
+}
+
+fn insert_summary(conn: &Connection, summary: &SummaryRow) -> Result<(), ArtifactError> {
+    let changed = conn
+        .execute(
+            "INSERT INTO summary_segments( \
+                 segment_id, compaction_event_id, compaction_sequence, epoch, reset_epoch, \
+                 source_start_sequence, source_end_sequence, source_hash, source_tokens, \
+                 source_estimator_id, source_input_sha256, segment_hash, handoff_hash, \
+                 segment_json, handoff_json, output_tokens, output_estimator_id, \
+                 output_input_sha256, provider, model, prompt_version, created_at_ms) \
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                    ?16, ?17, ?18, ?19, ?20, ?21, ?22) \
+             ON CONFLICT(segment_id) DO NOTHING",
+            params![
+                summary.segment_id,
+                summary.compaction_event_id,
+                summary.compaction_sequence,
+                summary.epoch,
+                summary.reset_epoch,
+                summary.source_start_sequence,
+                summary.source_end_sequence,
+                summary.source_hash,
+                summary.source_tokens,
+                summary.source_estimator_id,
+                summary.source_input_sha256,
+                summary.segment_hash,
+                summary.handoff_hash,
+                summary.segment_json,
+                summary.handoff_json,
+                summary.output_tokens,
+                summary.output_estimator_id,
+                summary.output_input_sha256,
+                summary.provider,
+                summary.model,
+                summary.prompt_version,
+                summary.created_at_ms,
+            ],
+        )
+        .map_err(summary_insert_err)?;
+    if changed == 0 {
+        compare_summary_row(conn, summary)?;
+    }
+    Ok(())
+}
+
+fn compare_summary_row(conn: &Connection, summary: &SummaryRow) -> Result<(), ArtifactError> {
+    let stored: Option<SummaryRow> = conn
+        .query_row(
+            "SELECT segment_id, compaction_event_id, compaction_sequence, epoch, reset_epoch, \
+                    source_start_sequence, source_end_sequence, source_hash, source_tokens, \
+                    source_estimator_id, source_input_sha256, segment_hash, handoff_hash, \
+                    segment_json, handoff_json, output_tokens, output_estimator_id, \
+                    output_input_sha256, provider, model, prompt_version, created_at_ms \
+             FROM summary_segments WHERE segment_id = ?1",
+            params![summary.segment_id],
+            |row| {
+                Ok(SummaryRow {
+                    segment_id: row.get(0)?,
+                    compaction_event_id: row.get(1)?,
+                    compaction_sequence: row.get(2)?,
+                    epoch: row.get(3)?,
+                    reset_epoch: row.get(4)?,
+                    source_start_sequence: row.get(5)?,
+                    source_end_sequence: row.get(6)?,
+                    source_hash: row.get(7)?,
+                    source_tokens: row.get(8)?,
+                    source_estimator_id: row.get(9)?,
+                    source_input_sha256: row.get(10)?,
+                    segment_hash: row.get(11)?,
+                    handoff_hash: row.get(12)?,
+                    segment_json: row.get(13)?,
+                    handoff_json: row.get(14)?,
+                    output_tokens: row.get(15)?,
+                    output_estimator_id: row.get(16)?,
+                    output_input_sha256: row.get(17)?,
+                    provider: row.get(18)?,
+                    model: row.get(19)?,
+                    prompt_version: row.get(20)?,
+                    created_at_ms: row.get(21)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_sqlite)?;
+    let Some(stored) = stored else {
+        return Err(ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            "derived summary segment vanished during projection",
+        ));
+    };
+    if stored != *summary {
+        return Err(ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            "derived summary segment differs from the replayed event",
+        ));
+    }
+    Ok(())
+}
+
+fn summary_insert_err(err: rusqlite::Error) -> ArtifactError {
+    let constraint = matches!(
+        &err,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+    );
+    if constraint {
+        ArtifactError::new(
+            "HISTORY_EVENT_INTEGRITY",
+            "derived summary segment conflicts with a different compaction",
+        )
+    } else {
+        map_sqlite(err)
+    }
 }
 
 fn write_checkpoint(
