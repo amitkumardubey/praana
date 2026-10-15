@@ -22,22 +22,33 @@ use praana_core::history::retrieve::{
 use praana_core::history::search::{
     search_session, SearchSourceKind, SessionSearchFilters, SessionSearchMode, SessionSearchRequest,
 };
+use praana_core::history::ArtifactError;
 use praana_core::id::MonotonicUlidGenerator;
+use praana_core::protocol::compaction::{
+    CompactorStrategy, EvidenceRefV1, HandoffReason, HistoricalHandoffContentV1,
+    HistoricalHandoffV1, HistoricalStatementV1, HistoryCompactedV1, SourceRangeV1,
+    StatementConfidence, SummarySegmentContentV1, SummarySegmentV1,
+};
 use praana_core::protocol::constants::TOOL_RESULT_MEDIA_TYPE;
 use praana_core::protocol::events::{
-    AssistantStepAccepted, AssistantStepPurpose, CanonicalEvent, EventEnvelope, ResetBoundary,
-    SessionStarted, ToolBatchCompleted, ToolExecutionFinished, ToolExecutionStarted, TurnCommitted,
-    TurnStarted, UserMessageAccepted,
+    AssistantAttemptStarted, AssistantStepAccepted, AssistantStepPurpose, CanonicalEvent,
+    CompactionPurpose, EventEnvelope, ProviderAttemptPurpose, ResetBoundary, SessionStarted,
+    ToolBatchCompleted, ToolExecutionFinished, ToolExecutionStarted, TurnCommitted, TurnStarted,
+    UserMessageAccepted,
 };
 use praana_core::protocol::hashes::{
-    calculate_accepted_messages_hash, calculate_result_messages_hash, calculate_tool_arguments_hash,
+    calculate_accepted_messages_hash, calculate_result_messages_hash, calculate_source_hash,
+    calculate_tool_arguments_hash,
 };
 use praana_core::protocol::id::*;
+use praana_core::protocol::json::serialize_canonical_string;
 use praana_core::protocol::messages::{
     AssistantBlock, AssistantMessage, AssistantPhase, ConversationMessage, FinishReason,
     ReasoningSummaryBlock, RefusalBlock, TextBlock, ToolCall, UserBlock, UserMessage,
 };
-use praana_core::protocol::models::{HistoryMode, ModelSelection, ProviderUsage, ReasoningEffort};
+use praana_core::protocol::models::{
+    AdmissionSnapshot, HistoryMode, ModelSelection, ProviderUsage, ReasoningEffort,
+};
 use praana_core::protocol::tool_result::{
     InlineToolResult, ToolResultBody, ToolResultContent, ToolResultMessage, ToolResultStatus,
 };
@@ -646,6 +657,11 @@ impl TestSession {
     fn project(&self) {
         let projector = HistoryProjector::new(&self.db);
         projector.project(&self.log).unwrap();
+    }
+
+    fn try_project(&self) -> Result<(), ArtifactError> {
+        let projector = HistoryProjector::new(&self.db);
+        projector.project(&self.log)
     }
 
     fn search_conn(&self) -> rusqlite::Connection {
@@ -2847,7 +2863,9 @@ fn child_crash_point() {
             }
         }
     }
-    panic!("crash point was not hit");
+    if std::env::var("PRAANA_P4A_ACTION").as_deref() != Ok("project_without_summary") {
+        panic!("crash point was not hit");
+    }
 }
 
 #[cfg(all(feature = "failpoints", unix))]
@@ -3636,4 +3654,960 @@ fn deletion_removes_an_inactive_session_and_empties_the_trash() {
     );
     // The id is only a record of the operation; nothing references it now.
     assert!(deletion_id.to_string().len() == 26);
+}
+
+fn zero_digest() -> Sha256Digest {
+    Sha256Digest::from_bytes([0; 32])
+}
+
+fn test_admission() -> AdmissionSnapshot {
+    AdmissionSnapshot {
+        token_estimator_schema_version: 1,
+        estimator_id: "praana-generic-unicode-15.1-v1".to_owned(),
+        estimated_input_sha256: Sha256Digest::from_hex_str(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        .unwrap(),
+        context_window_tokens: 128_000,
+        estimated_input_tokens: 0,
+        resolved_output_tokens: 0,
+        requested_reasoning_tokens: 0,
+        safety_margin_tokens: 0,
+        projected_fill_millionths: 0,
+        capability_profile_hash: Sha256Digest::from_hex_str(
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        )
+        .unwrap(),
+        estimate_reused_from_attempt_id: None,
+    }
+}
+
+fn closed_turn(
+    session: &mut TestSession,
+    turn_id: &str,
+    attempt_id: &str,
+    step_id: &str,
+    user_text: &str,
+    assistant_text: &str,
+) -> (u64, u64) {
+    let user_message_id = session.user_message(turn_id, &[user_text]);
+    session.turn_started(turn_id, &user_message_id);
+    session.assistant_step(
+        turn_id,
+        attempt_id,
+        step_id,
+        Some(assistant_text),
+        None,
+        None,
+        &[],
+    );
+    session.turn_committed(turn_id, &user_message_id, step_id);
+    let events = session.log.events().unwrap();
+    let start = events
+        .iter()
+        .find(|event| {
+            event.turn_id.map(|id| id.to_string()).as_deref() == Some(turn_id)
+                && matches!(event.event, CanonicalEvent::TurnStarted(_))
+        })
+        .unwrap()
+        .sequence;
+    let end = events
+        .iter()
+        .find(|event| {
+            event.turn_id.map(|id| id.to_string()).as_deref() == Some(turn_id)
+                && matches!(event.event, CanonicalEvent::TurnCommitted(_))
+        })
+        .unwrap()
+        .sequence;
+    (start, end)
+}
+
+struct CompactionIds {
+    attempt: &'static str,
+    compaction: &'static str,
+    segment: &'static str,
+    handoff: &'static str,
+}
+
+struct AppendedCompaction {
+    segment_id: SummarySegmentId,
+    event_id: EventId,
+    source_hash: Sha256Digest,
+    segment_json: String,
+    handoff_json: String,
+}
+
+struct CompactionAppend<'a> {
+    epoch: u32,
+    reset_epoch: u32,
+    turn_id: &'a str,
+    start_sequence: u64,
+    end_sequence: u64,
+    segment_text: &'a str,
+    handoff_text: &'a str,
+    ids: CompactionIds,
+    previous_handoff: Option<HandoffId>,
+    handoff_start: u64,
+}
+
+fn append_history_compacted(
+    session: &mut TestSession,
+    spec: CompactionAppend<'_>,
+) -> AppendedCompaction {
+    append_history_compacted_with(session, spec, |_| {})
+}
+
+/// Like [`append_history_compacted`], but runs `tamper` on the fully-built
+/// `HistoryCompactedV1` just before it is appended. Used by the integrity
+/// tests to drive the projection's rejection branches.
+fn append_history_compacted_with(
+    session: &mut TestSession,
+    spec: CompactionAppend<'_>,
+    tamper: impl FnOnce(&mut HistoryCompactedV1),
+) -> AppendedCompaction {
+    let CompactionAppend {
+        epoch,
+        reset_epoch,
+        turn_id,
+        start_sequence,
+        end_sequence,
+        segment_text,
+        handoff_text,
+        ids,
+        previous_handoff,
+        handoff_start,
+    } = spec;
+    let lines = session.log.raw_lines();
+    let source_hash =
+        calculate_source_hash(&lines[(start_sequence as usize - 1)..end_sequence as usize]);
+    let turn = TurnId::from_str_canonical(turn_id).unwrap();
+    let segment_id = SummarySegmentId::from_str_canonical(ids.segment).unwrap();
+    let handoff_id = HandoffId::from_str_canonical(ids.handoff).unwrap();
+    let estimator = "praana-generic-unicode-15.1-v1".to_owned();
+    let source_input = Sha256Digest::from_bytes([3; 32]);
+    let mut segment_content = SummarySegmentContentV1::default();
+    segment_content.user_goals.push(HistoricalStatementV1 {
+        text: segment_text.to_owned(),
+        confidence: StatementConfidence::Direct,
+        evidence: EvidenceRefV1::default(),
+        uncertainty: None,
+    });
+    let segment = SummarySegmentV1 {
+        summary_segment_schema_version: 1,
+        segment_id,
+        epoch,
+        source: SourceRangeV1 {
+            reset_epoch,
+            start_sequence,
+            end_sequence,
+            turn_ids: vec![turn],
+            event_prefix_hash_before: zero_digest(),
+            source_hash: source_hash.clone(),
+            source_tokens: 11,
+            source_estimator_id: estimator.clone(),
+            source_input_sha256: source_input.clone(),
+        },
+        content: segment_content,
+        artifact_ids: Vec::new(),
+        state_ids: Vec::new(),
+    };
+    let mut handoff_content = HistoricalHandoffContentV1::default();
+    handoff_content.current_goals.push(HistoricalStatementV1 {
+        text: handoff_text.to_owned(),
+        confidence: StatementConfidence::Direct,
+        evidence: EvidenceRefV1::default(),
+        uncertainty: None,
+    });
+    let handoff = HistoricalHandoffV1 {
+        handoff_schema_version: 1,
+        handoff_id,
+        reason: HandoffReason::Compaction,
+        label: "NON-AUTHORITATIVE HISTORICAL EVIDENCE".to_owned(),
+        epoch,
+        lineage_through_epoch: epoch,
+        source_start_sequence: handoff_start,
+        source_end_sequence: end_sequence,
+        based_on_previous_handoff: previous_handoff,
+        content: handoff_content,
+        artifact_ids: Vec::new(),
+        state_ids: Vec::new(),
+        estimated_tokens: 0,
+        estimator_id: estimator.clone(),
+        rendered_input_sha256: zero_digest(),
+    };
+    let segment_json = serialize_canonical_string(&segment).unwrap();
+    let handoff_json = serialize_canonical_string(&handoff).unwrap();
+    let attempt_id = AttemptId::from_str_canonical(ids.attempt).unwrap();
+    let started = session.append(
+        CanonicalEvent::AssistantAttemptStarted(AssistantAttemptStarted {
+            purpose: ProviderAttemptPurpose::Compaction(CompactionPurpose {
+                compaction_id: CompactionId::from_str_canonical(ids.compaction).unwrap(),
+                epoch,
+            }),
+            attempt_number: 1,
+            model: model_selection(),
+            request_hash: Sha256Digest::from_hex_str(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .unwrap(),
+            admission: test_admission(),
+            retry_of: None,
+            emergency_context_retry: false,
+            recovery_notices: Vec::new(),
+        }),
+        None,
+        Some(attempt_id),
+    );
+    let event_id = {
+        let mut compacted = HistoryCompactedV1 {
+            compaction_schema_version: 1,
+            compaction_id: CompactionId::from_str_canonical(ids.compaction).unwrap(),
+            policy_version: "rust-v2-compaction-1".to_owned(),
+            epoch,
+            reset_epoch,
+            source_start_sequence: start_sequence,
+            source_end_sequence: end_sequence,
+            source_hash: source_hash.clone(),
+            source_turn_ids: vec![turn],
+            eligible_source_tokens: 11,
+            target_source_tokens: 6,
+            retired_source_tokens: 11,
+            segment,
+            segment_hash: Sha256Digest::digest_bytes(segment_json.as_bytes()),
+            handoff,
+            handoff_hash: Sha256Digest::digest_bytes(handoff_json.as_bytes()),
+            candidate_hash: Sha256Digest::from_bytes([5; 32]),
+            output_tokens: 5,
+            strategy: CompactorStrategy::Configured {
+                provider: "openai".to_owned(),
+                model: "gpt-test".to_owned(),
+                config_id: "cfg".to_owned(),
+            },
+            provider: "openai".to_owned(),
+            protocol: "openai-responses-v1".to_owned(),
+            model: "gpt-test".to_owned(),
+            model_revision: None,
+            prompt_version: "compaction-v1:p54".to_owned(),
+            token_estimator_schema_version: 1,
+            estimator_id: estimator,
+            output_input_sha256: Sha256Digest::from_bytes([4; 32]),
+            artifact_ids: Vec::new(),
+            state_ids: Vec::new(),
+            attempt_started_event_id: started,
+        };
+        tamper(&mut compacted);
+        session.append(
+            CanonicalEvent::HistoryCompacted(compacted),
+            None,
+            Some(attempt_id),
+        )
+    };
+    AppendedCompaction {
+        segment_id,
+        event_id,
+        source_hash,
+        segment_json,
+        handoff_json,
+    }
+}
+
+fn summary_count(dir: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(dir.join("history.db")).unwrap();
+    conn.query_row("SELECT COUNT(*) FROM summary_segments", [], |row| {
+        row.get(0)
+    })
+    .unwrap()
+}
+
+fn checkpoint_sequence(dir: &Path) -> i64 {
+    let conn = rusqlite::Connection::open(dir.join("history.db")).unwrap();
+    conn.query_row(
+        "SELECT applied_through_sequence FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn assert_checkpoint_payload_unchanged(dir: &Path) {
+    let conn = rusqlite::Connection::open(dir.join("history.db")).unwrap();
+    let (version, payload): (i64, String) = conn
+        .query_row(
+            "SELECT checkpoint_schema_version, payload_json FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        version, 1,
+        "checkpoint_schema_version stays at History §5.2"
+    );
+    let value: Value = serde_json::from_str(&payload).unwrap();
+    let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            "applied_through_sequence".to_owned(),
+            "checkpoint_schema_version".to_owned(),
+            "event_prefix_hash".to_owned(),
+            "projection_version".to_owned(),
+            "reset_epoch".to_owned(),
+            "search_schema_version".to_owned(),
+            "session_id".to_owned(),
+        ]
+    );
+    let parsed: HistoryDerivedCheckpointV1 = serde_json::from_str(&payload).unwrap();
+    assert_eq!(parsed.checkpoint_schema_version, 1);
+}
+
+fn summary_hit(
+    session: &TestSession,
+    query: &str,
+    mode: SessionSearchMode,
+) -> praana_core::history::search::SessionSearchResult {
+    let conn = session.search_conn();
+    let mut request = search_request(query, mode);
+    request.filters.source_kinds = vec![SearchSourceKind::SummarySegment];
+    let page = search_session(
+        &conn,
+        &request,
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(page.results.len(), 1, "query {query:?} mode {mode:?}");
+    page.results.into_iter().next().unwrap()
+}
+
+fn assert_summary_retrieval(
+    session: &TestSession,
+    hit: &praana_core::history::search::SessionSearchResult,
+    field: &str,
+    text: &str,
+    segment_id: &SummarySegmentId,
+) {
+    assert_eq!(hit.source_kind, SearchSourceKind::SummarySegment);
+    assert_eq!(hit.source_field, field);
+    assert_eq!(hit.summary_segment_id.as_ref(), Some(segment_id));
+    assert!(hit.turn_id.is_none());
+    assert_eq!(hit.event_kind.as_deref(), Some("history_compacted"));
+    assert_eq!(hit.retrieval.tool, "read_session_source");
+    assert_eq!(
+        hit.retrieval.arguments["result_id"],
+        hit.result_id.to_string()
+    );
+    assert_eq!(hit.retrieval.arguments["byte_offset"], 0);
+    let response = read_session_source(
+        &session.search_conn(),
+        &ReadSessionSourceRequest {
+            result_id: hit.result_id,
+            byte_offset: 0,
+        },
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        response.source_kind,
+        praana_core::history::retrieve::SearchSourceKind::SummarySegment
+    );
+    assert_eq!(response.source_field, field);
+    assert_eq!(response.text, text);
+    assert!(response.complete);
+    assert!(response.text.contains('<'));
+    assert!(!response.text.contains("\\u003c"));
+}
+
+#[test]
+fn summary_segment_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    let appended = append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+    );
+    session.project();
+    session.project();
+
+    assert_eq!(summary_count(dir.path()), 1);
+    let conn = session.search_conn();
+    let row: (String, String, String, String, i64, String, String) = conn
+        .query_row(
+            "SELECT segment_json, handoff_json, segment_hash, handoff_hash, source_tokens, \
+                    source_estimator_id, output_estimator_id \
+             FROM summary_segments WHERE segment_id = ?1",
+            [appended.segment_id.to_string()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0, appended.segment_json);
+    assert_eq!(row.1, appended.handoff_json);
+    assert_eq!(row.2, Sha256Digest::digest_bytes(row.0.as_bytes()).as_str());
+    assert_eq!(row.3, Sha256Digest::digest_bytes(row.1.as_bytes()).as_str());
+    assert_eq!(row.4, 11);
+    assert_eq!(row.5, "praana-generic-unicode-15.1-v1");
+    assert_eq!(row.6, "praana-generic-unicode-15.1-v1");
+
+    let retired: (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT retired_by_epoch, source_hash FROM turns WHERE turn_id = '01ARZ3NDEKTSV4RRFFQ69G5FAY'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retired.0, Some(1));
+    assert_eq!(retired.1.as_deref(), Some(appended.source_hash.as_str()));
+
+    let exact = summary_hit(&session, "zephyrgoal", SessionSearchMode::Exact);
+    assert_summary_retrieval(
+        &session,
+        &exact,
+        "summary_segment.segment",
+        &appended.segment_json,
+        &appended.segment_id,
+    );
+    assert_eq!(exact.event_id, Some(appended.event_id));
+    let fts = summary_hit(&session, "zephyrgoal", SessionSearchMode::Fts);
+    assert_eq!(fts.result_id, exact.result_id);
+    let handoff = summary_hit(&session, "quollhandoff", SessionSearchMode::Exact);
+    assert_summary_retrieval(
+        &session,
+        &handoff,
+        "summary_segment.handoff",
+        &appended.handoff_json,
+        &appended.segment_id,
+    );
+
+    let lookup = search_session(
+        &conn,
+        &SessionSearchRequest {
+            query: String::new(),
+            mode: SessionSearchMode::Exact,
+            case_sensitive: false,
+            filters: SessionSearchFilters {
+                summary_segment_ids: vec![appended.segment_id],
+                ..SessionSearchFilters::default()
+            },
+            limit: 20,
+            cursor: None,
+        },
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(lookup.results.len(), 2);
+    assert!(lookup.results.iter().all(|hit| hit.occurrences.is_empty()));
+    assert!(lookup
+        .results
+        .iter()
+        .all(|hit| hit.retrieval.tool == "read_session_source"));
+
+    let source = search_session(
+        &conn,
+        &search_request("alpha source kept", SessionSearchMode::Exact),
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(source.results.len(), 1);
+    assert_eq!(source.results[0].source_kind, SearchSourceKind::Event);
+    assert_checkpoint_payload_unchanged(dir.path());
+}
+
+/// History §5.2: the derived projection re-checks that the embedded segment
+/// source range agrees with the top-level compaction fields. The event-log
+/// replayer validates `segment_hash`/`handoff_hash` and the source hash, but
+/// it never cross-checks the segment's own `source` block against the
+/// compaction header, so this is the projection's own guard. We mutate the
+/// segment's source range and recompute `segment_hash` so replay accepts the
+/// event and the mismatch only surfaces inside `summary_from_event`.
+#[test]
+fn summary_segment_source_mismatch_is_rejected_by_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    append_history_compacted_with(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+        |compacted| {
+            // Diverge the segment's own estimator id from the compaction
+            // header, then re-seal `segment_hash` so the replayer still
+            // accepts the event. Only the projection notices the mismatch.
+            compacted.segment.source.source_estimator_id = "tampered-estimator".to_owned();
+            let bytes = serialize_canonical_string(&compacted.segment).unwrap();
+            compacted.segment_hash = Sha256Digest::digest_bytes(bytes.as_bytes());
+        },
+    );
+
+    let err = session
+        .try_project()
+        .expect_err("a segment that disagrees with the compaction header must be rejected");
+    assert_eq!(err.code(), "HISTORY_EVENT_INTEGRITY");
+    assert_eq!(
+        err.message(),
+        "summary segment does not match the compaction event"
+    );
+    assert_eq!(summary_count(dir.path()), 0);
+}
+
+/// Defense in depth: a `segment_hash` that does not seal the segment bytes
+/// never reaches the projection. The event log validates the compaction
+/// against §8 replay on append, so the tampered event is refused at write
+/// time and `summary_from_event` never sees it.
+#[test]
+#[should_panic(expected = "E_COMPACTION_SOURCE_HASH_MISMATCH")]
+fn summary_segment_hash_tamper_is_rejected_before_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    // The event log refuses to append a compaction whose `segment_hash` does
+    // not seal the segment bytes; this call panics inside `append`.
+    append_history_compacted_with(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+        |compacted| {
+            // Flip the sealed hash without touching the segment bytes.
+            compacted.segment_hash = Sha256Digest::from_bytes([9; 32]);
+        },
+    );
+}
+
+#[test]
+fn summary_segments_stay_searchable_across_epochs_and_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start1, end1) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    let (start2, end2) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FD1",
+        "01ARZ3NDEKTSV4RRFFQ69G5FD2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FD3",
+        "bravo source kept",
+        "assistant bravo",
+    );
+    let first = append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start1,
+            end_sequence: end1,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start1,
+        },
+    );
+    let second = append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 2,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FD1",
+            start_sequence: start2,
+            end_sequence: end2,
+            segment_text: "epoch2segment <kept",
+            handoff_text: "epoch2handoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC5",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC6",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC7",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC8",
+            },
+            previous_handoff: Some(
+                HandoffId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FC4").unwrap(),
+            ),
+            handoff_start: start1,
+        },
+    );
+    session.project();
+    assert_eq!(summary_count(dir.path()), 2);
+    let epoch1 = summary_hit(&session, "zephyrgoal", SessionSearchMode::Exact);
+    assert_eq!(epoch1.summary_segment_id.as_ref(), Some(&first.segment_id));
+    let epoch2 = summary_hit(&session, "epoch2segment", SessionSearchMode::Fts);
+    assert_eq!(epoch2.summary_segment_id.as_ref(), Some(&second.segment_id));
+    let conn = session.search_conn();
+    let second_start: i64 = conn
+        .query_row(
+            "SELECT source_start_sequence FROM summary_segments WHERE segment_id = ?1",
+            [second.segment_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_start, start2 as i64);
+
+    session.reset();
+    session.project();
+    let hidden = search_session(
+        &session.search_conn(),
+        &search_request("zephyrgoal", SessionSearchMode::Exact),
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert!(hidden.results.is_empty());
+    let mut prior = search_request("zephyrgoal", SessionSearchMode::Exact);
+    prior.filters.include_prior_epochs = true;
+    let found = search_session(
+        &session.search_conn(),
+        &prior,
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(found.results.len(), 1);
+    assert_eq!(
+        found.results[0].source_kind,
+        SearchSourceKind::SummarySegment
+    );
+    let mut source = search_request("alpha source kept", SessionSearchMode::Exact);
+    source.filters.include_prior_epochs = true;
+    let source_page = search_session(
+        &session.search_conn(),
+        &source,
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(source_page.results.len(), 1);
+    assert_eq!(source_page.results[0].source_kind, SearchSourceKind::Event);
+    let mut later = search_request("epoch2handoff", SessionSearchMode::Fts);
+    later.filters.include_prior_epochs = true;
+    let later_page = search_session(
+        &session.search_conn(),
+        &later,
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(later_page.results.len(), 1);
+}
+
+#[test]
+fn summary_segment_stale_checkpoint_inserts_the_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    session.project();
+    let before = checkpoint_sequence(dir.path());
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        conn.execute(
+            "INSERT INTO telemetry_counters(key, value, updated_at_ms) VALUES('p54-sentinel', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let appended = append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+    );
+    assert_eq!(summary_count(dir.path()), 0);
+    assert_eq!(checkpoint_sequence(dir.path()), before);
+    session.project();
+    assert_eq!(summary_count(dir.path()), 1);
+    assert!(checkpoint_sequence(dir.path()) > before);
+    assert_checkpoint_payload_unchanged(dir.path());
+    let sentinel: i64 = rusqlite::Connection::open(dir.path().join("history.db"))
+        .unwrap()
+        .query_row(
+            "SELECT value FROM telemetry_counters WHERE key = 'p54-sentinel'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sentinel, 1, "a stale checkpoint replays in place");
+    session.project();
+    assert_eq!(summary_count(dir.path()), 1);
+    let hit = summary_hit(&session, "zephyrgoal", SessionSearchMode::Exact);
+    assert_eq!(hit.summary_segment_id.as_ref(), Some(&appended.segment_id));
+    assert_eq!(hit.retrieval.tool, "read_session_source");
+}
+
+#[test]
+fn summary_rebuild_replays_equivalent_summary_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+    );
+    session.project();
+    let before = summary_hit(&session, "zephyrgoal", SessionSearchMode::Exact);
+    let before_fts = summary_hit(&session, "quollhandoff", SessionSearchMode::Fts);
+    HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap();
+    let conn = session.search_conn();
+    let after = search_session(
+        &conn,
+        &{
+            let mut request = search_request("zephyrgoal", SessionSearchMode::Exact);
+            request.filters.source_kinds = vec![SearchSourceKind::SummarySegment];
+            request
+        },
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let after_fts = search_session(
+        &conn,
+        &{
+            let mut request = search_request("quollhandoff", SessionSearchMode::Fts);
+            request.filters.source_kinds = vec![SearchSourceKind::SummarySegment];
+            request
+        },
+        &session.hmac_key(),
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(after.results.len(), 1);
+    assert_eq!(after.results[0].result_id, before.result_id);
+    assert_eq!(after.results[0].retrieval.tool, "read_session_source");
+    assert_eq!(after_fts.results[0].result_id, before_fts.result_id);
+    assert_eq!(summary_count(dir.path()), 1);
+    assert_checkpoint_payload_unchanged(dir.path());
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn summary_failpoint_skips_projection_without_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    drop(session);
+
+    let output = spawn_crash_child(
+        dir.path(),
+        "history.after_summary_insert_before_checkpoint",
+        "project_without_summary",
+    );
+    assert!(
+        output.status.success(),
+        "projection without a summary must not hit the compaction failpoint: {output:?}"
+    );
+    assert_eq!(summary_count(dir.path()), 0);
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn summary_segment_crash_before_checkpoint_replays() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = TestSession::new(dir.path());
+    let (start, end) = closed_turn(
+        &mut session,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB2",
+        "01ARZ3NDEKTSV4RRFFQ69G5FB3",
+        "alpha source kept",
+        "assistant alpha",
+    );
+    session.project();
+    let before = checkpoint_sequence(dir.path());
+    append_history_compacted(
+        &mut session,
+        CompactionAppend {
+            epoch: 1,
+            reset_epoch: 0,
+            turn_id: "01ARZ3NDEKTSV4RRFFQ69G5FAY",
+            start_sequence: start,
+            end_sequence: end,
+            segment_text: "zephyrgoal <kept",
+            handoff_text: "quollhandoff <kept",
+            ids: CompactionIds {
+                attempt: "01ARZ3NDEKTSV4RRFFQ69G5FC1",
+                compaction: "01ARZ3NDEKTSV4RRFFQ69G5FC2",
+                segment: "01ARZ3NDEKTSV4RRFFQ69G5FC3",
+                handoff: "01ARZ3NDEKTSV4RRFFQ69G5FC4",
+            },
+            previous_handoff: None,
+            handoff_start: start,
+        },
+    );
+    drop(session);
+
+    let output = spawn_crash_child(
+        dir.path(),
+        "history.after_summary_insert_before_checkpoint",
+        "project",
+    );
+    assert_abort(&output, "history.after_summary_insert_before_checkpoint");
+    assert_eq!(summary_count(dir.path()), 0);
+    assert_eq!(checkpoint_sequence(dir.path()), before);
+
+    let log = EventLogStore::open(dir.path(), SESSION_ID).unwrap();
+    let db = HistoryDatabase::open(&dir.path().join("history.db")).unwrap();
+    HistoryProjector::new(&db).project(&log).unwrap();
+    assert_eq!(summary_count(dir.path()), 1);
+    assert!(checkpoint_sequence(dir.path()) > before);
+    assert_checkpoint_payload_unchanged(dir.path());
+    HistoryProjector::new(&db).project(&log).unwrap();
+    assert_eq!(summary_count(dir.path()), 1);
+    let key = {
+        let text = fs::read_to_string(dir.path().join("meta.json")).unwrap();
+        let meta: Value = serde_json::from_str(text.trim_end_matches('\n')).unwrap();
+        decode_base64(meta["cursor_hmac_key_base64"].as_str().unwrap())
+            .try_into()
+            .unwrap()
+    };
+    let conn = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+    let mut request = search_request("zephyrgoal", SessionSearchMode::Exact);
+    request.filters.source_kinds = vec![SearchSourceKind::SummarySegment];
+    let page = search_session(&conn, &request, &key, &CancellationToken::new()).unwrap();
+    assert_eq!(page.results.len(), 1);
+    assert_eq!(page.results[0].retrieval.tool, "read_session_source");
+    let response = read_session_source(
+        &conn,
+        &ReadSessionSourceRequest {
+            result_id: page.results[0].result_id,
+            byte_offset: 0,
+        },
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        response.source_kind,
+        praana_core::history::retrieve::SearchSourceKind::SummarySegment
+    );
+    assert!(response.text.contains("zephyrgoal <kept"));
 }

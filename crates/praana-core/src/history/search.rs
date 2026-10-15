@@ -1029,14 +1029,13 @@ fn build_retrieval(
                 }),
             }
         }
-        "event" | "state" => SearchRetrieval {
+        "event" | "state" | "summary_segment" => SearchRetrieval {
             tool: "read_session_source".to_owned(),
             arguments: serde_json::json!({
                 "result_id": result_id.to_string(),
                 "byte_offset": line_byte_offset(&row.text, start),
             }),
         },
-        // summary_segment retrieval is owned by P5 (History §11.3).
         _ => SearchRetrieval {
             tool: String::new(),
             arguments: serde_json::Value::Null,

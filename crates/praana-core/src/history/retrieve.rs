@@ -1278,7 +1278,7 @@ pub fn read_session_source_bounded(
             "result_id not found",
         ));
     };
-    if source_kind != "event" && source_kind != "state" {
+    if !matches!(source_kind.as_str(), "event" | "state" | "summary_segment") {
         return Err(ArtifactError::new(
             "HISTORY_SOURCE_NOT_FOUND",
             "result_id is not a session source",
@@ -1360,10 +1360,10 @@ pub fn read_session_source_bounded(
     check_cancel(cancel)?;
     Ok(ReadSessionSourceResponse {
         result_id: document_id,
-        source_kind: if source_kind == "state" {
-            SearchSourceKind::State
-        } else {
-            SearchSourceKind::Event
+        source_kind: match source_kind.as_str() {
+            "state" => SearchSourceKind::State,
+            "summary_segment" => SearchSourceKind::SummarySegment,
+            _ => SearchSourceKind::Event,
         },
         source_field,
         event_id: stored_event_id,
