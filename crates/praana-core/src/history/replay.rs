@@ -176,8 +176,8 @@ impl EventReplayer {
 
     /// Applies an event without cloning the entire replay state. Callers that
     /// use this method must discard the replayer if an error is returned.
-    /// Full-log replay paths satisfy that contract; append paths keep using
-    /// [`process_event`] so validation failure remains transactional.
+    /// Full-log replay paths satisfy that contract; append paths apply this
+    /// to a disposable clone so validation failure remains transactional.
     pub(crate) fn process_event_in_place(
         &mut self,
         envelope: &EventEnvelope,
@@ -640,11 +640,13 @@ impl EventReplayer {
                         return Err(self.error("E_COMPACTION_RANGE_INVALID", e, line));
                     }
                 }
+                let mut source_turn_ids = HashSet::new();
                 if v.source_start_sequence == 0
                     || v.source_start_sequence > v.source_end_sequence
                     || v.source_end_sequence >= e.sequence
                     || v.source_turn_ids.iter().any(|id| {
-                        self.compacted_turn_ids.contains(id)
+                        !source_turn_ids.insert(*id)
+                            || self.compacted_turn_ids.contains(id)
                             || self
                                 .turn_by_id
                                 .get(id)

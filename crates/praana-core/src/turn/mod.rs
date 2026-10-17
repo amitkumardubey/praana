@@ -595,22 +595,21 @@ impl HeadlessLoop {
             ..
         } = &mut outcome
         {
+            // Neither the artifact nor state service exposes its database
+            // handle. This separate handle must never rebuild/replace files.
+            // SQLite work is bounded to one checkpoint-tail transaction (the
+            // first projection is bounded by the existing log), with a 5 s
+            // busy timeout; no full replay or rebuild runs on this async path.
             let projection = (|| {
                 let db = crate::history::db::HistoryDatabase::open(
                     &self.config.session_dir.join("history.db"),
                 )?;
-                crate::history::checkpoint::HistoryProjector::new(&db).project(&self.log)
+                crate::history::checkpoint::HistoryProjector::new(&db)
+                    .project_without_rebuild(&self.log)
             })();
             if let Err(error) = projection {
-                let session_dir = self.config.session_dir.to_string_lossy();
-                *derived_projection_error = Some(ProtocolError {
-                    code: error.code().to_owned(),
-                    class: ErrorClass::Persistence,
-                    message: error.message().replace(session_dir.as_ref(), "<session>"),
-                    retryable: true,
-                    http_status: None,
-                    retry_after_ms: None,
-                });
+                *derived_projection_error =
+                    Some(projection_error(&error, &self.config.session_dir));
             }
         }
         Ok(outcome)
@@ -1791,6 +1790,34 @@ fn redact_provider_message(message: &str) -> String {
     out
 }
 
+/// Classification of a post-activation derived-projection failure.
+fn projection_error(
+    error: &crate::history::error::ArtifactError,
+    session_dir: &Path,
+) -> ProtocolError {
+    let code = error.code();
+    let class = match code {
+        "HISTORY_SQLITE_BUSY" | "HISTORY_IO" | "HISTORY_SQLITE_PRAGMA_FAILED" => {
+            ErrorClass::Persistence
+        }
+        "HISTORY_INSECURE_PERMISSIONS" => ErrorClass::Policy,
+        "HISTORY_SCHEMA_UNSUPPORTED" => ErrorClass::Validation,
+        // Invalid checkpoints require recovery, not a repeat of the live
+        // projection. Unknown/replay integrity failures also fail closed.
+        _ => ErrorClass::Integrity,
+    };
+    ProtocolError {
+        code: code.to_owned(),
+        class,
+        message: error
+            .message()
+            .replace(session_dir.to_string_lossy().as_ref(), "<session>"),
+        retryable: matches!(code, "HISTORY_SQLITE_BUSY" | "HISTORY_IO"),
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
 /// Canonical protocol error for a `ProviderError` raised during preparation
 /// or admission (before any durable attempt exists).
 pub fn provider_protocol_error(error: &crate::provider::openai::ProviderError) -> ProtocolError {
@@ -2543,6 +2570,37 @@ mod poison_tests {
         fn next_random_80(&mut self) -> Result<u128, IdGenerationError> {
             self.0 += 1;
             Ok(self.0)
+        }
+    }
+
+    #[test]
+    fn projection_error_policy_distinguishes_transient_and_permanent_failures() {
+        use crate::history::error::ArtifactError;
+        use crate::protocol::errors::ErrorClass;
+        for code in ["HISTORY_IO", "HISTORY_SQLITE_BUSY"] {
+            let error = super::projection_error(
+                &ArtifactError::new(code, "retry later"),
+                std::path::Path::new("/session"),
+            );
+            assert!(error.retryable, "{code}");
+            assert_eq!(error.class, ErrorClass::Persistence);
+        }
+        for (code, class) in [
+            ("HISTORY_EVENT_INTEGRITY", ErrorClass::Integrity),
+            ("HISTORY_CANONICAL_DB_CORRUPT", ErrorClass::Integrity),
+            ("HISTORY_CHECKPOINT_INVALID", ErrorClass::Integrity),
+            ("HISTORY_SCHEMA_UNSUPPORTED", ErrorClass::Validation),
+            ("HISTORY_INSECURE_PERMISSIONS", ErrorClass::Policy),
+            ("HISTORY_SQLITE_PRAGMA_FAILED", ErrorClass::Persistence),
+            ("E_COMPACTION_RANGE_INVALID", ErrorClass::Integrity),
+        ] {
+            let error = super::projection_error(
+                &ArtifactError::new(code, "bad data in /session/history.db"),
+                std::path::Path::new("/session"),
+            );
+            assert!(!error.retryable, "{code}");
+            assert_eq!(error.class, class, "{code}");
+            assert!(!error.message.contains("/session"));
         }
     }
 

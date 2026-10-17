@@ -4421,7 +4421,11 @@ fn summary_segment_stale_checkpoint_inserts_the_row() {
     );
     assert_eq!(summary_count(dir.path()), 0);
     assert_eq!(checkpoint_sequence(dir.path()), before);
-    session.project();
+    let conn = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+    conn.execute_batch(&format!("CREATE TRIGGER reject_prefix_reprojection BEFORE INSERT ON search_documents WHEN NEW.event_sequence <= {before} BEGIN SELECT RAISE(ABORT, 'prefix reprojected'); END;")).unwrap();
+    HistoryProjector::new(&session.db)
+        .project_without_rebuild(&session.log)
+        .unwrap();
     assert_eq!(summary_count(dir.path()), 1);
     assert!(checkpoint_sequence(dir.path()) > before);
     assert_checkpoint_payload_unchanged(dir.path());
@@ -4434,7 +4438,9 @@ fn summary_segment_stale_checkpoint_inserts_the_row() {
         )
         .unwrap();
     assert_eq!(sentinel, 1, "a stale checkpoint replays in place");
-    session.project();
+    HistoryProjector::new(&session.db)
+        .project_without_rebuild(&session.log)
+        .unwrap();
     assert_eq!(summary_count(dir.path()), 1);
     let hit = summary_hit(&session, "zephyrgoal", SessionSearchMode::Exact);
     assert_eq!(hit.summary_segment_id.as_ref(), Some(&appended.segment_id));

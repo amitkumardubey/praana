@@ -2636,12 +2636,14 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let CompactionOutcome::Activated {
             epoch: first_epoch,
             retired_turn_ids: first_retired,
+            derived_projection_error,
             ..
         } = loop_.compact_now(&compactor(&s)).await.unwrap()
         else {
             panic!("expected first activation");
         };
         assert_eq!(first_epoch, 1);
+        assert!(derived_projection_error.is_none());
         let first_event = of_kind(&s.session, "history_compacted")[0].clone();
         let first_handoff_id = first_event["event"]["data"]["handoff"]["handoff_id"]
             .as_str()
@@ -2710,15 +2712,26 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 .interruption
                 .is_none());
         }
+        // An incremental projection must not rewrite already-retired rows.
+        let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+        conn.execute_batch("CREATE TRIGGER no_old_turn_reprojection BEFORE UPDATE ON turns WHEN OLD.retired_by_epoch IS NOT NULL BEGIN SELECT RAISE(ABORT, 'old turn reprojected'); END;").unwrap();
         let CompactionOutcome::Activated {
             epoch: second_epoch,
             retired_turn_ids: second_retired,
+            derived_projection_error,
             ..
         } = loop_.compact_now(&compactor(&s)).await.unwrap()
         else {
             panic!("expected second activation");
         };
         assert_eq!(second_epoch, 2);
+        assert!(
+            derived_projection_error.is_none(),
+            "{derived_projection_error:?}"
+        );
+        conn.execute_batch("DROP TRIGGER no_old_turn_reprojection;")
+            .unwrap();
+        drop(conn);
         assert!(first_retired.iter().all(|id| !second_retired.contains(id)));
 
         let requests = s.fake.compactor_requests();
@@ -2845,6 +2858,11 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .contains(&retired_turn_ids[0]));
         let projection_error = derived_projection_error.expect("projection failure is reported");
         assert_eq!(projection_error.code, "HISTORY_EVENT_INTEGRITY");
+        assert!(!projection_error.retryable);
+        assert_eq!(
+            projection_error.class,
+            praana_core::protocol::errors::ErrorClass::Integrity
+        );
         assert!(projection_error
             .message
             .contains("derived summary segment conflicts with a different compaction"));
@@ -2874,8 +2892,173 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
     }
 
+    struct NoteProvider;
+
+    #[async_trait::async_trait]
+    impl praana_core::turn::StepProvider for NoteProvider {
+        fn prepare(
+            &self,
+            step: u32,
+        ) -> Result<praana_core::turn::PreparedRequest, praana_core::turn::TurnError> {
+            Ok(praana_core::turn::PreparedRequest {
+                request_body: json!({"step": step}),
+                component_bytes: std::array::from_fn(|_| Vec::new()),
+            })
+        }
+
+        async fn complete(
+            &self,
+            step: u32,
+            admitted: &praana_core::turn::AdmittedRequest,
+            _cancel: &tokio_util::sync::CancellationToken,
+        ) -> Result<praana_core::turn::ProviderOutput, praana_core::turn::TurnError> {
+            let calls = if step == 0 {
+                vec![praana_core::turn::DraftCall {
+                    call_id: "note-after-compaction".into(),
+                    name: "add_note".into(),
+                    arguments: json!({"text": "written after invalid history checkpoint"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(praana_core::turn::ProviderOutput {
+                authorization: admitted.authorize_send(admitted.body())?,
+                draft: praana_core::turn::AssistantDraft {
+                    text: Some("done".into()),
+                    finish_reason: if calls.is_empty() {
+                        praana_core::protocol::messages::FinishReason::Stop
+                    } else {
+                        praana_core::protocol::messages::FinishReason::ToolUse
+                    },
+                    calls,
+                    usage: Default::default(),
+                },
+            })
+        }
+    }
+
     #[tokio::test]
-    async fn duplicate_source_turn_id_fails_history_projection() {
+    async fn invalid_checkpoint_never_replaces_a_live_database() {
+        let mut s = session();
+        s.config.llm.context_window = 128_000;
+        let mut loop_ = run_turns(&s, &["one", "two", "three", "four"]).await;
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Activated { .. }
+        ));
+        let path = s.session.join("history.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE projection_checkpoints SET payload_hash = ?1 WHERE projection_name = 'history_derived'", ["0".repeat(64)]).unwrap();
+        drop(conn);
+        let CompactionOutcome::Activated {
+            derived_projection_error,
+            ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("invalid derived state cannot undo activation");
+        };
+        let error = derived_projection_error.expect("a rebuild is required");
+        assert_eq!(error.code, "HISTORY_CHECKPOINT_INVALID");
+        assert!(!error.retryable);
+        assert_eq!(
+            error.class,
+            praana_core::protocol::errors::ErrorClass::Integrity
+        );
+        assert!(!std::fs::read_dir(&s.session).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("history.db.bad-")));
+        let report = loop_
+            .run_turn("persist a note", &NoteProvider)
+            .await
+            .unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let graph: String = conn.query_row("SELECT payload_json FROM projection_checkpoints WHERE projection_name = 'state_graph'", [], |row| row.get(0)).unwrap();
+        assert!(
+            graph.contains("written after invalid history checkpoint"),
+            "graph={graph}; events={:?}",
+            read_events(&s.session)
+        );
+    }
+
+    #[tokio::test]
+    async fn projection_io_failure_is_retryable() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["one", "two", "three"]).await;
+        let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_history_checkpoint BEFORE INSERT ON projection_checkpoints WHEN NEW.projection_name = 'history_derived' BEGIN SELECT RAISE(ABORT, 'injected IO failure'); END;").unwrap();
+        let CompactionOutcome::Activated {
+            derived_projection_error,
+            ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("projection IO cannot undo activation");
+        };
+        let error = derived_projection_error.unwrap();
+        assert_eq!(error.code, "HISTORY_IO");
+        assert!(error.retryable);
+        assert_eq!(
+            error.class,
+            praana_core::protocol::errors::ErrorClass::Persistence
+        );
+    }
+
+    #[tokio::test]
+    async fn supersession_fsync_failure_still_projects_durable_activation() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["one", "two", "three"]).await;
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Valid);
+        // First start, failure, repair start, HistoryCompacted all reach fsync;
+        // only the post-activation supersession fails.
+        praana_core::history::event_log::fail_after_n_successful_fsyncs(4);
+        let result = loop_.compact_now(&compactor(&s)).await;
+        praana_core::history::event_log::reset_fsync_injection();
+        let CompactionOutcome::Activated {
+            event_id,
+            derived_projection_error,
+            ..
+        } = result.unwrap()
+        else {
+            panic!("HistoryCompacted already reached fsync");
+        };
+        assert!(derived_projection_error.is_none());
+        let compacted = of_kind(&s.session, "history_compacted").pop().unwrap();
+        assert_eq!(compacted["event_id"], event_id.to_string());
+        let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+        let sequence: u64 = conn.query_row("SELECT applied_through_sequence FROM projection_checkpoints WHERE projection_name = 'history_derived'", [], |row| row.get(0)).unwrap();
+        assert_eq!(sequence, compacted["sequence"].as_u64().unwrap());
+        let summaries: i64 = conn
+            .query_row("SELECT COUNT(*) FROM summary_segments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(summaries, 1);
+        assert!(loop_
+            .run_turn("writer is unhealthy", &NoteProvider)
+            .await
+            .is_err());
+        drop(conn);
+        drop(loop_);
+        // Lose the uncertain append as on power loss. Recovery repairs it.
+        let path = s.session.join("events.jsonl");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let durable: String = text.split_inclusive('\n').take(sequence as usize).collect();
+        std::fs::write(&path, durable).unwrap();
+        let sid = session_id(&s.session);
+        let mut recovery = SessionRecoveryEngine::new(&s.session, &sid.as_str()).unwrap();
+        assert_eq!(recovery.run_recovery().unwrap(), 1);
+        assert_eq!(of_kind(&s.session, "attempt_superseded").len(), 1);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_source_turn_id_is_rejected_before_append() {
         let s = session();
         let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
         assert!(matches!(
@@ -2891,29 +3074,26 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .find(|event| event["event"]["kind"] == "history_compacted")
             .unwrap();
         let sequence = compacted["sequence"].as_u64().unwrap() as usize;
-        let source_ids = compacted["event"]["data"]["source_turn_ids"]
-            .as_array()
-            .unwrap();
-        let original = serde_json::to_string(source_ids).unwrap();
-        let mut duplicated = source_ids.clone();
-        duplicated.push(duplicated[0].clone());
-        let replacement = serde_json::to_string(&duplicated).unwrap();
-        let mut lines: Vec<String> = std::fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        let needle = format!("\"source_turn_ids\":{original}");
-        let replacement = format!("\"source_turn_ids\":{replacement}");
-        assert!(lines[sequence - 1].contains(&needle));
-        lines[sequence - 1] = lines[sequence - 1].replace(&needle, &replacement);
-        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let original: EventEnvelope = serde_json::from_value(compacted.clone()).unwrap();
+        let mut duplicated = original.clone();
+        let CanonicalEvent::HistoryCompacted(data) = &mut duplicated.event else {
+            unreachable!();
+        };
+        data.source_turn_ids.push(data.source_turn_ids[0]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let prefix: String = text.split_inclusive('\n').take(sequence - 1).collect();
+        std::fs::write(&path, &prefix).unwrap();
 
         let sid = session_id(&s.session).to_string();
-        let log = EventLogStore::open(&s.session, &sid).unwrap();
-        let db = HistoryDatabase::open(&s.session.join("history.db")).unwrap();
-        let error = HistoryProjector::new(&db).project(&log).unwrap_err();
-        assert_eq!(error.code(), "HISTORY_EVENT_INTEGRITY");
+        let mut log = EventLogStore::open(&s.session, &sid).unwrap();
+        let hash = log.current_prefix_hash();
+        let error = log.append_event(&duplicated).unwrap_err();
+        assert_eq!(error.code(), "E_COMPACTION_RANGE_INVALID");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), prefix);
+        assert_eq!(log.current_sequence(), sequence as u64 - 1);
+        assert_eq!(log.current_prefix_hash(), hash);
+        log.append_event(&original).unwrap();
+        assert_eq!(log.current_sequence(), sequence as u64);
     }
 
     #[tokio::test]
@@ -3106,6 +3286,12 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 }),
             })
             .unwrap();
+            let frozen = snapshot(&log, &s.config, &compactor(&s).framing).unwrap();
+            assert!(
+                !frozen.universe.source_state_ids.contains(&note),
+                "note was created after the source end"
+            );
+            assert!(frozen.universe.current_state_ids.contains(&note));
             let db = praana_core::history::db::HistoryDatabase::open(&s.session.join("history.db"))
                 .unwrap();
             praana_core::state::write_checkpoint(
@@ -3357,11 +3543,13 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     #[tokio::test]
     async fn source_recheck_rejects_a_snapshot_another_epoch_overtook() {
         let s = session();
-        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        drop(loop_);
         let stale = {
-            let (events, raw) = read_log(&s.session);
-            snapshot(&events, &raw, &s.config, &compactor(&s).framing).unwrap()
+            let log = EventLogStore::open(&s.session, &session_id(&s.session).to_string()).unwrap();
+            snapshot(&log, &s.config, &compactor(&s).framing).unwrap()
         };
+        let mut loop_ = run_turns(&s, &[]).await;
         assert!(matches!(
             loop_.compact_now(&compactor(&s)).await.unwrap(),
             CompactionOutcome::Activated { .. }

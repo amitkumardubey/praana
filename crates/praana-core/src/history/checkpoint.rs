@@ -10,7 +10,7 @@ use super::artifact::HISTORY_RESULT_TOOLS;
 use super::db::HistoryDatabase;
 use super::error::{io_err, map_sqlite, ArtifactError};
 use super::event_log::EventLogStore;
-use super::recovery::build_interrupted_turn_capsule;
+use super::recovery::build_interrupted_turn_capsule_from_replay;
 use super::retrieve::compute_text_view;
 use super::search::SEARCH_SCHEMA_VERSION;
 use crate::canonical_json::to_canonical_json_bytes;
@@ -64,7 +64,7 @@ struct DocRow {
 struct TurnRow {
     reset_epoch: u32,
     start_sequence: u64,
-    status: &'static str,
+    status: String,
     commit_sequence: Option<u64>,
     end_sequence: Option<u64>,
     protocol_complete: bool,
@@ -79,11 +79,18 @@ impl<'a> HistoryProjector<'a> {
     }
 
     pub fn project(&self, log: &EventLogStore) -> Result<(), ArtifactError> {
-        self.derive(log, false)
+        self.derive(log, false, true)
+    }
+
+    /// Incremental projection safe while other database handles are alive.
+    /// An invalid checkpoint requires recovery/open-time rebuild; this entry
+    /// point never renames or replaces files, including on failure.
+    pub fn project_without_rebuild(&self, log: &EventLogStore) -> Result<(), ArtifactError> {
+        self.derive(log, false, false)
     }
 
     pub fn rebuild(&self, log: &EventLogStore) -> Result<(), ArtifactError> {
-        self.derive(log, true)
+        self.derive(log, true, true)
     }
 
     pub fn checkpoint(&self) -> Result<Option<HistoryDerivedCheckpointV1>, ArtifactError> {
@@ -92,22 +99,14 @@ impl<'a> HistoryProjector<'a> {
         validated_checkpoint(conn)
     }
 
-    fn derive(&self, log: &EventLogStore, force: bool) -> Result<(), ArtifactError> {
-        let events = log
-            .events()
-            .map_err(|err| ArtifactError::new(err.code(), "event log could not be read"))?;
-        let session_id = *log.session_id();
-        let current_seq = log.current_sequence();
-        let prefix = log.current_prefix_hash();
-        let raw_lines = log.raw_lines();
-
-        // §8: replay validates the canonical prefix before any derived write.
-        let mut replay = crate::history::replay::EventReplayer::new();
-        for (index, event) in events.iter().enumerate() {
-            replay
-                .process_event_in_place(event, Some(index + 1), Some(raw_lines))
-                .map_err(|err| ArtifactError::new(err.code(), "event log replay failed"))?;
-        }
+    fn derive(
+        &self,
+        log: &EventLogStore,
+        force: bool,
+        allow_rebuild: bool,
+    ) -> Result<(), ArtifactError> {
+        // The store validates the canonical prefix at open and on every
+        // append. Reuse that maintained replay instead of replaying again.
 
         if force {
             return super::rebuild::rebuild_derived_tables(self.db, log);
@@ -116,10 +115,16 @@ impl<'a> HistoryProjector<'a> {
         let guard = self.db.lock();
         let conn: &Connection = &guard;
 
-        match checkpoint_state(conn, session_id, current_seq, prefix, raw_lines)? {
+        match checkpoint_state(conn, log)? {
             CheckpointState::Fresh => return Ok(()),
             CheckpointState::Stale | CheckpointState::Absent => {}
             CheckpointState::Invalid => {
+                if !allow_rebuild {
+                    return Err(ArtifactError::new(
+                        "HISTORY_CHECKPOINT_INVALID",
+                        "history checkpoint is invalid; reopen with recovery to rebuild",
+                    ));
+                }
                 drop(guard);
                 return super::rebuild::rebuild_derived_tables(self.db, log);
             }
@@ -131,7 +136,14 @@ impl<'a> HistoryProjector<'a> {
         crate::crash_point::hit("history.finish_fsync_before_projection");
 
         conn.execute("BEGIN IMMEDIATE", []).map_err(map_sqlite)?;
-        let outcome = apply_projection(conn, &events, raw_lines, session_id, current_seq, prefix);
+        let outcome = (|| {
+            let baseline = if allow_rebuild {
+                None
+            } else {
+                validated_checkpoint(conn)?
+            };
+            apply_projection(conn, log, baseline.as_ref())
+        })();
         match outcome {
             Ok(()) => {
                 // History §15.2 point 13: checkpoint upsert before commit.
@@ -164,11 +176,11 @@ pub(crate) enum CheckpointState {
 
 pub(crate) fn checkpoint_state(
     conn: &Connection,
-    session_id: SessionId,
-    current_seq: u64,
-    prefix: [u8; 32],
-    raw_lines: &[String],
+    log: &EventLogStore,
 ) -> Result<CheckpointState, ArtifactError> {
+    let session_id = *log.session_id();
+    let current_seq = log.current_sequence();
+    let prefix = log.current_prefix_hash();
     let payload = match read_checkpoint_row(conn)? {
         // No row at all: a session that has never been projected, or one whose
         // row does not exist yet. There is nothing to discard, so a full
@@ -190,10 +202,13 @@ pub(crate) fn checkpoint_state(
     // head is stale, not invalid: its hash is correct for the sequence it
     // names. A hash that does not match the log at that sequence means the row
     // cannot be trusted and the derived tables are rebuilt.
-    let Some(at_applied) = prefix_hash_at(raw_lines, payload.applied_through_sequence) else {
+    let Some(at_applied) = log
+        .prefix_hashes()
+        .get(payload.applied_through_sequence as usize)
+    else {
         return Ok(CheckpointState::Invalid);
     };
-    if payload.event_prefix_hash.as_str() != Sha256Digest::from_bytes(at_applied).as_str() {
+    if payload.event_prefix_hash.as_str() != Sha256Digest::from_bytes(*at_applied).as_str() {
         return Ok(CheckpointState::Invalid);
     }
     if payload.applied_through_sequence == current_seq {
@@ -208,7 +223,7 @@ pub(crate) fn checkpoint_state(
 
 /// History §4.2 prefix chain recomputed over the log's exact lines, stopping
 /// after `sequence`. Returns `None` when the log is shorter than that.
-fn prefix_hash_at(raw_lines: &[String], sequence: u64) -> Option<[u8; 32]> {
+pub(crate) fn prefix_hash_at(raw_lines: &[String], sequence: u64) -> Option<[u8; 32]> {
     if sequence == 0 {
         return Some([0u8; 32]);
     }
@@ -323,14 +338,40 @@ fn prefix_bytes(digest: &Sha256Digest) -> Result<[u8; 32], ArtifactError> {
     Ok(raw)
 }
 
+fn read_turn_row(conn: &Connection, turn_id: TurnId) -> Result<Option<TurnRow>, ArtifactError> {
+    conn.query_row(
+        "SELECT reset_epoch, start_sequence, status, commit_sequence, end_sequence, \
+         protocol_complete, status = 'interrupted', retired_by_epoch, source_hash \
+         FROM turns WHERE turn_id = ?1",
+        [turn_id.to_string()],
+        |row| {
+            Ok(TurnRow {
+                reset_epoch: row.get(0)?,
+                start_sequence: row.get(1)?,
+                status: row.get(2)?,
+                commit_sequence: row.get(3)?,
+                end_sequence: row.get(4)?,
+                protocol_complete: row.get(5)?,
+                interrupted: row.get(6)?,
+                retired_by_epoch: row.get(7)?,
+                source_hash: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(map_sqlite)
+}
+
 fn apply_projection(
     conn: &Connection,
-    events: &[EventEnvelope],
-    raw_lines: &[String],
-    session_id: SessionId,
-    current_seq: u64,
-    prefix: [u8; 32],
+    log: &EventLogStore,
+    baseline: Option<&HistoryDerivedCheckpointV1>,
 ) -> Result<(), ArtifactError> {
+    let events = log.events_slice();
+    let raw_lines = log.raw_lines();
+    let session_id = *log.session_id();
+    let current_seq = log.current_sequence();
+    let prefix = log.current_prefix_hash();
     // History §11.1.1: tool-call argument rows are redacted under the
     // session's `SessionStarted.redaction_version`. Only the build version can
     // be produced here; any other version fails closed.
@@ -357,12 +398,28 @@ fn apply_projection(
         }
     }
 
-    let mut epoch: u32 = 0;
+    let mut epoch = baseline.map_or(0, |checkpoint| checkpoint.reset_epoch);
     let mut turns: BTreeMap<TurnId, TurnRow> = BTreeMap::new();
     let mut docs: Vec<DocRow> = Vec::new();
     let mut summaries: Vec<SummaryRow> = Vec::new();
 
-    for envelope in events {
+    let applied = baseline.map_or(0, |checkpoint| checkpoint.applied_through_sequence) as usize;
+    for envelope in &events[applied..] {
+        // A tail may close or retire a turn whose start predates the
+        // checkpoint. Load only those touched rows, never the entire table.
+        if baseline.is_some() {
+            let source_ids = match &envelope.event {
+                CanonicalEvent::HistoryCompacted(compacted) => compacted.source_turn_ids.as_slice(),
+                _ => &[],
+            };
+            for turn_id in envelope.turn_id.iter().chain(source_ids) {
+                if !turns.contains_key(turn_id) {
+                    if let Some(row) = read_turn_row(conn, *turn_id)? {
+                        turns.insert(*turn_id, row);
+                    }
+                }
+            }
+        }
         match &envelope.event {
             CanonicalEvent::UserMessageAccepted(v) => {
                 for (index, block) in v.message.blocks.iter().enumerate() {
@@ -581,7 +638,7 @@ fn apply_projection(
                         TurnRow {
                             reset_epoch: epoch,
                             start_sequence: envelope.sequence,
-                            status: "in_flight",
+                            status: "in_flight".to_owned(),
                             commit_sequence: None,
                             end_sequence: None,
                             protocol_complete: false,
@@ -597,7 +654,7 @@ fn apply_projection(
                     let entry = turns.entry(turn_id).or_insert(TurnRow {
                         reset_epoch: epoch,
                         start_sequence: envelope.sequence,
-                        status: "in_flight",
+                        status: "in_flight".to_owned(),
                         commit_sequence: None,
                         end_sequence: None,
                         protocol_complete: false,
@@ -607,7 +664,7 @@ fn apply_projection(
                     });
                     // §9.4: rebuild never upgrades an interrupted turn.
                     if entry.status == "in_flight" {
-                        entry.status = "committed";
+                        entry.status = "committed".to_owned();
                         entry.commit_sequence = Some(envelope.sequence);
                         entry.end_sequence = Some(envelope.sequence);
                         entry.protocol_complete = true;
@@ -619,7 +676,7 @@ fn apply_projection(
                     let entry = turns.entry(turn_id).or_insert(TurnRow {
                         reset_epoch: epoch,
                         start_sequence: envelope.sequence,
-                        status: "in_flight",
+                        status: "in_flight".to_owned(),
                         commit_sequence: None,
                         end_sequence: None,
                         protocol_complete: false,
@@ -628,7 +685,7 @@ fn apply_projection(
                         source_hash: None,
                     });
                     if entry.status == "in_flight" {
-                        entry.status = "interrupted";
+                        entry.status = "interrupted".to_owned();
                         entry.end_sequence = Some(envelope.sequence);
                         entry.interrupted = true;
                         // Capsule construction below validates every accepted
@@ -729,10 +786,27 @@ fn apply_projection(
     crate::crash_point::hit("history.derived_update_before_turns");
     for (turn_id, turn) in &turns {
         let capsule = if turn.interrupted {
-            let capsule =
-                build_interrupted_turn_capsule(events, raw_lines, *turn_id).map_err(|err| {
-                    ArtifactError::new(err.code(), "interruption capsule build failed")
+            let replay = log.replayer();
+            let recorded = replay
+                .turn_index(*turn_id)
+                .and_then(|index| replay.turns.get(&index))
+                .ok_or_else(|| {
+                    ArtifactError::new(
+                        "HISTORY_EVENT_INTEGRITY",
+                        "interrupted turn is missing from replay",
+                    )
                 })?;
+            let end_sequence = turn.end_sequence.ok_or_else(|| {
+                ArtifactError::new(
+                    "HISTORY_EVENT_INTEGRITY",
+                    "interrupted turn has no end sequence",
+                )
+            })?;
+            let capsule =
+                build_interrupted_turn_capsule_from_replay(recorded, end_sequence, raw_lines)
+                    .map_err(|err| {
+                        ArtifactError::new(err.code(), "interruption capsule build failed")
+                    })?;
             let bytes = to_canonical_json_bytes(&capsule)
                 .map_err(|err| io_err(format!("capsule canonicalization failed: {err}")))?;
             Some(

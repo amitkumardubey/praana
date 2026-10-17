@@ -367,6 +367,8 @@ impl EventLogStore {
                 false,
             ));
         }
+        // Validate on a clone: a failed append must not leave the maintained
+        // replayer half-updated by process_event_in_place.
         let mut candidate = self.replayer.clone();
         candidate.process_event_in_place(envelope, None, Some(&self.raw_lines))?;
         let json = serialize_event_compact(envelope)?;
@@ -480,6 +482,11 @@ impl EventLogStore {
     /// when the caller only needs to scan.
     pub(crate) fn events_slice(&self) -> &[EventEnvelope] {
         &self.events
+    }
+
+    /// Protocol state maintained after every durable append/open-time replay.
+    pub(crate) fn replayer(&self) -> &EventReplayer {
+        &self.replayer
     }
 
     /// Graph the replayer already holds after every accepted append.
