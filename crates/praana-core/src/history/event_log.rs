@@ -143,6 +143,7 @@ pub struct EventLogStore {
     replayer: EventReplayer,
     current_sequence: u64,
     current_prefix_hash: [u8; 32],
+    prefix_hashes: Vec<[u8; 32]>,
     quarantined_tail: Option<String>,
     unhealthy: bool,
     events: Vec<EventEnvelope>,
@@ -260,6 +261,7 @@ impl EventLogStore {
             replayer,
             current_sequence,
             current_prefix_hash,
+            prefix_hashes,
             quarantined_tail,
             events,
             raw_lines,
@@ -307,6 +309,7 @@ impl EventLogStore {
             replayer,
             current_sequence,
             current_prefix_hash,
+            prefix_hashes,
             quarantined_tail,
             unhealthy: read_only,
             events,
@@ -364,8 +367,10 @@ impl EventLogStore {
                 false,
             ));
         }
+        // Validate on a clone: a failed append must not leave the maintained
+        // replayer half-updated by process_event_in_place.
         let mut candidate = self.replayer.clone();
-        candidate.process_event(envelope, None, Some(&self.raw_lines))?;
+        candidate.process_event_in_place(envelope, None, Some(&self.raw_lines))?;
         let json = serialize_event_compact(envelope)?;
         if json.len() > 16_777_216 {
             return Err(HistoryError::new(
@@ -416,6 +421,7 @@ impl EventLogStore {
         self.replayer = candidate;
         self.current_prefix_hash =
             calculate_prefix_hash(&self.current_prefix_hash, envelope.sequence, &line);
+        self.prefix_hashes.push(self.current_prefix_hash);
         self.current_sequence = envelope.sequence;
         self.raw_lines
             .push(String::from_utf8(line).expect("compact JSONL is UTF-8"));
@@ -433,6 +439,10 @@ impl EventLogStore {
 
     pub fn prefix_hash(&self) -> [u8; 32] {
         self.current_prefix_hash
+    }
+
+    pub(crate) fn prefix_hashes(&self) -> &[[u8; 32]] {
+        &self.prefix_hashes
     }
 
     pub fn session_id(&self) -> &SessionId {
@@ -474,6 +484,11 @@ impl EventLogStore {
         &self.events
     }
 
+    /// Protocol state maintained after every durable append/open-time replay.
+    pub(crate) fn replayer(&self) -> &EventReplayer {
+        &self.replayer
+    }
+
     /// Graph the replayer already holds after every accepted append.
     pub fn state_graph(&self) -> &crate::protocol::state_graph::StateGraphV1 {
         &self.replayer.state
@@ -488,6 +503,7 @@ struct ScanResult {
     replayer: EventReplayer,
     current_sequence: u64,
     current_prefix_hash: [u8; 32],
+    prefix_hashes: Vec<[u8; 32]>,
     quarantined_tail: Option<String>,
     events: Vec<EventEnvelope>,
     raw_lines: Vec<String>,
@@ -509,6 +525,7 @@ fn scan_and_repair(
     let mut line_number = 0usize;
     let mut raw_lines = Vec::new();
     let mut events = Vec::new();
+    let mut prefix_hashes = vec![[0u8; 32]];
     let mut quarantined = None;
     let mut warnings = Vec::new();
     let read_only = false;
@@ -598,8 +615,9 @@ fn scan_and_repair(
                 false,
             )
         })?);
-        replayer.process_event(&event, Some(line_number), Some(&raw_lines))?;
+        replayer.process_event_in_place(&event, Some(line_number), Some(&raw_lines))?;
         prefix = calculate_prefix_hash(&prefix, event.sequence, line_with_lf);
+        prefix_hashes.push(prefix);
         events.push(event);
         valid_end = end;
         cursor = end;
@@ -629,6 +647,7 @@ fn scan_and_repair(
                 return Ok(ScanResult {
                     current_sequence: replayer.current_sequence(),
                     current_prefix_hash: prefix,
+                    prefix_hashes,
                     replayer,
                     quarantined_tail: quarantined,
                     events,
@@ -657,13 +676,14 @@ fn scan_and_repair(
                     true,
                 )
             })?);
-            replayer.process_event(&event, Some(line_number), Some(&raw_lines))?;
+            replayer.process_event_in_place(&event, Some(line_number), Some(&raw_lines))?;
             append_file
                 .write_all(b"\n")
                 .and_then(|_| append_file.flush())
                 .and_then(|_| sync_file(append_file))
                 .map_err(|_| durability())?;
             prefix = calculate_prefix_hash(&prefix, event.sequence, &repaired_line);
+            prefix_hashes.push(prefix);
             events.push(event);
         }
     }
@@ -671,6 +691,7 @@ fn scan_and_repair(
     Ok(ScanResult {
         current_sequence: replayer.current_sequence(),
         current_prefix_hash: prefix,
+        prefix_hashes,
         replayer,
         quarantined_tail: quarantined,
         events,
@@ -782,7 +803,7 @@ fn parse_path(path: &Path, validate: bool) -> HistoryResult<Vec<EventEnvelope>> 
             )
         })?);
         if validate {
-            replayer.process_event(&event, Some(line), Some(&raw_lines))?;
+            replayer.process_event_in_place(&event, Some(line), Some(&raw_lines))?;
         }
         events.push(event);
         cursor = next;
