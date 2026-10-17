@@ -88,7 +88,7 @@ pub struct TurnReplay {
     pub terminal: Option<TurnTerminal>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct EventReplayer {
     session_id: Option<SessionId>,
     current_sequence: u64,
@@ -168,6 +168,22 @@ impl EventReplayer {
         line: Option<usize>,
         raw_lines: Option<&[String]>,
     ) -> HistoryResult<()> {
+        let mut next = self.clone();
+        next.process_event_in_place(envelope, line, raw_lines)?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Applies an event without cloning the entire replay state. Callers that
+    /// use this method must discard the replayer if an error is returned.
+    /// Full-log replay paths satisfy that contract; append paths keep using
+    /// [`process_event`] so validation failure remains transactional.
+    pub(crate) fn process_event_in_place(
+        &mut self,
+        envelope: &EventEnvelope,
+        line: Option<usize>,
+        raw_lines: Option<&[String]>,
+    ) -> HistoryResult<()> {
         let seq = Some(envelope.sequence);
         if envelope.schema_version != EVENT_SCHEMA_VERSION {
             return Err(HistoryError::new(
@@ -209,9 +225,8 @@ impl EventReplayer {
         }
         self.validate_context(envelope, line)?;
 
-        let mut next = self.clone();
-        next.apply_event(envelope, line, raw_lines)?;
-        crate::state::project_logged_event(&mut next.state, envelope).map_err(|_| {
+        self.apply_event(envelope, line, raw_lines)?;
+        crate::state::project_logged_event(&mut self.state, envelope).map_err(|_| {
             HistoryError::new(
                 "STATE_PROJECTION_INTEGRITY",
                 Some(envelope.sequence),
@@ -219,11 +234,10 @@ impl EventReplayer {
                 false,
             )
         })?;
-        next.seen_event_ids.insert(envelope.event_id);
-        next.known_event_sequences
+        self.seen_event_ids.insert(envelope.event_id);
+        self.known_event_sequences
             .insert(envelope.event_id, envelope.sequence);
-        next.current_sequence = envelope.sequence;
-        *self = next;
+        self.current_sequence = envelope.sequence;
         Ok(())
     }
 

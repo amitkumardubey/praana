@@ -105,7 +105,7 @@ impl<'a> HistoryProjector<'a> {
         let mut replay = crate::history::replay::EventReplayer::new();
         for (index, event) in events.iter().enumerate() {
             replay
-                .process_event(event, Some(index + 1), Some(raw_lines))
+                .process_event_in_place(event, Some(index + 1), Some(raw_lines))
                 .map_err(|err| ArtifactError::new(err.code(), "event log replay failed"))?;
         }
 

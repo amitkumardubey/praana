@@ -43,7 +43,7 @@ impl ConversationProjection {
     ) -> Result<Self, HistoryError> {
         let mut replay = EventReplayer::new();
         for (index, event) in events.iter().enumerate() {
-            replay.process_event(event, Some(index + 1), raw_lines)?;
+            replay.process_event_in_place(event, Some(index + 1), raw_lines)?;
         }
 
         let active_turn = replay.active_turn_id();

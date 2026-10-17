@@ -1821,7 +1821,7 @@ mod handoff_split {
 
 mod activation {
     use std::collections::VecDeque;
-    use std::io::{Read, Write};
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
@@ -1850,8 +1850,11 @@ mod activation {
     };
     use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
     use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
-    use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
+    use praana_core::protocol::events::{
+        CanonicalEvent, EventEnvelope, InterruptionReason, TurnInterrupted,
+    };
     use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
+    use praana_core::protocol::json::serialize_event_compact;
     use praana_core::protocol::state_graph::{
         NoteStateV1, StateChangeReason, StateChangedV1, StateOperationV1, StateSourceKind,
         StateSourceV1, StateTier, StateValueV1,
@@ -1968,8 +1971,37 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     }
 
     fn last_event(session: &Path) -> Option<(String, bool)> {
-        let events = read_events(session);
-        let last = events.last()?;
+        let mut file = std::fs::File::open(session.join("events.jsonl")).ok()?;
+        let mut end = file.seek(SeekFrom::End(0)).ok()?;
+        let mut tail = Vec::new();
+        let mut chunk = [0; 4096];
+        while end > 0 {
+            let start = end.saturating_sub(chunk.len() as u64);
+            let length = usize::try_from(end - start).ok()?;
+            file.seek(SeekFrom::Start(start)).ok()?;
+            file.read_exact(&mut chunk[..length]).ok()?;
+            if let Some(newline) = chunk[..length].iter().rposition(|byte| *byte == b'\n') {
+                let suffix = &chunk[newline + 1..length];
+                if suffix.is_empty() && tail.is_empty() {
+                    end = start + newline as u64;
+                    continue;
+                }
+                let mut line = Vec::with_capacity(suffix.len() + tail.len());
+                line.extend_from_slice(suffix);
+                line.extend_from_slice(&tail);
+                let last: Value = serde_json::from_slice(&line).ok()?;
+                return Some((
+                    last.pointer("/event/kind")?.as_str()?.to_owned(),
+                    last["turn_id"].is_null(),
+                ));
+            }
+            let mut preceding = Vec::with_capacity(length + tail.len());
+            preceding.extend_from_slice(&chunk[..length]);
+            preceding.extend_from_slice(&tail);
+            tail = preceding;
+            end = start;
+        }
+        let last: Value = serde_json::from_slice(&tail).ok()?;
         Some((
             last.pointer("/event/kind")?.as_str()?.to_owned(),
             last["turn_id"].is_null(),
@@ -2186,6 +2218,125 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             assert!(report.interruption.is_none(), "turn {text:?} commits");
         }
         loop_
+    }
+
+    fn remap_turn_ids(
+        value: &mut Value,
+        session_id: &str,
+        ids: &MonotonicUlidGenerator,
+        replacements: &mut std::collections::HashMap<String, String>,
+    ) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    if key != "session_id" {
+                        remap_turn_ids(child, session_id, ids, replacements);
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    remap_turn_ids(child, session_id, ids, replacements);
+                }
+            }
+            Value::String(text) if text != session_id && ulid::Ulid::from_string(text).is_ok() => {
+                let replacement = replacements.entry(text.clone()).or_insert_with(|| {
+                    let id: EventId = ids.next_id().unwrap();
+                    id.to_string()
+                });
+                *text = replacement.clone();
+            }
+            _ => {}
+        }
+    }
+
+    /// Clones the user/start events of a valid turn and closes each synthetic
+    /// source with a valid interruption. Bulk writing keeps fixture setup from
+    /// replaying the growing log once per source turn.
+    fn append_copies_of_first_turn(session: &Path, total_turns: usize) {
+        let sid = session_id(session);
+        let log = EventLogStore::open(session, &sid.to_string()).unwrap();
+        let events = log.events().unwrap();
+        let first_turn_id = events
+            .iter()
+            .find_map(|event| match &event.event {
+                CanonicalEvent::UserMessageAccepted(accepted) => Some(accepted.message.turn_id),
+                _ => None,
+            })
+            .unwrap();
+        let template: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.turn_id == Some(first_turn_id)
+                    && matches!(
+                        event.event,
+                        CanonicalEvent::UserMessageAccepted(_) | CanonicalEvent::TurnStarted(_)
+                    )
+            })
+            .cloned()
+            .collect();
+        assert_eq!(template.len(), 2);
+        let session_id = log.session_id().to_string();
+        let session_id_value = *log.session_id();
+        let ids = MonotonicUlidGenerator::system();
+        let mut appended = Vec::new();
+        let mut next_sequence = log.current_sequence() + 1;
+
+        for turn_index in 2..=total_turns {
+            let mut cloned = Vec::with_capacity(template.len());
+            let mut replacements = std::collections::HashMap::new();
+            for (offset, event) in template.iter().enumerate() {
+                let mut value = serde_json::to_value(event).unwrap();
+                remap_turn_ids(&mut value, &session_id, &ids, &mut replacements);
+                value["sequence"] = json!(next_sequence + offset as u64);
+                if value.pointer("/event/kind").and_then(Value::as_str) == Some("turn_started") {
+                    value["event"]["data"]["turn_index"] = json!(turn_index);
+                }
+                cloned.push(serde_json::from_value::<EventEnvelope>(value).unwrap());
+            }
+            let (turn_id, user_message_id) = match &cloned[0].event {
+                CanonicalEvent::UserMessageAccepted(accepted) => {
+                    (accepted.message.turn_id, accepted.message.message_id)
+                }
+                _ => unreachable!("template begins with the accepted user event"),
+            };
+            let started = match &cloned[1].event {
+                CanonicalEvent::TurnStarted(started) => started,
+                _ => unreachable!("template contains the turn-start event second"),
+            };
+            for event in &cloned {
+                appended.extend_from_slice(serialize_event_compact(event).unwrap().as_bytes());
+                appended.push(b'\n');
+            }
+            let interrupted = EventEnvelope {
+                schema_version: EVENT_SCHEMA_VERSION,
+                event_id: ids.next_id().unwrap(),
+                session_id: session_id_value,
+                sequence: next_sequence + template.len() as u64,
+                timestamp_ms: cloned[1].timestamp_ms,
+                turn_id: Some(turn_id),
+                attempt_id: None,
+                event: CanonicalEvent::TurnInterrupted(TurnInterrupted {
+                    turn_index: started.turn_index,
+                    user_message_id,
+                    reason: InterruptionReason::UserAbort,
+                    last_accepted_step_id: None,
+                    failed_attempt_id: None,
+                    uncertain_execution_ids: Vec::new(),
+                    message: format!("synthetic source turn {turn_index} interrupted"),
+                }),
+            };
+            appended.extend_from_slice(serialize_event_compact(&interrupted).unwrap().as_bytes());
+            appended.push(b'\n');
+            next_sequence += template.len() as u64 + 1;
+        }
+        drop(log);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(session.join("events.jsonl"))
+            .unwrap();
+        file.write_all(&appended).unwrap();
+        file.sync_all().unwrap();
     }
 
     fn compactor(s: &Session) -> ConfiguredCompactor {
@@ -2685,7 +2836,9 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         drop(conn);
 
         let CompactionOutcome::Activated {
-            retired_turn_ids, ..
+            retired_turn_ids,
+            derived_projection_error,
+            ..
         } = loop_.compact_now(&compactor(&s)).await.unwrap()
         else {
             panic!("projection failure must not undo durable activation");
@@ -2694,10 +2847,14 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert!(projection(&s.session)
             .compacted_turn_ids
             .contains(&retired_turn_ids[0]));
-        assert_eq!(
-            loop_.take_pending_diagnostic().map(|error| error.code),
-            Some("HISTORY_PROJECTION_PENDING".to_owned()),
-        );
+        let projection_error = derived_projection_error.expect("projection failure is reported");
+        assert_eq!(projection_error.code, "HISTORY_EVENT_INTEGRITY");
+        assert!(projection_error
+            .message
+            .contains("derived summary segment conflicts with a different compaction"));
+        assert!(!projection_error
+            .message
+            .contains(&s.session.to_string_lossy().to_string()));
         drop(loop_);
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -2765,20 +2922,16 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
 
     #[tokio::test]
     async fn hundred_compaction_epochs_keep_a_single_bounded_handoff() {
-        let started = std::time::Instant::now();
         let mut s = session();
         s.config.history.compact_mass_fraction = 0.001;
-        let source_texts: Vec<String> = (0..100).map(|n| format!("synthetic source {n}")).collect();
-        let source_refs: Vec<&str> = source_texts.iter().map(String::as_str).collect();
-        let loop_ = run_turns(&s, &source_refs).await;
+        let loop_ = run_turns(&s, &["synthetic source 0"]).await;
         drop(loop_);
         let compactor = compactor(&s);
+        append_copies_of_first_turn(&s.session, 100);
         let mut log = EventLogStore::open(&s.session, &session_id(&s.session).to_string()).unwrap();
         let ids = MonotonicUlidGenerator::system();
         let config = s.config.clone();
         let mut seen_turns = std::collections::BTreeSet::new();
-        let mut ranges = Vec::new();
-        let mut active_handoff = None;
 
         for epoch in 1..=100u32 {
             let mut context = praana_core::compaction::activate::ActivationContext {
@@ -2804,44 +2957,59 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 panic!("epoch {epoch} did not activate");
             };
             assert_eq!(actual, epoch);
+            assert!(
+                !retired_turn_ids.is_empty(),
+                "epoch {epoch} retires a source turn"
+            );
             for id in retired_turn_ids {
                 assert!(seen_turns.insert(id), "turn {id} retired twice");
             }
-            let events = of_kind(&s.session, "history_compacted");
-            let current = events.last().unwrap();
-            let data = &current["event"]["data"];
-            assert!(
-                data["handoff"]["estimated_tokens"].as_u64().unwrap()
-                    <= s.config.history.handoff_max_tokens
-            );
-            assert_eq!(data["handoff"]["lineage_through_epoch"], epoch);
-            let visible = projection(&s.session);
-            let visible_handoff_id = visible
-                .active_handoff
-                .as_ref()
-                .map(|handoff| handoff.handoff_id.to_string());
-            assert_eq!(
-                visible_handoff_id.as_deref(),
-                data["handoff"]["handoff_id"].as_str(),
-                "exactly the current handoff is model-visible after epoch {epoch}",
-            );
-            if let Some(previous) = active_handoff {
-                assert_eq!(data["handoff"]["based_on_previous_handoff"], previous);
-            } else {
-                assert!(data["handoff"]["based_on_previous_handoff"].is_null());
+
+            if epoch % 10 == 0 || epoch == 100 {
+                let events = of_kind(&s.session, "history_compacted");
+                assert_eq!(events.len(), epoch as usize);
+                let mut ranges = Vec::new();
+                let mut previous_handoff = None;
+                for (index, current) in events.iter().enumerate() {
+                    let current_epoch = index as u32 + 1;
+                    let data = &current["event"]["data"];
+                    assert!(
+                        data["handoff"]["estimated_tokens"].as_u64().unwrap()
+                            <= s.config.history.handoff_max_tokens
+                    );
+                    assert_eq!(data["handoff"]["lineage_through_epoch"], current_epoch);
+                    if let Some(previous) = previous_handoff {
+                        assert_eq!(data["handoff"]["based_on_previous_handoff"], previous);
+                    } else {
+                        assert!(data["handoff"]["based_on_previous_handoff"].is_null());
+                    }
+                    previous_handoff = Some(data["handoff"]["handoff_id"].clone());
+                    let range = (
+                        data["source_start_sequence"].as_u64().unwrap(),
+                        data["source_end_sequence"].as_u64().unwrap(),
+                    );
+                    assert!(ranges
+                        .iter()
+                        .all(|prior: &(u64, u64)| range.1 < prior.0 || prior.1 < range.0));
+                    ranges.push(range);
+                }
+                let visible = projection(&s.session);
+                let visible_handoff_id = visible
+                    .active_handoff
+                    .as_ref()
+                    .map(|handoff| handoff.handoff_id.to_string());
+                assert_eq!(
+                    visible_handoff_id.as_deref(),
+                    previous_handoff.as_ref().and_then(Value::as_str),
+                    "exactly the current handoff is model-visible after epoch {epoch}",
+                );
+                assert_eq!(visible.compacted_turn_ids.len(), seen_turns.len());
+                assert!(seen_turns
+                    .iter()
+                    .all(|turn_id| visible.compacted_turn_ids.contains(turn_id)));
             }
-            active_handoff = Some(data["handoff"]["handoff_id"].clone());
-            let range = (
-                data["source_start_sequence"].as_u64().unwrap(),
-                data["source_end_sequence"].as_u64().unwrap(),
-            );
-            assert!(ranges
-                .iter()
-                .all(|prior: &(u64, u64)| range.1 < prior.0 || prior.1 < range.0));
-            ranges.push(range);
         }
         assert_eq!(seen_turns.len(), 100);
-        assert_eq!(of_kind(&s.session, "history_compacted").len(), 100);
         drop(log);
         let loop_ = run_turns(&s, &["after one hundred epochs"]).await;
         drop(loop_);
@@ -2855,17 +3023,20 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             1
         );
         assert!(instructions.contains("epoch two current handoff"));
-        eprintln!("100 compaction epochs: {:?}", started.elapsed());
     }
 
     #[tokio::test]
     async fn next_request_carries_the_handoff_slot() {
         let s = session();
         let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
-        assert!(matches!(
-            loop_.compact_now(&compactor(&s)).await.unwrap(),
-            CompactionOutcome::Activated { .. }
-        ));
+        let CompactionOutcome::Activated {
+            derived_projection_error,
+            ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("compaction should activate");
+        };
+        assert!(derived_projection_error.is_none());
         let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
         let report = loop_.run_turn("delta four", &provider).await.unwrap();
         assert!(report.interruption.is_none(), "{report:?}");

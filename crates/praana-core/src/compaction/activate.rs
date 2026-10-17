@@ -36,7 +36,6 @@ use crate::compaction::CompactionError;
 use crate::config::EffectiveConfigV1;
 use crate::credentials::store::{credentials_path, load_store, CredentialStoreV1};
 use crate::history::event_log::EventLogStore;
-use crate::history::recovery::build_interrupted_turn_capsule;
 use crate::history::replay::{accepted_messages, EventReplayer, TurnTerminal};
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
 use crate::protocol::compaction::{
@@ -144,6 +143,9 @@ pub enum CompactionOutcome {
         attempt_id: AttemptId,
         event_id: EventId,
         retired_turn_ids: Vec<TurnId>,
+        /// Failure to update the derived History projection after activation.
+        /// The durable `HistoryCompacted` event remains authoritative.
+        derived_projection_error: Option<ProtocolError>,
     },
     Failed {
         compaction_id: CompactionId,
@@ -350,17 +352,49 @@ fn message_id(message: &ConversationMessage) -> MessageId {
     }
 }
 
-fn replay_all(
-    events: &[EventEnvelope],
+fn interrupted_capsule_for_turn(
     raw_lines: &[String],
-) -> Result<EventReplayer, CompactionRunError> {
-    let mut replay = EventReplayer::new();
-    for (index, event) in events.iter().enumerate() {
-        replay
-            .process_event(event, Some(index + 1), Some(raw_lines))
-            .map_err(history_error)?;
+    turn: &crate::history::replay::TurnReplay,
+    interruption_event: &EventEnvelope,
+) -> Option<InterruptedTurnCapsuleV1> {
+    let Some(TurnTerminal::Interrupted(interruption, interruption_event_id)) = &turn.terminal
+    else {
+        return None;
+    };
+    if interruption_event.event_id != *interruption_event_id
+        || !matches!(interruption_event.event, CanonicalEvent::TurnInterrupted(_))
+    {
+        return None;
     }
-    Ok(replay)
+    let start = turn.start_sequence;
+    let end = interruption_event.sequence;
+    if start == 0 || end == 0 || end > raw_lines.len() as u64 || start > end {
+        return None;
+    }
+    let started = turn.started.as_ref()?;
+    Some(InterruptedTurnCapsuleV1 {
+        capsule_schema_version: 1,
+        turn_id: turn.id,
+        turn_index: started.turn_index,
+        user_message_id: turn.user.message_id,
+        accepted_step_ids: turn
+            .steps
+            .values()
+            .map(|step| step.purpose.step_id)
+            .collect(),
+        completed_batch_ids: turn
+            .batches
+            .values()
+            .filter_map(|batch| batch.completed.as_ref().map(|completed| completed.batch_id))
+            .collect(),
+        reason: interruption.reason.clone(),
+        failed_attempt_id: interruption.failed_attempt_id,
+        uncertain_execution_ids: interruption.uncertain_execution_ids.clone(),
+        interruption_event_id: *interruption_event_id,
+        source_start_sequence: start,
+        source_end_sequence: end,
+        source_hash: calculate_source_hash(&raw_lines[start as usize - 1..end as usize]),
+    })
 }
 
 fn replay_with_turn_end_states(
@@ -373,16 +407,36 @@ fn replay_with_turn_end_states(
     ),
     CompactionRunError,
 > {
+    let epoch_start = events
+        .iter()
+        .rposition(|event| matches!(event.event, CanonicalEvent::ResetBoundary(_)))
+        .map_or(0, |index| index + 1);
+    let retired_turn_ids: BTreeSet<TurnId> = events[epoch_start..]
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::HistoryCompacted(compacted) => {
+                Some(compacted.source_turn_ids.iter().copied())
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+
     let mut replay = EventReplayer::new();
     let mut states = HashMap::new();
     for (index, event) in events.iter().enumerate() {
         replay
-            .process_event(event, Some(index + 1), Some(raw_lines))
+            .process_event_in_place(event, Some(index + 1), Some(raw_lines))
             .map_err(history_error)?;
-        if matches!(
-            event.event,
-            CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_)
-        ) {
+        if index >= epoch_start
+            && event
+                .turn_id
+                .is_some_and(|turn_id| !retired_turn_ids.contains(&turn_id))
+            && matches!(
+                event.event,
+                CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_)
+            )
+        {
             states.insert(event.sequence, replay.state.clone());
         }
     }
@@ -422,7 +476,7 @@ pub fn projected_turns(
             }
             CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_) => {
                 if let Some(turn) = event.turn_id {
-                    closure.insert(turn, event.sequence);
+                    closure.insert(turn, event);
                 }
             }
             CanonicalEvent::UserMessageAccepted(_) => {
@@ -461,12 +515,13 @@ pub fn projected_turns(
             .collect::<Result<Vec<_>, _>>()?;
         let (closed, capsule) = match &turn.terminal {
             Some(TurnTerminal::Committed(_)) => (true, None),
-            Some(TurnTerminal::Interrupted(_, _)) => {
-                match build_interrupted_turn_capsule(events, raw_lines, turn.id) {
-                    Ok(capsule) => (true, Some(capsule)),
-                    Err(_) => (false, None),
-                }
-            }
+            Some(TurnTerminal::Interrupted(_, _)) => match closure
+                .get(&turn.id)
+                .and_then(|event| interrupted_capsule_for_turn(raw_lines, turn, event))
+            {
+                Some(capsule) => (true, Some(capsule)),
+                None => (false, None),
+            },
             None => (false, None),
         };
         let bytes = to_canonical_json_bytes(&messages).map_err(history_error)?;
@@ -481,7 +536,7 @@ pub fn projected_turns(
             turn: ProjectedTurn {
                 turn_id: turn.id,
                 start_sequence: turn.start_sequence,
-                closure_sequence: closure.get(&turn.id).copied().unwrap_or(0),
+                closure_sequence: closure.get(&turn.id).map_or(0, |event| event.sequence),
                 reset_epoch: turn_epoch,
                 retired_by_epoch: retired.get(&turn.id).copied(),
                 compaction_closed: closed,
@@ -566,6 +621,10 @@ pub struct CompactionSnapshot {
     pub selection: Selection,
     pub source_hash: Sha256Digest,
     pub event_prefix_hash_before: Sha256Digest,
+    /// Hash of the complete log prefix frozen for source rechecks.
+    pub snapshot_event_prefix_hash: [u8; 32],
+    /// Replay baseline used to validate only events appended after the snapshot.
+    pub replay_state: EventReplayer,
     pub turn_estimates: Vec<TokenEstimateV1>,
     pub source_turns: Vec<CompactionSourceTurnV1>,
     pub current_state: CompactionStateInputV1,
@@ -627,6 +686,16 @@ fn state_ids_of(graph: &crate::protocol::state_graph::StateGraphV1) -> BTreeSet<
     graph.objects.iter().map(|object| object.state_id).collect()
 }
 
+fn log_prefix_hash(raw_lines: &[String], sequence: usize) -> [u8; 32] {
+    raw_lines
+        .iter()
+        .take(sequence)
+        .enumerate()
+        .fold([0u8; 32], |prefix, (index, line)| {
+            calculate_prefix_hash(&prefix, index as u64 + 1, line.as_bytes())
+        })
+}
+
 /// Snapshots the session, selects the oldest eligible prefix, and freezes the
 /// source hash and reference universe (§9.1, §9.2).
 pub fn snapshot(
@@ -634,6 +703,18 @@ pub fn snapshot(
     raw_lines: &[String],
     config: &EffectiveConfigV1,
     framing: &FramingProfileV1,
+) -> Result<CompactionSnapshot, CompactionRunError> {
+    let prefix_hash = log_prefix_hash(raw_lines, events.len());
+    snapshot_with_prefix_hash(events, raw_lines, config, framing, prefix_hash, None)
+}
+
+fn snapshot_with_prefix_hash(
+    events: &[EventEnvelope],
+    raw_lines: &[String],
+    config: &EffectiveConfigV1,
+    framing: &FramingProfileV1,
+    snapshot_event_prefix_hash: [u8; 32],
+    prefix_hashes: Option<&[[u8; 32]]>,
 ) -> Result<CompactionSnapshot, CompactionRunError> {
     let (replay, states_at_turn_end) = replay_with_turn_end_states(events, raw_lines)?;
     if open_compaction_attempt(&replay) {
@@ -659,10 +740,12 @@ pub fn snapshot(
         ));
     }
     let source_hash = calculate_source_hash(&raw_lines[start as usize - 1..end as usize]);
-    let mut prefix = [0u8; 32];
-    for (index, line) in raw_lines[..start as usize - 1].iter().enumerate() {
-        prefix = calculate_prefix_hash(&prefix, index as u64 + 1, line.as_bytes());
-    }
+    let prefix = match prefix_hashes {
+        Some(prefix_hashes) => *prefix_hashes.get(start as usize - 1).ok_or_else(|| {
+            CompactionRunError::History("source prefix is outside the log".into())
+        })?,
+        None => log_prefix_hash(raw_lines, start as usize - 1),
+    };
 
     let selected: Vec<&TurnMass> = selection
         .turn_ids
@@ -739,6 +822,8 @@ pub fn snapshot(
         selection,
         source_hash,
         event_prefix_hash_before: Sha256Digest::from_bytes(prefix),
+        snapshot_event_prefix_hash,
+        replay_state: replay,
         source_turns,
         current_state,
         universe,
@@ -752,7 +837,34 @@ pub fn recheck_source(
     events: &[EventEnvelope],
     raw_lines: &[String],
 ) -> Result<(), String> {
-    let replay = replay_all(events, raw_lines).map_err(|e| e.to_string())?;
+    let current_prefix_hash = log_prefix_hash(raw_lines, raw_lines.len());
+    recheck_source_with_prefix(snapshot, events, raw_lines, current_prefix_hash)
+}
+
+fn recheck_source_with_prefix(
+    snapshot: &CompactionSnapshot,
+    events: &[EventEnvelope],
+    raw_lines: &[String],
+    current_prefix_hash: [u8; 32],
+) -> Result<(), String> {
+    let snapshot_sequence = snapshot.projection_sequence as usize;
+    if events.len() < snapshot_sequence || raw_lines.len() < snapshot_sequence {
+        return Err("event log prefix is shorter than the snapshot".into());
+    }
+    let mut prefix = snapshot.snapshot_event_prefix_hash;
+    for (index, line) in raw_lines.iter().enumerate().skip(snapshot_sequence) {
+        prefix = calculate_prefix_hash(&prefix, index as u64 + 1, line.as_bytes());
+    }
+    if prefix != current_prefix_hash {
+        return Err("event log prefix changed".into());
+    }
+
+    let mut replay = snapshot.replay_state.clone();
+    for (index, event) in events.iter().enumerate().skip(snapshot_sequence) {
+        replay
+            .process_event_in_place(event, Some(index + 1), Some(raw_lines))
+            .map_err(|error| error.to_string())?;
+    }
     if replay.reset_epoch != snapshot.reset_epoch {
         return Err("reset epoch changed".into());
     }
@@ -1442,7 +1554,14 @@ pub fn begin(
     let (snapshot, purpose, attempt_number, retry_of) = match &repair {
         None => {
             let (events, raw) = ctx.read()?;
-            let snapshot = snapshot(&events, &raw, ctx.config, ctx.framing)?;
+            let snapshot = snapshot_with_prefix_hash(
+                &events,
+                &raw,
+                ctx.config,
+                ctx.framing,
+                ctx.log.current_prefix_hash(),
+                Some(ctx.log.prefix_hashes()),
+            )?;
             let purpose = CompactionPurpose {
                 compaction_id: ctx.fresh()?,
                 epoch: snapshot.epoch,
@@ -1643,7 +1762,12 @@ pub fn finish(
     };
 
     let (events, raw) = ctx.read()?;
-    if let Err(reason) = recheck_source(&started.snapshot, &events, &raw) {
+    if let Err(reason) = recheck_source_with_prefix(
+        &started.snapshot,
+        &events,
+        &raw,
+        ctx.log.current_prefix_hash(),
+    ) {
         let error = compaction_error(
             "E_COMPACTION_SOURCE_HASH_MISMATCH",
             ErrorClass::Conflict,
@@ -1699,6 +1823,7 @@ pub fn finish(
         attempt_id: started.attempt_id,
         event_id,
         retired_turn_ids,
+        derived_projection_error: None,
     }))
 }
 

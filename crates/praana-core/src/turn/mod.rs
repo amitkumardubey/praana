@@ -497,12 +497,6 @@ impl HeadlessLoop {
         self.log.session_dir()
     }
 
-    /// Takes a diagnostic produced by an operation outside an ordinary turn,
-    /// such as a lagging derived-history projection after durable compaction.
-    pub fn take_pending_diagnostic(&mut self) -> Option<ProtocolError> {
-        self.pending_diagnostic.take()
-    }
-
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
@@ -578,7 +572,7 @@ impl HeadlessLoop {
     ) -> Result<crate::compaction::activate::CompactionOutcome, TurnError> {
         self.ensure_live()?;
         let config = self.config.config.clone();
-        let outcome = {
+        let mut outcome = {
             let mut ctx = crate::compaction::activate::ActivationContext {
                 log: &mut self.log,
                 ids: &self.config.ids,
@@ -596,23 +590,23 @@ impl HeadlessLoop {
                     other => TurnError::failed(other.to_string()),
                 })?
         };
-        if matches!(
-            outcome,
-            crate::compaction::activate::CompactionOutcome::Activated { .. }
-        ) {
+        if let crate::compaction::activate::CompactionOutcome::Activated {
+            derived_projection_error,
+            ..
+        } = &mut outcome
+        {
             let projection = (|| {
                 let db = crate::history::db::HistoryDatabase::open(
                     &self.config.session_dir.join("history.db"),
                 )?;
                 crate::history::checkpoint::HistoryProjector::new(&db).project(&self.log)
             })();
-            if projection.is_err() {
-                self.pending_diagnostic = Some(ProtocolError {
-                    code: "HISTORY_PROJECTION_PENDING".to_owned(),
+            if let Err(error) = projection {
+                let session_dir = self.config.session_dir.to_string_lossy();
+                *derived_projection_error = Some(ProtocolError {
+                    code: error.code().to_owned(),
                     class: ErrorClass::Persistence,
-                    message:
-                        "Compaction is active; derived history projection is pending recovery."
-                            .into(),
+                    message: error.message().replace(session_dir.as_ref(), "<session>"),
                     retryable: true,
                     http_status: None,
                     retry_after_ms: None,
@@ -735,13 +729,7 @@ impl HeadlessLoop {
         if self.replay()?.active_turn_id().is_some() {
             return Err(TurnError::failed("a turn is already active"));
         }
-        if self
-            .pending_diagnostic
-            .as_ref()
-            .is_none_or(|diagnostic| diagnostic.code != "HISTORY_PROJECTION_PENDING")
-        {
-            self.pending_diagnostic = None;
-        }
+        self.pending_diagnostic = None;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -1743,7 +1731,7 @@ impl HeadlessLoop {
         let mut replay = EventReplayer::new();
         for (index, event) in events.iter().enumerate() {
             replay
-                .process_event(event, Some(index + 1), Some(raw))
+                .process_event_in_place(event, Some(index + 1), Some(raw))
                 .map_err(|err| TurnError::failed(format!("replay: {err}")))?;
         }
         Ok(replay)

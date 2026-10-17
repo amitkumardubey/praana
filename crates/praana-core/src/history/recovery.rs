@@ -801,7 +801,7 @@ fn replay(
         replay.set_snapshot_max_steps(max_steps);
     }
     for (index, event) in events.iter().enumerate() {
-        replay.process_event(event, Some(index + 1), Some(raw_lines))?;
+        replay.process_event_in_place(event, Some(index + 1), Some(raw_lines))?;
     }
     Ok(replay)
 }
