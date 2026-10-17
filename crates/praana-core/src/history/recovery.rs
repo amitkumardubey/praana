@@ -973,7 +973,7 @@ pub fn build_interrupted_turn_capsule(
         .values()
         .find(|turn| turn.id == turn_id)
         .ok_or_else(|| HistoryError::new("E_REFERENCE_UNKNOWN", None, None, false))?;
-    let crate::history::replay::TurnTerminal::Interrupted(interruption, event_id) = turn
+    let crate::history::replay::TurnTerminal::Interrupted(_, event_id) = turn
         .terminal
         .as_ref()
         .ok_or_else(|| HistoryError::new("E_EVENT_TRANSITION_INVALID", None, None, false))?
@@ -990,6 +990,26 @@ pub fn build_interrupted_turn_capsule(
         .find(|event| event.event_id == *event_id)
         .map(|event| event.sequence)
         .ok_or_else(|| HistoryError::new("E_REFERENCE_UNKNOWN", None, None, false))?;
+    build_interrupted_turn_capsule_from_replay(turn, source_end_sequence, raw_lines)
+}
+
+pub(crate) fn build_interrupted_turn_capsule_from_replay(
+    turn: &crate::history::replay::TurnReplay,
+    source_end_sequence: u64,
+    raw_lines: &[String],
+) -> HistoryResult<InterruptedTurnCapsuleV1> {
+    let crate::history::replay::TurnTerminal::Interrupted(interruption, event_id) = turn
+        .terminal
+        .as_ref()
+        .ok_or_else(|| HistoryError::new("E_EVENT_TRANSITION_INVALID", None, None, false))?
+    else {
+        return Err(HistoryError::new(
+            "E_EVENT_TRANSITION_INVALID",
+            None,
+            None,
+            false,
+        ));
+    };
     let source_start = turn.start_sequence;
     if source_start == 0
         || source_end_sequence == 0
@@ -1001,7 +1021,7 @@ pub fn build_interrupted_turn_capsule(
     let source_lines = &raw_lines[(source_start as usize - 1)..source_end_sequence as usize];
     Ok(InterruptedTurnCapsuleV1 {
         capsule_schema_version: 1,
-        turn_id,
+        turn_id: turn.id,
         turn_index: turn
             .started
             .as_ref()

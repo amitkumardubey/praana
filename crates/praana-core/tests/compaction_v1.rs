@@ -1850,9 +1850,7 @@ mod activation {
     };
     use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
     use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
-    use praana_core::protocol::events::{
-        CanonicalEvent, EventEnvelope, InterruptionReason, TurnInterrupted,
-    };
+    use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
     use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
     use praana_core::protocol::json::serialize_event_compact;
     use praana_core::protocol::state_graph::{
@@ -2250,9 +2248,8 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         }
     }
 
-    /// Clones the user/start events of a valid turn and closes each synthetic
-    /// source with a valid interruption. Bulk writing keeps fixture setup from
-    /// replaying the growing log once per source turn.
+    /// Clones a committed turn in bulk so fixture setup avoids replaying the
+    /// growing log once per source turn.
     fn append_copies_of_first_turn(session: &Path, total_turns: usize) {
         let sid = session_id(session);
         let log = EventLogStore::open(session, &sid.to_string()).unwrap();
@@ -2266,69 +2263,68 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .unwrap();
         let template: Vec<_> = events
             .iter()
-            .filter(|event| {
-                event.turn_id == Some(first_turn_id)
-                    && matches!(
-                        event.event,
-                        CanonicalEvent::UserMessageAccepted(_) | CanonicalEvent::TurnStarted(_)
-                    )
-            })
+            .filter(|event| event.turn_id == Some(first_turn_id))
             .cloned()
             .collect();
-        assert_eq!(template.len(), 2);
+        assert!(template
+            .iter()
+            .any(|event| matches!(event.event, CanonicalEvent::AssistantStepAccepted(_))));
         let session_id = log.session_id().to_string();
-        let session_id_value = *log.session_id();
         let ids = MonotonicUlidGenerator::system();
         let mut appended = Vec::new();
         let mut next_sequence = log.current_sequence() + 1;
 
-        for turn_index in 2..=total_turns {
+        let first_synthetic_turn = events
+            .iter()
+            .filter(|event| matches!(event.event, CanonicalEvent::UserMessageAccepted(_)))
+            .count()
+            + 1;
+        for turn_index in first_synthetic_turn..=total_turns {
             let mut cloned = Vec::with_capacity(template.len());
             let mut replacements = std::collections::HashMap::new();
             for (offset, event) in template.iter().enumerate() {
                 let mut value = serde_json::to_value(event).unwrap();
                 remap_turn_ids(&mut value, &session_id, &ids, &mut replacements);
                 value["sequence"] = json!(next_sequence + offset as u64);
-                if value.pointer("/event/kind").and_then(Value::as_str) == Some("turn_started") {
-                    value["event"]["data"]["turn_index"] = json!(turn_index);
+                if let Some(index) = value.pointer_mut("/event/data/turn_index") {
+                    *index = json!(turn_index);
                 }
                 cloned.push(serde_json::from_value::<EventEnvelope>(value).unwrap());
             }
-            let (turn_id, user_message_id) = match &cloned[0].event {
-                CanonicalEvent::UserMessageAccepted(accepted) => {
-                    (accepted.message.turn_id, accepted.message.message_id)
+            assert!(matches!(
+                cloned[0].event,
+                CanonicalEvent::UserMessageAccepted(_)
+            ));
+            let accepted_messages: Vec<_> = cloned
+                .iter()
+                .filter_map(|event| match &event.event {
+                    CanonicalEvent::UserMessageAccepted(accepted) => {
+                        Some(praana_core::protocol::messages::ConversationMessage::User(
+                            accepted.message.clone(),
+                        ))
+                    }
+                    CanonicalEvent::AssistantStepAccepted(accepted) => Some(
+                        praana_core::protocol::messages::ConversationMessage::Assistant(
+                            accepted.message.clone(),
+                        ),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            for event in &mut cloned {
+                if let CanonicalEvent::TurnCommitted(committed) = &mut event.event {
+                    committed.accepted_messages_hash =
+                        praana_core::protocol::hashes::calculate_accepted_messages_hash(
+                            &accepted_messages,
+                        )
+                        .unwrap();
                 }
-                _ => unreachable!("template begins with the accepted user event"),
-            };
-            let started = match &cloned[1].event {
-                CanonicalEvent::TurnStarted(started) => started,
-                _ => unreachable!("template contains the turn-start event second"),
-            };
+            }
             for event in &cloned {
                 appended.extend_from_slice(serialize_event_compact(event).unwrap().as_bytes());
                 appended.push(b'\n');
             }
-            let interrupted = EventEnvelope {
-                schema_version: EVENT_SCHEMA_VERSION,
-                event_id: ids.next_id().unwrap(),
-                session_id: session_id_value,
-                sequence: next_sequence + template.len() as u64,
-                timestamp_ms: cloned[1].timestamp_ms,
-                turn_id: Some(turn_id),
-                attempt_id: None,
-                event: CanonicalEvent::TurnInterrupted(TurnInterrupted {
-                    turn_index: started.turn_index,
-                    user_message_id,
-                    reason: InterruptionReason::UserAbort,
-                    last_accepted_step_id: None,
-                    failed_attempt_id: None,
-                    uncertain_execution_ids: Vec::new(),
-                    message: format!("synthetic source turn {turn_index} interrupted"),
-                }),
-            };
-            appended.extend_from_slice(serialize_event_compact(&interrupted).unwrap().as_bytes());
-            appended.push(b'\n');
-            next_sequence += template.len() as u64 + 1;
+            next_sequence += template.len() as u64;
         }
         drop(log);
         let mut file = std::fs::OpenOptions::new()
@@ -2924,7 +2920,11 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     async fn hundred_compaction_epochs_keep_a_single_bounded_handoff() {
         let mut s = session();
         s.config.history.compact_mass_fraction = 0.001;
-        let loop_ = run_turns(&s, &["synthetic source 0"]).await;
+        let source_texts: Vec<String> = (0..50)
+            .map(|index| format!("synthetic source {index}"))
+            .collect();
+        let source_refs: Vec<&str> = source_texts.iter().map(String::as_str).collect();
+        let loop_ = run_turns(&s, &source_refs).await;
         drop(loop_);
         let compactor = compactor(&s);
         append_copies_of_first_turn(&s.session, 100);

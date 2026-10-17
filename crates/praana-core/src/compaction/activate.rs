@@ -36,6 +36,7 @@ use crate::compaction::CompactionError;
 use crate::config::EffectiveConfigV1;
 use crate::credentials::store::{credentials_path, load_store, CredentialStoreV1};
 use crate::history::event_log::EventLogStore;
+use crate::history::recovery::build_interrupted_turn_capsule_from_replay;
 use crate::history::replay::{accepted_messages, EventReplayer, TurnTerminal};
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
 use crate::protocol::compaction::{
@@ -352,51 +353,6 @@ fn message_id(message: &ConversationMessage) -> MessageId {
     }
 }
 
-fn interrupted_capsule_for_turn(
-    raw_lines: &[String],
-    turn: &crate::history::replay::TurnReplay,
-    interruption_event: &EventEnvelope,
-) -> Option<InterruptedTurnCapsuleV1> {
-    let Some(TurnTerminal::Interrupted(interruption, interruption_event_id)) = &turn.terminal
-    else {
-        return None;
-    };
-    if interruption_event.event_id != *interruption_event_id
-        || !matches!(interruption_event.event, CanonicalEvent::TurnInterrupted(_))
-    {
-        return None;
-    }
-    let start = turn.start_sequence;
-    let end = interruption_event.sequence;
-    if start == 0 || end == 0 || end > raw_lines.len() as u64 || start > end {
-        return None;
-    }
-    let started = turn.started.as_ref()?;
-    Some(InterruptedTurnCapsuleV1 {
-        capsule_schema_version: 1,
-        turn_id: turn.id,
-        turn_index: started.turn_index,
-        user_message_id: turn.user.message_id,
-        accepted_step_ids: turn
-            .steps
-            .values()
-            .map(|step| step.purpose.step_id)
-            .collect(),
-        completed_batch_ids: turn
-            .batches
-            .values()
-            .filter_map(|batch| batch.completed.as_ref().map(|completed| completed.batch_id))
-            .collect(),
-        reason: interruption.reason.clone(),
-        failed_attempt_id: interruption.failed_attempt_id,
-        uncertain_execution_ids: interruption.uncertain_execution_ids.clone(),
-        interruption_event_id: *interruption_event_id,
-        source_start_sequence: start,
-        source_end_sequence: end,
-        source_hash: calculate_source_hash(&raw_lines[start as usize - 1..end as usize]),
-    })
-}
-
 fn replay_with_turn_end_states(
     events: &[EventEnvelope],
     raw_lines: &[String],
@@ -515,10 +471,17 @@ pub fn projected_turns(
             .collect::<Result<Vec<_>, _>>()?;
         let (closed, capsule) = match &turn.terminal {
             Some(TurnTerminal::Committed(_)) => (true, None),
-            Some(TurnTerminal::Interrupted(_, _)) => match closure
-                .get(&turn.id)
-                .and_then(|event| interrupted_capsule_for_turn(raw_lines, turn, event))
-            {
+            Some(TurnTerminal::Interrupted(_, _)) => match closure.get(&turn.id).and_then(|event| {
+                let TurnTerminal::Interrupted(_, event_id) = turn.terminal.as_ref()? else {
+                    return None;
+                };
+                if event.event_id != *event_id
+                    || !matches!(event.event, CanonicalEvent::TurnInterrupted(_))
+                {
+                    return None;
+                }
+                build_interrupted_turn_capsule_from_replay(turn, event.sequence, raw_lines).ok()
+            }) {
                 Some(capsule) => (true, Some(capsule)),
                 None => (false, None),
             },
