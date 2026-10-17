@@ -1998,12 +1998,32 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .map(|turn| turn["messages"][0]["event_id"].as_str().unwrap().to_owned())
             .collect();
         let evidence = json!({"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []});
-        let statement = json!({"text": "The user asked for greetings.", "confidence": "direct", "evidence": evidence, "uncertainty": null});
         let mut candidate: Value =
             serde_json::from_str(include_str!("fixtures/compaction_v1/candidate_empty.json"))
                 .unwrap();
-        candidate["segment"]["user_goals"] = json!([statement.clone()]);
-        candidate["handoff"]["current_goals"] = json!([statement]);
+        let text = if control["previous_handoff"].is_null() {
+            "epoch one unique archived detail"
+        } else {
+            "epoch two current detail"
+        };
+        let statement = json!({
+            "text": text,
+            "confidence": "direct",
+            "evidence": evidence,
+            "uncertainty": null
+        });
+        candidate["segment"]["user_goals"] = json!([statement]);
+        let handoff_text = if control["previous_handoff"].is_null() {
+            "epoch one handoff context"
+        } else {
+            "epoch two current handoff"
+        };
+        candidate["handoff"]["current_goals"] = json!([{
+            "text": handoff_text,
+            "confidence": "direct",
+            "evidence": evidence,
+            "uncertainty": null
+        }]);
         if let Some(state) = state {
             candidate["handoff"]["next_actions"] = json!([{
                 "text": "Continue the tracked note.",
@@ -2336,8 +2356,6 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         else {
             panic!("expected activation");
         };
-        drop(loop_);
-
         let db_path = s.session.join("history.db");
         let count = |path: &std::path::Path| -> i64 {
             rusqlite::Connection::open(path)
@@ -2349,16 +2367,9 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         };
         assert_eq!(
             count(&db_path),
-            0,
-            "the durable event is ahead of the summary row"
+            1,
+            "summary is searchable immediately after activation"
         );
-
-        let sid = session_id(&s.session).to_string();
-        let log = EventLogStore::open(&s.session, &sid).unwrap();
-        let db = HistoryDatabase::open(&db_path).unwrap();
-        HistoryProjector::new(&db).project(&log).unwrap();
-        HistoryProjector::new(&db).project(&log).unwrap();
-        assert_eq!(count(&db_path), 1);
 
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         let (version, payload, segment_json, segment_hash, handoff_json, handoff_hash): (
@@ -2390,7 +2401,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(version, 1);
         let parsed: HistoryDerivedCheckpointV1 = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed.checkpoint_schema_version, 1);
-        assert!(segment_json.contains("The user asked for greetings."));
+        assert!(segment_json.contains("epoch one unique archived detail"));
         assert_eq!(
             segment_hash,
             praana_core::protocol::id::Sha256Digest::digest_bytes(segment_json.as_bytes()).as_str()
@@ -2412,7 +2423,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let page = search_session(
             &conn,
             &SessionSearchRequest {
-                query: "asked".to_owned(),
+                query: "epoch one unique archived detail".to_owned(),
                 mode: SessionSearchMode::Fts,
                 case_sensitive: false,
                 filters: praana_core::history::search::SessionSearchFilters {
@@ -2426,7 +2437,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             &tokio_util::sync::CancellationToken::new(),
         )
         .unwrap();
-        assert_eq!(page.results.len(), 2);
+        assert_eq!(page.results.len(), 1);
         assert!(page
             .results
             .iter()
@@ -2469,6 +2480,382 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .results
             .iter()
             .any(|hit| hit.source_kind == SearchSourceKind::Event));
+    }
+
+    #[tokio::test]
+    async fn second_epoch_replaces_handoff() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let CompactionOutcome::Activated {
+            epoch: first_epoch,
+            retired_turn_ids: first_retired,
+            ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("expected first activation");
+        };
+        assert_eq!(first_epoch, 1);
+        let first_event = of_kind(&s.session, "history_compacted")[0].clone();
+        let first_handoff_id = first_event["event"]["data"]["handoff"]["handoff_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let first_range = (
+            first_event["event"]["data"]["source_start_sequence"]
+                .as_u64()
+                .unwrap(),
+            first_event["event"]["data"]["source_end_sequence"]
+                .as_u64()
+                .unwrap(),
+        );
+        drop(loop_);
+        let sid = session_id(&s.session);
+        let ids = MonotonicUlidGenerator::system();
+        let note: StateId = ids.next_id().unwrap();
+        {
+            let mut log = EventLogStore::open(&s.session, &sid.to_string()).unwrap();
+            let source = log.events().unwrap()[0].clone();
+            let sequence = log.current_sequence();
+            log.append_event(&EventEnvelope {
+                schema_version: EVENT_SCHEMA_VERSION,
+                event_id: ids.next_id().unwrap(),
+                session_id: sid,
+                sequence: sequence + 1,
+                timestamp_ms: SystemClock.now_ms(),
+                turn_id: None,
+                attempt_id: None,
+                event: CanonicalEvent::StateChanged(StateChangedV1 {
+                    state_schema_version: 1,
+                    mutation_id: ids.next_id().unwrap(),
+                    expected_graph_sequence: sequence,
+                    reason: StateChangeReason::System,
+                    source: StateSourceV1 {
+                        source_kind: StateSourceKind::System,
+                        event_id: source.event_id,
+                        sequence: source.sequence,
+                        turn_id: None,
+                        attempt_id: None,
+                        tool_call_id: None,
+                        artifact_id: None,
+                        summary_segment_id: None,
+                    },
+                    automation: None,
+                    operations: vec![StateOperationV1::Create {
+                        state_id: note,
+                        tier: StateTier::Active,
+                        value: StateValueV1::Note(NoteStateV1 {
+                            text: "current graph note".into(),
+                            tags: Vec::new(),
+                        }),
+                    }],
+                }),
+            })
+            .unwrap();
+        }
+        let mut loop_ = run_turns(&s, &[]).await;
+
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        for text in ["delta four", "echo five", "foxtrot six"] {
+            assert!(loop_
+                .run_turn(text, &provider)
+                .await
+                .unwrap()
+                .interruption
+                .is_none());
+        }
+        let CompactionOutcome::Activated {
+            epoch: second_epoch,
+            retired_turn_ids: second_retired,
+            ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("expected second activation");
+        };
+        assert_eq!(second_epoch, 2);
+        assert!(first_retired.iter().all(|id| !second_retired.contains(id)));
+
+        let requests = s.fake.compactor_requests();
+        assert_eq!(requests.len(), 2);
+        let second_body: Value = serde_json::from_str(&requests[1].body).unwrap();
+        let second_control = control_of(&second_body).unwrap();
+        assert_eq!(
+            second_control["previous_handoff"]["handoff_id"],
+            first_handoff_id
+        );
+        assert_eq!(second_control["source_turns"].as_array().unwrap().len(), 2);
+        assert!(second_control["current_state"]["rendered_active_state"]
+            .as_str()
+            .unwrap()
+            .contains("current graph note"));
+        let second_source_text = second_control["source_turns"].to_string();
+        assert!(second_source_text.contains("charlie three"));
+        assert!(second_source_text.contains("delta four"));
+        assert!(!second_source_text.contains("alpha one"));
+        assert!(!second_source_text.contains("bravo two"));
+        assert!(!second_body.to_string().contains("alpha one"));
+        assert!(!second_body
+            .to_string()
+            .contains("epoch one unique archived detail"));
+
+        let compacted = of_kind(&s.session, "history_compacted");
+        let second_event = compacted.last().unwrap();
+        let second_data = &second_event["event"]["data"];
+        assert_eq!(second_data["handoff"]["lineage_through_epoch"], 2);
+        assert_eq!(
+            second_data["handoff"]["based_on_previous_handoff"],
+            first_handoff_id
+        );
+        let second_range = (
+            second_data["source_start_sequence"].as_u64().unwrap(),
+            second_data["source_end_sequence"].as_u64().unwrap(),
+        );
+        assert!(first_range.1 < second_range.0 || second_range.1 < first_range.0);
+        let mut mappings = std::collections::HashMap::new();
+        for event in &compacted {
+            for id in event["event"]["data"]["source_turn_ids"]
+                .as_array()
+                .unwrap()
+            {
+                *mappings
+                    .entry(id.as_str().unwrap().to_owned())
+                    .or_insert(0usize) += 1;
+            }
+        }
+        assert!(mappings.values().all(|count| *count == 1));
+
+        assert!(loop_
+            .run_turn("golf seven", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        let next_request = s.fake.main_requests().last().unwrap().clone();
+        let next_body: Value = serde_json::from_str(&next_request.body).unwrap();
+        let instructions = next_body["instructions"].as_str().unwrap();
+        let slot = instructions
+            .split("[PRAANA:HISTORICAL_HANDOFF_DATA]\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[/PRAANA:HISTORICAL_HANDOFF_DATA]").next())
+            .unwrap();
+        assert!(slot.contains(second_data["handoff"]["handoff_id"].as_str().unwrap()));
+        assert_eq!(
+            instructions
+                .matches("[PRAANA:HISTORICAL_HANDOFF_DATA]")
+                .count(),
+            1
+        );
+        assert!(!slot.contains("epoch one handoff context"));
+
+        let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+        let key = praana_core::history::event_log::read_cursor_hmac_key(&s.session).unwrap();
+        let page = search_session(
+            &conn,
+            &SessionSearchRequest {
+                query: "epoch one unique archived detail".to_owned(),
+                mode: SessionSearchMode::Exact,
+                case_sensitive: true,
+                filters: praana_core::history::search::SessionSearchFilters {
+                    source_kinds: vec![SearchSourceKind::SummarySegment],
+                    ..Default::default()
+                },
+                limit: 20,
+                cursor: None,
+            },
+            &key,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(page
+            .results
+            .iter()
+            .any(|hit| hit.source_field == "summary_segment.segment"));
+    }
+
+    #[tokio::test]
+    async fn projection_failure_keeps_compaction_active_and_replays_once() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two", "charlie three"]).await;
+        let db_path = s.session.join("history.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_summary_projection BEFORE INSERT ON summary_segments \
+             BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let CompactionOutcome::Activated {
+            retired_turn_ids, ..
+        } = loop_.compact_now(&compactor(&s)).await.unwrap()
+        else {
+            panic!("projection failure must not undo durable activation");
+        };
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
+        assert!(projection(&s.session)
+            .compacted_turn_ids
+            .contains(&retired_turn_ids[0]));
+        assert_eq!(
+            loop_.take_pending_diagnostic().map(|error| error.code),
+            Some("HISTORY_PROJECTION_PENDING".to_owned()),
+        );
+        drop(loop_);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("DROP TRIGGER fail_summary_projection;")
+            .unwrap();
+        drop(conn);
+        let sid = session_id(&s.session).to_string();
+        let log = EventLogStore::open(&s.session, &sid).unwrap();
+        let db = HistoryDatabase::open(&db_path).unwrap();
+        HistoryProjector::new(&db).project(&log).unwrap();
+        HistoryProjector::new(&db).project(&log).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let retired: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM turns WHERE retired_by_epoch = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retired, retired_turn_ids.len() as i64);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_source_turn_id_fails_history_projection() {
+        let s = session();
+        let mut loop_ = run_turns(&s, &["alpha one", "bravo two"]).await;
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Activated { .. }
+        ));
+        drop(loop_);
+
+        let path = s.session.join("events.jsonl");
+        let events = read_events(&s.session);
+        let compacted = events
+            .iter()
+            .find(|event| event["event"]["kind"] == "history_compacted")
+            .unwrap();
+        let sequence = compacted["sequence"].as_u64().unwrap() as usize;
+        let source_ids = compacted["event"]["data"]["source_turn_ids"]
+            .as_array()
+            .unwrap();
+        let original = serde_json::to_string(source_ids).unwrap();
+        let mut duplicated = source_ids.clone();
+        duplicated.push(duplicated[0].clone());
+        let replacement = serde_json::to_string(&duplicated).unwrap();
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let needle = format!("\"source_turn_ids\":{original}");
+        let replacement = format!("\"source_turn_ids\":{replacement}");
+        assert!(lines[sequence - 1].contains(&needle));
+        lines[sequence - 1] = lines[sequence - 1].replace(&needle, &replacement);
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+
+        let sid = session_id(&s.session).to_string();
+        let log = EventLogStore::open(&s.session, &sid).unwrap();
+        let db = HistoryDatabase::open(&s.session.join("history.db")).unwrap();
+        let error = HistoryProjector::new(&db).project(&log).unwrap_err();
+        assert_eq!(error.code(), "HISTORY_EVENT_INTEGRITY");
+    }
+
+    #[tokio::test]
+    async fn hundred_compaction_epochs_keep_a_single_bounded_handoff() {
+        let started = std::time::Instant::now();
+        let mut s = session();
+        s.config.history.compact_mass_fraction = 0.001;
+        let source_texts: Vec<String> = (0..100).map(|n| format!("synthetic source {n}")).collect();
+        let source_refs: Vec<&str> = source_texts.iter().map(String::as_str).collect();
+        let loop_ = run_turns(&s, &source_refs).await;
+        drop(loop_);
+        let compactor = compactor(&s);
+        let mut log = EventLogStore::open(&s.session, &session_id(&s.session).to_string()).unwrap();
+        let ids = MonotonicUlidGenerator::system();
+        let config = s.config.clone();
+        let mut seen_turns = std::collections::BTreeSet::new();
+        let mut ranges = Vec::new();
+        let mut active_handoff = None;
+
+        for epoch in 1..=100u32 {
+            let mut context = praana_core::compaction::activate::ActivationContext {
+                log: &mut log,
+                ids: &ids,
+                clock: &SystemClock,
+                session_id: session_id(&s.session),
+                config: &config,
+                framing: &compactor.framing,
+            };
+            let CompactionOutcome::Activated {
+                epoch: actual,
+                retired_turn_ids,
+                ..
+            } = praana_core::compaction::activate::run(
+                &mut context,
+                &compactor,
+                &tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            else {
+                panic!("epoch {epoch} did not activate");
+            };
+            assert_eq!(actual, epoch);
+            for id in retired_turn_ids {
+                assert!(seen_turns.insert(id), "turn {id} retired twice");
+            }
+            let events = of_kind(&s.session, "history_compacted");
+            let current = events.last().unwrap();
+            let data = &current["event"]["data"];
+            assert!(
+                data["handoff"]["estimated_tokens"].as_u64().unwrap()
+                    <= s.config.history.handoff_max_tokens
+            );
+            assert_eq!(data["handoff"]["lineage_through_epoch"], epoch);
+            let visible = projection(&s.session);
+            let visible_handoff_id = visible
+                .active_handoff
+                .as_ref()
+                .map(|handoff| handoff.handoff_id.to_string());
+            assert_eq!(
+                visible_handoff_id.as_deref(),
+                data["handoff"]["handoff_id"].as_str(),
+                "exactly the current handoff is model-visible after epoch {epoch}",
+            );
+            if let Some(previous) = active_handoff {
+                assert_eq!(data["handoff"]["based_on_previous_handoff"], previous);
+            } else {
+                assert!(data["handoff"]["based_on_previous_handoff"].is_null());
+            }
+            active_handoff = Some(data["handoff"]["handoff_id"].clone());
+            let range = (
+                data["source_start_sequence"].as_u64().unwrap(),
+                data["source_end_sequence"].as_u64().unwrap(),
+            );
+            assert!(ranges
+                .iter()
+                .all(|prior: &(u64, u64)| range.1 < prior.0 || prior.1 < range.0));
+            ranges.push(range);
+        }
+        assert_eq!(seen_turns.len(), 100);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 100);
+        drop(log);
+        let loop_ = run_turns(&s, &["after one hundred epochs"]).await;
+        drop(loop_);
+        let request = s.fake.main_requests().last().unwrap().clone();
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        let instructions = body["instructions"].as_str().unwrap();
+        assert_eq!(
+            instructions
+                .matches("[PRAANA:HISTORICAL_HANDOFF_DATA]")
+                .count(),
+            1
+        );
+        assert!(instructions.contains("epoch two current handoff"));
+        eprintln!("100 compaction epochs: {:?}", started.elapsed());
     }
 
     #[tokio::test]

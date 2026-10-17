@@ -1,6 +1,6 @@
 //! History-derived checkpoint and projection (History §5.2, §8, §9.4).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -663,7 +663,14 @@ fn apply_projection(
                     "summary_segment.handoff",
                     summary.handoff_json.clone(),
                 ));
+                let mut source_turn_ids = BTreeSet::new();
                 for turn_id in &compacted.source_turn_ids {
+                    if !source_turn_ids.insert(*turn_id) {
+                        return Err(ArtifactError::new(
+                            "HISTORY_EVENT_INTEGRITY",
+                            "compaction source turn ids contain a duplicate",
+                        ));
+                    }
                     let entry = turns.get_mut(turn_id).ok_or_else(|| {
                         ArtifactError::new(
                             "HISTORY_EVENT_INTEGRITY",

@@ -323,14 +323,11 @@ pub struct TurnMass {
 /// `tool_execution_finished` for each result.
 fn message_events(
     turn: &crate::history::replay::TurnReplay,
-    events: &[EventEnvelope],
+    user_events: &HashMap<TurnId, EventId>,
 ) -> HashMap<MessageId, EventId> {
     let mut map = HashMap::new();
-    if let Some(event) = events.iter().find(|event| {
-        event.turn_id == Some(turn.id)
-            && matches!(event.event, CanonicalEvent::UserMessageAccepted(_))
-    }) {
-        map.insert(turn.user.message_id, event.event_id);
+    if let Some(event_id) = user_events.get(&turn.id) {
+        map.insert(turn.user.message_id, *event_id);
     }
     for step in turn.steps.values() {
         map.insert(step.message.message_id, step.accept_event_id);
@@ -366,6 +363,32 @@ fn replay_all(
     Ok(replay)
 }
 
+fn replay_with_turn_end_states(
+    events: &[EventEnvelope],
+    raw_lines: &[String],
+) -> Result<
+    (
+        EventReplayer,
+        HashMap<u64, crate::protocol::state_graph::StateGraphV1>,
+    ),
+    CompactionRunError,
+> {
+    let mut replay = EventReplayer::new();
+    let mut states = HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        replay
+            .process_event(event, Some(index + 1), Some(raw_lines))
+            .map_err(history_error)?;
+        if matches!(
+            event.event,
+            CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_)
+        ) {
+            states.insert(event.sequence, replay.state.clone());
+        }
+    }
+    Ok((replay, states))
+}
+
 /// Builds `ProjectedTurn` for every turn of the current reset epoch. Token
 /// mass is the target estimator's count of each turn's accepted messages
 /// (§6). A turn is closed exactly when it committed or has a valid
@@ -376,20 +399,51 @@ pub fn projected_turns(
     replay: &EventReplayer,
     framing: &FramingProfileV1,
 ) -> Result<Vec<TurnMass>, CompactionRunError> {
-    let retired: HashMap<TurnId, u32> = retired_epochs(events);
-    let closure: HashMap<TurnId, u64> = events
-        .iter()
-        .filter_map(|event| match &event.event {
-            CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_) => {
-                event.turn_id.map(|turn| (turn, event.sequence))
+    let mut retired = HashMap::new();
+    let mut closure = HashMap::new();
+    let mut user_events = HashMap::new();
+    let mut turn_epochs = HashMap::new();
+    let mut reset_epoch = 0;
+    for event in events {
+        match &event.event {
+            CanonicalEvent::ResetBoundary(boundary) => {
+                reset_epoch = boundary.reset_epoch;
+                retired.clear();
             }
-            _ => None,
-        })
-        .collect();
+            CanonicalEvent::HistoryCompacted(compacted) => {
+                for turn in &compacted.source_turn_ids {
+                    retired.insert(*turn, compacted.epoch);
+                }
+            }
+            CanonicalEvent::TurnStarted(_) => {
+                if let Some(turn) = event.turn_id {
+                    turn_epochs.insert(turn, reset_epoch);
+                }
+            }
+            CanonicalEvent::TurnCommitted(_) | CanonicalEvent::TurnInterrupted(_) => {
+                if let Some(turn) = event.turn_id {
+                    closure.insert(turn, event.sequence);
+                }
+            }
+            CanonicalEvent::UserMessageAccepted(_) => {
+                if let Some(turn) = event.turn_id {
+                    user_events.insert(turn, event.event_id);
+                }
+            }
+            _ => {}
+        }
+    }
     let mut out = Vec::new();
     for turn in replay.turns.values() {
+        let turn_epoch = turn_epochs
+            .get(&turn.id)
+            .copied()
+            .unwrap_or(replay.reset_epoch);
+        if turn_epoch != replay.reset_epoch || retired.contains_key(&turn.id) {
+            continue;
+        }
         let messages = accepted_messages(turn, false, None, None).map_err(history_error)?;
-        let accepting = message_events(turn, events);
+        let accepting = message_events(turn, &user_events);
         let source_messages = messages
             .iter()
             .map(|message| {
@@ -428,7 +482,7 @@ pub fn projected_turns(
                 turn_id: turn.id,
                 start_sequence: turn.start_sequence,
                 closure_sequence: closure.get(&turn.id).copied().unwrap_or(0),
-                reset_epoch: replay.reset_epoch,
+                reset_epoch: turn_epoch,
                 retired_by_epoch: retired.get(&turn.id).copied(),
                 compaction_closed: closed,
                 protocol_complete: closed,
@@ -441,23 +495,6 @@ pub fn projected_turns(
         });
     }
     Ok(out)
-}
-
-/// Compaction epoch that retired each turn in the current reset epoch.
-fn retired_epochs(events: &[EventEnvelope]) -> HashMap<TurnId, u32> {
-    let mut retired = HashMap::new();
-    for event in events {
-        match &event.event {
-            CanonicalEvent::ResetBoundary(_) => retired.clear(),
-            CanonicalEvent::HistoryCompacted(compacted) => {
-                for turn in &compacted.source_turn_ids {
-                    retired.insert(*turn, compacted.epoch);
-                }
-            }
-            _ => {}
-        }
-    }
-    retired
 }
 
 fn after_last_reset(events: &[EventEnvelope]) -> &[EventEnvelope] {
@@ -598,7 +635,7 @@ pub fn snapshot(
     config: &EffectiveConfigV1,
     framing: &FramingProfileV1,
 ) -> Result<CompactionSnapshot, CompactionRunError> {
-    let replay = replay_all(events, raw_lines)?;
+    let (replay, states_at_turn_end) = replay_with_turn_end_states(events, raw_lines)?;
     if open_compaction_attempt(&replay) {
         return Err(CompactionRunError::InFlight);
     }
@@ -652,12 +689,9 @@ pub fn snapshot(
         .iter()
         .filter(|event| event.sequence >= start && event.sequence <= end)
         .collect();
-    let mut state_at_end = EventReplayer::new();
-    for (index, event) in events.iter().enumerate().take(end as usize) {
-        state_at_end
-            .process_event(event, Some(index + 1), Some(raw_lines))
-            .map_err(history_error)?;
-    }
+    let state_at_end = states_at_turn_end.get(&end).ok_or_else(|| {
+        CompactionRunError::History("selected source end has no replayed turn-end state".into())
+    })?;
     let epoch_events = after_last_reset(events);
     let mut prior_segment_ids = BTreeSet::new();
     let mut lineage_ranges = Vec::new();
@@ -673,7 +707,7 @@ pub fn snapshot(
     let universe = ReferenceUniverse {
         source_event_ids: source_events.iter().map(|event| event.event_id).collect(),
         source_artifact_ids: artifact_ids_in(&source_events),
-        source_state_ids: state_ids_of(&state_at_end.state),
+        source_state_ids: state_ids_of(state_at_end),
         prior_segment_ids,
         lineage_event_ids: events
             .iter()
