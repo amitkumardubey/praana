@@ -118,7 +118,20 @@ pub struct ProviderFailure {
     pub retry_after_ms: Option<u64>,
 }
 
+/// Canonical code of a provider context-length response (Protocol §10).
+const CONTEXT_LENGTH_CODE: &str = "E_PROVIDER_CONTEXT_LENGTH";
+
 impl ProviderFailure {
+    /// The one emergency context retry (Compaction §14.3). It is not a generic
+    /// retry: `retry_allowed` still excludes `ContextLength`, so other error
+    /// classes can neither reach nor reset this budget.
+    fn emergency_context_retry_allowed(&self, already_spent: bool) -> bool {
+        !already_spent
+            && !self.cancelled
+            && !self.emission_crossed
+            && self.error.code == CONTEXT_LENGTH_CODE
+    }
+
     fn retry_allowed(&self) -> bool {
         !self.emission_crossed
             && !self.cancelled
@@ -385,6 +398,9 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
+    /// Transient margin (tokens) for the single emergency re-admission after a
+    /// provider context-length response (Compaction §14.3). Zero otherwise.
+    emergency_margin_tokens: u64,
 }
 
 impl HeadlessLoop {
@@ -688,6 +704,7 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
+            emergency_margin_tokens: 0,
         })
     }
 
@@ -1033,6 +1050,7 @@ impl HeadlessLoop {
         // Accumulated retry wall time for this step: no further attempt is
         // scheduled once it reaches the OpenAI §18.3 60s cap.
         let mut retry_spent_ms: u64 = 0;
+        self.emergency_margin_tokens = 0;
         loop {
             if self.cancel.is_cancelled() {
                 return Ok(Control::Done(
@@ -1046,6 +1064,9 @@ impl HeadlessLoop {
                 attempt_number: u32,
                 status: crate::history::replay::AttemptStatus,
                 step_id: StepId,
+                emergency: bool,
+                emitted: bool,
+                failure_code: Option<String>,
             }
             let prior_attempts: Vec<PriorAttempt> = replay
                 .attempts
@@ -1062,6 +1083,9 @@ impl HeadlessLoop {
                         attempt_number: attempt.attempt_number,
                         status: attempt.status.clone(),
                         step_id: purpose.step_id,
+                        emergency: attempt.emergency_context_retry,
+                        emitted: attempt.observable_delta_emitted,
+                        failure_code: attempt.failure_code.clone(),
                     })
                 })
                 .collect();
@@ -1087,6 +1111,23 @@ impl HeadlessLoop {
                 .max_by_key(|attempt| attempt.attempt_number)
                 .cloned();
             let retry_of = max_prior.as_ref().map(|attempt| attempt.id);
+            // Compaction §14.3 / D2: the first context-length failure of a step
+            // earns exactly one emergency resend. It is derived from the
+            // durable log so a resumed turn neither repeats nor loses it.
+            let emergency_spent = prior_attempts.iter().any(|attempt| attempt.emergency);
+            let last_was_context_length = max_prior.as_ref().is_some_and(|attempt| {
+                attempt.status == crate::history::replay::AttemptStatus::Failed
+                    && !attempt.emitted
+                    && attempt.failure_code.as_deref() == Some(CONTEXT_LENGTH_CODE)
+            });
+            if last_was_context_length && emergency_spent {
+                // The emergency attempt itself (or an earlier one) was
+                // rejected: the canonical diagnostic is already durable.
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::ProviderFailure, retry_of)?,
+                ));
+            }
+            let is_emergency = last_was_context_length;
             let step_id: StepId = match &max_prior {
                 Some(attempt) => attempt.step_id,
                 None => self.fresh()?,
@@ -1218,6 +1259,12 @@ impl HeadlessLoop {
             // The admitted body carries the final reserve; drop the override.
             provider.clear_output_reserve();
             let attempt_id: AttemptId = self.fresh()?;
+            // `(context_window_tokens, estimated_input_tokens)` of this attempt
+            // feed the Compaction §14.3 underestimation figure.
+            let admission_dims = (
+                admitted.snapshot.context_window_tokens,
+                admitted.snapshot.estimated_input_tokens,
+            );
             let purpose = AssistantStepPurpose {
                 step_id,
                 step_index: open.step_index,
@@ -1237,10 +1284,11 @@ impl HeadlessLoop {
                     request_hash: admitted.request_hash,
                     admission: admitted.snapshot,
                     retry_of,
-                    emergency_context_retry: false,
+                    emergency_context_retry: is_emergency,
                     recovery_notices: notices,
                 }),
             )?;
+            self.emergency_margin_tokens = 0;
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_attempt_started:step{}:attempt{}",
@@ -1256,6 +1304,18 @@ impl HeadlessLoop {
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
+                        // §14.3 steps 1-4: the underestimation figure tightens
+                        // the next admission; a free `turn.max_attempts` slot
+                        // is checked at the top of the loop, so an exhausted
+                        // cap ends the step without another send.
+                        let (window, estimated) = admission_dims;
+                        self.emergency_margin_tokens =
+                            window.saturating_sub(estimated).saturating_add(1).max(1);
+                        #[cfg(feature = "failpoints")]
+                        crate::crash_point::hit("turn.before_emergency_resend");
+                        continue;
+                    }
                     // `attempt_number` is 1-based, so it is also the 1-based
                     // number of the retry about to be scheduled.
                     let delay = self.retry_backoff_delay_ms(attempt_number, &failure);
@@ -1404,7 +1464,7 @@ impl HeadlessLoop {
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
-            calibration_margin: 0,
+            calibration_margin: self.emergency_margin_tokens,
             component_bytes,
             framing: self.framing.clone(),
             image_count: prepared.image_count as u64,

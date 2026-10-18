@@ -2189,3 +2189,198 @@ async fn runtime_facts_session_id_matches_authoritative_session_on_create_and_re
         "turn 2 request must never contain placeholder session_id"
     );
 }
+
+// ---------------------------------------------------------------------------
+// P5-6a: one emergency context retry (Compaction §14.3, Amit D2)
+// ---------------------------------------------------------------------------
+
+const CONTEXT_LENGTH_BODY: &str =
+    "{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"maximum context length\"}}";
+
+struct EmergencyFixture {
+    _temp: tempfile::TempDir,
+    home: PathBuf,
+    session: PathBuf,
+    workspace: PathBuf,
+}
+
+fn emergency_fixture() -> EmergencyFixture {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+    EmergencyFixture {
+        _temp: temp,
+        home,
+        session,
+        workspace,
+    }
+}
+
+fn attempt_started_events(session: &Path) -> Vec<Value> {
+    events_of_kind(&read_events(session), "assistant_attempt_started")
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_emergency_retries_once() {
+    let fx = emergency_fixture();
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(400, CONTEXT_LENGTH_BODY, "")
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+    let config = openai_config(&fx.home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &fx.home, &fx.workspace).expect("provider");
+    let mut loop_ =
+        HeadlessLoop::create(loop_config(config, &fx.session, &fx.workspace)).expect("loop create");
+
+    let report = loop_
+        .run_turn("hello p3d please respond", &provider)
+        .await
+        .expect("turn yields a report");
+
+    assert!(report.interruption.is_none(), "emergency retry commits");
+    assert!(
+        report.diagnostic.is_none(),
+        "no stale diagnostic after success"
+    );
+    assert_eq!(
+        server.hits(),
+        2,
+        "one original send plus one emergency send"
+    );
+
+    let started = attempt_started_events(&fx.session);
+    assert_eq!(started.len(), 2);
+    assert_eq!(
+        started[0].pointer("/event/data/emergency_context_retry"),
+        Some(&json!(false))
+    );
+    assert_eq!(
+        started[1].pointer("/event/data/emergency_context_retry"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        started[1].pointer("/event/data/retry_of"),
+        started[0].pointer("/attempt_id"),
+        "emergency attempt links to the failed attempt"
+    );
+    assert_admission_preceded_send(&fx.session, &server.request(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_context_length_is_not_retried() {
+    let fx = emergency_fixture();
+    let server =
+        spawn_server(|_index, _request, _server| sse_response(400, CONTEXT_LENGTH_BODY, ""));
+    let config = openai_config(&fx.home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &fx.home, &fx.workspace).expect("provider");
+    let mut loop_ =
+        HeadlessLoop::create(loop_config(config, &fx.session, &fx.workspace)).expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn yields a report");
+
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    let diagnostic = diagnostic_json(&report);
+    assert_eq!(
+        diagnostic.get("code"),
+        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+    );
+    assert_eq!(diagnostic.get("class"), Some(&json!("context_length")));
+    assert_eq!(
+        server.hits(),
+        2,
+        "exactly one emergency resend, never a third"
+    );
+    assert_eq!(attempt_started_events(&fx.session).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exhausted_max_attempts_blocks_emergency_resend() {
+    let fx = emergency_fixture();
+    let server =
+        spawn_server(|_index, _request, _server| sse_response(400, CONTEXT_LENGTH_BODY, ""));
+    let mut config = openai_config(&fx.home, &server.base_url());
+    config.turn.max_attempts = 1;
+    let provider = OpenAiStepProvider::new(&config, &fx.home, &fx.workspace).expect("provider");
+    let mut loop_ =
+        HeadlessLoop::create(loop_config(config, &fx.session, &fx.workspace)).expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn yields a report");
+
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    assert_eq!(
+        diagnostic_json(&report).get("code"),
+        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+    );
+    assert_eq!(
+        server.hits(),
+        1,
+        "no further assistant attempt past the cap"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rate_limit_retry_does_not_spend_the_emergency_budget() {
+    let fx = emergency_fixture();
+    let server = spawn_server(|index, _request, _server| match index {
+        0 => sse_response(429, "{}", "retry-after-ms: 0\r\n"),
+        1 => sse_response(400, CONTEXT_LENGTH_BODY, ""),
+        _ => {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+    let mut config = openai_config(&fx.home, &server.base_url());
+    config.turn.max_attempts = 4;
+    let provider = OpenAiStepProvider::new(&config, &fx.home, &fx.workspace).expect("provider");
+    let mut loop_ =
+        HeadlessLoop::create(loop_config(config, &fx.session, &fx.workspace)).expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn yields a report");
+
+    assert!(
+        report.interruption.is_none(),
+        "429 then context then success"
+    );
+    assert_eq!(server.hits(), 3);
+    let started = attempt_started_events(&fx.session);
+    let flags: Vec<_> = started
+        .iter()
+        .map(|event| {
+            event
+                .pointer("/event/data/emergency_context_retry")
+                .cloned()
+        })
+        .collect();
+    assert_eq!(
+        flags,
+        vec![Some(json!(false)), Some(json!(false)), Some(json!(true))],
+        "only the post-context-length attempt carries the emergency flag"
+    );
+}
