@@ -121,6 +121,19 @@ pub struct ProviderFailure {
 /// Canonical code of a provider context-length response (Protocol §10).
 const CONTEXT_LENGTH_CODE: &str = "E_PROVIDER_CONTEXT_LENGTH";
 
+/// The §14.3 emergency re-admission margin from an attempt's admission dims.
+///
+/// The provider rejected a request the estimator thought fit, so the estimate
+/// `I` understated the real occupancy by at least `W - I`. We re-admit with the
+/// largest margin the admission allows: `max(1, W - I + 1)`. Admission still
+/// caps the applied margin at `W / 10`, so in practice this is the maximum
+/// margin rather than a tuned underestimation figure. Deriving it purely from
+/// the two durable admission numbers keeps a live resend and a resumed resend
+/// byte-identical. This figure is not a calibration sample and is not stored.
+fn emergency_margin_from(window: u64, estimated: u64) -> u64 {
+    window.saturating_sub(estimated).saturating_add(1).max(1)
+}
+
 impl ProviderFailure {
     /// The one emergency context retry (Compaction §14.3). It is not a generic
     /// retry: `retry_allowed` still excludes `ContextLength`, so other error
@@ -671,19 +684,39 @@ impl HeadlessLoop {
         };
         match self.compact_once(&compactor).await {
             Ok(CompactionOutcome::Activated { .. }) => Ok(true),
-            Ok(CompactionOutcome::Failed { .. }) => Ok(false),
+            Ok(CompactionOutcome::Failed { error, .. }) => {
+                // §14.1: a failed compaction retains every turn and the request
+                // still goes out. Surface the reason rather than dropping it.
+                eprintln!(
+                    "live compaction did not activate ({}): continuing with retained turns",
+                    error.code
+                );
+                Ok(false)
+            }
             Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
-            Err(_) => Ok(false),
+            Err(other) => {
+                // Non-durable failure (§14.1): continue, but do not swallow the
+                // reason silently.
+                eprintln!("live compaction epoch error: {other}; continuing with retained turns");
+                Ok(false)
+            }
         }
     }
 
-    /// Whether this admission should run a compaction epoch before sending:
-    /// hard-ceiling recovery (`I > U`, §14.2) always may; proactive pressure
-    /// (§4.2) needs the trigger and an unconsidered eligible turn.
+    /// Whether this admission should run a compaction epoch before sending.
+    /// Both the hard-ceiling path (non-`Admitted`, §14.2) and the proactive
+    /// pressure path (§4.2) require an unconsidered eligible turn: without one
+    /// there is nothing left to compact, so re-running would only burn a
+    /// durable attempt and a compactor call against the same source.
     fn live_compaction_wanted(&mut self, admission: &AdmissionOutcome) -> Result<bool, TurnError> {
-        use crate::compaction::admission::{
-            next_pressure_state, should_launch, PressureThresholds,
-        };
+        use crate::compaction::admission::{should_launch, PressureThresholds};
+        let candidate = crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
+            .map_err(|error| TurnError::failed(error.to_string()))?;
+        if !candidate {
+            return Ok(false);
+        }
+        // Hard-ceiling recovery (`I > U`): a request that does not fit as-is
+        // compacts first (§14.2), provided a source turn remains.
         let AdmissionOutcome::Admitted(admitted) = admission else {
             return Ok(true);
         };
@@ -694,13 +727,29 @@ impl HeadlessLoop {
             return Ok(false);
         };
         let fill_ppm = u64::from(admitted.snapshot.projected_fill_millionths);
-        self.pressure = next_pressure_state(self.pressure, fill_ppm, thresholds);
         if fill_ppm < thresholds.trigger_ppm {
             return Ok(false);
         }
-        let candidate = crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
-            .map_err(|error| TurnError::failed(error.to_string()))?;
         Ok(should_launch(fill_ppm, thresholds, false, candidate))
+    }
+
+    /// Updates the observable pressure hysteresis signal (§4.2) from the
+    /// admitted fill. Runs on every admission regardless of whether a compactor
+    /// is installed, so `pressure_state()` reflects reality even when live
+    /// compaction is inert.
+    fn update_pressure(&mut self, admission: &AdmissionOutcome) {
+        use crate::compaction::admission::{next_pressure_state, PressureThresholds};
+        let AdmissionOutcome::Admitted(admitted) = admission else {
+            return;
+        };
+        let history = &self.config.config.history;
+        let Ok(thresholds) =
+            PressureThresholds::from_ratios(history.compact_at, history.compact_clear_at)
+        else {
+            return;
+        };
+        let fill_ppm = u64::from(admitted.snapshot.projected_fill_millionths);
+        self.pressure = next_pressure_state(self.pressure, fill_ppm, thresholds);
     }
 
     /// True when replay reports an unfinished turn that
@@ -1127,6 +1176,9 @@ impl HeadlessLoop {
         self.emergency_margin_tokens = 0;
         // The §14.3 recovery cycle compacts at most once per emergency retry.
         let mut emergency_epoch_run = false;
+        // Hard-ceiling / proactive epochs run this step. Bounded so a
+        // non-progressing epoch under an inflated margin cannot loop forever.
+        let mut compaction_epochs_run: u32 = 0;
         loop {
             if self.cancel.is_cancelled() {
                 return Ok(Control::Done(
@@ -1143,6 +1195,8 @@ impl HeadlessLoop {
                 emergency: bool,
                 emitted: bool,
                 failure_code: Option<String>,
+                admission_window: u64,
+                admission_estimated: u64,
             }
             let prior_attempts: Vec<PriorAttempt> = replay
                 .attempts
@@ -1162,6 +1216,8 @@ impl HeadlessLoop {
                         emergency: attempt.emergency_context_retry,
                         emitted: attempt.observable_delta_emitted,
                         failure_code: attempt.failure_code.clone(),
+                        admission_window: attempt.admission_context_window_tokens,
+                        admission_estimated: attempt.admission_estimated_input_tokens,
                     })
                 })
                 .collect();
@@ -1204,6 +1260,20 @@ impl HeadlessLoop {
                 ));
             }
             let is_emergency = last_was_context_length;
+            // §14.3: an emergency resend carries the recovery margin derived
+            // from the failed attempt's durable admission dims. Recomputing it
+            // from the log (rather than trusting the in-memory value, which a
+            // resume loses) makes a live resend and a resumed resend send an
+            // identical request. The live failure path also seeds this value;
+            // reasserting it here is the single source of truth for the resend.
+            if is_emergency {
+                if let Some(attempt) = max_prior.as_ref() {
+                    self.emergency_margin_tokens = emergency_margin_from(
+                        attempt.admission_window,
+                        attempt.admission_estimated,
+                    );
+                }
+            }
             let step_id: StepId = match &max_prior {
                 Some(attempt) => attempt.step_id,
                 None => self.fresh()?,
@@ -1263,13 +1333,24 @@ impl HeadlessLoop {
                     );
                 }
             };
+            // Compaction §4.2: the pressure hysteresis signal tracks every
+            // admission, whether or not a compactor is installed.
+            self.update_pressure(&admission);
             // Compaction §14.2 order: a compaction epoch comes before any output
-            // reserve reduction, and an epoch always rebuilds the request.
+            // reserve reduction, and an epoch always rebuilds the request. An
+            // emergency cycle (§14.3) and the hard-ceiling / proactive paths
+            // each run at most one epoch per step: `proactive_candidate` goes
+            // false once every eligible turn is considered, and the per-step
+            // `compaction_epochs_run` cap stops a non-progressing epoch from
+            // looping forever under an inflated emergency margin.
             let emergency_cycle = self.emergency_margin_tokens > 0 && !emergency_epoch_run;
+            let epoch_budget_left = compaction_epochs_run < self.config.config.turn.max_attempts;
             if self.compactor.is_some()
+                && epoch_budget_left
                 && (emergency_cycle || self.live_compaction_wanted(&admission)?)
             {
                 emergency_epoch_run |= emergency_cycle;
+                compaction_epochs_run = compaction_epochs_run.saturating_add(1);
                 if self.live_compaction_epoch().await? {
                     continue;
                 }
@@ -1392,13 +1473,13 @@ impl HeadlessLoop {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
                     if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
-                        // §14.3 steps 1-4: the underestimation figure tightens
-                        // the next admission; a free `turn.max_attempts` slot
-                        // is checked at the top of the loop, so an exhausted
-                        // cap ends the step without another send.
+                        // §14.3: seed the recovery margin from this attempt's
+                        // admission dims and loop. The top-of-loop
+                        // `max_attempts` check gates the resend, so an exhausted
+                        // cap ends the step without another send. The resume
+                        // path recomputes the same margin from the durable log.
                         let (window, estimated) = admission_dims;
-                        self.emergency_margin_tokens =
-                            window.saturating_sub(estimated).saturating_add(1).max(1);
+                        self.emergency_margin_tokens = emergency_margin_from(window, estimated);
                         #[cfg(feature = "failpoints")]
                         crate::crash_point::hit("turn.before_emergency_resend");
                         continue;

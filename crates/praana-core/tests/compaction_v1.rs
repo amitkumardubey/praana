@@ -3840,6 +3840,59 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(s.fake.main_requests().len(), 1);
     }
 
+    #[tokio::test]
+    async fn hard_ceiling_failed_epoch_does_not_loop_and_still_sends() {
+        // Calibrate the window so the final turn overshoots usable input, the
+        // same way `hard_ceiling_compacts_before_reducing_the_output_reserve`
+        // does, so hard-ceiling recovery is the only compaction trigger.
+        let mut calibration = session();
+        no_margin(&mut calibration.config);
+        calibration.config.llm.max_output_tokens = 4_096;
+        let texts: Vec<String> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        run_live(&calibration, &texts, false).await;
+        let snapshots = admission_snapshots(&calibration.session);
+        let tokens = |index: usize| snapshots[index]["estimated_input_tokens"].as_u64().unwrap();
+        let rout = snapshots[3]["resolved_output_tokens"].as_u64().unwrap();
+        let rreason = snapshots[3]["requested_reasoning_tokens"].as_u64().unwrap();
+        let window = tokens(3) - 10 + rout + rreason;
+
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.max_output_tokens = 4_096;
+        s.config.llm.context_window = window;
+        // Keep proactive pressure out: only the hard ceiling (`I > U`) acts.
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        // The compaction attempt and its one schema repair both fail, so no
+        // source turn is ever retired within the final turn.
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Raw("still not json".into()));
+
+        run_live(&s, &texts, true).await;
+
+        // §14.1: a failed hard-ceiling epoch retires nothing and does not loop
+        // — the request still goes out after exactly one epoch (attempt plus
+        // its single schema repair), then the output reserve is reduced.
+        let compaction_attempts = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert_eq!(
+            compaction_attempts, 2,
+            "exactly one failed epoch: the attempt and its single repair"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 2);
+        assert!(
+            of_kind(&s.session, "history_compacted").is_empty(),
+            "a failed compaction retires nothing"
+        );
+        // §14.1: the request still goes out after the failed epoch.
+        assert_eq!(s.fake.main_requests().len(), texts.len());
+    }
+
     #[test]
     fn a_profile_with_an_empty_output_range_is_unavailable_not_a_panic() {
         let home = tempfile::tempdir().unwrap();

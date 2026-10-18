@@ -40,6 +40,12 @@ pub struct AttemptReplay {
     pub emergency_context_retry: bool,
     /// Canonical `E_*` code of the durable `AssistantAttemptFailed`, if any.
     pub failure_code: Option<String>,
+    /// Provider context window of the durable admission snapshot (`W`). Lets a
+    /// resumed turn recompute the §14.3 emergency margin from the log instead
+    /// of the lost in-memory value.
+    pub admission_context_window_tokens: u64,
+    /// Estimated input tokens of the durable admission snapshot (`I`).
+    pub admission_estimated_input_tokens: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -519,6 +525,8 @@ impl EventReplayer {
                         usage: ProviderUsage::default(),
                         emergency_context_retry: v.emergency_context_retry,
                         failure_code: None,
+                        admission_context_window_tokens: v.admission.context_window_tokens,
+                        admission_estimated_input_tokens: v.admission.estimated_input_tokens,
                     },
                 );
             }

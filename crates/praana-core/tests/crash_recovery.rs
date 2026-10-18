@@ -2786,17 +2786,32 @@ fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
         String::from_utf8_lossy(&resumed.stderr)
     );
     let after = read_envelopes(root.path());
-    let emergency: Vec<_> = after
+    let started: Vec<_> = after
         .iter()
         .filter_map(|event| match &event.event {
-            CanonicalEvent::AssistantAttemptStarted(started) if started.emergency_context_retry => {
-                Some(started)
-            }
+            CanonicalEvent::AssistantAttemptStarted(started) => Some(started),
             _ => None,
         })
         .collect();
+    let emergency: Vec<_> = started
+        .iter()
+        .filter(|started| started.emergency_context_retry)
+        .collect();
     assert_eq!(emergency.len(), 1, "exactly one emergency attempt");
     assert!(emergency[0].retry_of.is_some());
+    // The resumed emergency resend recovers its §14.3 margin from the durable
+    // log, so it carries a larger safety margin than the original attempt that
+    // the provider rejected for context length — it is not a bare re-send.
+    let original = started
+        .iter()
+        .find(|started| !started.emergency_context_retry)
+        .expect("original attempt is durable");
+    assert!(
+        emergency[0].admission.safety_margin_tokens > original.admission.safety_margin_tokens,
+        "emergency resend recovered a larger margin from the log ({} <= {})",
+        emergency[0].admission.safety_margin_tokens,
+        original.admission.safety_margin_tokens,
+    );
     assert!(after
         .iter()
         .any(|event| matches!(event.event, CanonicalEvent::TurnCommitted(_))));
