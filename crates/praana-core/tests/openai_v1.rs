@@ -730,6 +730,9 @@ fn cached_tokens_still_count_toward_occupancy() {
     assert_eq!(usage.cache_read_input_tokens, Some(10));
 }
 
+/// Adapter level only: the generic retry loop never retries a context-length
+/// response. The single P5-6a emergency retry is owned by the turn loop and is
+/// covered in `step_provider_p3d.rs` (`context_length_emergency_retries_once`).
 #[test]
 fn context_length_records_failure_without_retry() {
     assert!(!ProviderErrorCode::ProviderContextLength.generic_retry_before_emission());

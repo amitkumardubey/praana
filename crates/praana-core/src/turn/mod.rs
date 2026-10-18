@@ -401,6 +401,11 @@ pub struct HeadlessLoop {
     /// Transient margin (tokens) for the single emergency re-admission after a
     /// provider context-length response (Compaction §14.3). Zero otherwise.
     emergency_margin_tokens: u64,
+    /// Resolved configured compactor (Compaction §7.3). `None` keeps live
+    /// compaction inert; the P5-7 creation gate is what installs one.
+    compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
+    /// Observable hysteresis signal (Compaction §4.2); never a lockout.
+    pressure: crate::compaction::admission::PressureState,
 }
 
 impl HeadlessLoop {
@@ -578,15 +583,46 @@ impl HeadlessLoop {
         self.drive(provider, sink).await
     }
 
+    /// Installs the resolved configured compactor that live pressure and
+    /// hard-ceiling recovery use. `None` makes both inert.
+    pub fn set_compactor(
+        &mut self,
+        compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
+    ) {
+        self.compactor = compactor;
+    }
+
+    /// Current pressure hysteresis signal (Compaction §4.2).
+    pub fn pressure_state(&self) -> crate::compaction::admission::PressureState {
+        self.pressure
+    }
+
     /// Runs one compaction operation against a configured compactor
-    /// (Compaction §12). Called explicitly; live pressure wiring is P5-6. The
-    /// projection the next provider request sees is rebuilt from the durable
-    /// log, so a `HistoryCompacted` that reached fsync is the activation.
+    /// (Compaction §12) on demand. The projection the next provider request
+    /// sees is rebuilt from the durable log, so a `HistoryCompacted` that
+    /// reached fsync is the activation.
     pub async fn compact_now(
         &mut self,
         compactor: &crate::compaction::activate::ConfiguredCompactor,
     ) -> Result<crate::compaction::activate::CompactionOutcome, TurnError> {
         self.ensure_live()?;
+        self.compact_once(compactor)
+            .await
+            .map_err(|error| match error {
+                crate::compaction::activate::CompactionRunError::History(message) => {
+                    TurnError::Durability(message)
+                }
+                other => TurnError::failed(other.to_string()),
+            })
+    }
+
+    async fn compact_once(
+        &mut self,
+        compactor: &crate::compaction::activate::ConfiguredCompactor,
+    ) -> Result<
+        crate::compaction::activate::CompactionOutcome,
+        crate::compaction::activate::CompactionRunError,
+    > {
         let config = self.config.config.clone();
         let mut outcome = {
             let mut ctx = crate::compaction::activate::ActivationContext {
@@ -597,14 +633,7 @@ impl HeadlessLoop {
                 config: &config,
                 framing: &self.framing,
             };
-            crate::compaction::activate::run(&mut ctx, compactor, &self.cancel)
-                .await
-                .map_err(|error| match error {
-                    crate::compaction::activate::CompactionRunError::History(message) => {
-                        TurnError::Durability(message)
-                    }
-                    other => TurnError::failed(other.to_string()),
-                })?
+            crate::compaction::activate::run(&mut ctx, compactor, &self.cancel).await?
         };
         if let crate::compaction::activate::CompactionOutcome::Activated {
             derived_projection_error,
@@ -629,6 +658,49 @@ impl HeadlessLoop {
             }
         }
         Ok(outcome)
+    }
+
+    /// One live compaction epoch (Compaction §14.1, §14.2). `Ok(true)` means a
+    /// `HistoryCompacted` is durable and the request must be rebuilt. Any
+    /// non-durable-failure outcome keeps every source turn retained and lets
+    /// the caller continue with the request it already admitted or reject it.
+    async fn live_compaction_epoch(&mut self) -> Result<bool, TurnError> {
+        use crate::compaction::activate::{CompactionOutcome, CompactionRunError};
+        let Some(compactor) = self.compactor.clone() else {
+            return Ok(false);
+        };
+        match self.compact_once(&compactor).await {
+            Ok(CompactionOutcome::Activated { .. }) => Ok(true),
+            Ok(CompactionOutcome::Failed { .. }) => Ok(false),
+            Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Whether this admission should run a compaction epoch before sending:
+    /// hard-ceiling recovery (`I > U`, §14.2) always may; proactive pressure
+    /// (§4.2) needs the trigger and an unconsidered eligible turn.
+    fn live_compaction_wanted(&mut self, admission: &AdmissionOutcome) -> Result<bool, TurnError> {
+        use crate::compaction::admission::{
+            next_pressure_state, should_launch, PressureThresholds,
+        };
+        let AdmissionOutcome::Admitted(admitted) = admission else {
+            return Ok(true);
+        };
+        let history = &self.config.config.history;
+        let Ok(thresholds) =
+            PressureThresholds::from_ratios(history.compact_at, history.compact_clear_at)
+        else {
+            return Ok(false);
+        };
+        let fill_ppm = u64::from(admitted.snapshot.projected_fill_millionths);
+        self.pressure = next_pressure_state(self.pressure, fill_ppm, thresholds);
+        if fill_ppm < thresholds.trigger_ppm {
+            return Ok(false);
+        }
+        let candidate = crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
+            .map_err(|error| TurnError::failed(error.to_string()))?;
+        Ok(should_launch(fill_ppm, thresholds, false, candidate))
     }
 
     /// True when replay reports an unfinished turn that
@@ -705,6 +777,8 @@ impl HeadlessLoop {
             pending_diagnostic: None,
             project_context_changed: false,
             emergency_margin_tokens: 0,
+            compactor: None,
+            pressure: crate::compaction::admission::PressureState::Normal,
         })
     }
 
@@ -1051,6 +1125,8 @@ impl HeadlessLoop {
         // scheduled once it reaches the OpenAI §18.3 60s cap.
         let mut retry_spent_ms: u64 = 0;
         self.emergency_margin_tokens = 0;
+        // The §14.3 recovery cycle compacts at most once per emergency retry.
+        let mut emergency_epoch_run = false;
         loop {
             if self.cancel.is_cancelled() {
                 return Ok(Control::Done(
@@ -1187,6 +1263,17 @@ impl HeadlessLoop {
                     );
                 }
             };
+            // Compaction §14.2 order: a compaction epoch comes before any output
+            // reserve reduction, and an epoch always rebuilds the request.
+            let emergency_cycle = self.emergency_margin_tokens > 0 && !emergency_epoch_run;
+            if self.compactor.is_some()
+                && (emergency_cycle || self.live_compaction_wanted(&admission)?)
+            {
+                emergency_epoch_run |= emergency_cycle;
+                if self.live_compaction_epoch().await? {
+                    continue;
+                }
+            }
             if let AdmissionOutcome::ReduceOutput(new_max_output_tokens) = admission {
                 provider.set_output_reserve(new_max_output_tokens);
                 let reprepared = match provider.prepare_admitted(open.step_index, &prepare_ctx) {

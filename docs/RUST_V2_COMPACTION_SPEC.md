@@ -1693,6 +1693,13 @@ An exhausted `turn.max_attempts` does not send a further assistant attempt.
 The section 14.3 underestimation figure stays out of the calibration bucket.
 Defaults do not change.
 
+Amended 2026-10-18 (Amit, P5-6 scoping). P5-6 lands as P5-6a, then P5-6b.
+P5-6a covers live pressure, hard-ceiling recovery, and the emergency retry
+with its `turn.before_emergency_resend` failpoint. P5-6b covers calibration
+samples, `C`, and `compaction.after_calibration_sample`. Samples are kept in a
+non-canonical per-user store shared across sessions. A per-session bucket
+never reaches the 20-sample floor in a one-turn `praana run`.
+
 Run `cargo test -p praana-core --test step_provider_p3d context_length_emergency_retries_once`.
 Expected red: `retry_allowed` still excludes `ContextLength`, and
 `openai_v1.rs` `context_length_records_failure_without_retry` still describes
