@@ -18,7 +18,7 @@ use praana_core::history::recovery::SessionRecoveryEngine;
 use praana_core::id::{IdGenerationError, IdGenerator, MonotonicUlidGenerator, RandomSource};
 use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
 use praana_core::protocol::errors::{ErrorClass, ProtocolError};
-use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
+use praana_core::protocol::events::{CanonicalEvent, EventEnvelope, SupersessionReason};
 use praana_core::protocol::hashes::calculate_result_messages_hash;
 use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
 use praana_core::protocol::messages::FinishReason;
@@ -2811,6 +2811,19 @@ fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
         "emergency resend recovered a larger margin from the log ({} <= {})",
         emergency[0].admission.safety_margin_tokens,
         original.admission.safety_margin_tokens,
+    );
+    // The resumed resend supersedes with the same reason the live path uses.
+    let superseded: Vec<_> = after
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::AttemptSuperseded(superseded) => Some(superseded),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(superseded.len(), 1, "the emergency resend superseded once");
+    assert_eq!(
+        superseded[0].reason,
+        SupersessionReason::EmergencyContextRetry
     );
     assert!(after
         .iter()

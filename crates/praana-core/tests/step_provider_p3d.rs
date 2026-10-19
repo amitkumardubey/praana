@@ -2275,6 +2275,19 @@ async fn context_length_emergency_retries_once() {
         started[0].pointer("/attempt_id"),
         "emergency attempt links to the failed attempt"
     );
+    // Live execution must agree with the crash-recovery repair path: the
+    // emergency resend supersedes with `emergency_context_retry`, not `retry`.
+    let events = read_events(&fx.session);
+    let superseded = events_of_kind(&events, "attempt_superseded");
+    assert_eq!(superseded.len(), 1, "the emergency resend superseded once");
+    assert_eq!(
+        superseded[0].pointer("/event/data/reason"),
+        Some(&json!("emergency_context_retry"))
+    );
+    assert_eq!(
+        superseded[0].pointer("/event/data/superseded_attempt_id"),
+        started[0].pointer("/attempt_id")
+    );
     assert_admission_preceded_send(&fx.session, &server.request(1));
 }
 

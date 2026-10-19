@@ -1563,6 +1563,14 @@ impl HeadlessLoop {
                 .filter(|attempt| attempt.status == crate::history::replay::AttemptStatus::Failed)
                 .map(|attempt| attempt.id)
             {
+                // Match the crash-recovery repair path (history/recovery.rs): an
+                // emergency context retry supersedes with EmergencyContextRetry,
+                // so live execution and resume agree on the reason.
+                let reason = if is_emergency {
+                    SupersessionReason::EmergencyContextRetry
+                } else {
+                    SupersessionReason::Retry
+                };
                 self.append(
                     Some(open.id),
                     None,
@@ -1571,7 +1579,7 @@ impl HeadlessLoop {
                         superseded_attempt_id: old_id,
                         replacement_attempt_id: attempt_id,
                         replacement_accept_event_id: accept_event_id,
-                        reason: SupersessionReason::Retry,
+                        reason,
                     }),
                 )?;
             }
