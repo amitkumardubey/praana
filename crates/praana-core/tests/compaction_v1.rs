@@ -3667,6 +3667,292 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         }
     }
 
+    // ------------------------------------------------------------ P5-6a: live
+
+    fn big(label: &str) -> String {
+        format!("{label} {}", "lorem ipsum dolor sit amet ".repeat(120))
+    }
+
+    fn admission_snapshots(session: &Path) -> Vec<Value> {
+        of_kind(session, "assistant_attempt_started")
+            .iter()
+            .map(|event| event["event"]["data"]["admission"].clone())
+            .collect()
+    }
+
+    /// Runs `texts` as consecutive turns, installing the compactor first when
+    /// `with_compactor` is set.
+    async fn run_live(s: &Session, texts: &[String], with_compactor: bool) -> HeadlessLoop {
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(s)).unwrap();
+        if with_compactor {
+            loop_.set_compactor(Some(compactor(s)));
+        }
+        for text in texts {
+            let report = loop_.run_turn(text, &provider).await.unwrap();
+            assert!(
+                report.interruption.is_none(),
+                "turn commits: {:?} {:?}",
+                report.interruption,
+                report.diagnostic
+            );
+        }
+        loop_
+    }
+
+    fn no_margin(config: &mut EffectiveConfigV1) {
+        config.history.safety_margin_min_tokens = 0;
+        config.history.safety_margin_ratio = 0.0;
+    }
+
+    #[tokio::test]
+    async fn live_pressure_compacts_before_the_next_send() {
+        let mut s = session();
+        // Any non-trivial fill crosses this trigger.
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let texts: Vec<String> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        let loop_ = run_live(&s, &texts, true).await;
+
+        let compacted = of_kind(&s.session, "history_compacted");
+        assert!(!compacted.is_empty(), "pressure compacted live");
+        assert!(!s.fake.compactor_requests().is_empty());
+        // Every compaction became durable before the last turn's send.
+        let all = kinds(&s.session);
+        let last_start = all
+            .iter()
+            .rposition(|kind| kind == "assistant_attempt_started")
+            .unwrap();
+        let last_compacted = all
+            .iter()
+            .rposition(|kind| kind == "history_compacted")
+            .unwrap();
+        assert!(last_compacted < last_start);
+        assert_eq!(
+            loop_.pressure_state(),
+            praana_core::compaction::admission::PressureState::High
+        );
+    }
+
+    #[tokio::test]
+    async fn hard_ceiling_compacts_before_reducing_the_output_reserve() {
+        // Calibrate on a roomy session: request size grows by one turn each.
+        let mut calibration = session();
+        no_margin(&mut calibration.config);
+        // The bundled profile floors output at 256, so ask for more: only then
+        // can a reserve trim ever make room.
+        calibration.config.llm.max_output_tokens = 4_096;
+        let texts: Vec<String> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        run_live(&calibration, &texts, false).await;
+        let snapshots = admission_snapshots(&calibration.session);
+        let tokens = |index: usize| snapshots[index]["estimated_input_tokens"].as_u64().unwrap();
+        let rout = snapshots[3]["resolved_output_tokens"].as_u64().unwrap();
+        let rreason = snapshots[3]["requested_reasoning_tokens"].as_u64().unwrap();
+        let fourth = tokens(3);
+        // The fourth request overshoots usable input by a few tokens only, so
+        // trimming the output reserve alone would also have admitted it.
+        let window = fourth - 10 + rout + rreason;
+
+        let tight = |with_compactor: bool| {
+            let texts = texts.clone();
+            async move {
+                let mut s = session();
+                no_margin(&mut s.config);
+                s.config.llm.max_output_tokens = 4_096;
+                s.config.llm.context_window = window;
+                // Keep proactive pressure out of the way: only `I > U` acts.
+                s.config.history.compact_at = 1.0;
+                s.config.history.compact_clear_at = 0.9;
+                run_live(&s, &texts, with_compactor).await;
+                s
+            }
+        };
+
+        let control = tight(false).await;
+        let control_last = admission_snapshots(&control.session).pop().unwrap();
+        assert!(
+            control_last["resolved_output_tokens"].as_u64().unwrap() < rout,
+            "without a compactor the reserve is trimmed (precondition)"
+        );
+        assert!(of_kind(&control.session, "history_compacted").is_empty());
+
+        let live = tight(true).await;
+        assert_eq!(of_kind(&live.session, "history_compacted").len(), 1);
+        assert_eq!(live.fake.compactor_requests().len(), 1);
+        let last = admission_snapshots(&live.session).pop().unwrap();
+        assert_eq!(
+            last["resolved_output_tokens"].as_u64().unwrap(),
+            rout,
+            "compaction made room, so the output reserve stayed whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_live_compaction_keeps_turns_and_still_sends() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        // First compaction attempt and its single schema repair both fail.
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Raw("still not json".into()));
+        let texts = [big("alpha"), big("bravo")];
+        let mut loop_ = run_live(&s, &texts, true).await;
+
+        // Turn 2 is the first with a closed turn behind it.
+        assert!(
+            of_kind(&s.session, "history_compacted").is_empty(),
+            "a failed compaction retires nothing"
+        );
+        let failed_compaction = of_kind(&s.session, "assistant_attempt_failed")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert_eq!(failed_compaction, 2, "attempt plus its one repair");
+        assert_eq!(s.fake.compactor_requests().len(), 2);
+        assert_eq!(s.fake.main_requests().len(), 2, "both turns still sent");
+
+        // §14.1: the same source is not retried until a new turn commits.
+        // Turn 2 is that new closed turn, so turn 3 may try again and succeed.
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn(&big("charlie"), &provider).await.unwrap();
+        assert!(report.interruption.is_none());
+        assert!(
+            s.fake.compactor_requests().len() >= 3,
+            "a new closed turn lifts the backoff"
+        );
+        assert!(!of_kind(&s.session, "history_compacted").is_empty());
+    }
+
+    #[tokio::test]
+    async fn compactor_credential_loss_stops_turn_admission() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        // The compactor resolved with a credential, then lost it after start:
+        // its credential home no longer holds one.
+        let mut revoked = compactor(&s);
+        let empty_home = s._temp.path().join("revoked-home");
+        std::fs::create_dir_all(&empty_home).unwrap();
+        private(&empty_home);
+        revoked.home = empty_home;
+        loop_.set_compactor(Some(revoked));
+
+        let first = loop_.run_turn(&big("alpha"), &provider).await.unwrap();
+        assert!(first.interruption.is_none(), "{first:?}");
+        let second = loop_.run_turn(&big("bravo"), &provider).await.unwrap();
+        assert_eq!(
+            second.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ProviderFailure)
+        );
+        let diagnostic = second.diagnostic.expect("diagnostic");
+        assert_eq!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
+        assert_eq!(
+            s.fake.main_requests().len(),
+            1,
+            "the assistant request is not sent"
+        );
+        assert!(s.fake.compactor_requests().is_empty());
+        let failed: Vec<_> = of_kind(&s.session, "assistant_attempt_failed")
+            .into_iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0]["event"]["data"]["error"]["code"],
+            "E_PROVIDER_AUTH"
+        );
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+
+        // New turn admission stays stopped.
+        let error = loop_
+            .run_turn(&big("charlie"), &provider)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
+            "{error}"
+        );
+        assert_eq!(s.fake.main_requests().len(), 1);
+
+        // Reinstalling a healthy compactor is the capability change that lifts it.
+        loop_.set_compactor(Some(compactor(&s)));
+        let report = loop_.run_turn(&big("delta"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn single_turn_session_never_calls_the_compactor() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        run_live(&s, &[big("alpha")], true).await;
+        assert!(s.fake.compactor_requests().is_empty());
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+        assert_eq!(s.fake.main_requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hard_ceiling_failed_epoch_does_not_loop_and_still_sends() {
+        // Calibrate the window so the final turn overshoots usable input, the
+        // same way `hard_ceiling_compacts_before_reducing_the_output_reserve`
+        // does, so hard-ceiling recovery is the only compaction trigger.
+        let mut calibration = session();
+        no_margin(&mut calibration.config);
+        calibration.config.llm.max_output_tokens = 4_096;
+        let texts: Vec<String> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        run_live(&calibration, &texts, false).await;
+        let snapshots = admission_snapshots(&calibration.session);
+        let tokens = |index: usize| snapshots[index]["estimated_input_tokens"].as_u64().unwrap();
+        let rout = snapshots[3]["resolved_output_tokens"].as_u64().unwrap();
+        let rreason = snapshots[3]["requested_reasoning_tokens"].as_u64().unwrap();
+        let window = tokens(3) - 10 + rout + rreason;
+
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.max_output_tokens = 4_096;
+        s.config.llm.context_window = window;
+        // Keep proactive pressure out: only the hard ceiling (`I > U`) acts.
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        // The compaction attempt and its one schema repair both fail, so no
+        // source turn is ever retired within the final turn.
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Raw("still not json".into()));
+
+        run_live(&s, &texts, true).await;
+
+        // §14.1: a failed hard-ceiling epoch retires nothing and does not loop
+        // — the request still goes out after exactly one epoch (attempt plus
+        // its single schema repair), then the output reserve is reduced.
+        let compaction_attempts = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert_eq!(
+            compaction_attempts, 2,
+            "exactly one failed epoch: the attempt and its single repair"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 2);
+        assert!(
+            of_kind(&s.session, "history_compacted").is_empty(),
+            "a failed compaction retires nothing"
+        );
+        // §14.1: the request still goes out after the failed epoch.
+        assert_eq!(s.fake.main_requests().len(), texts.len());
+    }
+
     #[test]
     fn a_profile_with_an_empty_output_range_is_unavailable_not_a_panic() {
         let home = tempfile::tempdir().unwrap();

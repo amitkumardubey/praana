@@ -17,7 +17,8 @@ use praana_core::history::event_log::EventLogStore;
 use praana_core::history::recovery::SessionRecoveryEngine;
 use praana_core::id::{IdGenerationError, IdGenerator, MonotonicUlidGenerator, RandomSource};
 use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
-use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
+use praana_core::protocol::errors::{ErrorClass, ProtocolError};
+use praana_core::protocol::events::{CanonicalEvent, EventEnvelope, SupersessionReason};
 use praana_core::protocol::hashes::calculate_result_messages_hash;
 use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
 use praana_core::protocol::messages::FinishReason;
@@ -30,7 +31,7 @@ use praana_core::protocol::tool_result::ToolResultStatus;
 use praana_core::provider::openai::parse_chat_stream;
 use praana_core::turn::{
     AdmittedRequest, AssistantDraft, DraftCall, HeadlessLoop, LoopConfig, LoopFault,
-    PreparedRequest, ProviderOutput, ScriptedStep, StepProvider, TurnError,
+    PreparedRequest, ProviderFailure, ProviderOutput, ScriptedStep, StepProvider, TurnError,
 };
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -248,7 +249,7 @@ fn scenario_steps(scenario: &str) -> Vec<ScriptedStep> {
         ],
         "marked" => marked_steps(),
         "mixed-marked" => mixed_marked_steps(),
-        "standard" | "fragment-crash" => standard_steps(),
+        "standard" | "fragment-crash" | "context-length" => standard_steps(),
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -403,6 +404,33 @@ impl StepProvider for FragmentedScenarioProvider {
             .unwrap();
         writeln!(ledger, "{step_index}").unwrap();
         ledger.sync_all().unwrap();
+        if self.scenario == "context-length" && step_index == 0 {
+            let sends = std::fs::read_to_string(self.root.join("work").join("provider.log"))
+                .unwrap()
+                .lines()
+                .count();
+            if sends == 1 {
+                // The very first provider send is rejected for context length.
+                return Err(TurnError::Provider(Box::new(ProviderFailure {
+                    error: ProtocolError {
+                        code: "E_PROVIDER_CONTEXT_LENGTH".to_owned(),
+                        class: ErrorClass::ContextLength,
+                        message: "provider rejected request context length".to_owned(),
+                        retryable: false,
+                        http_status: Some(400),
+                        retry_after_ms: None,
+                    },
+                    emission_crossed: false,
+                    observable_delta: false,
+                    partial_blocks: Vec::new(),
+                    provider_response_id: None,
+                    usage: ProviderUsage::default(),
+                    may_have_completed: false,
+                    cancelled: false,
+                    retry_after_ms: None,
+                })));
+            }
+        }
         if self.scenario == "fragment-crash"
             && step_index == 0
             && std::env::var("PRAANA_CRASH_POINT").as_deref()
@@ -2715,4 +2743,90 @@ fn compaction_crash_after_history_compacted_fsync_activates_on_resume() {
 fn compaction_crash_before_projection_publish_activates_on_resume() {
     let root = compaction_crash("compaction.before_projection_publish");
     assert_activated_once(root.path());
+}
+
+#[test]
+fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
+    let root = tempfile::tempdir().unwrap();
+    let point = "turn.before_emergency_resend@1";
+    let seed = spawn_child(
+        root.path(),
+        "child_seed_and_crash",
+        "seed-and-crash",
+        "context-length",
+        Some(point),
+        false,
+    );
+    assert_abort(&seed, point);
+    let prefix = read_envelopes(root.path());
+    assert!(prefix.iter().any(|event| matches!(
+        &event.event,
+        CanonicalEvent::AssistantAttemptFailed(failed)
+            if failed.error.code == "E_PROVIDER_CONTEXT_LENGTH"
+    )));
+    assert!(
+        !prefix.iter().any(|event| matches!(
+            &event.event,
+            CanonicalEvent::AssistantAttemptStarted(started) if started.emergency_context_retry
+        )),
+        "crash is before the emergency attempt starts"
+    );
+
+    let resumed = spawn_child(
+        root.path(),
+        "child_resume_and_finish",
+        "resume-and-finish",
+        "context-length",
+        None,
+        true,
+    );
+    assert!(
+        resumed.status.success(),
+        "fresh-process resume failed: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let after = read_envelopes(root.path());
+    // (envelope, started) pairs so the envelope's attempt_id is available.
+    let started: Vec<_> = after
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptStarted(started) => Some((event, started)),
+            _ => None,
+        })
+        .collect();
+    let emergency: Vec<_> = started
+        .iter()
+        .filter(|(_, started)| started.emergency_context_retry)
+        .collect();
+    assert_eq!(emergency.len(), 1, "exactly one emergency attempt");
+    let (_, emergency_started) = emergency[0];
+    assert!(emergency_started.retry_of.is_some());
+    // §14.3: the emergency resend is the recovery path, not a bare re-send. It
+    // links to the original attempt the provider rejected for context length.
+    // (The underestimation figure is telemetry only; it does not change the
+    // admission margin, so the two attempts' margins are not compared here.)
+    let (original_env, _) = started
+        .iter()
+        .find(|(_, started)| !started.emergency_context_retry)
+        .expect("original attempt is durable");
+    assert_eq!(
+        emergency_started.retry_of, original_env.attempt_id,
+        "emergency resend links to the rejected original attempt"
+    );
+    // The resumed resend supersedes with the same reason the live path uses.
+    let superseded: Vec<_> = after
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::AttemptSuperseded(superseded) => Some(superseded),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(superseded.len(), 1, "the emergency resend superseded once");
+    assert_eq!(
+        superseded[0].reason,
+        SupersessionReason::EmergencyContextRetry
+    );
+    assert!(after
+        .iter()
+        .any(|event| matches!(event.event, CanonicalEvent::TurnCommitted(_))));
 }

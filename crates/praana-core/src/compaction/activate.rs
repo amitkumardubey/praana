@@ -496,6 +496,29 @@ pub fn has_unconsidered_eligible_turn(
         .any(|turn| turn.closure_sequence > started_at)
 }
 
+/// True when a proactive compaction could be launched now: no compaction
+/// attempt is open and at least one eligible turn was not considered by the
+/// most recent attempt at this projection (§4.2). Costs one whole-log
+/// projection, so callers gate it on the fill trigger first.
+pub fn proactive_candidate(
+    log: &EventLogStore,
+    framing: &FramingProfileV1,
+) -> Result<bool, CompactionRunError> {
+    let replay = log.replayer();
+    if open_compaction_attempt(replay) {
+        return Ok(false);
+    }
+    let events = log.events_slice();
+    let turns = projected_turns(events, log.raw_lines(), replay, framing)?;
+    let projected: Vec<ProjectedTurn> = turns.iter().map(|turn| turn.turn.clone()).collect();
+    Ok(has_unconsidered_eligible_turn(
+        events,
+        &projected,
+        replay.active_turn_id(),
+        replay.reset_epoch,
+    ))
+}
+
 fn open_compaction_attempt(replay: &EventReplayer) -> bool {
     replay.attempts.values().any(|attempt| {
         attempt.status == crate::history::replay::AttemptStatus::Open

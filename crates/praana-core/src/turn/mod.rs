@@ -118,7 +118,88 @@ pub struct ProviderFailure {
     pub retry_after_ms: Option<u64>,
 }
 
+/// Canonical code of a provider context-length response (Protocol §10).
+const CONTEXT_LENGTH_CODE: &str = "E_PROVIDER_CONTEXT_LENGTH";
+
+/// The §14.3 step 5 final diagnostic: the one emergency context retry was
+/// unavailable (cap exhausted) or failed with context length again. The
+/// internal domain code `ADMISSION_PROVIDER_CONTEXT_REJECTED` maps to the
+/// canonical `E_PROVIDER_CONTEXT_LENGTH` / `context_length` at the report
+/// boundary (Protocol Appendix A.5), so `TurnReport.diagnostic` carries the
+/// canonical code like every other surfaced diagnostic.
+fn provider_context_rejected() -> ProtocolError {
+    ProtocolError {
+        code: "E_PROVIDER_CONTEXT_LENGTH".to_owned(),
+        class: ErrorClass::ContextLength,
+        message: "the provider rejected the request for context length after the one emergency \
+                  retry was unavailable or failed"
+            .to_owned(),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
+/// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
+/// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
+/// A.5). Not retryable until the compactor capability or config changes.
+fn compaction_unavailable(cause: &ProtocolError) -> ProtocolError {
+    ProtocolError {
+        code: "E_COMPACTION_UNAVAILABLE".to_owned(),
+        class: ErrorClass::Unavailable,
+        message: format!(
+            "the configured compactor became unavailable after session start ({}); new turn \
+             admission is stopped",
+            cause.code
+        ),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
+/// Result of one live compaction epoch (see `HeadlessLoop::live_compaction_epoch`).
+enum LiveEpoch {
+    Activated,
+    Retained,
+    Unavailable(ProtocolError),
+}
+
+/// Live compaction launch decision (§4.2, §14.2). `admitted_fill_ppm` is
+/// `None` when the request did not fit as-is (hard ceiling, `I > U`); that
+/// path compacts whenever a source turn remains. An admitted request checks
+/// the cheap fill trigger first: `candidate` projects and token-estimates the
+/// whole retained log, so it runs only once proactive compaction could launch.
+fn wants_live_compaction(
+    admitted_fill_ppm: Option<u64>,
+    compact_at: f64,
+    compact_clear_at: f64,
+    candidate: impl FnOnce() -> Result<bool, TurnError>,
+) -> Result<bool, TurnError> {
+    use crate::compaction::admission::{should_launch, PressureThresholds};
+    let Some(fill_ppm) = admitted_fill_ppm else {
+        return candidate();
+    };
+    let Ok(thresholds) = PressureThresholds::from_ratios(compact_at, compact_clear_at) else {
+        return Ok(false);
+    };
+    if fill_ppm < thresholds.trigger_ppm {
+        return Ok(false);
+    }
+    Ok(should_launch(fill_ppm, thresholds, false, candidate()?))
+}
+
 impl ProviderFailure {
+    /// The one emergency context retry (Compaction §14.3). It is not a generic
+    /// retry: `retry_allowed` still excludes `ContextLength`, so other error
+    /// classes can neither reach nor reset this budget.
+    fn emergency_context_retry_allowed(&self, already_spent: bool) -> bool {
+        !already_spent
+            && !self.cancelled
+            && !self.emission_crossed
+            && self.error.code == CONTEXT_LENGTH_CODE
+    }
+
     fn retry_allowed(&self) -> bool {
         !self.emission_crossed
             && !self.cancelled
@@ -385,6 +466,19 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
+    /// A context-length failure is awaiting its one emergency recovery cycle
+    /// (Compaction §14.3): the next admission runs a compaction epoch and the
+    /// resend is marked `emergency_context_retry`. Not an admission input — the
+    /// epoch makes room, not a margin. `false` otherwise.
+    emergency_recovery_pending: bool,
+    /// Resolved configured compactor (Compaction §7.3). `None` keeps live
+    /// compaction inert; the P5-7 creation gate is what installs one.
+    compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
+    /// Set when the installed compactor lost its credential after start
+    /// (Compaction §14.4). While set, new turn admission is refused.
+    compaction_unavailable: Option<ProtocolError>,
+    /// Observable hysteresis signal (Compaction §4.2); never a lockout.
+    pressure: crate::compaction::admission::PressureState,
 }
 
 impl HeadlessLoop {
@@ -536,6 +630,7 @@ impl HeadlessLoop {
         sink: &mut dyn AcceptedStepSink,
     ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        self.ensure_compaction_available()?;
         provider.bind_session(self.log.session_dir());
         self.begin_turn(text)?;
         self.drive(provider, sink).await
@@ -555,6 +650,7 @@ impl HeadlessLoop {
         sink: &mut dyn AcceptedStepSink,
     ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        self.ensure_compaction_available()?;
         provider.bind_session(self.log.session_dir());
         if self.replay()?.active_turn_id().is_none() {
             return Err(TurnError::failed("no active turn to continue"));
@@ -562,15 +658,49 @@ impl HeadlessLoop {
         self.drive(provider, sink).await
     }
 
+    /// Installs the resolved configured compactor that live pressure and
+    /// hard-ceiling recovery use. `None` makes both inert. Installing (or
+    /// clearing) the compactor is the capability change that lifts a §14.4
+    /// `COMPACTION_UNAVAILABLE` admission stop.
+    pub fn set_compactor(
+        &mut self,
+        compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
+    ) {
+        self.compactor = compactor;
+        self.compaction_unavailable = None;
+    }
+
+    /// Current pressure hysteresis signal (Compaction §4.2).
+    pub fn pressure_state(&self) -> crate::compaction::admission::PressureState {
+        self.pressure
+    }
+
     /// Runs one compaction operation against a configured compactor
-    /// (Compaction §12). Called explicitly; live pressure wiring is P5-6. The
-    /// projection the next provider request sees is rebuilt from the durable
-    /// log, so a `HistoryCompacted` that reached fsync is the activation.
+    /// (Compaction §12) on demand. The projection the next provider request
+    /// sees is rebuilt from the durable log, so a `HistoryCompacted` that
+    /// reached fsync is the activation.
     pub async fn compact_now(
         &mut self,
         compactor: &crate::compaction::activate::ConfiguredCompactor,
     ) -> Result<crate::compaction::activate::CompactionOutcome, TurnError> {
         self.ensure_live()?;
+        self.compact_once(compactor)
+            .await
+            .map_err(|error| match error {
+                crate::compaction::activate::CompactionRunError::History(message) => {
+                    TurnError::Durability(message)
+                }
+                other => TurnError::failed(other.to_string()),
+            })
+    }
+
+    async fn compact_once(
+        &mut self,
+        compactor: &crate::compaction::activate::ConfiguredCompactor,
+    ) -> Result<
+        crate::compaction::activate::CompactionOutcome,
+        crate::compaction::activate::CompactionRunError,
+    > {
         let config = self.config.config.clone();
         let mut outcome = {
             let mut ctx = crate::compaction::activate::ActivationContext {
@@ -581,14 +711,7 @@ impl HeadlessLoop {
                 config: &config,
                 framing: &self.framing,
             };
-            crate::compaction::activate::run(&mut ctx, compactor, &self.cancel)
-                .await
-                .map_err(|error| match error {
-                    crate::compaction::activate::CompactionRunError::History(message) => {
-                        TurnError::Durability(message)
-                    }
-                    other => TurnError::failed(other.to_string()),
-                })?
+            crate::compaction::activate::run(&mut ctx, compactor, &self.cancel).await?
         };
         if let crate::compaction::activate::CompactionOutcome::Activated {
             derived_projection_error,
@@ -613,6 +736,108 @@ impl HeadlessLoop {
             }
         }
         Ok(outcome)
+    }
+
+    /// One live compaction epoch (Compaction §14.1, §14.2). `Activated` means a
+    /// `HistoryCompacted` is durable and the request must be rebuilt.
+    /// `Retained` keeps every source turn and lets the caller continue with
+    /// the request it already admitted or reject it. `Unavailable` is the
+    /// §14.4 post-start credential loss: the caller must not send.
+    async fn live_compaction_epoch(&mut self) -> Result<LiveEpoch, TurnError> {
+        use crate::compaction::activate::{CompactionOutcome, CompactionRunError};
+        let Some(compactor) = self.compactor.clone() else {
+            return Ok(LiveEpoch::Retained);
+        };
+        match self.compact_once(&compactor).await {
+            Ok(CompactionOutcome::Activated { .. }) => Ok(LiveEpoch::Activated),
+            Ok(CompactionOutcome::Failed { error, .. })
+                if error.class == ErrorClass::Authentication =>
+            {
+                // §14.4: a revoked or missing compactor credential on an
+                // eligible session is `COMPACTION_UNAVAILABLE`, not a
+                // recoverable §14.1 failure. Compaction stays unavailable and
+                // new turn admission stops until a compactor is reinstalled.
+                let unavailable = compaction_unavailable(&error);
+                self.compaction_unavailable = Some(unavailable.clone());
+                Ok(LiveEpoch::Unavailable(unavailable))
+            }
+            Ok(CompactionOutcome::Failed { error, .. }) => {
+                // §14.1: a failed compaction retains every turn and the request
+                // still goes out. Surface the reason rather than dropping it.
+                eprintln!(
+                    "live compaction did not activate ({}): continuing with retained turns",
+                    error.code
+                );
+                Ok(LiveEpoch::Retained)
+            }
+            Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
+            Err(other) => {
+                // Non-durable failure (§14.1): continue, but do not swallow the
+                // reason silently.
+                eprintln!("live compaction epoch error: {other}; continuing with retained turns");
+                Ok(LiveEpoch::Retained)
+            }
+        }
+    }
+
+    /// §14.4: once the installed compactor became unavailable after start, no
+    /// new provider request is admitted until a compactor is reinstalled.
+    fn ensure_compaction_available(&self) -> Result<(), TurnError> {
+        match &self.compaction_unavailable {
+            Some(error) => Err(TurnError::failed(format!(
+                "{}: {}",
+                error.code, error.message
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Whether this admission should run a compaction epoch before sending.
+    /// Both the hard-ceiling path (non-`Admitted`, §14.2) and the proactive
+    /// pressure path (§4.2) require an unconsidered eligible turn: without one
+    /// there is nothing left to compact, so re-running would only burn a
+    /// durable attempt and a compactor call against the same source.
+    ///
+    /// `proactive_candidate` projects and token-estimates the whole retained
+    /// log, so an admitted request checks the cheap fill trigger first and
+    /// only pays for the projection once proactive compaction could launch.
+    fn live_compaction_wanted(&mut self, admission: &AdmissionOutcome) -> Result<bool, TurnError> {
+        let admitted_fill_ppm = match admission {
+            AdmissionOutcome::Admitted(admitted) => {
+                Some(u64::from(admitted.snapshot.projected_fill_millionths))
+            }
+            _ => None,
+        };
+        let history = &self.config.config.history;
+        let (log, framing) = (&self.log, &self.framing);
+        wants_live_compaction(
+            admitted_fill_ppm,
+            history.compact_at,
+            history.compact_clear_at,
+            || {
+                crate::compaction::activate::proactive_candidate(log, framing)
+                    .map_err(|error| TurnError::failed(error.to_string()))
+            },
+        )
+    }
+
+    /// Updates the observable pressure hysteresis signal (§4.2) from the
+    /// admitted fill. Runs on every admission regardless of whether a compactor
+    /// is installed, so `pressure_state()` reflects reality even when live
+    /// compaction is inert.
+    fn update_pressure(&mut self, admission: &AdmissionOutcome) {
+        use crate::compaction::admission::{next_pressure_state, PressureThresholds};
+        let AdmissionOutcome::Admitted(admitted) = admission else {
+            return;
+        };
+        let history = &self.config.config.history;
+        let Ok(thresholds) =
+            PressureThresholds::from_ratios(history.compact_at, history.compact_clear_at)
+        else {
+            return;
+        };
+        let fill_ppm = u64::from(admitted.snapshot.projected_fill_millionths);
+        self.pressure = next_pressure_state(self.pressure, fill_ppm, thresholds);
     }
 
     /// True when replay reports an unfinished turn that
@@ -688,6 +913,10 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
+            emergency_recovery_pending: false,
+            compactor: None,
+            compaction_unavailable: None,
+            pressure: crate::compaction::admission::PressureState::Normal,
         })
     }
 
@@ -1033,6 +1262,9 @@ impl HeadlessLoop {
         // Accumulated retry wall time for this step: no further attempt is
         // scheduled once it reaches the OpenAI §18.3 60s cap.
         let mut retry_spent_ms: u64 = 0;
+        self.emergency_recovery_pending = false;
+        // The §14.3 recovery cycle runs its emergency epoch at most once.
+        let mut emergency_epoch_run = false;
         loop {
             if self.cancel.is_cancelled() {
                 return Ok(Control::Done(
@@ -1046,6 +1278,9 @@ impl HeadlessLoop {
                 attempt_number: u32,
                 status: crate::history::replay::AttemptStatus,
                 step_id: StepId,
+                emergency: bool,
+                emitted: bool,
+                failure_code: Option<String>,
             }
             let prior_attempts: Vec<PriorAttempt> = replay
                 .attempts
@@ -1062,16 +1297,33 @@ impl HeadlessLoop {
                         attempt_number: attempt.attempt_number,
                         status: attempt.status.clone(),
                         step_id: purpose.step_id,
+                        emergency: attempt.emergency_context_retry,
+                        emitted: attempt.observable_delta_emitted,
+                        failure_code: attempt.failure_code.clone(),
                     })
                 })
                 .collect();
+            let max_prior = prior_attempts
+                .iter()
+                .max_by_key(|attempt| attempt.attempt_number)
+                .cloned();
+            // Compaction §14.3 / D2: the first context-length failure of a step
+            // earns exactly one emergency resend. It is derived from the
+            // durable log so a resumed turn neither repeats nor loses it.
+            let emergency_spent = prior_attempts.iter().any(|attempt| attempt.emergency);
+            let last_was_context_length = max_prior.as_ref().is_some_and(|attempt| {
+                attempt.status == crate::history::replay::AttemptStatus::Failed
+                    && !attempt.emitted
+                    && attempt.failure_code.as_deref() == Some(CONTEXT_LENGTH_CODE)
+            });
             if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
-                let last_id = prior_attempts
-                    .iter()
-                    .max_by_key(|attempt| attempt.attempt_number)
-                    .map(|attempt| attempt.id);
-                // The last failed attempt durably recorded its canonical
-                // diagnostic; report() picks it up from the loop.
+                let last_id = max_prior.as_ref().map(|attempt| attempt.id);
+                // §14.3 step 5: a context-length failure whose emergency resend
+                // the cap blocked rejects with ADMISSION_PROVIDER_CONTEXT_REJECTED;
+                // any other exhausted retry keeps the attempt's own diagnostic.
+                if last_was_context_length {
+                    self.pending_diagnostic = Some(provider_context_rejected());
+                }
                 return Ok(Control::Done(
                     self.interrupt(InterruptionReason::ProviderFailure, last_id)?,
                 ));
@@ -1082,11 +1334,24 @@ impl HeadlessLoop {
                 .max()
                 .unwrap_or(0)
                 .saturating_add(1);
-            let max_prior = prior_attempts
-                .iter()
-                .max_by_key(|attempt| attempt.attempt_number)
-                .cloned();
             let retry_of = max_prior.as_ref().map(|attempt| attempt.id);
+            if last_was_context_length && emergency_spent {
+                // §14.3 step 5: the emergency resend (or an earlier one) failed
+                // with context length again. Reject with the final code rather
+                // than the raw provider context-length diagnostic.
+                self.pending_diagnostic = Some(provider_context_rejected());
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::ProviderFailure, retry_of)?,
+                ));
+            }
+            let is_emergency = last_was_context_length;
+            // §14.3 step 3: an emergency resend runs one compaction recovery
+            // epoch before it is sent. Derived from the durable log (not an
+            // in-memory value a resume would lose) so a live resend and a
+            // resumed resend take the same recovery path.
+            if is_emergency {
+                self.emergency_recovery_pending = true;
+            }
             let step_id: StepId = match &max_prior {
                 Some(attempt) => attempt.step_id,
                 None => self.fresh()?,
@@ -1146,6 +1411,43 @@ impl HeadlessLoop {
                     );
                 }
             };
+            // Compaction §4.2: the pressure hysteresis signal tracks every
+            // admission, whether or not a compactor is installed.
+            self.update_pressure(&admission);
+            // Compaction §14.2 order: a compaction epoch comes before any
+            // output-reserve reduction, and an epoch always rebuilds the
+            // request. §14.2 step 2 repeats successful epochs while the request
+            // is still over `U` and eligible turns remain; `live_compaction_wanted`
+            // gates on `proactive_candidate`, which goes false once every
+            // eligible turn is considered, so the loop is bounded by progress
+            // rather than by the assistant `turn.max_attempts` budget.
+            //
+            // The §14.3 emergency recovery cycle runs its epoch once per step
+            // (`emergency_epoch_run`). It is distinct from the hard-ceiling /
+            // proactive repeat and spends the compaction purpose budget.
+            //
+            // P5-6a retires closed turns only, at top-level turn admission. No
+            // in-turn tool-cycle compaction (handoff; §5.3; #634), so a step
+            // after a tool call (`step_index > 0`) never compacts.
+            let emergency_cycle = self.emergency_recovery_pending && !emergency_epoch_run;
+            if open.step_index == 0
+                && self.compactor.is_some()
+                && (emergency_cycle || self.live_compaction_wanted(&admission)?)
+            {
+                emergency_epoch_run |= emergency_cycle;
+                match self.live_compaction_epoch().await? {
+                    LiveEpoch::Activated => continue,
+                    LiveEpoch::Retained => {}
+                    LiveEpoch::Unavailable(error) => {
+                        // §14.4: stop without calling the provider; the
+                        // projection is unchanged.
+                        self.pending_diagnostic = Some(error);
+                        return Ok(Control::Done(
+                            self.interrupt(InterruptionReason::ProviderFailure, None)?,
+                        ));
+                    }
+                }
+            }
             if let AdmissionOutcome::ReduceOutput(new_max_output_tokens) = admission {
                 provider.set_output_reserve(new_max_output_tokens);
                 let reprepared = match provider.prepare_admitted(open.step_index, &prepare_ctx) {
@@ -1178,6 +1480,9 @@ impl HeadlessLoop {
                         );
                     }
                 };
+                // §4.2: the reduced-reserve re-admission can change projected
+                // fill, so refresh the hysteresis signal from the final value.
+                self.update_pressure(&admission);
             }
             let admitted = match admission {
                 AdmissionOutcome::Admitted(admitted) => admitted,
@@ -1237,10 +1542,14 @@ impl HeadlessLoop {
                     request_hash: admitted.request_hash,
                     admission: admitted.snapshot,
                     retry_of,
-                    emergency_context_retry: false,
+                    emergency_context_retry: is_emergency,
                     recovery_notices: notices,
                 }),
             )?;
+            // The attempt started; clear the pending-recovery flag so this
+            // attempt's own context-length failure (handled below) is what
+            // re-arms it, not a stale flag from the admission that preceded it.
+            self.emergency_recovery_pending = false;
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_attempt_started:step{}:attempt{}",
@@ -1256,6 +1565,17 @@ impl HeadlessLoop {
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
+                        // §14.3 steps 3-4: arm the one emergency recovery cycle
+                        // (a compaction epoch runs before the resend) and loop.
+                        // The top-of-loop `max_attempts` check gates the resend,
+                        // so an exhausted cap ends the step without another
+                        // send. The resume path re-arms this from the log.
+                        self.emergency_recovery_pending = true;
+                        #[cfg(feature = "failpoints")]
+                        crate::crash_point::hit("turn.before_emergency_resend");
+                        continue;
+                    }
                     // `attempt_number` is 1-based, so it is also the 1-based
                     // number of the retry about to be scheduled.
                     let delay = self.retry_backoff_delay_ms(attempt_number, &failure);
@@ -1272,6 +1592,15 @@ impl HeadlessLoop {
                     } else {
                         InterruptionReason::ProviderFailure
                     };
+                    // §14.3 step 5: an emergency resend that fails with context
+                    // length again rejects with ADMISSION_PROVIDER_CONTEXT_REJECTED,
+                    // not the raw provider diagnostic that `fail_attempt` left.
+                    if !cancelled
+                        && (is_emergency || emergency_spent)
+                        && failure.error.code == CONTEXT_LENGTH_CODE
+                    {
+                        self.pending_diagnostic = Some(provider_context_rejected());
+                    }
                     return Ok(Control::Done(self.interrupt(reason, Some(attempt_id))?));
                 }
                 Err(TurnError::Failed(message)) => {
@@ -1335,6 +1664,14 @@ impl HeadlessLoop {
                 .filter(|attempt| attempt.status == crate::history::replay::AttemptStatus::Failed)
                 .map(|attempt| attempt.id)
             {
+                // Match the crash-recovery repair path (history/recovery.rs): an
+                // emergency context retry supersedes with EmergencyContextRetry,
+                // so live execution and resume agree on the reason.
+                let reason = if is_emergency {
+                    SupersessionReason::EmergencyContextRetry
+                } else {
+                    SupersessionReason::Retry
+                };
                 self.append(
                     Some(open.id),
                     None,
@@ -1343,7 +1680,7 @@ impl HeadlessLoop {
                         superseded_attempt_id: old_id,
                         replacement_attempt_id: attempt_id,
                         replacement_accept_event_id: accept_event_id,
-                        reason: SupersessionReason::Retry,
+                        reason,
                     }),
                 )?;
             }
@@ -1404,6 +1741,11 @@ impl HeadlessLoop {
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
+            // §14.3 step 2-3: the `max(1, W - I + 1)` underestimation figure is
+            // telemetry, not `C`. The admission calibration margin stays the
+            // Token-Accounting value (0 until P5-6b records samples); the
+            // emergency recovery makes room via a compaction epoch, not by
+            // inflating this margin.
             calibration_margin: 0,
             component_bytes,
             framing: self.framing.clone(),
@@ -2760,5 +3102,68 @@ mod poison_tests {
             again.matches("\"user_message_accepted\"").count(),
             text.matches("\"user_message_accepted\"").count()
         );
+    }
+}
+
+#[cfg(test)]
+mod live_compaction_decision_tests {
+    use super::{wants_live_compaction, TurnError};
+    use std::cell::Cell;
+
+    const COMPACT_AT: f64 = 0.8;
+    const CLEAR_AT: f64 = 0.6;
+
+    /// Runs the decision and reports whether the whole-log candidate
+    /// projection was evaluated.
+    fn decide(fill_ppm: Option<u64>, candidate: bool) -> (bool, bool) {
+        let called = Cell::new(false);
+        let wanted = wants_live_compaction(fill_ppm, COMPACT_AT, CLEAR_AT, || {
+            called.set(true);
+            Ok(candidate)
+        })
+        .unwrap();
+        (wanted, called.get())
+    }
+
+    #[test]
+    fn below_the_fill_trigger_skips_the_candidate_projection() {
+        for fill in [0, 1, 600_000, 799_999] {
+            assert_eq!(decide(Some(fill), true), (false, false), "fill {fill}");
+        }
+    }
+
+    #[test]
+    fn at_or_above_the_trigger_launches_only_with_a_candidate() {
+        for fill in [800_000, 950_000, 1_200_000] {
+            assert_eq!(decide(Some(fill), true), (true, true), "fill {fill}");
+            assert_eq!(decide(Some(fill), false), (false, true), "fill {fill}");
+        }
+    }
+
+    #[test]
+    fn hard_ceiling_always_checks_the_candidate() {
+        assert_eq!(decide(None, true), (true, true));
+        assert_eq!(decide(None, false), (false, true));
+    }
+
+    #[test]
+    fn invalid_thresholds_never_project() {
+        let called = Cell::new(false);
+        let wanted = wants_live_compaction(Some(900_000), 0.5, 0.9, || {
+            called.set(true);
+            Ok(true)
+        })
+        .unwrap();
+        assert!(!wanted);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn candidate_errors_propagate_once_evaluated() {
+        let error = wants_live_compaction(Some(900_000), COMPACT_AT, CLEAR_AT, || {
+            Err(TurnError::failed("projection failed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "projection failed");
     }
 }
