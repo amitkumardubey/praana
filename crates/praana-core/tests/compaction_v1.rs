@@ -3830,6 +3830,66 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     }
 
     #[tokio::test]
+    async fn compactor_credential_loss_stops_turn_admission() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        // The compactor resolved with a credential, then lost it after start:
+        // its credential home no longer holds one.
+        let mut revoked = compactor(&s);
+        let empty_home = s._temp.path().join("revoked-home");
+        std::fs::create_dir_all(&empty_home).unwrap();
+        private(&empty_home);
+        revoked.home = empty_home;
+        loop_.set_compactor(Some(revoked));
+
+        let first = loop_.run_turn(&big("alpha"), &provider).await.unwrap();
+        assert!(first.interruption.is_none(), "{first:?}");
+        let second = loop_.run_turn(&big("bravo"), &provider).await.unwrap();
+        assert_eq!(
+            second.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ProviderFailure)
+        );
+        let diagnostic = second.diagnostic.expect("diagnostic");
+        assert_eq!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
+        assert_eq!(
+            s.fake.main_requests().len(),
+            1,
+            "the assistant request is not sent"
+        );
+        assert!(s.fake.compactor_requests().is_empty());
+        let failed: Vec<_> = of_kind(&s.session, "assistant_attempt_failed")
+            .into_iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .collect();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed[0]["event"]["data"]["error"]["code"],
+            "E_PROVIDER_AUTH"
+        );
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+
+        // New turn admission stays stopped.
+        let error = loop_
+            .run_turn(&big("charlie"), &provider)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
+            "{error}"
+        );
+        assert_eq!(s.fake.main_requests().len(), 1);
+
+        // Reinstalling a healthy compactor is the capability change that lifts it.
+        loop_.set_compactor(Some(compactor(&s)));
+        let report = loop_.run_turn(&big("delta"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
     async fn single_turn_session_never_calls_the_compactor() {
         let mut s = session();
         s.config.history.compact_at = 0.0002;

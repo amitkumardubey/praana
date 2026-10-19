@@ -140,6 +140,55 @@ fn provider_context_rejected() -> ProtocolError {
     }
 }
 
+/// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
+/// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
+/// A.5). Not retryable until the compactor capability or config changes.
+fn compaction_unavailable(cause: &ProtocolError) -> ProtocolError {
+    ProtocolError {
+        code: "E_COMPACTION_UNAVAILABLE".to_owned(),
+        class: ErrorClass::Unavailable,
+        message: format!(
+            "the configured compactor became unavailable after session start ({}); new turn \
+             admission is stopped",
+            cause.code
+        ),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
+/// Result of one live compaction epoch (see `HeadlessLoop::live_compaction_epoch`).
+enum LiveEpoch {
+    Activated,
+    Retained,
+    Unavailable(ProtocolError),
+}
+
+/// Live compaction launch decision (§4.2, §14.2). `admitted_fill_ppm` is
+/// `None` when the request did not fit as-is (hard ceiling, `I > U`); that
+/// path compacts whenever a source turn remains. An admitted request checks
+/// the cheap fill trigger first: `candidate` projects and token-estimates the
+/// whole retained log, so it runs only once proactive compaction could launch.
+fn wants_live_compaction(
+    admitted_fill_ppm: Option<u64>,
+    compact_at: f64,
+    compact_clear_at: f64,
+    candidate: impl FnOnce() -> Result<bool, TurnError>,
+) -> Result<bool, TurnError> {
+    use crate::compaction::admission::{should_launch, PressureThresholds};
+    let Some(fill_ppm) = admitted_fill_ppm else {
+        return candidate();
+    };
+    let Ok(thresholds) = PressureThresholds::from_ratios(compact_at, compact_clear_at) else {
+        return Ok(false);
+    };
+    if fill_ppm < thresholds.trigger_ppm {
+        return Ok(false);
+    }
+    Ok(should_launch(fill_ppm, thresholds, false, candidate()?))
+}
+
 impl ProviderFailure {
     /// The one emergency context retry (Compaction §14.3). It is not a generic
     /// retry: `retry_allowed` still excludes `ContextLength`, so other error
@@ -425,6 +474,9 @@ pub struct HeadlessLoop {
     /// Resolved configured compactor (Compaction §7.3). `None` keeps live
     /// compaction inert; the P5-7 creation gate is what installs one.
     compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
+    /// Set when the installed compactor lost its credential after start
+    /// (Compaction §14.4). While set, new turn admission is refused.
+    compaction_unavailable: Option<ProtocolError>,
     /// Observable hysteresis signal (Compaction §4.2); never a lockout.
     pressure: crate::compaction::admission::PressureState,
 }
@@ -578,6 +630,7 @@ impl HeadlessLoop {
         sink: &mut dyn AcceptedStepSink,
     ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        self.ensure_compaction_available()?;
         provider.bind_session(self.log.session_dir());
         self.begin_turn(text)?;
         self.drive(provider, sink).await
@@ -597,6 +650,7 @@ impl HeadlessLoop {
         sink: &mut dyn AcceptedStepSink,
     ) -> Result<TurnReport, TurnError> {
         self.ensure_live()?;
+        self.ensure_compaction_available()?;
         provider.bind_session(self.log.session_dir());
         if self.replay()?.active_turn_id().is_none() {
             return Err(TurnError::failed("no active turn to continue"));
@@ -605,12 +659,15 @@ impl HeadlessLoop {
     }
 
     /// Installs the resolved configured compactor that live pressure and
-    /// hard-ceiling recovery use. `None` makes both inert.
+    /// hard-ceiling recovery use. `None` makes both inert. Installing (or
+    /// clearing) the compactor is the capability change that lifts a §14.4
+    /// `COMPACTION_UNAVAILABLE` admission stop.
     pub fn set_compactor(
         &mut self,
         compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
     ) {
         self.compactor = compactor;
+        self.compaction_unavailable = None;
     }
 
     /// Current pressure hysteresis signal (Compaction §4.2).
@@ -681,17 +738,29 @@ impl HeadlessLoop {
         Ok(outcome)
     }
 
-    /// One live compaction epoch (Compaction §14.1, §14.2). `Ok(true)` means a
-    /// `HistoryCompacted` is durable and the request must be rebuilt. Any
-    /// non-durable-failure outcome keeps every source turn retained and lets
-    /// the caller continue with the request it already admitted or reject it.
-    async fn live_compaction_epoch(&mut self) -> Result<bool, TurnError> {
+    /// One live compaction epoch (Compaction §14.1, §14.2). `Activated` means a
+    /// `HistoryCompacted` is durable and the request must be rebuilt.
+    /// `Retained` keeps every source turn and lets the caller continue with
+    /// the request it already admitted or reject it. `Unavailable` is the
+    /// §14.4 post-start credential loss: the caller must not send.
+    async fn live_compaction_epoch(&mut self) -> Result<LiveEpoch, TurnError> {
         use crate::compaction::activate::{CompactionOutcome, CompactionRunError};
         let Some(compactor) = self.compactor.clone() else {
-            return Ok(false);
+            return Ok(LiveEpoch::Retained);
         };
         match self.compact_once(&compactor).await {
-            Ok(CompactionOutcome::Activated { .. }) => Ok(true),
+            Ok(CompactionOutcome::Activated { .. }) => Ok(LiveEpoch::Activated),
+            Ok(CompactionOutcome::Failed { error, .. })
+                if error.class == ErrorClass::Authentication =>
+            {
+                // §14.4: a revoked or missing compactor credential on an
+                // eligible session is `COMPACTION_UNAVAILABLE`, not a
+                // recoverable §14.1 failure. Compaction stays unavailable and
+                // new turn admission stops until a compactor is reinstalled.
+                let unavailable = compaction_unavailable(&error);
+                self.compaction_unavailable = Some(unavailable.clone());
+                Ok(LiveEpoch::Unavailable(unavailable))
+            }
             Ok(CompactionOutcome::Failed { error, .. }) => {
                 // §14.1: a failed compaction retains every turn and the request
                 // still goes out. Surface the reason rather than dropping it.
@@ -699,15 +768,27 @@ impl HeadlessLoop {
                     "live compaction did not activate ({}): continuing with retained turns",
                     error.code
                 );
-                Ok(false)
+                Ok(LiveEpoch::Retained)
             }
             Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
             Err(other) => {
                 // Non-durable failure (§14.1): continue, but do not swallow the
                 // reason silently.
                 eprintln!("live compaction epoch error: {other}; continuing with retained turns");
-                Ok(false)
+                Ok(LiveEpoch::Retained)
             }
+        }
+    }
+
+    /// §14.4: once the installed compactor became unavailable after start, no
+    /// new provider request is admitted until a compactor is reinstalled.
+    fn ensure_compaction_available(&self) -> Result<(), TurnError> {
+        match &self.compaction_unavailable {
+            Some(error) => Err(TurnError::failed(format!(
+                "{}: {}",
+                error.code, error.message
+            ))),
+            None => Ok(()),
         }
     }
 
@@ -716,29 +797,28 @@ impl HeadlessLoop {
     /// pressure path (§4.2) require an unconsidered eligible turn: without one
     /// there is nothing left to compact, so re-running would only burn a
     /// durable attempt and a compactor call against the same source.
+    ///
+    /// `proactive_candidate` projects and token-estimates the whole retained
+    /// log, so an admitted request checks the cheap fill trigger first and
+    /// only pays for the projection once proactive compaction could launch.
     fn live_compaction_wanted(&mut self, admission: &AdmissionOutcome) -> Result<bool, TurnError> {
-        use crate::compaction::admission::{should_launch, PressureThresholds};
-        let candidate = crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
-            .map_err(|error| TurnError::failed(error.to_string()))?;
-        if !candidate {
-            return Ok(false);
-        }
-        // Hard-ceiling recovery (`I > U`): a request that does not fit as-is
-        // compacts first (§14.2), provided a source turn remains.
-        let AdmissionOutcome::Admitted(admitted) = admission else {
-            return Ok(true);
+        let admitted_fill_ppm = match admission {
+            AdmissionOutcome::Admitted(admitted) => {
+                Some(u64::from(admitted.snapshot.projected_fill_millionths))
+            }
+            _ => None,
         };
         let history = &self.config.config.history;
-        let Ok(thresholds) =
-            PressureThresholds::from_ratios(history.compact_at, history.compact_clear_at)
-        else {
-            return Ok(false);
-        };
-        let fill_ppm = u64::from(admitted.snapshot.projected_fill_millionths);
-        if fill_ppm < thresholds.trigger_ppm {
-            return Ok(false);
-        }
-        Ok(should_launch(fill_ppm, thresholds, false, candidate))
+        let (log, framing) = (&self.log, &self.framing);
+        wants_live_compaction(
+            admitted_fill_ppm,
+            history.compact_at,
+            history.compact_clear_at,
+            || {
+                crate::compaction::activate::proactive_candidate(log, framing)
+                    .map_err(|error| TurnError::failed(error.to_string()))
+            },
+        )
     }
 
     /// Updates the observable pressure hysteresis signal (§4.2) from the
@@ -835,6 +915,7 @@ impl HeadlessLoop {
             project_context_changed: false,
             emergency_recovery_pending: false,
             compactor: None,
+            compaction_unavailable: None,
             pressure: crate::compaction::admission::PressureState::Normal,
         })
     }
@@ -1354,8 +1435,17 @@ impl HeadlessLoop {
                 && (emergency_cycle || self.live_compaction_wanted(&admission)?)
             {
                 emergency_epoch_run |= emergency_cycle;
-                if self.live_compaction_epoch().await? {
-                    continue;
+                match self.live_compaction_epoch().await? {
+                    LiveEpoch::Activated => continue,
+                    LiveEpoch::Retained => {}
+                    LiveEpoch::Unavailable(error) => {
+                        // §14.4: stop without calling the provider; the
+                        // projection is unchanged.
+                        self.pending_diagnostic = Some(error);
+                        return Ok(Control::Done(
+                            self.interrupt(InterruptionReason::ProviderFailure, None)?,
+                        ));
+                    }
                 }
             }
             if let AdmissionOutcome::ReduceOutput(new_max_output_tokens) = admission {
@@ -3012,5 +3102,68 @@ mod poison_tests {
             again.matches("\"user_message_accepted\"").count(),
             text.matches("\"user_message_accepted\"").count()
         );
+    }
+}
+
+#[cfg(test)]
+mod live_compaction_decision_tests {
+    use super::{wants_live_compaction, TurnError};
+    use std::cell::Cell;
+
+    const COMPACT_AT: f64 = 0.8;
+    const CLEAR_AT: f64 = 0.6;
+
+    /// Runs the decision and reports whether the whole-log candidate
+    /// projection was evaluated.
+    fn decide(fill_ppm: Option<u64>, candidate: bool) -> (bool, bool) {
+        let called = Cell::new(false);
+        let wanted = wants_live_compaction(fill_ppm, COMPACT_AT, CLEAR_AT, || {
+            called.set(true);
+            Ok(candidate)
+        })
+        .unwrap();
+        (wanted, called.get())
+    }
+
+    #[test]
+    fn below_the_fill_trigger_skips_the_candidate_projection() {
+        for fill in [0, 1, 600_000, 799_999] {
+            assert_eq!(decide(Some(fill), true), (false, false), "fill {fill}");
+        }
+    }
+
+    #[test]
+    fn at_or_above_the_trigger_launches_only_with_a_candidate() {
+        for fill in [800_000, 950_000, 1_200_000] {
+            assert_eq!(decide(Some(fill), true), (true, true), "fill {fill}");
+            assert_eq!(decide(Some(fill), false), (false, true), "fill {fill}");
+        }
+    }
+
+    #[test]
+    fn hard_ceiling_always_checks_the_candidate() {
+        assert_eq!(decide(None, true), (true, true));
+        assert_eq!(decide(None, false), (false, true));
+    }
+
+    #[test]
+    fn invalid_thresholds_never_project() {
+        let called = Cell::new(false);
+        let wanted = wants_live_compaction(Some(900_000), 0.5, 0.9, || {
+            called.set(true);
+            Ok(true)
+        })
+        .unwrap();
+        assert!(!wanted);
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn candidate_errors_propagate_once_evaluated() {
+        let error = wants_live_compaction(Some(900_000), COMPACT_AT, CLEAR_AT, || {
+            Err(TurnError::failed("projection failed"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "projection failed");
     }
 }
