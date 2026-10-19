@@ -2313,7 +2313,9 @@ async fn second_context_length_is_not_retried() {
     let diagnostic = diagnostic_json(&report);
     assert_eq!(
         diagnostic.get("code"),
-        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+        Some(&json!("ADMISSION_PROVIDER_CONTEXT_REJECTED")),
+        "§14.3 step 5: the final rejection after the emergency resend also \
+         fails with context length"
     );
     assert_eq!(diagnostic.get("class"), Some(&json!("context_length")));
     assert_eq!(
@@ -2346,7 +2348,8 @@ async fn exhausted_max_attempts_blocks_emergency_resend() {
     );
     assert_eq!(
         diagnostic_json(&report).get("code"),
-        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+        Some(&json!("ADMISSION_PROVIDER_CONTEXT_REJECTED")),
+        "§14.3 step 5: an exhausted cap blocks the resend and rejects"
     );
     assert_eq!(
         server.hits(),

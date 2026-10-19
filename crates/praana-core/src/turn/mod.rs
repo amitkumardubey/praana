@@ -134,6 +134,22 @@ fn emergency_margin_from(window: u64, estimated: u64) -> u64 {
     window.saturating_sub(estimated).saturating_add(1).max(1)
 }
 
+/// The §14.3 step 5 final diagnostic: the one emergency context retry was
+/// unavailable (cap exhausted) or failed with context length again. The report
+/// surfaces this instead of the raw `E_PROVIDER_CONTEXT_LENGTH` of the attempt.
+fn provider_context_rejected() -> ProtocolError {
+    ProtocolError {
+        code: "ADMISSION_PROVIDER_CONTEXT_REJECTED".to_owned(),
+        class: ErrorClass::ContextLength,
+        message: "the provider rejected the request for context length after the one emergency \
+                  retry was unavailable or failed"
+            .to_owned(),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
 impl ProviderFailure {
     /// The one emergency context retry (Compaction §14.3). It is not a generic
     /// retry: `retry_allowed` still excludes `ContextLength`, so other error
@@ -1221,13 +1237,27 @@ impl HeadlessLoop {
                     })
                 })
                 .collect();
+            let max_prior = prior_attempts
+                .iter()
+                .max_by_key(|attempt| attempt.attempt_number)
+                .cloned();
+            // Compaction §14.3 / D2: the first context-length failure of a step
+            // earns exactly one emergency resend. It is derived from the
+            // durable log so a resumed turn neither repeats nor loses it.
+            let emergency_spent = prior_attempts.iter().any(|attempt| attempt.emergency);
+            let last_was_context_length = max_prior.as_ref().is_some_and(|attempt| {
+                attempt.status == crate::history::replay::AttemptStatus::Failed
+                    && !attempt.emitted
+                    && attempt.failure_code.as_deref() == Some(CONTEXT_LENGTH_CODE)
+            });
             if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
-                let last_id = prior_attempts
-                    .iter()
-                    .max_by_key(|attempt| attempt.attempt_number)
-                    .map(|attempt| attempt.id);
-                // The last failed attempt durably recorded its canonical
-                // diagnostic; report() picks it up from the loop.
+                let last_id = max_prior.as_ref().map(|attempt| attempt.id);
+                // §14.3 step 5: a context-length failure whose emergency resend
+                // the cap blocked rejects with ADMISSION_PROVIDER_CONTEXT_REJECTED;
+                // any other exhausted retry keeps the attempt's own diagnostic.
+                if last_was_context_length {
+                    self.pending_diagnostic = Some(provider_context_rejected());
+                }
                 return Ok(Control::Done(
                     self.interrupt(InterruptionReason::ProviderFailure, last_id)?,
                 ));
@@ -1238,23 +1268,12 @@ impl HeadlessLoop {
                 .max()
                 .unwrap_or(0)
                 .saturating_add(1);
-            let max_prior = prior_attempts
-                .iter()
-                .max_by_key(|attempt| attempt.attempt_number)
-                .cloned();
             let retry_of = max_prior.as_ref().map(|attempt| attempt.id);
-            // Compaction §14.3 / D2: the first context-length failure of a step
-            // earns exactly one emergency resend. It is derived from the
-            // durable log so a resumed turn neither repeats nor loses it.
-            let emergency_spent = prior_attempts.iter().any(|attempt| attempt.emergency);
-            let last_was_context_length = max_prior.as_ref().is_some_and(|attempt| {
-                attempt.status == crate::history::replay::AttemptStatus::Failed
-                    && !attempt.emitted
-                    && attempt.failure_code.as_deref() == Some(CONTEXT_LENGTH_CODE)
-            });
             if last_was_context_length && emergency_spent {
-                // The emergency attempt itself (or an earlier one) was
-                // rejected: the canonical diagnostic is already durable.
+                // §14.3 step 5: the emergency resend (or an earlier one) failed
+                // with context length again. Reject with the final code rather
+                // than the raw provider context-length diagnostic.
+                self.pending_diagnostic = Some(provider_context_rejected());
                 return Ok(Control::Done(
                     self.interrupt(InterruptionReason::ProviderFailure, retry_of)?,
                 ));
@@ -1343,9 +1362,16 @@ impl HeadlessLoop {
             // false once every eligible turn is considered, and the per-step
             // `compaction_epochs_run` cap stops a non-progressing epoch from
             // looping forever under an inflated emergency margin.
+            //
+            // P5-6a retires closed turns only, at top-level turn admission. No
+            // in-turn tool-cycle compaction (handoff; §5.3; #634), so a step
+            // after a tool call (`step_index > 0`) never compacts. The
+            // emergency margin still tightens later-step admissions without an
+            // epoch, because it feeds admission whether or not compaction runs.
             let emergency_cycle = self.emergency_margin_tokens > 0 && !emergency_epoch_run;
             let epoch_budget_left = compaction_epochs_run < self.config.config.turn.max_attempts;
-            if self.compactor.is_some()
+            if open.step_index == 0
+                && self.compactor.is_some()
                 && epoch_budget_left
                 && (emergency_cycle || self.live_compaction_wanted(&admission)?)
             {
@@ -1387,6 +1413,9 @@ impl HeadlessLoop {
                         );
                     }
                 };
+                // §4.2: the reduced-reserve re-admission can change projected
+                // fill, so refresh the hysteresis signal from the final value.
+                self.update_pressure(&admission);
             }
             let admitted = match admission {
                 AdmissionOutcome::Admitted(admitted) => admitted,
@@ -1500,6 +1529,15 @@ impl HeadlessLoop {
                     } else {
                         InterruptionReason::ProviderFailure
                     };
+                    // §14.3 step 5: an emergency resend that fails with context
+                    // length again rejects with ADMISSION_PROVIDER_CONTEXT_REJECTED,
+                    // not the raw provider diagnostic that `fail_attempt` left.
+                    if !cancelled
+                        && (is_emergency || emergency_spent)
+                        && failure.error.code == CONTEXT_LENGTH_CODE
+                    {
+                        self.pending_diagnostic = Some(provider_context_rejected());
+                    }
                     return Ok(Control::Done(self.interrupt(reason, Some(attempt_id))?));
                 }
                 Err(TurnError::Failed(message)) => {
