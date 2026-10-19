@@ -121,25 +121,15 @@ pub struct ProviderFailure {
 /// Canonical code of a provider context-length response (Protocol §10).
 const CONTEXT_LENGTH_CODE: &str = "E_PROVIDER_CONTEXT_LENGTH";
 
-/// The §14.3 emergency re-admission margin from an attempt's admission dims.
-///
-/// The provider rejected a request the estimator thought fit, so the estimate
-/// `I` understated the real occupancy by at least `W - I`. We re-admit with the
-/// largest margin the admission allows: `max(1, W - I + 1)`. Admission still
-/// caps the applied margin at `W / 10`, so in practice this is the maximum
-/// margin rather than a tuned underestimation figure. Deriving it purely from
-/// the two durable admission numbers keeps a live resend and a resumed resend
-/// byte-identical. This figure is not a calibration sample and is not stored.
-fn emergency_margin_from(window: u64, estimated: u64) -> u64 {
-    window.saturating_sub(estimated).saturating_add(1).max(1)
-}
-
 /// The §14.3 step 5 final diagnostic: the one emergency context retry was
-/// unavailable (cap exhausted) or failed with context length again. The report
-/// surfaces this instead of the raw `E_PROVIDER_CONTEXT_LENGTH` of the attempt.
+/// unavailable (cap exhausted) or failed with context length again. The
+/// internal domain code `ADMISSION_PROVIDER_CONTEXT_REJECTED` maps to the
+/// canonical `E_PROVIDER_CONTEXT_LENGTH` / `context_length` at the report
+/// boundary (Protocol Appendix A.5), so `TurnReport.diagnostic` carries the
+/// canonical code like every other surfaced diagnostic.
 fn provider_context_rejected() -> ProtocolError {
     ProtocolError {
-        code: "ADMISSION_PROVIDER_CONTEXT_REJECTED".to_owned(),
+        code: "E_PROVIDER_CONTEXT_LENGTH".to_owned(),
         class: ErrorClass::ContextLength,
         message: "the provider rejected the request for context length after the one emergency \
                   retry was unavailable or failed"
@@ -427,9 +417,11 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
-    /// Transient margin (tokens) for the single emergency re-admission after a
-    /// provider context-length response (Compaction §14.3). Zero otherwise.
-    emergency_margin_tokens: u64,
+    /// A context-length failure is awaiting its one emergency recovery cycle
+    /// (Compaction §14.3): the next admission runs a compaction epoch and the
+    /// resend is marked `emergency_context_retry`. Not an admission input — the
+    /// epoch makes room, not a margin. `false` otherwise.
+    emergency_recovery_pending: bool,
     /// Resolved configured compactor (Compaction §7.3). `None` keeps live
     /// compaction inert; the P5-7 creation gate is what installs one.
     compactor: Option<crate::compaction::activate::ConfiguredCompactor>,
@@ -841,7 +833,7 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
-            emergency_margin_tokens: 0,
+            emergency_recovery_pending: false,
             compactor: None,
             pressure: crate::compaction::admission::PressureState::Normal,
         })
@@ -1189,12 +1181,9 @@ impl HeadlessLoop {
         // Accumulated retry wall time for this step: no further attempt is
         // scheduled once it reaches the OpenAI §18.3 60s cap.
         let mut retry_spent_ms: u64 = 0;
-        self.emergency_margin_tokens = 0;
-        // The §14.3 recovery cycle compacts at most once per emergency retry.
+        self.emergency_recovery_pending = false;
+        // The §14.3 recovery cycle runs its emergency epoch at most once.
         let mut emergency_epoch_run = false;
-        // Hard-ceiling / proactive epochs run this step. Bounded so a
-        // non-progressing epoch under an inflated margin cannot loop forever.
-        let mut compaction_epochs_run: u32 = 0;
         loop {
             if self.cancel.is_cancelled() {
                 return Ok(Control::Done(
@@ -1211,8 +1200,6 @@ impl HeadlessLoop {
                 emergency: bool,
                 emitted: bool,
                 failure_code: Option<String>,
-                admission_window: u64,
-                admission_estimated: u64,
             }
             let prior_attempts: Vec<PriorAttempt> = replay
                 .attempts
@@ -1232,8 +1219,6 @@ impl HeadlessLoop {
                         emergency: attempt.emergency_context_retry,
                         emitted: attempt.observable_delta_emitted,
                         failure_code: attempt.failure_code.clone(),
-                        admission_window: attempt.admission_context_window_tokens,
-                        admission_estimated: attempt.admission_estimated_input_tokens,
                     })
                 })
                 .collect();
@@ -1279,19 +1264,12 @@ impl HeadlessLoop {
                 ));
             }
             let is_emergency = last_was_context_length;
-            // §14.3: an emergency resend carries the recovery margin derived
-            // from the failed attempt's durable admission dims. Recomputing it
-            // from the log (rather than trusting the in-memory value, which a
-            // resume loses) makes a live resend and a resumed resend send an
-            // identical request. The live failure path also seeds this value;
-            // reasserting it here is the single source of truth for the resend.
+            // §14.3 step 3: an emergency resend runs one compaction recovery
+            // epoch before it is sent. Derived from the durable log (not an
+            // in-memory value a resume would lose) so a live resend and a
+            // resumed resend take the same recovery path.
             if is_emergency {
-                if let Some(attempt) = max_prior.as_ref() {
-                    self.emergency_margin_tokens = emergency_margin_from(
-                        attempt.admission_window,
-                        attempt.admission_estimated,
-                    );
-                }
+                self.emergency_recovery_pending = true;
             }
             let step_id: StepId = match &max_prior {
                 Some(attempt) => attempt.step_id,
@@ -1355,28 +1333,27 @@ impl HeadlessLoop {
             // Compaction §4.2: the pressure hysteresis signal tracks every
             // admission, whether or not a compactor is installed.
             self.update_pressure(&admission);
-            // Compaction §14.2 order: a compaction epoch comes before any output
-            // reserve reduction, and an epoch always rebuilds the request. An
-            // emergency cycle (§14.3) and the hard-ceiling / proactive paths
-            // each run at most one epoch per step: `proactive_candidate` goes
-            // false once every eligible turn is considered, and the per-step
-            // `compaction_epochs_run` cap stops a non-progressing epoch from
-            // looping forever under an inflated emergency margin.
+            // Compaction §14.2 order: a compaction epoch comes before any
+            // output-reserve reduction, and an epoch always rebuilds the
+            // request. §14.2 step 2 repeats successful epochs while the request
+            // is still over `U` and eligible turns remain; `live_compaction_wanted`
+            // gates on `proactive_candidate`, which goes false once every
+            // eligible turn is considered, so the loop is bounded by progress
+            // rather than by the assistant `turn.max_attempts` budget.
+            //
+            // The §14.3 emergency recovery cycle runs its epoch once per step
+            // (`emergency_epoch_run`). It is distinct from the hard-ceiling /
+            // proactive repeat and spends the compaction purpose budget.
             //
             // P5-6a retires closed turns only, at top-level turn admission. No
             // in-turn tool-cycle compaction (handoff; §5.3; #634), so a step
-            // after a tool call (`step_index > 0`) never compacts. The
-            // emergency margin still tightens later-step admissions without an
-            // epoch, because it feeds admission whether or not compaction runs.
-            let emergency_cycle = self.emergency_margin_tokens > 0 && !emergency_epoch_run;
-            let epoch_budget_left = compaction_epochs_run < self.config.config.turn.max_attempts;
+            // after a tool call (`step_index > 0`) never compacts.
+            let emergency_cycle = self.emergency_recovery_pending && !emergency_epoch_run;
             if open.step_index == 0
                 && self.compactor.is_some()
-                && epoch_budget_left
                 && (emergency_cycle || self.live_compaction_wanted(&admission)?)
             {
                 emergency_epoch_run |= emergency_cycle;
-                compaction_epochs_run = compaction_epochs_run.saturating_add(1);
                 if self.live_compaction_epoch().await? {
                     continue;
                 }
@@ -1456,12 +1433,6 @@ impl HeadlessLoop {
             // The admitted body carries the final reserve; drop the override.
             provider.clear_output_reserve();
             let attempt_id: AttemptId = self.fresh()?;
-            // `(context_window_tokens, estimated_input_tokens)` of this attempt
-            // feed the Compaction §14.3 underestimation figure.
-            let admission_dims = (
-                admitted.snapshot.context_window_tokens,
-                admitted.snapshot.estimated_input_tokens,
-            );
             let purpose = AssistantStepPurpose {
                 step_id,
                 step_index: open.step_index,
@@ -1485,7 +1456,10 @@ impl HeadlessLoop {
                     recovery_notices: notices,
                 }),
             )?;
-            self.emergency_margin_tokens = 0;
+            // The attempt started; clear the pending-recovery flag so this
+            // attempt's own context-length failure (handled below) is what
+            // re-arms it, not a stale flag from the admission that preceded it.
+            self.emergency_recovery_pending = false;
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_attempt_started:step{}:attempt{}",
@@ -1502,13 +1476,12 @@ impl HeadlessLoop {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
                     if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
-                        // §14.3: seed the recovery margin from this attempt's
-                        // admission dims and loop. The top-of-loop
-                        // `max_attempts` check gates the resend, so an exhausted
-                        // cap ends the step without another send. The resume
-                        // path recomputes the same margin from the durable log.
-                        let (window, estimated) = admission_dims;
-                        self.emergency_margin_tokens = emergency_margin_from(window, estimated);
+                        // §14.3 steps 3-4: arm the one emergency recovery cycle
+                        // (a compaction epoch runs before the resend) and loop.
+                        // The top-of-loop `max_attempts` check gates the resend,
+                        // so an exhausted cap ends the step without another
+                        // send. The resume path re-arms this from the log.
+                        self.emergency_recovery_pending = true;
                         #[cfg(feature = "failpoints")]
                         crate::crash_point::hit("turn.before_emergency_resend");
                         continue;
@@ -1678,7 +1651,12 @@ impl HeadlessLoop {
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
-            calibration_margin: self.emergency_margin_tokens,
+            // §14.3 step 2-3: the `max(1, W - I + 1)` underestimation figure is
+            // telemetry, not `C`. The admission calibration margin stays the
+            // Token-Accounting value (0 until P5-6b records samples); the
+            // emergency recovery makes room via a compaction epoch, not by
+            // inflating this margin.
+            calibration_margin: 0,
             component_bytes,
             framing: self.framing.clone(),
             image_count: prepared.image_count as u64,

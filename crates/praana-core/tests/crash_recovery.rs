@@ -2786,31 +2786,32 @@ fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
         String::from_utf8_lossy(&resumed.stderr)
     );
     let after = read_envelopes(root.path());
+    // (envelope, started) pairs so the envelope's attempt_id is available.
     let started: Vec<_> = after
         .iter()
         .filter_map(|event| match &event.event {
-            CanonicalEvent::AssistantAttemptStarted(started) => Some(started),
+            CanonicalEvent::AssistantAttemptStarted(started) => Some((event, started)),
             _ => None,
         })
         .collect();
     let emergency: Vec<_> = started
         .iter()
-        .filter(|started| started.emergency_context_retry)
+        .filter(|(_, started)| started.emergency_context_retry)
         .collect();
     assert_eq!(emergency.len(), 1, "exactly one emergency attempt");
-    assert!(emergency[0].retry_of.is_some());
-    // The resumed emergency resend recovers its §14.3 margin from the durable
-    // log, so it carries a larger safety margin than the original attempt that
-    // the provider rejected for context length — it is not a bare re-send.
-    let original = started
+    let (_, emergency_started) = emergency[0];
+    assert!(emergency_started.retry_of.is_some());
+    // §14.3: the emergency resend is the recovery path, not a bare re-send. It
+    // links to the original attempt the provider rejected for context length.
+    // (The underestimation figure is telemetry only; it does not change the
+    // admission margin, so the two attempts' margins are not compared here.)
+    let (original_env, _) = started
         .iter()
-        .find(|started| !started.emergency_context_retry)
+        .find(|(_, started)| !started.emergency_context_retry)
         .expect("original attempt is durable");
-    assert!(
-        emergency[0].admission.safety_margin_tokens > original.admission.safety_margin_tokens,
-        "emergency resend recovered a larger margin from the log ({} <= {})",
-        emergency[0].admission.safety_margin_tokens,
-        original.admission.safety_margin_tokens,
+    assert_eq!(
+        emergency_started.retry_of, original_env.attempt_id,
+        "emergency resend links to the rejected original attempt"
     );
     // The resumed resend supersedes with the same reason the live path uses.
     let superseded: Vec<_> = after
