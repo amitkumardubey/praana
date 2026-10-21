@@ -5,7 +5,7 @@ use super::types::EffectiveConfigV1;
 use crate::compaction::activate::{plan_request, CompactionSnapshot, ConfiguredCompactor};
 use crate::compaction::selection::Selection;
 use crate::compaction::validate::ReferenceUniverse;
-use crate::credentials::store::{credentials_path, load_store};
+use crate::credentials::store::{credentials_path, load_store, validate_credential_value};
 use crate::history::replay::EventReplayer;
 use crate::provider::provider_descriptor;
 use crate::token::Sha256Digest;
@@ -296,6 +296,14 @@ pub fn validate_compactor_pair_at_creation(
     // var. Presence only — `resolve_credential` is not used, the secret value
     // is never read or logged, and it stays resolved after the durable
     // compaction start (Compaction §12).
+    //
+    // Validity matches runtime: `CredentialStoreV1::validate` (run by
+    // `load_store`) already rejects any stored value that fails
+    // `validate_credential_value`, so a store row reaching this check is
+    // valid by construction. The env var must satisfy the same predicate
+    // here — an empty, whitespace-edged, or newline/NUL-containing value is
+    // rejected by `resolve_from_process_env` at send time, so creation must
+    // not accept it either.
     let store_present = match load_store(&credentials_path(praana_home)) {
         Ok(store) => store.credential_value(&compactor.provider).is_some(),
         Err(error) => {
@@ -311,7 +319,9 @@ pub fn validate_compactor_pair_at_creation(
                 compactor.provider
             ))
         })?;
-        env_vars.contains_key(&descriptor.credential_env)
+        env_vars
+            .get(&descriptor.credential_env)
+            .is_some_and(|value| validate_credential_value(value).is_ok())
     };
     if !store_present && !env_present {
         return Err(ConfigError::CompactorRequired(format!(

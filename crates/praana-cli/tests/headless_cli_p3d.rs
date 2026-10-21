@@ -503,6 +503,129 @@ fn run_cli_strings(env: &CliEnv, args: &[String]) -> Output {
         .expect("spawn praana")
 }
 
+/// Spawns `praana` with the ambient provider-key env vars removed, so a key
+/// on the test runner's machine can never satisfy (or leak into) the child.
+fn run_cli_no_ambient_keys(env: &CliEnv, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_praana"))
+        .args(args)
+        .current_dir(&env.workspace)
+        .env("PRAANA_HOME", &env.home)
+        .env("PRAANA_NO_UPDATE_CHECK", "1")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn praana")
+}
+
+/// Like [`run_cli_no_ambient_keys`], then pins a single provider key so the
+/// child deterministically sees exactly this credential.
+fn run_cli_with_key(env: &CliEnv, args: &[&str], key: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_praana"))
+        .args(args)
+        .current_dir(&env.workspace)
+        .env("PRAANA_HOME", &env.home)
+        .env("PRAANA_NO_UPDATE_CHECK", "1")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env("OPENAI_API_KEY", key)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn praana")
+}
+
+fn write_compactor_config(path: &Path, base_url: &str) {
+    let toml = format!(
+        r#"
+[llm]
+provider = "openai"
+protocol = "openai-responses-v1"
+model = "gpt-5.6-sol"
+max_output_tokens = 256
+
+[turn]
+max_steps = 6
+max_attempts = 3
+
+[tools]
+shell_enabled = true
+
+[history]
+compactor_provider = "openai"
+compactor_model = "gpt-5.6-sol"
+
+[providers.openai]
+base_url = "{base_url}"
+"#
+    );
+    std::fs::write(path, toml).expect("write compactor config");
+}
+
+#[test]
+fn complete_compactor_pair_without_credential_exits_2_before_session_creation() {
+    let env = cli_env();
+    // Complete pair, no store credential, and the child env is cleared of any
+    // ambient provider key. The base_url is a closed loopback port: the gate
+    // must reject before anything can touch the network.
+    write_compactor_config(&env.config, "http://127.0.0.1:1/v1");
+
+    let config = env.config.to_str().expect("config path utf8").to_owned();
+    let output = run_cli_no_ambient_keys(&env, &["run", "--config", &config, "hello"]);
+    assert_eq!(exit_code(&output), 2, "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "", "no stdout on gate rejection");
+    assert!(
+        stderr(&output).contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "complete pair is no longer a feature-gate rejection: {}",
+        stderr(&output)
+    );
+    assert_no_resume_id(&output);
+    assert!(
+        !env.home.join("sessions").exists(),
+        "no session directory may be created when the gate rejects"
+    );
+}
+
+#[test]
+fn complete_compactor_pair_with_key_passes_gate_and_runs_against_fake_server() {
+    let env = cli_env();
+    let server = spawn_server(|_index| sse_response(200, &responses_text_body("hello from cli")));
+    write_compactor_config(&env.config, &server.base_url());
+
+    let config = env.config.to_str().expect("config path utf8").to_owned();
+    let output = run_cli_with_key(
+        &env,
+        &["run", "--config", &config, "say hello"],
+        "p3d-cli-key",
+    );
+    assert_eq!(exit_code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("CONFIG_COMPACTOR_REQUIRED"),
+        "valid key must pass the gate: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "hello from cli\n");
+    assert_resume_id(&output);
+    // The only HTTP interaction is with the loopback fake server — never the
+    // real OpenAI endpoint.
+    assert_eq!(server.hits.load(Ordering::SeqCst), 1);
+    let recorded = server.recorded.lock().unwrap();
+    assert!(
+        recorded[0].starts_with("POST /v1/responses HTTP/1.1"),
+        "responses protocol posts to /v1/responses: {:?}",
+        recorded[0].lines().next()
+    );
+}
+
 #[test]
 fn admission_reject_exits_2_with_context_length_diagnostic_and_resume_id() {
     let env = cli_env();

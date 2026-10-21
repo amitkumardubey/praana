@@ -6,7 +6,9 @@ use praana_core::config::{
     load_effective_config, resolve_resume_config, ConfigCliOverrides, ConfigError, ConfigLoaderEnv,
     ConfigWarning,
 };
-use praana_core::credentials::credentials_path;
+use praana_core::credentials::{
+    credentials_path, save_store, upsert_credential, CredentialStoreV1,
+};
 use praana_core::provider::{
     catalog_cache_path, endpoint_fingerprint, CatalogCacheV1, LiveModelRowV1,
     CATALOG_CACHE_SCHEMA_VERSION, CATALOG_TTL_MS,
@@ -1663,6 +1665,93 @@ fn phase5_complete_pair_missing_credential_rejected_without_secret_leak() {
         !canonical.contains("sk-super-secret-marker"),
         "secret value leaked into the config snapshot: {canonical}"
     );
+}
+
+/// P5-7: an env credential that exists but is ` (empty, whitespace-edged,
+/// newline, NUL) must not count as present — runtime
+/// `resolve_from_process_env` rejects it via `validate_credential_value`, so
+/// creation must reject it too instead of passing and failing later at
+/// compaction time.
+#[test]
+fn phase5_complete_pair_invalid_env_credential_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    for (name, invalid_value) in [
+        ("empty", ""),
+        ("leading_space", " sk-x"),
+        ("trailing_space", "sk-x "),
+        ("newline", "sk-x\n"),
+    ] {
+        let mut env_map = HashMap::new();
+        env_map.insert("OPENAI_API_KEY".to_string(), invalid_value.to_string());
+        let env = make_test_env(&home, &cwd, env_map.clone());
+        let (eff, _, _) =
+            load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+        let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+            .expect_err("invalid env credential must be rejected at creation");
+        let text = error.to_string();
+        assert!(
+            text.contains("CONFIG_COMPACTOR_REQUIRED"),
+            "{name}: diagnostic carries the canonical code: {text}"
+        );
+        // The empty value is a substring of every string; assert non-leak
+        // only for values that actually carry secret-looking content.
+        if !invalid_value.is_empty() {
+            assert!(
+                !text.contains(invalid_value),
+                "{name}: supplied value leaked into the error: {text}"
+            );
+        }
+    }
+}
+
+/// P5-7: precedence keeps a valid store row usable even when the env var is
+/// present but invalid. A valid store row alone is enough.
+#[test]
+fn phase5_complete_pair_invalid_env_with_valid_store_row_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let mut store = CredentialStoreV1::empty();
+    upsert_credential(
+        &mut store,
+        "openai",
+        "sk-valid-store-row".to_owned(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    save_store(&credentials_path(&home), &store).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), " sk-bad-env".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("valid store row must satisfy credential presence even with an invalid env value");
 }
 
 /// P5-7: compactor-admission failure is rejected at creation. The minimum
