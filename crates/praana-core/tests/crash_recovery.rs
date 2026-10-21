@@ -2717,3 +2717,298 @@ fn compaction_crash_before_projection_publish_activates_on_resume() {
     let root = compaction_crash("compaction.before_projection_publish");
     assert_activated_once(root.path());
 }
+
+// ---------------------------------------------------------------------------
+// P5-6a: the emergency context retry and the calibration bucket
+// ---------------------------------------------------------------------------
+
+/// A provider that always fails with a recognized provider context-length
+/// error, so the turn takes the emergency context retry path.
+struct ContextLengthProvider {
+    root: PathBuf,
+}
+
+impl ContextLengthProvider {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[async_trait]
+impl StepProvider for ContextLengthProvider {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"scripted": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let _authorization = admitted.authorize_send(admitted.body())?;
+        let mut ledger = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("work").join("provider.log"))
+            .unwrap();
+        writeln!(ledger, "context-length").unwrap();
+        ledger.sync_all().unwrap();
+        // The canonical wire code and class of a provider context-length
+        // rejection (Protocol Appendix A.5).
+        Err(TurnError::Provider(Box::new(
+            praana_core::turn::ProviderFailure {
+                error: praana_core::protocol::errors::ProtocolError::provider(
+                    "E_PROVIDER_CONTEXT_LENGTH",
+                    praana_core::protocol::errors::ErrorClass::ContextLength,
+                    "context length exceeded",
+                    false,
+                ),
+                emission_crossed: false,
+                observable_delta: false,
+                partial_blocks: Vec::new(),
+                provider_response_id: None,
+                usage: ProviderUsage::default(),
+                may_have_completed: false,
+                cancelled: false,
+                retry_after_ms: None,
+            },
+        )))
+    }
+}
+
+/// A provider that completes one step, so the calibration path runs.
+struct CalibratingProvider {
+    root: PathBuf,
+}
+
+impl CalibratingProvider {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+}
+
+#[async_trait]
+impl StepProvider for CalibratingProvider {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"scripted": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        let mut ledger = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("work").join("provider.log"))
+            .unwrap();
+        writeln!(ledger, "accepted").unwrap();
+        ledger.sync_all().unwrap();
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("done".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(1),
+            },
+            authorization,
+        })
+    }
+}
+
+#[test]
+fn child_emergency_resend_crash() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("emergency-resend-crash") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    setup_work(&root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root.clone())).unwrap();
+        let provider = ContextLengthProvider::new(root.clone());
+        let _ = loop_.run_turn("alpha one", &provider).await;
+    });
+}
+
+#[test]
+fn child_emergency_resend_resume() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("emergency-resend-resume") {
+        return;
+    }
+    let root = PathBuf::from(root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::resume(resume_config(root.clone())).unwrap();
+        let provider = ContextLengthProvider::new(root.clone());
+        let report = loop_.continue_turn(&provider).await.unwrap();
+        // The second context-length failure for the same assistant step ends
+        // the turn: the emergency budget survived the restart.
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ProviderFailure)
+        );
+    });
+}
+
+#[test]
+fn child_calibration_sample_crash() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-crash") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    setup_work(&root);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root.clone())).unwrap();
+        let provider = CalibratingProvider::new(root.clone());
+        let _ = loop_.run_turn("alpha one", &provider).await;
+    });
+}
+
+fn attempts_of_kind(root: &Path, kind: &str) -> Vec<Value> {
+    let session = root.join("session");
+    let text = std::fs::read_to_string(session.join("events.jsonl")).unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).expect("event json"))
+        .filter(|event| event["event"]["kind"] == kind)
+        .collect()
+}
+
+/// A crash at `turn.before_emergency_resend` leaves the failed attempt
+/// durable and failed, accepts no partial output, starts no second attempt,
+/// and the emergency budget survives the restart.
+#[test]
+fn crash_before_emergency_resend_keeps_the_budget_across_a_restart() {
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    let output = spawn_child(
+        root.path(),
+        "child_emergency_resend_crash",
+        "emergency-resend-crash",
+        "standard",
+        Some("turn.before_emergency_resend"),
+        false,
+    );
+    assert_abort(&output, "turn.before_emergency_resend");
+
+    // The failed attempt is durable and failed, and nothing was accepted.
+    let started = attempts_of_kind(root.path(), "assistant_attempt_started");
+    assert_eq!(started.len(), 1, "no emergency attempt was started");
+    let failed = attempts_of_kind(root.path(), "assistant_attempt_failed");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(
+        failed[0]["event"]["data"]["error"]["code"],
+        json!("E_PROVIDER_CONTEXT_LENGTH")
+    );
+    assert!(
+        attempts_of_kind(root.path(), "assistant_step_accepted").is_empty(),
+        "the failed partial output is never accepted or summarized"
+    );
+    assert!(
+        attempts_of_kind(root.path(), "history_compacted").is_empty(),
+        "no compaction epoch activated"
+    );
+
+    // The budget survives the restart: the resumed attempt is a normal
+    // attempt, the second context-length failure ends the turn, and no
+    // emergency retry is started.
+    let resumed = spawn_child(
+        root.path(),
+        "child_emergency_resend_resume",
+        "emergency-resend-resume",
+        "standard",
+        None,
+        false,
+    );
+    assert!(
+        resumed.status.success(),
+        "the resumed child must finish: {}",
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    let started = attempts_of_kind(root.path(), "assistant_attempt_started");
+    assert_eq!(
+        started.len(),
+        2,
+        "the resumed attempt is the only further attempt: {started:?}"
+    );
+    assert_eq!(
+        started[1]["event"]["data"]["emergency_context_retry"],
+        json!(false),
+        "the emergency budget was already spent before the restart"
+    );
+    let failed = attempts_of_kind(root.path(), "assistant_attempt_failed");
+    assert_eq!(failed.len(), 2);
+    assert!(
+        attempts_of_kind(root.path(), "assistant_step_accepted").is_empty(),
+        "nothing was ever accepted"
+    );
+}
+
+/// A crash at `compaction.after_calibration_sample` happens before the
+/// in-memory bucket changes. The durable accepted step rebuilds exactly the
+/// same sample, so the bucket has no duplicate and no lost sample.
+#[test]
+fn crash_after_calibration_sample_rebuilds_the_same_bucket() {
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    let output = spawn_child(
+        root.path(),
+        "child_calibration_sample_crash",
+        "calibration-crash",
+        "standard",
+        Some("compaction.after_calibration_sample"),
+        false,
+    );
+    assert_abort(&output, "compaction.after_calibration_sample");
+
+    // The accepted step is durable before the crash.
+    assert_eq!(
+        attempts_of_kind(root.path(), "assistant_step_accepted").len(),
+        1
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let samples = rt.block_on(async {
+        let loop_ = HeadlessLoop::resume(resume_config(root.path().to_path_buf())).unwrap();
+        loop_.calibration_sample_count()
+    });
+    assert_eq!(
+        samples, 1,
+        "the rebuilt bucket has the one durable sample, with no duplicate and no loss"
+    );
+}
