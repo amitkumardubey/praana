@@ -1881,6 +1881,9 @@ mod activation {
         Valid,
         Raw(String),
         Http(u16),
+        /// An HTTP error with a body, so a test can produce a body the
+        /// adapter classifies as a provider context-length rejection.
+        HttpWithBody(u16, String),
         Sleep(u64),
     }
 
@@ -1890,6 +1893,9 @@ mod activation {
         cite_state: Mutex<Option<StateId>>,
         compactor: Mutex<Vec<Recorded>>,
         main: Mutex<Vec<Recorded>>,
+        /// The reply for the assistant request. The default is a completed
+        /// text step; a test can switch it to a context-length rejection.
+        main_reply: Mutex<Option<Reply>>,
     }
 
     struct Fake {
@@ -2074,6 +2080,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             cite_state: Mutex::new(None),
             compactor: Mutex::new(Vec::new()),
             main: Mutex::new(Vec::new()),
+            main_reply: Mutex::new(None),
         });
         let thread_script = script.clone();
         std::thread::spawn(move || {
@@ -2089,7 +2096,19 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 let response = match control_of(&parsed) {
                     None => {
                         thread_script.main.lock().unwrap().push(recorded);
-                        http(200, &responses_sse("ready"))
+                        match thread_script.main_reply.lock().unwrap().clone() {
+                            Some(reply) => match reply {
+                                Reply::Valid => http(200, &responses_sse("ready")),
+                                Reply::Raw(text) => http(200, &responses_sse(&text)),
+                                Reply::Http(status) => http(status, "{\"error\":{}}"),
+                                Reply::HttpWithBody(status, body) => http(status, &body),
+                                Reply::Sleep(ms) => {
+                                    std::thread::sleep(Duration::from_millis(ms));
+                                    http(200, &responses_sse("{}"))
+                                }
+                            },
+                            None => http(200, &responses_sse("ready")),
+                        }
                     }
                     Some(control) => {
                         thread_script.compactor.lock().unwrap().push(recorded);
@@ -2106,6 +2125,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                             }
                             Reply::Raw(text) => http(200, &responses_sse(&text)),
                             Reply::Http(status) => http(status, "{\"error\":{}}"),
+                            Reply::HttpWithBody(status, body) => http(status, &body),
                             Reply::Sleep(ms) => {
                                 std::thread::sleep(Duration::from_millis(ms));
                                 http(200, &responses_sse("{}"))
@@ -3690,5 +3710,182 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let config = build_defaults(home.path());
         let error = ConfiguredCompactor::resolve(&config, home.path(), 0).unwrap_err();
         assert_eq!(error.code(), "COMPACTION_UNAVAILABLE");
+    }
+
+    /// The emergency recovery cycle runs a compaction attempt. That attempt
+    /// carries the compaction purpose, so it never spends the assistant
+    /// attempt budget: the one emergency context retry is still sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_compaction_attempt_does_not_spend_the_assistant_attempt_budget() {
+        let mut s = session();
+        s.config.history.compactor_provider = "openai".into();
+        s.config.history.compactor_model = MODEL.into();
+        s.config.turn.max_attempts = 3;
+
+        // One closed turn so the recovery cycle has an eligible closed turn.
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        let report = loop_.run_turn("alpha one", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "the first turn commits");
+
+        // The next assistant request is rejected for context length, so the
+        // emergency recovery cycle runs and the emergency retry is sent.
+        *s.fake.script.main_reply.lock().unwrap() = Some(Reply::HttpWithBody(
+            400,
+            "{\"error\":{\"message\":\"maximum context length exceeded\"}}".to_owned(),
+        ));
+        let report = loop_.run_turn("bravo two", &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ProviderFailure),
+            "the second context-length rejection ends the turn"
+        );
+
+        let started = of_kind(&s.session, "assistant_attempt_started");
+        let assistant: Vec<_> = started
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == json!("assistant_step"))
+            .collect();
+        let compaction: Vec<_> = started
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == json!("compaction"))
+            .collect();
+        assert_eq!(
+            assistant.len(),
+            3,
+            "one attempt in the first turn, then the first attempt and the one emergency context retry in the second turn"
+        );
+        assert_eq!(
+            compaction.len(),
+            1,
+            "the recovery cycle ran one compaction-purpose attempt"
+        );
+        assert!(
+            !s.fake.compactor_requests().is_empty(),
+            "the recovery cycle really called the compactor"
+        );
+        assert!(
+            kinds(&s.session).contains(&"history_compacted".to_string()),
+            "the compaction epoch activated"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Calibration buckets (Token Accounting section 9, decision D6)
+// ---------------------------------------------------------------------------
+
+mod calibration {
+    use praana_core::protocol::id::Sha256Digest;
+    use praana_core::token::calibration::{
+        CalibrationBucketKey, TokenCalibrationBuckets, TokenCalibrationSampleV1,
+    };
+
+    const ESTIMATOR: &str = "praana-generic-unicode-15.1-v1";
+
+    fn key(model_revision: Option<&str>) -> CalibrationBucketKey {
+        CalibrationBucketKey::new(
+            "openai",
+            "openai-responses-v1",
+            model_revision.map(str::to_owned),
+            ESTIMATOR,
+        )
+    }
+
+    fn sample(
+        model_revision: Option<&str>,
+        estimated: u64,
+        reported: u64,
+    ) -> TokenCalibrationSampleV1 {
+        TokenCalibrationSampleV1::new(
+            "openai".to_owned(),
+            "openai-responses-v1".to_owned(),
+            "gpt-5.6-sol".to_owned(),
+            model_revision.map(str::to_owned),
+            ESTIMATOR.to_owned(),
+            Sha256Digest::digest_bytes(b"request"),
+            estimated,
+            reported,
+            None,
+            0,
+            1_700_000_000_000,
+        )
+        .expect("sample")
+    }
+
+    #[test]
+    fn c_is_zero_below_twenty_comparable_samples() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        for _ in 0..19 {
+            buckets.add_sample(sample(None, 100, 500));
+        }
+        assert_eq!(buckets.sample_count(&key(None)), 19);
+        assert_eq!(
+            buckets.margin_c(&key(None)),
+            0,
+            "C stays 0 below 20 comparable samples"
+        );
+    }
+
+    #[test]
+    fn c_is_nearest_rank_p95_plus_128_at_twenty_samples() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        // 20 samples whose positive errors are 1..=20. The nearest-rank p95
+        // is ceil(0.95 * 20) = 19, so the 19th smallest error (19) is the
+        // p95 and C = 19 + 128 = 147.
+        for error in 1..=20u64 {
+            buckets.add_sample(sample(None, 100, 100 + error));
+        }
+        assert_eq!(buckets.sample_count(&key(None)), 20);
+        assert_eq!(buckets.margin_c(&key(None)), 19 + 128);
+    }
+
+    #[test]
+    fn a_model_revision_never_mixes_samples() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        for _ in 0..20 {
+            buckets.add_sample(sample(Some("rev-a"), 100, 500));
+        }
+        assert_eq!(buckets.margin_c(&key(Some("rev-a"))), 400 + 128);
+        assert_eq!(
+            buckets.margin_c(&key(Some("rev-b"))),
+            0,
+            "a different model revision has its own bucket"
+        );
+        assert_eq!(buckets.sample_count(&key(Some("rev-b"))), 0);
+    }
+
+    #[test]
+    fn a_changed_estimator_starts_a_new_bucket_without_deleting_the_old_one() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        for _ in 0..20 {
+            buckets.add_sample(sample(None, 100, 500));
+        }
+        let old_key = key(None);
+        assert_eq!(buckets.margin_c(&old_key), 400 + 128);
+
+        let mut changed = sample(None, 100, 900);
+        changed.estimator_id = "another-estimator".to_owned();
+        buckets.add_sample(changed);
+
+        assert_eq!(
+            buckets.sample_count(&old_key),
+            20,
+            "the previous bucket is not deleted"
+        );
+        assert_eq!(buckets.margin_c(&old_key), 400 + 128);
+        let new_key =
+            CalibrationBucketKey::new("openai", "openai-responses-v1", None, "another-estimator");
+        assert_eq!(buckets.sample_count(&new_key), 1);
+        assert_eq!(buckets.margin_c(&new_key), 0);
+    }
+
+    #[test]
+    fn placeholder_zero_usage_is_excluded_and_counted() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        buckets.add_sample(sample(None, 100, 0));
+        assert_eq!(buckets.sample_count(&key(None)), 0);
+        assert_eq!(buckets.excluded_sample_count(&key(None)), 1);
+        assert_eq!(buckets.margin_c(&key(None)), 0);
     }
 }

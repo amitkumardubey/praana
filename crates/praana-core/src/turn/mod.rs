@@ -385,6 +385,16 @@ enum RecoveryCycle {
     Failed(String),
 }
 
+/// What the turn loop does after a recognized provider context-length error
+/// (Compaction §14.3).
+enum ContextLengthOutcome {
+    /// Schedule the one emergency context retry for this assistant step.
+    Retry,
+    /// The turn ends, either with the context rejection or with a
+    /// cancellation observed during the recovery cycle.
+    Rejected(Control),
+}
+
 #[derive(Default)]
 struct RecoveryBatch {
     id: Option<ToolBatchId>,
@@ -720,6 +730,23 @@ impl HeadlessLoop {
                 Ok(RecoveryCycle::Failed(error.code.clone()))
             }
         }
+    }
+
+    /// The calibration margin `C` for the current model identity. `C` is 0
+    /// below 20 comparable samples and the nearest-rank p95 of positive error
+    /// plus 128 at 20 or more (Token Accounting §9).
+    #[doc(hidden)]
+    pub fn calibration_margin_c(&self) -> u64 {
+        self.calibration_buckets
+            .margin_c(&self.calibration_bucket_key())
+    }
+
+    /// The number of comparable calibration samples for the current model
+    /// identity.
+    #[doc(hidden)]
+    pub fn calibration_sample_count(&self) -> usize {
+        self.calibration_buckets
+            .sample_count(&self.calibration_bucket_key())
     }
 
     /// True when replay reports an unfinished turn that
@@ -1385,7 +1412,7 @@ impl HeadlessLoop {
                     // assistant step. The budget is derived from the durable
                     // log, so it survives a restart.
                     if failure.error.code == CONTEXT_LENGTH_WIRE_CODE {
-                        return self
+                        match self
                             .handle_context_length(
                                 open,
                                 &admitted_snapshot,
@@ -1394,7 +1421,15 @@ impl HeadlessLoop {
                                 attempt_id,
                                 &failure,
                             )
-                            .await;
+                            .await?
+                        {
+                            // The one emergency retry continues the attempt
+                            // loop, so the request is re-prepared and
+                            // re-admitted from the durable projection instead
+                            // of reusing the failed attempt's bytes.
+                            ContextLengthOutcome::Retry => continue,
+                            ContextLengthOutcome::Rejected(control) => return Ok(control),
+                        }
                     }
                     // `attempt_number` is 1-based, so it is also the 1-based
                     // number of the retry about to be scheduled.
@@ -1571,7 +1606,7 @@ impl HeadlessLoop {
         admitted_component_tokens: &[u64; 9],
         attempt_id: AttemptId,
         failure: &ProviderFailure,
-    ) -> Result<Control, TurnError> {
+    ) -> Result<ContextLengthOutcome, TurnError> {
         // §14.3 steps 1 and 2: record the estimated components and the
         // provider error, plus the underestimation figure. The figure is
         // telemetry only: it never becomes a calibration sample and never
@@ -1588,10 +1623,12 @@ impl HeadlessLoop {
         let context_length_failures = self.context_length_failure_count(open);
         if context_length_failures > 1 {
             // The one emergency retry for this step is already spent.
-            return Ok(Control::Done(self.context_rejected_interrupt(
-                attempt_id,
-                "the provider rejected the request context after the emergency context retry",
-            )?));
+            return Ok(ContextLengthOutcome::Rejected(Control::Done(
+                self.context_rejected_interrupt(
+                    attempt_id,
+                    "the provider rejected the request context after the emergency context retry",
+                )?,
+            )));
         }
 
         // The assistant purpose must still have a free `turn.max_attempts`
@@ -1599,10 +1636,12 @@ impl HeadlessLoop {
         let prior_attempts = self.assistant_attempt_count(open);
         let max_attempts = self.config.config.turn.max_attempts as usize;
         if prior_attempts >= max_attempts {
-            return Ok(Control::Done(self.context_rejected_interrupt(
-                attempt_id,
-                "the provider rejected the request context and the assistant attempt budget is exhausted",
-            )?));
+            return Ok(ContextLengthOutcome::Rejected(Control::Done(
+                self.context_rejected_interrupt(
+                    attempt_id,
+                    "the provider rejected the request context and the assistant attempt budget is exhausted",
+                )?,
+            )));
         }
 
         // §14.3 step 3: one emergency recovery cycle. Compaction epochs spend
@@ -1622,17 +1661,19 @@ impl HeadlessLoop {
         }
 
         if self.cancel.is_cancelled() {
-            return Ok(Control::Done(
+            // Compaction section 18.6: a cancellation during the recovery
+            // cycle ends the turn and sends nothing.
+            return Ok(ContextLengthOutcome::Rejected(Control::Done(
                 self.interrupt(InterruptionReason::UserAbort, Some(attempt_id))?,
-            ));
+            )));
         }
 
-        // §14.3 step 4: retry once. The next loop iteration re-prepares and
-        // re-admits the request from the durable projection.
+        // §14.3 step 4: retry once. The next attempt-loop iteration
+        // re-prepares and re-admits the request from the durable projection.
         self.next_attempt_is_emergency_retry = true;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("turn.before_emergency_resend");
-        Ok(Control::Continue)
+        Ok(ContextLengthOutcome::Retry)
     }
 
     /// The durable count of context-length failures for one assistant step.

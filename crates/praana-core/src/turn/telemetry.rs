@@ -62,27 +62,36 @@ pub fn record_context_underestimation(
 ) -> bool {
     let figure =
         underestimation_figure(record.context_window_tokens, record.estimated_input_tokens);
-    let mut dimensions: BTreeMap<&str, String> = BTreeMap::new();
-    dimensions.insert("provider", record.provider.clone());
-    dimensions.insert("protocol", record.protocol.clone());
-    dimensions.insert("model", record.model.clone());
+    let mut dimensions: BTreeMap<&str, DimensionValue> = BTreeMap::new();
+    dimensions.insert("provider", DimensionValue::Text(record.provider.clone()));
+    dimensions.insert("protocol", DimensionValue::Text(record.protocol.clone()));
+    dimensions.insert("model", DimensionValue::Text(record.model.clone()));
     dimensions.insert(
         "model_revision",
-        record.model_revision.clone().unwrap_or_default(),
+        DimensionValue::Text(record.model_revision.clone().unwrap_or_default()),
     );
-    dimensions.insert("estimator_id", record.estimator_id.clone());
-    dimensions.insert("request_hash", record.request_hash.clone());
-    dimensions.insert("error_code", record.error_code.clone());
+    dimensions.insert(
+        "estimator_id",
+        DimensionValue::Text(record.estimator_id.clone()),
+    );
+    dimensions.insert(
+        "request_hash",
+        DimensionValue::Text(record.request_hash.clone()),
+    );
+    dimensions.insert(
+        "error_code",
+        DimensionValue::Text(record.error_code.clone()),
+    );
     dimensions.insert(
         "context_window_tokens",
-        record.context_window_tokens.to_string(),
+        DimensionValue::Number(record.context_window_tokens),
     );
     dimensions.insert(
         "estimated_input_tokens",
-        record.estimated_input_tokens.to_string(),
+        DimensionValue::Number(record.estimated_input_tokens),
     );
     for (index, tokens) in record.component_tokens.iter().enumerate() {
-        dimensions.insert(component_dimension(index), tokens.to_string());
+        dimensions.insert(component_dimension(index), DimensionValue::Number(*tokens));
     }
     let json = dimensions_json(&dimensions);
     store
@@ -113,8 +122,14 @@ fn component_dimension(index: usize) -> &'static str {
     }
 }
 
+/// One telemetry dimension value: an identifier or a number.
+enum DimensionValue {
+    Text(String),
+    Number(u64),
+}
+
 /// RFC 8785-style object with sorted keys and no insignificant whitespace.
-fn dimensions_json(dimensions: &BTreeMap<&str, String>) -> String {
+fn dimensions_json(dimensions: &BTreeMap<&str, DimensionValue>) -> String {
     let mut out = String::from("{");
     for (index, (key, value)) in dimensions.iter().enumerate() {
         if index > 0 {
@@ -122,9 +137,15 @@ fn dimensions_json(dimensions: &BTreeMap<&str, String>) -> String {
         }
         out.push('"');
         out.push_str(&escape_json_string(key));
-        out.push_str("\":\"");
-        out.push_str(&escape_json_string(value));
-        out.push('"');
+        out.push_str("\":");
+        match value {
+            DimensionValue::Text(text) => {
+                out.push('"');
+                out.push_str(&escape_json_string(text));
+                out.push('"');
+            }
+            DimensionValue::Number(number) => out.push_str(&number.to_string()),
+        }
     }
     out.push('}');
     out

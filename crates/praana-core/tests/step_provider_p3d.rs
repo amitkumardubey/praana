@@ -246,6 +246,14 @@ fn read_events(session_dir: &Path) -> Vec<Value> {
         .collect()
 }
 
+fn read_envelopes(session_dir: &Path) -> Vec<praana_core::protocol::events::EventEnvelope> {
+    let text = std::fs::read_to_string(session_dir.join("events.jsonl")).unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("event envelope"))
+        .collect()
+}
+
 fn event_kinds(session_dir: &Path) -> Vec<String> {
     read_events(session_dir)
         .iter()
@@ -1137,6 +1145,436 @@ async fn non_context_length_retries_do_not_consume_emergency_budget() {
         "rate limit failure and context-length failure are both durable"
     );
     assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_emergency_budget_is_per_assistant_step() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    // Step 1: context-length, then the emergency retry succeeds with a tool
+    // call, so the turn moves to step 2. Step 2: context-length, then its own
+    // emergency retry succeeds with a final answer.
+    let server = spawn_server(|index, _request, _server| match index {
+        0 => sse_response(
+            400,
+            "{\"error\":{\"message\":\"context length exceeded\"}}",
+            "",
+        ),
+        1 => sse_response(200, &chat_text_then_tool_body(), ""),
+        2 => sse_response(
+            400,
+            "{\"error\":{\"message\":\"context length exceeded\"}}",
+            "",
+        ),
+        _ => sse_response(200, &chat_final_text_body("done"), ""),
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    config.llm.protocol = "openai-chat-v1".into();
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits");
+    assert!(report.interruption.is_none(), "both steps commit");
+    assert_eq!(server.hits(), 4, "two steps, one emergency retry each");
+
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    assert_eq!(started.len(), 4);
+    // Attempt 2 is the emergency retry of step 1, attempt 4 is the emergency
+    // retry of step 2. The budget is per assistant step.
+    assert_eq!(
+        started[1]["event"]["data"]["emergency_context_retry"],
+        json!(true)
+    );
+    assert_eq!(
+        started[3]["event"]["data"]["emergency_context_retry"],
+        json!(true)
+    );
+    assert_eq!(
+        started[1]["event"]["data"]["purpose"]["data"]["step_index"],
+        json!(0),
+        "the first emergency retry belongs to step 0"
+    );
+    assert_eq!(
+        started[3]["event"]["data"]["purpose"]["data"]["step_index"],
+        json!(1),
+        "the second emergency retry belongs to step 1"
+    );
+    assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_second_failure_in_a_step_ends_the_turn_without_a_loop() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|_index, _request, _server| {
+        sse_response(
+            400,
+            "{\"error\":{\"message\":\"context length exceeded\"}}",
+            "",
+        )
+    });
+
+    let config = openai_config(&home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_.run_turn("hello", &provider).await.expect("report");
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    let diagnostic = diagnostic_json(&report);
+    assert_eq!(
+        diagnostic.get("code"),
+        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+    );
+    assert_eq!(diagnostic.get("class"), Some(&json!("context_length")));
+    assert!(
+        diagnostic
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("ADMISSION_PROVIDER_CONTEXT_REJECTED"),
+        "the internal name is surfaced in the diagnostic message: {diagnostic}"
+    );
+
+    // Exactly one emergency retry: no loop.
+    assert_eq!(server.hits(), 2);
+    let events = read_events(&session);
+    assert_eq!(
+        events_of_kind(&events, "assistant_attempt_started").len(),
+        2
+    );
+    assert!(!event_kinds(&session).contains(&"turn_committed".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_underestimation_is_recorded_as_telemetry_and_never_a_sample() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    config.llm.context_window = 128_000;
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits");
+    assert!(report.interruption.is_none());
+
+    let samples = praana_core::history::db::HistoryDatabase::open(&session.join("history.db"))
+        .expect("history db")
+        .read_telemetry_samples("admission_context_underestimation")
+        .expect("telemetry read");
+    assert_eq!(samples.len(), 1, "one underestimation record");
+    let sample = &samples[0];
+    assert!(
+        sample.value_integer >= 1,
+        "the underestimation figure is at least 1: {}",
+        sample.value_integer
+    );
+    let dimensions: Value = serde_json::from_str(&sample.dimensions_json).expect("dimensions json");
+    assert_eq!(dimensions["error_code"], json!("E_PROVIDER_CONTEXT_LENGTH"));
+    assert_eq!(dimensions["provider"], json!("openai"));
+    assert_eq!(dimensions["protocol"], json!("openai-responses-v1"));
+    assert!(dimensions["request_hash"].is_string());
+    assert!(dimensions["context_window_tokens"].is_number());
+    assert!(dimensions["estimated_input_tokens"].is_number());
+    assert!(
+        dimensions["system_tokens"].is_number(),
+        "the estimated components are recorded: {dimensions}"
+    );
+    assert!(dimensions["retained_message_tokens"].is_number());
+
+    // The figure is telemetry only: it never becomes a calibration sample.
+    // The successful emergency retry is not a comparable sample either, so
+    // the calibration bucket stays empty.
+    let buckets =
+        praana_core::token::calibration::rebuild_buckets_from_events(&read_envelopes(&session));
+    assert_eq!(
+        buckets.keys().count(),
+        0,
+        "an emergency retry attempt is never a calibration sample"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emergency_retry_re_prepares_and_re_admits_the_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+
+    let config = openai_config(&home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits");
+    assert!(report.interruption.is_none());
+    assert_eq!(server.hits(), 2);
+
+    // The retry went through the normal prepare and admit path: a fresh
+    // attempt with its own durable admission snapshot and request hash.
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    assert_eq!(started.len(), 2);
+    let first_hash = started[0]["event"]["data"]["request_hash"].clone();
+    let second_hash = started[1]["event"]["data"]["request_hash"].clone();
+    assert_eq!(
+        first_hash, second_hash,
+        "the same projection produces the same request bytes, so the request hash is unchanged"
+    );
+    assert!(started[1]["event"]["data"]["admission"]["estimated_input_tokens"].is_number());
+    // The retry is a fresh attempt that was admitted before it was sent.
+    assert_admission_preceded_send(&session, &server.request(1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calibration_margin_applies_after_twenty_samples_and_survives_a_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|_index, _request, _server| {
+        let body = fixture("openai-responses/streams/text-completed.sse");
+        sse_response(200, &body, "")
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    // The margin is then exactly `C`, so the applied value is observable.
+    config.history.safety_margin_min_tokens = 0;
+    config.history.safety_margin_ratio = 0.0;
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config.clone(), &session, &workspace, &home))
+        .expect("loop create");
+
+    // Twenty comparable samples. The fixture reports 2 input tokens, so every
+    // positive error is 0 and C becomes 0 + 128.
+    for index in 0..20 {
+        loop_
+            .run_turn(&format!("turn {index}"), &provider)
+            .await
+            .expect("turn commits");
+    }
+    assert_eq!(loop_.calibration_sample_count(), 20);
+    assert_eq!(loop_.calibration_margin_c(), 128);
+
+    // The next admission applies C.
+    loop_
+        .run_turn("after the samples", &provider)
+        .await
+        .expect("turn commits");
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    let last = started.last().expect("an attempt");
+    assert_eq!(
+        last["event"]["data"]["admission"]["safety_margin_tokens"],
+        json!(128),
+        "the applied margin carries C"
+    );
+
+    // A restart rebuilds the buckets from the durable log, so C is unchanged.
+    let before_restart = loop_.calibration_sample_count();
+    let margin_before_restart = loop_.calibration_margin_c();
+    drop(loop_);
+    let mut resumed = HeadlessLoop::resume(loop_config(config, &session, &workspace, &home))
+        .expect("loop resume");
+    assert_eq!(
+        resumed.calibration_sample_count(),
+        before_restart,
+        "the rebuilt bucket has the same comparable samples"
+    );
+    assert_eq!(
+        resumed.calibration_margin_c(),
+        margin_before_restart,
+        "C after a restart equals the value before it"
+    );
+    assert_eq!(margin_before_restart, 128);
+    resumed
+        .run_turn("after the restart", &provider)
+        .await
+        .expect("turn commits");
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    let last = started.last().expect("an attempt");
+    assert_eq!(
+        last["event"]["data"]["admission"]["safety_margin_tokens"],
+        json!(128),
+        "the rebuilt bucket applies the same C"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancellation_during_the_recovery_cycle_sends_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    // Request 0 is the first assistant turn. Request 1 is the second turn,
+    // which the provider rejects for context length. Request 2 is the
+    // compaction request of the emergency recovery cycle: it never answers,
+    // so the cycle stays in flight until the session is cancelled.
+    let server = spawn_server(|index, _request, _server| match index {
+        0 => {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+        1 => sse_response(
+            400,
+            "{\"error\":{\"message\":\"context length exceeded\"}}",
+            "",
+        ),
+        _ => {
+            std::thread::sleep(Duration::from_secs(30));
+            sse_response(200, "data: [DONE]\n\n", "")
+        }
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    config.history.compactor_provider = "openai".into();
+    config.history.compactor_model = BUNDLED_OPENAI_MODEL.into();
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config.clone(), &session, &workspace, &home))
+        .expect("loop create");
+
+    // One closed turn, so the recovery cycle has an eligible closed turn.
+    let report = loop_
+        .run_turn("first turn", &provider)
+        .await
+        .expect("first turn commits");
+    assert!(report.interruption.is_none());
+
+    let token = loop_.cancellation_token();
+    let handle = tokio::spawn(async move {
+        let report = loop_.run_turn("second turn", &provider).await;
+        (report, loop_.session_dir().to_path_buf())
+    });
+
+    until(|| server.hits() >= 3, "the compaction request to land").await;
+    token.cancel();
+    let (report, session_dir) = handle.await.expect("join run");
+    let report = report.expect("report");
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::UserAbort),
+        "a cancellation during the recovery cycle ends the turn"
+    );
+    assert_eq!(
+        server.hits(),
+        3,
+        "the emergency retry never sends after the cancellation"
+    );
+    let events = read_events(&session_dir);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    let assistant_attempts = started
+        .iter()
+        .filter(|event| event["event"]["data"]["purpose"]["type"] == json!("assistant_step"))
+        .count();
+    assert_eq!(
+        assistant_attempts, 2,
+        "no emergency attempt was started after the cancellation"
+    );
+    assert_eq!(
+        started.len(),
+        3,
+        "the third attempt is the compaction-purpose attempt of the recovery cycle"
+    );
+    assert_eq!(
+        events_of_kind(&events, "assistant_step_accepted").len(),
+        1,
+        "only the first turn accepted a step; the cancelled turn accepted none"
+    );
+    assert!(!event_kinds(&session_dir).contains(&"history_compacted".to_string()));
+    assert!(event_kinds(&session_dir).contains(&"turn_interrupted".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn calibration_defaults_are_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    let config = praana_core::config::build_defaults(&home);
+    assert_eq!(config.history.compact_at, 0.60);
+    assert_eq!(config.history.compact_clear_at, 0.45);
+    assert_eq!(config.history.compact_mass_fraction, 0.50);
+    assert_eq!(config.history.safety_margin_min_tokens, 512);
+    assert_eq!(config.history.safety_margin_ratio, 0.03);
+    assert_eq!(config.turn.max_attempts, 3);
 }
 
 // ---------------------------------------------------------------------------
