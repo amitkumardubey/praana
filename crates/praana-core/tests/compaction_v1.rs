@@ -2166,6 +2166,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         LoopConfig {
             session_dir: s.session.clone(),
             workspace: s.workspace.clone(),
+            home: s.home.clone(),
             config: s.config.clone(),
             clock: Arc::new(SystemClock),
             ids: Arc::new(MonotonicUlidGenerator::system()),

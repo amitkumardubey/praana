@@ -221,10 +221,16 @@ fn openai_config(home: &Path, base_url: &str) -> EffectiveConfigV1 {
     config
 }
 
-fn loop_config(config: EffectiveConfigV1, session: &Path, workspace: &Path) -> LoopConfig {
+fn loop_config(
+    config: EffectiveConfigV1,
+    session: &Path,
+    workspace: &Path,
+    home: &Path,
+) -> LoopConfig {
     LoopConfig {
         session_dir: session.to_path_buf(),
         workspace: workspace.to_path_buf(),
+        home: home.to_path_buf(),
         config,
         clock: Arc::new(SystemClock),
         ids: Arc::new(MonotonicUlidGenerator::system()),
@@ -490,8 +496,8 @@ async fn bundled_profile_exact_body_durable_admission_then_send_and_commit() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let (mut sink, accepted) = recording_sink();
 
     let report = loop_
@@ -574,8 +580,8 @@ async fn unknown_model_without_window_fails_admission_before_any_send() {
     config.llm.model = "totally-unknown-model".into();
     config.llm.context_window = 0;
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("hello", &provider)
@@ -616,8 +622,8 @@ async fn oversized_request_rejects_with_active_turn_too_large_and_no_send() {
     config.llm.context_window = 1_000;
     config.llm.max_output_tokens = 64;
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let huge = "p".repeat(12_000);
     let report = loop_
@@ -662,8 +668,8 @@ async fn missing_credential_fails_closed_with_auth_diagnostic_and_zero_sends() {
     config.turn.max_attempts = 3;
     config.providers.openrouter.base_url = server.base_url();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("hello", &provider)
@@ -728,8 +734,8 @@ async fn pre_emission_server_error_retries_with_fresh_attempt_ids_and_retry_of()
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("hello", &provider)
@@ -774,8 +780,8 @@ async fn post_emission_disconnect_never_retries() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_.run_turn("hello", &provider).await.expect("report");
     assert_eq!(
@@ -825,8 +831,8 @@ async fn retry_budget_exhaustion_stops_with_last_diagnostic() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_.run_turn("hello", &provider).await.expect("report");
     assert_eq!(
@@ -844,6 +850,272 @@ async fn retry_budget_exhaustion_stops_with_last_diagnostic() {
         3
     );
     assert_eq!(events_of_kind(&events, "assistant_attempt_failed").len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Emergency context retry (P5-6)
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_emergency_retries_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+
+    let config = openai_config(&home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits with emergency retry");
+    assert!(
+        report.interruption.is_none(),
+        "emergency retry recovers to a commit"
+    );
+    assert_eq!(server.hits(), 2, "exactly one emergency retry");
+
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    assert_eq!(started.len(), 2);
+    let first_id = started[0]["attempt_id"].clone();
+    let second_id = started[1]["attempt_id"].clone();
+    assert_ne!(first_id, second_id, "every retry gets a fresh attempt id");
+    assert_eq!(started[0]["event"]["data"]["retry_of"], Value::Null);
+    assert_eq!(
+        started[1]["event"]["data"]["retry_of"], first_id,
+        "second attempt records retry_of the first"
+    );
+    assert_eq!(
+        started[1]["event"]["data"]["emergency_context_retry"],
+        json!(true),
+        "emergency retry is marked"
+    );
+    assert_eq!(
+        events_of_kind(&events, "assistant_attempt_failed").len(),
+        1,
+        "the first context-length failure is durable before the retry"
+    );
+    assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_emergency_retry_second_failure_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|_index, _request, _server| {
+        sse_response(
+            400,
+            "{\"error\":{\"message\":\"context length exceeded\"}}",
+            "",
+        )
+    });
+
+    let config = openai_config(&home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_.run_turn("hello", &provider).await.expect("report");
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    let diagnostic = diagnostic_json(&report);
+    // After emergency retry fails with context-length, we return ADMISSION_PROVIDER_CONTEXT_REJECTED.
+    assert_eq!(
+        diagnostic.get("code"),
+        Some(&json!("E_PROVIDER_CONTEXT_REJECTED"))
+    );
+
+    assert_eq!(server.hits(), 2, "first attempt + one emergency retry");
+    let events = read_events(&session);
+    assert_eq!(
+        events_of_kind(&events, "assistant_attempt_started").len(),
+        2
+    );
+    assert_eq!(events_of_kind(&events, "assistant_attempt_failed").len(), 2);
+    let second_started = &events_of_kind(&events, "assistant_attempt_started")[1];
+    assert_eq!(
+        second_started["event"]["data"]["emergency_context_retry"],
+        json!(true)
+    );
+    let second_failed = &events_of_kind(&events, "assistant_attempt_failed")[1];
+    assert_eq!(
+        second_failed["event"]["data"]["error"]["code"],
+        json!("E_PROVIDER_CONTEXT_LENGTH")
+    );
+    assert!(!event_kinds(&session).contains(&"turn_committed".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn context_length_emergency_retry_exhausted_max_attempts_no_send() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index < 2 {
+            sse_response(
+                500,
+                "{\"error\":{\"message\":\"boom\"}}",
+                "retry-after-ms: 0\r\n",
+            )
+        } else {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        }
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    config.turn.max_attempts = 3;
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_.run_turn("hello", &provider).await.expect("report");
+    assert_eq!(
+        report.interruption,
+        Some(InterruptionReason::ProviderFailure)
+    );
+    let diagnostic = diagnostic_json(&report);
+    // max_attempts=3: attempt 1 (500), attempt 2 (500), attempt 3 (context-length).
+    // Emergency retry would be attempt 4 but max_attempts is exhausted.
+    assert_eq!(
+        diagnostic.get("code"),
+        Some(&json!("E_PROVIDER_CONTEXT_REJECTED"))
+    );
+
+    assert_eq!(
+        server.hits(),
+        3,
+        "max_attempts exhausted at context error, no emergency send"
+    );
+    let events = read_events(&session);
+    assert_eq!(
+        events_of_kind(&events, "assistant_attempt_started").len(),
+        3
+    );
+    assert_eq!(events_of_kind(&events, "assistant_attempt_failed").len(), 3);
+    let started_all = events_of_kind(&events, "assistant_attempt_started");
+    let last_started = started_all.last().unwrap();
+    assert_eq!(
+        last_started["event"]["data"]["emergency_context_retry"],
+        json!(false)
+    );
+    assert!(!event_kinds(&session).contains(&"turn_committed".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_context_length_retries_do_not_consume_emergency_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(
+                500,
+                "{\"error\":{\"message\":\"boom\"}}",
+                "retry-after-ms: 0\r\n",
+            )
+        } else if index == 1 {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+
+    let config = openai_config(&home, &server.base_url());
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits");
+    assert!(
+        report.interruption.is_none(),
+        "non-context retry then emergency retry commits"
+    );
+    assert_eq!(
+        server.hits(),
+        3,
+        "rate limit retry + context error + emergency retry"
+    );
+
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    assert_eq!(started.len(), 3);
+    assert_eq!(started[0]["event"]["data"]["retry_of"], Value::Null);
+    assert_eq!(
+        started[1]["event"]["data"]["retry_of"],
+        started[0]["attempt_id"]
+    );
+    assert_eq!(
+        started[1]["event"]["data"]["emergency_context_retry"],
+        json!(false)
+    );
+    assert_eq!(
+        started[2]["event"]["data"]["retry_of"],
+        started[1]["attempt_id"]
+    );
+    assert_eq!(
+        started[2]["event"]["data"]["emergency_context_retry"],
+        json!(true)
+    );
+    assert_eq!(
+        events_of_kind(&events, "assistant_attempt_failed").len(),
+        2,
+        "rate limit failure and context-length failure are both durable"
+    );
+    assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -888,8 +1160,8 @@ async fn multi_step_shell_tool_cycle_commits_in_order() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let (mut sink, accepted) = recording_sink();
 
     let report = loop_
@@ -949,8 +1221,8 @@ async fn accepted_text_reaches_sink_while_later_step_is_still_pending() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let (mut sink, accepted) = recording_sink();
 
     let handle = tokio::spawn(async move {
@@ -1008,8 +1280,8 @@ async fn resume_never_replays_previously_accepted_text() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config.clone(), &session, &workspace)).expect("create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config.clone(), &session, &workspace, &home))
+        .expect("create");
     let (mut sink_one, accepted_one) = recording_sink();
     let report = loop_
         .run_turn_with_sink("first turn", &provider, &mut sink_one)
@@ -1022,7 +1294,7 @@ async fn resume_never_replays_previously_accepted_text() {
     );
     drop(loop_);
 
-    let mut resumed = HeadlessLoop::resume(loop_config(config, &session, &workspace))
+    let mut resumed = HeadlessLoop::resume(loop_config(config, &session, &workspace, &home))
         .expect("resume the session");
     let (mut sink_two, accepted_two) = recording_sink();
     let report = resumed
@@ -1064,8 +1336,8 @@ async fn cancel_during_stream_never_accepts_partial_text() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let token = loop_.cancellation_token();
     let (mut sink, accepted) = recording_sink();
 
@@ -1116,8 +1388,8 @@ async fn refusal_stream_is_carried_as_an_ordered_block() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("do something disallowed", &provider)
@@ -1198,8 +1470,8 @@ async fn unauthorized_echoing_the_credential_never_reaches_events() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("hello", &provider)
@@ -1239,8 +1511,8 @@ async fn server_error_echoing_the_credential_retries_without_persisting_it() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("hello", &provider)
@@ -1327,8 +1599,8 @@ async fn responses_phase_and_reasoning_summary_replay_in_order() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let (mut sink, accepted) = recording_sink();
 
     let report = loop_
@@ -1438,8 +1710,8 @@ async fn responses_tool_start_before_arguments_is_never_retried() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_.run_turn("hello", &provider).await.expect("report");
     assert_eq!(
@@ -1490,8 +1762,8 @@ async fn responses_refusal_only_failure_records_no_observable_delta() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("do something disallowed", &provider)
@@ -1564,7 +1836,7 @@ async fn project_agents_bytes_reach_the_request_and_the_creation_digest() {
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
     let mut loop_ = HeadlessLoop::create_with_project_context(
-        loop_config(config, &session, &workspace),
+        loop_config(config, &session, &workspace, &home),
         Some(provider.project_context().clone()),
     )
     .expect("loop create");
@@ -1615,7 +1887,7 @@ async fn resume_reports_project_context_change_without_source_text() {
     let config = openai_config(&home, &server.base_url());
     let first = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
     let mut loop_ = HeadlessLoop::create_with_project_context(
-        loop_config(config.clone(), &session, &workspace),
+        loop_config(config.clone(), &session, &workspace, &home),
         Some(first.project_context().clone()),
     )
     .expect("loop create");
@@ -1630,7 +1902,7 @@ async fn resume_reports_project_context_change_without_source_text() {
     write_project_agents(&workspace, "# Project\n\nSecond version.\n");
     let resumed_provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
     let resumed = HeadlessLoop::resume_with_project_context(
-        loop_config(config, &session, &workspace),
+        loop_config(config, &session, &workspace, &home),
         Some(resumed_provider.project_context().clone()),
     )
     .expect("resume");
@@ -1666,8 +1938,8 @@ async fn uploaded_bytes_equal_the_canonical_admitted_body() {
 
     let config = openai_config(&home, &server.base_url());
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     loop_
         .run_turn("hello", &provider)
         .await
@@ -1737,8 +2009,8 @@ async fn headless_risk_class_is_denied_without_allow() {
     let mut config = openai_config(&home, &server.base_url());
     config.llm.protocol = "openai-chat-v1".into();
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     // The server keeps asking for the call, so the step budget ends the turn.
     let _report = loop_.run_turn("clean up", &provider).await.expect("report");
@@ -1788,8 +2060,8 @@ async fn headless_risk_class_runs_when_allowed() {
     config.llm.protocol = "openai-chat-v1".into();
     config.risk.allow = vec!["rm".to_owned()];
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_.run_turn("clean up", &provider).await.expect("report");
     assert!(
@@ -1845,8 +2117,8 @@ async fn step_limit_interrupts_with_the_step_limit_reason() {
     config.llm.protocol = "openai-chat-v1".into();
     config.turn.max_steps = 2;
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_
         .run_turn("loop forever", &provider)
@@ -1906,8 +2178,8 @@ async fn reserve_larger_than_the_window_is_an_admission_accounting_error() {
     config.llm.max_output_tokens = 950;
     config.llm.min_output_tokens = 16;
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
 
     let report = loop_.run_turn("hello", &provider).await.expect("report");
     assert_eq!(
@@ -2027,8 +2299,8 @@ async fn state_mutation_in_step_n_appears_in_step_n_plus_one_and_retry_re_render
         prepares: AtomicUsize::new(0),
         seen_tails: std::sync::Mutex::new(Vec::new()),
     };
-    let mut loop_ =
-        HeadlessLoop::create(loop_config(config, &session, &workspace)).expect("loop create");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
     let (mut sink, _) = recording_sink();
 
     let report = loop_
@@ -2133,8 +2405,9 @@ async fn runtime_facts_session_id_matches_authoritative_session_on_create_and_re
     let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
 
     // 1. Create turn
-    let mut loop_create = HeadlessLoop::create(loop_config(config.clone(), &session, &workspace))
-        .expect("loop create");
+    let mut loop_create =
+        HeadlessLoop::create(loop_config(config.clone(), &session, &workspace, &home))
+            .expect("loop create");
     let report_create = loop_create
         .run_turn("turn 1", &provider)
         .await
@@ -2168,8 +2441,8 @@ async fn runtime_facts_session_id_matches_authoritative_session_on_create_and_re
     drop(loop_create);
 
     // 2. Resume turn
-    let mut loop_resume =
-        HeadlessLoop::resume(loop_config(config, &session, &workspace)).expect("loop resume");
+    let mut loop_resume = HeadlessLoop::resume(loop_config(config, &session, &workspace, &home))
+        .expect("loop resume");
     let report_resume = loop_resume
         .run_turn("turn 2", &provider)
         .await

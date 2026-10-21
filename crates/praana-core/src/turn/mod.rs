@@ -37,7 +37,7 @@ use crate::protocol::state_graph::StateChangeReason;
 use crate::provider::openai::{admit, AdmissionDecision, AdmissionRequest};
 use crate::redaction::redact_json_v1;
 use crate::token::profile::TokenProfileStoreV1;
-use crate::token::FramingProfileV1;
+use crate::token::{FramingProfileV1, TokenCalibrationBucket, TokenCalibrationSampleV1};
 use crate::tools::builtin::production_tools;
 use crate::tools::{
     BatchOrigin, DurableBatchOutcome, DurableSession, ErasedTool, ProviderToolCall,
@@ -60,6 +60,7 @@ pub enum LoopFault {
 pub struct LoopConfig {
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
+    pub home: PathBuf,
     pub config: EffectiveConfigV1,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<MonotonicUlidGenerator>,
@@ -385,6 +386,13 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
+    /// Emergency context retry state for the current step (P5-6 §14.3).
+    emergency_context_retry_used: bool,
+    next_attempt_is_emergency_retry: bool,
+    /// Whether the currently running attempt is an emergency context retry.
+    current_attempt_is_emergency_retry: bool,
+    /// Calibration bucket for admission margin (Token Accounting §7).
+    calibration_bucket: TokenCalibrationBucket,
 }
 
 impl HeadlessLoop {
@@ -615,6 +623,36 @@ impl HeadlessLoop {
         Ok(outcome)
     }
 
+    /// Runs one emergency compaction operation for the emergency context retry
+    /// path (Compaction §14.3). This is a best-effort attempt to reduce context
+    /// before the emergency retry; failure does not block the retry.
+    async fn run_emergency_compaction(&mut self) -> Result<(), TurnError> {
+        self.ensure_live()?;
+        let config = self.config.config.clone();
+        let now_ms = self.config.clock.now_ms();
+        let compactor = match crate::compaction::activate::ConfiguredCompactor::resolve(
+            &config,
+            &self.config.home,
+            now_ms,
+        ) {
+            Ok(compactor) => compactor,
+            Err(_) => {
+                // No compactor configured or unavailable; emergency compaction is best-effort.
+                return Ok(());
+            }
+        };
+        let mut ctx = crate::compaction::activate::ActivationContext {
+            log: &mut self.log,
+            ids: &self.config.ids,
+            clock: self.config.clock.as_ref(),
+            session_id: self.session_id,
+            config: &config,
+            framing: &self.framing,
+        };
+        let _ = crate::compaction::activate::run(&mut ctx, &compactor, &self.cancel).await;
+        Ok(())
+    }
+
     /// True when replay reports an unfinished turn that
     /// [`HeadlessLoop::continue_turn_with_sink`] would drive to completion.
     pub fn has_active_turn(&self) -> Result<bool, TurnError> {
@@ -688,6 +726,10 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
+            emergency_context_retry_used: false,
+            next_attempt_is_emergency_retry: false,
+            current_attempt_is_emergency_retry: false,
+            calibration_bucket: TokenCalibrationBucket::new(128),
         })
     }
 
@@ -729,6 +771,9 @@ impl HeadlessLoop {
             return Err(TurnError::failed("a turn is already active"));
         }
         self.pending_diagnostic = None;
+        self.emergency_context_retry_used = false;
+        self.next_attempt_is_emergency_retry = false;
+        self.current_attempt_is_emergency_retry = false;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -1223,9 +1268,12 @@ impl HeadlessLoop {
                 step_index: open.step_index,
             };
             let notices = std::mem::take(&mut self.pending_notices);
+            // Save values needed for calibration sample after successful completion.
+            let admitted_snapshot = admitted.snapshot.clone();
+            let admitted_request_hash = admitted.request_hash;
             let admitted_request = AdmittedRequest {
                 body: admitted.request_body.clone(),
-                request_hash: admitted.request_hash.clone(),
+                request_hash: admitted_request_hash.clone(),
             };
             self.append(
                 Some(open.id),
@@ -1234,13 +1282,17 @@ impl HeadlessLoop {
                     purpose: ProviderAttemptPurpose::AssistantStep(purpose.clone()),
                     attempt_number,
                     model: self.model.clone(),
-                    request_hash: admitted.request_hash,
-                    admission: admitted.snapshot,
+                    request_hash: admitted_request_hash.clone(),
+                    admission: admitted_snapshot.clone(),
                     retry_of,
-                    emergency_context_retry: false,
+                    emergency_context_retry: self.next_attempt_is_emergency_retry,
                     recovery_notices: notices,
                 }),
             )?;
+            // Track whether this attempt is an emergency context retry.
+            self.current_attempt_is_emergency_retry = self.next_attempt_is_emergency_retry;
+            // Reset the flag after using it for this attempt.
+            self.next_attempt_is_emergency_retry = false;
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_attempt_started:step{}:attempt{}",
@@ -1256,6 +1308,78 @@ impl HeadlessLoop {
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
+                    // Check if this is a provider context-length error.
+                    let is_context_length = failure.error.code == "E_PROVIDER_CONTEXT_LENGTH";
+                    if is_context_length {
+                        if !self.emergency_context_retry_used {
+                            // P5-6: Emergency context retry (§14.3).
+                            // Record telemetry for estimated components and provider error.
+                            // Record underestimation figure as telemetry only (not a calibration sample).
+                            // Run one emergency recovery cycle (compaction epochs spend compaction budget).
+                            // Then retry once with emergency_context_retry = true if attempt budget allows.
+                            self.emergency_context_retry_used = true;
+                            // Check if we have a free attempt slot for the assistant purpose.
+                            let prior_attempts: usize = {
+                                let replay = self.replay()?;
+                                replay
+                                    .attempts
+                                    .values()
+                                    .filter(|attempt| {
+                                        attempt.turn_id == Some(open.id)
+                                            && matches!(
+                                                attempt.purpose,
+                                                ProviderAttemptPurpose::AssistantStep(ref purpose)
+                                                if purpose.step_index == open.step_index
+                                            )
+                                    })
+                                    .count()
+                            };
+                            let max_attempts = self.config.config.turn.max_attempts as usize;
+                            if prior_attempts >= max_attempts {
+                                // Cap exhausted: do not send emergency retry.
+                                self.pending_diagnostic = Some(ProtocolError {
+                                    code: "E_PROVIDER_CONTEXT_REJECTED".to_owned(),
+                                    class: ErrorClass::ContextLength,
+                                    message:
+                                        "provider context-length error; emergency retry blocked by max_attempts"
+                                            .to_owned(),
+                                    retryable: false,
+                                    http_status: None,
+                                    retry_after_ms: None,
+                                });
+                                return Ok(Control::Done(self.interrupt(
+                                    InterruptionReason::ProviderFailure,
+                                    Some(attempt_id),
+                                )?));
+                            }
+                            // Run emergency compaction if compactor is available.
+                            // This is a best-effort attempt to reduce context; failure doesn't block the retry.
+                            let _ = self.run_emergency_compaction().await;
+                            // Mark the next attempt as an emergency context retry.
+                            self.next_attempt_is_emergency_retry = true;
+                            #[cfg(feature = "failpoints")]
+                            crate::crash_point::hit("turn.before_emergency_resend");
+                            // Retry with a new attempt, marked as emergency context retry.
+                            // The loop will continue and create a new attempt with emergency_context_retry = true.
+                            continue;
+                        } else {
+                            // Emergency retry already used and we got another context-length error.
+                            // Return ADMISSION_PROVIDER_CONTEXT_REJECTED.
+                            self.pending_diagnostic = Some(ProtocolError {
+                                code: "E_PROVIDER_CONTEXT_REJECTED".to_owned(),
+                                class: ErrorClass::ContextLength,
+                                message: "provider context-length error after emergency retry"
+                                    .to_owned(),
+                                retryable: false,
+                                http_status: None,
+                                retry_after_ms: None,
+                            });
+                            return Ok(Control::Done(self.interrupt(
+                                InterruptionReason::ProviderFailure,
+                                Some(attempt_id),
+                            )?));
+                        }
+                    }
                     // `attempt_number` is 1-based, so it is also the 1-based
                     // number of the retry about to be scheduled.
                     let delay = self.retry_backoff_delay_ms(attempt_number, &failure);
@@ -1265,6 +1389,7 @@ impl HeadlessLoop {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}
                         }
                         retry_spent_ms = retry_spent_ms.saturating_add(delay);
+                        self.current_attempt_is_emergency_retry = false;
                         continue;
                     }
                     let reason = if cancelled {
@@ -1288,6 +1413,8 @@ impl HeadlessLoop {
             // parse does not discard the completed step — completion wins. A
             // cancel seen before the terminal event arrives as the cancelled
             // provider failure above and is handled there.
+            // Save usage for calibration sample before draft is moved.
+            let outcome_usage = outcome.draft.usage.clone();
             let draft = outcome.draft;
             let message = match assistant_message_with(
                 &draft,
@@ -1320,6 +1447,34 @@ impl HeadlessLoop {
             // The step is durable: drop any diagnostic from a retried attempt
             // so a later success never reports a stale failure line.
             self.pending_diagnostic = None;
+            // Record calibration sample if this was not an emergency context retry.
+            // P5-6 §15: comparable samples feed C = p95(positive_error) + 128 after 20 samples.
+            if !self.current_attempt_is_emergency_retry {
+                let estimated = admitted_snapshot.estimated_input_tokens;
+                let reported = outcome_usage.input_tokens;
+                if reported > 0 {
+                    let sample = TokenCalibrationSampleV1::new(
+                        self.model.provider.clone(),
+                        self.model.protocol.clone(),
+                        self.model.model.clone(),
+                        self.model.model_revision.clone(),
+                        admitted_snapshot.estimator_id.clone(),
+                        admitted_request_hash.clone(),
+                        estimated,
+                        reported,
+                        Some(outcome_usage.cache_read_tokens),
+                        0, // compaction_epoch - 0 for assistant attempts
+                        self.config.clock.now_ms(),
+                    );
+                    if let Ok(sample) = sample {
+                        self.calibration_bucket.add_sample(sample);
+                        #[cfg(feature = "failpoints")]
+                        crate::crash_point::hit("compaction.after_calibration_sample");
+                    }
+                }
+            }
+            // Reset emergency retry flag for this attempt.
+            self.current_attempt_is_emergency_retry = false;
             // Accepted text reaches the sink only after the barrier above.
             for block in &message.blocks {
                 if let AssistantBlock::Text(text) = block {
@@ -1404,7 +1559,10 @@ impl HeadlessLoop {
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
-            calibration_margin: 0,
+            calibration_margin: self
+                .calibration_bucket
+                .calculate_calibration_margin_c()
+                .unwrap_or(0),
             component_bytes,
             framing: self.framing.clone(),
             image_count: prepared.image_count as u64,
@@ -2724,6 +2882,7 @@ mod poison_tests {
         let cfg = LoopConfig {
             session_dir: dir.path().join("session"),
             workspace: dir.path().join("work"),
+            home: PathBuf::from("/praana-home"),
             config: effective,
             clock: Arc::new(FixedClock(1_700_000_000_000)),
             ids: Arc::new(MonotonicUlidGenerator::new(

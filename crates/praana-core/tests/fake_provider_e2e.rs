@@ -135,6 +135,7 @@ fn config(root: &std::path::Path, max_steps: u32) -> LoopConfig {
     LoopConfig {
         session_dir: root.join("session"),
         workspace: root.join("work"),
+        home: PathBuf::from("/praana-home"),
         config: effective,
         clock: Arc::new(FixedClock(1_700_000_000_000)),
         ids: Arc::new(MonotonicUlidGenerator::new(

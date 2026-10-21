@@ -71,6 +71,7 @@ fn config_with_seed(root: PathBuf, seed: u128) -> LoopConfig {
     LoopConfig {
         session_dir: root.join("session"),
         workspace: root.join("work"),
+        home: PathBuf::from("/praana-home"),
         config: effective,
         clock: Arc::new(FixedClock(1_700_000_000_000)),
         ids: Arc::new(MonotonicUlidGenerator::new(

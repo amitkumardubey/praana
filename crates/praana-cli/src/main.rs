@@ -620,6 +620,7 @@ async fn run_command(args: RunArgs) -> i32 {
     let loop_config = LoopConfig {
         session_dir,
         workspace: cwd,
+        home: praana_home.clone(),
         config: config.clone(),
         clock: Arc::new(SystemClock),
         ids: Arc::new(ids),
@@ -832,6 +833,7 @@ async fn resume_command(args: ResumeArgs) -> i32 {
     let loop_config = LoopConfig {
         session_dir,
         workspace,
+        home: praana_home.clone(),
         config: runtime_config.clone(),
         clock: Arc::new(SystemClock),
         ids: Arc::new(MonotonicUlidGenerator::system()),
