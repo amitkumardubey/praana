@@ -949,10 +949,22 @@ async fn context_length_emergency_retry_second_failure_rejected() {
         Some(InterruptionReason::ProviderFailure)
     );
     let diagnostic = diagnostic_json(&report);
-    // After emergency retry fails with context-length, we return ADMISSION_PROVIDER_CONTEXT_REJECTED.
+    // Protocol Appendix A.5: the internal ADMISSION_PROVIDER_CONTEXT_REJECTED
+    // maps to the E_PROVIDER_CONTEXT_LENGTH wire code and the context_length
+    // class. The internal name is carried in the message.
     assert_eq!(
         diagnostic.get("code"),
-        Some(&json!("E_PROVIDER_CONTEXT_REJECTED"))
+        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+    );
+    assert_eq!(diagnostic.get("class"), Some(&json!("context_length")));
+    assert_eq!(diagnostic.get("retryable"), Some(&json!(false)));
+    assert!(
+        diagnostic
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("ADMISSION_PROVIDER_CONTEXT_REJECTED"),
+        "the internal name is surfaced in the diagnostic message: {diagnostic}"
     );
 
     assert_eq!(server.hits(), 2, "first attempt + one emergency retry");
@@ -1018,7 +1030,16 @@ async fn context_length_emergency_retry_exhausted_max_attempts_no_send() {
     // Emergency retry would be attempt 4 but max_attempts is exhausted.
     assert_eq!(
         diagnostic.get("code"),
-        Some(&json!("E_PROVIDER_CONTEXT_REJECTED"))
+        Some(&json!("E_PROVIDER_CONTEXT_LENGTH"))
+    );
+    assert_eq!(diagnostic.get("class"), Some(&json!("context_length")));
+    assert!(
+        diagnostic
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("ADMISSION_PROVIDER_CONTEXT_REJECTED"),
+        "the internal name is surfaced in the diagnostic message: {diagnostic}"
     );
 
     assert_eq!(

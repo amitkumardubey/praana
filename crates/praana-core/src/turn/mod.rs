@@ -37,7 +37,10 @@ use crate::protocol::state_graph::StateChangeReason;
 use crate::provider::openai::{admit, AdmissionDecision, AdmissionRequest};
 use crate::redaction::redact_json_v1;
 use crate::token::profile::TokenProfileStoreV1;
-use crate::token::{FramingProfileV1, TokenCalibrationBucket, TokenCalibrationSampleV1};
+use crate::token::{
+    CalibrationBucketKey, FramingProfileV1, TokenCalibrationBuckets, TokenCalibrationSampleV1,
+    TokenEstimatorV1,
+};
 use crate::tools::builtin::production_tools;
 use crate::tools::{
     BatchOrigin, DurableBatchOutcome, DurableSession, ErasedTool, ProviderToolCall,
@@ -45,10 +48,16 @@ use crate::tools::{
 };
 
 pub mod provider;
+pub mod telemetry;
 
 /// OpenAI §18.3: no further attempt is scheduled once the accumulated retry
 /// wall time for one step reaches this cap, including under cancellation.
 const RETRY_WALL_CAP_MS: u64 = 60_000;
+
+/// Protocol Appendix A.5: the internal `ADMISSION_PROVIDER_CONTEXT_REJECTED`
+/// and the provider's own context-length rejection share this wire code and
+/// class. The internal name is carried in the diagnostic message.
+const CONTEXT_LENGTH_WIRE_CODE: &str = "E_PROVIDER_CONTEXT_LENGTH";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopFault {
@@ -364,6 +373,18 @@ enum Control {
     Done(TurnReport),
 }
 
+/// The outcome of one emergency recovery cycle (Compaction §14.3 step 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RecoveryCycle {
+    /// The session has no configured compactor pair. The empty pair is legal
+    /// and inert, so this is a normal no-op.
+    NoCompactor,
+    /// The cycle ran and activated a durable compaction epoch.
+    Completed,
+    /// The cycle failed. The code is surfaced; it never blocks the retry.
+    Failed(String),
+}
+
 #[derive(Default)]
 struct RecoveryBatch {
     id: Option<ToolBatchId>,
@@ -386,13 +407,15 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
-    /// Emergency context retry state for the current step (P5-6 §14.3).
-    emergency_context_retry_used: bool,
+    /// Whether the next assistant attempt is the one emergency context retry
+    /// (Compaction §14.3, decision D2).
     next_attempt_is_emergency_retry: bool,
     /// Whether the currently running attempt is an emergency context retry.
     current_attempt_is_emergency_retry: bool,
-    /// Calibration bucket for admission margin (Token Accounting §7).
-    calibration_bucket: TokenCalibrationBucket,
+    /// Keyed calibration buckets for the admission margin (Token Accounting
+    /// §9). One bucket per exact provider, protocol, model revision, and
+    /// estimator ID.
+    calibration_buckets: TokenCalibrationBuckets,
 }
 
 impl HeadlessLoop {
@@ -623,11 +646,23 @@ impl HeadlessLoop {
         Ok(outcome)
     }
 
-    /// Runs one emergency compaction operation for the emergency context retry
-    /// path (Compaction §14.3). This is a best-effort attempt to reduce context
-    /// before the emergency retry; failure does not block the retry.
-    async fn run_emergency_compaction(&mut self) -> Result<(), TurnError> {
+    /// Compaction §14.3 step 3: one emergency recovery cycle.
+    ///
+    /// The cycle runs the compaction operation against a configured
+    /// compactor. Its attempts carry the compaction purpose, so they spend
+    /// the compaction budget and never the assistant budget.
+    ///
+    /// A session with no configured compactor pair is a normal no-op: the
+    /// empty pair is legal and inert. Every other failure is reported so the
+    /// caller can surface it; it never blocks the one emergency retry.
+    async fn run_emergency_recovery_cycle(&mut self) -> Result<RecoveryCycle, TurnError> {
         self.ensure_live()?;
+        let history = &self.config.config.history;
+        if history.compactor_provider.trim().is_empty() || history.compactor_model.trim().is_empty()
+        {
+            // The empty compactor pair is legal and inert.
+            return Ok(RecoveryCycle::NoCompactor);
+        }
         let config = self.config.config.clone();
         let now_ms = self.config.clock.now_ms();
         let compactor = match crate::compaction::activate::ConfiguredCompactor::resolve(
@@ -636,21 +671,55 @@ impl HeadlessLoop {
             now_ms,
         ) {
             Ok(compactor) => compactor,
-            Err(_) => {
-                // No compactor configured or unavailable; emergency compaction is best-effort.
-                return Ok(());
+            Err(error) => {
+                return Ok(RecoveryCycle::Failed(error.code().to_owned()));
             }
         };
-        let mut ctx = crate::compaction::activate::ActivationContext {
-            log: &mut self.log,
-            ids: &self.config.ids,
-            clock: self.config.clock.as_ref(),
-            session_id: self.session_id,
-            config: &config,
-            framing: &self.framing,
+        let outcome = {
+            let mut ctx = crate::compaction::activate::ActivationContext {
+                log: &mut self.log,
+                ids: &self.config.ids,
+                clock: self.config.clock.as_ref(),
+                session_id: self.session_id,
+                config: &config,
+                framing: &self.framing,
+            };
+            match crate::compaction::activate::run(&mut ctx, &compactor, &self.cancel).await {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return Ok(RecoveryCycle::Failed(error.code().to_owned()));
+                }
+            }
         };
-        let _ = crate::compaction::activate::run(&mut ctx, &compactor, &self.cancel).await;
-        Ok(())
+        match outcome {
+            crate::compaction::activate::CompactionOutcome::Activated {
+                derived_projection_error,
+                ..
+            } => {
+                // The durable `HistoryCompacted` event is authoritative. The
+                // derived SQLite update is bounded to one checkpoint-tail
+                // transaction; a failure never invalidates the activation but
+                // it is never discarded silently either.
+                let projection = (|| {
+                    let db = crate::history::db::HistoryDatabase::open(
+                        &self.config.session_dir.join("history.db"),
+                    )?;
+                    crate::history::checkpoint::HistoryProjector::new(&db)
+                        .project_without_rebuild(&self.log)
+                })();
+                if let Err(error) = projection {
+                    self.surface_recovery_failure(
+                        &projection_error(&error, &self.config.session_dir).code,
+                    );
+                } else if let Some(derived) = derived_projection_error {
+                    self.surface_recovery_failure(&derived.code);
+                }
+                Ok(RecoveryCycle::Completed)
+            }
+            crate::compaction::activate::CompactionOutcome::Failed { error, .. } => {
+                Ok(RecoveryCycle::Failed(error.code.clone()))
+            }
+        }
     }
 
     /// True when replay reports an unfinished turn that
@@ -712,6 +781,10 @@ impl HeadlessLoop {
         runtime
             .open_state(&log)
             .map_err(|err| TurnError::failed(err.to_string()))?;
+        // Token Accounting §9: the calibration buckets are rebuilt from the
+        // durable log so `C` after a restart equals the value before it.
+        let calibration_buckets =
+            crate::token::calibration::rebuild_buckets_from_events(&log.events_slice());
         Ok(Self {
             model: model_selection(&config.config),
             config,
@@ -726,10 +799,9 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
-            emergency_context_retry_used: false,
             next_attempt_is_emergency_retry: false,
             current_attempt_is_emergency_retry: false,
-            calibration_bucket: TokenCalibrationBucket::new(128),
+            calibration_buckets,
         })
     }
 
@@ -771,7 +843,6 @@ impl HeadlessLoop {
             return Err(TurnError::failed("a turn is already active"));
         }
         self.pending_diagnostic = None;
-        self.emergency_context_retry_used = false;
         self.next_attempt_is_emergency_retry = false;
         self.current_attempt_is_emergency_retry = false;
         let turn_id: TurnId = self.fresh()?;
@@ -1271,6 +1342,7 @@ impl HeadlessLoop {
             // Save values needed for calibration sample after successful completion.
             let admitted_snapshot = admitted.snapshot.clone();
             let admitted_request_hash = admitted.request_hash;
+            let admitted_component_tokens = admitted.component_tokens;
             let admitted_request = AdmittedRequest {
                 body: admitted.request_body.clone(),
                 request_hash: admitted_request_hash.clone(),
@@ -1308,77 +1380,21 @@ impl HeadlessLoop {
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
-                    // Check if this is a provider context-length error.
-                    let is_context_length = failure.error.code == "E_PROVIDER_CONTEXT_LENGTH";
-                    if is_context_length {
-                        if !self.emergency_context_retry_used {
-                            // P5-6: Emergency context retry (§14.3).
-                            // Record telemetry for estimated components and provider error.
-                            // Record underestimation figure as telemetry only (not a calibration sample).
-                            // Run one emergency recovery cycle (compaction epochs spend compaction budget).
-                            // Then retry once with emergency_context_retry = true if attempt budget allows.
-                            self.emergency_context_retry_used = true;
-                            // Check if we have a free attempt slot for the assistant purpose.
-                            let prior_attempts: usize = {
-                                let replay = self.replay()?;
-                                replay
-                                    .attempts
-                                    .values()
-                                    .filter(|attempt| {
-                                        attempt.turn_id == Some(open.id)
-                                            && matches!(
-                                                attempt.purpose,
-                                                ProviderAttemptPurpose::AssistantStep(ref purpose)
-                                                if purpose.step_index == open.step_index
-                                            )
-                                    })
-                                    .count()
-                            };
-                            let max_attempts = self.config.config.turn.max_attempts as usize;
-                            if prior_attempts >= max_attempts {
-                                // Cap exhausted: do not send emergency retry.
-                                self.pending_diagnostic = Some(ProtocolError {
-                                    code: "E_PROVIDER_CONTEXT_REJECTED".to_owned(),
-                                    class: ErrorClass::ContextLength,
-                                    message:
-                                        "provider context-length error; emergency retry blocked by max_attempts"
-                                            .to_owned(),
-                                    retryable: false,
-                                    http_status: None,
-                                    retry_after_ms: None,
-                                });
-                                return Ok(Control::Done(self.interrupt(
-                                    InterruptionReason::ProviderFailure,
-                                    Some(attempt_id),
-                                )?));
-                            }
-                            // Run emergency compaction if compactor is available.
-                            // This is a best-effort attempt to reduce context; failure doesn't block the retry.
-                            let _ = self.run_emergency_compaction().await;
-                            // Mark the next attempt as an emergency context retry.
-                            self.next_attempt_is_emergency_retry = true;
-                            #[cfg(feature = "failpoints")]
-                            crate::crash_point::hit("turn.before_emergency_resend");
-                            // Retry with a new attempt, marked as emergency context retry.
-                            // The loop will continue and create a new attempt with emergency_context_retry = true.
-                            continue;
-                        } else {
-                            // Emergency retry already used and we got another context-length error.
-                            // Return ADMISSION_PROVIDER_CONTEXT_REJECTED.
-                            self.pending_diagnostic = Some(ProtocolError {
-                                code: "E_PROVIDER_CONTEXT_REJECTED".to_owned(),
-                                class: ErrorClass::ContextLength,
-                                message: "provider context-length error after emergency retry"
-                                    .to_owned(),
-                                retryable: false,
-                                http_status: None,
-                                retry_after_ms: None,
-                            });
-                            return Ok(Control::Done(self.interrupt(
-                                InterruptionReason::ProviderFailure,
-                                Some(attempt_id),
-                            )?));
-                        }
+                    // Compaction §14.3: a recognized provider context-length
+                    // error gets one emergency context retry for this
+                    // assistant step. The budget is derived from the durable
+                    // log, so it survives a restart.
+                    if failure.error.code == CONTEXT_LENGTH_WIRE_CODE {
+                        return self
+                            .handle_context_length(
+                                open,
+                                &admitted_snapshot,
+                                &admitted_request_hash,
+                                &admitted_component_tokens,
+                                attempt_id,
+                                &failure,
+                            )
+                            .await;
                     }
                     // `attempt_number` is 1-based, so it is also the 1-based
                     // number of the retry about to be scheduled.
@@ -1447,11 +1463,15 @@ impl HeadlessLoop {
             // The step is durable: drop any diagnostic from a retried attempt
             // so a later success never reports a stale failure line.
             self.pending_diagnostic = None;
-            // Record calibration sample if this was not an emergency context retry.
-            // P5-6 §15: comparable samples feed C = p95(positive_error) + 128 after 20 samples.
+            // Record a calibration sample when this attempt's usage is
+            // comparable. Token Accounting §15: comparable samples feed
+            // `C = p95(positive_error) + 128` after 20 samples. An emergency
+            // context retry attempt is never a sample, and placeholder zero
+            // reported usage is excluded.
             if !self.current_attempt_is_emergency_retry {
                 let estimated = admitted_snapshot.estimated_input_tokens;
                 let reported = outcome_usage.input_tokens;
+                let compaction_epoch = self.current_compaction_epoch();
                 if reported > 0 {
                     let sample = TokenCalibrationSampleV1::new(
                         self.model.provider.clone(),
@@ -1463,13 +1483,16 @@ impl HeadlessLoop {
                         estimated,
                         reported,
                         Some(outcome_usage.cache_read_tokens),
-                        0, // compaction_epoch - 0 for assistant attempts
+                        compaction_epoch,
                         self.config.clock.now_ms(),
                     );
                     if let Ok(sample) = sample {
-                        self.calibration_bucket.add_sample(sample);
+                        // The failpoint sits where the sample is computed, so a
+                        // crash can happen before the bucket changes. The
+                        // durable accepted step then rebuilds the same sample.
                         #[cfg(feature = "failpoints")]
                         crate::crash_point::hit("compaction.after_calibration_sample");
+                        self.calibration_buckets.add_sample(sample);
                     }
                 }
             }
@@ -1526,6 +1549,204 @@ impl HeadlessLoop {
         spent_ms.saturating_add(delay_ms) < RETRY_WALL_CAP_MS
     }
 
+    /// Compaction §14.3, decision D2: a recognized provider context-length
+    /// error gets one emergency context retry for this assistant step.
+    ///
+    /// The budget is derived from the durable log, so it survives a restart:
+    /// a step whose durable history already holds a context-length failure has
+    /// spent its emergency retry, and a second context-length error ends the
+    /// turn with `ADMISSION_PROVIDER_CONTEXT_REJECTED` (Protocol Appendix A.5
+    /// maps it to the `E_PROVIDER_CONTEXT_LENGTH` wire code).
+    ///
+    /// The recovery cycle runs before the retry, and a recovery failure never
+    /// blocks the retry. The retry re-enters the normal prepare and admit
+    /// path, so the resent request is rebuilt from the durable projection
+    /// rather than reusing the failed attempt's bytes.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_context_length(
+        &mut self,
+        open: &OpenTurn,
+        admitted_snapshot: &AdmissionSnapshot,
+        admitted_request_hash: &Sha256Digest,
+        admitted_component_tokens: &[u64; 9],
+        attempt_id: AttemptId,
+        failure: &ProviderFailure,
+    ) -> Result<Control, TurnError> {
+        // §14.3 steps 1 and 2: record the estimated components and the
+        // provider error, plus the underestimation figure. The figure is
+        // telemetry only: it never becomes a calibration sample and never
+        // enters the calibration bucket.
+        self.record_context_underestimation(
+            admitted_snapshot,
+            admitted_request_hash,
+            admitted_component_tokens,
+            failure,
+        );
+
+        // The number of durable context-length failures for this assistant
+        // step. The failure that led here is already durable.
+        let context_length_failures = self.context_length_failure_count(open);
+        if context_length_failures > 1 {
+            // The one emergency retry for this step is already spent.
+            return Ok(Control::Done(self.context_rejected_interrupt(
+                attempt_id,
+                "the provider rejected the request context after the emergency context retry",
+            )?));
+        }
+
+        // The assistant purpose must still have a free `turn.max_attempts`
+        // slot. Otherwise the failure is recorded and nothing is sent.
+        let prior_attempts = self.assistant_attempt_count(open);
+        let max_attempts = self.config.config.turn.max_attempts as usize;
+        if prior_attempts >= max_attempts {
+            return Ok(Control::Done(self.context_rejected_interrupt(
+                attempt_id,
+                "the provider rejected the request context and the assistant attempt budget is exhausted",
+            )?));
+        }
+
+        // §14.3 step 3: one emergency recovery cycle. Compaction epochs spend
+        // the compaction purpose budget, not the assistant budget. A recovery
+        // failure is surfaced but never blocks the retry.
+        match self.run_emergency_recovery_cycle().await {
+            Ok(RecoveryCycle::NoCompactor) => {}
+            Ok(RecoveryCycle::Completed) => {}
+            Ok(RecoveryCycle::Failed(code)) => {
+                self.surface_recovery_failure(&code);
+            }
+            Err(error) => {
+                // A durability failure in the recovery cycle is still reported
+                // and never blocks the retry.
+                self.surface_recovery_failure(&error.to_string());
+            }
+        }
+
+        if self.cancel.is_cancelled() {
+            return Ok(Control::Done(
+                self.interrupt(InterruptionReason::UserAbort, Some(attempt_id))?,
+            ));
+        }
+
+        // §14.3 step 4: retry once. The next loop iteration re-prepares and
+        // re-admits the request from the durable projection.
+        self.next_attempt_is_emergency_retry = true;
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("turn.before_emergency_resend");
+        Ok(Control::Continue)
+    }
+
+    /// The durable count of context-length failures for one assistant step.
+    /// The budget is derived from the log, so a restart cannot grant a second
+    /// emergency retry for the same step.
+    fn context_length_failure_count(&self, open: &OpenTurn) -> usize {
+        let Ok(replay) = self.replay() else {
+            return 0;
+        };
+        let events = self.log.events_slice();
+        let mut count = 0usize;
+        for event in events.iter() {
+            let CanonicalEvent::AssistantAttemptFailed(failed) = &event.event else {
+                continue;
+            };
+            if failed.error.code != CONTEXT_LENGTH_WIRE_CODE {
+                continue;
+            }
+            let Some(attempt_id) = event.attempt_id else {
+                continue;
+            };
+            let Some(attempt) = replay.attempts.get(&attempt_id) else {
+                continue;
+            };
+            if attempt.turn_id != Some(open.id) {
+                continue;
+            }
+            let ProviderAttemptPurpose::AssistantStep(purpose) = &attempt.purpose else {
+                continue;
+            };
+            if purpose.step_index != open.step_index {
+                continue;
+            }
+            count = count.saturating_add(1);
+        }
+        count
+    }
+
+    /// The durable count of assistant attempts for one step. `turn.max_attempts`
+    /// is counted per assistant step.
+    fn assistant_attempt_count(&self, open: &OpenTurn) -> usize {
+        let Ok(replay) = self.replay() else {
+            return 0;
+        };
+        replay
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt.turn_id == Some(open.id)
+                    && matches!(
+                        &attempt.purpose,
+                        ProviderAttemptPurpose::AssistantStep(purpose)
+                        if purpose.step_index == open.step_index
+                    )
+            })
+            .count()
+    }
+
+    /// §14.3 step 4/5: the turn ends with the internal
+    /// `ADMISSION_PROVIDER_CONTEXT_REJECTED`. Protocol Appendix A.5 maps it
+    /// to the `E_PROVIDER_CONTEXT_LENGTH` wire code and the `context_length`
+    /// class, so the internal name is carried in the message.
+    fn context_rejected_interrupt(
+        &mut self,
+        attempt_id: AttemptId,
+        message: &str,
+    ) -> Result<TurnReport, TurnError> {
+        self.pending_diagnostic = Some(ProtocolError {
+            code: CONTEXT_LENGTH_WIRE_CODE.to_owned(),
+            class: ErrorClass::ContextLength,
+            message: format!("ADMISSION_PROVIDER_CONTEXT_REJECTED: {message}"),
+            retryable: false,
+            http_status: None,
+            retry_after_ms: None,
+        });
+        self.interrupt(InterruptionReason::ProviderFailure, Some(attempt_id))
+    }
+
+    /// §14.3 steps 1 and 2: the estimated components, the provider error, and
+    /// the underestimation figure `max(1, W - I + 1)`. Telemetry only.
+    fn record_context_underestimation(
+        &self,
+        admitted_snapshot: &AdmissionSnapshot,
+        admitted_request_hash: &Sha256Digest,
+        admitted_component_tokens: &[u64; 9],
+        failure: &ProviderFailure,
+    ) {
+        let record = crate::turn::telemetry::ContextUnderestimation {
+            provider: self.model.provider.clone(),
+            protocol: self.model.protocol.clone(),
+            model: self.model.model.clone(),
+            model_revision: self.model.model_revision.clone(),
+            estimator_id: admitted_snapshot.estimator_id.clone(),
+            request_hash: admitted_request_hash.as_str().to_owned(),
+            error_code: failure.error.code.clone(),
+            context_window_tokens: admitted_snapshot.context_window_tokens,
+            estimated_input_tokens: admitted_snapshot.estimated_input_tokens,
+            component_tokens: *admitted_component_tokens,
+        };
+        let occurred_at_ms = self.config.clock.now_ms();
+        crate::turn::telemetry::record_context_underestimation(
+            &self.artifacts,
+            &record,
+            occurred_at_ms,
+        );
+    }
+
+    /// A recovery-cycle failure is surfaced, never discarded silently. The
+    /// retry still happens: §14.3 step 3 to 4 says a recovery failure does
+    /// not block the one emergency retry.
+    fn surface_recovery_failure(&self, code: &str) {
+        eprintln!("emergency context recovery failed: {code}");
+    }
+
     fn failure_interrupt(
         &mut self,
         failure: ProviderFailure,
@@ -1550,6 +1771,10 @@ impl HeadlessLoop {
         let requested_max_output = prepared
             .resolved_max_output_tokens
             .unwrap_or(llm.max_output_tokens);
+        // Token Accounting §9: `C` comes from the bucket for this request's
+        // exact identity. A request whose identity has no bucket yet gets 0.
+        let calibration_key = self.calibration_bucket_key();
+        let calibration_margin = self.calibration_buckets.margin_c(&calibration_key);
         let decision = admit(&AdmissionRequest {
             profile: prepared.profile.as_ref(),
             configured_context_window: llm.context_window,
@@ -1559,10 +1784,7 @@ impl HeadlessLoop {
             reasoning_reserve_tokens: llm.reasoning_reserve_tokens,
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
-            calibration_margin: self
-                .calibration_bucket
-                .calculate_calibration_margin_c()
-                .unwrap_or(0),
+            calibration_margin,
             component_bytes,
             framing: self.framing.clone(),
             image_count: prepared.image_count as u64,
@@ -1578,17 +1800,38 @@ impl HeadlessLoop {
         })
         .map_err(|err| TurnError::Provider(Box::new(provider_failure_from_provider_error(&err))))?;
         Ok(match decision {
-            AdmissionDecision::Admit(estimate) => AdmissionOutcome::Admitted(Admitted {
-                request_hash: estimate.request_hash,
-                snapshot: estimate.snapshot,
-                request_body: prepared.request.request_body.clone(),
-            }),
+            AdmissionDecision::Admit(estimate) => {
+                let component_tokens = estimate_component_tokens(&estimate);
+                AdmissionOutcome::Admitted(Admitted {
+                    request_hash: estimate.request_hash,
+                    snapshot: estimate.snapshot,
+                    request_body: prepared.request.request_body.clone(),
+                    component_tokens,
+                })
+            }
             AdmissionDecision::ReduceOutput {
                 new_max_output_tokens,
                 ..
             } => AdmissionOutcome::ReduceOutput(new_max_output_tokens),
             AdmissionDecision::Reject { .. } => AdmissionOutcome::Reject,
         })
+    }
+
+    /// The exact calibration bucket identity of the current model selection
+    /// and the estimator the request is estimated with.
+    fn calibration_bucket_key(&self) -> CalibrationBucketKey {
+        CalibrationBucketKey::new(
+            self.model.provider.clone(),
+            self.model.protocol.clone(),
+            self.model.model_revision.clone(),
+            crate::token::GenericTokenEstimatorV1.estimator_id(),
+        )
+    }
+    /// The compaction epoch in effect right now. A calibration sample records
+    /// it, so a sample taken after an activation is not confused with one
+    /// taken before it.
+    fn current_compaction_epoch(&self) -> u32 {
+        self.replay().map_or(0, |replay| replay.compaction_epoch)
     }
 
     async fn run_tool_batch(
@@ -1929,6 +2172,26 @@ struct Admitted {
     request_hash: Sha256Digest,
     snapshot: AdmissionSnapshot,
     request_body: Value,
+    /// The admitted component estimates in the `AdmissionEstimate` order.
+    /// Kept for the §14.3 telemetry record; it never changes the request.
+    component_tokens: [u64; 9],
+}
+
+/// The `AdmissionEstimate` component tokens in the `AdmissionEstimate` order:
+/// system, tool schema, memory bootstrap, handoff, retained messages, state
+/// graph, active tool cycle, continuation, provider framing.
+fn estimate_component_tokens(estimate: &crate::provider::openai::AdmissionEstimate) -> [u64; 9] {
+    [
+        estimate.system_tokens,
+        estimate.tool_schema_tokens,
+        estimate.memory_bootstrap_tokens,
+        estimate.handoff_tokens,
+        estimate.retained_message_tokens,
+        estimate.state_graph_tokens,
+        estimate.active_tool_cycle_tokens,
+        estimate.continuation_tokens,
+        estimate.provider_framing_tokens,
+    ]
 }
 
 fn redact_provider_message(message: &str) -> String {

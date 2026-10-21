@@ -223,6 +223,33 @@ impl ArtifactStore {
         })
     }
 
+    /// History §10.2: non-authoritative telemetry write. A failure is never
+    /// surfaced to the caller as a semantic error; the caller decides.
+    pub fn record_telemetry_sample(
+        &self,
+        name: &str,
+        event_sequence: Option<i64>,
+        value_integer: i64,
+        dimensions_json: &str,
+        occurred_at_ms: i64,
+    ) -> Result<(), ArtifactError> {
+        self.db.record_telemetry_sample(
+            name,
+            event_sequence,
+            value_integer,
+            dimensions_json,
+            occurred_at_ms,
+        )
+    }
+
+    /// History §10.2: reads the recorded telemetry samples for one name.
+    pub fn read_telemetry_samples(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::history::db::RecordedTelemetrySample>, ArtifactError> {
+        self.db.read_telemetry_samples(name)
+    }
+
     pub fn publish_batch(
         &self,
         log: &mut EventLogStore,
