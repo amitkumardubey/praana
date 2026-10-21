@@ -218,7 +218,7 @@ fn setup_apply_writes_empty_compactor_pair_before_p5() {
 }
 
 #[test]
-fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
+fn setup_apply_accepts_valid_complete_compactor_pair() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let service = SetupService::new(home.clone());
@@ -232,7 +232,7 @@ fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
         SetupValueDto::Text("gpt-5.6-sol".to_owned()),
     );
 
-    let error = service
+    let result = service
         .apply(
             0,
             ProviderId::from_canonical_str("openai").unwrap(),
@@ -240,9 +240,61 @@ fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
             values,
             2_000,
         )
-        .expect_err("non-default compactor selection must be rejected before P5");
-    assert!(
-        error.to_string().contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
-        "diagnostic carries the canonical code: {error}"
+        .expect("valid complete compactor pair must be accepted by setup");
+    assert_eq!(result.revision, 1);
+
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("praana.config.json")).unwrap())
+            .unwrap();
+    let history = config.get("history").expect("history section");
+    assert_eq!(
+        history.get("compactor_provider").and_then(|v| v.as_str()),
+        Some("openai"),
+        "compactor_provider must be written: {config}"
     );
+    assert_eq!(
+        history.get("compactor_model").and_then(|v| v.as_str()),
+        Some("gpt-5.6-sol"),
+        "compactor_model must be written: {config}"
+    );
+    assert!(!config.to_string().contains("credential-value-123"));
+}
+
+#[test]
+fn setup_apply_rejects_one_sided_compactor_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+
+    for (name, field) in [
+        ("provider_only", "compactor_provider"),
+        ("model_only", "compactor_model"),
+    ] {
+        let mut values = openai_setup_values();
+        values.insert(
+            SetupFieldId(field.to_owned()),
+            SetupValueDto::Text("openai".to_owned()),
+        );
+        let error = service
+            .apply(
+                0,
+                ProviderId::from_canonical_str("openai").unwrap(),
+                ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+                values,
+                2_000,
+            )
+            .expect_err("one-sided compactor pair must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("compactor_provider and compactor_model must be supplied together"),
+            "{name}: expected the one-sided message, got {error}"
+        );
+        assert!(
+            !std::fs::read_to_string(home.join("praana.config.json"))
+                .map(|text| text.contains("compactor_provider"))
+                .unwrap_or(false),
+            "{name}: no config must be written on rejection"
+        );
+    }
 }

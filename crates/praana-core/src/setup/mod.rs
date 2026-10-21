@@ -491,13 +491,15 @@ impl SetupService {
         now_ms: i64,
     ) -> Result<SetupApplyResultDto, SetupError> {
         let operation_id = OperationId(ulid::Ulid::generate());
-        self.apply_operation(
+        let env_vars: BTreeMap<String, String> = std::env::vars().collect();
+        self.apply_operation_with_env(
             operation_id,
             expected_revision,
             provider,
             model_id,
             values,
             now_ms,
+            &env_vars,
         )
     }
 
@@ -509,6 +511,29 @@ impl SetupService {
         model_id: ModelId,
         values: BTreeMap<SetupFieldId, SetupValueDto>,
         now_ms: i64,
+    ) -> Result<SetupApplyResultDto, SetupError> {
+        let env_vars: BTreeMap<String, String> = std::env::vars().collect();
+        self.apply_operation_with_env(
+            operation_id,
+            expected_revision,
+            provider,
+            model_id,
+            values,
+            now_ms,
+            &env_vars,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_operation_with_env(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        provider: ProviderId,
+        model_id: ModelId,
+        values: BTreeMap<SetupFieldId, SetupValueDto>,
+        now_ms: i64,
+        env_vars: &BTreeMap<String, String>,
     ) -> Result<SetupApplyResultDto, SetupError> {
         let provider_name = provider.as_str();
         let descriptor = crate::provider::provider_descriptor(provider_name)
@@ -601,6 +626,23 @@ impl SetupService {
         }
         save_store(&self.credential_path(), &store)?;
 
+        // P5-7 creation gate: a complete compactor pair is validated (window,
+        // strict-schema, credential presence, admission) after the active
+        // credential is durable and before any config is written, so setup
+        // cannot produce a configuration that fails only later at history
+        // pressure (Catalog §7).
+        let mut effective = build_defaults(&self.praana_home);
+        let raw = crate::config::RawConfigV1::parse_json(&config_bytes[..config_bytes.len() - 1])
+            .map_err(|error| SetupError::Config(error.to_string()))?;
+        crate::config::merge::merge_raw_into_effective(&mut effective, raw);
+        crate::config::validate::validate_compactor_pair_at_creation(
+            &effective,
+            &self.praana_home,
+            now_ms,
+            env_vars,
+        )
+        .map_err(|error| SetupError::Config(error.to_string()))?;
+
         write_private_atomic(&self.config_path, &config_bytes)?;
         validate_written_config(&self.praana_home, &self.config_path)?;
         let active_model = ActiveModelDto {
@@ -691,14 +733,14 @@ fn resolve_compactor_selection(
             "compactor_provider and compactor_model must be supplied together".to_owned(),
         ));
     }
-    if compactor_provider.is_some() {
-        // A non-default compactor selection stays gated until P5 compaction work lands.
-        return Err(SetupError::Config(
-            "CONFIG_FEATURE_NOT_IMPLEMENTED: compactor selection requires P5".to_owned(),
-        ));
-    }
-    // P3D pre-state: no separate compactor selection; the pair stays empty.
-    Ok((String::new(), String::new()))
+    // P5-7: a complete pair is accepted. The Phase-5 creation gate validates
+    // it (window, strict-schema, credential presence, admission) in
+    // `setup_config_bytes` before anything is written; an invalid pair fails
+    // there. The empty pair stays the default.
+    Ok((
+        compactor_provider.unwrap_or_default(),
+        compactor_model.unwrap_or_default(),
+    ))
 }
 
 fn validate_written_config(praana_home: &Path, config_path: &Path) -> Result<(), SetupError> {

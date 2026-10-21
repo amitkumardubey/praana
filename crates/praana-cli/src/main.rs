@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use praana_core::clock::SystemClock;
+use praana_core::clock::{Clock, SystemClock};
 use praana_core::config::path::normalize_praana_home;
 use praana_core::config::{
     load_effective_config, resolve_resume_config, ConfigCliOverrides, ConfigLoaderEnv,
@@ -579,6 +579,24 @@ async fn run_command(args: RunArgs) -> i32 {
             return 2;
         }
     };
+
+    // P5-7 creation gate: a complete compactor pair is validated here (trusted
+    // window, strict_json_schema, credential presence, admission), only when a
+    // NEW session is created. Resume never runs it, so pre-Phase-5 snapshots
+    // keep their frozen creation configuration.
+    let env_btree: std::collections::BTreeMap<String, String> = env_vars
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if let Err(error) = praana_core::config::validate::validate_compactor_pair_at_creation(
+        &config,
+        &praana_home,
+        SystemClock.now_ms(),
+        &env_btree,
+    ) {
+        eprintln!("{error}");
+        return 2;
+    }
 
     if cfg!(windows) {
         eprintln!("error: headless session creation is fail-closed on Windows");

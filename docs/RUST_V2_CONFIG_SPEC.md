@@ -462,8 +462,11 @@ against `resolve_profile_from_manifest`: the bundled row `openai` /
 trusted context window, and `self_compaction: Unvalidated`. The bundled
 `openai-responses-v1` row for the same model loads the same way.
 `ModelProfileManifestV1::validate` does not read a fidelity manifest for
-`Unvalidated`. Until P5-7, `validate_effective_config` still rejects every
-complete pair with `CONFIG_FEATURE_NOT_IMPLEMENTED`.
+`Unvalidated`. As of P5-7, `validate_effective_config` accepts a complete
+pair; the creation gate (`validate_compactor_pair_at_creation`) performs the
+trusted-window, strict-schema, credential-presence, and admission checks when
+a new session is created. It never runs on plain loading, the config digest,
+or resume.
 
 Until a bundled profile is `SelfCompactionCapability::Validated` under
 Compaction §17, a new Phase-5 session may still be created with the empty
