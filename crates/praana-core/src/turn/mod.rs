@@ -811,7 +811,7 @@ impl HeadlessLoop {
         // Token Accounting §9: the calibration buckets are rebuilt from the
         // durable log so `C` after a restart equals the value before it.
         let calibration_buckets =
-            crate::token::calibration::rebuild_buckets_from_events(&log.events_slice());
+            crate::token::calibration::rebuild_buckets_from_events(log.events_slice());
         Ok(Self {
             model: model_selection(&config.config),
             config,
