@@ -2907,8 +2907,10 @@ fn attempts_of_kind(root: &Path, kind: &str) -> Vec<Value> {
 }
 
 /// A crash at `turn.before_emergency_resend` leaves the failed attempt
-/// durable and failed, accepts no partial output, starts no second attempt,
-/// and the emergency budget survives the restart.
+/// durable and failed, accepts no partial output, and starts no emergency
+/// attempt. The resumed turn recovers the pending emergency retry from the
+/// durable attempt flag, sends it once, and the second context-length failure
+/// ends the turn.
 #[test]
 fn crash_before_emergency_resend_keeps_the_budget_across_a_restart() {
     let root = tempfile::tempdir().unwrap();
@@ -2926,6 +2928,10 @@ fn crash_before_emergency_resend_keeps_the_budget_across_a_restart() {
     // The failed attempt is durable and failed, and nothing was accepted.
     let started = attempts_of_kind(root.path(), "assistant_attempt_started");
     assert_eq!(started.len(), 1, "no emergency attempt was started");
+    assert_eq!(
+        started[0]["event"]["data"]["emergency_context_retry"],
+        json!(false)
+    );
     let failed = attempts_of_kind(root.path(), "assistant_attempt_failed");
     assert_eq!(failed.len(), 1);
     assert_eq!(
@@ -2941,9 +2947,10 @@ fn crash_before_emergency_resend_keeps_the_budget_across_a_restart() {
         "no compaction epoch activated"
     );
 
-    // The budget survives the restart: the resumed attempt is a normal
-    // attempt, the second context-length failure ends the turn, and no
-    // emergency retry is started.
+    // The pending emergency retry is recovered from the durable log: the
+    // resumed attempt carries `emergency_context_retry = true`, and its
+    // second context-length failure ends the turn. Exactly one emergency
+    // attempt exists in total.
     let resumed = spawn_child(
         root.path(),
         "child_emergency_resend_resume",
@@ -2965,11 +2972,28 @@ fn crash_before_emergency_resend_keeps_the_budget_across_a_restart() {
     );
     assert_eq!(
         started[1]["event"]["data"]["emergency_context_retry"],
-        json!(false),
-        "the emergency budget was already spent before the restart"
+        json!(true),
+        "the resumed attempt is the one emergency retry"
+    );
+    assert_eq!(
+        started[1]["event"]["data"]["retry_of"], started[0]["attempt_id"],
+        "the emergency retry records retry_of the failed attempt"
+    );
+    let emergency: Vec<_> = started
+        .iter()
+        .filter(|event| event["event"]["data"]["emergency_context_retry"] == json!(true))
+        .collect();
+    assert_eq!(
+        emergency.len(),
+        1,
+        "exactly one emergency attempt across the restart"
     );
     let failed = attempts_of_kind(root.path(), "assistant_attempt_failed");
     assert_eq!(failed.len(), 2);
+    assert_eq!(
+        failed[1]["event"]["data"]["error"]["code"],
+        json!("E_PROVIDER_CONTEXT_LENGTH")
+    );
     assert!(
         attempts_of_kind(root.path(), "assistant_step_accepted").is_empty(),
         "nothing was ever accepted"
@@ -2994,21 +3018,44 @@ fn crash_after_calibration_sample_rebuilds_the_same_bucket() {
     assert_abort(&output, "compaction.after_calibration_sample");
 
     // The accepted step is durable before the crash.
-    assert_eq!(
-        attempts_of_kind(root.path(), "assistant_step_accepted").len(),
-        1
-    );
+    let accepted = attempts_of_kind(root.path(), "assistant_step_accepted");
+    assert_eq!(accepted.len(), 1);
+    let started = attempts_of_kind(root.path(), "assistant_attempt_started");
+    assert_eq!(started.len(), 1);
+    let expected_hash = started[0]["event"]["data"]["request_hash"]
+        .as_str()
+        .expect("request hash")
+        .to_owned();
+    let expected_estimated = started[0]["event"]["data"]["admission"]["estimated_input_tokens"]
+        .as_u64()
+        .expect("estimated input");
+    let expected_reported = accepted[0]["event"]["data"]["message"]["usage"]["input_tokens"]
+        .as_u64()
+        .expect("reported input");
+    assert!(expected_reported > 0);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let samples = rt.block_on(async {
+    let (samples, margin) = rt.block_on(async {
         let loop_ = HeadlessLoop::resume(resume_config(root.path().to_path_buf())).unwrap();
-        loop_.calibration_sample_count()
+        (
+            loop_.calibration_samples().to_vec(),
+            loop_.calibration_margin_c(),
+        )
     });
     assert_eq!(
-        samples, 1,
+        samples.len(),
+        1,
         "the rebuilt bucket has the one durable sample, with no duplicate and no loss"
+    );
+    assert_eq!(samples[0].request_hash.as_str(), expected_hash);
+    assert_eq!(samples[0].estimated_input_tokens, expected_estimated);
+    assert_eq!(samples[0].reported_input_tokens, expected_reported);
+    assert_eq!(samples[0].compaction_epoch, 0);
+    assert_eq!(
+        margin, 0,
+        "one sample is below the 20-sample threshold, so C is 0"
     );
 }

@@ -925,6 +925,66 @@ async fn context_length_emergency_retries_once() {
         "the first context-length failure is durable before the retry"
     );
     assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
+    assert_eq!(
+        loop_.last_recovery_failure(),
+        None,
+        "an empty compactor pair is a silent no-op"
+    );
+}
+
+/// A configured-but-unresolvable compactor is a real recovery failure: it is
+/// surfaced, and it never blocks the one emergency retry (§14.3 step 3 to 4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emergency_recovery_failure_is_surfaced_and_never_blocks_the_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let session = temp.path().join("session");
+    let workspace = temp.path().join("workspace");
+    std::fs::create_dir_all(&home).unwrap();
+    make_home_private(&home);
+    std::fs::create_dir_all(&workspace).unwrap();
+    write_credentials(&home, "openai", "p3d-secret-key");
+
+    let server = spawn_server(|index, _request, _server| {
+        if index == 0 {
+            sse_response(
+                400,
+                "{\"error\":{\"message\":\"context length exceeded\"}}",
+                "",
+            )
+        } else {
+            let body = fixture("openai-responses/streams/text-completed.sse");
+            sse_response(200, &body, "")
+        }
+    });
+
+    let mut config = openai_config(&home, &server.base_url());
+    // A non-empty pair whose provider cannot resolve.
+    config.history.compactor_provider = "unknown-compactor-provider".into();
+    config.history.compactor_model = "unknown-compactor-model".into();
+    let provider = OpenAiStepProvider::new(&config, &home, &workspace).expect("provider");
+    let mut loop_ = HeadlessLoop::create(loop_config(config, &session, &workspace, &home))
+        .expect("loop create");
+
+    let report = loop_
+        .run_turn("hello", &provider)
+        .await
+        .expect("turn commits with emergency retry");
+    assert!(report.interruption.is_none());
+    assert_eq!(server.hits(), 2, "the emergency retry was still sent");
+    assert_eq!(
+        loop_.last_recovery_failure(),
+        Some("COMPACTION_UNAVAILABLE"),
+        "the resolve failure is surfaced instead of being discarded"
+    );
+    let events = read_events(&session);
+    let started = events_of_kind(&events, "assistant_attempt_started");
+    assert_eq!(started.len(), 2);
+    assert_eq!(
+        started[1]["event"]["data"]["emergency_context_retry"],
+        json!(true)
+    );
+    assert_eq!(events_of_kind(&events, "turn_committed").len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1445,6 +1505,23 @@ async fn calibration_margin_applies_after_twenty_samples_and_survives_a_restart(
     // A restart rebuilds the buckets from the durable log, so C is unchanged.
     let before_restart = loop_.calibration_sample_count();
     let margin_before_restart = loop_.calibration_margin_c();
+    let samples_before_restart: Vec<_> = loop_
+        .calibration_samples()
+        .iter()
+        .map(|sample| {
+            (
+                sample.provider.clone(),
+                sample.protocol.clone(),
+                sample.model.clone(),
+                sample.model_revision.clone(),
+                sample.estimator_id.clone(),
+                sample.request_hash.clone(),
+                sample.estimated_input_tokens,
+                sample.reported_input_tokens,
+                sample.compaction_epoch,
+            )
+        })
+        .collect();
     drop(loop_);
     let mut resumed = HeadlessLoop::resume(loop_config(config, &session, &workspace, &home))
         .expect("loop resume");
@@ -1457,6 +1534,27 @@ async fn calibration_margin_applies_after_twenty_samples_and_survives_a_restart(
         resumed.calibration_margin_c(),
         margin_before_restart,
         "C after a restart equals the value before it"
+    );
+    let samples_after_restart: Vec<_> = resumed
+        .calibration_samples()
+        .iter()
+        .map(|sample| {
+            (
+                sample.provider.clone(),
+                sample.protocol.clone(),
+                sample.model.clone(),
+                sample.model_revision.clone(),
+                sample.estimator_id.clone(),
+                sample.request_hash.clone(),
+                sample.estimated_input_tokens,
+                sample.reported_input_tokens,
+                sample.compaction_epoch,
+            )
+        })
+        .collect();
+    assert_eq!(
+        samples_after_restart, samples_before_restart,
+        "replay rebuilds the same comparable samples"
     );
     assert_eq!(margin_before_restart, 128);
     resumed

@@ -3768,6 +3768,88 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             kinds(&s.session).contains(&"history_compacted".to_string()),
             "the compaction epoch activated"
         );
+        // The retry was re-prepared after the activation, so it does not
+        // resend the failed attempt's bytes.
+        let failed_hash = assistant[1]["event"]["data"]["request_hash"].clone();
+        let retried_hash = assistant[2]["event"]["data"]["request_hash"].clone();
+        assert_ne!(
+            failed_hash, retried_hash,
+            "the emergency retry re-prepares the request after the compaction epoch"
+        );
+
+        // A later comparable assistant sample records the live compaction
+        // epoch (1), not a hardcoded 0.
+        *s.fake.script.main_reply.lock().unwrap() = None;
+        let report = loop_.run_turn("charlie three", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "the third turn commits");
+        let samples = loop_.calibration_samples();
+        let sample = samples.last().expect("a comparable sample");
+        assert_eq!(sample.compaction_epoch, 1);
+    }
+
+    /// A failed emergency recovery cycle is surfaced through
+    /// `last_recovery_failure`; it never discards the failure and never blocks
+    /// the one emergency retry (Compaction §14.3 step 3 to 4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_recovery_cycle_is_surfaced_and_still_retries() {
+        let mut s = session();
+        s.config.history.compactor_provider = "openai".into();
+        s.config.history.compactor_model = MODEL.into();
+        s.config.turn.max_attempts = 3;
+
+        // One closed turn so the recovery cycle has an eligible closed turn.
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        let report = loop_.run_turn("alpha one", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "the first turn commits");
+        assert_eq!(loop_.last_recovery_failure(), None);
+
+        // The compactor fails its attempt; the assistant request is then
+        // rejected for context length.
+        s.fake
+            .script
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Reply::Http(500));
+        *s.fake.script.main_reply.lock().unwrap() = Some(Reply::HttpWithBody(
+            400,
+            "{\"error\":{\"message\":\"maximum context length exceeded\"}}".to_owned(),
+        ));
+        let report = loop_.run_turn("bravo two", &provider).await.unwrap();
+
+        let failure = loop_
+            .last_recovery_failure()
+            .expect("the failed recovery cycle is surfaced");
+        assert!(!failure.is_empty());
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ProviderFailure),
+            "the emergency retry still ran and its context-length failure ended the turn"
+        );
+        let started = of_kind(&s.session, "assistant_attempt_started");
+        let assistant: Vec<_> = started
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == json!("assistant_step"))
+            .collect();
+        let compaction: Vec<_> = started
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == json!("compaction"))
+            .collect();
+        assert_eq!(compaction.len(), 1, "the failing recovery cycle ran once");
+        assert_eq!(
+            assistant.len(),
+            3,
+            "the emergency retry was still sent after the recovery failure"
+        );
+        assert_eq!(
+            assistant
+                .iter()
+                .filter(|event| event["event"]["data"]["emergency_context_retry"] == json!(true))
+                .count(),
+            1,
+            "exactly one emergency attempt"
+        );
     }
 }
 
@@ -3853,6 +3935,24 @@ mod calibration {
             "a different model revision has its own bucket"
         );
         assert_eq!(buckets.sample_count(&key(Some("rev-b"))), 0);
+    }
+
+    #[test]
+    fn a_provider_or_protocol_switch_never_mixes_samples() {
+        let mut buckets = TokenCalibrationBuckets::new(128);
+        for _ in 0..20 {
+            buckets.add_sample(sample(None, 100, 500));
+        }
+        let openai = key(None);
+        assert_eq!(buckets.margin_c(&openai), 400 + 128);
+
+        let other_provider =
+            CalibrationBucketKey::new("openrouter", "openai-responses-v1", None, ESTIMATOR);
+        let other_protocol = CalibrationBucketKey::new("openai", "openai-chat-v1", None, ESTIMATOR);
+        assert_eq!(buckets.sample_count(&other_provider), 0);
+        assert_eq!(buckets.margin_c(&other_provider), 0);
+        assert_eq!(buckets.sample_count(&other_protocol), 0);
+        assert_eq!(buckets.margin_c(&other_protocol), 0);
     }
 
     #[test]
