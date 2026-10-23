@@ -526,7 +526,6 @@ fn run_cli_with_key(env: &CliEnv, args: &[&str], key: &str) -> Output {
         .current_dir(&env.workspace)
         .env("PRAANA_HOME", &env.home)
         .env("PRAANA_NO_UPDATE_CHECK", "1")
-        .env_remove("OPENAI_API_KEY")
         .env_remove("OPENROUTER_API_KEY")
         .env("OPENAI_API_KEY", key)
         .stdin(Stdio::null())

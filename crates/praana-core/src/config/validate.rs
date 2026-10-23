@@ -6,6 +6,7 @@ use crate::compaction::activate::{plan_request, CompactionSnapshot, ConfiguredCo
 use crate::compaction::selection::Selection;
 use crate::compaction::validate::ReferenceUniverse;
 use crate::credentials::store::{credentials_path, load_store, validate_credential_value};
+use crate::credentials::CredentialStoreError;
 use crate::history::replay::EventReplayer;
 use crate::provider::provider_descriptor;
 use crate::token::Sha256Digest;
@@ -292,10 +293,15 @@ pub fn validate_compactor_pair_at_creation(
         ))
     })?;
 
-    // Credential presence (D4): credential-store row, then the provider env
-    // var. Presence only — `resolve_credential` is not used, the secret value
-    // is never read or logged, and it stays resolved after the durable
-    // compaction start (Compaction §12).
+    // Credential presence (D4): the env var is checked first. If it is valid,
+    // presence is satisfied and `load_store` is NOT called — this avoids
+    // `load_store`'s side effects (`prepare_parent` runs `create_dir_all` and
+    // enforces mode 0700). Only when the env var is unusable do we consult
+    // the store. A `load_store` error then counts as `store_present = false`,
+    // and if both are unusable the returned error mentions the store problem
+    // as well as the missing credential. Presence only — `resolve_credential`
+    // is not used, the secret value is never read or logged, and it stays
+    // resolved after the durable compaction start (Compaction §12).
     //
     // Validity matches runtime: `CredentialStoreV1::validate` (run by
     // `load_store`) already rejects any stored value that fails
@@ -304,14 +310,10 @@ pub fn validate_compactor_pair_at_creation(
     // here — an empty, whitespace-edged, or newline/NUL-containing value is
     // rejected by `resolve_from_process_env` at send time, so creation must
     // not accept it either.
-    let store_present = match load_store(&credentials_path(praana_home)) {
-        Ok(store) => store.credential_value(&compactor.provider).is_some(),
-        Err(error) => {
-            return Err(ConfigError::CompactorRequired(format!(
-                "history.compactor: compactor credential cannot be verified: {error}"
-            )));
-        }
-    };
+    //
+    // Note: `load_store` is retained (no read-only loader exists); it has the
+    // side effect of creating/enforcing the parent directory mode. Callers
+    // that need to avoid that side effect must ensure a valid env var.
     let env_present = {
         let descriptor = provider_descriptor(&compactor.provider).ok_or_else(|| {
             ConfigError::CompactorRequired(format!(
@@ -323,7 +325,28 @@ pub fn validate_compactor_pair_at_creation(
             .get(&descriptor.credential_env)
             .is_some_and(|value| validate_credential_value(value).is_ok())
     };
-    if !store_present && !env_present {
+
+    let mut store_error: Option<CredentialStoreError> = None;
+    let store_present = if env_present {
+        // Presence already satisfied by the env var; do not touch the store.
+        true
+    } else {
+        match load_store(&credentials_path(praana_home)) {
+            Ok(store) => store.credential_value(&compactor.provider).is_some(),
+            Err(error) => {
+                store_error = Some(error);
+                false
+            }
+        }
+    };
+
+    if !env_present && !store_present {
+        if let Some(error) = store_error {
+            return Err(ConfigError::CompactorRequired(format!(
+                "history.compactor: compactor credential cannot be verified: {error}; no credential is available for compactor provider {}",
+                compactor.provider
+            )));
+        }
         return Err(ConfigError::CompactorRequired(format!(
             "history.compactor: no credential is available for compactor provider {}",
             compactor.provider
@@ -367,7 +390,9 @@ pub fn admit_minimum_compactor_request(
         // with no messages: the smallest control the runtime can ever render.
         source_turns: vec![crate::compaction::control::CompactionSourceTurnV1 {
             turn_id: crate::protocol::id::TurnId::from_str_canonical("01J8Z3NDEK0000000000000001")
-                .expect("synthetic ulid"),
+                .map_err(|error| {
+                    ConfigError::InvalidValue(format!("synthetic turn id: {error}"))
+                })?,
             start_sequence: 1,
             end_sequence: 1,
             interrupted: None,

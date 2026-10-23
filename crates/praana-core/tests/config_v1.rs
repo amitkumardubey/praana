@@ -6,9 +6,9 @@ use praana_core::config::{
     load_effective_config, resolve_resume_config, ConfigCliOverrides, ConfigError, ConfigLoaderEnv,
     ConfigWarning,
 };
-use praana_core::credentials::{
-    credentials_path, save_store, upsert_credential, CredentialStoreV1,
-};
+use praana_core::credentials::credentials_path;
+#[cfg(unix)]
+use praana_core::credentials::{save_store, upsert_credential, CredentialStoreV1};
 use praana_core::provider::{
     catalog_cache_path, endpoint_fingerprint, CatalogCacheV1, LiveModelRowV1,
     CATALOG_CACHE_SCHEMA_VERSION, CATALOG_TTL_MS,
@@ -1667,7 +1667,7 @@ fn phase5_complete_pair_missing_credential_rejected_without_secret_leak() {
     );
 }
 
-/// P5-7: an env credential that exists but is ` (empty, whitespace-edged,
+/// P5-7: an env credential that exists but is invalid (empty, whitespace-edged,
 /// newline, NUL) must not count as present — runtime
 /// `resolve_from_process_env` rejects it via `validate_credential_value`, so
 /// creation must reject it too instead of passing and failing later at
@@ -1693,6 +1693,7 @@ fn phase5_complete_pair_invalid_env_credential_rejected() {
         ("leading_space", " sk-x"),
         ("trailing_space", "sk-x "),
         ("newline", "sk-x\n"),
+        ("embedded_nul", "sk-x\0y"),
     ] {
         let mut env_map = HashMap::new();
         env_map.insert("OPENAI_API_KEY".to_string(), invalid_value.to_string());
@@ -1719,6 +1720,11 @@ fn phase5_complete_pair_invalid_env_credential_rejected() {
 
 /// P5-7: precedence keeps a valid store row usable even when the env var is
 /// present but invalid. A valid store row alone is enough.
+///
+/// Unix-only: on non-unix `load_store` always fails with `UnsafePermissions`
+/// (current-user ACL enforcement is unavailable), so a store row can never be
+/// read back to satisfy credential presence.
+#[cfg(unix)]
 #[test]
 fn phase5_complete_pair_invalid_env_with_valid_store_row_accepted() {
     let temp = tempfile::tempdir().unwrap();
@@ -1932,4 +1938,147 @@ fn phase5_config_digest_stable_across_env_and_catalog_cache() {
     let (_, digest_after_cache, _) =
         load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env_b).unwrap();
     assert_eq!(digest_b, digest_after_cache);
+}
+
+// --- R3: a store error must not mask a valid env credential ---
+
+/// R3: a corrupt credential store does not block creation when a valid env
+/// credential is present. The env var is checked first; a valid value
+/// satisfies presence and `load_store` is never consulted, so the corrupt
+/// store is irrelevant.
+#[test]
+fn phase5_complete_pair_corrupt_store_with_valid_env_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    // A corrupt credential store: `load_store` would error on it.
+    fs::write(credentials_path(&home), "{not valid json\n").unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("a valid env credential must satisfy presence even with a corrupt store");
+}
+
+/// R3: a corrupt credential store with no valid env credential is rejected,
+/// and the error mentions the store problem as well as the missing credential.
+#[test]
+fn phase5_complete_pair_corrupt_store_no_env_mentions_store_problem() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    fs::write(credentials_path(&home), "{not valid json\n").unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    // No valid env credential.
+    let env = make_test_env(&home, &cwd, HashMap::new());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &BTreeMap::new())
+        .expect_err("corrupt store and no env credential must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {text}"
+    );
+    assert!(
+        text.contains("no credential is available"),
+        "the missing-credential reason must be stated: {text}"
+    );
+    assert!(
+        text.contains("cannot be verified") || text.contains("CREDENTIAL_STORE_INVALID"),
+        "the store problem must be mentioned: {text}"
+    );
+}
+
+/// R3: a valid env credential satisfies presence without `load_store`'s side
+/// effect. `load_store` -> `prepare_parent` runs `create_dir_all` and enforces
+/// mode 0700 on the home directory. With a valid env var, the gate must not
+/// call `load_store`, so a home directory at mode 0755 keeps mode 0755.
+#[cfg(unix)]
+#[test]
+fn phase5_valid_env_does_not_enforce_home_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    // Deliberately 0755 (not the 0700 `load_store` would enforce).
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("valid env credential must be accepted");
+
+    let mode = fs::metadata(&home).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "the home directory mode must be unchanged (no load_store side effect)"
+    );
+}
+
+// --- R4: admit_minimum_compactor_request must not panic on a bad ULID ---
+
+/// R4: `admit_minimum_compactor_request` builds a synthetic source turn with a
+/// canonical ULID. The code now maps a parse failure into a `ConfigError`
+/// instead of panicking via `.expect(...)`. The canonical constant used in
+/// production parses, so the helper succeeds for a real compactor. (This also
+/// documents the `pub #[doc(hidden)]` surface that `tests/config_v1.rs` calls.)
+#[test]
+fn phase5_admit_minimum_request_uses_valid_canonical_ulid() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map);
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let compactor = ConfiguredCompactor::resolve(&eff, &home, 2_000).unwrap();
+    admit_minimum_compactor_request(&eff, &compactor)
+        .expect("the synthetic canonical ULID must parse and the minimum request must admit");
 }

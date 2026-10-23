@@ -584,10 +584,12 @@ async fn run_command(args: RunArgs) -> i32 {
     // window, strict_json_schema, credential presence, admission), only when a
     // NEW session is created. Resume never runs it, so pre-Phase-5 snapshots
     // keep their frozen creation configuration.
-    let env_btree: std::collections::BTreeMap<String, String> = env_vars
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
+    let env_btree: std::collections::BTreeMap<String, String> = env_vars.into_iter().collect();
+    if cfg!(windows) {
+        eprintln!("error: headless session creation is fail-closed on Windows");
+        return 1;
+    }
+
     if let Err(error) = praana_core::config::validate::validate_compactor_pair_at_creation(
         &config,
         &praana_home,
@@ -596,11 +598,6 @@ async fn run_command(args: RunArgs) -> i32 {
     ) {
         eprintln!("{error}");
         return 2;
-    }
-
-    if cfg!(windows) {
-        eprintln!("error: headless session creation is fail-closed on Windows");
-        return 1;
     }
 
     // One discovery shared by the provider request instructions and the
