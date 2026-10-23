@@ -381,6 +381,9 @@ enum RecoveryCycle {
     NoCompactor,
     /// The cycle ran and activated a durable compaction epoch.
     Completed,
+    /// Cancellation was observed during the cycle. The turn ends and sends
+    /// nothing (Compaction §18.6).
+    Cancelled,
     /// The cycle failed. The code is surfaced; it never blocks the retry.
     Failed(String),
 }
@@ -417,11 +420,9 @@ pub struct HeadlessLoop {
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
-    /// Whether the next assistant attempt is the one emergency context retry
-    /// (Compaction §14.3, decision D2).
-    next_attempt_is_emergency_retry: bool,
-    /// Whether the currently running attempt is an emergency context retry.
-    current_attempt_is_emergency_retry: bool,
+    /// The last emergency recovery-cycle failure code, if any. Surface-only:
+    /// it never blocks the one emergency retry (Compaction §14.3 step 3).
+    last_recovery_failure: Option<String>,
     /// Keyed calibration buckets for the admission margin (Token Accounting
     /// §9). One bucket per exact provider, protocol, model revision, and
     /// estimator ID.
@@ -682,6 +683,9 @@ impl HeadlessLoop {
         ) {
             Ok(compactor) => compactor,
             Err(error) => {
+                if self.cancel.is_cancelled() {
+                    return Ok(RecoveryCycle::Cancelled);
+                }
                 return Ok(RecoveryCycle::Failed(error.code().to_owned()));
             }
         };
@@ -697,10 +701,16 @@ impl HeadlessLoop {
             match crate::compaction::activate::run(&mut ctx, &compactor, &self.cancel).await {
                 Ok(outcome) => outcome,
                 Err(error) => {
+                    if self.cancel.is_cancelled() {
+                        return Ok(RecoveryCycle::Cancelled);
+                    }
                     return Ok(RecoveryCycle::Failed(error.code().to_owned()));
                 }
             }
         };
+        if self.cancel.is_cancelled() {
+            return Ok(RecoveryCycle::Cancelled);
+        }
         match outcome {
             crate::compaction::activate::CompactionOutcome::Activated {
                 derived_projection_error,
@@ -747,6 +757,23 @@ impl HeadlessLoop {
     pub fn calibration_sample_count(&self) -> usize {
         self.calibration_buckets
             .sample_count(&self.calibration_bucket_key())
+    }
+
+    /// The comparable samples for the current model identity, oldest first.
+    /// Test/diagnostic surface only; the bucket stays the authority.
+    #[doc(hidden)]
+    pub fn calibration_samples(&self) -> &[TokenCalibrationSampleV1] {
+        self.calibration_buckets
+            .samples(&self.calibration_bucket_key())
+            .unwrap_or(&[])
+    }
+
+    /// The last emergency recovery-cycle failure code, if any. The cycle is
+    /// best-effort: this value is surfaced for diagnostics and never blocks
+    /// the one emergency retry (Compaction §14.3 step 3 to 4).
+    #[doc(hidden)]
+    pub fn last_recovery_failure(&self) -> Option<&str> {
+        self.last_recovery_failure.as_deref()
     }
 
     /// True when replay reports an unfinished turn that
@@ -826,8 +853,7 @@ impl HeadlessLoop {
             pending_notices,
             pending_diagnostic: None,
             project_context_changed: false,
-            next_attempt_is_emergency_retry: false,
-            current_attempt_is_emergency_retry: false,
+            last_recovery_failure: None,
             calibration_buckets,
         })
     }
@@ -870,8 +896,7 @@ impl HeadlessLoop {
             return Err(TurnError::failed("a turn is already active"));
         }
         self.pending_diagnostic = None;
-        self.next_attempt_is_emergency_retry = false;
-        self.current_attempt_is_emergency_retry = false;
+        self.last_recovery_failure = None;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -1189,6 +1214,9 @@ impl HeadlessLoop {
                 attempt_number: u32,
                 status: crate::history::replay::AttemptStatus,
                 step_id: StepId,
+                emergency: bool,
+                emitted: bool,
+                failure_code: Option<String>,
             }
             let prior_attempts: Vec<PriorAttempt> = replay
                 .attempts
@@ -1205,20 +1233,12 @@ impl HeadlessLoop {
                         attempt_number: attempt.attempt_number,
                         status: attempt.status.clone(),
                         step_id: purpose.step_id,
+                        emergency: attempt.emergency_context_retry,
+                        emitted: attempt.observable_delta_emitted,
+                        failure_code: attempt.failure_code.clone(),
                     })
                 })
                 .collect();
-            if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
-                let last_id = prior_attempts
-                    .iter()
-                    .max_by_key(|attempt| attempt.attempt_number)
-                    .map(|attempt| attempt.id);
-                // The last failed attempt durably recorded its canonical
-                // diagnostic; report() picks it up from the loop.
-                return Ok(Control::Done(
-                    self.interrupt(InterruptionReason::ProviderFailure, last_id)?,
-                ));
-            }
             let attempt_number = prior_attempts
                 .iter()
                 .map(|attempt| attempt.attempt_number)
@@ -1230,6 +1250,50 @@ impl HeadlessLoop {
                 .max_by_key(|attempt| attempt.attempt_number)
                 .cloned();
             let retry_of = max_prior.as_ref().map(|attempt| attempt.id);
+            // Compaction §14.3 / decision D2: the one emergency context retry
+            // is derived from the durable log, so a restart neither repeats
+            // nor loses it. The flag on the attempt start is the budget: an
+            // attempt that already carries `emergency_context_retry = true`
+            // has spent the step's single retry.
+            let emergency_spent = prior_attempts.iter().any(|attempt| attempt.emergency);
+            let last_was_context_length = max_prior.as_ref().is_some_and(|attempt| {
+                attempt.status == crate::history::replay::AttemptStatus::Failed
+                    && !attempt.emitted
+                    && attempt.failure_code.as_deref() == Some(CONTEXT_LENGTH_WIRE_CODE)
+            });
+            if last_was_context_length && emergency_spent {
+                // §14.3 step 5: the emergency resend itself was rejected for
+                // context length. The turn ends and nothing further is sent.
+                let last_id = max_prior
+                    .as_ref()
+                    .map(|attempt| attempt.id)
+                    .expect("last attempt exists");
+                return Ok(Control::Done(self.context_rejected_interrupt(
+                    last_id,
+                    "the provider rejected the request context after the emergency context retry",
+                )?));
+            }
+            if prior_attempts.len() >= self.config.config.turn.max_attempts as usize {
+                let last_id = max_prior.as_ref().map(|attempt| attempt.id);
+                if last_was_context_length {
+                    // §14.3 step 4/5: no free assistant-purpose slot, so the
+                    // emergency retry is not sent.
+                    return Ok(Control::Done(self.context_rejected_interrupt(
+                        last_id.expect("last attempt exists"),
+                        "the provider rejected the request context and the assistant attempt budget is exhausted",
+                    )?));
+                }
+                // The last failed attempt durably recorded its canonical
+                // diagnostic; report() picks it up from the loop.
+                return Ok(Control::Done(
+                    self.interrupt(InterruptionReason::ProviderFailure, last_id)?,
+                ));
+            }
+            // §14.3 step 4: the attempt that follows a recognized context
+            // length failure is the one emergency retry. This is also how a
+            // resumed turn recovers the in-flight emergency retry after a
+            // crash at `turn.before_emergency_resend`.
+            let is_emergency = last_was_context_length;
             let step_id: StepId = match &max_prior {
                 Some(attempt) => attempt.step_id,
                 None => self.fresh()?,
@@ -1384,14 +1448,10 @@ impl HeadlessLoop {
                     request_hash: admitted_request_hash.clone(),
                     admission: admitted_snapshot.clone(),
                     retry_of,
-                    emergency_context_retry: self.next_attempt_is_emergency_retry,
+                    emergency_context_retry: is_emergency,
                     recovery_notices: notices,
                 }),
             )?;
-            // Track whether this attempt is an emergency context retry.
-            self.current_attempt_is_emergency_retry = self.next_attempt_is_emergency_retry;
-            // Reset the flag after using it for this attempt.
-            self.next_attempt_is_emergency_retry = false;
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_attempt_started:step{}:attempt{}",
@@ -1440,7 +1500,6 @@ impl HeadlessLoop {
                             _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}
                         }
                         retry_spent_ms = retry_spent_ms.saturating_add(delay);
-                        self.current_attempt_is_emergency_retry = false;
                         continue;
                     }
                     let reason = if cancelled {
@@ -1503,7 +1562,7 @@ impl HeadlessLoop {
             // `C = p95(positive_error) + 128` after 20 samples. An emergency
             // context retry attempt is never a sample, and placeholder zero
             // reported usage is excluded.
-            if !self.current_attempt_is_emergency_retry {
+            if !is_emergency {
                 let estimated = admitted_snapshot.estimated_input_tokens;
                 let reported = outcome_usage.input_tokens;
                 let compaction_epoch = self.current_compaction_epoch();
@@ -1531,8 +1590,6 @@ impl HeadlessLoop {
                     }
                 }
             }
-            // Reset emergency retry flag for this attempt.
-            self.current_attempt_is_emergency_retry = false;
             // Accepted text reaches the sink only after the barrier above.
             for block in &message.blocks {
                 if let AssistantBlock::Text(text) = block {
@@ -1556,7 +1613,11 @@ impl HeadlessLoop {
                         superseded_attempt_id: old_id,
                         replacement_attempt_id: attempt_id,
                         replacement_accept_event_id: accept_event_id,
-                        reason: SupersessionReason::Retry,
+                        reason: if is_emergency {
+                            SupersessionReason::EmergencyContextRetry
+                        } else {
+                            SupersessionReason::Retry
+                        },
                     }),
                 )?;
             }
@@ -1588,8 +1649,8 @@ impl HeadlessLoop {
     /// error gets one emergency context retry for this assistant step.
     ///
     /// The budget is derived from the durable log, so it survives a restart:
-    /// a step whose durable history already holds a context-length failure has
-    /// spent its emergency retry, and a second context-length error ends the
+    /// the durable `emergency_context_retry` flag on the attempt start marks
+    /// the step's single retry, and a second context-length error ends the
     /// turn with `ADMISSION_PROVIDER_CONTEXT_REJECTED` (Protocol Appendix A.5
     /// maps it to the `E_PROVIDER_CONTEXT_LENGTH` wire code).
     ///
@@ -1618,11 +1679,9 @@ impl HeadlessLoop {
             failure,
         );
 
-        // The number of durable context-length failures for this assistant
-        // step. The failure that led here is already durable.
-        let context_length_failures = self.context_length_failure_count(open);
-        if context_length_failures > 1 {
-            // The one emergency retry for this step is already spent.
+        // §14.3 step 5: an emergency resend that fails with context length
+        // again is not retried. The durable attempt flag is the budget.
+        if self.emergency_retry_spent(open) {
             return Ok(ContextLengthOutcome::Rejected(Control::Done(
                 self.context_rejected_interrupt(
                     attempt_id,
@@ -1650,6 +1709,11 @@ impl HeadlessLoop {
         match self.run_emergency_recovery_cycle().await {
             Ok(RecoveryCycle::NoCompactor) => {}
             Ok(RecoveryCycle::Completed) => {}
+            Ok(RecoveryCycle::Cancelled) => {
+                return Ok(ContextLengthOutcome::Rejected(Control::Done(
+                    self.interrupt(InterruptionReason::UserAbort, Some(attempt_id))?,
+                )));
+            }
             Ok(RecoveryCycle::Failed(code)) => {
                 self.surface_recovery_failure(&code);
             }
@@ -1669,47 +1733,30 @@ impl HeadlessLoop {
         }
 
         // §14.3 step 4: retry once. The next attempt-loop iteration
-        // re-prepares and re-admits the request from the durable projection.
-        self.next_attempt_is_emergency_retry = true;
+        // re-prepares and re-admits the request from the durable projection;
+        // it marks the new attempt as the emergency retry because the last
+        // durable failure is this context-length rejection.
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("turn.before_emergency_resend");
         Ok(ContextLengthOutcome::Retry)
     }
 
-    /// The durable count of context-length failures for one assistant step.
-    /// The budget is derived from the log, so a restart cannot grant a second
-    /// emergency retry for the same step.
-    fn context_length_failure_count(&self, open: &OpenTurn) -> usize {
+    /// Whether this assistant step already spent its one emergency context
+    /// retry. The durable `emergency_context_retry` flag on the attempt start
+    /// is the budget, so a restart neither repeats nor loses it.
+    fn emergency_retry_spent(&self, open: &OpenTurn) -> bool {
         let Ok(replay) = self.replay() else {
-            return 0;
+            return false;
         };
-        let events = self.log.events_slice();
-        let mut count = 0usize;
-        for event in events.iter() {
-            let CanonicalEvent::AssistantAttemptFailed(failed) = &event.event else {
-                continue;
-            };
-            if failed.error.code != CONTEXT_LENGTH_WIRE_CODE {
-                continue;
-            }
-            let Some(attempt_id) = event.attempt_id else {
-                continue;
-            };
-            let Some(attempt) = replay.attempts.get(&attempt_id) else {
-                continue;
-            };
-            if attempt.turn_id != Some(open.id) {
-                continue;
-            }
-            let ProviderAttemptPurpose::AssistantStep(purpose) = &attempt.purpose else {
-                continue;
-            };
-            if purpose.step_index != open.step_index {
-                continue;
-            }
-            count = count.saturating_add(1);
-        }
-        count
+        replay.attempts.values().any(|attempt| {
+            attempt.emergency_context_retry
+                && attempt.turn_id == Some(open.id)
+                && matches!(
+                    &attempt.purpose,
+                    ProviderAttemptPurpose::AssistantStep(purpose)
+                    if purpose.step_index == open.step_index
+                )
+        })
     }
 
     /// The durable count of assistant attempts for one step. `turn.max_attempts`
@@ -1784,7 +1831,8 @@ impl HeadlessLoop {
     /// A recovery-cycle failure is surfaced, never discarded silently. The
     /// retry still happens: §14.3 step 3 to 4 says a recovery failure does
     /// not block the one emergency retry.
-    fn surface_recovery_failure(&self, code: &str) {
+    fn surface_recovery_failure(&mut self, code: &str) {
+        self.last_recovery_failure = Some(code.to_owned());
         eprintln!("emergency context recovery failed: {code}");
     }
 

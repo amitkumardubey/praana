@@ -101,6 +101,11 @@ impl TokenCalibrationBucket {
         self.samples.len()
     }
 
+    /// The comparable samples, oldest first. Read-only diagnostic surface.
+    pub fn samples(&self) -> &[TokenCalibrationSampleV1] {
+        &self.samples
+    }
+
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
@@ -212,6 +217,11 @@ impl TokenCalibrationBuckets {
     /// Comparable sample count for one exact identity.
     pub fn sample_count(&self, key: &CalibrationBucketKey) -> usize {
         self.buckets.get(key).map_or(0, TokenCalibrationBucket::len)
+    }
+
+    /// Comparable samples for one exact identity, oldest first.
+    pub fn samples(&self, key: &CalibrationBucketKey) -> Option<&[TokenCalibrationSampleV1]> {
+        self.buckets.get(key).map(TokenCalibrationBucket::samples)
     }
 
     /// Excluded (non-comparable) sample count for one exact identity.

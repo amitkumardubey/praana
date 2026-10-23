@@ -36,6 +36,11 @@ pub struct AttemptReplay {
     pub observable_delta_emitted: bool,
     pub attempt_number: u32,
     pub usage: ProviderUsage,
+    /// The durable start marked this attempt as the one emergency context
+    /// retry (Compaction §14.3, decision D2).
+    pub emergency_context_retry: bool,
+    /// Canonical `E_*` code of the durable `AssistantAttemptFailed`, if any.
+    pub failure_code: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -513,6 +518,8 @@ impl EventReplayer {
                         observable_delta_emitted: false,
                         attempt_number: v.attempt_number,
                         usage: ProviderUsage::default(),
+                        emergency_context_retry: v.emergency_context_retry,
+                        failure_code: None,
                     },
                 );
             }
@@ -531,6 +538,7 @@ impl EventReplayer {
                 attempt.status = AttemptStatus::Failed;
                 attempt.observable_delta_emitted = v.observable_delta_emitted;
                 attempt.usage = v.usage.clone();
+                attempt.failure_code = Some(v.error.code.clone());
             }
             CanonicalEvent::AssistantStepAccepted(v) => {
                 let attempt_id = e.attempt_id.unwrap();
