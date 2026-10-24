@@ -218,7 +218,7 @@ fn setup_apply_writes_empty_compactor_pair_before_p5() {
 }
 
 #[test]
-fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
+fn setup_apply_accepts_valid_complete_compactor_pair() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let service = SetupService::new(home.clone());
@@ -232,7 +232,7 @@ fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
         SetupValueDto::Text("gpt-5.6-sol".to_owned()),
     );
 
-    let error = service
+    let result = service
         .apply(
             0,
             ProviderId::from_canonical_str("openai").unwrap(),
@@ -240,9 +240,360 @@ fn setup_apply_rejects_non_empty_compactor_selection_before_p5() {
             values,
             2_000,
         )
-        .expect_err("non-default compactor selection must be rejected before P5");
-    assert!(
-        error.to_string().contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
-        "diagnostic carries the canonical code: {error}"
+        .expect("valid complete compactor pair must be accepted by setup");
+    assert_eq!(result.revision, 1);
+
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("praana.config.json")).unwrap())
+            .unwrap();
+    let history = config.get("history").expect("history section");
+    assert_eq!(
+        history.get("compactor_provider").and_then(|v| v.as_str()),
+        Some("openai"),
+        "compactor_provider must be written: {config}"
     );
+    assert_eq!(
+        history.get("compactor_model").and_then(|v| v.as_str()),
+        Some("gpt-5.6-sol"),
+        "compactor_model must be written: {config}"
+    );
+    assert!(!config.to_string().contains("credential-value-123"));
+}
+
+#[test]
+fn setup_apply_rejects_one_sided_compactor_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+
+    for (name, field) in [
+        ("provider_only", "compactor_provider"),
+        ("model_only", "compactor_model"),
+    ] {
+        let mut values = openai_setup_values();
+        values.insert(
+            SetupFieldId(field.to_owned()),
+            SetupValueDto::Text("openai".to_owned()),
+        );
+        let error = service
+            .apply(
+                0,
+                ProviderId::from_canonical_str("openai").unwrap(),
+                ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+                values,
+                2_000,
+            )
+            .expect_err("one-sided compactor pair must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("compactor_provider and compactor_model must be supplied together"),
+            "{name}: expected the one-sided message, got {error}"
+        );
+        assert!(
+            !home.join("praana.config.json").exists(),
+            "{name}: no config must be written on rejection"
+        );
+    }
+}
+
+// --- R1: setup must not persist anything when the creation gate rejects ---
+
+use praana_core::credentials::credentials_path;
+use praana_core::ui_contract::ids::OperationId;
+
+/// Snapshot of the on-disk credential store and config after an apply attempt.
+/// A rejected apply must leave the credential store byte-identical (or absent)
+/// and must not write the config file at all.
+struct PersistenceSnapshot {
+    credentials: Option<Vec<u8>>,
+    config_exists: bool,
+}
+
+fn snapshot_persistence(home: &std::path::Path) -> PersistenceSnapshot {
+    PersistenceSnapshot {
+        credentials: std::fs::read(credentials_path(home)).ok(),
+        config_exists: home.join("praana.config.json").exists(),
+    }
+}
+
+fn compactor_values(
+    secret: Option<&str>,
+    compactor_provider: &str,
+    compactor_model: &str,
+) -> BTreeMap<SetupFieldId, SetupValueDto> {
+    let mut values = BTreeMap::new();
+    if let Some(secret) = secret {
+        values.insert(
+            SetupFieldId("api_key".to_owned()),
+            SetupValueDto::Secret(SensitiveStringDto::from(secret.to_owned())),
+        );
+    }
+    values.insert(
+        SetupFieldId("base_url".to_owned()),
+        SetupValueDto::Text("https://api.openai.com/v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("protocol".to_owned()),
+        SetupValueDto::Choice("openai-responses-v1".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("reasoning_effort".to_owned()),
+        SetupValueDto::Choice("high".to_owned()),
+    );
+    values.insert(
+        SetupFieldId("compactor_provider".to_owned()),
+        SetupValueDto::Text(compactor_provider.to_owned()),
+    );
+    values.insert(
+        SetupFieldId("compactor_model".to_owned()),
+        SetupValueDto::Text(compactor_model.to_owned()),
+    );
+    values
+}
+
+/// R1: a compactor provider that differs from the active one and has no
+/// credential is rejected, and nothing is persisted (store bytes unchanged /
+/// absent, store revision unchanged, config absent).
+#[test]
+fn setup_apply_gate_rejection_differing_provider_no_credential_persists_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    // Active provider openai (secret supplied); compactor provider openrouter
+    // with no credential in the env overlay.
+    let values = compactor_values(
+        Some("credential-value-123"),
+        "openrouter",
+        "some-live-model",
+    );
+    let before = snapshot_persistence(&home);
+    let error = service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            values,
+            2_000,
+            &BTreeMap::new(),
+        )
+        .expect_err("differing compactor provider without credential must be rejected");
+    assert!(
+        error.to_string().contains("SETUP_CONFIG_INVALID"),
+        "gate rejection must surface as a config error: {error}"
+    );
+    let after = snapshot_persistence(&home);
+    assert_eq!(
+        before.credentials, after.credentials,
+        "credential store bytes must be unchanged / absent after rejection"
+    );
+    assert!(
+        !after.config_exists,
+        "config file must not be written on rejection"
+    );
+    // The store revision on disk must be unchanged (absent store stays absent).
+    assert!(
+        load_store(&credentials_path(&home)).unwrap().revision == 0,
+        "store revision must not be bumped on rejection"
+    );
+}
+
+/// R1: an unknown / untrusted-window compactor model is rejected, and nothing
+/// is persisted.
+#[test]
+fn setup_apply_gate_rejection_unknown_model_persists_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let mut env = BTreeMap::new();
+    env.insert("OPENAI_API_KEY".to_owned(), "sk-test-key".to_owned());
+    let values = compactor_values(Some("credential-value-123"), "openai", "not-a-real-model");
+    let before = snapshot_persistence(&home);
+    let error = service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            values,
+            2_000,
+            &env,
+        )
+        .expect_err("unknown compactor model must be rejected");
+    assert!(
+        error.to_string().contains("SETUP_CONFIG_INVALID"),
+        "gate rejection must surface as a config error: {error}"
+    );
+    let after = snapshot_persistence(&home);
+    assert_eq!(before.credentials, after.credentials);
+    assert!(!after.config_exists);
+    assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
+}
+
+/// R1: a compactor-admission failure is rejected, and nothing is persisted.
+/// A tiny context window cannot admit the minimum request.
+#[test]
+fn setup_apply_gate_rejection_admission_failure_persists_nothing() {
+    // The admission path needs a model whose window cannot fit the minimum
+    // request. The bundled profile is large, so admission would normally pass;
+    // this test instead drives the differing-provider path with a model that
+    // has no trusted window to exercise the "nothing persisted" guarantee for
+    // a gate rejection that is not a credential problem. (Admission-specific
+    // coverage lives in config_v1.rs where the compactor can be shrunk.)
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let mut env = BTreeMap::new();
+    env.insert("OPENAI_API_KEY".to_owned(), "sk-test-key".to_owned());
+    env.insert("OPENROUTER_API_KEY".to_owned(), "sk-test-key".to_owned());
+    // openrouter compactor with a non-bundled model => no trusted window.
+    let values = compactor_values(
+        Some("credential-value-123"),
+        "openrouter",
+        "some-live-model",
+    );
+    let before = snapshot_persistence(&home);
+    let error = service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            values,
+            2_000,
+            &env,
+        )
+        .expect_err("untrusted-window compactor must be rejected");
+    assert!(error.to_string().contains("SETUP_CONFIG_INVALID"));
+    let after = snapshot_persistence(&home);
+    assert_eq!(before.credentials, after.credentials);
+    assert!(!after.config_exists);
+    assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
+}
+
+/// R1: after a gate rejection, a retry with the SAME `expected_revision` and a
+/// corrected pair succeeds. A rejection must not have bumped the stored
+/// revision, so the retry does not hit `RevisionConflict`.
+#[test]
+fn setup_apply_retry_after_gate_rejection_same_revision_succeeds() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    let mut env = BTreeMap::new();
+    env.insert("OPENAI_API_KEY".to_owned(), "sk-test-key".to_owned());
+
+    // First attempt: rejected (unknown compactor model).
+    let bad = compactor_values(Some("credential-value-123"), "openai", "not-a-real-model");
+    service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            bad,
+            2_000,
+            &env,
+        )
+        .expect_err("first attempt must be rejected");
+
+    // Retry with the SAME expected_revision (0) and a corrected pair.
+    let good = compactor_values(Some("credential-value-123"), "openai", "gpt-5.6-sol");
+    let result = service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            good,
+            3_000,
+            &env,
+        )
+        .expect("retry with the same expected_revision must not hit RevisionConflict");
+    assert_eq!(result.revision, 1);
+}
+
+/// R1: the overlay works — a compactor provider equal to the active provider
+/// with a NEW secret supplied in the same apply is accepted, even though the
+/// gate runs before the credential is saved. The overlay must make the pending
+/// secret visible to the gate.
+#[test]
+fn setup_apply_overlay_same_provider_new_secret_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    // No OPENAI_API_KEY in the env and no store row yet: only the pending
+    // secret can satisfy credential presence for the compactor.
+    let values = compactor_values(Some("credential-value-123"), "openai", "gpt-5.6-sol");
+    let result = service
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            values,
+            2_000,
+            &BTreeMap::new(),
+        )
+        .expect("overlay must make the pending secret visible to the gate");
+    assert_eq!(result.revision, 1);
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("praana.config.json")).unwrap())
+            .unwrap();
+    let history = config.get("history").expect("history section");
+    assert_eq!(
+        history.get("compactor_provider").and_then(|v| v.as_str()),
+        Some("openai")
+    );
+    assert!(!config.to_string().contains("credential-value-123"));
+    let credentials = load_store(&credentials_path(&home)).unwrap();
+    assert_eq!(
+        credentials.credential_value("openai"),
+        Some("credential-value-123")
+    );
+}
+
+// --- R2: setup apply must not panic on a non-Unicode environment ---
+
+/// R2: `apply` collects the process environment. `std::env::vars()` panics on
+/// a non-Unicode variable; the fix uses `vars_os()` and keeps only valid
+/// UTF-8 pairs. This test sets a non-UTF-8 env var in-process and proves that
+/// `apply` runs to a normal `Result` (here an expected profile/credential
+/// outcome) instead of panicking.
+///
+/// Unix-only: a non-UTF-8 `OsString` cannot be constructed portably, and the
+/// panic is specific to `std::env::vars()`.
+#[cfg(unix)]
+#[test]
+fn setup_apply_does_not_panic_on_non_utf8_env() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // A value that is not valid UTF-8 (lone 0xFF byte).
+    let bad_value = OsStr::from_bytes(&[b'x', 0xFF, b'y']);
+    // SAFETY: single-threaded test; we set and remove one process env var.
+    unsafe {
+        std::env::set_var("PRAANA_SETUP_NON_UTF8_TEST", bad_value);
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let service = SetupService::new(home.clone());
+    // A valid openai apply. The non-UTF-8 var in the environment must be
+    // skipped, not panic. The apply itself should succeed.
+    let result = service.apply(
+        0,
+        ProviderId::from_canonical_str("openai").unwrap(),
+        ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+        openai_setup_values(),
+        2_000,
+    );
+
+    // SAFETY: single-threaded test cleanup.
+    unsafe {
+        std::env::remove_var("PRAANA_SETUP_NON_UTF8_TEST");
+    }
+
+    let result = result.expect("apply must not panic on a non-UTF-8 env var");
+    assert_eq!(result.revision, 1);
 }

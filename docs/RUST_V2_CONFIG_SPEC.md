@@ -462,8 +462,12 @@ against `resolve_profile_from_manifest`: the bundled row `openai` /
 trusted context window, and `self_compaction: Unvalidated`. The bundled
 `openai-responses-v1` row for the same model loads the same way.
 `ModelProfileManifestV1::validate` does not read a fidelity manifest for
-`Unvalidated`. Until P5-7, `validate_effective_config` still rejects every
-complete pair with `CONFIG_FEATURE_NOT_IMPLEMENTED`.
+`Unvalidated`. As of P5-7, `validate_effective_config` accepts a complete
+pair; the creation resolver (`resolve_compactor_at_creation`) performs the
+trusted-window, strict-schema, credential-presence, and admission checks and
+returns the compactor installed by `praana run`. Setup uses its validation-only
+wrapper (`validate_compactor_pair_at_creation`). The creation gate never runs
+on plain loading, the config digest, or resume.
 
 Until a bundled profile is `SelfCompactionCapability::Validated` under
 Compaction §17, a new Phase-5 session may still be created with the empty
@@ -476,6 +480,13 @@ compaction-eligible. Resume keeps that snapshot's empty compactor pair inert
 and does not rewrite it. Credential presence for a configured pair is checked
 at creation. The secret is resolved only after the durable compaction attempt
 start, immediately before send (Compaction §12).
+
+Resume resolves and installs a complete pair from the frozen creation
+configuration, without re-running creation admission. A missing capability or
+credential presence marks the existing `COMPACTION_UNAVAILABLE` admission stop:
+no new turn/provider request is admitted and the projection is unchanged.
+Reinstalling an available compactor lifts that stop. The default empty pair
+still installs nothing; resume does not infer a same-model fallback.
 
 ### 6.5 History mode and reasoning replay
 

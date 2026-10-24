@@ -491,13 +491,15 @@ impl SetupService {
         now_ms: i64,
     ) -> Result<SetupApplyResultDto, SetupError> {
         let operation_id = OperationId(ulid::Ulid::generate());
-        self.apply_operation(
+        let env_vars = process_env_utf8();
+        self.apply_operation_with_env(
             operation_id,
             expected_revision,
             provider,
             model_id,
             values,
             now_ms,
+            &env_vars,
         )
     }
 
@@ -509,6 +511,35 @@ impl SetupService {
         model_id: ModelId,
         values: BTreeMap<SetupFieldId, SetupValueDto>,
         now_ms: i64,
+    ) -> Result<SetupApplyResultDto, SetupError> {
+        let env_vars = process_env_utf8();
+        self.apply_operation_with_env(
+            operation_id,
+            expected_revision,
+            provider,
+            model_id,
+            values,
+            now_ms,
+            &env_vars,
+        )
+    }
+
+    /// Core apply with an explicit environment overlay. `apply` and
+    /// `apply_operation` wrap this with the process environment
+    /// (`process_env_utf8`). Exposed `#[doc(hidden)]` so `tests/setup_v1.rs`
+    /// can drive the P5-7 creation gate with a deterministic environment
+    /// instead of the ambient process environment.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_operation_with_env(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        provider: ProviderId,
+        model_id: ModelId,
+        values: BTreeMap<SetupFieldId, SetupValueDto>,
+        now_ms: i64,
+        env_vars: &BTreeMap<String, String>,
     ) -> Result<SetupApplyResultDto, SetupError> {
         let provider_name = provider.as_str();
         let descriptor = crate::provider::provider_descriptor(provider_name)
@@ -591,14 +622,53 @@ impl SetupService {
             Some(SetupValueDto::Secret(value)) => Some(value.expose().to_owned()),
             _ => None,
         };
-        if let Some(secret) = secret {
-            upsert_credential(&mut store, provider_name, secret, now_ms)?;
+        // Apply the secret to the in-memory store only (this validates the
+        // secret value and bumps the in-memory revision). Nothing is written
+        // to disk yet: the P5-7 creation gate runs first, and a rejected pair
+        // must leave the credential store and its revision untouched on disk,
+        // so a retry with the same `expected_revision` does not hit
+        // `RevisionConflict`.
+        if let Some(secret) = &secret {
+            upsert_credential(&mut store, provider_name, secret.clone(), now_ms)?;
         }
         if store.credential_value(provider_name).is_none() {
             return Err(SetupError::Credential(
                 CredentialStoreError::CredentialMissing,
             ));
         }
+
+        // P5-7 creation gate: a complete compactor pair is validated (window,
+        // strict-schema, credential presence, admission) BEFORE anything is
+        // persisted, so a rejected pair leaves no new credential and no bumped
+        // revision on disk, and setup cannot produce a configuration that
+        // fails only later at history pressure (Catalog §7).
+        //
+        // The gate reads the credential store from disk, so a not-yet-saved
+        // pending secret would be invisible to it. When the compactor provider
+        // equals the active provider and a new secret was supplied in this
+        // apply, overlay the pending secret onto a clone of the env map under
+        // the provider's `credential_env` so the gate sees it as present. The
+        // secret value is never logged. Any other case uses the env map as-is.
+        let mut effective = build_defaults(&self.praana_home);
+        let raw = crate::config::RawConfigV1::parse_json(&config_bytes[..config_bytes.len() - 1])
+            .map_err(|error| SetupError::Config(error.to_string()))?;
+        crate::config::merge::merge_raw_into_effective(&mut effective, raw);
+        let gate_env = gate_env_with_overlay(
+            provider_name,
+            secret.as_deref(),
+            &compactor_provider,
+            env_vars,
+        );
+        crate::config::validate::validate_compactor_pair_at_creation(
+            &effective,
+            &self.praana_home,
+            now_ms,
+            &gate_env,
+        )
+        .map_err(|error| SetupError::Config(error.to_string()))?;
+
+        // The gate accepted: now the new credential and the bumped revision
+        // are durable before the config is written.
         save_store(&self.credential_path(), &store)?;
 
         write_private_atomic(&self.config_path, &config_bytes)?;
@@ -626,6 +696,49 @@ impl SetupService {
         .map_err(|error| SetupError::Io(core_error_text(&error)))?;
         Ok(result)
     }
+}
+
+/// Collect the process environment as UTF-8 pairs without panicking.
+///
+/// `std::env::vars()` panics if any variable's name or value is not valid
+/// Unicode. `vars_os()` does not; this helper keeps only the pairs where both
+/// the name and the value are valid UTF-8 and silently drops the rest, which
+/// is correct here because every credential env var the gate reads has an
+/// ASCII name and a UTF-8-validated value.
+fn process_env_utf8() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(
+            |(key, value)| match (key.into_string(), value.into_string()) {
+                (Ok(key), Ok(value)) => Some((key, value)),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
+/// Build the environment map the P5-7 creation gate reads for credential
+/// presence. The gate reads the credential store from disk, so a not-yet-saved
+/// pending secret is invisible to it. Only when the compactor provider equals
+/// the active provider and a new secret was supplied in this apply do we
+/// overlay that pending secret onto a clone of the env map under the active
+/// provider's `credential_env`, making it visible to the gate before the store
+/// is written. The secret value is never logged. Every other case returns a
+/// clone of the env map unchanged.
+fn gate_env_with_overlay(
+    active_provider: &str,
+    pending_secret: Option<&str>,
+    compactor_provider: &str,
+    env_vars: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut overlay = env_vars.clone();
+    if compactor_provider == active_provider {
+        if let Some(secret) = pending_secret {
+            if let Some(descriptor) = crate::provider::provider_descriptor(active_provider) {
+                overlay.insert(descriptor.credential_env.clone(), secret.to_owned());
+            }
+        }
+    }
+    overlay
 }
 
 fn choice_value<'a>(
@@ -691,14 +804,14 @@ fn resolve_compactor_selection(
             "compactor_provider and compactor_model must be supplied together".to_owned(),
         ));
     }
-    if compactor_provider.is_some() {
-        // A non-default compactor selection stays gated until P5 compaction work lands.
-        return Err(SetupError::Config(
-            "CONFIG_FEATURE_NOT_IMPLEMENTED: compactor selection requires P5".to_owned(),
-        ));
-    }
-    // P3D pre-state: no separate compactor selection; the pair stays empty.
-    Ok((String::new(), String::new()))
+    // P5-7: a complete pair is accepted. The Phase-5 creation gate validates
+    // it (window, strict-schema, credential presence, admission) in
+    // `apply_operation_with_env`, before anything is persisted; an invalid
+    // pair fails there. The empty pair stays the default.
+    Ok((
+        compactor_provider.unwrap_or_default(),
+        compactor_model.unwrap_or_default(),
+    ))
 }
 
 fn validate_written_config(praana_home: &Path, config_path: &Path) -> Result<(), SetupError> {

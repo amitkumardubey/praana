@@ -143,14 +143,14 @@ fn provider_context_rejected() -> ProtocolError {
 /// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
 /// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
 /// A.5). Not retryable until the compactor capability or config changes.
-fn compaction_unavailable(cause: &ProtocolError) -> ProtocolError {
+fn compaction_unavailable(cause_code: &str) -> ProtocolError {
     ProtocolError {
         code: "E_COMPACTION_UNAVAILABLE".to_owned(),
         class: ErrorClass::Unavailable,
         message: format!(
             "the configured compactor became unavailable after session start ({}); new turn \
              admission is stopped",
-            cause.code
+            cause_code
         ),
         retryable: false,
         http_status: None,
@@ -670,6 +670,43 @@ impl HeadlessLoop {
         self.compaction_unavailable = None;
     }
 
+    /// Reinstalls a configured compactor from this loop's frozen resume config.
+    /// This is not the creation gate: old empty pairs remain inert, while a
+    /// lost capability or credential presence uses the existing §14.4 stop.
+    /// Secrets remain resolved after the durable attempt start, never pinned
+    /// to this presence-check environment.
+    pub fn install_compactor_on_resume(
+        &mut self,
+        home: &Path,
+        now_ms: i64,
+        env_vars: &std::collections::BTreeMap<String, String>,
+    ) {
+        let history = &self.config.config.history;
+        if history.compactor_provider.trim().is_empty() && history.compactor_model.trim().is_empty()
+        {
+            return;
+        }
+        let compactor = crate::compaction::activate::ConfiguredCompactor::resolve(
+            &self.config.config,
+            home,
+            now_ms,
+        )
+        .map_err(|error| error.code())
+        .and_then(|compactor| {
+            crate::config::validate::validate_compactor_credential_presence(
+                &compactor, home, env_vars,
+            )
+            .map_err(|_| "E_PROVIDER_AUTH")?;
+            Ok(compactor)
+        });
+        match compactor {
+            Ok(compactor) => self.set_compactor(Some(compactor)),
+            Err(cause_code) => {
+                self.compaction_unavailable = Some(compaction_unavailable(cause_code));
+            }
+        }
+    }
+
     /// Current pressure hysteresis signal (Compaction §4.2).
     pub fn pressure_state(&self) -> crate::compaction::admission::PressureState {
         self.pressure
@@ -757,7 +794,7 @@ impl HeadlessLoop {
                 // eligible session is `COMPACTION_UNAVAILABLE`, not a
                 // recoverable §14.1 failure. Compaction stays unavailable and
                 // new turn admission stops until a compactor is reinstalled.
-                let unavailable = compaction_unavailable(&error);
+                let unavailable = compaction_unavailable(&error.code);
                 self.compaction_unavailable = Some(unavailable.clone());
                 Ok(LiveEpoch::Unavailable(unavailable))
             }

@@ -1,10 +1,38 @@
+use praana_core::compaction::activate::ConfiguredCompactor;
+use praana_core::config::validate::{
+    admit_minimum_compactor_request, validate_compactor_pair_at_creation,
+};
 use praana_core::config::{
     load_effective_config, resolve_resume_config, ConfigCliOverrides, ConfigError, ConfigLoaderEnv,
     ConfigWarning,
 };
-use std::collections::HashMap;
+use praana_core::credentials::credentials_path;
+#[cfg(unix)]
+use praana_core::credentials::{save_store, upsert_credential, CredentialStoreV1};
+use praana_core::provider::{
+    catalog_cache_path, endpoint_fingerprint, CatalogCacheV1, LiveModelRowV1,
+    CATALOG_CACHE_SCHEMA_VERSION, CATALOG_TTL_MS,
+};
+use praana_core::token::Sha256Digest;
+use praana_core::ui_contract::json_data::{ModelId, ProviderId};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+fn env_btree(env: HashMap<String, String>) -> BTreeMap<String, String> {
+    env.into_iter().collect()
+}
+
+/// The credential store requires its parent directory to be mode 0700
+/// (`prepare_parent`/`establish_private`).
+#[cfg(unix)]
+fn make_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[cfg(not(unix))]
+fn make_private(_path: &Path) {}
 
 fn fixture_path(relative: &str) -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -1330,8 +1358,534 @@ fn dangling_symlink_in_discovery_is_rejected() {
     assert!(matches!(res, Err(ConfigError::SourceInvalid(_))));
 }
 
+/// P5-7 headline: a complete bundled pair (`openai` + `gpt-5.6-sol`)
+/// loads without `CONFIG_FEATURE_NOT_IMPLEMENTED` and passes the creation gate
+/// (trusted window, strict-schema, credential presence, admission) without a
+/// fidelity manifest — the bundled row is `self_compaction: Unvalidated`.
 #[test]
-fn complete_non_empty_compactor_pair_is_feature_not_implemented_before_p5() {
+fn phase5_compactor_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    assert_eq!(eff.history.compactor_provider, "openai");
+    assert_eq!(eff.history.compactor_model, "gpt-5.6-sol");
+
+    let gate = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map));
+    assert!(
+        gate.is_ok(),
+        "complete bundled pair must pass the P5-7 gate: {:?}",
+        gate.err()
+    );
+}
+
+/// P5-7: the empty pair stays legal and inert. No compactor capability,
+/// credential, or admission check runs, and `CONFIG_COMPACTOR_REQUIRED` is
+/// never raised (no bundled profile is `Validated`). Proof that no check ran:
+/// the credential store at this home is deliberately corrupt, so any
+/// credential-presence check would have failed; the gate still returns Ok.
+#[test]
+fn phase5_empty_compactor_pair_loads_and_runs_no_checks() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+
+    // A corrupt credential store: `load_store` would error on it.
+    fs::write(credentials_path(&home), "{not valid json\n").unwrap();
+
+    let env = make_test_env(&home, &cwd, HashMap::new());
+    let (eff, _, _) = load_effective_config(None, &ConfigCliOverrides::default(), &env).unwrap();
+    assert!(eff.history.compactor_provider.is_empty());
+    assert!(eff.history.compactor_model.is_empty());
+
+    let gate = validate_compactor_pair_at_creation(&eff, &home, 2_000, &BTreeMap::new());
+    assert!(
+        gate.is_ok(),
+        "empty pair must stay inert and never raise CONFIG_COMPACTOR_REQUIRED: {:?}",
+        gate.err()
+    );
+}
+
+/// P5-7: a one-sided pair stays `CONFIG_INVALID_VALUE` (both directions).
+#[test]
+fn phase5_one_sided_compactor_pair_is_invalid_value() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+
+    for (name, section) in [
+        (
+            "provider_only",
+            "[history]\ncompactor_provider = \"openai\"\n",
+        ),
+        (
+            "model_only",
+            "[history]\ncompactor_model = \"gpt-5.6-sol\"\n",
+        ),
+    ] {
+        let cfg_file = temp.path().join(format!("compactor_one_sided_{name}.toml"));
+        fs::write(&cfg_file, section).unwrap();
+        let env = make_test_env(&home, &cwd, HashMap::new());
+        let res = load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env);
+        let error = res.expect_err("one-sided pair must be rejected");
+        assert!(
+            matches!(error, ConfigError::InvalidValue(_)),
+            "expected InvalidValue, got {error:?}"
+        );
+        assert!(
+            error.to_string().contains("CONFIG_INVALID_VALUE"),
+            "diagnostic carries the canonical code: {error}"
+        );
+    }
+}
+
+/// P5-7: a complete pair with an unknown model is rejected with a clear,
+/// specific error; no window is fabricated.
+#[test]
+fn phase5_complete_pair_unknown_model_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_unknown.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"not-a-real-model\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect_err("unknown compactor model must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {text}"
+    );
+    assert!(
+        text.contains("no trusted window"),
+        "specific reason must be stated: {text}"
+    );
+}
+
+/// P5-7: a complete pair whose profile has an untrusted window is rejected.
+/// An openrouter compactor with a custom endpoint never trusts a live catalog
+/// cache, so a non-bundled model has no trusted window.
+#[test]
+fn phase5_complete_pair_untrusted_window_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    // Populate a cache file, but the configured endpoint is custom, so the
+    // cache is never trusted.
+    let now = 2_000i64;
+    let cache = CatalogCacheV1 {
+        schema_version: CATALOG_CACHE_SCHEMA_VERSION,
+        provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+        endpoint_fingerprint: endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        fetched_at_ms: now,
+        expires_at_ms: now + CATALOG_TTL_MS,
+        etag: None,
+        body_sha256: Sha256Digest::digest_bytes(b"catalog body"),
+        models: vec![LiveModelRowV1 {
+            provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+            model_id: ModelId::from_canonical_str("some-live-model").unwrap(),
+            display_name: "Live model".to_owned(),
+            context_length: Some(4096),
+            max_completion_tokens: Some(2048),
+            supported_parameters: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        }],
+    };
+    fs::create_dir_all(catalog_cache_path(&home).parent().unwrap()).unwrap();
+    fs::write(
+        catalog_cache_path(&home),
+        serde_json::to_vec(&cache).unwrap(),
+    )
+    .unwrap();
+
+    let cfg_file = temp.path().join("compactor_untrusted.toml");
+    fs::write(
+        &cfg_file,
+        r#"[history]
+compactor_provider = "openrouter"
+compactor_model = "some-live-model"
+[providers.openrouter]
+base_url = "http://127.0.0.1:9/v1"
+"#,
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENROUTER_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, now, &env_btree(env_map))
+        .expect_err("untrusted compactor window must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("no trusted window"),
+        "specific reason must be stated: {text}"
+    );
+}
+
+/// P5-7: a complete pair whose resolved profile lacks `strict_json_schema` is
+/// rejected. Live catalog rows never claim strict schema, so an unexpired
+/// official OpenRouter cache row exercises the check without a network call.
+#[test]
+fn phase5_complete_pair_missing_strict_json_schema_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let now = 2_000i64;
+    let cache = CatalogCacheV1 {
+        schema_version: CATALOG_CACHE_SCHEMA_VERSION,
+        provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+        endpoint_fingerprint: endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        fetched_at_ms: now,
+        expires_at_ms: now + CATALOG_TTL_MS,
+        etag: None,
+        body_sha256: Sha256Digest::digest_bytes(b"catalog body"),
+        models: vec![LiveModelRowV1 {
+            provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+            model_id: ModelId::from_canonical_str("some-live-model").unwrap(),
+            display_name: "Live model".to_owned(),
+            context_length: Some(4096),
+            max_completion_tokens: Some(2048),
+            supported_parameters: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        }],
+    };
+    fs::create_dir_all(catalog_cache_path(&home).parent().unwrap()).unwrap();
+    fs::write(
+        catalog_cache_path(&home),
+        serde_json::to_vec(&cache).unwrap(),
+    )
+    .unwrap();
+
+    let cfg_file = temp.path().join("compactor_no_strict.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openrouter\"\ncompactor_model = \"some-live-model\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENROUTER_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, now, &env_btree(env_map))
+        .expect_err("compactor profile without strict JSON schema must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("does not support strict JSON schema"),
+        "specific reason must be stated: {text}"
+    );
+}
+
+/// P5-7: a complete pair with no credential available is rejected at creation.
+/// The check is presence-only: the secret value never appears in the error,
+/// logs, or snapshot. A marker value placed in the environment is never
+/// echoed, and the canonical config/snapshot bytes contain no credential.
+#[test]
+fn phase5_complete_pair_missing_credential_rejected_without_secret_leak() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    // No OPENAI_API_KEY; an unrelated marker secret must never leak.
+    let mut env_map = HashMap::new();
+    env_map.insert(
+        "SOME_OTHER_VAR".to_string(),
+        "sk-super-secret-marker".to_string(),
+    );
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect_err("complete pair without a credential must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {text}"
+    );
+    assert!(
+        text.contains("no credential is available"),
+        "specific reason must be stated: {text}"
+    );
+    assert!(
+        !text.contains("sk-super-secret-marker"),
+        "secret value leaked into the error: {text}"
+    );
+    let canonical = String::from_utf8(eff.to_canonical_json_bytes()).unwrap();
+    assert!(
+        !canonical.contains("sk-super-secret-marker"),
+        "secret value leaked into the config snapshot: {canonical}"
+    );
+}
+
+/// P5-7: an env credential that exists but is invalid (empty, whitespace-edged,
+/// newline, NUL) must not count as present — runtime
+/// `resolve_from_process_env` rejects it via `validate_credential_value`, so
+/// creation must reject it too instead of passing and failing later at
+/// compaction time.
+#[test]
+fn phase5_complete_pair_invalid_env_credential_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    for (name, invalid_value) in [
+        ("empty", ""),
+        ("leading_space", " sk-x"),
+        ("trailing_space", "sk-x "),
+        ("newline", "sk-x\n"),
+        ("embedded_nul", "sk-x\0y"),
+    ] {
+        let mut env_map = HashMap::new();
+        env_map.insert("OPENAI_API_KEY".to_string(), invalid_value.to_string());
+        let env = make_test_env(&home, &cwd, env_map.clone());
+        let (eff, _, _) =
+            load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+        let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+            .expect_err("invalid env credential must be rejected at creation");
+        let text = error.to_string();
+        assert!(
+            text.contains("CONFIG_COMPACTOR_REQUIRED"),
+            "{name}: diagnostic carries the canonical code: {text}"
+        );
+        // The empty value is a substring of every string; assert non-leak
+        // only for values that actually carry secret-looking content.
+        if !invalid_value.is_empty() {
+            assert!(
+                !text.contains(invalid_value),
+                "{name}: supplied value leaked into the error: {text}"
+            );
+        }
+    }
+}
+
+/// P5-7: precedence keeps a valid store row usable even when the env var is
+/// present but invalid. A valid store row alone is enough.
+///
+/// Unix-only: on non-unix `load_store` always fails with `UnsafePermissions`
+/// (current-user ACL enforcement is unavailable), so a store row can never be
+/// read back to satisfy credential presence.
+#[cfg(unix)]
+#[test]
+fn phase5_complete_pair_invalid_env_with_valid_store_row_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let mut store = CredentialStoreV1::empty();
+    upsert_credential(
+        &mut store,
+        "openai",
+        "sk-valid-store-row".to_owned(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    save_store(&credentials_path(&home), &store).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), " sk-bad-env".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("valid store row must satisfy credential presence even with an invalid env value");
+}
+
+/// P5-7: compactor-admission failure is rejected at creation. The minimum
+/// request (control prompt, schema, `Rout`) must be admissible against the
+/// compactor model's window; a profile whose window cannot fit it fails.
+#[test]
+fn phase5_complete_pair_admission_failure_rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+
+    // Resolve the real compactor, then shrink its trusted window until the
+    // minimum request cannot fit.
+    let mut tiny = ConfiguredCompactor::resolve(&eff, &home, 2_000).unwrap();
+    tiny.profile.context_window_tokens = 200;
+    tiny.profile.max_output_tokens = 100;
+    tiny.profile.min_output_tokens = 1;
+    let error = admit_minimum_compactor_request(&eff, &tiny)
+        .expect_err("unadmissible minimum compactor request must be rejected");
+    let text = error.to_string();
+    assert!(
+        text.contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {text}"
+    );
+    assert!(
+        text.contains("admission failed"),
+        "specific reason must be stated: {text}"
+    );
+}
+
+/// P5-7: a complete pair uses no network (the base URL points at a closed
+/// loopback port; any connect attempt would fail) and does not read a fidelity
+/// manifest (the bundled row is `self_compaction: Unvalidated` and resolves
+/// without one).
+#[test]
+fn phase5_complete_pair_uses_no_network_and_no_fidelity_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_no_network.toml");
+    fs::write(
+        &cfg_file,
+        r#"[history]
+compactor_provider = "openai"
+compactor_model = "gpt-5.6-sol"
+[providers.openai]
+base_url = "http://127.0.0.1:1/v1"
+"#,
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let gate = validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map));
+    assert!(
+        gate.is_ok(),
+        "creation gate must not touch the network: {:?}",
+        gate.err()
+    );
+}
+
+/// P5-7: a pre-Phase-5 snapshot (frozen empty pair) resumes unchanged: the
+/// snapshot bytes are not rewritten, resume keeps the frozen creation
+/// configuration, the loaded config's complete pair only warns, and the
+/// session is not compaction-eligible.
+#[test]
+fn phase5_pre_phase5_snapshot_resumes_with_frozen_empty_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    let session_dir = home.join("sessions/session-00000000000000000000000001");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+
+    let env = make_test_env(&home, &cwd, HashMap::new());
+    let (creation, creation_digest, _) =
+        load_effective_config(None, &ConfigCliOverrides::default(), &env).unwrap();
+    assert!(creation.history.compactor_provider.is_empty());
+    assert!(creation.history.compactor_model.is_empty());
+    let snapshot_path = creation.write_config_snapshot(&session_dir).unwrap();
+    let snapshot_before = fs::read(&snapshot_path).unwrap();
+
+    // The user later configures a complete pair; resume must load it (it may
+    // only warn) and keep the frozen creation configuration.
+    let cfg_file = temp.path().join("compactor_later.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let (loaded, loaded_digest, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    assert_eq!(loaded.history.compactor_provider, "openai");
+
+    let result = resolve_resume_config(&creation, &creation_digest, &loaded, &loaded_digest)
+        .expect("resume must not newly reject a pre-P5 snapshot");
+    assert!(result.changed_since_create);
+    assert!(result.runtime_config.history.compactor_provider.is_empty());
+    assert!(result.runtime_config.history.compactor_model.is_empty());
+    assert_eq!(fs::read(&snapshot_path).unwrap(), snapshot_before);
+}
+
+/// P5-7: the config digest depends only on the config text, not on the
+/// environment, catalog cache contents, or clock. Same config text must yield
+/// the same digest even with different env vars and a populated catalog cache.
+#[test]
+fn phase5_config_digest_stable_across_env_and_catalog_cache() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let cwd = temp.path().join("cwd");
@@ -1345,15 +1899,186 @@ fn complete_non_empty_compactor_pair_is_feature_not_implemented_before_p5() {
     )
     .unwrap();
 
+    let mut env_a = HashMap::new();
+    env_a.insert("OPENAI_API_KEY".to_string(), "sk-key-a".to_string());
+    let env_a = make_test_env(&home, &cwd, env_a);
+    let env_b = make_test_env(&home, &cwd, HashMap::new());
+    let (_, digest_a, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env_a).unwrap();
+    let (_, digest_b, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env_b).unwrap();
+    assert_eq!(digest_a, digest_b);
+
+    // A populated catalog cache under the same home must not move the digest.
+    let now = 2_000i64;
+    let cache = CatalogCacheV1 {
+        schema_version: CATALOG_CACHE_SCHEMA_VERSION,
+        provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+        endpoint_fingerprint: endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        fetched_at_ms: now,
+        expires_at_ms: now + CATALOG_TTL_MS,
+        etag: None,
+        body_sha256: Sha256Digest::digest_bytes(b"catalog body"),
+        models: vec![LiveModelRowV1 {
+            provider: ProviderId::from_canonical_str("openrouter").unwrap(),
+            model_id: ModelId::from_canonical_str("some-live-model").unwrap(),
+            display_name: "Live model".to_owned(),
+            context_length: Some(4096),
+            max_completion_tokens: Some(2048),
+            supported_parameters: Vec::new(),
+            reasoning_efforts: Vec::new(),
+        }],
+    };
+    fs::create_dir_all(catalog_cache_path(&home).parent().unwrap()).unwrap();
+    fs::write(
+        catalog_cache_path(&home),
+        serde_json::to_vec(&cache).unwrap(),
+    )
+    .unwrap();
+    let (_, digest_after_cache, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env_b).unwrap();
+    assert_eq!(digest_b, digest_after_cache);
+}
+
+// --- R3: a store error must not mask a valid env credential ---
+
+/// R3: a corrupt credential store does not block creation when a valid env
+/// credential is present. The env var is checked first; a valid value
+/// satisfies presence and `load_store` is never consulted, so the corrupt
+/// store is irrelevant.
+#[test]
+fn phase5_complete_pair_corrupt_store_with_valid_env_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    // A corrupt credential store: `load_store` would error on it.
+    fs::write(credentials_path(&home), "{not valid json\n").unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("a valid env credential must satisfy presence even with a corrupt store");
+}
+
+/// R3: a corrupt credential store with no valid env credential is rejected,
+/// and the error mentions the store problem as well as the missing credential.
+#[test]
+fn phase5_complete_pair_corrupt_store_no_env_mentions_store_problem() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    fs::write(credentials_path(&home), "{not valid json\n").unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    // No valid env credential.
     let env = make_test_env(&home, &cwd, HashMap::new());
-    let res = load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env);
-    let error = res.expect_err("complete compactor pair must be rejected before P5");
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let error = validate_compactor_pair_at_creation(&eff, &home, 2_000, &BTreeMap::new())
+        .expect_err("corrupt store and no env credential must be rejected");
+    let text = error.to_string();
     assert!(
-        matches!(error, ConfigError::FeatureNotImplemented(_)),
-        "expected FeatureNotImplemented, got {error:?}"
+        text.contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {text}"
     );
     assert!(
-        error.to_string().contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
-        "diagnostic carries the canonical code: {error}"
+        text.contains("no credential is available"),
+        "the missing-credential reason must be stated: {text}"
     );
+    assert!(
+        text.contains("cannot be verified") || text.contains("CREDENTIAL_STORE_INVALID"),
+        "the store problem must be mentioned: {text}"
+    );
+}
+
+/// R3: a valid env credential satisfies presence without `load_store`'s side
+/// effect. `load_store` -> `prepare_parent` runs `create_dir_all` and enforces
+/// mode 0700 on the home directory. With a valid env var, the gate must not
+/// call `load_store`, so a home directory at mode 0755 keeps mode 0755.
+#[cfg(unix)]
+#[test]
+fn phase5_valid_env_does_not_enforce_home_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    // Deliberately 0755 (not the 0700 `load_store` would enforce).
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map.clone());
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    validate_compactor_pair_at_creation(&eff, &home, 2_000, &env_btree(env_map))
+        .expect("valid env credential must be accepted");
+
+    let mode = fs::metadata(&home).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "the home directory mode must be unchanged (no load_store side effect)"
+    );
+}
+
+// --- R4: admit_minimum_compactor_request must not panic on a bad ULID ---
+
+/// R4: `admit_minimum_compactor_request` builds a synthetic source turn with a
+/// canonical ULID. The code now maps a parse failure into a `ConfigError`
+/// instead of panicking via `.expect(...)`. The canonical constant used in
+/// production parses, so the helper succeeds for a real compactor. (This also
+/// documents the `pub #[doc(hidden)]` surface that `tests/config_v1.rs` calls.)
+#[test]
+fn phase5_admit_minimum_request_uses_valid_canonical_ulid() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let cwd = temp.path().join("cwd");
+    fs::create_dir_all(&home).unwrap();
+    make_private(&home);
+    fs::create_dir_all(&cwd).unwrap();
+
+    let cfg_file = temp.path().join("compactor_complete.toml");
+    fs::write(
+        &cfg_file,
+        "[history]\ncompactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\"\n",
+    )
+    .unwrap();
+    let mut env_map = HashMap::new();
+    env_map.insert("OPENAI_API_KEY".to_string(), "sk-test-key".to_string());
+    let env = make_test_env(&home, &cwd, env_map);
+    let (eff, _, _) =
+        load_effective_config(Some(&cfg_file), &ConfigCliOverrides::default(), &env).unwrap();
+    let compactor = ConfiguredCompactor::resolve(&eff, &home, 2_000).unwrap();
+    admit_minimum_compactor_request(&eff, &compactor)
+        .expect("the synthetic canonical ULID must parse and the minimum request must admit");
 }
