@@ -590,15 +590,18 @@ async fn run_command(args: RunArgs) -> i32 {
         return 1;
     }
 
-    if let Err(error) = praana_core::config::validate::validate_compactor_pair_at_creation(
+    let compactor = match praana_core::config::validate::resolve_compactor_at_creation(
         &config,
         &praana_home,
         SystemClock.now_ms(),
         &env_btree,
     ) {
-        eprintln!("{error}");
-        return 2;
-    }
+        Ok(compactor) => compactor,
+        Err(error) => {
+            eprintln!("{error}");
+            return 2;
+        }
+    };
 
     // One discovery shared by the provider request instructions and the
     // session provenance digest (System Context §7.1).
@@ -648,6 +651,9 @@ async fn run_command(args: RunArgs) -> i32 {
                 return 2;
             }
         };
+    if let Some(compactor) = compactor {
+        headless.set_compactor(Some(compactor));
+    }
 
     let session_id = session_id.to_string();
     drive_turn(
@@ -860,6 +866,11 @@ async fn resume_command(args: ResumeArgs) -> i32 {
                 return 1;
             }
         };
+    headless.install_compactor_on_resume(
+        &praana_home,
+        SystemClock.now_ms(),
+        &env_vars.into_iter().collect(),
+    );
     // System Context §7.1: the code is the whole warning — no source bytes and
     // no host-absolute paths — and it is printed before the next provider
     // request, never instead of one.

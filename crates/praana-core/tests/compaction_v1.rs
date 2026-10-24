@@ -3976,4 +3976,153 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let error = ConfiguredCompactor::resolve(&config, home.path(), 0).unwrap_err();
         assert_eq!(error.code(), "COMPACTION_UNAVAILABLE");
     }
+
+    #[tokio::test]
+    async fn creation_resolution_installs_once_and_compacts_before_second_assistant() {
+        use praana_core::config::validate::resolve_compactor_at_creation;
+        let mut s = session();
+        s.config.history.compactor_provider = "openai".into();
+        s.config.history.compactor_model = MODEL.into();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let resolved = resolve_compactor_at_creation(
+            &s.config,
+            &s.home,
+            SystemClock.now_ms(),
+            &Default::default(),
+        )
+        .unwrap()
+        .expect("complete pair resolves");
+        assert!(
+            resolved.env.is_none(),
+            "do not pin the creation environment"
+        );
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        // The same resolved value and installation call used by praana run.
+        loop_.set_compactor(Some(resolved));
+        for text in [big("alpha"), big("bravo")] {
+            assert!(loop_
+                .run_turn(&text, &provider)
+                .await
+                .unwrap()
+                .interruption
+                .is_none());
+        }
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(s.fake.main_requests().len(), 2);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
+        let request = &s.fake.main_requests()[1];
+        assert!(request.body.contains("epoch one handoff context"));
+    }
+
+    #[tokio::test]
+    async fn creation_empty_pair_returns_no_install_and_zero_compactor_requests() {
+        use praana_core::config::validate::resolve_compactor_at_creation;
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let resolved = resolve_compactor_at_creation(
+            &s.config,
+            &s.home,
+            SystemClock.now_ms(),
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(
+            resolved.is_none(),
+            "the empty pair must not install a compactor"
+        );
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        if let Some(compactor) = resolved {
+            loop_.set_compactor(Some(compactor));
+        }
+        for text in [big("alpha"), big("bravo")] {
+            assert!(loop_
+                .run_turn(&text, &provider)
+                .await
+                .unwrap()
+                .interruption
+                .is_none());
+        }
+        assert!(s.fake.compactor_requests().is_empty());
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resume_missing_credential_stops_new_turn_without_eligible_source_then_reinstall_lifts()
+    {
+        let mut s = session();
+        s.config.history.compactor_provider = "openai".into();
+        s.config.history.compactor_model = MODEL.into();
+        // No eligible source and below compact_at: resume must stop admission,
+        // not wait for a future compaction epoch to discover credential loss.
+        drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+        save_store(&credentials_path(&s.home), &CredentialStoreV1::empty()).unwrap();
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        let before = std::fs::read(s.session.join("events.jsonl")).unwrap();
+        loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let error = loop_
+            .run_turn("small admissible turn", &provider)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("(E_PROVIDER_AUTH)"), "{error}");
+        assert_eq!(
+            std::fs::read(s.session.join("events.jsonl")).unwrap(),
+            before
+        );
+        assert!(s.fake.main_requests().is_empty());
+        assert!(s.fake.compactor_requests().is_empty());
+        let mut store = CredentialStoreV1::empty();
+        upsert_credential(
+            &mut store,
+            "openai",
+            "restored-key".into(),
+            SystemClock.now_ms(),
+        )
+        .unwrap();
+        save_store(&credentials_path(&s.home), &store).unwrap();
+        loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
+        assert!(loop_
+            .run_turn("now admitted", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        assert_eq!(s.fake.main_requests().len(), 1);
+        assert!(s.fake.compactor_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_unresolvable_frozen_pair_stops_new_turn_without_projection_changes() {
+        let mut s = session();
+        s.config.history.compactor_provider = "openai".into();
+        s.config.history.compactor_model = "unknown-untrusted-compactor".into();
+        // Library create's known validation bypass is not changed by this work.
+        drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        let before = std::fs::read(s.session.join("events.jsonl")).unwrap();
+        loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let error = loop_
+            .run_turn("small admissible turn", &provider)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(s.session.join("events.jsonl")).unwrap(),
+            before
+        );
+        assert!(s.fake.main_requests().is_empty());
+        assert!(s.fake.compactor_requests().is_empty());
+    }
 }

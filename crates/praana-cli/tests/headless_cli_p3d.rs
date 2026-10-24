@@ -717,6 +717,237 @@ fn resume_ready_session_exits_0_with_id_and_empty_stdout() {
     assert_eq!(assert_resume_id(&resumed), created_id);
 }
 
+// A real first CLI run supplies the immutable creation snapshot and a closed
+// source turn. Append only the next turn's durable admission prefix, modelling
+// a process exit before its first assistant attempt. `resume` has no prompt
+// argument, so it must continue this active step-zero turn.
+fn append_pending_turn(env: &CliEnv) -> (String, PathBuf) {
+    use praana_core::history::event_log::EventLogStore;
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::protocol::events::EventEnvelope;
+    use praana_core::protocol::id::{EventId, MessageId, TurnId};
+
+    let sid = first_session_id(&env.home);
+    let dir = env.home.join("sessions").join(&sid);
+    let mut log = EventLogStore::open(&dir, &sid).unwrap();
+    let events = log.events().unwrap();
+    let mut prefix: Vec<serde_json::Value> = events
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(event).unwrap();
+            matches!(
+                value["event"]["kind"].as_str(),
+                Some("user_message_accepted" | "turn_started")
+            )
+            .then_some(value)
+        })
+        .collect();
+    assert_eq!(prefix.len(), 2);
+    let ids = MonotonicUlidGenerator::system();
+    let turn: TurnId = ids.next_id().unwrap();
+    let message: MessageId = ids.next_id().unwrap();
+    for event in &mut prefix {
+        let id: EventId = ids.next_id().unwrap();
+        event["event_id"] = serde_json::json!(id.to_string());
+        event["turn_id"] = serde_json::json!(turn.to_string());
+        event["sequence"] = serde_json::json!(log.current_sequence() + 1);
+        match event["event"]["kind"].as_str().unwrap() {
+            "user_message_accepted" => {
+                event["event"]["data"]["message"]["turn_id"] = serde_json::json!(turn.to_string());
+                event["event"]["data"]["message"]["message_id"] =
+                    serde_json::json!(message.to_string());
+            }
+            "turn_started" => {
+                event["event"]["data"]["turn_index"] = serde_json::json!(2);
+                event["event"]["data"]["user_message_id"] = serde_json::json!(message.to_string());
+            }
+            _ => unreachable!(),
+        }
+        let envelope: EventEnvelope = serde_json::from_value(event.clone()).unwrap();
+        log.append_event(&envelope).unwrap();
+    }
+    (sid, dir)
+}
+
+fn write_live_compactor_config(
+    env: &CliEnv,
+    assistant: &FakeServer,
+    compactor: &FakeServer,
+    pair: bool,
+    compact_at: f64,
+) {
+    let pair = if pair {
+        "compactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\""
+    } else {
+        ""
+    };
+    std::fs::write(
+        &env.config,
+        format!(
+            r#"
+[llm]
+provider = "openrouter"
+protocol = "openai-chat-v1"
+model = "openai/gpt-5.6-sol"
+max_output_tokens = 256
+min_output_tokens = 16
+context_window = 65536
+[history]
+compact_at = {compact_at}
+compact_clear_at = 0.1
+{pair}
+[providers.openrouter]
+base_url = "{}"
+[providers.openai]
+base_url = "{}"
+"#,
+            assistant.base_url(),
+            compactor.base_url()
+        ),
+    )
+    .unwrap();
+}
+
+fn live_cli_fixture(pair: bool, compact_at: f64) -> (CliEnv, FakeServer, FakeServer) {
+    let env = cli_env();
+    write_credentials(&env.home, "openrouter", "assistant-key");
+    let mut store =
+        praana_core::credentials::store::load_store(&credentials_path(&env.home)).unwrap();
+    upsert_credential(
+        &mut store,
+        "openai",
+        "compactor-key".into(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    save_store(&credentials_path(&env.home), &store).unwrap();
+    let assistant = spawn_server(|_| sse_response(200, &chat_text_body("assistant answer")));
+    let compactor = spawn_server(|_| {
+        let candidate =
+            include_str!("../../praana-core/tests/fixtures/compaction_v1/candidate_empty.json");
+        let escaped = serde_json::to_string(candidate.trim()).unwrap();
+        // responses_text_body expects JSON-string contents rather than quotes.
+        sse_response(200, &responses_text_body(&escaped[1..escaped.len() - 1]))
+    });
+    write_live_compactor_config(&env, &assistant, &compactor, pair, compact_at);
+    (env, assistant, compactor)
+}
+
+#[test]
+fn cli_resume_installs_frozen_compactor_before_assistant() {
+    let (env, assistant, compactor) = live_cli_fixture(true, 0.4);
+    let prompt = "first closed source ".repeat(1200);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &["run", "--config", env.config.to_str().unwrap(), &prompt],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    let (sid, dir) = append_pending_turn(&env);
+    let snapshot = std::fs::read(dir.join("config.snapshot.json")).unwrap();
+    // Loaded configuration must neither disable the frozen pair nor run a
+    // creation gate. The frozen endpoints and thresholds remain authoritative.
+    write_live_compactor_config(&env, &assistant, &compactor, false, 0.9);
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&resumed), 0, "{}", stderr(&resumed));
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert_eq!(
+        compactor.hits.load(Ordering::SeqCst),
+        1,
+        "frozen compactor must send; {}",
+        stderr(&resumed)
+    );
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    let compacted = events.find("\"kind\":\"history_compacted\"").unwrap();
+    let last_assistant = events.rfind("\"type\":\"assistant_step\"").unwrap();
+    assert!(
+        compacted < last_assistant,
+        "compaction activates before assistant start"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("config.snapshot.json")).unwrap(),
+        snapshot
+    );
+    assert!(compactor.recorded.lock().unwrap()[0].starts_with("POST /v1/responses "));
+    assert!(assistant.recorded.lock().unwrap()[1].starts_with("POST /v1/chat/completions "));
+}
+
+#[test]
+fn cli_resume_frozen_empty_pair_never_installs_or_rewrites() {
+    let (env, assistant, compactor) = live_cli_fixture(false, 0.4);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &[
+            "run",
+            "--config",
+            env.config.to_str().unwrap(),
+            &"first closed source ".repeat(1200),
+        ],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    let (sid, dir) = append_pending_turn(&env);
+    let snapshot = std::fs::read(dir.join("config.snapshot.json")).unwrap();
+    write_live_compactor_config(&env, &assistant, &compactor, true, 0.4);
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&resumed), 0, "{}", stderr(&resumed));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        std::fs::read(dir.join("config.snapshot.json")).unwrap(),
+        snapshot
+    );
+    assert!(!std::fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .contains("history_compacted"));
+}
+
+#[test]
+fn cli_resume_missing_compactor_credential_stops_before_any_request() {
+    let (env, assistant, compactor) = live_cli_fixture(true, 0.9);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &[
+            "run",
+            "--config",
+            env.config.to_str().unwrap(),
+            "small source",
+        ],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    let (sid, dir) = append_pending_turn(&env);
+    // Preserve the assistant credential; only the compactor loses capability.
+    write_credentials(&env.home, "openrouter", "assistant-key");
+    let before = std::fs::read(dir.join("events.jsonl")).unwrap();
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_ne!(
+        exit_code(&resumed),
+        0,
+        "missing compactor must stop admission"
+    );
+    assert!(
+        stderr(&resumed).contains("E_COMPACTION_UNAVAILABLE"),
+        "{}",
+        stderr(&resumed)
+    );
+    assert!(!stderr(&resumed).contains("CONFIG_COMPACTOR_REQUIRED"));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        assistant.hits.load(Ordering::SeqCst),
+        1,
+        "zero resumed assistant requests"
+    );
+    assert_eq!(std::fs::read(dir.join("events.jsonl")).unwrap(), before);
+}
+
 #[test]
 fn resume_unknown_selector_exits_2_with_session_not_found() {
     let env = cli_env();

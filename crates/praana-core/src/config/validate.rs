@@ -246,6 +246,16 @@ pub fn validate_effective_config(
     Ok(warnings)
 }
 
+/// Validation-only creation gate used by setup.
+pub fn validate_compactor_pair_at_creation(
+    config: &EffectiveConfigV1,
+    praana_home: &Path,
+    now_ms: i64,
+    env_vars: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
+    resolve_compactor_at_creation(config, praana_home, now_ms, env_vars).map(|_| ())
+}
+
 /// Phase-5 creation gate (P5-7): `history.compactor_provider` /
 /// `history.compactor_model` pair validation at session creation (Config §6.4
 /// and §6.6, Compaction §7.3 and §14.4). It runs only when a NEW session is
@@ -260,23 +270,23 @@ pub fn validate_effective_config(
 /// - One-sided pair: `CONFIG_INVALID_VALUE` (also enforced here as
 ///   defense-in-depth; `validate_effective_config` rejects it first).
 /// - Complete pair: validated for (1) a trusted context window, (2)
-///   `strict_json_schema`, (3) credential presence only (the secret value is
-///   never resolved, read, or logged; it stays resolved after the durable
+///   `strict_json_schema`, (3) credential presence only (the runtime secret is
+///   not resolved, retained, or logged; resolution stays after the durable
 ///   compaction start, Compaction §12), and (4) compactor admission of the
 ///   minimum request (control prompt, schema, `Rout`) against the compactor
 ///   model's window. No network completion, no silent fallback to a different
 ///   model, no fidelity manifest, and no `SelfCompactionCapability::Validated`
 ///   requirement.
-pub fn validate_compactor_pair_at_creation(
+pub fn resolve_compactor_at_creation(
     config: &EffectiveConfigV1,
     praana_home: &Path,
     now_ms: i64,
     env_vars: &BTreeMap<String, String>,
-) -> Result<(), ConfigError> {
+) -> Result<Option<ConfiguredCompactor>, ConfigError> {
     let provider_empty = ascii_edge_trim(&config.history.compactor_provider).is_empty();
     let model_empty = ascii_edge_trim(&config.history.compactor_model).is_empty();
     if provider_empty && model_empty {
-        return Ok(());
+        return Ok(None);
     }
     if provider_empty != model_empty {
         return Err(ConfigError::InvalidValue(
@@ -292,7 +302,18 @@ pub fn validate_compactor_pair_at_creation(
             "history.compactor: compactor selection failed: {error}"
         ))
     })?;
+    validate_compactor_credential_presence(&compactor, praana_home, env_vars)?;
+    admit_minimum_compactor_request(config, &compactor)?;
+    Ok(Some(compactor))
+}
 
+/// Presence only, shared with resume's post-start capability check. This does
+/// not resolve a secret or apply creation-time capability/admission gates.
+pub(crate) fn validate_compactor_credential_presence(
+    compactor: &ConfiguredCompactor,
+    praana_home: &Path,
+    env_vars: &BTreeMap<String, String>,
+) -> Result<(), ConfigError> {
     // Credential presence (D4): the env var is checked first. If it is valid,
     // presence is satisfied and `load_store` is NOT called — this avoids
     // `load_store`'s side effects (`prepare_parent` runs `create_dir_all` and
@@ -300,8 +321,8 @@ pub fn validate_compactor_pair_at_creation(
     // the store. A `load_store` error then counts as `store_present = false`,
     // and if both are unusable the returned error mentions the store problem
     // as well as the missing credential. Presence only — `resolve_credential`
-    // is not used, the secret value is never read or logged, and it stays
-    // resolved after the durable compaction start (Compaction §12).
+    // is not used, no secret is retained or logged, and runtime resolution
+    // stays after the durable compaction start (Compaction §12).
     //
     // Validity matches runtime: `CredentialStoreV1::validate` (run by
     // `load_store`) already rejects any stored value that fails
@@ -353,7 +374,7 @@ pub fn validate_compactor_pair_at_creation(
         )));
     }
 
-    admit_minimum_compactor_request(config, &compactor)
+    Ok(())
 }
 
 /// Admits the minimum compactor request against the compactor model's window:
