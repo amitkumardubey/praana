@@ -9,13 +9,15 @@
 //! sample. This module never panics on I/O, never prints, and never rewrites
 //! a corrupt or wrong-version file.
 
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
-use super::calibration::{CalibrationBucketKey, TokenCalibrationSampleV1};
+use super::calibration::{CalibrationBucketKey, TokenCalibrationBucket, TokenCalibrationSampleV1};
 use super::Sha256Digest;
 
 const SCHEMA_VERSION: i32 = 1;
@@ -142,6 +144,148 @@ pub fn append_sample(
     tighten_private_file(&path)?;
     chmod_sidecars(&path);
     Ok(())
+}
+
+/// `C` for one bucket, loaded from the store the first time this process
+/// uses the key and kept after that.
+///
+/// Samples this process appends are added to the cached vec, so a later
+/// admission in the same process sees them. Samples another process writes
+/// after this process has cached the bucket are picked up by the next
+/// process, not by this one. A failed load is cached empty: `C` stays 0 and
+/// the store is not retried. `error_code` is set only on that first failure.
+pub(crate) struct CachedCalibrationMargin {
+    pub(crate) margin: u64,
+    pub(crate) error_code: Option<&'static str>,
+}
+
+pub(crate) fn cached_calibration_margin(
+    home: &Path,
+    key: &CalibrationBucketKey,
+) -> CachedCalibrationMargin {
+    let id = CacheId {
+        home: home.to_path_buf(),
+        key: key.clone(),
+    };
+    {
+        let guard = cache_lock();
+        if let Some(entry) = guard.get(&id) {
+            return CachedCalibrationMargin {
+                margin: margin_from_samples(&entry.samples),
+                error_code: None,
+            };
+        }
+    }
+    // Load outside the lock. Re-check before inserting so a sample noted
+    // while this load ran is not replaced by a stale vec.
+    let loaded = try_load_bucket(home, key);
+    let mut guard = cache_lock();
+    if let Some(entry) = guard.get(&id) {
+        return CachedCalibrationMargin {
+            margin: margin_from_samples(&entry.samples),
+            error_code: None,
+        };
+    }
+    match loaded {
+        Ok(samples) => {
+            let margin = margin_from_samples(&samples);
+            guard.insert(id, CacheEntry { samples });
+            CachedCalibrationMargin {
+                margin,
+                error_code: None,
+            }
+        }
+        Err(error) => {
+            guard.insert(
+                id,
+                CacheEntry {
+                    samples: Vec::new(),
+                },
+            );
+            CachedCalibrationMargin {
+                margin: 0,
+                error_code: Some(error.code),
+            }
+        }
+    }
+}
+
+/// Remember a sample this process just persisted. No disk read when the
+/// bucket is already cached.
+pub(crate) fn note_appended_sample(home: &Path, sample: &TokenCalibrationSampleV1) {
+    let key = CalibrationBucketKey::from_sample(sample);
+    let id = CacheId {
+        home: home.to_path_buf(),
+        key: key.clone(),
+    };
+    {
+        let mut guard = cache_lock();
+        if let Some(entry) = guard.get_mut(&id) {
+            push_sample(&mut entry.samples, sample);
+            return;
+        }
+    }
+    let mut samples = try_load_bucket(home, &key).unwrap_or_default();
+    push_sample(&mut samples, sample);
+    let mut guard = cache_lock();
+    if let Some(entry) = guard.get_mut(&id) {
+        push_sample(&mut entry.samples, sample);
+        return;
+    }
+    guard.insert(id, CacheEntry { samples });
+}
+
+struct CacheEntry {
+    samples: Vec<TokenCalibrationSampleV1>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CacheId {
+    home: PathBuf,
+    key: CalibrationBucketKey,
+}
+
+fn push_sample(samples: &mut Vec<TokenCalibrationSampleV1>, sample: &TokenCalibrationSampleV1) {
+    if samples.iter().any(|existing| same_sample(existing, sample)) {
+        return;
+    }
+    samples.push(sample.clone());
+    retain_latest(samples);
+}
+
+fn same_sample(left: &TokenCalibrationSampleV1, right: &TokenCalibrationSampleV1) -> bool {
+    left.request_hash == right.request_hash
+        && left.timestamp_ms == right.timestamp_ms
+        && left.reported_input_tokens == right.reported_input_tokens
+}
+
+fn retain_latest(samples: &mut Vec<TokenCalibrationSampleV1>) {
+    if samples.len() <= RETAINED_SAMPLES {
+        return;
+    }
+    // Stable sort: equal timestamps keep the earlier insertion, which is older.
+    samples.sort_by_key(|sample| sample.timestamp_ms);
+    let overflow = samples.len() - RETAINED_SAMPLES;
+    samples.drain(0..overflow);
+}
+
+fn margin_from_samples(samples: &[TokenCalibrationSampleV1]) -> u64 {
+    let mut bucket = TokenCalibrationBucket::new(RETAINED_SAMPLES);
+    for sample in samples {
+        bucket.add_sample(sample.clone());
+    }
+    bucket.calculate_calibration_margin_c().unwrap_or(0)
+}
+
+fn cache() -> &'static Mutex<HashMap<CacheId, CacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<CacheId, CacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cache_lock() -> std::sync::MutexGuard<'static, HashMap<CacheId, CacheEntry>> {
+    cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 enum Existing {

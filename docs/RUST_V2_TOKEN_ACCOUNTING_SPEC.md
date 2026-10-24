@@ -553,6 +553,13 @@ change. The store does not panic, does not print, and does not delete or
 rewrite a corrupt or wrong-version file. Placeholder zero reported usage is
 not inserted.
 
+A process loads a bucket on first use of its key and keeps that view,
+including samples it appends afterward. Samples another process writes after
+the cache is filled are visible to the next process. Admission still applies
+`M = min(M, floor(0.10 * W))`. An emergency context retry and placeholder zero
+reported usage are not samples. A compaction-purpose request is not an
+accepted assistant step, so it does not produce a calibration sample.
+
 Calibration is a runtime safety input, not evidence that an estimator is exact.
 Release-quality rates are measurement targets until a checked-in corpus and
 evaluator define their population and confidence method.

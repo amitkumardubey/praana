@@ -70,6 +70,7 @@ fn config_with_seed(root: PathBuf, seed: u128) -> LoopConfig {
     effective.turn.max_steps = 6;
     effective.turn.max_attempts = 3;
     LoopConfig {
+        home: root.join("home"),
         session_dir: root.join("session"),
         workspace: root.join("work"),
         config: effective,
@@ -502,6 +503,140 @@ fn arm_from_env() {
     }
 }
 
+struct CalibrationUsage(u64);
+
+#[async_trait]
+impl StepProvider for CalibrationUsage {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"calibration": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("ok".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(self.0),
+            },
+            authorization,
+        })
+    }
+}
+
+struct EmergencyCalibrationUsage {
+    sends: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl StepProvider for EmergencyCalibrationUsage {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"calibration": true, "step": step_index, "emergency": true}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        if self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Err(TurnError::Provider(Box::new(ProviderFailure {
+                error: ProtocolError {
+                    code: "E_PROVIDER_CONTEXT_LENGTH".into(),
+                    class: ErrorClass::ContextLength,
+                    message: "provider rejected request context length".into(),
+                    retryable: false,
+                    http_status: Some(400),
+                    retry_after_ms: None,
+                },
+                emission_crossed: false,
+                observable_delta: false,
+                partial_blocks: Vec::new(),
+                provider_response_id: None,
+                usage: usage(400),
+                may_have_completed: false,
+                cancelled: false,
+                retry_after_ms: None,
+            })));
+        }
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("recovered".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(400),
+            },
+            authorization,
+        })
+    }
+}
+
+fn private_home(home: &Path) {
+    std::fs::create_dir_all(home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+
+fn seed_calibration(home: &Path, count: usize) {
+    for index in 0..count {
+        let sample = praana_core::token::TokenCalibrationSampleV1::new(
+            "scripted".into(),
+            "scripted-v1".into(),
+            "fake".into(),
+            None,
+            praana_core::token::GENERIC_ESTIMATOR_ID.into(),
+            praana_core::protocol::id::Sha256Digest::digest_bytes(
+                format!("crash-seed-{index}").as_bytes(),
+            ),
+            100,
+            101 + index as u64,
+            Some(0),
+            0,
+            1_700_000_000_000 + index as i64,
+        )
+        .unwrap();
+        praana_core::token::append_sample(home, &sample).unwrap();
+    }
+}
+
+fn calibration_key() -> praana_core::token::CalibrationBucketKey {
+    praana_core::token::CalibrationBucketKey::from_parts(
+        "scripted",
+        "scripted-v1",
+        "fake",
+        None,
+        praana_core::token::GENERIC_ESTIMATOR_ID,
+    )
+}
+
+fn assert_temp_root(root: &Path) {
+    assert!(
+        root.starts_with(std::env::temp_dir()),
+        "crash tests stay under the temp dir"
+    );
+    if let Some(real_home) = std::env::var_os("HOME") {
+        let praana = PathBuf::from(real_home).join(".praana");
+        assert!(!root.starts_with(&praana));
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn child_panics_instead_of_aborting() {
@@ -577,6 +712,180 @@ fn child_resumes_session_started_prefix() {
     };
     HeadlessLoop::resume(resume_config(PathBuf::from(root)))
         .expect("valid durable session_started prefix must resume");
+}
+
+#[test]
+fn child_calibration_sample_crash() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-sample") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let _ = loop_.run_turn("calibrate", &CalibrationUsage(80)).await;
+    });
+}
+
+#[test]
+fn child_calibration_zero_usage() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-zero") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let report = loop_.run_turn("zero", &CalibrationUsage(0)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+}
+
+#[test]
+fn child_calibration_emergency() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-emergency") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let provider = EmergencyCalibrationUsage {
+            sends: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let report = loop_.run_turn("too big", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+}
+
+#[test]
+fn crash_at_calibration_sample_keeps_a_valid_store_and_the_next_process_records() {
+    let root = tempfile::tempdir().unwrap();
+    assert_temp_root(root.path());
+    let home = root.path().join("home");
+    private_home(&home);
+    seed_calibration(&home, 3);
+    let before = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(before.len(), 3);
+    let point = "compaction.after_calibration_sample@1";
+    let output = spawn_child(
+        root.path(),
+        "child_calibration_sample_crash",
+        "calibration-sample",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert_abort(&output, point);
+    let after = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(after.len(), 3, "the crashed sample is not a partial row");
+    assert_eq!(after[0].request_hash, before[0].request_hash);
+    assert_eq!(after[2].request_hash, before[2].request_hash);
+    let mut next = config(root.path().to_path_buf());
+    next.session_dir = root.path().join("session-next");
+    std::fs::create_dir_all(root.path().join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(next).unwrap();
+        let report = loop_
+            .run_turn("next process", &CalibrationUsage(80))
+            .await
+            .unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+    let recorded = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(recorded.len(), 4);
+    assert!(recorded
+        .iter()
+        .any(|sample| sample.reported_input_tokens == 80));
+}
+
+#[test]
+fn zero_usage_and_emergency_retry_do_not_hit_the_calibration_failpoint() {
+    let root = tempfile::tempdir().unwrap();
+    assert_temp_root(root.path());
+    let home = root.path().join("home");
+    private_home(&home);
+    seed_calibration(&home, 2);
+    let point = "compaction.after_calibration_sample@1";
+    let zero = spawn_child(
+        root.path(),
+        "child_calibration_zero_usage",
+        "calibration-zero",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert!(
+        zero.status.success(),
+        "zero usage must not reach the calibration failpoint\nstderr:\n{}",
+        String::from_utf8_lossy(&zero.stderr)
+    );
+    assert!(
+        zero.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&zero.stderr)
+    );
+    assert_eq!(
+        praana_core::token::load_bucket(&home, &calibration_key()).len(),
+        2
+    );
+
+    let emergency_root = tempfile::tempdir().unwrap();
+    assert_temp_root(emergency_root.path());
+    let emergency_home = emergency_root.path().join("home");
+    private_home(&emergency_home);
+    seed_calibration(&emergency_home, 2);
+    let emergency = spawn_child(
+        emergency_root.path(),
+        "child_calibration_emergency",
+        "calibration-emergency",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert!(
+        emergency.status.success(),
+        "an emergency retry must not reach the calibration failpoint\nstderr:\n{}",
+        String::from_utf8_lossy(&emergency.stderr)
+    );
+    assert!(read_envelopes(emergency_root.path()).iter().any(|event| {
+        matches!(
+            &event.event,
+            CanonicalEvent::AssistantAttemptStarted(started) if started.emergency_context_retry
+        )
+    }));
+    assert_eq!(
+        praana_core::token::load_bucket(&emergency_home, &calibration_key()).len(),
+        2
+    );
 }
 
 #[test]
