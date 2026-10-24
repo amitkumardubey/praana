@@ -2564,6 +2564,7 @@ fn spawn_compaction_server(ledger_root: Option<PathBuf>) -> String {
                     .open(root.join(name))
                     .unwrap();
                 writeln!(ledger, "{body}").unwrap();
+                ledger.sync_all().unwrap();
             }
             let text = if let Some(control) = control {
                 let control: Value = serde_json::from_str(control).unwrap();
@@ -2861,7 +2862,7 @@ fn live_crash_text(label: &str) -> String {
     format!("{label} {}", "lorem ipsum dolor sit amet ".repeat(120))
 }
 
-fn live_crash_config(root: &Path, base_url: &str, window: u64) -> LoopConfig {
+fn live_crash_config(root: &Path, base_url: &str, window: u64, proactive: bool) -> LoopConfig {
     let mut cfg = resume_config(root.to_path_buf());
     cfg.config.llm.provider = "openai".into();
     cfg.config.llm.protocol = "openai-responses-v1".into();
@@ -2869,8 +2870,15 @@ fn live_crash_config(root: &Path, base_url: &str, window: u64) -> LoopConfig {
     cfg.config.llm.min_output_tokens = 16;
     cfg.config.llm.max_output_tokens = 4_096;
     cfg.config.llm.context_window = window;
-    cfg.config.history.compact_at = 1.0;
-    cfg.config.history.compact_clear_at = 0.9;
+    if proactive {
+        // The request fits comfortably; pressure alone must launch compaction.
+        cfg.config.history.compact_at = 0.0002;
+        cfg.config.history.compact_clear_at = 0.0001;
+    } else {
+        // Keep proactive pressure out: only the hard ceiling can launch.
+        cfg.config.history.compact_at = 1.0;
+        cfg.config.history.compact_clear_at = 0.9;
+    }
     cfg.config.providers.openai.base_url = base_url.to_owned();
     cfg
 }
@@ -2900,7 +2908,7 @@ fn live_crash_home(root: &Path) -> PathBuf {
 }
 
 #[test]
-fn child_live_hard_ceiling() {
+fn child_live_compaction() {
     let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
         return;
     };
@@ -2909,13 +2917,14 @@ fn child_live_hard_ceiling() {
         return;
     }
     let root = PathBuf::from(root);
+    let proactive = std::env::var("PRAANA_SCENARIO").as_deref() == Ok("proactive");
     let window = std::fs::read_to_string(root.join("window"))
         .unwrap()
         .parse()
         .unwrap();
     let home = live_crash_home(&root);
     let url = spawn_compaction_server(Some(root.clone()));
-    let cfg = live_crash_config(&root, &url, window);
+    let cfg = live_crash_config(&root, &url, window, proactive);
     let provider =
         praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
             .unwrap();
@@ -2953,12 +2962,14 @@ fn child_live_hard_ceiling() {
     });
 }
 
-fn live_hard_ceiling_crash(point: &str) {
-    let calibration = tempfile::tempdir().unwrap();
-    setup_work(calibration.path());
-    let home = live_crash_home(calibration.path());
-    let url = spawn_compaction_server(Some(calibration.path().to_path_buf()));
-    let cfg = live_crash_config(calibration.path(), &url, 128_000);
+/// Calibrate against an actual assistant admission, so the next turn exceeds
+/// the hard ceiling by ten input tokens without depending on estimator details.
+fn live_hard_ceiling_window() -> u64 {
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    let home = live_crash_home(root.path());
+    let url = spawn_compaction_server(Some(root.path().to_path_buf()));
+    let cfg = live_crash_config(root.path(), &url, 128_000, false);
     let provider =
         praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
             .unwrap();
@@ -2969,16 +2980,15 @@ fn live_hard_ceiling_crash(point: &str) {
     rt.block_on(async {
         let mut loop_ = HeadlessLoop::create(cfg).unwrap();
         for label in ["alpha", "bravo", "charlie", "delta"] {
-            assert!(loop_
+            let report = loop_
                 .run_turn(&live_crash_text(label), &provider)
                 .await
-                .unwrap()
-                .interruption
-                .is_none());
+                .unwrap();
+            assert!(report.interruption.is_none(), "{report:?}");
         }
     });
-    let events = read_envelopes(calibration.path());
-    let last = events
+    let events = read_envelopes(root.path());
+    let admission = events
         .iter()
         .rev()
         .find_map(|event| match &event.event {
@@ -2986,39 +2996,60 @@ fn live_hard_ceiling_crash(point: &str) {
             _ => None,
         })
         .unwrap();
-    let admission = serde_json::to_value(last).unwrap();
-    let input = admission["estimated_input_tokens"].as_u64().unwrap();
-    let window = input - 10
-        + admission["resolved_output_tokens"].as_u64().unwrap()
-        + admission["requested_reasoning_tokens"].as_u64().unwrap();
+    admission.estimated_input_tokens - 10
+        + admission.resolved_output_tokens
+        + admission.requested_reasoning_tokens
+}
+
+fn live_compaction_crash(point: &str, proactive: bool) {
+    let window = if proactive {
+        128_000
+    } else {
+        live_hard_ceiling_window()
+    };
     let root = tempfile::tempdir().unwrap();
     setup_work(root.path());
     std::fs::write(root.path().join("window"), window.to_string()).unwrap();
     let home = live_crash_home(root.path());
     let url = spawn_compaction_server(Some(root.path().to_path_buf()));
-    let cfg = live_crash_config(root.path(), &url, window);
+    let cfg = live_crash_config(root.path(), &url, window, proactive);
     let provider =
         praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
             .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(async {
         let mut loop_ = HeadlessLoop::create(cfg).unwrap();
-        for label in ["alpha", "bravo", "charlie"] {
-            assert!(loop_
+        let labels: &[&str] = if proactive {
+            // One eligible source guarantees one epoch even while pressure
+            // remains above the deliberately tiny proactive trigger.
+            &["alpha"]
+        } else {
+            &["alpha", "bravo", "charlie"]
+        };
+        for label in labels {
+            let report = loop_
                 .run_turn(&live_crash_text(label), &provider)
                 .await
-                .unwrap()
-                .interruption
-                .is_none());
+                .unwrap();
+            assert!(report.interruption.is_none(), "{report:?}");
         }
     });
     let path = root.path().join("session/events.jsonl");
     let sources = std::fs::read(&path).unwrap();
     let before_sends = line_count(&root.path().join("assistant.jsonl"));
+    let scenario = if proactive {
+        "proactive"
+    } else {
+        "hard-ceiling"
+    };
     let crashed = spawn_child(
         root.path(),
-        "child_live_hard_ceiling",
+        "child_live_compaction",
         "live-crash",
-        "standard",
+        scenario,
         Some(point),
         true,
     );
@@ -3031,23 +3062,57 @@ fn live_hard_ceiling_crash(point: &str) {
     assert_eq!(
         line_count(&root.path().join("assistant.jsonl")),
         before_sends,
-        "over-window admission cannot send before compaction"
+        "compaction starts before the next assistant send"
     );
-    let compacted_before = kinds_of(root.path())
+    let before = read_envelopes(root.path());
+    let lost_attempt = if point == "compaction.after_attempt_started" {
+        let last = before.last().unwrap();
+        assert!(last.turn_id.is_none());
+        assert!(matches!(
+            &last.event,
+            CanonicalEvent::AssistantAttemptStarted(started)
+                if matches!(started.purpose, praana_core::protocol::events::ProviderAttemptPurpose::Compaction(_))
+        ));
+        Some(last)
+    } else {
+        None
+    };
+    let compacted_before = before
         .iter()
-        .filter(|kind| kind.as_str() == "history_compacted")
+        .filter(|event| matches!(event.event, CanonicalEvent::HistoryCompacted(_)))
         .count();
     assert_eq!(
         compacted_before,
-        usize::from(point.contains("history_compacted_fsync"))
+        usize::from(point == "compaction.after_history_compacted_fsync")
+    );
+    assert_eq!(
+        line_count(&root.path().join("compactor.jsonl")),
+        compacted_before,
+        "after_attempt_started aborts before the compactor HTTP send"
     );
     let resumed = spawn_child(
         root.path(),
-        "child_live_hard_ceiling",
+        "child_live_compaction",
         "live-resume",
-        "standard",
+        scenario,
         None,
         true,
+    );
+    let events = read_envelopes(root.path());
+    let compacted: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::HistoryCompacted(compacted) => Some(compacted),
+            _ => None,
+        })
+        .collect();
+    // Keep this first after restart: on main the lost attempt incorrectly
+    // suppresses the launch, so the regression must fail with left 0 / right 1,
+    // not a later interruption, send-count, or projection assertion.
+    assert_eq!(
+        compacted.len(),
+        1,
+        "one durable activation across crash/replay"
     );
     assert!(
         resumed.status.success(),
@@ -3059,27 +3124,38 @@ fn live_hard_ceiling_crash(point: &str) {
         std::fs::read(&path).unwrap().starts_with(&prefix),
         "restart preserves every source and pre-crash event byte"
     );
-    assert_eq!(
-        line_count(&root.path().join("assistant.jsonl")),
-        before_sends + 1
-    );
-    let events = read_envelopes(root.path());
-    let compacted: Vec<_> = events
+    let failed: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.event {
-            CanonicalEvent::HistoryCompacted(compacted) => Some(compacted),
+            CanonicalEvent::AssistantAttemptFailed(failed) => Some((event, failed)),
             _ => None,
         })
         .collect();
+    assert_eq!(failed.len(), usize::from(lost_attempt.is_some()));
+    if let Some(lost) = lost_attempt {
+        let CanonicalEvent::AssistantAttemptStarted(started) = &lost.event else {
+            unreachable!()
+        };
+        assert_eq!(failed[0].0.attempt_id, lost.attempt_id);
+        assert!(failed[0].0.turn_id.is_none());
+        assert_eq!(failed[0].1.purpose, started.purpose);
+        assert_eq!(failed[0].1.error.code, "E_ATTEMPT_LOST");
+    }
     assert_eq!(
-        compacted.len(),
+        line_count(&root.path().join("compactor.jsonl")),
         1,
-        "one durable activation across crash/replay"
+        "restart retries a lost launch but never resends a durable activation"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends + 1,
+        "exactly one post-restart assistant send"
     );
     let retired: Vec<_> = compacted
         .iter()
         .flat_map(|event| &event.source_turn_ids)
         .collect();
+    assert!(!retired.is_empty());
     assert_eq!(
         retired.len(),
         retired.iter().copied().collect::<BTreeSet<_>>().len(),
@@ -3098,9 +3174,22 @@ fn live_hard_ceiling_crash(point: &str) {
     );
     assert_eq!(
         sent["max_output_tokens"], 4_096,
-        "hard ceiling recovered by compaction, not output trimming"
+        "compaction recovers admission without output trimming"
     );
     let after = std::fs::read(&path).unwrap();
+    let replayed = spawn_child(
+        root.path(),
+        "child_resume_idempotently",
+        "resume-idempotently",
+        scenario,
+        None,
+        false,
+    );
+    assert!(
+        replayed.status.success(),
+        "second fresh-process replay: {}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
     let projection = resumed_projection(root.path());
     assert!(projection.active_handoff.is_some());
     assert_eq!(projection.compacted_turn_ids.len(), retired.len());
@@ -3109,9 +3198,24 @@ fn live_hard_ceiling_crash(point: &str) {
         after,
         "second replay is idempotent"
     );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends + 1,
+        "replay cannot duplicate the assistant send"
+    );
+}
+
+#[test]
+fn live_hard_ceiling_crash_after_attempt_started_retries_once() {
+    live_compaction_crash("compaction.after_attempt_started", false);
+}
+
+#[test]
+fn live_proactive_crash_after_attempt_started_retries_once() {
+    live_compaction_crash("compaction.after_attempt_started", true);
 }
 
 #[test]
 fn live_hard_ceiling_crash_after_history_compacted_fsync_replays_once() {
-    live_hard_ceiling_crash("compaction.after_history_compacted_fsync");
+    live_compaction_crash("compaction.after_history_compacted_fsync", false);
 }
