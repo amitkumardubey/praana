@@ -3,10 +3,14 @@
 //! Normative owner: `docs/RUST_V2_TOKEN_ACCOUNTING_SPEC.md`.
 
 pub mod calibration;
+pub mod calibration_store;
 pub mod generic;
 pub mod profile;
 
-pub use calibration::{TokenCalibrationBucket, TokenCalibrationSampleV1};
+pub use calibration::{CalibrationBucketKey, TokenCalibrationBucket, TokenCalibrationSampleV1};
+pub use calibration_store::{
+    append_sample, calibration_store_path, load_bucket, try_load_bucket, CalibrationStoreError,
+};
 pub use generic::{GenericTokenEstimatorV1, GENERIC_ESTIMATOR_ID};
 pub use profile::{TokenProfileEntryV1, TokenProfileStoreV1};
 

@@ -534,6 +534,25 @@ model revision, and estimator ID. With at least 20 samples, calibration margin
 `C` is zero. Changing estimator identity starts a new calibration bucket but
 does not delete old telemetry.
 
+Amended 2026-10-24 (Amit, P5-6b). Comparable samples live in a non-canonical
+per-user SQLite store at `<PRAANA_HOME>/calibration.db`, shared across
+sessions. The file is not part of the config digest and not part of any
+session snapshot. Resume does not read it. The database uses WAL and a 5000 ms
+busy timeout. Each key keeps the latest 128 comparable samples, pruned in the
+same transaction as the insert.
+
+The bucket key is provider, protocol, model revision, and estimator id. When
+`model_revision` is absent, the key also includes the model name, so two
+models without a revision cannot mix. When a revision is present, the model
+name is not part of the key.
+
+A read or write failure is best-effort. A missing file on read, a lock, a
+corrupt file, a wrong schema version, a read-only file, or a symlink at
+`calibration.db` yields `C = 0` or drops that sample. Turn behavior does not
+change. The store does not panic, does not print, and does not delete or
+rewrite a corrupt or wrong-version file. Placeholder zero reported usage is
+not inserted.
+
 Calibration is a runtime safety input, not evidence that an estimator is exact.
 Release-quality rates are measurement targets until a checked-in corpus and
 evaluator define their population and confidence method.
