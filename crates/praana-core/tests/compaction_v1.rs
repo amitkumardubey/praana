@@ -141,6 +141,144 @@ fn launch_needs_trigger_idle_compactor_and_new_eligible_turn() {
     );
 }
 
+mod eligibility {
+    use super::turn;
+    use praana_core::compaction::activate::has_unconsidered_eligible_turn;
+    use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
+    use praana_core::protocol::errors::{ErrorClass, ProtocolError};
+    use praana_core::protocol::events::{
+        AssistantAttemptFailed, AssistantAttemptStarted, CanonicalEvent, CompactionPurpose,
+        EventEnvelope, PartialAssistantOutput, ProviderAttemptPurpose,
+    };
+    use praana_core::protocol::id::{AttemptId, CompactionId, EventId, SessionId, Sha256Digest};
+    use praana_core::protocol::models::{
+        AdmissionSnapshot, ModelSelection, ProviderUsage, ReasoningEffort,
+    };
+    use ulid::Ulid;
+
+    fn failed_compaction(code: &str, sequence: u64) -> Vec<EventEnvelope> {
+        let id = Ulid::from_parts(1, u128::from(sequence));
+        let digest = Sha256Digest::from_hex_str(&"a".repeat(64)).unwrap();
+        let purpose = ProviderAttemptPurpose::Compaction(CompactionPurpose {
+            compaction_id: CompactionId(id),
+            epoch: 1,
+        });
+        let started = AssistantAttemptStarted {
+            purpose: purpose.clone(),
+            attempt_number: 1,
+            model: ModelSelection {
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model: "gpt-5.6-sol".into(),
+                model_revision: None,
+                model_family: "gpt-5".into(),
+                endpoint_fingerprint: digest.clone(),
+                reasoning_effort: ReasoningEffort::Off,
+            },
+            request_hash: digest.clone(),
+            admission: AdmissionSnapshot {
+                token_estimator_schema_version: 1,
+                estimator_id: "generic".into(),
+                estimated_input_sha256: digest.clone(),
+                context_window_tokens: 128_000,
+                estimated_input_tokens: 100,
+                resolved_output_tokens: 100,
+                requested_reasoning_tokens: 0,
+                safety_margin_tokens: 0,
+                projected_fill_millionths: 1_563,
+                capability_profile_hash: digest,
+                estimate_reused_from_attempt_id: None,
+            },
+            retry_of: None,
+            emergency_context_retry: false,
+            recovery_notices: vec![],
+        };
+        let failed = AssistantAttemptFailed {
+            purpose,
+            error: ProtocolError {
+                code: code.into(),
+                class: if code == "E_ATTEMPT_LOST" {
+                    ErrorClass::ProcessCrash
+                } else {
+                    ErrorClass::Validation
+                },
+                message: "compaction did not activate".into(),
+                retryable: false,
+                http_status: None,
+                retry_after_ms: None,
+            },
+            partial_output: PartialAssistantOutput {
+                blocks: vec![],
+                provider_response_id: None,
+            },
+            observable_delta_emitted: false,
+            provider_may_have_completed: false,
+            usage: ProviderUsage::default(),
+        };
+        [
+            CanonicalEvent::AssistantAttemptStarted(started),
+            CanonicalEvent::AssistantAttemptFailed(failed),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(offset, event)| EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id: EventId(Ulid::from_parts(1, u128::from(sequence) + offset as u128)),
+            session_id: SessionId(Ulid::from_parts(1, 1)),
+            sequence: sequence + offset as u64,
+            timestamp_ms: 1,
+            turn_id: None,
+            attempt_id: Some(AttemptId(id)),
+            event,
+        })
+        .collect()
+    }
+
+    #[test]
+    fn latest_lost_compaction_attempt_keeps_source_eligible() {
+        let events = failed_compaction("E_ATTEMPT_LOST", 30);
+        assert!(has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+
+    #[test]
+    fn latest_genuine_compaction_failure_waits_for_a_later_closed_turn() {
+        let events = failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 30);
+        let mut turns = vec![turn(1, 100), turn(2, 100)];
+        assert!(!has_unconsidered_eligible_turn(&events, &turns, None, 0));
+        turns.push(turn(4, 100));
+        assert!(has_unconsidered_eligible_turn(&events, &turns, None, 0));
+    }
+
+    #[test]
+    fn latest_lost_compaction_attempt_does_not_resurrect_older_failure_backoff() {
+        let mut events = failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 30);
+        events.extend(failed_compaction("E_ATTEMPT_LOST", 40));
+        assert!(has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+
+    #[test]
+    fn latest_genuine_compaction_failure_after_lost_still_backs_off() {
+        let mut events = failed_compaction("E_ATTEMPT_LOST", 30);
+        events.extend(failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 40));
+        assert!(!has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+}
+
 // --------------------------------------------------------------- selection
 
 #[test]
