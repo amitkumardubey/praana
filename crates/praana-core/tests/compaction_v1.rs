@@ -1979,7 +1979,7 @@ mod activation {
         credentials_path, save_store, upsert_credential, CredentialStoreV1,
     };
     use praana_core::history::checkpoint::{HistoryDerivedCheckpointV1, HistoryProjector};
-    use praana_core::history::db::HistoryDatabase;
+    use praana_core::history::db::{HistoryDatabase, RecordedTelemetrySample};
     use praana_core::history::event_log::EventLogStore;
     use praana_core::history::projection::ConversationProjection;
     use praana_core::history::recovery::SessionRecoveryEngine;
@@ -4859,5 +4859,100 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let loaded = load_bucket(&home, &scripted_key("fake"));
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].positive_error_tokens, 4);
+    }
+
+    fn telemetry(session: &Path, name: &str) -> Vec<RecordedTelemetrySample> {
+        let db = HistoryDatabase::open(&session.join("history.db")).unwrap();
+        db.read_telemetry_samples(name).unwrap()
+    }
+
+    fn underestimation_figure(window: u64, estimated: u64) -> i64 {
+        i64::try_from(window.saturating_sub(estimated).saturating_add(1).max(1)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn context_length_records_underestimation_and_not_a_calibration_sample() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "fake", &[1, 2, 3]);
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut loop_ =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config)).unwrap();
+        let provider = EmergencyThenStop {
+            sends: AtomicUsize::new(0),
+        };
+        let report = loop_.run_turn("too big please", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        drop(loop_);
+        let started = of_kind(&session, "assistant_attempt_started");
+        let window = started[0]["event"]["data"]["admission"]["context_window_tokens"]
+            .as_u64()
+            .unwrap();
+        let estimated = started[0]["event"]["data"]["admission"]["estimated_input_tokens"]
+            .as_u64()
+            .unwrap();
+        let figure = underestimation_figure(window, estimated);
+        let rows = telemetry(&session, "admission_context_underestimation");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value_integer, figure);
+        let dimensions: Value = serde_json::from_str(&rows[0].dimensions_json).unwrap();
+        assert_eq!(dimensions["provider"], json!("scripted"));
+        assert_eq!(dimensions["protocol"], json!("scripted-v1"));
+        assert_eq!(dimensions["model"], json!("fake"));
+        assert!(dimensions["model_revision"].is_null());
+        assert_eq!(dimensions["estimator_id"], json!(GENERIC_ESTIMATOR_ID));
+        assert_eq!(
+            dimensions["request_hash"],
+            started[0]["event"]["data"]["request_hash"]
+        );
+        assert_eq!(dimensions["error_code"], json!("E_PROVIDER_CONTEXT_LENGTH"));
+        assert_eq!(dimensions["context_window_tokens"], json!(window));
+        assert_eq!(dimensions["estimated_input_tokens"], json!(estimated));
+        for key in [
+            "system_tokens",
+            "tool_schema_tokens",
+            "memory_bootstrap_tokens",
+            "handoff_tokens",
+            "retained_message_tokens",
+            "state_graph_tokens",
+            "active_tool_cycle_tokens",
+            "continuation_tokens",
+            "provider_framing_tokens",
+        ] {
+            assert!(dimensions[key].is_u64(), "{key}");
+        }
+        assert!(!rows[0].dimensions_json.contains("too big please"));
+        assert!(!rows[0].dimensions_json.contains("recovered"));
+        assert!(!rows[0]
+            .dimensions_json
+            .contains("provider rejected request context length"));
+        let stored = load_bucket(&home, &scripted_key("fake"));
+        assert_eq!(stored.len(), 3, "the bucket is unchanged");
+        assert!(stored.iter().all(|sample| {
+            sample.reported_input_tokens != figure as u64
+                && sample.positive_error_tokens != figure as u64
+                && sample.estimated_input_tokens != figure as u64
+        }));
+    }
+
+    #[tokio::test]
+    async fn calibration_store_error_is_a_telemetry_code_only() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let path = calibration_store_path(&home);
+        let original = b"not-a-sqlite-database".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(first_margin(&session), 0);
+        let rows = telemetry(&session, "calibration_store_error");
+        assert!(!rows.is_empty());
+        for row in &rows {
+            let dimensions: Value = serde_json::from_str(&row.dimensions_json).unwrap();
+            assert_eq!(dimensions["error_code"], json!("CALIBRATION_STORE_CORRUPT"));
+            assert_eq!(dimensions.as_object().unwrap().len(), 1);
+            assert!(!row.dimensions_json.contains("not-a-sqlite"));
+            assert!(!row.dimensions_json.contains("calibration.db"));
+            assert!(!row.dimensions_json.to_ascii_lowercase().contains("sqlite"));
+        }
+        assert!(telemetry(&session, "admission_context_underestimation").is_empty());
     }
 }

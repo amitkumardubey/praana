@@ -223,6 +223,32 @@ impl ArtifactStore {
         })
     }
 
+    /// Non-authoritative telemetry write. A failure never changes turn behavior.
+    pub fn record_telemetry_sample(
+        &self,
+        name: &str,
+        event_sequence: Option<i64>,
+        value_integer: i64,
+        dimensions_json: &str,
+        occurred_at_ms: i64,
+    ) -> Result<(), ArtifactError> {
+        self.db.record_telemetry_sample(
+            name,
+            event_sequence,
+            value_integer,
+            dimensions_json,
+            occurred_at_ms,
+        )
+    }
+
+    /// Recorded telemetry samples for one name, oldest first.
+    pub fn read_telemetry_samples(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::history::db::RecordedTelemetrySample>, ArtifactError> {
+        self.db.read_telemetry_samples(name)
+    }
+
     pub fn publish_batch(
         &self,
         log: &mut EventLogStore,

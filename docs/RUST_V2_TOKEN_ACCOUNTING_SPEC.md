@@ -560,6 +560,12 @@ the cache is filled are visible to the next process. Admission still applies
 reported usage are not samples. A compaction-purpose request is not an
 accepted assistant step, so it does not produce a calibration sample.
 
+A recognized context-length response records `admission_context_underestimation`
+in that session's `history.db` `telemetry_samples` table, with value
+`max(1, W - I + 1)`. A calibration-store failure records
+`calibration_store_error` there with the error code only. Neither row is a
+calibration sample, and neither enters the bucket.
+
 Calibration is a runtime safety input, not evidence that an estimator is exact.
 Release-quality rates are measurement targets until a checked-in corpus and
 evaluator define their population and confidence method.

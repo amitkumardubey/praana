@@ -41,6 +41,8 @@ use crate::token::calibration_store::{cached_calibration_margin, note_appended_s
 use crate::token::profile::TokenProfileStoreV1;
 use crate::token::FramingProfileV1;
 use crate::token::GENERIC_ESTIMATOR_ID;
+
+mod telemetry;
 use crate::tools::builtin::production_tools;
 use crate::tools::{
     BatchOrigin, DurableBatchOutcome, DurableSession, ErasedTool, ProviderToolCall,
@@ -1542,6 +1544,8 @@ impl HeadlessLoop {
             // can record the hash and estimate of this attempt.
             let calibration_request_hash = admitted.request_hash.clone();
             let calibration_estimated = admitted.snapshot.estimated_input_tokens;
+            let calibration_window = admitted.snapshot.context_window_tokens;
+            let calibration_components = admitted.component_tokens;
             let calibration_estimator_id = admitted.snapshot.estimator_id.clone();
             self.append(
                 Some(open.id),
@@ -1575,6 +1579,21 @@ impl HeadlessLoop {
                 Err(TurnError::Durability(message)) => return Err(TurnError::Durability(message)),
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
+                    if failure.error.code == CONTEXT_LENGTH_CODE {
+                        telemetry::record_context_underestimation(
+                            &self.artifacts,
+                            &telemetry::ContextUnderestimation {
+                                model: &self.model,
+                                estimator_id: &calibration_estimator_id,
+                                request_hash: calibration_request_hash.as_str(),
+                                error_code: &failure.error.code,
+                                context_window_tokens: calibration_window,
+                                estimated_input_tokens: calibration_estimated,
+                                component_tokens: &calibration_components,
+                            },
+                            self.config.clock.now_ms(),
+                        );
+                    }
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
                     if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
                         // §14.3 steps 3-4: arm the one emergency recovery cycle
@@ -1799,10 +1818,12 @@ impl HeadlessLoop {
     }
 
     fn note_calibration_store_error(&mut self, code: &'static str) {
-        // P3 records `calibration_store_error` in the session telemetry table.
-        // A store failure never changes the turn: `C` stays 0 and the sample
-        // is dropped.
-        let _ = code;
+        // The code is telemetry only. `C` stays 0 and the sample is dropped.
+        telemetry::record_calibration_store_error(
+            &self.artifacts,
+            code,
+            self.config.clock.now_ms(),
+        );
     }
 
     fn admit_prepared(
@@ -1852,6 +1873,17 @@ impl HeadlessLoop {
                 request_hash: estimate.request_hash,
                 snapshot: estimate.snapshot,
                 request_body: prepared.request.request_body.clone(),
+                component_tokens: [
+                    estimate.system_tokens,
+                    estimate.tool_schema_tokens,
+                    estimate.memory_bootstrap_tokens,
+                    estimate.handoff_tokens,
+                    estimate.retained_message_tokens,
+                    estimate.state_graph_tokens,
+                    estimate.active_tool_cycle_tokens,
+                    estimate.continuation_tokens,
+                    estimate.provider_framing_tokens,
+                ],
             }),
             AdmissionDecision::ReduceOutput {
                 new_max_output_tokens,
@@ -2199,6 +2231,8 @@ struct Admitted {
     request_hash: Sha256Digest,
     snapshot: AdmissionSnapshot,
     request_body: Value,
+    /// Admitted component counts for §14.3 telemetry. Not an admission input.
+    component_tokens: [u64; 9],
 }
 
 fn redact_provider_message(message: &str) -> String {
