@@ -1882,6 +1882,7 @@ mod activation {
         Raw(String),
         Http(u16),
         Sleep(u64),
+        Cancel(tokio_util::sync::CancellationToken),
     }
 
     struct Script {
@@ -2109,6 +2110,11 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                             Reply::Sleep(ms) => {
                                 std::thread::sleep(Duration::from_millis(ms));
                                 http(200, &responses_sse("{}"))
+                            }
+                            Reply::Cancel(cancel) => {
+                                cancel.cancel();
+                                std::thread::sleep(Duration::from_millis(100));
+                                http(200, &responses_sse(&valid_candidate(&control, None)))
                             }
                         }
                     }
@@ -3951,6 +3957,216 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         );
         // §14.1: the request still goes out after the failed epoch.
         assert_eq!(s.fake.main_requests().len(), texts.len());
+    }
+
+    async fn hard_ceiling_window(texts: &[String]) -> u64 {
+        let mut calibration = session();
+        no_margin(&mut calibration.config);
+        calibration.config.llm.max_output_tokens = 4_096;
+        drop(run_live(&calibration, texts, false).await);
+        let last = admission_snapshots(&calibration.session).pop().unwrap();
+        last["estimated_input_tokens"].as_u64().unwrap() - 10
+            + last["resolved_output_tokens"].as_u64().unwrap()
+            + last["requested_reasoning_tokens"].as_u64().unwrap()
+    }
+
+    async fn cancel_live_compaction(hard_ceiling: bool) {
+        let texts: Vec<_> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        let mut s = session();
+        if hard_ceiling {
+            no_margin(&mut s.config);
+            s.config.llm.max_output_tokens = 4_096;
+            s.config.llm.context_window = hard_ceiling_window(&texts).await;
+            s.config.history.compact_at = 1.0;
+            s.config.history.compact_clear_at = 0.9;
+        } else {
+            s.config.history.compact_at = 0.0002;
+            s.config.history.compact_clear_at = 0.0001;
+        }
+        let seed_count = if hard_ceiling { 3 } else { 1 };
+        let mut loop_ = run_live(&s, &texts[..seed_count], false).await;
+        let before = projection(&s.session);
+        let prefix = std::fs::read(s.session.join("events.jsonl")).unwrap();
+        let assistant_before = s.fake.main_requests().len();
+        loop_.set_compactor(Some(compactor(&s)));
+        s.fake.push(Reply::Cancel(loop_.cancellation_token()));
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn(&texts[seed_count], &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::UserAbort)
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1, "cancel in flight");
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        let assistant_attempts = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "assistant_step")
+            .count();
+        assert_eq!(
+            assistant_attempts, seed_count,
+            "cancel before assistant attempt start"
+        );
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+        assert!(projection(&s.session).compacted_turn_ids.is_empty());
+        assert!(
+            projection(&s.session)
+                .messages
+                .starts_with(&before.messages),
+            "all source messages remain in the model projection"
+        );
+        assert!(std::fs::read(s.session.join("events.jsonl"))
+            .unwrap()
+            .starts_with(&prefix));
+        let failures = of_kind(&s.session, "assistant_attempt_failed");
+        assert!(
+            failures.iter().any(|event| {
+                event["event"]["data"]["purpose"]["type"] == "compaction"
+                    && event["event"]["data"]["error"]["code"] == "E_COMPACTION_CANCELLED"
+            }),
+            "{failures:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_proactive_compaction_aborts_without_assistant_send() {
+        cancel_live_compaction(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_hard_ceiling_compaction_aborts_without_assistant_send() {
+        cancel_live_compaction(true).await;
+    }
+
+    #[tokio::test]
+    async fn state_tail_guard_precedes_live_compaction_with_an_eligible_turn() {
+        let mut s = session();
+        drop(run_live(&s, &[big("retained-source")], false).await);
+        let sid = session_id(&s.session);
+        let ids = MonotonicUlidGenerator::system();
+        let mut log = EventLogStore::open(&s.session, &sid.to_string()).unwrap();
+        let first = log.events().unwrap()[0].clone();
+        log.append_event(&EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id: ids.next_id().unwrap(),
+            session_id: sid,
+            sequence: log.current_sequence() + 1,
+            timestamp_ms: SystemClock.now_ms(),
+            turn_id: None,
+            attempt_id: None,
+            event: CanonicalEvent::StateChanged(StateChangedV1 {
+                state_schema_version: 1,
+                mutation_id: ids.next_id().unwrap(),
+                expected_graph_sequence: log.current_sequence(),
+                reason: StateChangeReason::System,
+                source: StateSourceV1 {
+                    source_kind: StateSourceKind::System,
+                    event_id: first.event_id,
+                    sequence: first.sequence,
+                    turn_id: None,
+                    attempt_id: None,
+                    tool_call_id: None,
+                    artifact_id: None,
+                    summary_segment_id: None,
+                },
+                automation: None,
+                operations: vec![StateOperationV1::Create {
+                    state_id: ids.next_id().unwrap(),
+                    tier: StateTier::Active,
+                    value: StateValueV1::Note(NoteStateV1 {
+                        text: big("protected-state").trim().to_owned(),
+                        tags: Vec::new(),
+                    }),
+                }],
+            }),
+        })
+        .unwrap();
+        let tail = praana_core::state::render_state_tail(log.state_graph());
+        let tokens = praana_core::state::estimate_tail(&tail)
+            .unwrap()
+            .total_tokens;
+        assert!(tokens > 1);
+        s.config.state.active_max_tokens = tokens - 1;
+        drop(log);
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        let assistant_before = s.fake.main_requests().len();
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_
+            .run_turn("guarded active turn", &provider)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ActiveTurnTooLarge)
+        );
+        assert_eq!(report.diagnostic.unwrap().code, "E_ACTIVE_TURN_TOO_LARGE");
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        assert!(s.fake.compactor_requests().is_empty());
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .all(|event| { event["event"]["data"]["purpose"]["type"] != "compaction" }));
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+    }
+
+    async fn output_reserve_floor(configured_minimum: u64, expected: u64) {
+        let text = big("output-floor");
+        let window = hard_ceiling_window(std::slice::from_ref(&text)).await;
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.context_window = window;
+        s.config.llm.max_output_tokens = 4_096;
+        s.config.llm.min_output_tokens = configured_minimum;
+        drop(run_live(&s, &[text], true).await);
+        let requests = s.fake.main_requests();
+        assert_eq!(requests.len(), 1);
+        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(body["max_output_tokens"], expected);
+        assert_eq!(
+            admission_snapshots(&s.session)[0]["resolved_output_tokens"],
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn output_reserve_floor_uses_profile_minimum_when_config_is_lower() {
+        output_reserve_floor(16, 256).await;
+    }
+
+    #[tokio::test]
+    async fn output_reserve_floor_uses_config_minimum_when_profile_is_lower() {
+        output_reserve_floor(512, 512).await;
+    }
+
+    #[tokio::test]
+    async fn exhausted_hard_ceiling_recovery_bounds_diagnostic_without_user_text() {
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.context_window = 8_000;
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let mut loop_ = run_live(&s, &[big("closed-source")], false).await;
+        loop_.set_compactor(Some(compactor(&s)));
+        let assistant_before = s.fake.main_requests().len();
+        const SENTINEL: &str = "DISTINCTIVE_PRIVATE_USER_SENTINEL_7e42";
+        let active = format!("{SENTINEL} {}", big("oversized").repeat(20));
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn(&active, &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ActiveTurnTooLarge)
+        );
+        let diagnostic = report.diagnostic.unwrap();
+        assert_eq!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE");
+        assert!(diagnostic.message.len() <= 512);
+        assert!(!diagnostic.message.contains(SENTINEL));
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
     }
 
     #[test]

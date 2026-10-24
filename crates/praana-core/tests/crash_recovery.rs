@@ -2510,6 +2510,10 @@ const COMPACTOR_MODEL: &str = "gpt-5.6-sol";
 /// valid candidate that cites, from the request, the user-message event of
 /// each source turn.
 fn spawn_fake_compactor() -> String {
+    spawn_compaction_server(None)
+}
+
+fn spawn_compaction_server(ledger_root: Option<PathBuf>) -> String {
     use std::io::Read;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2542,28 +2546,50 @@ fn spawn_fake_compactor() -> String {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let body: Value = serde_json::from_slice(&buf[split + 4..]).unwrap();
-            let control_text = body["input"][0]["content"][0]["text"].as_str().unwrap();
-            let control: Value = serde_json::from_str(
-                control_text
-                    .strip_prefix("[PRAANA:INTERNAL_COMPACTION_CONTROL]\n")
-                    .and_then(|t| t.strip_suffix("\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n"))
-                    .unwrap(),
-            )
-            .unwrap();
-            let cited: Vec<String> = control["source_turns"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t["messages"][0]["event_id"].as_str().unwrap().to_owned())
-                .collect();
-            let statement = json!({"text": "Goal.", "confidence": "direct", "uncertainty": null,
-                "evidence": {"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []}});
-            let mut candidate: Value =
-                serde_json::from_str(include_str!("fixtures/compaction_v1/candidate_empty.json"))
+            let control_text = body["input"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            let control = control_text
+                .strip_prefix("[PRAANA:INTERNAL_COMPACTION_CONTROL]\n")
+                .and_then(|t| t.strip_suffix("\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n"));
+            if let Some(root) = &ledger_root {
+                let name = if control.is_some() {
+                    "compactor.jsonl"
+                } else {
+                    "assistant.jsonl"
+                };
+                let mut ledger = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(root.join(name))
                     .unwrap();
-            candidate["segment"]["user_goals"] = json!([statement.clone()]);
-            candidate["handoff"]["current_goals"] = json!([statement]);
-            let delta = serde_json::to_string(&candidate.to_string()).unwrap();
+                writeln!(ledger, "{body}").unwrap();
+            }
+            let text = if let Some(control) = control {
+                let control: Value = serde_json::from_str(control).unwrap();
+                let cited: Vec<String> = control["source_turns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["messages"][0]["event_id"].as_str().unwrap().to_owned())
+                    .collect();
+                let statement = json!({"text": "Goal.", "confidence": "direct", "uncertainty": null,
+                    "evidence": {"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []}});
+                let mut candidate: Value = serde_json::from_str(include_str!(
+                    "fixtures/compaction_v1/candidate_empty.json"
+                ))
+                .unwrap();
+                candidate["segment"]["user_goals"] = json!([statement.clone()]);
+                candidate["handoff"]["current_goals"] = json!([statement]);
+                candidate.to_string()
+            } else {
+                assert!(
+                    ledger_root.is_some(),
+                    "manual compactor server expects control"
+                );
+                "ready".to_owned()
+            };
+            let delta = serde_json::to_string(&text).unwrap();
             let sse = format!(
                 "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"r\",\"model\":\"{COMPACTOR_MODEL}\"}}}}\n\n\
 event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"m\",\"phase\":\"final_answer\"}}}}\n\n\
@@ -2829,4 +2855,263 @@ fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
     assert!(after
         .iter()
         .any(|event| matches!(event.event, CanonicalEvent::TurnCommitted(_))));
+}
+
+fn live_crash_text(label: &str) -> String {
+    format!("{label} {}", "lorem ipsum dolor sit amet ".repeat(120))
+}
+
+fn live_crash_config(root: &Path, base_url: &str, window: u64) -> LoopConfig {
+    let mut cfg = resume_config(root.to_path_buf());
+    cfg.config.llm.provider = "openai".into();
+    cfg.config.llm.protocol = "openai-responses-v1".into();
+    cfg.config.llm.model = COMPACTOR_MODEL.into();
+    cfg.config.llm.min_output_tokens = 16;
+    cfg.config.llm.max_output_tokens = 4_096;
+    cfg.config.llm.context_window = window;
+    cfg.config.history.compact_at = 1.0;
+    cfg.config.history.compact_clear_at = 0.9;
+    cfg.config.providers.openai.base_url = base_url.to_owned();
+    cfg
+}
+
+fn live_crash_home(root: &Path) -> PathBuf {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut store = praana_core::credentials::store::CredentialStoreV1::empty();
+    praana_core::credentials::store::upsert_credential(
+        &mut store,
+        "openai",
+        "live-crash-secret".into(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    praana_core::credentials::store::save_store(
+        &praana_core::credentials::store::credentials_path(&home),
+        &store,
+    )
+    .unwrap();
+    home
+}
+
+#[test]
+fn child_live_hard_ceiling() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    let mode = std::env::var("PRAANA_CRASH_MODE").unwrap();
+    if mode != "live-crash" && mode != "live-resume" {
+        return;
+    }
+    let root = PathBuf::from(root);
+    let window = std::fs::read_to_string(root.join("window"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let home = live_crash_home(&root);
+    let url = spawn_compaction_server(Some(root.clone()));
+    let cfg = live_crash_config(&root, &url, window);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    let mut compactor_cfg = cfg.config.clone();
+    compactor_cfg.history.compactor_provider = "openai".into();
+    compactor_cfg.history.compactor_model = COMPACTOR_MODEL.into();
+    let mut compactor = praana_core::compaction::activate::ConfiguredCompactor::resolve(
+        &compactor_cfg,
+        &home,
+        1_700_000_000_000,
+    )
+    .unwrap();
+    compactor.env = Some(Default::default());
+    let mut loop_ = HeadlessLoop::resume(cfg).unwrap();
+    loop_.set_compactor(Some(compactor));
+    arm_from_env();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let report = if mode == "live-crash" {
+            loop_
+                .run_turn(&live_crash_text("delta"), &provider)
+                .await
+                .unwrap()
+        } else {
+            loop_.continue_turn(&provider).await.unwrap()
+        };
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(
+            mode, "live-resume",
+            "live recovery must hit the armed failpoint"
+        );
+    });
+}
+
+fn live_hard_ceiling_crash(point: &str) {
+    let calibration = tempfile::tempdir().unwrap();
+    setup_work(calibration.path());
+    let home = live_crash_home(calibration.path());
+    let url = spawn_compaction_server(Some(calibration.path().to_path_buf()));
+    let cfg = live_crash_config(calibration.path(), &url, 128_000);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        for label in ["alpha", "bravo", "charlie", "delta"] {
+            assert!(loop_
+                .run_turn(&live_crash_text(label), &provider)
+                .await
+                .unwrap()
+                .interruption
+                .is_none());
+        }
+    });
+    let events = read_envelopes(calibration.path());
+    let last = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptStarted(started) => Some(&started.admission),
+            _ => None,
+        })
+        .unwrap();
+    let admission = serde_json::to_value(last).unwrap();
+    let input = admission["estimated_input_tokens"].as_u64().unwrap();
+    let window = input - 10
+        + admission["resolved_output_tokens"].as_u64().unwrap()
+        + admission["requested_reasoning_tokens"].as_u64().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    std::fs::write(root.path().join("window"), window.to_string()).unwrap();
+    let home = live_crash_home(root.path());
+    let url = spawn_compaction_server(Some(root.path().to_path_buf()));
+    let cfg = live_crash_config(root.path(), &url, window);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        for label in ["alpha", "bravo", "charlie"] {
+            assert!(loop_
+                .run_turn(&live_crash_text(label), &provider)
+                .await
+                .unwrap()
+                .interruption
+                .is_none());
+        }
+    });
+    let path = root.path().join("session/events.jsonl");
+    let sources = std::fs::read(&path).unwrap();
+    let before_sends = line_count(&root.path().join("assistant.jsonl"));
+    let crashed = spawn_child(
+        root.path(),
+        "child_live_hard_ceiling",
+        "live-crash",
+        "standard",
+        Some(point),
+        true,
+    );
+    assert_abort(&crashed, point);
+    let prefix = std::fs::read(&path).unwrap();
+    assert!(
+        prefix.starts_with(&sources),
+        "source prefix byte-identical at crash"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends,
+        "over-window admission cannot send before compaction"
+    );
+    let compacted_before = kinds_of(root.path())
+        .iter()
+        .filter(|kind| kind.as_str() == "history_compacted")
+        .count();
+    assert_eq!(
+        compacted_before,
+        usize::from(point.contains("history_compacted_fsync"))
+    );
+    let resumed = spawn_child(
+        root.path(),
+        "child_live_hard_ceiling",
+        "live-resume",
+        "standard",
+        None,
+        true,
+    );
+    assert!(
+        resumed.status.success(),
+        "resume: {}\n{}",
+        String::from_utf8_lossy(&resumed.stdout),
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(
+        std::fs::read(&path).unwrap().starts_with(&prefix),
+        "restart preserves every source and pre-crash event byte"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends + 1
+    );
+    let events = read_envelopes(root.path());
+    let compacted: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::HistoryCompacted(compacted) => Some(compacted),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        compacted.len(),
+        1,
+        "one durable activation across crash/replay"
+    );
+    let retired: Vec<_> = compacted
+        .iter()
+        .flat_map(|event| &event.source_turn_ids)
+        .collect();
+    assert_eq!(
+        retired.len(),
+        retired.iter().copied().collect::<BTreeSet<_>>().len(),
+        "no source turn retired twice"
+    );
+    let requests = std::fs::read_to_string(root.path().join("assistant.jsonl")).unwrap();
+    let sent: Value = serde_json::from_str(requests.lines().last().unwrap()).unwrap();
+    assert!(
+        sent.to_string()
+            .contains("NON-AUTHORITATIVE HISTORICAL EVIDENCE"),
+        "resumed provider request uses compacted projection"
+    );
+    assert!(
+        !sent.to_string().contains(&live_crash_text("alpha")),
+        "retired source is absent from resumed provider request"
+    );
+    assert_eq!(
+        sent["max_output_tokens"], 4_096,
+        "hard ceiling recovered by compaction, not output trimming"
+    );
+    let after = std::fs::read(&path).unwrap();
+    let projection = resumed_projection(root.path());
+    assert!(projection.active_handoff.is_some());
+    assert_eq!(projection.compacted_turn_ids.len(), retired.len());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        after,
+        "second replay is idempotent"
+    );
+}
+
+#[test]
+fn live_hard_ceiling_crash_after_history_compacted_fsync_replays_once() {
+    live_hard_ceiling_crash("compaction.after_history_compacted_fsync");
 }
