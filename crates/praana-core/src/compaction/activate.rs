@@ -36,7 +36,7 @@ use crate::compaction::CompactionError;
 use crate::config::EffectiveConfigV1;
 use crate::credentials::store::{credentials_path, load_store, CredentialStoreV1};
 use crate::history::event_log::EventLogStore;
-use crate::history::recovery::build_interrupted_turn_capsule_from_replay;
+use crate::history::recovery::{build_interrupted_turn_capsule_from_replay, ATTEMPT_LOST_CODE};
 use crate::history::replay::{accepted_messages, EventReplayer, TurnTerminal};
 use crate::id::{IdGenerator, MonotonicUlidGenerator};
 use crate::protocol::compaction::{
@@ -458,9 +458,10 @@ fn after_last_reset(events: &[EventEnvelope]) -> &[EventEnvelope] {
 }
 
 /// The `has_unconsidered_eligible_turn` input to `should_launch` (§4.2),
-/// derived from replay. After a failed compaction attempt, only a turn that
-/// closed after that attempt started is new. After a successful epoch the
-/// projection changed, so every remaining eligible turn counts.
+/// derived from replay. After a genuine compaction failure, only a turn that
+/// closed after that attempt started is new. A lost attempt did not judge the
+/// source, so it does not back off. After a successful epoch the projection
+/// changed, so every remaining eligible turn counts.
 pub fn has_unconsidered_eligible_turn(
     events: &[EventEnvelope],
     turns: &[ProjectedTurn],
@@ -480,6 +481,11 @@ pub fn has_unconsidered_eligible_turn(
     });
     let Some(last) = last else { return true };
     if matches!(last.event, CanonicalEvent::HistoryCompacted(_)) {
+        return true;
+    }
+    if matches!(&last.event, CanonicalEvent::AssistantAttemptFailed(failed)
+        if failed.error.code == ATTEMPT_LOST_CODE)
+    {
         return true;
     }
     let Some(started_at) = epoch_events.iter().find_map(|event| match &event.event {

@@ -36,8 +36,13 @@ use crate::protocol::recovery::RecoveryNotice;
 use crate::protocol::state_graph::StateChangeReason;
 use crate::provider::openai::{admit, AdmissionDecision, AdmissionRequest};
 use crate::redaction::redact_json_v1;
+use crate::token::calibration::{CalibrationBucketKey, TokenCalibrationSampleV1};
+use crate::token::calibration_store::{cached_calibration_margin, note_appended_sample};
 use crate::token::profile::TokenProfileStoreV1;
 use crate::token::FramingProfileV1;
+use crate::token::GENERIC_ESTIMATOR_ID;
+
+mod telemetry;
 use crate::tools::builtin::production_tools;
 use crate::tools::{
     BatchOrigin, DurableBatchOutcome, DurableSession, ErasedTool, ProviderToolCall,
@@ -58,6 +63,9 @@ pub enum LoopFault {
 
 #[derive(Clone)]
 pub struct LoopConfig {
+    /// Per-user PRAANA home. The calibration store is `<home>/calibration.db`.
+    /// Explicit: admission does not derive this from `session_dir`.
+    pub home: PathBuf,
     pub session_dir: PathBuf,
     pub workspace: PathBuf,
     pub config: EffectiveConfigV1,
@@ -1569,6 +1577,13 @@ impl HeadlessLoop {
                 body: admitted.request_body.clone(),
                 request_hash: admitted.request_hash.clone(),
             };
+            // Kept across the provider call so an accepted comparable step
+            // can record the hash and estimate of this attempt.
+            let calibration_request_hash = admitted.request_hash.clone();
+            let calibration_estimated = admitted.snapshot.estimated_input_tokens;
+            let calibration_window = admitted.snapshot.context_window_tokens;
+            let calibration_components = admitted.component_tokens;
+            let calibration_estimator_id = admitted.snapshot.estimator_id.clone();
             self.append(
                 Some(open.id),
                 Some(attempt_id),
@@ -1601,6 +1616,21 @@ impl HeadlessLoop {
                 Err(TurnError::Durability(message)) => return Err(TurnError::Durability(message)),
                 Err(TurnError::Provider(failure)) => {
                     let cancelled = failure.cancelled;
+                    if failure.error.code == CONTEXT_LENGTH_CODE {
+                        telemetry::record_context_underestimation(
+                            &self.artifacts,
+                            &telemetry::ContextUnderestimation {
+                                model: &self.model,
+                                estimator_id: &calibration_estimator_id,
+                                request_hash: calibration_request_hash.as_str(),
+                                error_code: &failure.error.code,
+                                context_window_tokens: calibration_window,
+                                estimated_input_tokens: calibration_estimated,
+                                component_tokens: &calibration_components,
+                            },
+                            self.config.clock.now_ms(),
+                        );
+                    }
                     self.fail_attempt(open.id, attempt_id, purpose.clone(), &failure)?;
                     if failure.emergency_context_retry_allowed(emergency_spent || is_emergency) {
                         // §14.3 steps 3-4: arm the one emergency recovery cycle
@@ -1692,6 +1722,13 @@ impl HeadlessLoop {
                     sink.on_accepted_text(&text.text);
                 }
             }
+            self.record_calibration_sample(
+                is_emergency,
+                &message.usage,
+                &calibration_request_hash,
+                calibration_estimated,
+                &calibration_estimator_id,
+            );
             #[cfg(feature = "failpoints")]
             crate::crash_point::hit(format!(
                 "turn.after_assistant_step_accepted:step{}",
@@ -1755,6 +1792,77 @@ impl HeadlessLoop {
         Ok(Control::Done(self.interrupt(reason, attempt)?))
     }
 
+    /// Token Accounting §9 margin for this request's bucket.
+    ///
+    /// Admission estimates with the generic estimator, so the key uses
+    /// `GENERIC_ESTIMATOR_ID`. A recorded sample uses the admitted snapshot's
+    /// estimator id, which is that same id today; a different id is a
+    /// different bucket. The first use of a key in this process loads the
+    /// store. Another process's later writes are visible to the next process.
+    fn calibration_margin_for_admission(&mut self) -> u64 {
+        let key = CalibrationBucketKey::from_parts(
+            self.model.provider.clone(),
+            self.model.protocol.clone(),
+            self.model.model.clone(),
+            self.model.model_revision.clone(),
+            GENERIC_ESTIMATOR_ID,
+        );
+        let cached = cached_calibration_margin(&self.config.home, &key);
+        if let Some(code) = cached.error_code {
+            self.note_calibration_store_error(code);
+        }
+        cached.margin
+    }
+
+    /// Comparable accepted assistant step. Placeholder zero usage and an
+    /// emergency context retry are not samples. Compaction-purpose requests
+    /// are not assistant steps, so they are not sampled here.
+    ///
+    /// The failpoint sits after the sample exists and before the store write.
+    /// A crash there drops at most this one non-canonical sample.
+    fn record_calibration_sample(
+        &mut self,
+        is_emergency: bool,
+        usage: &ProviderUsage,
+        request_hash: &Sha256Digest,
+        estimated_input_tokens: u64,
+        estimator_id: &str,
+    ) {
+        if is_emergency || usage.input_tokens == 0 {
+            return;
+        }
+        let Ok(sample) = TokenCalibrationSampleV1::new(
+            self.model.provider.clone(),
+            self.model.protocol.clone(),
+            self.model.model.clone(),
+            self.model.model_revision.clone(),
+            estimator_id.to_owned(),
+            request_hash.clone(),
+            estimated_input_tokens,
+            usage.input_tokens,
+            Some(usage.cache_read_tokens),
+            self.log.replayer().compaction_epoch,
+            self.config.clock.now_ms(),
+        ) else {
+            return;
+        };
+        #[cfg(feature = "failpoints")]
+        crate::crash_point::hit("compaction.after_calibration_sample");
+        match crate::token::append_sample(&self.config.home, &sample) {
+            Ok(()) => note_appended_sample(&self.config.home, &sample),
+            Err(error) => self.note_calibration_store_error(error.code),
+        }
+    }
+
+    fn note_calibration_store_error(&mut self, code: &'static str) {
+        // The code is telemetry only. `C` stays 0 and the sample is dropped.
+        telemetry::record_calibration_store_error(
+            &self.artifacts,
+            code,
+            self.config.clock.now_ms(),
+        );
+    }
+
     fn admit_prepared(
         &mut self,
         prepared: &PreparedStep,
@@ -1779,11 +1887,10 @@ impl HeadlessLoop {
             safety_margin_min_tokens: history.safety_margin_min_tokens,
             safety_margin_ratio: history.safety_margin_ratio,
             // §14.3 step 2-3: the `max(1, W - I + 1)` underestimation figure is
-            // telemetry, not `C`. The admission calibration margin stays the
-            // Token-Accounting value (0 until P5-6b records samples); the
-            // emergency recovery makes room via a compaction epoch, not by
-            // inflating this margin.
-            calibration_margin: 0,
+            // telemetry, not `C`. Emergency recovery makes room via a
+            // compaction epoch, not by inflating this margin. `admit` still
+            // caps `M` at `floor(0.10 * W)`.
+            calibration_margin: self.calibration_margin_for_admission(),
             component_bytes,
             framing: self.framing.clone(),
             image_count: prepared.image_count as u64,
@@ -1803,6 +1910,17 @@ impl HeadlessLoop {
                 request_hash: estimate.request_hash,
                 snapshot: estimate.snapshot,
                 request_body: prepared.request.request_body.clone(),
+                component_tokens: [
+                    estimate.system_tokens,
+                    estimate.tool_schema_tokens,
+                    estimate.memory_bootstrap_tokens,
+                    estimate.handoff_tokens,
+                    estimate.retained_message_tokens,
+                    estimate.state_graph_tokens,
+                    estimate.active_tool_cycle_tokens,
+                    estimate.continuation_tokens,
+                    estimate.provider_framing_tokens,
+                ],
             }),
             AdmissionDecision::ReduceOutput {
                 new_max_output_tokens,
@@ -2150,6 +2268,8 @@ struct Admitted {
     request_hash: Sha256Digest,
     snapshot: AdmissionSnapshot,
     request_body: Value,
+    /// Admitted component counts for §14.3 telemetry. Not an admission input.
+    component_tokens: [u64; 9],
 }
 
 fn redact_provider_message(message: &str) -> String {
@@ -3101,6 +3221,7 @@ mod poison_tests {
             ),
         };
         let cfg = LoopConfig {
+            home: dir.path().join("home"),
             session_dir: dir.path().join("session"),
             workspace: dir.path().join("work"),
             config: effective,

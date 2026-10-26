@@ -70,6 +70,7 @@ fn config_with_seed(root: PathBuf, seed: u128) -> LoopConfig {
     effective.turn.max_steps = 6;
     effective.turn.max_attempts = 3;
     LoopConfig {
+        home: root.join("home"),
         session_dir: root.join("session"),
         workspace: root.join("work"),
         config: effective,
@@ -502,6 +503,140 @@ fn arm_from_env() {
     }
 }
 
+struct CalibrationUsage(u64);
+
+#[async_trait]
+impl StepProvider for CalibrationUsage {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"calibration": true, "step": step_index}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("ok".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(self.0),
+            },
+            authorization,
+        })
+    }
+}
+
+struct EmergencyCalibrationUsage {
+    sends: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl StepProvider for EmergencyCalibrationUsage {
+    fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+        Ok(PreparedRequest {
+            request_body: json!({"calibration": true, "step": step_index, "emergency": true}),
+            component_bytes: std::array::from_fn(|_| Vec::new()),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _step_index: u32,
+        admitted: &AdmittedRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<ProviderOutput, TurnError> {
+        let authorization = admitted.authorize_send(admitted.body())?;
+        if self.sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Err(TurnError::Provider(Box::new(ProviderFailure {
+                error: ProtocolError {
+                    code: "E_PROVIDER_CONTEXT_LENGTH".into(),
+                    class: ErrorClass::ContextLength,
+                    message: "provider rejected request context length".into(),
+                    retryable: false,
+                    http_status: Some(400),
+                    retry_after_ms: None,
+                },
+                emission_crossed: false,
+                observable_delta: false,
+                partial_blocks: Vec::new(),
+                provider_response_id: None,
+                usage: usage(400),
+                may_have_completed: false,
+                cancelled: false,
+                retry_after_ms: None,
+            })));
+        }
+        Ok(ProviderOutput {
+            draft: AssistantDraft {
+                text: Some("recovered".into()),
+                calls: Vec::new(),
+                finish_reason: FinishReason::Stop,
+                usage: usage(400),
+            },
+            authorization,
+        })
+    }
+}
+
+fn private_home(home: &Path) {
+    std::fs::create_dir_all(home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+}
+
+fn seed_calibration(home: &Path, count: usize) {
+    for index in 0..count {
+        let sample = praana_core::token::TokenCalibrationSampleV1::new(
+            "scripted".into(),
+            "scripted-v1".into(),
+            "fake".into(),
+            None,
+            praana_core::token::GENERIC_ESTIMATOR_ID.into(),
+            praana_core::protocol::id::Sha256Digest::digest_bytes(
+                format!("crash-seed-{index}").as_bytes(),
+            ),
+            100,
+            101 + index as u64,
+            Some(0),
+            0,
+            1_700_000_000_000 + index as i64,
+        )
+        .unwrap();
+        praana_core::token::append_sample(home, &sample).unwrap();
+    }
+}
+
+fn calibration_key() -> praana_core::token::CalibrationBucketKey {
+    praana_core::token::CalibrationBucketKey::from_parts(
+        "scripted",
+        "scripted-v1",
+        "fake",
+        None,
+        praana_core::token::GENERIC_ESTIMATOR_ID,
+    )
+}
+
+fn assert_temp_root(root: &Path) {
+    assert!(
+        root.starts_with(std::env::temp_dir()),
+        "crash tests stay under the temp dir"
+    );
+    if let Some(real_home) = std::env::var_os("HOME") {
+        let praana = PathBuf::from(real_home).join(".praana");
+        assert!(!root.starts_with(&praana));
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn child_panics_instead_of_aborting() {
@@ -577,6 +712,180 @@ fn child_resumes_session_started_prefix() {
     };
     HeadlessLoop::resume(resume_config(PathBuf::from(root)))
         .expect("valid durable session_started prefix must resume");
+}
+
+#[test]
+fn child_calibration_sample_crash() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-sample") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let _ = loop_.run_turn("calibrate", &CalibrationUsage(80)).await;
+    });
+}
+
+#[test]
+fn child_calibration_zero_usage() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-zero") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let report = loop_.run_turn("zero", &CalibrationUsage(0)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+}
+
+#[test]
+fn child_calibration_emergency() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    if std::env::var("PRAANA_CRASH_MODE").as_deref() != Ok("calibration-emergency") {
+        return;
+    }
+    arm_from_env();
+    let root = PathBuf::from(root);
+    std::fs::create_dir_all(root.join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(config(root)).unwrap();
+        let provider = EmergencyCalibrationUsage {
+            sends: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let report = loop_.run_turn("too big", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+}
+
+#[test]
+fn crash_at_calibration_sample_keeps_a_valid_store_and_the_next_process_records() {
+    let root = tempfile::tempdir().unwrap();
+    assert_temp_root(root.path());
+    let home = root.path().join("home");
+    private_home(&home);
+    seed_calibration(&home, 3);
+    let before = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(before.len(), 3);
+    let point = "compaction.after_calibration_sample@1";
+    let output = spawn_child(
+        root.path(),
+        "child_calibration_sample_crash",
+        "calibration-sample",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert_abort(&output, point);
+    let after = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(after.len(), 3, "the crashed sample is not a partial row");
+    assert_eq!(after[0].request_hash, before[0].request_hash);
+    assert_eq!(after[2].request_hash, before[2].request_hash);
+    let mut next = config(root.path().to_path_buf());
+    next.session_dir = root.path().join("session-next");
+    std::fs::create_dir_all(root.path().join("work")).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(next).unwrap();
+        let report = loop_
+            .run_turn("next process", &CalibrationUsage(80))
+            .await
+            .unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    });
+    let recorded = praana_core::token::load_bucket(&home, &calibration_key());
+    assert_eq!(recorded.len(), 4);
+    assert!(recorded
+        .iter()
+        .any(|sample| sample.reported_input_tokens == 80));
+}
+
+#[test]
+fn zero_usage_and_emergency_retry_do_not_hit_the_calibration_failpoint() {
+    let root = tempfile::tempdir().unwrap();
+    assert_temp_root(root.path());
+    let home = root.path().join("home");
+    private_home(&home);
+    seed_calibration(&home, 2);
+    let point = "compaction.after_calibration_sample@1";
+    let zero = spawn_child(
+        root.path(),
+        "child_calibration_zero_usage",
+        "calibration-zero",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert!(
+        zero.status.success(),
+        "zero usage must not reach the calibration failpoint\nstderr:\n{}",
+        String::from_utf8_lossy(&zero.stderr)
+    );
+    assert!(
+        zero.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&zero.stderr)
+    );
+    assert_eq!(
+        praana_core::token::load_bucket(&home, &calibration_key()).len(),
+        2
+    );
+
+    let emergency_root = tempfile::tempdir().unwrap();
+    assert_temp_root(emergency_root.path());
+    let emergency_home = emergency_root.path().join("home");
+    private_home(&emergency_home);
+    seed_calibration(&emergency_home, 2);
+    let emergency = spawn_child(
+        emergency_root.path(),
+        "child_calibration_emergency",
+        "calibration-emergency",
+        "standard",
+        Some(point),
+        false,
+    );
+    assert!(
+        emergency.status.success(),
+        "an emergency retry must not reach the calibration failpoint\nstderr:\n{}",
+        String::from_utf8_lossy(&emergency.stderr)
+    );
+    assert!(read_envelopes(emergency_root.path()).iter().any(|event| {
+        matches!(
+            &event.event,
+            CanonicalEvent::AssistantAttemptStarted(started) if started.emergency_context_retry
+        )
+    }));
+    assert_eq!(
+        praana_core::token::load_bucket(&emergency_home, &calibration_key()).len(),
+        2
+    );
 }
 
 #[test]
@@ -2510,6 +2819,10 @@ const COMPACTOR_MODEL: &str = "gpt-5.6-sol";
 /// valid candidate that cites, from the request, the user-message event of
 /// each source turn.
 fn spawn_fake_compactor() -> String {
+    spawn_compaction_server(None)
+}
+
+fn spawn_compaction_server(ledger_root: Option<PathBuf>) -> String {
     use std::io::Read;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2542,28 +2855,51 @@ fn spawn_fake_compactor() -> String {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let body: Value = serde_json::from_slice(&buf[split + 4..]).unwrap();
-            let control_text = body["input"][0]["content"][0]["text"].as_str().unwrap();
-            let control: Value = serde_json::from_str(
-                control_text
-                    .strip_prefix("[PRAANA:INTERNAL_COMPACTION_CONTROL]\n")
-                    .and_then(|t| t.strip_suffix("\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n"))
-                    .unwrap(),
-            )
-            .unwrap();
-            let cited: Vec<String> = control["source_turns"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| t["messages"][0]["event_id"].as_str().unwrap().to_owned())
-                .collect();
-            let statement = json!({"text": "Goal.", "confidence": "direct", "uncertainty": null,
-                "evidence": {"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []}});
-            let mut candidate: Value =
-                serde_json::from_str(include_str!("fixtures/compaction_v1/candidate_empty.json"))
+            let control_text = body["input"][0]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            let control = control_text
+                .strip_prefix("[PRAANA:INTERNAL_COMPACTION_CONTROL]\n")
+                .and_then(|t| t.strip_suffix("\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n"));
+            if let Some(root) = &ledger_root {
+                let name = if control.is_some() {
+                    "compactor.jsonl"
+                } else {
+                    "assistant.jsonl"
+                };
+                let mut ledger = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(root.join(name))
                     .unwrap();
-            candidate["segment"]["user_goals"] = json!([statement.clone()]);
-            candidate["handoff"]["current_goals"] = json!([statement]);
-            let delta = serde_json::to_string(&candidate.to_string()).unwrap();
+                writeln!(ledger, "{body}").unwrap();
+                ledger.sync_all().unwrap();
+            }
+            let text = if let Some(control) = control {
+                let control: Value = serde_json::from_str(control).unwrap();
+                let cited: Vec<String> = control["source_turns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t["messages"][0]["event_id"].as_str().unwrap().to_owned())
+                    .collect();
+                let statement = json!({"text": "Goal.", "confidence": "direct", "uncertainty": null,
+                    "evidence": {"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []}});
+                let mut candidate: Value = serde_json::from_str(include_str!(
+                    "fixtures/compaction_v1/candidate_empty.json"
+                ))
+                .unwrap();
+                candidate["segment"]["user_goals"] = json!([statement.clone()]);
+                candidate["handoff"]["current_goals"] = json!([statement]);
+                candidate.to_string()
+            } else {
+                assert!(
+                    ledger_root.is_some(),
+                    "manual compactor server expects control"
+                );
+                "ready".to_owned()
+            };
+            let delta = serde_json::to_string(&text).unwrap();
             let sse = format!(
                 "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"r\",\"model\":\"{COMPACTOR_MODEL}\"}}}}\n\n\
 event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"m\",\"phase\":\"final_answer\"}}}}\n\n\
@@ -2829,4 +3165,366 @@ fn emergency_resend_crash_resumes_with_exactly_one_emergency_attempt() {
     assert!(after
         .iter()
         .any(|event| matches!(event.event, CanonicalEvent::TurnCommitted(_))));
+}
+
+fn live_crash_text(label: &str) -> String {
+    format!("{label} {}", "lorem ipsum dolor sit amet ".repeat(120))
+}
+
+fn live_crash_config(root: &Path, base_url: &str, window: u64, proactive: bool) -> LoopConfig {
+    let mut cfg = resume_config(root.to_path_buf());
+    cfg.config.llm.provider = "openai".into();
+    cfg.config.llm.protocol = "openai-responses-v1".into();
+    cfg.config.llm.model = COMPACTOR_MODEL.into();
+    cfg.config.llm.min_output_tokens = 16;
+    cfg.config.llm.max_output_tokens = 4_096;
+    cfg.config.llm.context_window = window;
+    if proactive {
+        // The request fits comfortably; pressure alone must launch compaction.
+        cfg.config.history.compact_at = 0.0002;
+        cfg.config.history.compact_clear_at = 0.0001;
+    } else {
+        // Keep proactive pressure out: only the hard ceiling can launch.
+        cfg.config.history.compact_at = 1.0;
+        cfg.config.history.compact_clear_at = 0.9;
+    }
+    cfg.config.providers.openai.base_url = base_url.to_owned();
+    cfg
+}
+
+fn live_crash_home(root: &Path) -> PathBuf {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut store = praana_core::credentials::store::CredentialStoreV1::empty();
+    praana_core::credentials::store::upsert_credential(
+        &mut store,
+        "openai",
+        "live-crash-secret".into(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    praana_core::credentials::store::save_store(
+        &praana_core::credentials::store::credentials_path(&home),
+        &store,
+    )
+    .unwrap();
+    home
+}
+
+#[test]
+fn child_live_compaction() {
+    let Ok(root) = std::env::var("PRAANA_CRASH_ROOT") else {
+        return;
+    };
+    let mode = std::env::var("PRAANA_CRASH_MODE").unwrap();
+    if mode != "live-crash" && mode != "live-resume" {
+        return;
+    }
+    let root = PathBuf::from(root);
+    let proactive = std::env::var("PRAANA_SCENARIO").as_deref() == Ok("proactive");
+    let window = std::fs::read_to_string(root.join("window"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let home = live_crash_home(&root);
+    let url = spawn_compaction_server(Some(root.clone()));
+    let cfg = live_crash_config(&root, &url, window, proactive);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    let mut compactor_cfg = cfg.config.clone();
+    compactor_cfg.history.compactor_provider = "openai".into();
+    compactor_cfg.history.compactor_model = COMPACTOR_MODEL.into();
+    let mut compactor = praana_core::compaction::activate::ConfiguredCompactor::resolve(
+        &compactor_cfg,
+        &home,
+        1_700_000_000_000,
+    )
+    .unwrap();
+    compactor.env = Some(Default::default());
+    let mut loop_ = HeadlessLoop::resume(cfg).unwrap();
+    loop_.set_compactor(Some(compactor));
+    arm_from_env();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let report = if mode == "live-crash" {
+            loop_
+                .run_turn(&live_crash_text("delta"), &provider)
+                .await
+                .unwrap()
+        } else {
+            loop_.continue_turn(&provider).await.unwrap()
+        };
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(
+            mode, "live-resume",
+            "live recovery must hit the armed failpoint"
+        );
+    });
+}
+
+/// Calibrate against an actual assistant admission, so the next turn exceeds
+/// the hard ceiling by ten input tokens without depending on estimator details.
+fn live_hard_ceiling_window() -> u64 {
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    let home = live_crash_home(root.path());
+    let url = spawn_compaction_server(Some(root.path().to_path_buf()));
+    let cfg = live_crash_config(root.path(), &url, 128_000, false);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        for label in ["alpha", "bravo", "charlie", "delta"] {
+            let report = loop_
+                .run_turn(&live_crash_text(label), &provider)
+                .await
+                .unwrap();
+            assert!(report.interruption.is_none(), "{report:?}");
+        }
+    });
+    let events = read_envelopes(root.path());
+    let admission = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptStarted(started) => Some(&started.admission),
+            _ => None,
+        })
+        .unwrap();
+    admission.estimated_input_tokens - 10
+        + admission.resolved_output_tokens
+        + admission.requested_reasoning_tokens
+}
+
+fn live_compaction_crash(point: &str, proactive: bool) {
+    let window = if proactive {
+        128_000
+    } else {
+        live_hard_ceiling_window()
+    };
+    let root = tempfile::tempdir().unwrap();
+    setup_work(root.path());
+    std::fs::write(root.path().join("window"), window.to_string()).unwrap();
+    let home = live_crash_home(root.path());
+    let url = spawn_compaction_server(Some(root.path().to_path_buf()));
+    let cfg = live_crash_config(root.path(), &url, window, proactive);
+    let provider =
+        praana_core::turn::provider::OpenAiStepProvider::new(&cfg.config, &home, &cfg.workspace)
+            .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        let labels: &[&str] = if proactive {
+            // One eligible source guarantees one epoch even while pressure
+            // remains above the deliberately tiny proactive trigger.
+            &["alpha"]
+        } else {
+            &["alpha", "bravo", "charlie"]
+        };
+        for label in labels {
+            let report = loop_
+                .run_turn(&live_crash_text(label), &provider)
+                .await
+                .unwrap();
+            assert!(report.interruption.is_none(), "{report:?}");
+        }
+    });
+    let path = root.path().join("session/events.jsonl");
+    let sources = std::fs::read(&path).unwrap();
+    let before_sends = line_count(&root.path().join("assistant.jsonl"));
+    let scenario = if proactive {
+        "proactive"
+    } else {
+        "hard-ceiling"
+    };
+    let crashed = spawn_child(
+        root.path(),
+        "child_live_compaction",
+        "live-crash",
+        scenario,
+        Some(point),
+        true,
+    );
+    assert_abort(&crashed, point);
+    let prefix = std::fs::read(&path).unwrap();
+    assert!(
+        prefix.starts_with(&sources),
+        "source prefix byte-identical at crash"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends,
+        "compaction starts before the next assistant send"
+    );
+    let before = read_envelopes(root.path());
+    let lost_attempt = if point == "compaction.after_attempt_started" {
+        let last = before.last().unwrap();
+        assert!(last.turn_id.is_none());
+        assert!(matches!(
+            &last.event,
+            CanonicalEvent::AssistantAttemptStarted(started)
+                if matches!(started.purpose, praana_core::protocol::events::ProviderAttemptPurpose::Compaction(_))
+        ));
+        Some(last)
+    } else {
+        None
+    };
+    let compacted_before = before
+        .iter()
+        .filter(|event| matches!(event.event, CanonicalEvent::HistoryCompacted(_)))
+        .count();
+    assert_eq!(
+        compacted_before,
+        usize::from(point == "compaction.after_history_compacted_fsync")
+    );
+    assert_eq!(
+        line_count(&root.path().join("compactor.jsonl")),
+        compacted_before,
+        "after_attempt_started aborts before the compactor HTTP send"
+    );
+    let resumed = spawn_child(
+        root.path(),
+        "child_live_compaction",
+        "live-resume",
+        scenario,
+        None,
+        true,
+    );
+    let events = read_envelopes(root.path());
+    let compacted: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::HistoryCompacted(compacted) => Some(compacted),
+            _ => None,
+        })
+        .collect();
+    // Keep this first after restart: on main the lost attempt incorrectly
+    // suppresses the launch, so the regression must fail with left 0 / right 1,
+    // not a later interruption, send-count, or projection assertion.
+    assert_eq!(
+        compacted.len(),
+        1,
+        "one durable activation across crash/replay"
+    );
+    assert!(
+        resumed.status.success(),
+        "resume: {}\n{}",
+        String::from_utf8_lossy(&resumed.stdout),
+        String::from_utf8_lossy(&resumed.stderr)
+    );
+    assert!(
+        std::fs::read(&path).unwrap().starts_with(&prefix),
+        "restart preserves every source and pre-crash event byte"
+    );
+    let failed: Vec<_> = events
+        .iter()
+        .filter_map(|event| match &event.event {
+            CanonicalEvent::AssistantAttemptFailed(failed) => Some((event, failed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(failed.len(), usize::from(lost_attempt.is_some()));
+    if let Some(lost) = lost_attempt {
+        let CanonicalEvent::AssistantAttemptStarted(started) = &lost.event else {
+            unreachable!()
+        };
+        assert_eq!(failed[0].0.attempt_id, lost.attempt_id);
+        assert!(failed[0].0.turn_id.is_none());
+        assert_eq!(failed[0].1.purpose, started.purpose);
+        assert_eq!(failed[0].1.error.code, "E_ATTEMPT_LOST");
+    }
+    assert_eq!(
+        line_count(&root.path().join("compactor.jsonl")),
+        1,
+        "restart retries a lost launch but never resends a durable activation"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends + 1,
+        "exactly one post-restart assistant send"
+    );
+    let retired: Vec<_> = compacted
+        .iter()
+        .flat_map(|event| &event.source_turn_ids)
+        .collect();
+    assert!(!retired.is_empty());
+    assert_eq!(
+        retired.len(),
+        retired.iter().copied().collect::<BTreeSet<_>>().len(),
+        "no source turn retired twice"
+    );
+    let requests = std::fs::read_to_string(root.path().join("assistant.jsonl")).unwrap();
+    let sent: Value = serde_json::from_str(requests.lines().last().unwrap()).unwrap();
+    assert!(
+        sent.to_string()
+            .contains("NON-AUTHORITATIVE HISTORICAL EVIDENCE"),
+        "resumed provider request uses compacted projection"
+    );
+    assert!(
+        !sent.to_string().contains(&live_crash_text("alpha")),
+        "retired source is absent from resumed provider request"
+    );
+    assert_eq!(
+        sent["max_output_tokens"], 4_096,
+        "compaction recovers admission without output trimming"
+    );
+    let after = std::fs::read(&path).unwrap();
+    let replayed = spawn_child(
+        root.path(),
+        "child_resume_idempotently",
+        "resume-idempotently",
+        scenario,
+        None,
+        false,
+    );
+    assert!(
+        replayed.status.success(),
+        "second fresh-process replay: {}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    let projection = resumed_projection(root.path());
+    assert!(projection.active_handoff.is_some());
+    assert_eq!(projection.compacted_turn_ids.len(), retired.len());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        after,
+        "second replay is idempotent"
+    );
+    assert_eq!(
+        line_count(&root.path().join("assistant.jsonl")),
+        before_sends + 1,
+        "replay cannot duplicate the assistant send"
+    );
+}
+
+#[test]
+fn live_hard_ceiling_crash_after_attempt_started_retries_once() {
+    live_compaction_crash("compaction.after_attempt_started", false);
+}
+
+#[test]
+fn live_proactive_crash_after_attempt_started_retries_once() {
+    live_compaction_crash("compaction.after_attempt_started", true);
+}
+
+#[test]
+fn live_hard_ceiling_crash_after_history_compacted_fsync_replays_once() {
+    live_compaction_crash("compaction.after_history_compacted_fsync", false);
 }

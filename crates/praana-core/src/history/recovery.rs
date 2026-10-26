@@ -23,6 +23,9 @@ use crate::token::{
     GENERIC_ESTIMATOR_ID,
 };
 
+/// Recovery closes an orphaned attempt without judging its source or output.
+pub(crate) const ATTEMPT_LOST_CODE: &str = "E_ATTEMPT_LOST";
+
 pub fn truncated_log_tail_notice(sha: &str) -> RecoveryNotice {
     truncated_tail_notice(sha)
 }
@@ -245,7 +248,7 @@ impl SessionRecoveryEngine {
                     CanonicalEvent::AssistantAttemptFailed(AssistantAttemptFailed {
                         purpose: attempt.purpose.clone(),
                         error: ProtocolError {
-                            code: "E_ATTEMPT_LOST".to_owned(),
+                            code: ATTEMPT_LOST_CODE.to_owned(),
                             class: ErrorClass::ProcessCrash,
                             message: "The provider attempt was open when the process stopped."
                                 .to_owned(),

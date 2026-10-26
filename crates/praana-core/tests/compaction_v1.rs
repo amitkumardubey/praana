@@ -141,6 +141,144 @@ fn launch_needs_trigger_idle_compactor_and_new_eligible_turn() {
     );
 }
 
+mod eligibility {
+    use super::turn;
+    use praana_core::compaction::activate::has_unconsidered_eligible_turn;
+    use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
+    use praana_core::protocol::errors::{ErrorClass, ProtocolError};
+    use praana_core::protocol::events::{
+        AssistantAttemptFailed, AssistantAttemptStarted, CanonicalEvent, CompactionPurpose,
+        EventEnvelope, PartialAssistantOutput, ProviderAttemptPurpose,
+    };
+    use praana_core::protocol::id::{AttemptId, CompactionId, EventId, SessionId, Sha256Digest};
+    use praana_core::protocol::models::{
+        AdmissionSnapshot, ModelSelection, ProviderUsage, ReasoningEffort,
+    };
+    use ulid::Ulid;
+
+    fn failed_compaction(code: &str, sequence: u64) -> Vec<EventEnvelope> {
+        let id = Ulid::from_parts(1, u128::from(sequence));
+        let digest = Sha256Digest::from_hex_str(&"a".repeat(64)).unwrap();
+        let purpose = ProviderAttemptPurpose::Compaction(CompactionPurpose {
+            compaction_id: CompactionId(id),
+            epoch: 1,
+        });
+        let started = AssistantAttemptStarted {
+            purpose: purpose.clone(),
+            attempt_number: 1,
+            model: ModelSelection {
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model: "gpt-5.6-sol".into(),
+                model_revision: None,
+                model_family: "gpt-5".into(),
+                endpoint_fingerprint: digest.clone(),
+                reasoning_effort: ReasoningEffort::Off,
+            },
+            request_hash: digest.clone(),
+            admission: AdmissionSnapshot {
+                token_estimator_schema_version: 1,
+                estimator_id: "generic".into(),
+                estimated_input_sha256: digest.clone(),
+                context_window_tokens: 128_000,
+                estimated_input_tokens: 100,
+                resolved_output_tokens: 100,
+                requested_reasoning_tokens: 0,
+                safety_margin_tokens: 0,
+                projected_fill_millionths: 1_563,
+                capability_profile_hash: digest,
+                estimate_reused_from_attempt_id: None,
+            },
+            retry_of: None,
+            emergency_context_retry: false,
+            recovery_notices: vec![],
+        };
+        let failed = AssistantAttemptFailed {
+            purpose,
+            error: ProtocolError {
+                code: code.into(),
+                class: if code == "E_ATTEMPT_LOST" {
+                    ErrorClass::ProcessCrash
+                } else {
+                    ErrorClass::Validation
+                },
+                message: "compaction did not activate".into(),
+                retryable: false,
+                http_status: None,
+                retry_after_ms: None,
+            },
+            partial_output: PartialAssistantOutput {
+                blocks: vec![],
+                provider_response_id: None,
+            },
+            observable_delta_emitted: false,
+            provider_may_have_completed: false,
+            usage: ProviderUsage::default(),
+        };
+        [
+            CanonicalEvent::AssistantAttemptStarted(started),
+            CanonicalEvent::AssistantAttemptFailed(failed),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(offset, event)| EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id: EventId(Ulid::from_parts(1, u128::from(sequence) + offset as u128)),
+            session_id: SessionId(Ulid::from_parts(1, 1)),
+            sequence: sequence + offset as u64,
+            timestamp_ms: 1,
+            turn_id: None,
+            attempt_id: Some(AttemptId(id)),
+            event,
+        })
+        .collect()
+    }
+
+    #[test]
+    fn latest_lost_compaction_attempt_keeps_source_eligible() {
+        let events = failed_compaction("E_ATTEMPT_LOST", 30);
+        assert!(has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+
+    #[test]
+    fn latest_genuine_compaction_failure_waits_for_a_later_closed_turn() {
+        let events = failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 30);
+        let mut turns = vec![turn(1, 100), turn(2, 100)];
+        assert!(!has_unconsidered_eligible_turn(&events, &turns, None, 0));
+        turns.push(turn(4, 100));
+        assert!(has_unconsidered_eligible_turn(&events, &turns, None, 0));
+    }
+
+    #[test]
+    fn latest_lost_compaction_attempt_does_not_resurrect_older_failure_backoff() {
+        let mut events = failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 30);
+        events.extend(failed_compaction("E_ATTEMPT_LOST", 40));
+        assert!(has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+
+    #[test]
+    fn latest_genuine_compaction_failure_after_lost_still_backs_off() {
+        let mut events = failed_compaction("E_ATTEMPT_LOST", 30);
+        events.extend(failed_compaction("E_COMPACTION_CANDIDATE_INVALID", 40));
+        assert!(!has_unconsidered_eligible_turn(
+            &events,
+            &[turn(1, 100), turn(2, 100)],
+            None,
+            0
+        ));
+    }
+}
+
 // --------------------------------------------------------------- selection
 
 #[test]
@@ -1824,9 +1962,11 @@ mod activation {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use praana_core::clock::{Clock, SystemClock};
     use praana_core::compaction::activate::{
         has_unconsidered_eligible_turn, projected_turns, recheck_source, snapshot,
@@ -1839,7 +1979,7 @@ mod activation {
         credentials_path, save_store, upsert_credential, CredentialStoreV1,
     };
     use praana_core::history::checkpoint::{HistoryDerivedCheckpointV1, HistoryProjector};
-    use praana_core::history::db::HistoryDatabase;
+    use praana_core::history::db::{HistoryDatabase, RecordedTelemetrySample};
     use praana_core::history::event_log::EventLogStore;
     use praana_core::history::projection::ConversationProjection;
     use praana_core::history::recovery::SessionRecoveryEngine;
@@ -1850,16 +1990,27 @@ mod activation {
     };
     use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
     use praana_core::protocol::constants::EVENT_SCHEMA_VERSION;
+    use praana_core::protocol::errors::{ErrorClass, ProtocolError};
     use praana_core::protocol::events::{CanonicalEvent, EventEnvelope};
     use praana_core::protocol::id::{EventId, SessionId, StateId, StateMutationId};
     use praana_core::protocol::json::serialize_event_compact;
+    use praana_core::protocol::messages::FinishReason;
+    use praana_core::protocol::models::ProviderUsage;
     use praana_core::protocol::state_graph::{
         NoteStateV1, StateChangeReason, StateChangedV1, StateOperationV1, StateSourceKind,
         StateSourceV1, StateTier, StateValueV1,
     };
+    use praana_core::token::{
+        append_sample, calibration_store_path, load_bucket, CalibrationBucketKey,
+        TokenCalibrationBucket, TokenCalibrationSampleV1, GENERIC_ESTIMATOR_ID,
+    };
     use praana_core::turn::provider::OpenAiStepProvider;
-    use praana_core::turn::{HeadlessLoop, LoopConfig, LoopFault};
+    use praana_core::turn::{
+        AdmittedRequest, AssistantDraft, HeadlessLoop, LoopConfig, LoopFault, PreparedRequest,
+        ProviderFailure, ProviderOutput, StepProvider, TurnError,
+    };
     use serde_json::{json, Value};
+    use tokio_util::sync::CancellationToken;
 
     const MODEL: &str = "gpt-5.6-sol";
     const CONTROL_OPEN: &str = "[PRAANA:INTERNAL_COMPACTION_CONTROL]\n";
@@ -1882,6 +2033,7 @@ mod activation {
         Raw(String),
         Http(u16),
         Sleep(u64),
+        Cancel(tokio_util::sync::CancellationToken),
     }
 
     struct Script {
@@ -2110,6 +2262,11 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                                 std::thread::sleep(Duration::from_millis(ms));
                                 http(200, &responses_sse("{}"))
                             }
+                            Reply::Cancel(cancel) => {
+                                cancel.cancel();
+                                std::thread::sleep(Duration::from_millis(100));
+                                http(200, &responses_sse(&valid_candidate(&control, None)))
+                            }
                         }
                     }
                 };
@@ -2164,6 +2321,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
 
     fn loop_config(s: &Session) -> LoopConfig {
         LoopConfig {
+            home: s.home.clone(),
             session_dir: s.session.clone(),
             workspace: s.workspace.clone(),
             config: s.config.clone(),
@@ -3953,6 +4111,216 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(s.fake.main_requests().len(), texts.len());
     }
 
+    async fn hard_ceiling_window(texts: &[String]) -> u64 {
+        let mut calibration = session();
+        no_margin(&mut calibration.config);
+        calibration.config.llm.max_output_tokens = 4_096;
+        drop(run_live(&calibration, texts, false).await);
+        let last = admission_snapshots(&calibration.session).pop().unwrap();
+        last["estimated_input_tokens"].as_u64().unwrap() - 10
+            + last["resolved_output_tokens"].as_u64().unwrap()
+            + last["requested_reasoning_tokens"].as_u64().unwrap()
+    }
+
+    async fn cancel_live_compaction(hard_ceiling: bool) {
+        let texts: Vec<_> = ["alpha", "bravo", "charlie", "delta"]
+            .iter()
+            .map(|label| big(label))
+            .collect();
+        let mut s = session();
+        if hard_ceiling {
+            no_margin(&mut s.config);
+            s.config.llm.max_output_tokens = 4_096;
+            s.config.llm.context_window = hard_ceiling_window(&texts).await;
+            s.config.history.compact_at = 1.0;
+            s.config.history.compact_clear_at = 0.9;
+        } else {
+            s.config.history.compact_at = 0.0002;
+            s.config.history.compact_clear_at = 0.0001;
+        }
+        let seed_count = if hard_ceiling { 3 } else { 1 };
+        let mut loop_ = run_live(&s, &texts[..seed_count], false).await;
+        let before = projection(&s.session);
+        let prefix = std::fs::read(s.session.join("events.jsonl")).unwrap();
+        let assistant_before = s.fake.main_requests().len();
+        loop_.set_compactor(Some(compactor(&s)));
+        s.fake.push(Reply::Cancel(loop_.cancellation_token()));
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn(&texts[seed_count], &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::UserAbort)
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1, "cancel in flight");
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        let assistant_attempts = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "assistant_step")
+            .count();
+        assert_eq!(
+            assistant_attempts, seed_count,
+            "cancel before assistant attempt start"
+        );
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+        assert!(projection(&s.session).compacted_turn_ids.is_empty());
+        assert!(
+            projection(&s.session)
+                .messages
+                .starts_with(&before.messages),
+            "all source messages remain in the model projection"
+        );
+        assert!(std::fs::read(s.session.join("events.jsonl"))
+            .unwrap()
+            .starts_with(&prefix));
+        let failures = of_kind(&s.session, "assistant_attempt_failed");
+        assert!(
+            failures.iter().any(|event| {
+                event["event"]["data"]["purpose"]["type"] == "compaction"
+                    && event["event"]["data"]["error"]["code"] == "E_COMPACTION_CANCELLED"
+            }),
+            "{failures:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_proactive_compaction_aborts_without_assistant_send() {
+        cancel_live_compaction(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_hard_ceiling_compaction_aborts_without_assistant_send() {
+        cancel_live_compaction(true).await;
+    }
+
+    #[tokio::test]
+    async fn state_tail_guard_precedes_live_compaction_with_an_eligible_turn() {
+        let mut s = session();
+        drop(run_live(&s, &[big("retained-source")], false).await);
+        let sid = session_id(&s.session);
+        let ids = MonotonicUlidGenerator::system();
+        let mut log = EventLogStore::open(&s.session, &sid.to_string()).unwrap();
+        let first = log.events().unwrap()[0].clone();
+        log.append_event(&EventEnvelope {
+            schema_version: EVENT_SCHEMA_VERSION,
+            event_id: ids.next_id().unwrap(),
+            session_id: sid,
+            sequence: log.current_sequence() + 1,
+            timestamp_ms: SystemClock.now_ms(),
+            turn_id: None,
+            attempt_id: None,
+            event: CanonicalEvent::StateChanged(StateChangedV1 {
+                state_schema_version: 1,
+                mutation_id: ids.next_id().unwrap(),
+                expected_graph_sequence: log.current_sequence(),
+                reason: StateChangeReason::System,
+                source: StateSourceV1 {
+                    source_kind: StateSourceKind::System,
+                    event_id: first.event_id,
+                    sequence: first.sequence,
+                    turn_id: None,
+                    attempt_id: None,
+                    tool_call_id: None,
+                    artifact_id: None,
+                    summary_segment_id: None,
+                },
+                automation: None,
+                operations: vec![StateOperationV1::Create {
+                    state_id: ids.next_id().unwrap(),
+                    tier: StateTier::Active,
+                    value: StateValueV1::Note(NoteStateV1 {
+                        text: big("protected-state").trim().to_owned(),
+                        tags: Vec::new(),
+                    }),
+                }],
+            }),
+        })
+        .unwrap();
+        let tail = praana_core::state::render_state_tail(log.state_graph());
+        let tokens = praana_core::state::estimate_tail(&tail)
+            .unwrap()
+            .total_tokens;
+        assert!(tokens > 1);
+        s.config.state.active_max_tokens = tokens - 1;
+        drop(log);
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        let assistant_before = s.fake.main_requests().len();
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_
+            .run_turn("guarded active turn", &provider)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ActiveTurnTooLarge)
+        );
+        assert_eq!(report.diagnostic.unwrap().code, "E_ACTIVE_TURN_TOO_LARGE");
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        assert!(s.fake.compactor_requests().is_empty());
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .all(|event| { event["event"]["data"]["purpose"]["type"] != "compaction" }));
+        assert!(of_kind(&s.session, "history_compacted").is_empty());
+    }
+
+    async fn output_reserve_floor(configured_minimum: u64, expected: u64) {
+        let text = big("output-floor");
+        let window = hard_ceiling_window(std::slice::from_ref(&text)).await;
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.context_window = window;
+        s.config.llm.max_output_tokens = 4_096;
+        s.config.llm.min_output_tokens = configured_minimum;
+        drop(run_live(&s, &[text], true).await);
+        let requests = s.fake.main_requests();
+        assert_eq!(requests.len(), 1);
+        let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+        assert_eq!(body["max_output_tokens"], expected);
+        assert_eq!(
+            admission_snapshots(&s.session)[0]["resolved_output_tokens"],
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn output_reserve_floor_uses_profile_minimum_when_config_is_lower() {
+        output_reserve_floor(16, 256).await;
+    }
+
+    #[tokio::test]
+    async fn output_reserve_floor_uses_config_minimum_when_profile_is_lower() {
+        output_reserve_floor(512, 512).await;
+    }
+
+    #[tokio::test]
+    async fn exhausted_hard_ceiling_recovery_bounds_diagnostic_without_user_text() {
+        let mut s = session();
+        no_margin(&mut s.config);
+        s.config.llm.context_window = 8_000;
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let mut loop_ = run_live(&s, &[big("closed-source")], false).await;
+        loop_.set_compactor(Some(compactor(&s)));
+        let assistant_before = s.fake.main_requests().len();
+        const SENTINEL: &str = "DISTINCTIVE_PRIVATE_USER_SENTINEL_7e42";
+        let active = format!("{SENTINEL} {}", big("oversized").repeat(20));
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let report = loop_.run_turn(&active, &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::ActiveTurnTooLarge)
+        );
+        let diagnostic = report.diagnostic.unwrap();
+        assert_eq!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE");
+        assert!(diagnostic.message.len() <= 512);
+        assert!(!diagnostic.message.contains(SENTINEL));
+        assert_eq!(s.fake.main_requests().len(), assistant_before);
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
+    }
+
     #[test]
     fn a_profile_with_an_empty_output_range_is_unavailable_not_a_panic() {
         let home = tempfile::tempdir().unwrap();
@@ -3975,6 +4343,617 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let config = build_defaults(home.path());
         let error = ConfiguredCompactor::resolve(&config, home.path(), 0).unwrap_err();
         assert_eq!(error.code(), "COMPACTION_UNAVAILABLE");
+    }
+
+    // ------------------------------------------------------- P5-6b admission
+
+    fn assert_temp_home(home: &Path) {
+        let temp = std::env::temp_dir();
+        assert!(
+            home.starts_with(&temp),
+            "calibration tests stay under the temp dir: {}",
+            home.display()
+        );
+        if let Some(real_home) = std::env::var_os("HOME") {
+            let praana = PathBuf::from(real_home).join(".praana");
+            assert!(
+                !home.starts_with(&praana),
+                "a test home must not be ~/.praana"
+            );
+        }
+    }
+
+    fn scripted_config(home: &Path, model: &str, window: u64) -> EffectiveConfigV1 {
+        let mut config = build_defaults(home);
+        config.llm.provider = "scripted".into();
+        config.llm.protocol = "scripted-v1".into();
+        config.llm.model = model.into();
+        config.llm.context_window = window;
+        config.llm.min_output_tokens = 16;
+        config.llm.max_output_tokens = 256;
+        config.history.safety_margin_min_tokens = 0;
+        config.history.safety_margin_ratio = 0.0;
+        config.turn.max_steps = 4;
+        config.turn.max_attempts = 3;
+        config
+    }
+
+    fn scripted_loop(
+        home: &Path,
+        session: &Path,
+        workspace: &Path,
+        config: EffectiveConfigV1,
+    ) -> LoopConfig {
+        LoopConfig {
+            home: home.to_path_buf(),
+            session_dir: session.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+            config,
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(MonotonicUlidGenerator::system()),
+            fault: LoopFault::None,
+        }
+    }
+
+    fn seed_errors(home: &Path, model: &str, errors: &[u64]) {
+        for (index, error) in errors.iter().enumerate() {
+            let sample = TokenCalibrationSampleV1::new(
+                "scripted".into(),
+                "scripted-v1".into(),
+                model.into(),
+                None,
+                GENERIC_ESTIMATOR_ID.into(),
+                praana_core::protocol::id::Sha256Digest::digest_bytes(
+                    format!("seed-{model}-{index}").as_bytes(),
+                ),
+                100,
+                100 + error,
+                Some(0),
+                0,
+                1_700_000_000_000 + index as i64,
+            )
+            .unwrap();
+            append_sample(home, &sample).unwrap();
+        }
+    }
+
+    fn fresh_dirs() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let session = temp.path().join("session");
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        private(&home);
+        assert_temp_home(&home);
+        (temp, home, session, workspace)
+    }
+
+    fn first_margin(session: &Path) -> u64 {
+        of_kind(session, "assistant_attempt_started")[0]["event"]["data"]["admission"]
+            ["safety_margin_tokens"]
+            .as_u64()
+            .unwrap()
+    }
+
+    struct FixedUsage(u64);
+
+    #[async_trait]
+    impl StepProvider for FixedUsage {
+        fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+            Ok(PreparedRequest {
+                request_body: json!({"scripted": true, "step": step_index}),
+                component_bytes: std::array::from_fn(|_| Vec::new()),
+            })
+        }
+
+        async fn complete(
+            &self,
+            _step_index: u32,
+            admitted: &AdmittedRequest,
+            _cancel: &CancellationToken,
+        ) -> Result<ProviderOutput, TurnError> {
+            let authorization = admitted.authorize_send(admitted.body())?;
+            Ok(ProviderOutput {
+                draft: AssistantDraft {
+                    text: Some("ok".into()),
+                    calls: Vec::new(),
+                    finish_reason: FinishReason::Stop,
+                    usage: ProviderUsage {
+                        input_tokens: self.0,
+                        output_tokens: 1,
+                        ..ProviderUsage::default()
+                    },
+                },
+                authorization,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn seeded_store_sets_c_on_the_first_admission() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let errors: Vec<u64> = (1..=20).collect();
+        seed_errors(&home, "fake", &errors);
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut loop_ =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config)).unwrap();
+        let report = loop_.run_turn("hello", &FixedUsage(50)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        // Errors 1..=20: nearest-rank p95 is 19, so C is 19 + 128.
+        assert_eq!(first_margin(&session), 147);
+    }
+
+    fn scripted_key(model: &str) -> CalibrationBucketKey {
+        CalibrationBucketKey::from_parts(
+            "scripted",
+            "scripted-v1",
+            model,
+            None,
+            GENERIC_ESTIMATOR_ID,
+        )
+    }
+
+    fn stored_margin(home: &Path, model: &str) -> u64 {
+        let mut bucket = TokenCalibrationBucket::new(128);
+        for sample in load_bucket(home, &scripted_key(model)) {
+            bucket.add_sample(sample);
+        }
+        bucket.calculate_calibration_margin_c().unwrap()
+    }
+
+    async fn drive(
+        home: &Path,
+        session: &Path,
+        workspace: &Path,
+        model: &str,
+        window: u64,
+        usage: u64,
+    ) {
+        let config = scripted_config(home, model, window);
+        let mut loop_ =
+            HeadlessLoop::create(scripted_loop(home, session, workspace, config)).unwrap();
+        let report = loop_.run_turn("hello", &FixedUsage(usage)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+    }
+
+    #[tokio::test]
+    async fn nineteen_samples_keep_the_first_admission_at_zero() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "fake", &(1..=19).collect::<Vec<_>>());
+        drive(&home, &session, &workspace, "fake", 128_000, 50).await;
+        assert_eq!(first_margin(&session), 0);
+    }
+
+    #[tokio::test]
+    async fn calibration_margin_stays_inside_ten_percent_of_the_window() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "fake", &[200_000; 20]);
+        drive(&home, &session, &workspace, "fake", 10_000, 50).await;
+        // C is 200_128. floor(0.10 * 10_000) is 1_000, and admit keeps that cap.
+        assert_eq!(first_margin(&session), 1_000);
+    }
+
+    #[tokio::test]
+    async fn a_new_loop_reads_c_from_samples_the_first_session_wrote() {
+        let (temp, home, session, workspace) = fresh_dirs();
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut first =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config.clone()))
+                .unwrap();
+        for index in 0..20 {
+            let report = first
+                .run_turn(&format!("turn {index}"), &FixedUsage(5_000))
+                .await
+                .unwrap();
+            assert!(report.interruption.is_none(), "{report:?}");
+        }
+        let stored = load_bucket(&home, &scripted_key("fake"));
+        assert_eq!(stored.len(), 20);
+        let expected = stored_margin(&home, "fake");
+        assert!(expected > 0, "twenty comparable samples produce C");
+        let started = of_kind(&session, "assistant_attempt_started");
+        assert_eq!(started.len(), 20);
+        for (sample, event) in stored.iter().zip(started.iter()) {
+            assert_eq!(
+                sample.request_hash.as_str(),
+                event["event"]["data"]["request_hash"].as_str().unwrap(),
+                "the sample carries that attempt's admitted request hash"
+            );
+        }
+        let session_two = temp.path().join("session-two");
+        let mut second =
+            HeadlessLoop::create(scripted_loop(&home, &session_two, &workspace, config)).unwrap();
+        let report = second
+            .run_turn("next session", &FixedUsage(5_000))
+            .await
+            .unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(first_margin(&session_two), expected);
+    }
+
+    #[tokio::test]
+    async fn resume_with_another_model_does_not_reuse_the_previous_c() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "alpha", &(1..=20).collect::<Vec<_>>());
+        let alpha = scripted_config(&home, "alpha", 128_000);
+        let mut created =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, alpha)).unwrap();
+        let report = created.run_turn("alpha", &FixedUsage(50)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(first_margin(&session), 147);
+        drop(created);
+        let beta = scripted_config(&home, "beta", 128_000);
+        let mut resumed =
+            HeadlessLoop::resume(scripted_loop(&home, &session, &workspace, beta)).unwrap();
+        let report = resumed.run_turn("beta", &FixedUsage(50)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let margins: Vec<u64> = of_kind(&session, "assistant_attempt_started")
+            .iter()
+            .map(|event| {
+                event["event"]["data"]["admission"]["safety_margin_tokens"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(margins, vec![147, 0]);
+        assert_eq!(load_bucket(&home, &scripted_key("beta")).len(), 1);
+        assert_eq!(stored_margin(&home, "beta"), 0);
+    }
+
+    #[tokio::test]
+    async fn zero_reported_usage_does_not_create_the_store() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        drive(&home, &session, &workspace, "fake", 128_000, 0).await;
+        assert!(
+            !calibration_store_path(&home).exists(),
+            "placeholder zero usage is not a sample and does not create the store"
+        );
+    }
+
+    struct EmergencyThenStop {
+        sends: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl StepProvider for EmergencyThenStop {
+        fn prepare(&self, step_index: u32) -> Result<PreparedRequest, TurnError> {
+            Ok(PreparedRequest {
+                request_body: json!({"scripted": true, "step": step_index, "emergency": true}),
+                component_bytes: std::array::from_fn(|_| Vec::new()),
+            })
+        }
+
+        async fn complete(
+            &self,
+            _step_index: u32,
+            admitted: &AdmittedRequest,
+            _cancel: &CancellationToken,
+        ) -> Result<ProviderOutput, TurnError> {
+            let authorization = admitted.authorize_send(admitted.body())?;
+            if self.sends.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(TurnError::Provider(Box::new(ProviderFailure {
+                    error: ProtocolError {
+                        code: "E_PROVIDER_CONTEXT_LENGTH".into(),
+                        class: ErrorClass::ContextLength,
+                        message: "provider rejected request context length".into(),
+                        retryable: false,
+                        http_status: Some(400),
+                        retry_after_ms: None,
+                    },
+                    emission_crossed: false,
+                    observable_delta: false,
+                    partial_blocks: Vec::new(),
+                    provider_response_id: None,
+                    usage: ProviderUsage {
+                        input_tokens: 400,
+                        ..ProviderUsage::default()
+                    },
+                    may_have_completed: false,
+                    cancelled: false,
+                    retry_after_ms: None,
+                })));
+            }
+            Ok(ProviderOutput {
+                draft: AssistantDraft {
+                    text: Some("recovered".into()),
+                    calls: Vec::new(),
+                    finish_reason: FinishReason::Stop,
+                    usage: ProviderUsage {
+                        input_tokens: 400,
+                        output_tokens: 1,
+                        ..ProviderUsage::default()
+                    },
+                },
+                authorization,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn emergency_retry_is_not_a_calibration_sample() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut loop_ =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config)).unwrap();
+        let provider = EmergencyThenStop {
+            sends: AtomicUsize::new(0),
+        };
+        let report = loop_.run_turn("too big", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let started = of_kind(&session, "assistant_attempt_started");
+        assert_eq!(started.len(), 2);
+        assert_eq!(
+            started[1]["event"]["data"]["emergency_context_retry"],
+            json!(true)
+        );
+        assert!(
+            !calibration_store_path(&home).exists(),
+            "the emergency retry attempt is not a comparable sample"
+        );
+    }
+
+    #[test]
+    fn calibration_store_does_not_change_the_config_digest() {
+        let (_temp, home, _session, _workspace) = fresh_dirs();
+        let config = scripted_config(&home, "fake", 128_000);
+        let before = config.config_digest_sha256();
+        seed_errors(&home, "fake", &[1]);
+        assert!(calibration_store_path(&home).exists());
+        assert_eq!(config.config_digest_sha256(), before);
+    }
+
+    #[tokio::test]
+    async fn resume_does_not_require_the_calibration_store() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut created =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config.clone()))
+                .unwrap();
+        let report = created.run_turn("hello", &FixedUsage(0)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert!(!calibration_store_path(&home).exists());
+        drop(created);
+        let mut resumed =
+            HeadlessLoop::resume(scripted_loop(&home, &session, &workspace, config)).unwrap();
+        let report = resumed.run_turn("again", &FixedUsage(40)).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert_eq!(load_bucket(&home, &scripted_key("fake")).len(), 1);
+    }
+
+    fn run_turn_against_home(home: &Path) {
+        let session = home.parent().unwrap().join(format!(
+            "session-{}",
+            home.file_name().unwrap().to_string_lossy()
+        ));
+        let workspace = home.parent().unwrap().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(drive(home, &session, &workspace, "fake", 128_000, 80));
+    }
+
+    #[test]
+    fn calibration_turn_failure_child() {
+        let Ok(home) = std::env::var("PRAANA_CALIBRATION_HOME") else {
+            return;
+        };
+        if std::env::var("PRAANA_CALIBRATION_TURN_CHILD").as_deref() != Ok("corrupt") {
+            return;
+        }
+        let home = PathBuf::from(home);
+        assert_temp_home(&home);
+        run_turn_against_home(&home);
+    }
+
+    #[test]
+    fn corrupt_store_turn_prints_nothing_and_leaves_the_file() {
+        let (_temp, home, _session, _workspace) = fresh_dirs();
+        let path = calibration_store_path(&home);
+        let original = b"not-a-sqlite-database".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "activation::calibration_turn_failure_child",
+                "--nocapture",
+            ])
+            .env("PRAANA_CALIBRATION_HOME", &home)
+            .env("PRAANA_CALIBRATION_TURN_CHILD", "corrupt")
+            .output()
+            .expect("spawn turn failure child");
+        assert!(
+            output.status.success(),
+            "turn child failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "stderr must stay empty, got: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(load_bucket(&home, &scripted_key("fake")).is_empty());
+    }
+
+    #[tokio::test]
+    async fn bad_calibration_store_keeps_the_turn_and_c_at_zero() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let path = calibration_store_path(&home);
+        let original = b"not-a-sqlite-database".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(first_margin(&session), 0);
+
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let path = calibration_store_path(&home);
+        let script = "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA user_version=99'); c.execute('create table foreign_store(x)'); c.commit()";
+        let status = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(&path)
+            .status()
+            .expect("python3");
+        assert!(status.success());
+        let original = std::fs::read(&path).unwrap();
+        drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(first_margin(&session), 0);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{symlink, PermissionsExt};
+            let (_temp, home, session, workspace) = fresh_dirs();
+            seed_errors(&home, "fake", &(1..=20).collect::<Vec<_>>());
+            let path = calibration_store_path(&home);
+            let original = std::fs::read(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+            drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+            assert_eq!(first_margin(&session), 0, "a read-only store yields C = 0");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            let (_temp, home, session, workspace) = fresh_dirs();
+            seed_errors(&home, "fake", &[3]);
+            let path = calibration_store_path(&home);
+            let original = std::fs::read(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+            assert_eq!(first_margin(&session), 0);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            let (_temp, home, session, workspace) = fresh_dirs();
+            let target = home.parent().unwrap().join("calibration-target");
+            let original = b"calibration-target-bytes".to_vec();
+            std::fs::write(&target, &original).unwrap();
+            symlink(&target, calibration_store_path(&home)).unwrap();
+            drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+            assert_eq!(std::fs::read(&target).unwrap(), original);
+            assert!(std::fs::symlink_metadata(calibration_store_path(&home))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(first_margin(&session), 0);
+        }
+
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "fake", &[4]);
+        let path = calibration_store_path(&home);
+        let script = "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1], timeout=0); c.execute('BEGIN EXCLUSIVE'); c.execute('select 1').fetchall(); time.sleep(20)";
+        let mut holder = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .arg(&path)
+            .spawn()
+            .expect("python3 lock");
+        std::thread::sleep(Duration::from_millis(400));
+        drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+        let _ = holder.kill();
+        let _ = holder.wait();
+        assert_eq!(first_margin(&session), 0);
+        let loaded = load_bucket(&home, &scripted_key("fake"));
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].positive_error_tokens, 4);
+    }
+
+    fn telemetry(session: &Path, name: &str) -> Vec<RecordedTelemetrySample> {
+        let db = HistoryDatabase::open(&session.join("history.db")).unwrap();
+        db.read_telemetry_samples(name).unwrap()
+    }
+
+    fn underestimation_figure(window: u64, estimated: u64) -> i64 {
+        i64::try_from(window.saturating_sub(estimated).saturating_add(1).max(1)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn context_length_records_underestimation_and_not_a_calibration_sample() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        seed_errors(&home, "fake", &[1, 2, 3]);
+        let config = scripted_config(&home, "fake", 128_000);
+        let mut loop_ =
+            HeadlessLoop::create(scripted_loop(&home, &session, &workspace, config)).unwrap();
+        let provider = EmergencyThenStop {
+            sends: AtomicUsize::new(0),
+        };
+        let report = loop_.run_turn("too big please", &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        drop(loop_);
+        let started = of_kind(&session, "assistant_attempt_started");
+        let window = started[0]["event"]["data"]["admission"]["context_window_tokens"]
+            .as_u64()
+            .unwrap();
+        let estimated = started[0]["event"]["data"]["admission"]["estimated_input_tokens"]
+            .as_u64()
+            .unwrap();
+        let figure = underestimation_figure(window, estimated);
+        let rows = telemetry(&session, "admission_context_underestimation");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].value_integer, figure);
+        let dimensions: Value = serde_json::from_str(&rows[0].dimensions_json).unwrap();
+        assert_eq!(dimensions["provider"], json!("scripted"));
+        assert_eq!(dimensions["protocol"], json!("scripted-v1"));
+        assert_eq!(dimensions["model"], json!("fake"));
+        assert!(dimensions["model_revision"].is_null());
+        assert_eq!(dimensions["estimator_id"], json!(GENERIC_ESTIMATOR_ID));
+        assert_eq!(
+            dimensions["request_hash"],
+            started[0]["event"]["data"]["request_hash"]
+        );
+        assert_eq!(dimensions["error_code"], json!("E_PROVIDER_CONTEXT_LENGTH"));
+        assert_eq!(dimensions["context_window_tokens"], json!(window));
+        assert_eq!(dimensions["estimated_input_tokens"], json!(estimated));
+        for key in [
+            "system_tokens",
+            "tool_schema_tokens",
+            "memory_bootstrap_tokens",
+            "handoff_tokens",
+            "retained_message_tokens",
+            "state_graph_tokens",
+            "active_tool_cycle_tokens",
+            "continuation_tokens",
+            "provider_framing_tokens",
+        ] {
+            assert!(dimensions[key].is_u64(), "{key}");
+        }
+        assert!(!rows[0].dimensions_json.contains("too big please"));
+        assert!(!rows[0].dimensions_json.contains("recovered"));
+        assert!(!rows[0]
+            .dimensions_json
+            .contains("provider rejected request context length"));
+        let stored = load_bucket(&home, &scripted_key("fake"));
+        assert_eq!(stored.len(), 3, "the bucket is unchanged");
+        assert!(stored.iter().all(|sample| {
+            sample.reported_input_tokens != figure as u64
+                && sample.positive_error_tokens != figure as u64
+                && sample.estimated_input_tokens != figure as u64
+        }));
+    }
+
+    #[tokio::test]
+    async fn calibration_store_error_is_a_telemetry_code_only() {
+        let (_temp, home, session, workspace) = fresh_dirs();
+        let path = calibration_store_path(&home);
+        let original = b"not-a-sqlite-database".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        drive(&home, &session, &workspace, "fake", 128_000, 80).await;
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(first_margin(&session), 0);
+        let rows = telemetry(&session, "calibration_store_error");
+        assert!(!rows.is_empty());
+        for row in &rows {
+            let dimensions: Value = serde_json::from_str(&row.dimensions_json).unwrap();
+            assert_eq!(dimensions["error_code"], json!("CALIBRATION_STORE_CORRUPT"));
+            assert_eq!(dimensions.as_object().unwrap().len(), 1);
+            assert!(!row.dimensions_json.contains("not-a-sqlite"));
+            assert!(!row.dimensions_json.contains("calibration.db"));
+            assert!(!row.dimensions_json.to_ascii_lowercase().contains("sqlite"));
+        }
+        assert!(telemetry(&session, "admission_context_underestimation").is_empty());
     }
 
     #[tokio::test]

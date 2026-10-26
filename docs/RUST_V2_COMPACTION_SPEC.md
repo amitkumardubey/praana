@@ -1268,6 +1268,14 @@ Backoff for repeated
 proactive failures is projection based: do not retry the same source hash until
 at least one new committed turn, model/config change, or manual command.
 
+A recovery-synthesized `E_ATTEMPT_LOST` closes an interrupted provider attempt;
+it is not a verdict on the source and MUST NOT trigger this backoff, for either
+proactive launch or hard-ceiling recovery. Keep the latest compaction outcome:
+if it is LOST, eligible source can be retried even when an older genuine failure
+exists; if it is a genuine failure, the existing backoff remains unchanged.
+Recovery still records LOST durably as `AssistantAttemptFailed` for replay,
+notices, and historical status.
+
 ### 14.2 Hard-ceiling recovery
 
 The StateGraph request-time tail guard has already run. Over
@@ -1629,9 +1637,10 @@ from History replay (closure sequence, capsule validity, per-turn token mass
 under the target model) and persists nothing new. Section 4.2's "most recent
 attempt at the same projection sequence" is derived from replay: the latest
 compaction-purpose `AssistantAttemptFailed` or `HistoryCompacted` and the
-source turns it considered (section 14.1 records both durably). Those turns
-and that sequence are the `has_unconsidered_eligible_turn` input to
-`should_launch`.
+source turns it considered (section 14.1 records both durably). If that latest
+failure is `E_ATTEMPT_LOST`, it imposes no source backoff; do not fall back to an
+older genuine failure. Those turns and that sequence otherwise supply the
+`has_unconsidered_eligible_turn` input to `should_launch`.
 
 Run `cargo test -p praana-core --test compaction_v1 fake_compactor_activates_after_fsync`.
 Expected red: no `HistoryCompacted` writer. It depends on P5-2.
