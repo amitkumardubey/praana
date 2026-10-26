@@ -520,9 +520,77 @@ impl HistoryDatabase {
         meta_value(&self.lock(), key)
     }
 
+    /// One non-authoritative telemetry sample. Callers must pass ids and
+    /// integers only. A failure is the caller's to ignore.
+    pub fn record_telemetry_sample(
+        &self,
+        name: &str,
+        event_sequence: Option<i64>,
+        value_integer: i64,
+        dimensions_json: &str,
+        occurred_at_ms: i64,
+    ) -> Result<(), ArtifactError> {
+        self.lock()
+            .execute(
+                "INSERT INTO telemetry_samples
+                   (name, event_sequence, value_integer, dimensions_json, occurred_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![
+                    name,
+                    event_sequence,
+                    value_integer,
+                    dimensions_json,
+                    occurred_at_ms
+                ],
+            )
+            .map(|_| ())
+            .map_err(|_| ArtifactError::new("HISTORY_IO", "telemetry sample failed"))
+    }
+
+    /// Recorded samples for one name, oldest first.
+    pub fn read_telemetry_samples(
+        &self,
+        name: &str,
+    ) -> Result<Vec<RecordedTelemetrySample>, ArtifactError> {
+        let conn = self.lock();
+        let mut statement = conn
+            .prepare(
+                "SELECT name, event_sequence, value_integer, dimensions_json, occurred_at_ms
+                   FROM telemetry_samples WHERE name = ?1 ORDER BY sample_id",
+            )
+            .map_err(|_| ArtifactError::new("HISTORY_IO", "telemetry read failed"))?;
+        let rows = statement
+            .query_map([name], |row| {
+                Ok(RecordedTelemetrySample {
+                    name: row.get(0)?,
+                    event_sequence: row.get(1)?,
+                    value_integer: row.get(2)?,
+                    dimensions_json: row.get(3)?,
+                    occurred_at_ms: row.get(4)?,
+                })
+            })
+            .map_err(|_| ArtifactError::new("HISTORY_IO", "telemetry read failed"))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|_| ArtifactError::new("HISTORY_IO", "telemetry read failed"))?);
+        }
+        Ok(out)
+    }
+
     pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|err| err.into_inner())
     }
+}
+
+/// One recorded non-authoritative telemetry sample. Dimensions are ids and
+/// integers only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedTelemetrySample {
+    pub name: String,
+    pub event_sequence: Option<i64>,
+    pub value_integer: i64,
+    pub dimensions_json: String,
+    pub occurred_at_ms: i64,
 }
 
 /// Version and timeout checks shared by read-write open, read-only open, and

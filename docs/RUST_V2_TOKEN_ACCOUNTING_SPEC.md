@@ -534,6 +534,46 @@ model revision, and estimator ID. With at least 20 samples, calibration margin
 `C` is zero. Changing estimator identity starts a new calibration bucket but
 does not delete old telemetry.
 
+Amended 2026-10-24 (Amit, P5-6b). Comparable samples live in a non-canonical
+per-user SQLite store at `<PRAANA_HOME>/calibration.db`, shared across
+sessions. The file is not part of the config digest and not part of any
+session snapshot. Resume does not read it. The database uses WAL and a 5000 ms
+busy timeout. Each key keeps the latest 128 comparable samples, pruned in the
+same transaction as the insert.
+
+The bucket key is provider, protocol, model revision, and estimator id. When
+`model_revision` is absent, the key also includes the model name, so two
+models without a revision cannot mix. When a revision is present, the model
+name is not part of the key.
+
+A read or write failure is best-effort. A missing file on read, a lock, a
+corrupt file, a wrong schema version, a read-only file, or a symlink at
+`calibration.db` yields `C = 0` or drops that sample. Turn behavior does not
+change. The store does not panic, does not print, and does not delete or
+rewrite a corrupt or wrong-version file. Placeholder zero reported usage is
+not inserted.
+
+Decided (Amit, 2026-10-24, P5-6b review). On unix the store file is mode 0600
+and `<PRAANA_HOME>` is private. A new home is created 0700. An existing home that
+grants the owner full access but is also open to others (for example 0755) is
+tightened to 0700 when the store is first written. The code never widens a mode,
+never follows a symlink, and fails closed (`CALIBRATION_STORE_PERMISSIONS`) when
+the owner lacks access. This is the only change the store makes to the home
+directory.
+
+A process loads a bucket on first use of its key and keeps that view,
+including samples it appends afterward. Samples another process writes after
+the cache is filled are visible to the next process. Admission still applies
+`M = min(M, floor(0.10 * W))`. An emergency context retry and placeholder zero
+reported usage are not samples. A compaction-purpose request is not an
+accepted assistant step, so it does not produce a calibration sample.
+
+A recognized context-length response records `admission_context_underestimation`
+in that session's `history.db` `telemetry_samples` table, with value
+`max(1, W - I + 1)`. A calibration-store failure records
+`calibration_store_error` there with the error code only. Neither row is a
+calibration sample, and neither enters the bucket.
+
 Calibration is a runtime safety input, not evidence that an estimator is exact.
 Release-quality rates are measurement targets until a checked-in corpus and
 evaluator define their population and confidence method.

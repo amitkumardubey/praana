@@ -618,6 +618,7 @@ async fn run_command(args: RunArgs) -> i32 {
     };
     let session_dir = PathBuf::from(&config.session.root).join(session_id.to_string());
     let loop_config = LoopConfig {
+        home: praana_home.clone(),
         session_dir,
         workspace: cwd,
         config: config.clone(),
@@ -830,6 +831,7 @@ async fn resume_command(args: ResumeArgs) -> i32 {
     };
 
     let loop_config = LoopConfig {
+        home: praana_home.clone(),
         session_dir,
         workspace,
         config: runtime_config.clone(),

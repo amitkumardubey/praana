@@ -133,6 +133,7 @@ fn config(root: &std::path::Path, max_steps: u32) -> LoopConfig {
     effective.tools.shell_enabled = true;
     effective.tools.max_parallel_calls = 2;
     LoopConfig {
+        home: root.join("home"),
         session_dir: root.join("session"),
         workspace: root.join("work"),
         config: effective,

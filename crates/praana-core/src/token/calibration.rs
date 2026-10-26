@@ -130,3 +130,52 @@ impl TokenCalibrationBucket {
         p95.checked_add(128).ok_or(TokenAccountingError::Overflow)
     }
 }
+
+/// Token Accounting §9 bucket identity: provider, protocol, model revision,
+/// and estimator id.
+///
+/// When `model_revision` is absent, the model name is part of the key as
+/// well. Two models that both lack a revision must not share a bucket. When
+/// a revision is present, the spec key does not include the model name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CalibrationBucketKey {
+    pub provider: String,
+    pub protocol: String,
+    pub model_revision: Option<String>,
+    /// `Some` only when `model_revision` is `None`.
+    pub model: Option<String>,
+    pub estimator_id: String,
+}
+
+impl CalibrationBucketKey {
+    pub fn from_parts(
+        provider: impl Into<String>,
+        protocol: impl Into<String>,
+        model: impl Into<String>,
+        model_revision: Option<String>,
+        estimator_id: impl Into<String>,
+    ) -> Self {
+        let model = model.into();
+        Self {
+            provider: provider.into(),
+            protocol: protocol.into(),
+            model: if model_revision.is_none() {
+                Some(model)
+            } else {
+                None
+            },
+            model_revision,
+            estimator_id: estimator_id.into(),
+        }
+    }
+
+    pub fn from_sample(sample: &TokenCalibrationSampleV1) -> Self {
+        Self::from_parts(
+            sample.provider.clone(),
+            sample.protocol.clone(),
+            sample.model.clone(),
+            sample.model_revision.clone(),
+            sample.estimator_id.clone(),
+        )
+    }
+}
