@@ -1225,14 +1225,24 @@ fn exercise_store_failures(root: &std::path::Path) {
             let dir = case("locked");
             append_errors(&dir, 1);
             let path = calibration_store_path(&dir);
-            let script = "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1], timeout=0); c.execute('BEGIN EXCLUSIVE'); c.execute('select 1').fetchall(); time.sleep(12)";
+            let script = "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1], timeout=0); c.execute('BEGIN EXCLUSIVE'); c.execute('select 1').fetchall(); print('locked', flush=True); time.sleep(12)";
             let mut holder = std::process::Command::new("python3")
                 .arg("-c")
                 .arg(script)
                 .arg(&path)
+                .stdout(std::process::Stdio::piped())
                 .spawn()
                 .expect("python3 lock");
-            std::thread::sleep(std::time::Duration::from_millis(400));
+            // Wait until the holder really owns the exclusive lock. A fixed
+            // sleep raced python start-up when the machine was busy.
+            {
+                use std::io::BufRead;
+                let mut ready = String::new();
+                std::io::BufReader::new(holder.stdout.take().expect("holder stdout"))
+                    .read_line(&mut ready)
+                    .expect("holder output");
+                assert_eq!(ready.trim(), "locked", "holder must report the lock");
+            }
             let sample = stored_sample(
                 STORE_PROVIDER,
                 STORE_PROTOCOL,
