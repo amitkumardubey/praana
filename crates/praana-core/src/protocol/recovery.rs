@@ -13,6 +13,9 @@ pub enum RecoveryKind {
     TurnInterrupted,
     TruncatedLogTail,
     ModelChanged,
+    /// The derived history database could not be rebuilt at resume; the
+    /// session continues with the durable log as authority.
+    HistoryProjectionFailed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

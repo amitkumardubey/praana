@@ -2032,6 +2032,8 @@ mod activation {
         Valid,
         Raw(String),
         Http(u16),
+        /// 429 with a retry-after-ms hint (mirrors provider rate limits).
+        HttpRateLimited,
         Sleep(u64),
         Cancel(tokio_util::sync::CancellationToken),
     }
@@ -2278,6 +2280,15 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                             }
                             Reply::Raw(text) => http(200, &responses_sse(&text)),
                             Reply::Http(status) => http(status, "{\"error\":{}}"),
+                            Reply::HttpRateLimited => {
+                                let body = "{\"error\":{}}";
+                                format!(
+                                    "HTTP/1.1 429 X\r\ncontent-type: text/event-stream\r\nretry-after-ms: 5000\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                    body.len(),
+                                    body
+                                )
+                                .into_bytes()
+                            }
                             Reply::Sleep(ms) => {
                                 std::thread::sleep(Duration::from_millis(ms));
                                 http(200, &responses_sse("{}"))
@@ -2539,6 +2550,19 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     fn projection(session: &Path) -> ConversationProjection {
         let (events, raw) = read_log(session);
         ConversationProjection::project_with_context(&events, Some(&raw), &[], None).unwrap()
+    }
+
+    /// Aborts every derived-checkpoint write so projections fail deterministically
+    /// (used to make a live/resume projection fail, mirroring a read-only or
+    /// corrupt derived store).
+    fn inject_projection_trigger(session: &Path) {
+        let conn = rusqlite::Connection::open(session.join("history.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS fail_history_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+        )
+        .unwrap();
     }
 
     fn session_id(session: &Path) -> SessionId {
@@ -4194,6 +4218,195 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
         assert_eq!(s.fake.compactor_requests().len(), 1);
         assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn aborted_turn_does_not_report_a_step_zero_compaction_failure() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // Compaction fails at step 0 (the attempt and its single schema repair
+        // both fail), then the turn is user-aborted mid-repair. The aborted
+        // report must carry only its own cause — never the compaction failure.
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Cancel(loop_.cancellation_token()));
+        let main_before = s.fake.main_requests().len();
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::UserAbort)
+        );
+        assert_eq!(
+            s.fake.main_requests().len(),
+            main_before,
+            "abort fires before any assistant send"
+        );
+        assert!(
+            report.diagnostic.is_none(),
+            "an interrupted report carries only its own cause: {report:?}"
+        );
+        let compaction_failures = of_kind(&s.session, "assistant_attempt_failed")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert!(
+            compaction_failures >= 2,
+            "epoch attempt and repair both failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_turn_reports_only_the_compaction_failure_diagnostic() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::Http(500));
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "failed compaction must not stop the turn"
+        );
+        let diagnostic = report
+            .diagnostic
+            .expect("committed turn surfaces the compaction failure");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.message, "live compaction did not activate; every turn retained",
+            "the generic message never quotes provider text: {diagnostic:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn committed_turn_prefers_compaction_over_projection_diagnostic() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // Both a step-0 compaction failure and a commit-time projection failure
+        // occur in this turn. Compaction wins the report; the projection
+        // failure stays in its own slot (dropped from this report, not
+        // overwritten).
+        inject_projection_trigger(&s.session);
+        s.fake.push(Reply::Http(500));
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report
+            .diagnostic
+            .expect("compaction failure wins the report");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.message, "live compaction did not activate; every turn retained",
+            "{diagnostic:?}"
+        );
+        assert_ne!(
+            diagnostic.code, "HISTORY_IO",
+            "projection failure must not win: {diagnostic:?}"
+        );
+
+        // The projection diagnostic is recorded separately: with the compactor
+        // removed, the next committed turn reports it.
+        loop_.set_compactor(None);
+        let third = loop_.run_turn(&big("charlie"), &provider).await.unwrap();
+        assert!(third.interruption.is_none(), "{third:?}");
+        assert_eq!(
+            third.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_IO"),
+            "{third:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_compactor_failure_keeps_retry_after_ms() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::HttpRateLimited);
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report
+            .diagnostic
+            .expect("rate-limited compaction failure is observable");
+        assert_eq!(diagnostic.code, "E_PROVIDER_RATE_LIMIT", "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.retry_after_ms,
+            Some(5000),
+            "retry-after hint survives the safe diagnostic: {diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.message, "live compaction did not activate; every turn retained",
+            "{diagnostic:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_activation_projection_failure_does_not_say_compaction_failed() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // The compactor succeeds (activation durably retires turns); only the
+        // post-activation derived projection fails. The report must say
+        // projection, not compaction.
+        inject_projection_trigger(&s.session);
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report.diagnostic.expect("projection failure is observable");
+        assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+        assert!(
+            diagnostic.message.contains("injected projection failure"),
+            "{diagnostic:?}"
+        );
+        assert!(
+            !diagnostic.message.contains("did not activate"),
+            "a projection failure must not read as a compaction failure: {diagnostic:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
     }
 
     #[tokio::test]

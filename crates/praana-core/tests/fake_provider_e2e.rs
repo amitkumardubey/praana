@@ -2428,3 +2428,445 @@ async fn live_projection_failure_does_not_fail_turn_and_later_search_converges()
     assert!(later_report.interruption.is_none());
     assert!(finished_search_result(&cfg.session_dir).contains("retryprojectionmarker"));
 }
+
+// ---------------------------------------------------------------------------
+// Round-2 regressions: resume degradation, tool-batch pre-projection, and
+// diagnostic attribution. Helpers shared by the tests below.
+// ---------------------------------------------------------------------------
+
+fn inject_projection_trigger(session_dir: &std::path::Path, message: &str) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER IF NOT EXISTS fail_history_projection BEFORE INSERT ON projection_checkpoints \
+         WHEN NEW.projection_name = 'history_derived' \
+         BEGIN SELECT RAISE(ABORT, '{message}'); END;"
+    ))
+    .unwrap();
+}
+
+fn drop_projection_trigger(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+        .unwrap();
+}
+
+fn read_events(session_dir: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(session_dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn events_of_kind(session_dir: &std::path::Path, kind: &str) -> Vec<Value> {
+    read_events(session_dir)
+        .into_iter()
+        .filter(|event| event["event"]["kind"] == kind)
+        .collect()
+}
+
+/// First value of `key` anywhere in a parsed event tree (e.g. `artifact_id`).
+fn find_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            if let Some(found) = map.get(key) {
+                return Some(found);
+            }
+            map.values().find_map(|child| find_value(child, key))
+        }
+        Value::Array(items) => items.iter().find_map(|item| find_value(item, key)),
+        _ => None,
+    }
+}
+
+/// Parses the DTO of the last successful durable `tool_execution_finished`
+/// event for `tool`.
+fn last_tool_result_dto(session_dir: &std::path::Path, tool: &str) -> Value {
+    let event = events_of_kind(session_dir, "tool_execution_finished")
+        .into_iter()
+        .rev()
+        .find(|event| event["event"]["data"]["result"]["tool_name"] == tool)
+        .expect("durable tool result");
+    assert_eq!(
+        event["event"]["data"]["result"]["status"], "success",
+        "{event:?}"
+    );
+    let text = event["event"]["data"]["result"]["body"]["content"]["data"]["text"]
+        .as_str()
+        .expect("inline tool result");
+    serde_json::from_str(text).expect("tool result DTO JSON")
+}
+
+/// Replicates History §11.3 `derive_document_id` for an accepted assistant text
+/// block so a test can predict the result_id before the projection that creates
+/// the source row runs.
+fn predict_assistant_source_result_id(
+    event_id: &str,
+    text: &str,
+) -> praana_core::protocol::id::SearchResultId {
+    use sha2::{Digest, Sha256};
+    fn hex_lower(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    let content_sha = hex_lower(&Sha256::digest(text.as_bytes()));
+    let mut input = Vec::new();
+    input.extend_from_slice(b"praana-search-result-v1");
+    input.push(0);
+    input.extend_from_slice(b"event");
+    input.push(0);
+    input.extend_from_slice(event_id.as_bytes());
+    input.push(0);
+    input.extend_from_slice(b"assistant.blocks[0].text");
+    input.push(0);
+    input.extend_from_slice(content_sha.as_bytes());
+    let digest = Sha256::digest(&input);
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&digest[..16]);
+    let ulid = ulid::Ulid::from_bytes(raw);
+    praana_core::protocol::id::SearchResultId::from_str_canonical(&ulid.to_string()).unwrap()
+}
+
+const STALE_MARKER: &str = "STALE_MARKER unseen-until-catchup";
+
+#[tokio::test]
+async fn resume_degrades_when_recovery_projection_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    // Make the derived rebuild fail at resume: drop the checkpoint row (so the
+    // projector must re-apply and write a row) and abort every checkpoint
+    // write. The failure message embeds the session dir so the redaction can
+    // be observed.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+        )
+        .unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, 'injected resume projection failure {}'); END;",
+            cfg.session_dir.display()
+        ))
+        .unwrap();
+    }
+
+    // Resume must degrade, not abort: the derived rebuild failure is recorded
+    // as a recovery notice, and the session stays usable.
+    let mut resumed =
+        HeadlessLoop::resume(cfg.clone()).expect("resume degrades when the derived rebuild fails");
+
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after degraded resume", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    let diagnostic = report
+        .diagnostic
+        .as_ref()
+        .expect("projection failure surfaces on the first report");
+    assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+    assert!(
+        !diagnostic
+            .message
+            .contains(&cfg.session_dir.display().to_string()),
+        "session path is redacted: {diagnostic:?}"
+    );
+
+    // The recovery notice surfaced with the first post-resume assistant attempt.
+    let attempt = events_of_kind(&cfg.session_dir, "assistant_attempt_started")
+        .into_iter()
+        .rev()
+        .find(|event| event["event"]["data"]["purpose"]["type"] == "assistant_step")
+        .expect("post-resume assistant attempt");
+    let notices = attempt["event"]["data"]["recovery_notices"]
+        .as_array()
+        .unwrap();
+    let notice = notices
+        .iter()
+        .find(|notice| notice["kind"] == "history_projection_failed")
+        .expect("history projection failure notice on the first attempt");
+    let notice_message = notice["message"].as_str().unwrap();
+    assert!(
+        notice_message.contains("injected resume projection failure"),
+        "{notice_message}"
+    );
+    assert!(
+        !notice_message.contains(&cfg.session_dir.display().to_string()),
+        "session path is redacted from the notice: {notice_message}"
+    );
+
+    // Stop failing; a later turn runs cleanly.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
+            .unwrap();
+    }
+    let later = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("later turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed.run_turn("later turn", &later).await.unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert!(report.diagnostic.is_none(), "{report:?}");
+}
+
+#[tokio::test]
+async fn live_history_tool_batches_project_before_read() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed visible text".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+
+    // ------------------------------------------------------------- search
+    // A stale turn whose commit projection fails leaves the derived db lagging
+    // behind the log. The next batch that calls a history tool must project
+    // before the tool reads; otherwise the tool would not see the stale turn.
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let stale = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some(STALE_MARKER.into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let stale_report = loop_.run_turn("stale turn", &stale).await.unwrap();
+    assert!(stale_report.interruption.is_none(), "{stale_report:?}");
+    assert_eq!(
+        stale_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "the stale turn's commit projection fails: {stale_report:?}"
+    );
+    drop_projection_trigger(&cfg.session_dir);
+
+    let probe = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": STALE_MARKER, "mode": "exact"}),
+            ),
+            ScriptedStep {
+                text: Some("probed".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let probe_report = loop_.run_turn("probe search", &probe).await.unwrap();
+    assert!(probe_report.interruption.is_none(), "{probe_report:?}");
+    assert!(probe_report.diagnostic.is_none(), "{probe_report:?}");
+    let page = last_tool_result_dto(&cfg.session_dir, "search_session_log");
+    assert!(
+        page.to_string().contains(STALE_MARKER),
+        "search reads the catch-up projection: {page}"
+    );
+
+    // ------------------------------------------------------ read_session_source
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let stale_two = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some(STALE_MARKER.into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let stale_two_report = loop_.run_turn("stale turn two", &stale_two).await.unwrap();
+    assert!(
+        stale_two_report.interruption.is_none(),
+        "{stale_two_report:?}"
+    );
+    assert_eq!(
+        stale_two_report
+            .diagnostic
+            .as_ref()
+            .map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{stale_two_report:?}"
+    );
+
+    let stale_step = events_of_kind(&cfg.session_dir, "assistant_step_accepted")
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event["event"]["data"]["message"]["blocks"]
+                .as_array()
+                .map(|blocks| blocks.iter().any(|b| b["data"]["text"] == STALE_MARKER))
+                .unwrap_or(false)
+        })
+        .expect("stale assistant step");
+    let stale_event_id = stale_step["event_id"].as_str().unwrap().to_owned();
+    let predicted = predict_assistant_source_result_id(&stale_event_id, STALE_MARKER);
+    drop_projection_trigger(&cfg.session_dir);
+
+    let probe_src = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-read-source",
+                "read_session_source",
+                json!({"result_id": predicted.to_string()}),
+            ),
+            ScriptedStep {
+                text: Some("source probed".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let probe_src_report = loop_
+        .run_turn("probe read session source", &probe_src)
+        .await
+        .unwrap();
+    assert!(
+        probe_src_report.interruption.is_none(),
+        "{probe_src_report:?}"
+    );
+    let source = last_tool_result_dto(&cfg.session_dir, "read_session_source");
+    assert!(
+        source["data"]["source"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(STALE_MARKER),
+        "read_session_source reads the catch-up projection: {source}"
+    );
+
+    // --------------------------------------------------------- retrieve_artifact
+    // `retrieve_artifact` reads publish-written artifact tables, so its read
+    // cannot observe catch-up the way search/source reads do; the batch still
+    // runs the pre-batch projection (covered above via search/source) and the
+    // artifact created in the stale turn remains retrievable.
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let artifact_stale = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-sh",
+                "shell",
+                json!({"command": "yes a | head -c 5000", "timeout_ms": 5000}),
+            ),
+            ScriptedStep {
+                text: Some("artifact made".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let artifact_report = loop_
+        .run_turn("stale artifact turn", &artifact_stale)
+        .await
+        .unwrap();
+    assert!(
+        artifact_report.interruption.is_none(),
+        "{artifact_report:?}"
+    );
+    assert_eq!(
+        artifact_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{artifact_report:?}"
+    );
+    let artifact_id = find_value(
+        &events_of_kind(&cfg.session_dir, "tool_execution_finished")
+            .into_iter()
+            .next_back()
+            .expect("shell finish event"),
+        "artifact_id",
+    )
+    .expect("artifact id")
+    .as_str()
+    .unwrap()
+    .to_owned();
+    drop_projection_trigger(&cfg.session_dir);
+
+    let probe_artifact = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-retrieve",
+                "retrieve_artifact",
+                json!({"artifact_id": artifact_id}),
+            ),
+            ScriptedStep {
+                text: Some("artifact probed".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let probe_artifact_report = loop_
+        .run_turn("probe artifact", &probe_artifact)
+        .await
+        .unwrap();
+    assert!(
+        probe_artifact_report.interruption.is_none(),
+        "{probe_artifact_report:?}"
+    );
+    let artifact = last_tool_result_dto(&cfg.session_dir, "retrieve_artifact");
+    let text = artifact["data"]["artifact"]["content"]["data"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.contains('a'),
+        "artifact text is retrievable: {artifact}"
+    );
+}
