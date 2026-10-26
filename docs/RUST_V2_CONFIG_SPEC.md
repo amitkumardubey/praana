@@ -455,7 +455,13 @@ Amended by P5 reconciliation, 2026-10-03.
 Starting with Phase 5, a non-empty configured pair is validated at creation
 for a trusted context window, only the profile's `strict_json_schema` flag,
 credential presence, and compactor admission using one empty synthetic turn.
-Acceptance by the real provider API is **UNVERIFIED (#645)**. Resolution
+The gate makes no network call, so it cannot prove that the provider accepts
+the candidate schema. Checked once by hand (#645): on 2026-10-26, OpenAI
+`gpt-5.6-sol` on `/v1/responses` accepted the checked-in schema in strict mode
+with HTTP 200 (the opt-in live test added in #663 repeats the check). That shows
+schema acceptance only. It does not show that the model writes a valid
+candidate within the compactor's output budget, and other providers and
+endpoints, including the OpenRouter chat path, are **unverified**. Resolution
 performs no network completion and does not silently select a different model.
 It does not require
 `SelfCompactionCapability::Validated` or a fidelity manifest. Confirmed

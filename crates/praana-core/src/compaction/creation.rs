@@ -37,8 +37,10 @@ pub fn validate_compactor_pair_at_creation(
 ///   after the durable compaction start, Compaction §12), and (4) compactor
 ///   admission of the minimum request (control prompt, schema, `Rout`) with
 ///   one empty synthetic turn against the compactor model's window.
-///   Acceptance by the real provider API is UNVERIFIED (#645): no network
-///   completion, no silent fallback, no fidelity manifest, and no
+///   The gate makes no network call, so it cannot prove the provider accepts
+///   the schema. That was checked once against OpenAI Responses (see #645 and
+///   Config §6.4); other providers and endpoints are unverified. No silent
+///   fallback, no fidelity manifest, and no
 ///   `SelfCompactionCapability::Validated` requirement.
 pub fn resolve_compactor_at_creation(
     config: &EffectiveConfigV1,
