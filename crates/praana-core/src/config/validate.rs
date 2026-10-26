@@ -1,7 +1,7 @@
 use super::error::{ConfigError, ConfigWarning};
 use super::path::validate_memory_db_path;
 use super::raw::ascii_edge_trim;
-use super::types::EffectiveConfigV1;
+use super::types::{CompactorPair, EffectiveConfigV1};
 use std::path::Path;
 
 pub fn normalize_provider_url(raw_url: &str, field_name: &str) -> Result<String, ConfigError> {
@@ -161,9 +161,7 @@ pub fn validate_effective_config(
     // session creation (trusted window, strict_json_schema, credential
     // presence, compactor admission) so that plain loading, the config
     // digest, and resume stay pure and independent of ambient state.
-    let compactor_provider_empty = ascii_edge_trim(&config.history.compactor_provider).is_empty();
-    let compactor_model_empty = ascii_edge_trim(&config.history.compactor_model).is_empty();
-    if compactor_provider_empty != compactor_model_empty {
+    if config.history.compactor_pair() == CompactorPair::OneSided {
         return Err(ConfigError::InvalidValue(
             "history.compactor: compactor_provider and compactor_model must both be empty or both non-empty".to_string(),
         ));

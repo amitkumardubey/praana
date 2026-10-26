@@ -453,9 +453,11 @@ explicit P5 owner decision before that behavior is enabled.
 Amended by P5 reconciliation, 2026-10-03.
 
 Starting with Phase 5, a non-empty configured pair is validated at creation
-for a trusted context window, `strict_json_schema`, credential presence, and
-compactor admission. Resolution performs no network completion and does not
-silently select a different model. It does not require
+for a trusted context window, only the profile's `strict_json_schema` flag,
+credential presence, and compactor admission using one empty synthetic turn.
+Acceptance by the real provider API is **UNVERIFIED (#645)**. Resolution
+performs no network completion and does not silently select a different model.
+It does not require
 `SelfCompactionCapability::Validated` or a fidelity manifest. Confirmed
 against `resolve_profile_from_manifest`: the bundled row `openai` /
 `openai-chat-v1` / `gpt-5.6-sol` loads with `strict_json_schema: true`, a
@@ -470,16 +472,21 @@ wrapper (`validate_compactor_pair_at_creation`). The creation gate never runs
 on plain loading, the config digest, or resume.
 
 Setup validates defaults plus the configuration file it writes; it does not
-validate every ambient configuration layer. `praana run` re-validates the full
-layered configuration and is authoritative.
+validate every ambient configuration layer. Blank or omitted compactor fields
+leave the existing pair unchanged; only two non-blank fields replace it, and a
+one-sided submission remains an error. The gate validates the effective pair,
+including a kept pair. `praana run` re-validates the full layered configuration
+and is authoritative.
 
 On resume, the frozen pair's missing credential or unreadable credential store
 stops admission with `E_COMPACTION_UNAVAILABLE` and a specific cause code. An
 unresolved profile or window instead leaves compaction inert for that process,
-records a best-effort `compactor_profile_unresolved` notice and telemetry sample
-(error code only), and permits normal turns subject to assistant admission.
+records a `compactor_profile_unresolved` notice and a best-effort telemetry sample
+(stable reason token only), and permits normal turns subject to assistant admission.
 Live non-bundled catalog profiles still do not establish `strict_json_schema`,
 even with a fresh cache; this policy is unchanged.
+Bundled compactor profiles remain resolvable on resume with a fresh, expired,
+or missing catalog cache; expiry never disables a bundled profile.
 
 Until a bundled profile is `SelfCompactionCapability::Validated` under
 Compaction §17, a new Phase-5 session may still be created with the empty

@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::compaction::activate::{plan_request, CompactionSnapshot, ConfiguredCompactor};
-use crate::config::raw::ascii_edge_trim;
-use crate::config::{ConfigError, EffectiveConfigV1};
+use crate::config::{CompactorPair, ConfigError, EffectiveConfigV1};
 use crate::credentials::store::{credentials_path, load_store, validate_credential_value};
 use crate::credentials::CredentialStoreError;
 use crate::provider::provider_descriptor;
@@ -32,29 +31,29 @@ pub fn validate_compactor_pair_at_creation(
 ///   (no bundled profile is `Validated`).
 /// - One-sided pair: `CONFIG_INVALID_VALUE` (also enforced here as
 ///   defense-in-depth; `validate_effective_config` rejects it first).
-/// - Complete pair: validated for (1) a trusted context window, (2)
-///   `strict_json_schema`, (3) credential presence only (the runtime secret is
-///   not resolved, retained, or logged; resolution stays after the durable
-///   compaction start, Compaction §12), and (4) compactor admission of the
-///   minimum request (control prompt, schema, `Rout`) against the compactor
-///   model's window. No network completion, no silent fallback to a different
-///   model, no fidelity manifest, and no `SelfCompactionCapability::Validated`
-///   requirement.
+/// - Complete pair: validated for (1) a trusted context window, (2) only the
+///   profile's `strict_json_schema` flag, (3) credential presence only (the
+///   runtime secret is not resolved, retained, or logged; resolution stays
+///   after the durable compaction start, Compaction §12), and (4) compactor
+///   admission of the minimum request (control prompt, schema, `Rout`) with
+///   one empty synthetic turn against the compactor model's window.
+///   Acceptance by the real provider API is UNVERIFIED (#645): no network
+///   completion, no silent fallback, no fidelity manifest, and no
+///   `SelfCompactionCapability::Validated` requirement.
 pub fn resolve_compactor_at_creation(
     config: &EffectiveConfigV1,
     praana_home: &Path,
     now_ms: i64,
     env_vars: &BTreeMap<String, String>,
 ) -> Result<Option<ConfiguredCompactor>, ConfigError> {
-    let provider_empty = ascii_edge_trim(&config.history.compactor_provider).is_empty();
-    let model_empty = ascii_edge_trim(&config.history.compactor_model).is_empty();
-    if provider_empty && model_empty {
-        return Ok(None);
-    }
-    if provider_empty != model_empty {
-        return Err(ConfigError::InvalidValue(
-            "history.compactor: compactor_provider and compactor_model must both be empty or both non-empty".to_string(),
-        ));
+    match config.history.compactor_pair() {
+        CompactorPair::Empty => return Ok(None),
+        CompactorPair::OneSided => {
+            return Err(ConfigError::InvalidValue(
+                "history.compactor: compactor_provider and compactor_model must both be empty or both non-empty".to_string(),
+            ));
+        }
+        CompactorPair::Complete { .. } => {}
     }
 
     // Complete pair. Resolve provider rules, window, strict-schema, profile
@@ -109,6 +108,8 @@ pub(crate) fn validate_compactor_credential_presence(
     // Note: `load_store` is retained (no read-only loader exists); it has the
     // side effect of creating/enforcing the parent directory mode. Callers
     // that need to avoid that side effect must ensure a valid env var.
+    // On non-unix, load_store always returns UnsafePermissions. The CLI's
+    // run/resume commands fail closed on Windows before reaching this check.
     let descriptor = provider_descriptor(provider)
         .ok_or_else(|| CredentialStoreError::UnknownProvider(provider.to_owned()))?;
     if env_vars
@@ -140,8 +141,8 @@ pub(crate) fn credential_presence_cause_code(error: &CredentialStoreError) -> &'
 }
 
 /// Admits the minimum compactor request against the compactor model's window:
-/// the §7.4 system policy and control payload (with no source turns yet), the
-/// candidate schema, and the resolved `Rout`. Reuses `plan_request` so the
+/// the §7.4 system policy and control payload with one empty synthetic turn,
+/// the candidate schema, and the resolved `Rout`. Reuses `plan_request` so the
 /// creation-time check exercises the exact bytes and admission path of the
 /// runtime activation.
 #[doc(hidden)]

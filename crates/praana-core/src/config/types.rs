@@ -22,6 +22,25 @@ pub struct HistoryConfig {
     pub summary_segment_max_tokens: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactorPair<'a> {
+    Empty,
+    Complete { provider: &'a str, model: &'a str },
+    OneSided,
+}
+
+impl HistoryConfig {
+    pub fn compactor_pair(&self) -> CompactorPair<'_> {
+        let provider = super::raw::ascii_edge_trim(&self.compactor_provider);
+        let model = super::raw::ascii_edge_trim(&self.compactor_model);
+        match (provider.is_empty(), model.is_empty()) {
+            (true, true) => CompactorPair::Empty,
+            (false, false) => CompactorPair::Complete { provider, model },
+            _ => CompactorPair::OneSided,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct StateConfig {

@@ -695,13 +695,17 @@ impl HeadlessLoop {
         use crate::compaction::creation::{
             credential_presence_cause_code, validate_compactor_credential_presence,
         };
-        use crate::config::raw::ascii_edge_trim;
+        use crate::config::{raw::ascii_edge_trim, CompactorPair};
         let history = &self.config.config.history;
-        let provider = ascii_edge_trim(&history.compactor_provider);
-        if provider.is_empty() && ascii_edge_trim(&history.compactor_model).is_empty() {
-            self.set_compactor(None);
-            return;
-        }
+        let provider = match history.compactor_pair() {
+            CompactorPair::Empty => {
+                self.set_compactor(None);
+                return;
+            }
+            CompactorPair::Complete { provider, .. } => provider,
+            // Frozen invalid pairs still use the existing credential failure path.
+            CompactorPair::OneSided => ascii_edge_trim(&history.compactor_provider),
+        };
         // Presence is independent of catalog freshness. A lost credential must
         // still stop admission even when the profile also cannot be resolved.
         if let Err(error) = validate_compactor_credential_presence(provider, home, env_vars) {
@@ -714,11 +718,12 @@ impl HeadlessLoop {
         }
         match ConfiguredCompactor::resolve(&self.config.config, home, now_ms) {
             Ok(compactor) => self.set_compactor(Some(compactor)),
-            Err(error @ CompactionRunError::Unavailable(_)) => {
-                let cause_code = error.code();
+            Err(CompactionRunError::Unavailable { reason, .. }) => {
+                let cause_code = reason.token();
                 self.set_compactor(None);
                 self.compactor_profile_unresolved = Some(cause_code);
                 let dimensions = format!("{{\"error_code\":\"{cause_code}\"}}");
+                // Best-effort derived telemetry must not prevent session resume.
                 let _ = self.artifacts.record_telemetry_sample(
                     "compactor_profile_unresolved",
                     None,
@@ -728,8 +733,8 @@ impl HeadlessLoop {
                 );
             }
             Err(error) => {
-                self.compactor = None;
-                self.compaction_unavailable = Some(compaction_unavailable(error.code()));
+                // resolve only performs profile resolution; every failure is Unavailable.
+                unreachable!("ConfiguredCompactor::resolve returned a non-profile error: {error}")
             }
         }
     }

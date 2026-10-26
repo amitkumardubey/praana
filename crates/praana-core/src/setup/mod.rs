@@ -20,6 +20,7 @@ use crate::credentials::{
 use crate::history::operation_ledger::{
     complete_operation, open_host_ledger, reserve_operation_sync, HistoryService,
 };
+use crate::process::env::process_env_utf8;
 use crate::provider::{bundled_manifest, endpoint_trust, resolve_profile, ProviderProtocol};
 use crate::ui_contract::catalog::{
     ActiveModelDto, ProviderProtocol as UiProviderProtocol, ReasoningEffort as UiReasoningEffort,
@@ -628,6 +629,8 @@ impl SetupService {
             Some(SetupValueDto::Secret(value)) => Some(value.expose().to_owned()),
             _ => None,
         };
+        // Pending keys and credential-store values are plain Strings; neither
+        // representation is zeroized when dropped.
         // Apply the secret to the in-memory store only (this validates the
         // secret value and bumps the in-memory revision). Nothing is written
         // to disk yet: the P5-7 creation gate runs first, and a rejected pair
@@ -662,7 +665,7 @@ impl SetupService {
         let gate_env = gate_env_with_overlay(
             provider_name,
             secret.as_deref(),
-            &compactor_provider,
+            &effective.history.compactor_provider,
             env_vars,
         );
         crate::compaction::creation::validate_compactor_pair_at_creation(
@@ -702,24 +705,6 @@ impl SetupService {
         .map_err(|error| SetupError::Io(core_error_text(&error)))?;
         Ok(result)
     }
-}
-
-/// Collect the process environment as UTF-8 pairs without panicking.
-///
-/// `std::env::vars()` panics if any variable's name or value is not valid
-/// Unicode. `vars_os()` does not; this helper keeps only the pairs where both
-/// the name and the value are valid UTF-8 and silently drops the rest, which
-/// is correct here because every credential env var the gate reads has an
-/// ASCII name and a UTF-8-validated value.
-fn process_env_utf8() -> BTreeMap<String, String> {
-    std::env::vars_os()
-        .filter_map(
-            |(key, value)| match (key.into_string(), value.into_string()) {
-                (Ok(key), Ok(value)) => Some((key, value)),
-                _ => None,
-            },
-        )
-        .collect()
 }
 
 /// Build the environment map the P5-7 creation gate reads for credential
@@ -781,19 +766,13 @@ fn clone_setup_values_for_operation(
         .collect()
 }
 
-fn optional_text_value(
-    values: &BTreeMap<SetupFieldId, SetupValueDto>,
+fn optional_text_value<'a>(
+    values: &'a BTreeMap<SetupFieldId, SetupValueDto>,
     field_name: &str,
-) -> Result<Option<String>, SetupError> {
+) -> Result<Option<&'a str>, SetupError> {
     match values.get(&SetupFieldId(field_name.to_owned())) {
         None => Ok(None),
-        Some(SetupValueDto::Text(value)) | Some(SetupValueDto::Choice(value)) => {
-            if value.trim().is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(value.clone()))
-            }
-        }
+        Some(SetupValueDto::Text(value)) | Some(SetupValueDto::Choice(value)) => Ok(Some(value)),
         Some(SetupValueDto::Secret(_) | SetupValueDto::Boolean(_)) => Err(
             SetupError::InvalidInput(format!("field {field_name} must be text or choice")),
         ),
@@ -803,9 +782,12 @@ fn optional_text_value(
 fn resolve_compactor_selection(
     values: &BTreeMap<SetupFieldId, SetupValueDto>,
 ) -> Result<(String, String), SetupError> {
-    let compactor_provider = optional_text_value(values, FIELD_COMPACTOR_PROVIDER)?;
-    let compactor_model = optional_text_value(values, FIELD_COMPACTOR_MODEL)?;
-    if compactor_provider.is_some() != compactor_model.is_some() {
+    use crate::config::raw::ascii_edge_trim;
+    let compactor_provider =
+        ascii_edge_trim(optional_text_value(values, FIELD_COMPACTOR_PROVIDER)?.unwrap_or_default());
+    let compactor_model =
+        ascii_edge_trim(optional_text_value(values, FIELD_COMPACTOR_MODEL)?.unwrap_or_default());
+    if compactor_provider.is_empty() != compactor_model.is_empty() {
         return Err(SetupError::InvalidInput(
             "compactor_provider and compactor_model must be supplied together".to_owned(),
         ));
@@ -813,11 +795,8 @@ fn resolve_compactor_selection(
     // P5-7: a complete pair is accepted. The Phase-5 creation gate validates
     // it (window, strict-schema, credential presence, admission) in
     // `apply_operation_with_env`, before anything is persisted; an invalid
-    // pair fails there. The empty pair stays the default.
-    Ok((
-        compactor_provider.unwrap_or_default(),
-        compactor_model.unwrap_or_default(),
-    ))
+    // pair fails there. Blank or omitted fields leave the existing pair unchanged.
+    Ok((compactor_provider.to_owned(), compactor_model.to_owned()))
 }
 
 fn validate_written_config(praana_home: &Path, config_path: &Path) -> Result<(), SetupError> {
@@ -880,13 +859,15 @@ fn setup_config_bytes(
     llm.insert("protocol".to_owned(), json!(protocol));
     llm.insert("model".to_owned(), json!(model));
     llm.insert("reasoning_effort".to_owned(), json!(reasoning_effort));
-    let history = object
-        .entry("history")
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()
-        .ok_or_else(|| SetupError::Config("history must be an object".to_owned()))?;
-    history.insert("compactor_provider".to_owned(), json!(compactor_provider));
-    history.insert("compactor_model".to_owned(), json!(compactor_model));
+    if !compactor_provider.is_empty() && !compactor_model.is_empty() {
+        let history = object
+            .entry("history")
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| SetupError::Config("history must be an object".to_owned()))?;
+        history.insert("compactor_provider".to_owned(), json!(compactor_provider));
+        history.insert("compactor_model".to_owned(), json!(compactor_model));
+    }
     let provider_config = json!({"base_url": base_url, "extra_headers": {}});
     let providers = object
         .entry("providers")

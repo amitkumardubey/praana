@@ -803,6 +803,38 @@ fn compactor_fields_are_both_empty_or_complete() {
 }
 
 #[test]
+fn compactor_pair_classifies_ascii_edges_without_trimming_nbsp() {
+    use praana_core::config::CompactorPair;
+    let home = tempfile::tempdir().unwrap();
+    let mut history = praana_core::config::build_defaults(home.path()).history;
+    for (provider, model, expected) in [
+        (" \t\r\n", "", CompactorPair::Empty),
+        ("openai", " \t", CompactorPair::OneSided),
+        ("", "gpt-5.6-sol", CompactorPair::OneSided),
+        (
+            " openai\t",
+            "\rgpt-5.6-sol\n",
+            CompactorPair::Complete {
+                provider: "openai",
+                model: "gpt-5.6-sol",
+            },
+        ),
+        (
+            "\u{00a0}",
+            "\u{00a0}",
+            CompactorPair::Complete {
+                provider: "\u{00a0}",
+                model: "\u{00a0}",
+            },
+        ),
+    ] {
+        history.compactor_provider = provider.into();
+        history.compactor_model = model.into();
+        assert_eq!(history.compactor_pair(), expected, "{provider:?}/{model:?}");
+    }
+}
+
+#[test]
 fn incognito_and_plugin_none_select_identical_memory_boundary() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");

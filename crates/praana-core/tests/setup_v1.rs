@@ -88,7 +88,6 @@ fn setup_apply_validates_profile_writes_secret_free_config_and_returns_active_mo
     let config = std::fs::read_to_string(home.join("praana.config.json")).unwrap();
     assert!(!config.contains("credential-value-123"));
     assert!(config.contains("gpt-5.6-sol"));
-    assert!(config.contains("compactor_provider"));
     let operation_bytes = std::fs::read(home.join("ui-operations.db")).unwrap();
     assert!(!String::from_utf8_lossy(&operation_bytes).contains("credential-value-123"));
     let credentials = load_store(&home.join("credentials.json")).unwrap();
@@ -183,38 +182,6 @@ fn openai_setup_values() -> BTreeMap<SetupFieldId, SetupValueDto> {
         SetupValueDto::Choice("high".to_owned()),
     );
     values
-}
-
-#[test]
-fn setup_apply_writes_empty_compactor_pair_before_p5() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
-    let service = SetupService::new(home.clone());
-    let result = service
-        .apply(
-            0,
-            ProviderId::from_canonical_str("openai").unwrap(),
-            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
-            openai_setup_values(),
-            2_000,
-        )
-        .unwrap();
-    assert_eq!(result.revision, 1);
-
-    let config: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(home.join("praana.config.json")).unwrap())
-            .unwrap();
-    let history = config.get("history").expect("history section");
-    assert_eq!(
-        history.get("compactor_provider").and_then(|v| v.as_str()),
-        Some(""),
-        "compactor_provider must be empty before P5: {config}"
-    );
-    assert_eq!(
-        history.get("compactor_model").and_then(|v| v.as_str()),
-        Some(""),
-        "compactor_model must be empty before P5: {config}"
-    );
 }
 
 #[test]
@@ -595,4 +562,172 @@ fn setup_apply_does_not_panic_on_non_utf8_env() {
 
     let result = result.expect("apply must not panic on a non-UTF-8 env var");
     assert_eq!(result.revision, 1);
+}
+
+#[test]
+fn setup_apply_preserves_compactor_when_omitted_or_blank() {
+    for omitted in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("praana.config.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "config_schema_version": 1,
+                "history": {"compactor_provider": "openai", "compactor_model": "gpt-5.6-sol"},
+                "llm": {"provider": "openrouter", "model": "old-model"},
+                "providers": {"openai": {"base_url": "https://old.example/v1", "extra_headers": {}}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut values = compactor_values(Some("rotated-key"), " \t\r\n", " \t\r\n");
+        if omitted {
+            values.remove(&SetupFieldId("compactor_provider".into()));
+            values.remove(&SetupFieldId("compactor_model".into()));
+        }
+        SetupService::new(home)
+            .apply_operation_with_env(
+                OperationId(ulid::Ulid::generate()),
+                0,
+                ProviderId::from_canonical_str("openai").unwrap(),
+                ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+                values,
+                2000,
+                &BTreeMap::new(),
+            )
+            .expect("kept same-provider pair must see the pending rotated key");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            saved["history"]["compactor_provider"], "openai",
+            "omitted={omitted}"
+        );
+        assert_eq!(
+            saved["history"]["compactor_model"], "gpt-5.6-sol",
+            "omitted={omitted}"
+        );
+        assert_eq!(saved["llm"]["provider"], "openai");
+        assert_eq!(saved["llm"]["model"], "gpt-5.6-sol");
+        assert_eq!(
+            saved["providers"]["openai"]["base_url"],
+            "https://api.openai.com/v1"
+        );
+    }
+}
+
+#[test]
+fn setup_apply_gates_the_kept_compactor_pair() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let path = home.join("praana.config.json");
+    let before = serde_json::to_vec(&serde_json::json!({
+        "config_schema_version": 1,
+        "history": {"compactor_provider": "openrouter", "compactor_model": "openai/gpt-5.6-sol"}
+    }))
+    .unwrap();
+    std::fs::write(&path, &before).unwrap();
+    let error = SetupService::new(home.clone())
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            compactor_values(Some("pending-openai-key"), "", ""),
+            2000,
+            &BTreeMap::new(),
+        )
+        .expect_err("kept pair must still require its own credential");
+    assert!(
+        error.to_string().contains("no credential is available"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
+}
+
+#[test]
+fn setup_apply_replaces_complete_compactor_and_rejects_one_sided_selection() {
+    for (provider, model) in [
+        ("openai", ""),
+        ("", "gpt-5.6-sol"),
+        ("openai", "gpt-5.6-sol"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let path = home.join("praana.config.json");
+        let before = serde_json::to_vec(&serde_json::json!({
+            "config_schema_version": 1,
+            "history": {"compactor_provider": "openrouter", "compactor_model": "openai/gpt-5.6-sol"}
+        }))
+        .unwrap();
+        std::fs::write(&path, &before).unwrap();
+        let result = SetupService::new(home).apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            compactor_values(Some("pending-key"), provider, model),
+            2000,
+            &BTreeMap::new(),
+        );
+        if provider.is_empty() || model.is_empty() {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("must be supplied together"));
+            assert_eq!(std::fs::read(path).unwrap(), before);
+        } else {
+            result.unwrap();
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(saved["history"]["compactor_provider"], "openai");
+            assert_eq!(saved["history"]["compactor_model"], "gpt-5.6-sol");
+        }
+    }
+}
+
+#[test]
+fn setup_apply_trims_compactor_before_pending_secret_overlay_and_save() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    SetupService::new(home.clone())
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            compactor_values(Some("pending-key"), "openai ", " gpt-5.6-sol"),
+            2000,
+            &BTreeMap::new(),
+        )
+        .expect("ASCII-trimmed pair must use the pending same-provider key");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.join("praana.config.json")).unwrap()).unwrap();
+    assert_eq!(saved["history"]["compactor_provider"], "openai");
+    assert_eq!(saved["history"]["compactor_model"], "gpt-5.6-sol");
+}
+
+#[test]
+fn setup_apply_nbsp_compactor_selection_is_not_blank() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let error = SetupService::new(home)
+        .apply_operation_with_env(
+            OperationId(ulid::Ulid::generate()),
+            0,
+            ProviderId::from_canonical_str("openai").unwrap(),
+            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+            compactor_values(Some("pending-key"), "\u{00a0}", "\u{00a0}"),
+            2000,
+            &BTreeMap::new(),
+        )
+        .expect_err("NBSP must not silently select an empty compactor pair");
+    assert!(
+        error.to_string().contains("SETUP_CONFIG_INVALID"),
+        "{error}"
+    );
 }

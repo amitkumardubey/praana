@@ -532,7 +532,9 @@ async fn drive_turn(
 // ---------------------------------------------------------------------------
 
 async fn run_command(args: RunArgs) -> i32 {
-    let env_vars: HashMap<String, String> = std::env::vars().collect();
+    let env_vars: HashMap<String, String> = praana_core::process::env::process_env_utf8()
+        .into_iter()
+        .collect();
     let cwd = workspace_dir();
 
     let overrides = ConfigCliOverrides {
@@ -580,16 +582,16 @@ async fn run_command(args: RunArgs) -> i32 {
         }
     };
 
-    // P5-7 creation gate: a complete compactor pair is validated here (trusted
-    // window, strict_json_schema, credential presence, admission), only when a
-    // NEW session is created. Resume never runs it, so pre-Phase-5 snapshots
-    // keep their frozen creation configuration.
     let env_btree: std::collections::BTreeMap<String, String> = env_vars.into_iter().collect();
     if cfg!(windows) {
         eprintln!("error: headless session creation is fail-closed on Windows");
         return 1;
     }
 
+    // P5-7 creation gate: a complete compactor pair is validated here (trusted
+    // window, strict_json_schema, credential presence, admission), only when a
+    // NEW session is created. Resume never runs it, so pre-Phase-5 snapshots
+    // keep their frozen creation configuration.
     let compactor = match praana_core::compaction::creation::resolve_compactor_at_creation(
         &config,
         &praana_home,
@@ -724,7 +726,9 @@ fn find_session(root: &Path, prefix: &str) -> Result<Vec<(PathBuf, String)>, i32
 }
 
 async fn resume_command(args: ResumeArgs) -> i32 {
-    let env_vars: HashMap<String, String> = std::env::vars().collect();
+    let env_vars: HashMap<String, String> = praana_core::process::env::process_env_utf8()
+        .into_iter()
+        .collect();
     let cwd = workspace_dir();
 
     let overrides = ConfigCliOverrides {
