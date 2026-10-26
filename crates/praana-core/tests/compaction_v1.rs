@@ -1973,7 +1973,7 @@ mod activation {
         CompactionOutcome, ConfiguredCompactor,
     };
     use praana_core::compaction::control::COMPACTOR_SYSTEM_POLICY;
-    use praana_core::compaction::schema::candidate_json_schema;
+    use praana_core::compaction::schema::candidate_wire_schema;
     use praana_core::config::{build_defaults, EffectiveConfigV1};
     use praana_core::credentials::store::{
         credentials_path, save_store, upsert_credential, CredentialStoreV1,
@@ -2577,7 +2577,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(body["input"].as_array().unwrap().len(), 1);
         assert!(body.get("tools").is_none());
         assert_eq!(body["text"]["format"]["strict"], true);
-        assert_eq!(&body["text"]["format"]["schema"], candidate_json_schema());
+        assert_eq!(&body["text"]["format"]["schema"], candidate_wire_schema());
         let control = control_of(&body).unwrap();
         assert_eq!(control["request_schema_version"], 1);
         assert!(control["previous_handoff"].is_null());
@@ -4954,5 +4954,84 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             assert!(!row.dimensions_json.to_ascii_lowercase().contains("sqlite"));
         }
         assert!(telemetry(&session, "admission_context_underestimation").is_empty());
+    }
+}
+
+/// #645: the strict wire schema must not carry a `format` the provider rejects,
+/// while the checked-in schema and its hash stay as they are.
+mod wire_schema {
+    use praana_core::compaction::schema::{
+        candidate_json_schema, candidate_schema_bytes, candidate_wire_schema,
+    };
+    use serde_json::Value;
+
+    fn count_keyword(value: &Value, keyword: &str) -> usize {
+        match value {
+            Value::Object(map) => {
+                usize::from(map.get(keyword).is_some_and(|v| !v.is_object()))
+                    + map
+                        .values()
+                        .map(|child| count_keyword(child, keyword))
+                        .sum::<usize>()
+            }
+            Value::Array(items) => items.iter().map(|item| count_keyword(item, keyword)).sum(),
+            _ => 0,
+        }
+    }
+
+    fn without_format(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .filter(|(key, child)| !(key.as_str() == "format" && child.is_string()))
+                    .map(|(key, child)| (key.clone(), without_format(child)))
+                    .collect(),
+            ),
+            Value::Array(items) => Value::Array(items.iter().map(without_format).collect()),
+            other => other.clone(),
+        }
+    }
+
+    #[test]
+    fn wire_schema_is_the_full_schema_minus_unsupported_formats() {
+        let full = candidate_json_schema();
+        let wire = candidate_wire_schema();
+        assert!(
+            count_keyword(full, "format") > 0,
+            "the checked-in schema still carries format: uint32"
+        );
+        assert_eq!(
+            count_keyword(wire, "format"),
+            0,
+            "no format goes on the wire"
+        );
+        assert_eq!(wire, &without_format(full));
+        for keyword in [
+            "pattern",
+            "minimum",
+            "additionalProperties",
+            "enum",
+            "required",
+        ] {
+            assert_eq!(
+                count_keyword(wire, keyword),
+                count_keyword(full, keyword),
+                "{keyword} must be untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn the_checked_in_schema_bytes_are_unchanged_by_the_wire_schema() {
+        let bytes = String::from_utf8(candidate_schema_bytes()).unwrap();
+        assert!(bytes.contains("\"format\":\"uint32\""));
+        assert_eq!(
+            bytes.as_bytes(),
+            include_bytes!("../schemas/compaction_candidate_v1.schema.json")
+                .strip_suffix(b"\n")
+                .unwrap_or(include_bytes!(
+                    "../schemas/compaction_candidate_v1.schema.json"
+                ))
+        );
     }
 }

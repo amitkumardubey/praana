@@ -27,7 +27,7 @@ use crate::compaction::control::{
 };
 use crate::compaction::render::check_rendered_handoff_tokens;
 use crate::compaction::schema::{
-    candidate_hash, candidate_json_schema, candidate_schema_sha256, parse_candidate,
+    candidate_hash, candidate_schema_sha256, candidate_wire_schema, parse_candidate,
     CandidateIssue, CandidateIssueCode, CompactionCandidateV1, CANDIDATE_OUTPUT_SCHEMA_ID,
 };
 use crate::compaction::selection::{select_turns, ProjectedTurn, Selection};
@@ -912,7 +912,7 @@ pub fn plan_request(
             continuation: None,
             target: &compactor.selection,
             internal_compaction_control: Some(&control_text),
-            compaction_schema: Some(candidate_json_schema()),
+            compaction_schema: Some(candidate_wire_schema()),
             replay_policy: "active",
         })
     } else {
@@ -934,7 +934,7 @@ pub fn plan_request(
             reasoning: ReasoningEffort::Off,
             image_input_supported: false,
             internal_compaction_control: Some(&control_text),
-            compaction_schema: Some(candidate_json_schema()),
+            compaction_schema: Some(candidate_wire_schema()),
         })
     }
     .map_err(|error| CompactionRunError::Request(error.safe_message.clone()))?;

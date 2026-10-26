@@ -288,6 +288,59 @@ pub fn candidate_json_schema() -> &'static Value {
     })
 }
 
+/// `format` values that OpenAI strict structured output accepts. Any other
+/// `format` (here `uint32`) makes the API reject the whole schema before it
+/// generates anything.
+const STRICT_WIRE_FORMATS: &[&str] = &[
+    "date-time",
+    "time",
+    "date",
+    "duration",
+    "email",
+    "hostname",
+    "ipv4",
+    "ipv6",
+    "uuid",
+];
+
+/// The schema that goes on the wire in strict mode (`text.format` /
+/// `response_format`). It is `candidate_json_schema()` without any `format`
+/// keyword the strict API does not accept. The checked-in schema, its hash
+/// (`output_schema_sha256`) and local validation of the returned candidate
+/// still use the full schema, so the `uint32` bound is enforced on our side
+/// by `minimum` and the validator, not by the provider (#645).
+pub fn candidate_wire_schema() -> &'static Value {
+    static WIRE: OnceLock<Value> = OnceLock::new();
+    WIRE.get_or_init(|| {
+        let mut schema = candidate_json_schema().clone();
+        strip_unsupported_formats(&mut schema);
+        schema
+    })
+}
+
+fn strip_unsupported_formats(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            let unsupported = map
+                .get("format")
+                .and_then(Value::as_str)
+                .is_some_and(|format| !STRICT_WIRE_FORMATS.contains(&format));
+            if unsupported {
+                map.remove("format");
+            }
+            for child in map.values_mut() {
+                strip_unsupported_formats(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_unsupported_formats(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// RFC 8785 bytes of the normalized schema, with no trailing LF. These are the
 /// checked-in file bytes and the input to `output_schema_sha256`.
 pub fn candidate_schema_bytes() -> Vec<u8> {
