@@ -529,6 +529,10 @@ impl SetupService {
     /// (`process_env_utf8`). Exposed `#[doc(hidden)]` so `tests/setup_v1.rs`
     /// can drive the P5-7 creation gate with a deterministic environment
     /// instead of the ambient process environment.
+    ///
+    /// Validates defaults plus the configuration file setup writes, not the
+    /// full layered runtime configuration. `praana run` re-validates all layers
+    /// and is authoritative.
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
     pub fn apply_operation_with_env(
@@ -595,6 +599,8 @@ impl SetupService {
             values: operation_values,
         });
         let (ledger, history) = self.host_operation_context(now_ms)?;
+        // A byte-identical retry continues this reservation; a corrected payload
+        // needs a new operation id.
         let reservation = reserve_operation_sync(&ledger, &command, &history)
             .map_err(|error| SetupError::Io(core_error_text(&error)))?;
         if let OperationReservation::ReplayStored(StoredTerminalResult::Success(
@@ -659,7 +665,7 @@ impl SetupService {
             &compactor_provider,
             env_vars,
         );
-        crate::config::validate::validate_compactor_pair_at_creation(
+        crate::compaction::creation::validate_compactor_pair_at_creation(
             &effective,
             &self.praana_home,
             now_ms,

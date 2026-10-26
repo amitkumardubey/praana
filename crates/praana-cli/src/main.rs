@@ -590,7 +590,7 @@ async fn run_command(args: RunArgs) -> i32 {
         return 1;
     }
 
-    let compactor = match praana_core::config::validate::resolve_compactor_at_creation(
+    let compactor = match praana_core::compaction::creation::resolve_compactor_at_creation(
         &config,
         &praana_home,
         SystemClock.now_ms(),
@@ -873,6 +873,9 @@ async fn resume_command(args: ResumeArgs) -> i32 {
         SystemClock.now_ms(),
         &env_vars.into_iter().collect(),
     );
+    if let Some(cause) = headless.compactor_profile_unresolved_cause() {
+        eprintln!("warning: compactor_profile_unresolved ({cause}); compaction is inert");
+    }
     // System Context §7.1: the code is the whole warning — no source bytes and
     // no host-absolute paths — and it is printed before the next provider
     // request, never instead of one.

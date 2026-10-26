@@ -469,6 +469,18 @@ returns the compactor installed by `praana run`. Setup uses its validation-only
 wrapper (`validate_compactor_pair_at_creation`). The creation gate never runs
 on plain loading, the config digest, or resume.
 
+Setup validates defaults plus the configuration file it writes; it does not
+validate every ambient configuration layer. `praana run` re-validates the full
+layered configuration and is authoritative.
+
+On resume, the frozen pair's missing credential or unreadable credential store
+stops admission with `E_COMPACTION_UNAVAILABLE` and a specific cause code. An
+unresolved profile or window instead leaves compaction inert for that process,
+records a best-effort `compactor_profile_unresolved` notice and telemetry sample
+(error code only), and permits normal turns subject to assistant admission.
+Live non-bundled catalog profiles still do not establish `strict_json_schema`,
+even with a fresh cache; this policy is unchanged.
+
 Until a bundled profile is `SelfCompactionCapability::Validated` under
 Compaction §17, a new Phase-5 session may still be created with the empty
 pair. That pair does not select a same-model compactor. It stays legal and

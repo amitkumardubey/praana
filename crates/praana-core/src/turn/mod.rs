@@ -485,6 +485,8 @@ pub struct HeadlessLoop {
     /// Set when the installed compactor lost its credential after start
     /// (Compaction §14.4). While set, new turn admission is refused.
     compaction_unavailable: Option<ProtocolError>,
+    /// Best-effort, process-local notice; no profile content or secret is retained.
+    compactor_profile_unresolved: Option<&'static str>,
     /// Observable hysteresis signal (Compaction §4.2); never a lockout.
     pressure: crate::compaction::admission::PressureState,
 }
@@ -676,43 +678,65 @@ impl HeadlessLoop {
     ) {
         self.compactor = compactor;
         self.compaction_unavailable = None;
+        self.compactor_profile_unresolved = None;
     }
 
-    /// Reinstalls a configured compactor from this loop's frozen resume config.
-    /// This is not the creation gate: old empty pairs remain inert, while a
-    /// lost capability or credential presence uses the existing §14.4 stop.
-    /// Secrets remain resolved after the durable attempt start, never pinned
-    /// to this presence-check environment.
+    /// Reinstalls the frozen pair without a creation gate. Credential failures
+    /// stop admission (§14.4); unresolved profiles leave compaction inert for
+    /// this process and ordinary turn admission unchanged. Runtime secrets are
+    /// still resolved only after the durable compaction attempt start.
     pub fn install_compactor_on_resume(
         &mut self,
         home: &Path,
         now_ms: i64,
         env_vars: &std::collections::BTreeMap<String, String>,
     ) {
+        use crate::compaction::activate::{CompactionRunError, ConfiguredCompactor};
+        use crate::compaction::creation::{
+            credential_presence_cause_code, validate_compactor_credential_presence,
+        };
+        use crate::config::raw::ascii_edge_trim;
         let history = &self.config.config.history;
-        if history.compactor_provider.trim().is_empty() && history.compactor_model.trim().is_empty()
-        {
+        let provider = ascii_edge_trim(&history.compactor_provider);
+        if provider.is_empty() && ascii_edge_trim(&history.compactor_model).is_empty() {
+            self.set_compactor(None);
             return;
         }
-        let compactor = crate::compaction::activate::ConfiguredCompactor::resolve(
-            &self.config.config,
-            home,
-            now_ms,
-        )
-        .map_err(|error| error.code())
-        .and_then(|compactor| {
-            crate::config::validate::validate_compactor_credential_presence(
-                &compactor, home, env_vars,
-            )
-            .map_err(|_| "E_PROVIDER_AUTH")?;
-            Ok(compactor)
-        });
-        match compactor {
+        // Presence is independent of catalog freshness. A lost credential must
+        // still stop admission even when the profile also cannot be resolved.
+        if let Err(error) = validate_compactor_credential_presence(provider, home, env_vars) {
+            self.compactor = None;
+            self.compactor_profile_unresolved = None;
+            self.compaction_unavailable = Some(compaction_unavailable(
+                credential_presence_cause_code(&error),
+            ));
+            return;
+        }
+        match ConfiguredCompactor::resolve(&self.config.config, home, now_ms) {
             Ok(compactor) => self.set_compactor(Some(compactor)),
-            Err(cause_code) => {
-                self.compaction_unavailable = Some(compaction_unavailable(cause_code));
+            Err(error @ CompactionRunError::Unavailable(_)) => {
+                let cause_code = error.code();
+                self.set_compactor(None);
+                self.compactor_profile_unresolved = Some(cause_code);
+                let dimensions = format!("{{\"error_code\":\"{cause_code}\"}}");
+                let _ = self.artifacts.record_telemetry_sample(
+                    "compactor_profile_unresolved",
+                    None,
+                    0,
+                    &dimensions,
+                    now_ms,
+                );
+            }
+            Err(error) => {
+                self.compactor = None;
+                self.compaction_unavailable = Some(compaction_unavailable(error.code()));
             }
         }
+    }
+
+    /// Notice for a caller to present; library code never prints to stderr.
+    pub fn compactor_profile_unresolved_cause(&self) -> Option<&'static str> {
+        self.compactor_profile_unresolved
     }
 
     /// Current pressure hysteresis signal (Compaction §4.2).
@@ -960,6 +984,7 @@ impl HeadlessLoop {
             project_context_changed: false,
             emergency_recovery_pending: false,
             compactor: None,
+            compactor_profile_unresolved: None,
             compaction_unavailable: None,
             pressure: crate::compaction::admission::PressureState::Normal,
         })

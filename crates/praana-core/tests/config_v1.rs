@@ -1,5 +1,5 @@
 use praana_core::compaction::activate::ConfiguredCompactor;
-use praana_core::config::validate::{
+use praana_core::compaction::creation::{
     admit_minimum_compactor_request, validate_compactor_pair_at_creation,
 };
 use praana_core::config::{

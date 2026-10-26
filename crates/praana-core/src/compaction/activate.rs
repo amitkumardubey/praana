@@ -194,8 +194,8 @@ impl ConfiguredCompactor {
         now_ms: i64,
     ) -> Result<Self, CompactionRunError> {
         let history = &config.history;
-        let provider = history.compactor_provider.trim().to_owned();
-        let model = history.compactor_model.trim().to_owned();
+        let provider = crate::config::raw::ascii_edge_trim(&history.compactor_provider).to_owned();
+        let model = crate::config::raw::ascii_edge_trim(&history.compactor_model).to_owned();
         if provider.is_empty() || model.is_empty() {
             return Err(CompactionRunError::Unavailable(
                 "the compactor pair is empty and inert".into(),
@@ -555,6 +555,61 @@ pub struct CompactionSnapshot {
     pub source_turns: Vec<CompactionSourceTurnV1>,
     pub current_state: CompactionStateInputV1,
     pub universe: ReferenceUniverse,
+}
+
+impl CompactionSnapshot {
+    /// Smallest renderable control for the creation-time admission probe.
+    pub fn minimal_for_admission_probe() -> Result<Self, crate::config::ConfigError> {
+        Ok(Self {
+            projection_sequence: 0,
+            reset_epoch: 0,
+            epoch: 1,
+            previous_handoff: None,
+            previous_handoff_hash: None,
+            selection: Selection {
+                turn_ids: Vec::new(),
+                source_start_sequence: 1,
+                source_end_sequence: 1,
+                eligible_mass: 0,
+                target_mass: 0,
+                selected_mass: 0,
+            },
+            source_hash: Sha256Digest::digest_bytes(b""),
+            event_prefix_hash_before: Sha256Digest::digest_bytes(b""),
+            snapshot_event_prefix_hash: [0u8; 32],
+            replay_state: EventReplayer::default(),
+            turn_estimates: Vec::new(),
+            // Zero source turns cannot render (§7.4); use one empty synthetic turn.
+            source_turns: vec![CompactionSourceTurnV1 {
+                turn_id: TurnId::from_str_canonical("01J8Z3NDEK0000000000000001").map_err(
+                    |error| {
+                        crate::config::ConfigError::InvalidValue(format!(
+                            "synthetic turn id: {error}"
+                        ))
+                    },
+                )?,
+                start_sequence: 1,
+                end_sequence: 1,
+                interrupted: None,
+                messages: Vec::new(),
+                artifact_previews: Vec::new(),
+            }],
+            current_state: CompactionStateInputV1 {
+                graph_sequence: 0,
+                rendered_input_sha256: Sha256Digest::digest_bytes(b""),
+                rendered_active_state: String::new(),
+            },
+            universe: ReferenceUniverse {
+                source_event_ids: BTreeSet::new(),
+                source_artifact_ids: BTreeSet::new(),
+                source_state_ids: BTreeSet::new(),
+                prior_segment_ids: BTreeSet::new(),
+                lineage_event_ids: BTreeSet::new(),
+                session_artifact_ids: BTreeSet::new(),
+                current_state_ids: BTreeSet::new(),
+            },
+        })
+    }
 }
 
 fn digest_of<T: serde::Serialize>(value: &T) -> Result<Sha256Digest, CompactionRunError> {

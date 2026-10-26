@@ -352,124 +352,115 @@ fn compactor_values(
     values
 }
 
-/// R1: a compactor provider that differs from the active one and has no
-/// credential is rejected, and nothing is persisted (store bytes unchanged /
-/// absent, store revision unchanged, config absent).
+/// The shared creation gate must reject before save_store for every reachable
+/// rejection class. Bundled windows cannot reach admission failure through setup;
+/// config_v1 exercises that gate directly with a deliberately shrunk profile.
 #[test]
-fn setup_apply_gate_rejection_differing_provider_no_credential_persists_nothing() {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
-    let service = SetupService::new(home.clone());
-    // Active provider openai (secret supplied); compactor provider openrouter
-    // with no credential in the env overlay.
-    let values = compactor_values(
-        Some("credential-value-123"),
-        "openrouter",
-        "some-live-model",
-    );
-    let before = snapshot_persistence(&home);
-    let error = service
-        .apply_operation_with_env(
-            OperationId(ulid::Ulid::generate()),
-            0,
-            ProviderId::from_canonical_str("openai").unwrap(),
-            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
-            values,
-            2_000,
-            &BTreeMap::new(),
-        )
-        .expect_err("differing compactor provider without credential must be rejected");
-    assert!(
-        error.to_string().contains("SETUP_CONFIG_INVALID"),
-        "gate rejection must surface as a config error: {error}"
-    );
-    let after = snapshot_persistence(&home);
-    assert_eq!(
-        before.credentials, after.credentials,
-        "credential store bytes must be unchanged / absent after rejection"
-    );
-    assert!(
-        !after.config_exists,
-        "config file must not be written on rejection"
-    );
-    // The store revision on disk must be unchanged (absent store stays absent).
-    assert!(
-        load_store(&credentials_path(&home)).unwrap().revision == 0,
-        "store revision must not be bumped on rejection"
-    );
+fn setup_apply_gate_rejections_precede_save_store() {
+    for (provider, model, reason) in [
+        (
+            "openrouter",
+            "openai/gpt-5.6-sol",
+            "no credential is available",
+        ),
+        ("openai", "not-a-real-model", "no trusted window"),
+        ("openrouter", "review/no-window", "no trusted window"),
+        (
+            "openrouter",
+            "review/no-strict",
+            "does not support strict JSON schema",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let service = SetupService::new(home.clone());
+        // Known live rows distinguish an unresolved window from an unknown model.
+        let cache = serde_json::json!({
+            "schema_version": 1, "provider": "openrouter",
+            "endpoint_fingerprint": praana_core::provider::endpoint_fingerprint(
+                "https://openrouter.ai/api/v1").unwrap(),
+            "fetched_at_ms": 2000, "expires_at_ms": 21602000,
+            "etag": null, "body_sha256": praana_core::token::Sha256Digest::digest_bytes(b"catalog"),
+            "models": [
+                {"provider": "openrouter", "model_id": "review/no-window",
+                 "display_name": "No window", "context_length": null,
+                 "max_completion_tokens": 8192, "supported_parameters": [], "reasoning_efforts": []},
+                {"provider": "openrouter", "model_id": "review/no-strict",
+                 "display_name": "No strict schema", "context_length": 65536,
+                 "max_completion_tokens": 8192, "supported_parameters": [], "reasoning_efforts": []}
+            ]
+        });
+        let path = praana_core::provider::catalog_cache_path(&home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        let before = snapshot_persistence(&home);
+        let error = service
+            .apply_operation_with_env(
+                OperationId(ulid::Ulid::generate()),
+                0,
+                ProviderId::from_canonical_str("openai").unwrap(),
+                ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
+                compactor_values(Some("pending-not-to-be-saved"), provider, model),
+                2000,
+                &BTreeMap::new(),
+            )
+            .expect_err("the gate must reject before saving the pending credential");
+        assert!(
+            error.to_string().contains("SETUP_CONFIG_INVALID"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains(reason),
+            "{provider}/{model}: {error}"
+        );
+        let after = snapshot_persistence(&home);
+        assert_eq!(
+            after.credentials, before.credentials,
+            "{provider}/{model}: gate must precede save_store, including its revision bump"
+        );
+        assert!(!after.config_exists);
+        assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
+    }
 }
 
-/// R1: an unknown / untrusted-window compactor model is rejected, and nothing
-/// is persisted.
 #[test]
-fn setup_apply_gate_rejection_unknown_model_persists_nothing() {
+fn setup_apply_same_operation_retries_after_credential_repair_exactly_once() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let service = SetupService::new(home.clone());
-    let mut env = BTreeMap::new();
-    env.insert("OPENAI_API_KEY".to_owned(), "sk-test-key".to_owned());
-    let values = compactor_values(Some("credential-value-123"), "openai", "not-a-real-model");
-    let before = snapshot_persistence(&home);
-    let error = service
-        .apply_operation_with_env(
-            OperationId(ulid::Ulid::generate()),
+    let operation = OperationId(ulid::Ulid::generate());
+    let values = || {
+        compactor_values(
+            Some("pending-openai-key"),
+            "openrouter",
+            "openai/gpt-5.6-sol",
+        )
+    };
+    let apply = |env: &BTreeMap<String, String>| {
+        service.apply_operation_with_env(
+            operation,
             0,
             ProviderId::from_canonical_str("openai").unwrap(),
             ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
-            values,
-            2_000,
-            &env,
+            values(),
+            2000,
+            env,
         )
-        .expect_err("unknown compactor model must be rejected");
+    };
+    let error = apply(&BTreeMap::new()).unwrap_err();
     assert!(
-        error.to_string().contains("SETUP_CONFIG_INVALID"),
-        "gate rejection must surface as a config error: {error}"
+        error.to_string().contains("no credential is available"),
+        "{error}"
     );
-    let after = snapshot_persistence(&home);
-    assert_eq!(before.credentials, after.credentials);
-    assert!(!after.config_exists);
     assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
-}
-
-/// R1: a compactor-admission failure is rejected, and nothing is persisted.
-/// A tiny context window cannot admit the minimum request.
-#[test]
-fn setup_apply_gate_rejection_admission_failure_persists_nothing() {
-    // The admission path needs a model whose window cannot fit the minimum
-    // request. The bundled profile is large, so admission would normally pass;
-    // this test instead drives the differing-provider path with a model that
-    // has no trusted window to exercise the "nothing persisted" guarantee for
-    // a gate rejection that is not a credential problem. (Admission-specific
-    // coverage lives in config_v1.rs where the compactor can be shrunk.)
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("home");
-    let service = SetupService::new(home.clone());
-    let mut env = BTreeMap::new();
-    env.insert("OPENAI_API_KEY".to_owned(), "sk-test-key".to_owned());
-    env.insert("OPENROUTER_API_KEY".to_owned(), "sk-test-key".to_owned());
-    // openrouter compactor with a non-bundled model => no trusted window.
-    let values = compactor_values(
-        Some("credential-value-123"),
-        "openrouter",
-        "some-live-model",
-    );
-    let before = snapshot_persistence(&home);
-    let error = service
-        .apply_operation_with_env(
-            OperationId(ulid::Ulid::generate()),
-            0,
-            ProviderId::from_canonical_str("openai").unwrap(),
-            ModelId::from_canonical_str("gpt-5.6-sol").unwrap(),
-            values,
-            2_000,
-            &env,
-        )
-        .expect_err("untrusted-window compactor must be rejected");
-    assert!(error.to_string().contains("SETUP_CONFIG_INVALID"));
-    let after = snapshot_persistence(&home);
-    assert_eq!(before.credentials, after.credentials);
-    assert!(!after.config_exists);
-    assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 0);
+    let repaired = BTreeMap::from([("OPENROUTER_API_KEY".into(), "repaired-key".into())]);
+    let result = apply(&repaired).expect("byte-identical retry continues its reservation");
+    assert_eq!(result.revision, 1);
+    let saved = std::fs::read(credentials_path(&home)).unwrap();
+    let replay = apply(&BTreeMap::new()).expect("terminal result replays even without the repair");
+    assert_eq!(replay.revision, 1);
+    assert_eq!(std::fs::read(credentials_path(&home)).unwrap(), saved);
+    assert_eq!(load_store(&credentials_path(&home)).unwrap().revision, 1);
 }
 
 /// R1: after a gate rejection, a retry with the SAME `expected_revision` and a
@@ -555,11 +546,8 @@ fn setup_apply_overlay_same_provider_new_secret_accepted() {
 
 // --- R2: setup apply must not panic on a non-Unicode environment ---
 
-/// R2: `apply` collects the process environment. `std::env::vars()` panics on
-/// a non-Unicode variable; the fix uses `vars_os()` and keeps only valid
-/// UTF-8 pairs. This test sets a non-UTF-8 env var in-process and proves that
-/// `apply` runs to a normal `Result` (here an expected profile/credential
-/// outcome) instead of panicking.
+/// `apply` ignores non-UTF-8 environment pairs. Inject the invalid value at
+/// child creation, never by mutating the threaded test runner's environment.
 ///
 /// Unix-only: a non-UTF-8 `OsString` cannot be constructed portably, and the
 /// panic is specific to `std::env::vars()`.
@@ -569,11 +557,27 @@ fn setup_apply_does_not_panic_on_non_utf8_env() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    // A value that is not valid UTF-8 (lone 0xFF byte).
-    let bad_value = OsStr::from_bytes(&[b'x', 0xFF, b'y']);
-    // SAFETY: single-threaded test; we set and remove one process env var.
-    unsafe {
-        std::env::set_var("PRAANA_SETUP_NON_UTF8_TEST", bad_value);
+    if std::env::var_os("PRAANA_SETUP_NON_UTF8_CHILD").is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "setup_apply_does_not_panic_on_non_utf8_env",
+                "--nocapture",
+            ])
+            .env("PRAANA_SETUP_NON_UTF8_CHILD", "1")
+            .env(
+                "PRAANA_SETUP_NON_UTF8_TEST",
+                OsStr::from_bytes(&[b'x', 0xFF, b'y']),
+            )
+            .output()
+            .expect("spawn isolated non-UTF-8 child");
+        assert!(
+            output.status.success(),
+            "non-UTF-8 child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
     }
 
     let temp = tempfile::tempdir().unwrap();
@@ -588,11 +592,6 @@ fn setup_apply_does_not_panic_on_non_utf8_env() {
         openai_setup_values(),
         2_000,
     );
-
-    // SAFETY: single-threaded test cleanup.
-    unsafe {
-        std::env::remove_var("PRAANA_SETUP_NON_UTF8_TEST");
-    }
 
     let result = result.expect("apply must not panic on a non-UTF-8 env var");
     assert_eq!(result.revision, 1);

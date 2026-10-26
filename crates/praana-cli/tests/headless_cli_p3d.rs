@@ -949,6 +949,115 @@ fn cli_resume_missing_compactor_credential_stops_before_any_request() {
 }
 
 #[test]
+fn cli_resume_expired_compactor_catalog_sends_normal_turn() {
+    use praana_core::clock::{Clock, SystemClock};
+    use praana_core::config::{load_effective_config, ConfigCliOverrides, ConfigLoaderEnv};
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::provider::{catalog_cache_path, endpoint_fingerprint};
+    use praana_core::turn::{HeadlessLoop, LoopConfig, LoopFault};
+    let env = cli_env();
+    write_credentials(&env.home, "openai", "assistant-key");
+    let mut store = praana_core::credentials::load_store(&credentials_path(&env.home)).unwrap();
+    upsert_credential(&mut store, "openrouter", "compactor-key".into(), 2000).unwrap();
+    save_store(&credentials_path(&env.home), &store).unwrap();
+    let assistant = spawn_server(|_| sse_response(200, &responses_text_body("normal answer")));
+    write_compactor_config(&env.config, &assistant.base_url());
+    let text = std::fs::read_to_string(&env.config)
+        .unwrap()
+        .replace(
+            "compactor_provider = \"openai\"",
+            "compactor_provider = \"openrouter\"",
+        )
+        .replace(
+            "compactor_model = \"gpt-5.6-sol\"",
+            "compactor_model = \"review/live-compactor\"",
+        );
+    std::fs::write(&env.config, text).unwrap();
+    let now = SystemClock.now_ms();
+    let mut cache = serde_json::json!({
+        "schema_version": 1, "provider": "openrouter",
+        "endpoint_fingerprint": endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        "fetched_at_ms": now, "expires_at_ms": now + 6 * 60 * 60 * 1000,
+        "etag": null, "body_sha256": praana_core::token::Sha256Digest::digest_bytes(b"catalog"),
+        "models": [{"provider": "openrouter", "model_id": "review/live-compactor",
+            "display_name": "Live compactor", "context_length": 65536,
+            "max_completion_tokens": 8192, "supported_parameters": ["structured_outputs"],
+            "reasoning_efforts": []}]
+    });
+    let path = catalog_cache_path(&env.home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&cache).unwrap()).unwrap();
+    let loader = ConfigLoaderEnv {
+        home_dir: env.home.parent().unwrap().to_path_buf(),
+        session_cwd: env.workspace.clone(),
+        process_cwd: env.workspace.clone(),
+        env_vars: std::collections::HashMap::from([(
+            "PRAANA_HOME".into(),
+            env.home.to_string_lossy().into_owned(),
+        )]),
+    };
+    let (config, _, _) =
+        load_effective_config(Some(&env.config), &ConfigCliOverrides::default(), &loader).unwrap();
+    // Model a legacy/library-created frozen pair. Creation's strict-schema
+    // policy remains unchanged: live catalog rows cannot establish that flag.
+    let sid: praana_core::protocol::id::SessionId =
+        MonotonicUlidGenerator::system().next_id().unwrap();
+    let session_dir = env.home.join("sessions").join(sid.to_string());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let provider = praana_core::turn::provider::OpenAiStepProvider::new(
+            &config,
+            &env.home,
+            &env.workspace,
+        )
+        .unwrap();
+        let mut loop_ = HeadlessLoop::create(LoopConfig {
+            home: env.home.clone(),
+            workspace: env.workspace.clone(),
+            session_dir,
+            config,
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(MonotonicUlidGenerator::system()),
+            fault: LoopFault::None,
+        })
+        .unwrap();
+        assert!(loop_
+            .run_turn("first turn", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+    });
+    let (sid, dir) = append_pending_turn(&env);
+    cache["fetched_at_ms"] = serde_json::json!(now - 7 * 60 * 60 * 1000);
+    cache["expires_at_ms"] = serde_json::json!(now - 60 * 60 * 1000);
+    std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+    let output = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stderr(&output));
+    assert_eq!(stdout(&output), "normal answer\n");
+    assert!(!stderr(&output).contains("E_COMPACTION_UNAVAILABLE"));
+    assert!(stderr(&output).contains("compactor_profile_unresolved"));
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        !events.contains("\"compaction_id\""),
+        "zero compactor attempts"
+    );
+    let db = praana_core::history::db::HistoryDatabase::open(&dir.join("history.db")).unwrap();
+    let rows = db
+        .read_telemetry_samples("compactor_profile_unresolved")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].dimensions_json).unwrap(),
+        serde_json::json!({"error_code": "COMPACTION_UNAVAILABLE"})
+    );
+}
+
+#[test]
 fn resume_unknown_selector_exits_2_with_session_not_found() {
     let env = cli_env();
     let output = run_cli(&env, &["resume", "01ABCDEFGHJK"]);

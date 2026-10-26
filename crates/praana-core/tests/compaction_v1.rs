@@ -4958,7 +4958,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
 
     #[tokio::test]
     async fn creation_resolution_installs_once_and_compacts_before_second_assistant() {
-        use praana_core::config::validate::resolve_compactor_at_creation;
+        use praana_core::compaction::creation::resolve_compactor_at_creation;
         let mut s = session();
         s.config.history.compactor_provider = "openai".into();
         s.config.history.compactor_model = MODEL.into();
@@ -4997,7 +4997,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
 
     #[tokio::test]
     async fn creation_empty_pair_returns_no_install_and_zero_compactor_requests() {
-        use praana_core::config::validate::resolve_compactor_at_creation;
+        use praana_core::compaction::creation::resolve_compactor_at_creation;
         let mut s = session();
         s.config.history.compact_at = 0.0002;
         s.config.history.compact_clear_at = 0.0001;
@@ -5051,7 +5051,10 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
             "{error}"
         );
-        assert!(error.to_string().contains("(E_PROVIDER_AUTH)"), "{error}");
+        assert!(
+            error.to_string().contains("(AUTH_CREDENTIAL_MISSING)"),
+            "{error}"
+        );
         assert_eq!(
             std::fs::read(s.session.join("events.jsonl")).unwrap(),
             before
@@ -5078,30 +5081,183 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert!(s.fake.compactor_requests().is_empty());
     }
 
+    fn live_compactor_cache(
+        s: &Session,
+        now: i64,
+    ) -> praana_core::provider::catalog::CatalogCacheV1 {
+        use praana_core::provider::{catalog_cache_path, endpoint_fingerprint};
+        let cache = serde_json::from_value(json!({
+            "schema_version": 1,
+            "provider": "openrouter",
+            "endpoint_fingerprint": endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+            "fetched_at_ms": now,
+            "expires_at_ms": now + 6 * 60 * 60 * 1000,
+            "etag": null,
+            "body_sha256": praana_core::token::Sha256Digest::digest_bytes(b"catalog"),
+            "models": [{
+                "provider": "openrouter", "model_id": "review/live-compactor",
+                "display_name": "Live compactor", "context_length": 65536,
+                "max_completion_tokens": 8192,
+                "supported_parameters": ["structured_outputs"], "reasoning_efforts": []
+            }]
+        }))
+        .unwrap();
+        let path = catalog_cache_path(&s.home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        cache
+    }
+
     #[tokio::test]
-    async fn resume_unresolvable_frozen_pair_stops_new_turn_without_projection_changes() {
+    async fn resume_unresolved_profile_keeps_turns_usable() {
+        use praana_core::provider::catalog::resolve_profile_with_catalog;
+        use praana_core::provider::catalog_cache_path;
+        use praana_core::provider::registry::ProviderProtocol;
+        if std::env::var_os("PRAANA_UNRESOLVED_PROFILE_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "activation::resume_unresolved_profile_keeps_turns_usable",
+                    "--nocapture",
+                ])
+                .env("PRAANA_UNRESOLVED_PROFILE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "profile child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stderr.is_empty(),
+                "library must not print notices: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Live profiles deliberately do not establish strict-schema support.
+        // A fresh cache proves window resolution, not creation eligibility.
+        for state in ["fresh", "expired", "missing", "unknown"] {
+            let mut s = session();
+            s.config.history.compactor_provider = "openrouter".into();
+            s.config.history.compactor_model = "review/live-compactor".into();
+            let now = SystemClock.now_ms();
+            let cache = live_compactor_cache(&s, now);
+            let profile = resolve_profile_with_catalog(
+                "openrouter",
+                &ProviderProtocol::Chat,
+                "review/live-compactor",
+                "https://openrouter.ai/api/v1",
+                now,
+                Some(&cache),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(profile.context_window_tokens, 65536);
+            assert!(!profile.strict_json_schema);
+            let resume_at = if state == "expired" {
+                cache.expires_at_ms + 1
+            } else {
+                now
+            };
+            if state == "missing" {
+                std::fs::remove_file(catalog_cache_path(&s.home)).unwrap();
+            } else if state == "unknown" {
+                s.config.history.compactor_model = "review/unknown".into();
+            }
+            drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+            let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+            let env = std::collections::BTreeMap::from([(
+                "OPENROUTER_API_KEY".into(),
+                "compactor-presence-key".into(),
+            )]);
+            loop_.install_compactor_on_resume(&s.home, resume_at, &env);
+            assert_eq!(
+                loop_.compactor_profile_unresolved_cause(),
+                Some("COMPACTION_UNAVAILABLE")
+            );
+            let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+            let report = loop_
+                .run_turn("small admissible turn", &provider)
+                .await
+                .expect("an unresolved profile must not stop turn admission");
+            assert!(report.interruption.is_none(), "{state}: {report:?}");
+            assert!(report.diagnostic.is_none(), "{state}: {report:?}");
+            assert_eq!(s.fake.main_requests().len(), 1, "{state}");
+            assert!(s.fake.compactor_requests().is_empty(), "{state}");
+            let rows = telemetry(&s.session, "compactor_profile_unresolved");
+            assert_eq!(rows.len(), 1, "{state}");
+            let dimensions: Value = serde_json::from_str(&rows[0].dimensions_json).unwrap();
+            assert_eq!(dimensions, json!({"error_code": "COMPACTION_UNAVAILABLE"}));
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_unreadable_credential_store_preserves_cause() {
         let mut s = session();
         s.config.history.compactor_provider = "openai".into();
-        s.config.history.compactor_model = "unknown-untrusted-compactor".into();
-        // Library create's known validation bypass is not changed by this work.
+        s.config.history.compactor_model = MODEL.into();
         drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+        std::fs::write(credentials_path(&s.home), b"not-json").unwrap();
         let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
-        let before = std::fs::read(s.session.join("events.jsonl")).unwrap();
         loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
         let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
-        let error = loop_
-            .run_turn("small admissible turn", &provider)
-            .await
-            .unwrap_err();
+        let error = loop_.run_turn("not sent", &provider).await.unwrap_err();
         assert!(
             error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
             "{error}"
         );
-        assert_eq!(
-            std::fs::read(s.session.join("events.jsonl")).unwrap(),
-            before
+        assert!(
+            error.to_string().contains("(CREDENTIAL_STORE_INVALID)"),
+            "{error}"
         );
         assert!(s.fake.main_requests().is_empty());
-        assert!(s.fake.compactor_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resume_unknown_provider_preserves_cause() {
+        let mut s = session();
+        s.config.history.compactor_provider = "unknown-provider".into();
+        s.config.history.compactor_model = MODEL.into();
+        drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let error = loop_.run_turn("not sent", &provider).await.unwrap_err();
+        assert!(
+            error.to_string().contains("E_COMPACTION_UNAVAILABLE"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("(PROVIDER_UNKNOWN)"), "{error}");
+        assert!(s.fake.main_requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn nbsp_only_compactor_pair_is_not_empty_at_creation_or_resume() {
+        let mut s = session();
+        s.config.history.compactor_provider = "\u{a0}".into();
+        s.config.history.compactor_model = "\u{a0}".into();
+        assert!(
+            praana_core::compaction::creation::resolve_compactor_at_creation(
+                &s.config,
+                &s.home,
+                SystemClock.now_ms(),
+                &Default::default()
+            )
+            .is_err(),
+            "NBSP is not ASCII edge whitespace"
+        );
+        drop(HeadlessLoop::create(loop_config(&s)).unwrap());
+        let mut loop_ = HeadlessLoop::resume(loop_config(&s)).unwrap();
+        loop_.install_compactor_on_resume(&s.home, SystemClock.now_ms(), &Default::default());
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let error = loop_
+            .run_turn("not sent", &provider)
+            .await
+            .expect_err("resume must not treat an NBSP-only provider as an empty pair");
+        assert!(error.to_string().contains("(PROVIDER_UNKNOWN)"), "{error}");
+        assert!(s.fake.main_requests().is_empty());
     }
 }
