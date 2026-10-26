@@ -25,6 +25,9 @@ const SCHEMA_VERSION_TEXT: &str = "1";
 /// Distinct from the history database `application_id`.
 const APPLICATION_ID: i32 = 0x7035_434C;
 const RETAINED_SAMPLES: usize = 128;
+/// Total time `append_sample` keeps retrying a lock that SQLite reports without
+/// waiting.
+const LOCK_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_millis(2_000);
 const SQLITE_MAGIC: &[u8] = b"SQLite format 3\0";
 
 const CODE_IO: &str = "CALIBRATION_STORE_IO";
@@ -120,6 +123,29 @@ pub fn try_load_bucket(
 /// and is dropped without an error. A corrupt or wrong-version file is left
 /// untouched.
 pub fn append_sample(
+    home: &Path,
+    sample: &TokenCalibrationSampleV1,
+) -> Result<(), CalibrationStoreError> {
+    // SQLite does not always invoke the busy handler: opening a connection
+    // while another connection is creating the file, switching the journal
+    // mode, or checkpointing and removing the WAL returns BUSY at once. Retry
+    // only a lock, only for a short bounded time, and never anything else.
+    let deadline = std::time::Instant::now() + LOCK_RETRY_BUDGET;
+    let mut attempt = 0u32;
+    loop {
+        match append_sample_once(home, sample) {
+            Err(error) if error.code == CODE_LOCKED && std::time::Instant::now() < deadline => {
+                attempt = attempt.saturating_add(1);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    u64::from(attempt.min(10)) * 5,
+                ));
+            }
+            other => return other,
+        }
+    }
+}
+
+fn append_sample_once(
     home: &Path,
     sample: &TokenCalibrationSampleV1,
 ) -> Result<(), CalibrationStoreError> {
@@ -445,10 +471,20 @@ fn init_new(path: &Path) -> Result<(), CalibrationStoreError> {
 fn open_read_write(path: &Path) -> Result<Connection, CalibrationStoreError> {
     apply_private_umask();
     let conn = Connection::open(path).map_err(map_sql)?;
+    // The busy handler must be in place before any other statement. Only
+    // switch the journal mode when the file is not already WAL: the switch
+    // takes locks that an already-WAL file does not need.
+    conn.busy_timeout(std::time::Duration::from_millis(5_000))
+        .map_err(map_sql)?;
+    let current: String = conn
+        .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
+        .map_err(map_sql)?;
+    if !current.eq_ignore_ascii_case("wal") {
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(map_sql)?;
+    }
     conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA busy_timeout = 5000;
-         PRAGMA foreign_keys = ON;
+        "PRAGMA foreign_keys = ON;
          PRAGMA trusted_schema = OFF;",
     )
     .map_err(map_sql)?;
