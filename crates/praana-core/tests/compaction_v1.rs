@@ -2036,9 +2036,15 @@ mod activation {
         Cancel(tokio_util::sync::CancellationToken),
     }
 
+    #[derive(Clone, Copy)]
+    enum MainReply {
+        ContextLength,
+    }
+
     struct Script {
         session: PathBuf,
         replies: Mutex<VecDeque<Reply>>,
+        main_replies: Mutex<VecDeque<MainReply>>,
         cite_state: Mutex<Option<StateId>>,
         compactor: Mutex<Vec<Recorded>>,
         main: Mutex<Vec<Recorded>>,
@@ -2061,6 +2067,13 @@ mod activation {
         }
         fn push(&self, reply: Reply) {
             self.script.replies.lock().unwrap().push_back(reply);
+        }
+        fn reject_next_main_for_context_length(&self) {
+            self.script
+                .main_replies
+                .lock()
+                .unwrap()
+                .push_back(MainReply::ContextLength);
         }
     }
 
@@ -2223,6 +2236,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let script = Arc::new(Script {
             session: session.to_path_buf(),
             replies: Mutex::new(VecDeque::new()),
+            main_replies: Mutex::new(VecDeque::new()),
             cite_state: Mutex::new(None),
             compactor: Mutex::new(Vec::new()),
             main: Mutex::new(Vec::new()),
@@ -2241,7 +2255,13 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 let response = match control_of(&parsed) {
                     None => {
                         thread_script.main.lock().unwrap().push(recorded);
-                        http(200, &responses_sse("ready"))
+                        match thread_script.main_replies.lock().unwrap().pop_front() {
+                            Some(MainReply::ContextLength) => http(
+                                400,
+                                r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}"#,
+                            ),
+                            None => http(200, &responses_sse("ready")),
+                        }
                     }
                     Some(control) => {
                         thread_script.compactor.lock().unwrap().push(recorded);
@@ -4056,6 +4076,124 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert!(s.fake.compactor_requests().is_empty());
         assert!(of_kind(&s.session, "history_compacted").is_empty());
         assert_eq!(s.fake.main_requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn emergency_context_recovery_compacts_an_unconsidered_source_once() {
+        let mut s = session();
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn("closed source", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        s.fake.reject_next_main_for_context_length();
+        let report = loop_.run_turn("context rejected", &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "emergency resend commits: {report:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(
+            s.fake.main_requests().len(),
+            3,
+            "failed request plus retry after seed"
+        );
+        assert_eq!(
+            of_kind(&s.session, "assistant_attempt_started")
+                .iter()
+                .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+                .count(),
+            1,
+            "one emergency compaction epoch"
+        );
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .any(|event| event["event"]["data"]["emergency_context_retry"] == true));
+    }
+
+    #[tokio::test]
+    async fn emergency_context_recovery_skips_already_considered_source() {
+        let mut s = session();
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn("closed source", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        s.fake.push(Reply::Http(500));
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Failed { .. }
+        ));
+        let compaction_starts_before = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert_eq!(compaction_starts_before, 1);
+
+        s.fake.reject_next_main_for_context_length();
+        let report = loop_.run_turn("context rejected", &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "assistant retry still runs: {report:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(
+            of_kind(&s.session, "assistant_attempt_started")
+                .iter()
+                .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+                .count(),
+            compaction_starts_before,
+            "no durable compaction attempt for an already-considered source"
+        );
+        assert_eq!(
+            s.fake.main_requests().len(),
+            3,
+            "context retry is still sent"
+        );
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .any(|event| event["event"]["data"]["emergency_context_retry"] == true));
+    }
+
+    #[tokio::test]
+    async fn failed_live_compaction_is_reported_without_stopping_the_turn() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::Http(500));
+
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "failed compaction must not stop turn"
+        );
+        let diagnostic = report.diagnostic.expect("live failure is observable");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(s.fake.main_requests().len(), 2);
     }
 
     #[tokio::test]

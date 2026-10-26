@@ -2155,3 +2155,276 @@ async fn auto_hydrate_placement_attempt_blocks_assistant_step_not_compaction() {
         "AssistantStep attempt must block auto_hydrate event emission"
     );
 }
+
+async fn search_session_log(cfg: &LoopConfig, query: &str) -> Value {
+    let tools = praana_core::tools::builtin::production_tools(&cfg.config.tools).unwrap();
+    let registry = praana_core::tools::ToolRegistry::try_from_erased(tools).unwrap();
+    let runtime = praana_core::tools::ToolRuntime::new(
+        registry,
+        cfg.config.tools.clone(),
+        cfg.config.risk.clone(),
+        cfg.config.circuit.clone(),
+    );
+    runtime.set_workspace(cfg.workspace.clone());
+    let session_id = get_session_id(&cfg.session_dir);
+    runtime.set_session(cfg.session_dir.clone(), session_id);
+    runtime.set_headless(true);
+    let request = praana_core::tools::ToolBatchRequest {
+        batch_id: cfg.ids.next_id().unwrap(),
+        session_id,
+        turn_id: cfg.ids.next_id().unwrap(),
+        attempt_id: cfg.ids.next_id().unwrap(),
+        calls: vec![praana_core::tools::ProviderToolCall {
+            tool_call_id: praana_core::protocol::id::ToolCallId::from_str_canonical("call-search")
+                .unwrap(),
+            tool_name: praana_core::tools::ToolName::new("search_session_log").unwrap(),
+            arguments: json!({"query": query}),
+            provider_ordinal: 0,
+        }],
+        origin: praana_core::tools::ToolCallOrigin::Model,
+    };
+    let result = runtime
+        .execute_batch(
+            request,
+            praana_core::tools::BatchOrigin::Model,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .results
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(
+        result.dto.ok,
+        "search_session_log returned {:?}",
+        result.dto.error
+    );
+    result.dto.data.expect("search result data")["page"].clone()
+}
+
+fn finished_search_result(session_dir: &std::path::Path) -> String {
+    let events: Vec<Value> = fs::read_to_string(session_dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let result = events
+        .iter()
+        .find(|event| {
+            event["event"]["kind"] == "tool_execution_finished"
+                && event["event"]["data"]["result"]["tool_name"] == "search_session_log"
+        })
+        .expect("durable search_session_log result");
+    assert_eq!(result["event"]["data"]["result"]["status"], "success");
+    result["event"]["data"]["result"]["body"]["content"]["data"]["text"]
+        .as_str()
+        .expect("inline search result")
+        .to_owned()
+}
+
+fn remove_history_database(session_dir: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = session_dir.join(format!("history.db{suffix}"));
+        if path.exists() {
+            fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn live_history_projection_is_visible_to_search_session_log() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("priorprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("first turn", &first)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+
+    let search = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": "priorprojectionmarker"}),
+            ),
+            ScriptedStep {
+                text: Some("found it".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    assert!(loop_
+        .run_turn("search now", &search)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    assert!(finished_search_result(&cfg.session_dir).contains("priorprojectionmarker"));
+}
+
+#[tokio::test]
+async fn resume_rebuilds_a_missing_history_database_before_search() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let provider = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("missingdbprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("history before deletion", &provider)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    remove_history_database(&cfg.session_dir);
+
+    drop(HeadlessLoop::resume(cfg.clone()).expect("resume projects missing database"));
+    let page = search_session_log(&cfg, "missingdbprojectionmarker").await;
+    assert!(page.to_string().contains("missingdbprojectionmarker"));
+}
+
+#[tokio::test]
+async fn resume_advances_a_stale_history_checkpoint_before_search() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("checkpoint seed".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("checkpoint seed", &first)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    let db_path = cfg.session_dir.join("history.db");
+    let backup = cfg.session_dir.join("history.db.seed");
+    let checkpoint = rusqlite::Connection::open(&db_path).unwrap();
+    checkpoint
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(checkpoint);
+    fs::copy(&db_path, &backup).unwrap();
+
+    let mut loop_ = HeadlessLoop::resume(cfg.clone()).unwrap();
+    let second = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("stalecheckpointmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("stale checkpoint tail", &second)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    remove_history_database(&cfg.session_dir);
+    fs::rename(&backup, &db_path).unwrap();
+
+    drop(HeadlessLoop::resume(cfg.clone()).expect("resume projects stale checkpoint"));
+    let page = search_session_log(&cfg, "stalecheckpointmarker").await;
+    assert!(page.to_string().contains("stalecheckpointmarker"));
+    let event_count = fs::read_to_string(cfg.session_dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .count() as u64;
+    assert_eq!(page["projection_through_sequence"], json!(event_count));
+}
+
+#[tokio::test]
+async fn live_projection_failure_does_not_fail_turn_and_later_search_converges() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let db = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_history_projection BEFORE INSERT ON projection_checkpoints \
+         BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+    )
+    .unwrap();
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("retryprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let first_report = loop_
+        .run_turn("projection failure turn", &first)
+        .await
+        .unwrap();
+    assert!(first_report.interruption.is_none());
+    assert_eq!(
+        first_report
+            .diagnostic
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("HISTORY_IO")
+    );
+    db.execute_batch("DROP TRIGGER fail_history_projection")
+        .unwrap();
+
+    let search = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": "retryprojectionmarker"}),
+            ),
+            ScriptedStep {
+                text: Some("recovered".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let later_report = loop_
+        .run_turn("search after recovery", &search)
+        .await
+        .unwrap();
+    assert!(later_report.interruption.is_none());
+    assert!(finished_search_result(&cfg.session_dir).contains("retryprojectionmarker"));
+}

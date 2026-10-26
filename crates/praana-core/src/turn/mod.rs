@@ -462,6 +462,7 @@ pub struct HeadlessLoop {
     config: LoopConfig,
     log: EventLogStore,
     artifacts: ArtifactStore,
+    history_db: crate::history::db::HistoryDatabase,
     runtime: ToolRuntime,
     session_id: SessionId,
     model: ModelSelection,
@@ -471,6 +472,7 @@ pub struct HeadlessLoop {
     cancel: CancellationToken,
     pending_notices: Vec<RecoveryNotice>,
     pending_diagnostic: Option<ProtocolError>,
+    live_compaction_diagnostic: Option<ProtocolError>,
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
@@ -552,6 +554,12 @@ impl HeadlessLoop {
             engine
                 .run_recovery()
                 .map_err(|err| TurnError::failed(err.to_string()))?;
+            let db =
+                crate::history::db::HistoryDatabase::open(&config.session_dir.join("history.db"))
+                    .map_err(|err| TurnError::failed(err.to_string()))?;
+            crate::history::checkpoint::HistoryProjector::new(&db)
+                .project(engine.store())
+                .map_err(|err| TurnError::failed(format!("history recovery projection: {err}")))?;
             engine.take_pending_notices()
         };
         let parsed = SessionId::from_str_canonical(&session_id)
@@ -792,21 +800,17 @@ impl HeadlessLoop {
             ..
         } = &mut outcome
         {
-            // Neither the artifact nor state service exposes its database
-            // handle. This separate handle must never rebuild/replace files.
-            // SQLite work is bounded to one checkpoint-tail transaction (the
-            // first projection is bounded by the existing log), with a 5 s
-            // busy timeout; no full replay or rebuild runs on this async path.
-            let projection = (|| {
-                let db = crate::history::db::HistoryDatabase::open(
-                    &self.config.session_dir.join("history.db"),
-                )?;
-                crate::history::checkpoint::HistoryProjector::new(&db)
-                    .project_without_rebuild(&self.log)
-            })();
-            if let Err(error) = projection {
+            // This persistent writer handle never rebuilds or replaces files.
+            // Projection is one checkpoint-tail transaction with the database's
+            // existing 5 s busy timeout; no full replay runs on this live path.
+            if let Err(error) = crate::history::checkpoint::HistoryProjector::new(&self.history_db)
+                .project_without_rebuild(&self.log)
+            {
                 *derived_projection_error =
                     Some(projection_error(&error, &self.config.session_dir));
+            }
+            if let Some(error) = derived_projection_error {
+                self.live_compaction_diagnostic = Some(safe_live_diagnostic(error));
             }
         }
         Ok(outcome)
@@ -837,18 +841,21 @@ impl HeadlessLoop {
             }
             Ok(CompactionOutcome::Failed { error, .. }) => {
                 // §14.1: a failed compaction retains every turn and the request
-                // still goes out. Surface the reason rather than dropping it.
-                eprintln!(
-                    "live compaction did not activate ({}): continuing with retained turns",
-                    error.code
-                );
+                // still goes out. Report only the safe code and generic context.
+                self.live_compaction_diagnostic = Some(safe_live_diagnostic(&error));
                 Ok(LiveEpoch::Retained)
             }
             Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
             Err(other) => {
-                // Non-durable failure (§14.1): continue, but do not swallow the
-                // reason silently.
-                eprintln!("live compaction epoch error: {other}; continuing with retained turns");
+                self.live_compaction_diagnostic = Some(ProtocolError {
+                    code: other.code().to_owned(),
+                    class: ErrorClass::Internal,
+                    message: "live compaction epoch errored; canonical history is unchanged"
+                        .to_owned(),
+                    retryable: false,
+                    http_status: None,
+                    retry_after_ms: None,
+                });
                 Ok(LiveEpoch::Retained)
             }
         }
@@ -864,6 +871,11 @@ impl HeadlessLoop {
             ))),
             None => Ok(()),
         }
+    }
+
+    fn live_compaction_candidate(&self) -> Result<bool, TurnError> {
+        crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
+            .map_err(|error| TurnError::failed(error.to_string()))
     }
 
     /// Whether this admission should run a compaction epoch before sending.
@@ -964,12 +976,15 @@ impl HeadlessLoop {
         runtime.set_session(config.session_dir.clone(), session_id);
         runtime.set_headless(true);
         runtime.set_state_active_max_tokens(config.config.state.active_max_tokens);
+        let history_path = config.session_dir.join("history.db");
         let artifacts = ArtifactStore::open(
-            &config.session_dir.join("history.db"),
+            &history_path,
             policy_from_session(&config.session_dir),
             Arc::clone(&config.clock),
         )
         .map_err(|err| TurnError::failed(err.to_string()))?;
+        let history_db = crate::history::db::HistoryDatabase::open(&history_path)
+            .map_err(|err| TurnError::failed(err.to_string()))?;
         runtime
             .open_state(&log)
             .map_err(|err| TurnError::failed(err.to_string()))?;
@@ -978,6 +993,7 @@ impl HeadlessLoop {
             config,
             log,
             artifacts,
+            history_db,
             runtime,
             session_id,
             toolset_hash,
@@ -986,6 +1002,7 @@ impl HeadlessLoop {
             cancel: CancellationToken::new(),
             pending_notices,
             pending_diagnostic: None,
+            live_compaction_diagnostic: None,
             project_context_changed: false,
             emergency_recovery_pending: false,
             compactor: None,
@@ -1033,6 +1050,7 @@ impl HeadlessLoop {
             return Err(TurnError::failed("a turn is already active"));
         }
         self.pending_diagnostic = None;
+        self.live_compaction_diagnostic = None;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -1505,10 +1523,16 @@ impl HeadlessLoop {
             // in-turn tool-cycle compaction (handoff; §5.3; #634), so a step
             // after a tool call (`step_index > 0`) never compacts.
             let emergency_cycle = self.emergency_recovery_pending && !emergency_epoch_run;
-            if open.step_index == 0
-                && self.compactor.is_some()
-                && (emergency_cycle || self.live_compaction_wanted(&admission)?)
-            {
+            let compaction_wanted = if open.step_index == 0 && self.compactor.is_some() {
+                if emergency_cycle {
+                    self.live_compaction_candidate()?
+                } else {
+                    self.live_compaction_wanted(&admission)?
+                }
+            } else {
+                false
+            };
+            if compaction_wanted {
                 emergency_epoch_run |= emergency_cycle;
                 match self.live_compaction_epoch().await? {
                     LiveEpoch::Activated => continue,
@@ -2005,6 +2029,14 @@ impl HeadlessLoop {
         cancel: CancellationToken,
         recovery: RecoveryBatch,
     ) -> Result<Control, TurnError> {
+        if draft_calls.iter().any(|call| {
+            matches!(
+                call.name.as_str(),
+                "search_session_log" | "retrieve_artifact" | "read_session_source"
+            )
+        }) {
+            self.project_history_live();
+        }
         let mut calls = Vec::new();
         for call in draft_calls {
             let provider_ordinal = calls.len() as u32;
@@ -2160,6 +2192,7 @@ impl HeadlessLoop {
         )?;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("turn.after_turn_committed");
+        self.project_history_live();
         self.pending_diagnostic = None;
         Ok(self.report(None))
     }
@@ -2211,6 +2244,7 @@ impl HeadlessLoop {
                 message: interruption_message(&reason).to_owned(),
             }),
         )?;
+        self.project_history_live();
         Ok(self.report(Some(reason)))
     }
 
@@ -2218,7 +2252,10 @@ impl HeadlessLoop {
         TurnReport {
             interruption,
             admission_count: self.admissions,
-            diagnostic: self.pending_diagnostic.clone(),
+            diagnostic: self
+                .pending_diagnostic
+                .clone()
+                .or_else(|| self.live_compaction_diagnostic.clone()),
         }
     }
 
@@ -2261,6 +2298,15 @@ impl HeadlessLoop {
                 .map_err(|err| TurnError::failed(format!("replay: {err}")))?;
         }
         Ok(replay)
+    }
+
+    fn project_history_live(&mut self) {
+        if let Err(error) = crate::history::checkpoint::HistoryProjector::new(&self.history_db)
+            .project_without_rebuild(&self.log)
+        {
+            let diagnostic = projection_error(&error, &self.config.session_dir);
+            self.live_compaction_diagnostic = Some(safe_live_diagnostic(&diagnostic));
+        }
     }
 
     fn append(
@@ -2317,6 +2363,19 @@ fn redact_provider_message(message: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Keep live diagnostics useful without exposing provider text or host paths.
+fn safe_live_diagnostic(error: &ProtocolError) -> ProtocolError {
+    ProtocolError {
+        code: error.code.clone(),
+        class: error.class.clone(),
+        message: "live compaction or history projection failed; canonical history is authoritative"
+            .to_owned(),
+        retryable: error.retryable,
+        http_status: None,
+        retry_after_ms: None,
+    }
 }
 
 /// Classification of a post-activation derived-projection failure.
