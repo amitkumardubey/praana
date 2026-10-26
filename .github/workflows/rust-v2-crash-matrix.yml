@@ -112,6 +112,9 @@ jobs:
             'crash_during_supersession_repair_is_idempotent',
             'emergency_resend_crash_resumes_with_exactly_one_emergency_attempt',
             'environment_alone_cannot_arm_failpoints',
+            'live_hard_ceiling_crash_after_attempt_started_retries_once',
+            'live_hard_ceiling_crash_after_history_compacted_fsync_replays_once',
+            'live_proactive_crash_after_attempt_started_retries_once',
             'malformed_tail_recovers_exact_valid_prefix',
             'replacement_acceptance_crash_repairs_supersession_once_in_fresh_process'
           )
