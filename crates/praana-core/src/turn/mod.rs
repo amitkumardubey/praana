@@ -151,14 +151,14 @@ fn provider_context_rejected() -> ProtocolError {
 /// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
 /// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
 /// A.5). Not retryable until the compactor capability or config changes.
-fn compaction_unavailable(cause: &ProtocolError) -> ProtocolError {
+fn compaction_unavailable(cause_code: &str) -> ProtocolError {
     ProtocolError {
         code: "E_COMPACTION_UNAVAILABLE".to_owned(),
         class: ErrorClass::Unavailable,
         message: format!(
             "the configured compactor became unavailable after session start ({}); new turn \
              admission is stopped",
-            cause.code
+            cause_code
         ),
         retryable: false,
         http_status: None,
@@ -485,6 +485,8 @@ pub struct HeadlessLoop {
     /// Set when the installed compactor lost its credential after start
     /// (Compaction §14.4). While set, new turn admission is refused.
     compaction_unavailable: Option<ProtocolError>,
+    /// Best-effort, process-local notice; no profile content or secret is retained.
+    compactor_profile_unresolved: Option<&'static str>,
     /// Observable hysteresis signal (Compaction §4.2); never a lockout.
     pressure: crate::compaction::admission::PressureState,
 }
@@ -676,6 +678,70 @@ impl HeadlessLoop {
     ) {
         self.compactor = compactor;
         self.compaction_unavailable = None;
+        self.compactor_profile_unresolved = None;
+    }
+
+    /// Reinstalls the frozen pair without a creation gate. Credential failures
+    /// stop admission (§14.4); unresolved profiles leave compaction inert for
+    /// this process and ordinary turn admission unchanged. Runtime secrets are
+    /// still resolved only after the durable compaction attempt start.
+    pub fn install_compactor_on_resume(
+        &mut self,
+        home: &Path,
+        now_ms: i64,
+        env_vars: &std::collections::BTreeMap<String, String>,
+    ) {
+        use crate::compaction::activate::{CompactionRunError, ConfiguredCompactor};
+        use crate::compaction::creation::{
+            credential_presence_cause_code, validate_compactor_credential_presence,
+        };
+        use crate::config::{raw::ascii_edge_trim, CompactorPair};
+        let history = &self.config.config.history;
+        let provider = match history.compactor_pair() {
+            CompactorPair::Empty => {
+                self.set_compactor(None);
+                return;
+            }
+            CompactorPair::Complete { provider, .. } => provider,
+            // Frozen invalid pairs still use the existing credential failure path.
+            CompactorPair::OneSided => ascii_edge_trim(&history.compactor_provider),
+        };
+        // Presence is independent of catalog freshness. A lost credential must
+        // still stop admission even when the profile also cannot be resolved.
+        if let Err(error) = validate_compactor_credential_presence(provider, home, env_vars) {
+            self.compactor = None;
+            self.compactor_profile_unresolved = None;
+            self.compaction_unavailable = Some(compaction_unavailable(
+                credential_presence_cause_code(&error),
+            ));
+            return;
+        }
+        match ConfiguredCompactor::resolve(&self.config.config, home, now_ms) {
+            Ok(compactor) => self.set_compactor(Some(compactor)),
+            Err(CompactionRunError::Unavailable { reason, .. }) => {
+                let cause_code = reason.token();
+                self.set_compactor(None);
+                self.compactor_profile_unresolved = Some(cause_code);
+                let dimensions = format!("{{\"error_code\":\"{cause_code}\"}}");
+                // Best-effort derived telemetry must not prevent session resume.
+                let _ = self.artifacts.record_telemetry_sample(
+                    "compactor_profile_unresolved",
+                    None,
+                    0,
+                    &dimensions,
+                    now_ms,
+                );
+            }
+            Err(error) => {
+                // resolve only performs profile resolution; every failure is Unavailable.
+                unreachable!("ConfiguredCompactor::resolve returned a non-profile error: {error}")
+            }
+        }
+    }
+
+    /// Notice for a caller to present; library code never prints to stderr.
+    pub fn compactor_profile_unresolved_cause(&self) -> Option<&'static str> {
+        self.compactor_profile_unresolved
     }
 
     /// Current pressure hysteresis signal (Compaction §4.2).
@@ -765,7 +831,7 @@ impl HeadlessLoop {
                 // eligible session is `COMPACTION_UNAVAILABLE`, not a
                 // recoverable §14.1 failure. Compaction stays unavailable and
                 // new turn admission stops until a compactor is reinstalled.
-                let unavailable = compaction_unavailable(&error);
+                let unavailable = compaction_unavailable(&error.code);
                 self.compaction_unavailable = Some(unavailable.clone());
                 Ok(LiveEpoch::Unavailable(unavailable))
             }
@@ -923,6 +989,7 @@ impl HeadlessLoop {
             project_context_changed: false,
             emergency_recovery_pending: false,
             compactor: None,
+            compactor_profile_unresolved: None,
             compaction_unavailable: None,
             pressure: crate::compaction::admission::PressureState::Normal,
         })

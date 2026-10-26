@@ -1,6 +1,15 @@
-//! Explicit tool environment. Credentials are removed before spawn.
+//! UTF-8 process snapshots and explicit tool environments.
+//! Tool environments remove credentials before spawn.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+/// Snapshot valid UTF-8 environment pairs, skipping a pair if either its name
+/// or value is not UTF-8. Unlike `std::env::vars`, this cannot panic on such a pair.
+pub fn process_env_utf8() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
+}
 
 const DENY_EXACT: &[&str] = &[
     "OPENAI_API_KEY",

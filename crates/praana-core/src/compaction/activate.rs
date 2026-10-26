@@ -33,7 +33,7 @@ use crate::compaction::schema::{
 use crate::compaction::selection::{select_turns, ProjectedTurn, Selection};
 use crate::compaction::validate::{validate_candidate, ReferenceUniverse};
 use crate::compaction::CompactionError;
-use crate::config::EffectiveConfigV1;
+use crate::config::{CompactorPair, EffectiveConfigV1};
 use crate::credentials::store::{credentials_path, load_store, CredentialStoreV1};
 use crate::history::event_log::EventLogStore;
 use crate::history::recovery::{build_interrupted_turn_capsule_from_replay, ATTEMPT_LOST_CODE};
@@ -81,6 +81,32 @@ pub const HANDOFF_LABEL: &str = "NON-AUTHORITATIVE HISTORICAL EVIDENCE";
 // Errors and outcomes
 // ---------------------------------------------------------------------------
 
+/// Local diagnostic details, not protocol wire error codes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnavailableReason {
+    Empty,
+    UnsupportedProvider,
+    UnsupportedProtocol,
+    WindowUntrusted,
+    StrictSchemaUnsupported,
+    ProfileRangeEmpty,
+    EndpointInvalid,
+}
+
+impl UnavailableReason {
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Empty => "COMPACTOR_EMPTY",
+            Self::UnsupportedProvider => "COMPACTOR_UNSUPPORTED_PROVIDER",
+            Self::UnsupportedProtocol => "COMPACTOR_UNSUPPORTED_PROTOCOL",
+            Self::WindowUntrusted => "COMPACTOR_WINDOW_UNTRUSTED",
+            Self::StrictSchemaUnsupported => "COMPACTOR_STRICT_SCHEMA_UNSUPPORTED",
+            Self::ProfileRangeEmpty => "COMPACTOR_PROFILE_RANGE_EMPTY",
+            Self::EndpointInvalid => "COMPACTOR_ENDPOINT_INVALID",
+        }
+    }
+}
+
 /// A compaction that stopped before or outside a durable attempt. Nothing in
 /// the projection changed.
 #[derive(Debug)]
@@ -88,7 +114,10 @@ pub enum CompactionRunError {
     /// Selection found nothing to retire, or a turn lacked token mass.
     Selection(CompactionError),
     /// The configured pair is empty, untrusted, or lacks strict schema support.
-    Unavailable(String),
+    Unavailable {
+        reason: UnavailableReason,
+        message: String,
+    },
     /// A compaction-purpose attempt is already open.
     InFlight,
     /// The compactor request did not pass admission against its own model.
@@ -103,7 +132,7 @@ impl CompactionRunError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Selection(error) => error.code(),
-            Self::Unavailable(_) | Self::InFlight => "COMPACTION_UNAVAILABLE",
+            Self::Unavailable { .. } | Self::InFlight => "COMPACTION_UNAVAILABLE",
             Self::Admission(_) => "ADMISSION_ACTIVE_CONTEXT_TOO_LARGE",
             Self::Request(_) => "COMPACTION_PROVIDER",
             Self::History(_) => "COMPACTION_PERSISTENCE",
@@ -116,7 +145,10 @@ impl std::fmt::Display for CompactionRunError {
         match self {
             Self::Selection(error) => write!(f, "{error}"),
             Self::InFlight => write!(f, "{}: a compaction is in flight", self.code()),
-            Self::Unavailable(m) | Self::Admission(m) | Self::Request(m) | Self::History(m) => {
+            Self::Unavailable { reason, message } => {
+                write!(f, "{} ({}): {message}", self.code(), reason.token())
+            }
+            Self::Admission(m) | Self::Request(m) | Self::History(m) => {
                 write!(f, "{}: {m}", self.code())
             }
         }
@@ -188,19 +220,22 @@ impl ConfiguredCompactor {
     /// rule (`openai` uses Responses, `openrouter` uses Chat). The model needs
     /// a trusted catalog/profile window and strict JSON schema support; there
     /// is no unsafe compactor window override.
+    /// Builds a reqwest::Client; validation-only callers discard that client.
     pub fn resolve(
         config: &EffectiveConfigV1,
         home: &Path,
         now_ms: i64,
     ) -> Result<Self, CompactionRunError> {
         let history = &config.history;
-        let provider = history.compactor_provider.trim().to_owned();
-        let model = history.compactor_model.trim().to_owned();
-        if provider.is_empty() || model.is_empty() {
-            return Err(CompactionRunError::Unavailable(
-                "the compactor pair is empty and inert".into(),
-            ));
-        }
+        let (provider, model) = match history.compactor_pair() {
+            CompactorPair::Complete { provider, model } => (provider.to_owned(), model.to_owned()),
+            CompactorPair::Empty | CompactorPair::OneSided => {
+                return Err(CompactionRunError::Unavailable {
+                    reason: UnavailableReason::Empty,
+                    message: "the compactor pair is empty and inert".into(),
+                });
+            }
+        };
         let (protocol, base_url, extra_headers) = match provider.as_str() {
             "openai" => (
                 ProviderProtocol::Responses,
@@ -213,9 +248,10 @@ impl ConfiguredCompactor {
                 config.providers.openrouter.extra_headers.clone(),
             ),
             other => {
-                return Err(CompactionRunError::Unavailable(format!(
-                    "unsupported compactor provider {other:?}"
-                )))
+                return Err(CompactionRunError::Unavailable {
+                    reason: UnavailableReason::UnsupportedProvider,
+                    message: format!("unsupported compactor provider {other:?}"),
+                })
             }
         };
         let cache = crate::turn::provider::read_catalog_cache(&catalog_cache_path(home));
@@ -230,23 +266,39 @@ impl ConfiguredCompactor {
             Some(history.compactor_max_output_tokens),
         )
         .map_err(|error| {
-            CompactionRunError::Unavailable(format!(
-                "compactor model has no trusted window: {error}"
-            ))
+            use crate::provider::catalog::CatalogError;
+            use crate::provider::profile::ProfileError;
+            let reason = match &error {
+                CatalogError::UnknownProvider(_) => UnavailableReason::UnsupportedProvider,
+                CatalogError::UnsupportedProtocol(_)
+                | CatalogError::Profile(ProfileError::UnsupportedProtocol { .. }) => {
+                    UnavailableReason::UnsupportedProtocol
+                }
+                CatalogError::InvalidEndpoint(_) => UnavailableReason::EndpointInvalid,
+                _ => UnavailableReason::WindowUntrusted,
+            };
+            CompactionRunError::Unavailable {
+                reason,
+                message: format!("compactor model has no trusted window: {error}"),
+            }
         })?;
         if profile.min_output_tokens > profile.max_output_tokens {
-            return Err(CompactionRunError::Unavailable(
-                "compactor profile output range is empty".into(),
-            ));
+            return Err(CompactionRunError::Unavailable {
+                reason: UnavailableReason::ProfileRangeEmpty,
+                message: "compactor profile output range is empty".into(),
+            });
         }
         if !profile.strict_json_schema {
-            return Err(CompactionRunError::Unavailable(
-                "compactor model does not support strict JSON schema output".into(),
-            ));
+            return Err(CompactionRunError::Unavailable {
+                reason: UnavailableReason::StrictSchemaUnsupported,
+                message: "compactor model does not support strict JSON schema output".into(),
+            });
         }
-        let fingerprint = endpoint_fingerprint(&base_url).map_err(|error| {
-            CompactionRunError::Unavailable(format!("compactor endpoint is invalid: {error}"))
-        })?;
+        let fingerprint =
+            endpoint_fingerprint(&base_url).map_err(|error| CompactionRunError::Unavailable {
+                reason: UnavailableReason::EndpointInvalid,
+                message: format!("compactor endpoint is invalid: {error}"),
+            })?;
         let config_id = compactor_config_id(&CompactorConfigIdentity {
             provider: &provider,
             protocol: protocol.config_name(),
@@ -555,6 +607,62 @@ pub struct CompactionSnapshot {
     pub source_turns: Vec<CompactionSourceTurnV1>,
     pub current_state: CompactionStateInputV1,
     pub universe: ReferenceUniverse,
+}
+
+impl CompactionSnapshot {
+    /// Smallest renderable control for the creation-time admission probe.
+    #[doc(hidden)]
+    pub fn minimal_for_admission_probe() -> Result<Self, crate::config::ConfigError> {
+        Ok(Self {
+            projection_sequence: 0,
+            reset_epoch: 0,
+            epoch: 1,
+            previous_handoff: None,
+            previous_handoff_hash: None,
+            selection: Selection {
+                turn_ids: Vec::new(),
+                source_start_sequence: 1,
+                source_end_sequence: 1,
+                eligible_mass: 0,
+                target_mass: 0,
+                selected_mass: 0,
+            },
+            source_hash: Sha256Digest::digest_bytes(b""),
+            event_prefix_hash_before: Sha256Digest::digest_bytes(b""),
+            snapshot_event_prefix_hash: [0u8; 32],
+            replay_state: EventReplayer::default(),
+            turn_estimates: Vec::new(),
+            // Zero source turns cannot render (§7.4); use one empty synthetic turn.
+            source_turns: vec![CompactionSourceTurnV1 {
+                turn_id: TurnId::from_str_canonical("01J8Z3NDEK0000000000000001").map_err(
+                    |error| {
+                        crate::config::ConfigError::InvalidValue(format!(
+                            "synthetic turn id: {error}"
+                        ))
+                    },
+                )?,
+                start_sequence: 1,
+                end_sequence: 1,
+                interrupted: None,
+                messages: Vec::new(),
+                artifact_previews: Vec::new(),
+            }],
+            current_state: CompactionStateInputV1 {
+                graph_sequence: 0,
+                rendered_input_sha256: Sha256Digest::digest_bytes(b""),
+                rendered_active_state: String::new(),
+            },
+            universe: ReferenceUniverse {
+                source_event_ids: BTreeSet::new(),
+                source_artifact_ids: BTreeSet::new(),
+                source_state_ids: BTreeSet::new(),
+                prior_segment_ids: BTreeSet::new(),
+                lineage_event_ids: BTreeSet::new(),
+                session_artifact_ids: BTreeSet::new(),
+                current_state_ids: BTreeSet::new(),
+            },
+        })
+    }
 }
 
 fn digest_of<T: serde::Serialize>(value: &T) -> Result<Sha256Digest, CompactionRunError> {
@@ -1503,11 +1611,10 @@ pub fn begin(
     // §12 step 4: the credential is resolved only after the durable start.
     let store = load_store(&credentials_path(&compactor.home))
         .unwrap_or_else(|_| CredentialStoreV1::empty());
-    let env = compactor.env.clone().unwrap_or_else(|| {
-        std::env::vars_os()
-            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
-            .collect()
-    });
+    let env = compactor
+        .env
+        .clone()
+        .unwrap_or_else(crate::process::env::process_env_utf8);
     match resolve_provider_credential(&store, &compactor.provider, None, &env) {
         Ok(token) => Ok(Begun::Started(Box::new(StartedAttempt {
             snapshot,

@@ -453,17 +453,46 @@ explicit P5 owner decision before that behavior is enabled.
 Amended by P5 reconciliation, 2026-10-03.
 
 Starting with Phase 5, a non-empty configured pair is validated at creation
-for a trusted context window, `strict_json_schema`, credential presence, and
-compactor admission. Resolution performs no network completion and does not
-silently select a different model. It does not require
+for a trusted context window, only the profile's `strict_json_schema` flag,
+credential presence, and compactor admission using one empty synthetic turn.
+The gate makes no network call, so it cannot prove that the provider accepts
+the candidate schema. Checked once by hand (#645): on 2026-10-26, OpenAI
+`gpt-5.6-sol` on `/v1/responses` accepted the checked-in schema in strict mode
+with HTTP 200 (the opt-in live test added in #663 repeats the check). That shows
+schema acceptance only. It does not show that the model writes a valid
+candidate within the compactor's output budget, and other providers and
+endpoints, including the OpenRouter chat path, are **unverified**. Resolution
+performs no network completion and does not silently select a different model.
+It does not require
 `SelfCompactionCapability::Validated` or a fidelity manifest. Confirmed
 against `resolve_profile_from_manifest`: the bundled row `openai` /
 `openai-chat-v1` / `gpt-5.6-sol` loads with `strict_json_schema: true`, a
 trusted context window, and `self_compaction: Unvalidated`. The bundled
 `openai-responses-v1` row for the same model loads the same way.
 `ModelProfileManifestV1::validate` does not read a fidelity manifest for
-`Unvalidated`. Until P5-7, `validate_effective_config` still rejects every
-complete pair with `CONFIG_FEATURE_NOT_IMPLEMENTED`.
+`Unvalidated`. As of P5-7, `validate_effective_config` accepts a complete
+pair; the creation resolver (`resolve_compactor_at_creation`) performs the
+trusted-window, strict-schema, credential-presence, and admission checks and
+returns the compactor installed by `praana run`. Setup uses its validation-only
+wrapper (`validate_compactor_pair_at_creation`). The creation gate never runs
+on plain loading, the config digest, or resume.
+
+Setup validates defaults plus the configuration file it writes; it does not
+validate every ambient configuration layer. Blank or omitted compactor fields
+leave the existing pair unchanged; only two non-blank fields replace it, and a
+one-sided submission remains an error. The gate validates the effective pair,
+including a kept pair. `praana run` re-validates the full layered configuration
+and is authoritative.
+
+On resume, the frozen pair's missing credential or unreadable credential store
+stops admission with `E_COMPACTION_UNAVAILABLE` and a specific cause code. An
+unresolved profile or window instead leaves compaction inert for that process,
+records a `compactor_profile_unresolved` notice and a best-effort telemetry sample
+(stable reason token only), and permits normal turns subject to assistant admission.
+Live non-bundled catalog profiles still do not establish `strict_json_schema`,
+even with a fresh cache; this policy is unchanged.
+Bundled compactor profiles remain resolvable on resume with a fresh, expired,
+or missing catalog cache; expiry never disables a bundled profile.
 
 Until a bundled profile is `SelfCompactionCapability::Validated` under
 Compaction §17, a new Phase-5 session may still be created with the empty
@@ -476,6 +505,13 @@ compaction-eligible. Resume keeps that snapshot's empty compactor pair inert
 and does not rewrite it. Credential presence for a configured pair is checked
 at creation. The secret is resolved only after the durable compaction attempt
 start, immediately before send (Compaction §12).
+
+Resume resolves and installs a complete pair from the frozen creation
+configuration, without re-running creation admission. A missing capability or
+credential presence marks the existing `COMPACTION_UNAVAILABLE` admission stop:
+no new turn/provider request is admitted and the projection is unchanged.
+Reinstalling an available compactor lifts that stop. The default empty pair
+still installs nothing; resume does not infer a same-model fallback.
 
 ### 6.5 History mode and reasoning replay
 

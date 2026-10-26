@@ -269,6 +269,50 @@ fn assert_no_resume_id(output: &Output) {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn cli_run_and_resume_ignore_non_utf8_environment() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // Create a normal frozen session first so resume is exercised even while
+    // run still has the original environment panic.
+    let env = cli_env();
+    write_credentials(&env.home, "openai", "test-key");
+    let server = spawn_server(|_| sse_response(200, &responses_text_body("utf8-safe answer")));
+    write_config(&env.config, &server.base_url(), "openai-responses-v1", "");
+    let created = run_cli_with_config(&env, "first");
+    assert_eq!(exit_code(&created), 0, "{}", stderr(&created));
+    let (sid, _) = append_pending_turn(&env);
+    let mut failures = Vec::new();
+    for args in [
+        vec!["run", "--config", env.config.to_str().unwrap(), "second"],
+        vec!["resume", "--config", env.config.to_str().unwrap(), &sid],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_praana"))
+            .args(&args)
+            .current_dir(&env.workspace)
+            .env("PRAANA_HOME", &env.home)
+            .env("PRAANA_NO_UPDATE_CHECK", "1")
+            .env("PRAANA_NON_UTF8_VALUE", OsStr::from_bytes(b"x\xffy"))
+            .env(OsStr::from_bytes(b"PRAANA_NON_UTF8_NAME_\xff"), "ignored")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        if !output.status.success() {
+            failures.push(format!("{}: {}", args[0], stderr(&output)));
+        } else {
+            assert_eq!(stdout(&output), "utf8-safe answer\n", "{}", args[0]);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "non-UTF-8 environment must not panic:\n{}",
+        failures.join("\n")
+    );
+    assert_eq!(server.hits.load(Ordering::SeqCst), 3);
+}
+
 // ---------------------------------------------------------------------------
 // Grammar
 // ---------------------------------------------------------------------------
@@ -503,6 +547,128 @@ fn run_cli_strings(env: &CliEnv, args: &[String]) -> Output {
         .expect("spawn praana")
 }
 
+/// Spawns `praana` with the ambient provider-key env vars removed, so a key
+/// on the test runner's machine can never satisfy (or leak into) the child.
+fn run_cli_no_ambient_keys(env: &CliEnv, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_praana"))
+        .args(args)
+        .current_dir(&env.workspace)
+        .env("PRAANA_HOME", &env.home)
+        .env("PRAANA_NO_UPDATE_CHECK", "1")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn praana")
+}
+
+/// Like [`run_cli_no_ambient_keys`], then pins a single provider key so the
+/// child deterministically sees exactly this credential.
+fn run_cli_with_key(env: &CliEnv, args: &[&str], key: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_praana"))
+        .args(args)
+        .current_dir(&env.workspace)
+        .env("PRAANA_HOME", &env.home)
+        .env("PRAANA_NO_UPDATE_CHECK", "1")
+        .env_remove("OPENROUTER_API_KEY")
+        .env("OPENAI_API_KEY", key)
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn praana")
+}
+
+fn write_compactor_config(path: &Path, base_url: &str) {
+    let toml = format!(
+        r#"
+[llm]
+provider = "openai"
+protocol = "openai-responses-v1"
+model = "gpt-5.6-sol"
+max_output_tokens = 256
+
+[turn]
+max_steps = 6
+max_attempts = 3
+
+[tools]
+shell_enabled = true
+
+[history]
+compactor_provider = "openai"
+compactor_model = "gpt-5.6-sol"
+
+[providers.openai]
+base_url = "{base_url}"
+"#
+    );
+    std::fs::write(path, toml).expect("write compactor config");
+}
+
+#[test]
+fn complete_compactor_pair_without_credential_exits_2_before_session_creation() {
+    let env = cli_env();
+    // Complete pair, no store credential, and the child env is cleared of any
+    // ambient provider key. The base_url is a closed loopback port: the gate
+    // must reject before anything can touch the network.
+    write_compactor_config(&env.config, "http://127.0.0.1:1/v1");
+
+    let config = env.config.to_str().expect("config path utf8").to_owned();
+    let output = run_cli_no_ambient_keys(&env, &["run", "--config", &config, "hello"]);
+    assert_eq!(exit_code(&output), 2, "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "", "no stdout on gate rejection");
+    assert!(
+        stderr(&output).contains("CONFIG_COMPACTOR_REQUIRED"),
+        "diagnostic carries the canonical code: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "complete pair is no longer a feature-gate rejection: {}",
+        stderr(&output)
+    );
+    assert_no_resume_id(&output);
+    assert!(
+        !env.home.join("sessions").exists(),
+        "no session directory may be created when the gate rejects"
+    );
+}
+
+#[test]
+fn complete_compactor_pair_with_key_passes_gate_and_runs_against_fake_server() {
+    let env = cli_env();
+    let server = spawn_server(|_index| sse_response(200, &responses_text_body("hello from cli")));
+    write_compactor_config(&env.config, &server.base_url());
+
+    let config = env.config.to_str().expect("config path utf8").to_owned();
+    let output = run_cli_with_key(
+        &env,
+        &["run", "--config", &config, "say hello"],
+        "p3d-cli-key",
+    );
+    assert_eq!(exit_code(&output), 0, "stderr: {}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("CONFIG_COMPACTOR_REQUIRED"),
+        "valid key must pass the gate: {}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("CONFIG_FEATURE_NOT_IMPLEMENTED"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert_eq!(stdout(&output), "hello from cli\n");
+    assert_resume_id(&output);
+    // The only HTTP interaction is with the loopback fake server — never the
+    // real OpenAI endpoint.
+    assert_eq!(server.hits.load(Ordering::SeqCst), 1);
+    let recorded = server.recorded.lock().unwrap();
+    assert!(
+        recorded[0].starts_with("POST /v1/responses HTTP/1.1"),
+        "responses protocol posts to /v1/responses: {:?}",
+        recorded[0].lines().next()
+    );
+}
+
 #[test]
 fn admission_reject_exits_2_with_context_length_diagnostic_and_resume_id() {
     let env = cli_env();
@@ -593,6 +759,420 @@ fn resume_ready_session_exits_0_with_id_and_empty_stdout() {
         "a ready resumed session writes no stdout"
     );
     assert_eq!(assert_resume_id(&resumed), created_id);
+}
+
+// A real first CLI run supplies the immutable creation snapshot and a closed
+// source turn. Append only the next turn's durable admission prefix, modelling
+// a process exit before its first assistant attempt. `resume` has no prompt
+// argument, so it must continue this active step-zero turn.
+fn append_pending_turn(env: &CliEnv) -> (String, PathBuf) {
+    use praana_core::history::event_log::EventLogStore;
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::protocol::events::EventEnvelope;
+    use praana_core::protocol::id::{EventId, MessageId, TurnId};
+
+    let sid = first_session_id(&env.home);
+    let dir = env.home.join("sessions").join(&sid);
+    let mut log = EventLogStore::open(&dir, &sid).unwrap();
+    let events = log.events().unwrap();
+    let mut prefix: Vec<serde_json::Value> = events
+        .iter()
+        .filter_map(|event| {
+            let value = serde_json::to_value(event).unwrap();
+            matches!(
+                value["event"]["kind"].as_str(),
+                Some("user_message_accepted" | "turn_started")
+            )
+            .then_some(value)
+        })
+        .collect();
+    assert_eq!(prefix.len(), 2);
+    let ids = MonotonicUlidGenerator::system();
+    let turn: TurnId = ids.next_id().unwrap();
+    let message: MessageId = ids.next_id().unwrap();
+    for event in &mut prefix {
+        let id: EventId = ids.next_id().unwrap();
+        event["event_id"] = serde_json::json!(id.to_string());
+        event["turn_id"] = serde_json::json!(turn.to_string());
+        event["sequence"] = serde_json::json!(log.current_sequence() + 1);
+        match event["event"]["kind"].as_str().unwrap() {
+            "user_message_accepted" => {
+                event["event"]["data"]["message"]["turn_id"] = serde_json::json!(turn.to_string());
+                event["event"]["data"]["message"]["message_id"] =
+                    serde_json::json!(message.to_string());
+            }
+            "turn_started" => {
+                event["event"]["data"]["turn_index"] = serde_json::json!(2);
+                event["event"]["data"]["user_message_id"] = serde_json::json!(message.to_string());
+            }
+            _ => unreachable!(),
+        }
+        let envelope: EventEnvelope = serde_json::from_value(event.clone()).unwrap();
+        log.append_event(&envelope).unwrap();
+    }
+    (sid, dir)
+}
+
+fn write_live_compactor_config(
+    env: &CliEnv,
+    assistant: &FakeServer,
+    compactor: &FakeServer,
+    pair: bool,
+    compact_at: f64,
+) {
+    let pair = if pair {
+        "compactor_provider = \"openai\"\ncompactor_model = \"gpt-5.6-sol\""
+    } else {
+        ""
+    };
+    std::fs::write(
+        &env.config,
+        format!(
+            r#"
+[llm]
+provider = "openrouter"
+protocol = "openai-chat-v1"
+model = "openai/gpt-5.6-sol"
+max_output_tokens = 256
+min_output_tokens = 16
+context_window = 65536
+[history]
+compact_at = {compact_at}
+compact_clear_at = 0.1
+{pair}
+[providers.openrouter]
+base_url = "{}"
+[providers.openai]
+base_url = "{}"
+"#,
+            assistant.base_url(),
+            compactor.base_url()
+        ),
+    )
+    .unwrap();
+}
+
+fn live_cli_fixture(pair: bool, compact_at: f64) -> (CliEnv, FakeServer, FakeServer) {
+    let env = cli_env();
+    write_credentials(&env.home, "openrouter", "assistant-key");
+    let mut store =
+        praana_core::credentials::store::load_store(&credentials_path(&env.home)).unwrap();
+    upsert_credential(
+        &mut store,
+        "openai",
+        "compactor-key".into(),
+        1_700_000_000_000,
+    )
+    .unwrap();
+    save_store(&credentials_path(&env.home), &store).unwrap();
+    let assistant = spawn_server(|_| sse_response(200, &chat_text_body("assistant answer")));
+    let compactor = spawn_server(|_| {
+        let candidate =
+            include_str!("../../praana-core/tests/fixtures/compaction_v1/candidate_empty.json");
+        let escaped = serde_json::to_string(candidate.trim()).unwrap();
+        // responses_text_body expects JSON-string contents rather than quotes.
+        sse_response(200, &responses_text_body(&escaped[1..escaped.len() - 1]))
+    });
+    write_live_compactor_config(&env, &assistant, &compactor, pair, compact_at);
+    (env, assistant, compactor)
+}
+
+#[test]
+fn cli_resume_installs_frozen_compactor_before_assistant() {
+    let (env, assistant, compactor) = live_cli_fixture(true, 0.4);
+    let prompt = "first closed source ".repeat(1200);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &["run", "--config", env.config.to_str().unwrap(), &prompt],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    let (sid, dir) = append_pending_turn(&env);
+    let snapshot = std::fs::read(dir.join("config.snapshot.json")).unwrap();
+    // Loaded configuration must neither disable the frozen pair nor run a
+    // creation gate. The frozen endpoints and thresholds remain authoritative.
+    write_live_compactor_config(&env, &assistant, &compactor, false, 0.9);
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&resumed), 0, "{}", stderr(&resumed));
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert_eq!(
+        compactor.hits.load(Ordering::SeqCst),
+        1,
+        "frozen compactor must send; {}",
+        stderr(&resumed)
+    );
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    let compacted = events.find("\"kind\":\"history_compacted\"").unwrap();
+    let last_assistant = events.rfind("\"type\":\"assistant_step\"").unwrap();
+    assert!(
+        compacted < last_assistant,
+        "compaction activates before assistant start"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("config.snapshot.json")).unwrap(),
+        snapshot
+    );
+    assert!(compactor.recorded.lock().unwrap()[0].starts_with("POST /v1/responses "));
+    assert!(assistant.recorded.lock().unwrap()[1].starts_with("POST /v1/chat/completions "));
+}
+
+#[test]
+fn cli_resume_frozen_empty_pair_never_installs_or_rewrites() {
+    let (env, assistant, compactor) = live_cli_fixture(false, 0.4);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &[
+            "run",
+            "--config",
+            env.config.to_str().unwrap(),
+            &"first closed source ".repeat(1200),
+        ],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    let (sid, dir) = append_pending_turn(&env);
+    let snapshot = std::fs::read(dir.join("config.snapshot.json")).unwrap();
+    write_live_compactor_config(&env, &assistant, &compactor, true, 0.4);
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&resumed), 0, "{}", stderr(&resumed));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        std::fs::read(dir.join("config.snapshot.json")).unwrap(),
+        snapshot
+    );
+    assert!(!std::fs::read_to_string(dir.join("events.jsonl"))
+        .unwrap()
+        .contains("history_compacted"));
+}
+
+#[test]
+fn cli_resume_missing_compactor_credential_stops_before_any_request() {
+    let (env, assistant, compactor) = live_cli_fixture(true, 0.9);
+    let first = run_cli_no_ambient_keys(
+        &env,
+        &[
+            "run",
+            "--config",
+            env.config.to_str().unwrap(),
+            "small source",
+        ],
+    );
+    assert_eq!(exit_code(&first), 0, "{}", stderr(&first));
+    let (sid, dir) = append_pending_turn(&env);
+    // Preserve the assistant credential; only the compactor loses capability.
+    write_credentials(&env.home, "openrouter", "assistant-key");
+    let before = std::fs::read(dir.join("events.jsonl")).unwrap();
+    let resumed = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_ne!(
+        exit_code(&resumed),
+        0,
+        "missing compactor must stop admission"
+    );
+    assert!(
+        stderr(&resumed).contains("E_COMPACTION_UNAVAILABLE"),
+        "{}",
+        stderr(&resumed)
+    );
+    assert!(!stderr(&resumed).contains("CONFIG_COMPACTOR_REQUIRED"));
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        assistant.hits.load(Ordering::SeqCst),
+        1,
+        "zero resumed assistant requests"
+    );
+    assert_eq!(std::fs::read(dir.join("events.jsonl")).unwrap(), before);
+}
+
+#[test]
+fn cli_resume_non_strict_live_profile_sends_normal_turn() {
+    use praana_core::clock::{Clock, SystemClock};
+    use praana_core::config::{load_effective_config, ConfigCliOverrides, ConfigLoaderEnv};
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::provider::{catalog_cache_path, endpoint_fingerprint};
+    use praana_core::turn::{HeadlessLoop, LoopConfig, LoopFault};
+    let env = cli_env();
+    write_credentials(&env.home, "openai", "assistant-key");
+    let mut store = praana_core::credentials::load_store(&credentials_path(&env.home)).unwrap();
+    upsert_credential(&mut store, "openrouter", "compactor-key".into(), 2000).unwrap();
+    save_store(&credentials_path(&env.home), &store).unwrap();
+    let assistant = spawn_server(|_| sse_response(200, &responses_text_body("normal answer")));
+    write_compactor_config(&env.config, &assistant.base_url());
+    let text = std::fs::read_to_string(&env.config)
+        .unwrap()
+        .replace(
+            "compactor_provider = \"openai\"",
+            "compactor_provider = \"openrouter\"",
+        )
+        .replace(
+            "compactor_model = \"gpt-5.6-sol\"",
+            "compactor_model = \"review/live-compactor\"",
+        );
+    std::fs::write(&env.config, text).unwrap();
+    let now = SystemClock.now_ms();
+    let cache = serde_json::json!({
+        "schema_version": 1, "provider": "openrouter",
+        "endpoint_fingerprint": endpoint_fingerprint("https://openrouter.ai/api/v1").unwrap(),
+        "fetched_at_ms": now, "expires_at_ms": now + 6 * 60 * 60 * 1000,
+        "etag": null, "body_sha256": praana_core::token::Sha256Digest::digest_bytes(b"catalog"),
+        "models": [{"provider": "openrouter", "model_id": "review/live-compactor",
+            "display_name": "Live compactor", "context_length": 65536,
+            "max_completion_tokens": 8192, "supported_parameters": ["structured_outputs"],
+            "reasoning_efforts": []}]
+    });
+    let path = catalog_cache_path(&env.home);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_vec(&cache).unwrap()).unwrap();
+    let loader = ConfigLoaderEnv {
+        home_dir: env.home.parent().unwrap().to_path_buf(),
+        session_cwd: env.workspace.clone(),
+        process_cwd: env.workspace.clone(),
+        env_vars: std::collections::HashMap::from([(
+            "PRAANA_HOME".into(),
+            env.home.to_string_lossy().into_owned(),
+        )]),
+    };
+    let (config, _, _) =
+        load_effective_config(Some(&env.config), &ConfigCliOverrides::default(), &loader).unwrap();
+    // Model a legacy/library-created frozen pair. Creation's strict-schema
+    // policy remains unchanged: live catalog rows cannot establish that flag.
+    let sid: praana_core::protocol::id::SessionId =
+        MonotonicUlidGenerator::system().next_id().unwrap();
+    let session_dir = env.home.join("sessions").join(sid.to_string());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let provider = praana_core::turn::provider::OpenAiStepProvider::new(
+            &config,
+            &env.home,
+            &env.workspace,
+        )
+        .unwrap();
+        let mut loop_ = HeadlessLoop::create(LoopConfig {
+            home: env.home.clone(),
+            workspace: env.workspace.clone(),
+            session_dir,
+            config,
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(MonotonicUlidGenerator::system()),
+            fault: LoopFault::None,
+        })
+        .unwrap();
+        assert!(loop_
+            .run_turn("first turn", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+    });
+    let (sid, dir) = append_pending_turn(&env);
+    let output = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stderr(&output));
+    assert_eq!(stdout(&output), "normal answer\n");
+    assert!(!stderr(&output).contains("E_COMPACTION_UNAVAILABLE"));
+    assert!(
+        stderr(&output)
+            .contains("compactor_profile_unresolved (COMPACTOR_STRICT_SCHEMA_UNSUPPORTED)"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        !events.contains("\"compaction_id\""),
+        "zero compactor attempts"
+    );
+    let db = praana_core::history::db::HistoryDatabase::open(&dir.join("history.db")).unwrap();
+    let rows = db
+        .read_telemetry_samples("compactor_profile_unresolved")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].dimensions_json).unwrap(),
+        serde_json::json!({"error_code": "COMPACTOR_STRICT_SCHEMA_UNSUPPORTED"})
+    );
+}
+
+#[test]
+fn cli_resume_dropped_bundled_compactor_model_sends_normal_turn() {
+    use praana_core::clock::SystemClock;
+    use praana_core::config::{load_effective_config, ConfigCliOverrides, ConfigLoaderEnv};
+    use praana_core::id::{IdGenerator, MonotonicUlidGenerator};
+    use praana_core::turn::{HeadlessLoop, LoopConfig, LoopFault};
+
+    let (env, assistant, compactor) = live_cli_fixture(true, 0.4);
+    let text = std::fs::read_to_string(&env.config).unwrap().replace(
+        "compactor_model = \"gpt-5.6-sol\"",
+        "compactor_model = \"dropped-from-new-binary\"",
+    );
+    std::fs::write(&env.config, text).unwrap();
+    let loader = ConfigLoaderEnv {
+        home_dir: env.home.parent().unwrap().to_path_buf(),
+        session_cwd: env.workspace.clone(),
+        process_cwd: env.workspace.clone(),
+        env_vars: std::collections::HashMap::from([(
+            "PRAANA_HOME".into(),
+            env.home.to_string_lossy().into_owned(),
+        )]),
+    };
+    let (config, _, _) =
+        load_effective_config(Some(&env.config), &ConfigCliOverrides::default(), &loader).unwrap();
+    let sid: praana_core::protocol::id::SessionId =
+        MonotonicUlidGenerator::system().next_id().unwrap();
+    // A frozen legacy pair may refer to a model absent from the current binary.
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let provider = praana_core::turn::provider::OpenAiStepProvider::new(
+            &config,
+            &env.home,
+            &env.workspace,
+        )
+        .unwrap();
+        let mut loop_ = HeadlessLoop::create(LoopConfig {
+            home: env.home.clone(),
+            workspace: env.workspace.clone(),
+            session_dir: env.home.join("sessions").join(sid.to_string()),
+            config,
+            clock: Arc::new(SystemClock),
+            ids: Arc::new(MonotonicUlidGenerator::system()),
+            fault: LoopFault::None,
+        })
+        .unwrap();
+        let report = loop_.run_turn("first turn", &provider).await.unwrap();
+        assert!(report.interruption.is_none());
+    });
+    let (sid, dir) = append_pending_turn(&env);
+    let output = run_cli_no_ambient_keys(
+        &env,
+        &["resume", "--config", env.config.to_str().unwrap(), &sid],
+    );
+    assert_eq!(exit_code(&output), 0, "{}", stderr(&output));
+    assert_eq!(stdout(&output), "assistant answer\n");
+    assert!(
+        stderr(&output).contains("compactor_profile_unresolved (COMPACTOR_WINDOW_UNTRUSTED)"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(assistant.hits.load(Ordering::SeqCst), 2);
+    assert_eq!(compactor.hits.load(Ordering::SeqCst), 0);
+    let db = praana_core::history::db::HistoryDatabase::open(&dir.join("history.db")).unwrap();
+    let rows = db
+        .read_telemetry_samples("compactor_profile_unresolved")
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].dimensions_json).unwrap(),
+        serde_json::json!({"error_code": "COMPACTOR_WINDOW_UNTRUSTED"})
+    );
 }
 
 #[test]

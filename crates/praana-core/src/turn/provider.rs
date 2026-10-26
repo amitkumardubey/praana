@@ -354,7 +354,7 @@ impl OpenAiStepProvider {
     ) -> Result<(Vec<u8>, SendAuthorization), DispatchError> {
         let store = load_store(&credentials_path(&self.home))
             .unwrap_or_else(|_| CredentialStoreV1::empty());
-        let env: BTreeMap<String, String> = std::env::vars().collect();
+        let env = crate::process::env::process_env_utf8();
         let token = resolve_provider_credential(&store, &self.provider_id, None, &env)
             .map_err(DispatchError::Provider)?;
         let headers = build_headers(
