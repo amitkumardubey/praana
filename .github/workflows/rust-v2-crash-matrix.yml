@@ -105,6 +105,7 @@ jobs:
             'crash_after_terminal_step_before_commit',
             'crash_after_tool_body_before_redaction',
             'crash_after_turn_committed',
+            'crash_at_calibration_sample_keeps_a_valid_store_and_the_next_process_records',
             'crash_auto_hydrate_recovery_matrix',
             'crash_during_fragmented_provider_output_never_accepts_partial',
             'crash_during_batch_edit_validation_leaves_workspace_unchanged',
@@ -116,7 +117,8 @@ jobs:
             'live_hard_ceiling_crash_after_history_compacted_fsync_replays_once',
             'live_proactive_crash_after_attempt_started_retries_once',
             'malformed_tail_recovers_exact_valid_prefix',
-            'replacement_acceptance_crash_repairs_supersession_once_in_fresh_process'
+            'replacement_acceptance_crash_repairs_supersession_once_in_fresh_process',
+            'zero_usage_and_emergency_retry_do_not_hit_the_calibration_failpoint'
           )
           $issue = 'https://github.com/amitkumardubey/praana/issues/622'
           foreach ($test in $durableTests) { Write-Host "SKIPPED $test — $issue (requires private Windows History ACLs)" }
