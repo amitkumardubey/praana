@@ -2,7 +2,16 @@
 //!
 //! The compactor sends its candidate schema in strict structured-output mode.
 //! OpenAI validates that schema before it generates a token, so a rejected
-//! schema comes back as a 400 and the test fails. Run it once with your key:
+//! schema comes back as a 400 and the test fails.
+//!
+//! Recorded result: on 2026-10-26, `gpt-5.6-sol` on `/v1/responses` accepted
+//! the checked-in schema, including `format: "uint32"` and 84 `pattern`
+//! keywords, with HTTP 200. The response was `incomplete` only because the
+//! request allows 16 output tokens, all of which the reasoning step used. So
+//! this proves the provider accepts the schema. It does not prove the model
+//! writes a valid candidate within the compactor's real output budget.
+//!
+//! Run it with your key:
 //!
 //! ```text
 //! OPENAI_API_KEY=sk-... cargo test -p praana-core --test live_openai_schema \
@@ -10,11 +19,12 @@
 //! ```
 //!
 //! Optional: `PRAANA_LIVE_MODEL` (default `gpt-5.6-sol`) and `OPENAI_BASE_URL`
-//! (default `https://api.openai.com/v1`). Each request asks for 16 output
+//! (default `https://api.openai.com/v1`). The request asks for 16 output
 //! tokens, so the cost is negligible. The key is read from the environment
-//! only and is never printed.
+//! only. Only the HTTP status and the error object are printed, never the
+//! response body.
 
-use praana_core::compaction::schema::{candidate_json_schema, candidate_wire_schema};
+use praana_core::compaction::schema::candidate_json_schema;
 use serde_json::{json, Value};
 
 async fn post_schema(schema: &Value) -> (u16, Value) {
@@ -62,25 +72,15 @@ fn schema_rejected(status: u16, body: &Value) -> bool {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs OPENAI_API_KEY and network access"]
 async fn openai_accepts_the_strict_compaction_schema() {
-    // Diagnostic only: the full schema as checked in (carries `format: uint32`).
-    let (full_status, full_body) = post_schema(candidate_json_schema()).await;
+    let (status, body) = post_schema(candidate_json_schema()).await;
     println!(
-        "FULL schema -> HTTP {full_status}, schema rejected: {}\n{full_body}",
-        schema_rejected(full_status, &full_body)
-    );
-
-    // The assertion: the schema the compactor really sends.
-    let (status, body) = post_schema(candidate_wire_schema()).await;
-    println!(
-        "WIRE schema -> HTTP {status}, schema rejected: {}\n{body}",
-        schema_rejected(status, &body)
+        "HTTP {status}, response status: {}, error: {}",
+        body["status"], body["error"]
     );
     assert!(
         !schema_rejected(status, &body),
-        "OpenAI rejected the strict compaction schema: HTTP {status}: {body}"
+        "OpenAI rejected the strict compaction schema: HTTP {status}: {}",
+        body["error"]
     );
-    assert!(
-        status == 200 || status == 400 || status == 429,
-        "unexpected status {status}: {body}"
-    );
+    assert_eq!(status, 200, "unexpected status {status}: {}", body["error"]);
 }
