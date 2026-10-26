@@ -981,6 +981,49 @@ fn calibration_store_two_writers_keep_128_without_busy() {
     assert_eq!(nonces, expected);
 }
 
+/// Racing creators on a fresh home: no writer may see a half-initialized file
+/// as a foreign schema. The schema, `application_id` and `user_version` must
+/// become visible together.
+#[test]
+fn calibration_store_racing_creators_never_report_a_schema_error() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use praana_core::token::{append_sample, load_bucket};
+
+    for round in 0..40u64 {
+        let home = temp_calibration_home();
+        let barrier = Arc::new(Barrier::new(4));
+        let mut joins = Vec::new();
+        for writer in 0..4u64 {
+            let home_path = home.path().to_path_buf();
+            let barrier = Arc::clone(&barrier);
+            joins.push(thread::spawn(move || {
+                barrier.wait();
+                let sample = stored_sample(
+                    STORE_PROVIDER,
+                    STORE_PROTOCOL,
+                    STORE_MODEL,
+                    None,
+                    STORE_ESTIMATOR,
+                    round * 4 + writer,
+                    100,
+                    110,
+                );
+                append_sample(&home_path, &sample)
+            }));
+        }
+        for join in joins {
+            let outcome = join.join().expect("writer thread");
+            assert!(
+                outcome.is_ok(),
+                "round {round}: a racing creator failed: {outcome:?}"
+            );
+        }
+        assert_eq!(load_bucket(home.path(), &primary_key()).len(), 4);
+    }
+}
+
 /// Store failures are best-effort. The child process is what proves nothing
 /// is written to stderr; this parent also checks the bytes itself so a panic
 /// points at the case.

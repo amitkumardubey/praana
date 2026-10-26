@@ -368,7 +368,17 @@ enum SchemaState {
     Foreign,
 }
 
+/// Classifies the file from ONE read snapshot. The probes below are separate
+/// statements; without a transaction a writer committing the schema between
+/// them yields version 0 together with existing tables, which looks foreign.
 fn schema_state(conn: &Connection) -> Result<SchemaState, CalibrationStoreError> {
+    conn.execute_batch("BEGIN").map_err(map_sql)?;
+    let state = schema_state_in_snapshot(conn);
+    let _ = conn.execute_batch("ROLLBACK");
+    state
+}
+
+fn schema_state_in_snapshot(conn: &Connection) -> Result<SchemaState, CalibrationStoreError> {
     let user_version = pragma_i32(conn, "user_version")?;
     let application_id = pragma_i32(conn, "application_id")?;
     let meta_table = table_exists(conn, "schema_meta")?;
@@ -449,6 +459,9 @@ fn init_new(path: &Path) -> Result<(), CalibrationStoreError> {
         }
     }
     let conn = open_read_write(path)?;
+    // The tables, the meta row, `application_id` and `user_version` commit
+    // together. Written separately, another process could open the file between
+    // the two commits, see tables with version 0, and report a foreign schema.
     in_immediate(&conn, |conn| {
         conn.execute_batch(SCHEMA_SQL).map_err(map_sql)?;
         conn.execute(
@@ -457,12 +470,12 @@ fn init_new(path: &Path) -> Result<(), CalibrationStoreError> {
             [SCHEMA_VERSION_TEXT],
         )
         .map_err(map_sql)?;
+        conn.execute_batch(&format!(
+            "PRAGMA application_id = {APPLICATION_ID}; PRAGMA user_version = {SCHEMA_VERSION};"
+        ))
+        .map_err(map_sql)?;
         Ok(())
     })?;
-    conn.execute_batch(&format!(
-        "PRAGMA application_id = {APPLICATION_ID}; PRAGMA user_version = {SCHEMA_VERSION};"
-    ))
-    .map_err(map_sql)?;
     tighten_private_file(path)?;
     chmod_sidecars(path);
     Ok(())
