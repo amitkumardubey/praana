@@ -22,6 +22,8 @@ bun run test:parallel  # opt-in: bun test --parallel tests/
 
 Requires **Bun ≥1.4**. Native dependencies are optional (see Embedder Config and Native Addon below).
 
+**Rust workspace build size.** Each integration test binary links all of `praana-core`, so a full test build is large (about 4 GB with the repo's `debug = "line-tables-only"` dev profile, 11 GB with full debug info, more once stale hashes pile up). In a throwaway git worktree, build with `CARGO_INCREMENTAL=0` and run `cargo clean` (or remove the worktree) when the work is merged. A shared `CARGO_TARGET_DIR` across worktrees saves little (only dependency libraries) and makes parallel builds wait on the cargo lock.
+
 ---
 
 ### Global CLI (`bun link`)
