@@ -2529,6 +2529,9 @@ fn predict_assistant_source_result_id(
 
 const STALE_MARKER: &str = "STALE_MARKER unseen-until-catchup";
 
+const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
+    "derived history rebuild failed at resume; canonical history is authoritative";
+
 #[tokio::test]
 async fn resume_degrades_when_recovery_projection_fails() {
     let dir = tempfile::tempdir().unwrap();
@@ -2555,8 +2558,8 @@ async fn resume_degrades_when_recovery_projection_fails() {
 
     // Make the derived rebuild fail at resume: drop the checkpoint row (so the
     // projector must re-apply and write a row) and abort every checkpoint
-    // write. The failure message embeds the session dir so the redaction can
-    // be observed.
+    // write. The failure message embeds the session dir so the test proves it
+    // never reaches the report.
     {
         let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
         conn.execute_batch(
@@ -2572,8 +2575,8 @@ async fn resume_degrades_when_recovery_projection_fails() {
         .unwrap();
     }
 
-    // Resume must degrade, not abort: the derived rebuild failure is recorded
-    // as a recovery notice, and the session stays usable.
+    // Resume must degrade, not abort: the derived rebuild failure is carried
+    // as a non-durable diagnostic, and the session stays usable.
     let mut resumed =
         HeadlessLoop::resume(cfg.clone()).expect("resume degrades when the derived rebuild fails");
 
@@ -2596,37 +2599,29 @@ async fn resume_degrades_when_recovery_projection_fails() {
         .as_ref()
         .expect("projection failure surfaces on the first report");
     assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+    assert_eq!(
+        diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
+        "the fixed message replaces raw rebuild text: {diagnostic:?}"
+    );
     assert!(
         !diagnostic
             .message
             .contains(&cfg.session_dir.display().to_string()),
-        "session path is redacted: {diagnostic:?}"
+        "session path is never present: {diagnostic:?}"
     );
 
-    // The recovery notice surfaced with the first post-resume assistant attempt.
-    let attempt = events_of_kind(&cfg.session_dir, "assistant_attempt_started")
-        .into_iter()
-        .rev()
-        .find(|event| event["event"]["data"]["purpose"]["type"] == "assistant_step")
-        .expect("post-resume assistant attempt");
-    let notices = attempt["event"]["data"]["recovery_notices"]
-        .as_array()
-        .unwrap();
-    let notice = notices
-        .iter()
-        .find(|notice| notice["kind"] == "history_projection_failed")
-        .expect("history projection failure notice on the first attempt");
-    let notice_message = notice["message"].as_str().unwrap();
+    // The degradation is session-local: no recovery notice is persisted, so
+    // replay cannot collide on a repeated notice id with differing content.
+    let events = read_events(&cfg.session_dir);
     assert!(
-        notice_message.contains("injected resume projection failure"),
-        "{notice_message}"
-    );
-    assert!(
-        !notice_message.contains(&cfg.session_dir.display().to_string()),
-        "session path is redacted from the notice: {notice_message}"
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("history_projection_failed"),
+        "no history projection recovery notice is persisted"
     );
 
-    // Stop failing; a later turn runs cleanly.
+    // Stop failing; the diagnostic was taken (cleared): a second turn's
+    // report carries nothing.
     {
         let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
         conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
@@ -2644,6 +2639,126 @@ async fn resume_degrades_when_recovery_projection_fails() {
     let report = resumed.run_turn("later turn", &later).await.unwrap();
     assert!(report.interruption.is_none(), "{report:?}");
     assert!(report.diagnostic.is_none(), "{report:?}");
+}
+
+#[tokio::test]
+async fn consecutive_resume_rebuild_failures_stay_replayable() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    let inject = |message: &str| {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+        )
+        .unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, '{message}'); END;"
+        ))
+        .unwrap();
+    };
+    let clear = || {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
+            .unwrap();
+    };
+
+    // First degraded resume.
+    inject("first injected rebuild failure");
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).expect("first resume succeeds degraded");
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after first degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after first degraded resume", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{report:?}"
+    );
+    drop(resumed);
+
+    // Second degraded resume: the same failure code but different injected
+    // text. A recovery-notice id derived from the code alone would collide on
+    // replay; carrying no notice means both resumes succeed and the session
+    // still replays.
+    clear();
+    inject("second injected rebuild failure");
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).expect("second resume succeeds degraded");
+    let second = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after second degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after second degraded resume", &second)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{report:?}"
+    );
+
+    // The session still replays cleanly: a later committed turn runs without
+    // errors and without any stale diagnostic.
+    clear();
+    let third = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("clean turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed.run_turn("clean turn", &third).await.unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert!(report.diagnostic.is_none(), "{report:?}");
+
+    // No recovery notice was ever recorded for either degradation.
+    let events = read_events(&cfg.session_dir);
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("history_projection_failed"),
+        "no history projection recovery notice is persisted"
+    );
 }
 
 #[tokio::test]
@@ -2791,9 +2906,11 @@ async fn live_history_tool_batches_project_before_read() {
 
     // --------------------------------------------------------- retrieve_artifact
     // `retrieve_artifact` reads publish-written artifact tables, so its read
-    // cannot observe catch-up the way search/source reads do; the batch still
-    // runs the pre-batch projection (covered above via search/source) and the
-    // artifact created in the stale turn remains retrievable.
+    // cannot observe catch-up the way search/source reads do. It is also NOT
+    // part of the projection-triggering set (`HISTORY_TOOL_BATCHES_PROJECT`;
+    // covered in `retrieve_only_batch_does_not_run_the_pre_batch_projection`
+    // in turn/mod.rs), so this batch runs no pre-batch projection. The
+    // artifact created in the stale turn remains retrievable regardless.
     inject_projection_trigger(&cfg.session_dir, "injected projection failure");
     let artifact_stale = ScriptedProvider::new(
         cfg.session_dir.clone(),
