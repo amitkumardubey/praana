@@ -8,6 +8,12 @@ members = [
   "crates/praana-xtask",
 ]
 
+[profile.dev]
+# Every integration test binary links all of praana-core, so full debug info
+# made a single target directory 20-40 GB (about 4 GB with line tables only).
+# Backtraces keep file and line numbers. `test` inherits from `dev`.
+debug = "line-tables-only"
+
 [profile.release]
 lto = true
 strip = "symbols"
