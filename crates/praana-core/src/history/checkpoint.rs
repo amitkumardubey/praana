@@ -606,7 +606,10 @@ fn apply_projection(
                             if content_type != "binary" {
                                 let value: serde_json::Value = serde_json::from_slice(&canonical)
                                     .map_err(|err| {
-                                    io_err(format!("canonical artifact is not json: {err}"))
+                                    ArtifactError::new(
+                                        "HISTORY_CANONICAL_DB_CORRUPT",
+                                        format!("canonical artifact is not json: {err}"),
+                                    )
                                 })?;
                                 let view = compute_text_view(&value);
                                 docs.push(DocRow {

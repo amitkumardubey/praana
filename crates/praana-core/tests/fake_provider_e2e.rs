@@ -17,6 +17,7 @@ use praana_core::protocol::models::ProviderUsage;
 use praana_core::turn::{
     AdmittedRequest, AssistantDraft, DraftCall, HeadlessLoop, LoopConfig, LoopFault,
     PreparedRequest, ProviderOutput, ScriptedStep, StepProvider, TurnError,
+    RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
 };
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -2521,9 +2522,6 @@ fn predict_assistant_source_result_id(
 }
 
 const STALE_MARKER: &str = "STALE_MARKER unseen-until-catchup";
-
-const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
-    "derived history rebuild failed at resume; canonical history is authoritative";
 
 #[tokio::test]
 async fn resume_degrades_when_recovery_projection_fails() {

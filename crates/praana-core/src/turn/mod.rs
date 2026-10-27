@@ -168,8 +168,8 @@ pub const LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE: &str =
 /// and class come from `projection_error`; retryable is always false. The raw
 /// error text and paths never reach events or reports. The derived
 /// `history.db` stays behind while canonical history remains authoritative.
-const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
-    "derived history rebuild failed at resume; canonical history is authoritative";
+pub const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
+    "derived history could not be projected at resume; canonical history is authoritative";
 
 /// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
 /// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
@@ -2485,16 +2485,14 @@ fn redact_provider_message(message: &str) -> String {
     out
 }
 
-/// A failed/errored compaction keeps the original code, class, retryability,
-/// HTTP status, and retry-after hint (none carry provider text or host paths)
-/// but replaces the message with a fixed generic string, so no provider or
-/// transport body ever reaches events or stderr.
 /// Canonical diagnostic for a retained live epoch that stopped before a
 /// durable attempt (`CompactionRunError`). Appendix A.5 supplies the code and
 /// class where a row names one. `E_COMPACTION_UNAVAILABLE` is reserved for the
 /// §14.4 stop, so a retained `COMPACTION_UNAVAILABLE` (`InFlight`,
 /// `Unavailable`) does not use it. `Request` has no concrete provider error to
-/// map, and `History` is not reported here. Those use `E_COMPACTION_EPOCH_FAILED`.
+/// map, so it uses `E_COMPACTION_EPOCH_FAILED`. `History` is handled as a
+/// durability error by the caller; this function maps it to the same code
+/// defensively if called directly.
 fn retained_epoch_diagnostic(
     error: &crate::compaction::activate::CompactionRunError,
 ) -> ProtocolError {
@@ -2523,6 +2521,10 @@ fn retained_epoch_diagnostic(
     }
 }
 
+/// A failed/errored compaction keeps the original code, class, retryability,
+/// HTTP status, and retry-after hint (none carry provider text or host paths)
+/// but replaces the message with a fixed generic string, so no provider or
+/// transport body ever reaches events or stderr.
 fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
     ProtocolError {
         code: error.code.clone(),
@@ -2550,7 +2552,7 @@ fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
 /// Canonical-integrity (fatal): the codes those files use when the canonical
 /// prefix or artifact bytes cannot be trusted, plus anything else (capsule
 /// builders pass `err.code()` through, including `E_EVENT_SCHEMA_INVALID`).
-/// - `HISTORY_CANONICAL_DB_CORRUPT` — `rebuild.rs` blob hash / reference checks
+/// - `HISTORY_CANONICAL_DB_CORRUPT` — artifact JSON, blob hash / reference checks
 /// - `HISTORY_DANGLING_ARTIFACT` — finish event names a missing artifact row
 /// - `HISTORY_EVENT_INTEGRITY` — replay does not match the derived rows, or
 ///   the checkpoint prefix hash does not parse
