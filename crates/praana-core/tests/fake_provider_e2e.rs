@@ -3047,12 +3047,21 @@ async fn invalid_checkpoint_resume_keeps_history_db_and_operation_records() {
     assert!(report.interruption.is_none(), "{report:?}");
     let diagnostic = report
         .diagnostic
-        .expect("invalid checkpoint is reported once");
+        .expect("the turn's own invalid-checkpoint projection failure is reported");
     assert_eq!(
         diagnostic.code, "HISTORY_CHECKPOINT_INVALID",
         "{diagnostic:?}"
     );
-    assert_eq!(diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE);
+    // An invalid checkpoint cannot heal, so this turn's projection failure
+    // outranks the one-shot resume diagnostic.
+    assert_ne!(
+        diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
+        "the turn's own projection failure outranks the resume diagnostic: {diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message.contains("history checkpoint is invalid"),
+        "{diagnostic:?}"
+    );
 
     let later = ScriptedProvider::new(
         cfg.session_dir.clone(),
@@ -3070,7 +3079,7 @@ async fn invalid_checkpoint_resume_keeps_history_db_and_operation_records() {
             .as_ref()
             .map(|diagnostic| diagnostic.message.as_str()),
         Some(RESUME_PROJECTION_DIAGNOSTIC_MESSAGE),
-        "the resume diagnostic is reported once: {later_report:?}"
+        "later turns keep the live invalid-checkpoint failure, not the resume message: {later_report:?}"
     );
     assert_eq!(operation_record_count(&cfg.session_dir), 1);
 }
