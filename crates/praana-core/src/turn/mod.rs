@@ -159,21 +159,21 @@ fn provider_context_rejected() -> ProtocolError {
     }
 }
 
-/// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
-/// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
-/// A.5). Not retryable until the compactor capability or config changes.
 /// Fixed generic message shared by every non-activation live compaction
 /// diagnostic (Compaction §14.1): never quotes provider or compactor text.
-const LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE: &str =
+pub const LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE: &str =
     "live compaction did not activate; every turn retained";
 
-/// Fixed message for the degraded-resume derived-rebuild failure. The code,
-/// class, and retryability come from `projection_error`; the raw error text
-/// and paths never reach events or reports. The derived `history.db` stays
-/// behind while canonical history remains authoritative.
+/// Fixed message for the degraded-resume derived-projection failure. The code
+/// and class come from `projection_error`; retryable is always false. The raw
+/// error text and paths never reach events or reports. The derived
+/// `history.db` stays behind while canonical history remains authoritative.
 const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
     "derived history rebuild failed at resume; canonical history is authoritative";
 
+/// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
+/// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
+/// A.5). Not retryable until the compactor capability or config changes.
 fn compaction_unavailable(cause_code: &str) -> ProtocolError {
     ProtocolError {
         code: "E_COMPACTION_UNAVAILABLE".to_owned(),
@@ -2527,7 +2527,7 @@ fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
     ProtocolError {
         code: error.code.clone(),
         class: error.class.clone(),
-        message: "live compaction did not activate; every turn retained".to_owned(),
+        message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
         retryable: error.retryable,
         http_status: error.http_status,
         retry_after_ms: error.retry_after_ms,

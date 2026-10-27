@@ -2008,6 +2008,7 @@ mod activation {
     use praana_core::turn::{
         AdmittedRequest, AssistantDraft, HeadlessLoop, LoopConfig, LoopFault, PreparedRequest,
         ProviderFailure, ProviderOutput, StepProvider, TurnError,
+        LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
     };
     use serde_json::{json, Value};
     use tokio_util::sync::CancellationToken;
@@ -4289,7 +4290,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .expect("committed turn surfaces the compaction failure");
         assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
         assert_eq!(
-            diagnostic.message, "live compaction did not activate; every turn retained",
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
             "the generic message never quotes provider text: {diagnostic:?}"
         );
         assert_eq!(s.fake.compactor_requests().len(), 1);
@@ -4323,7 +4324,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             .expect("compaction failure wins the report");
         assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
         assert_eq!(
-            diagnostic.message, "live compaction did not activate; every turn retained",
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
             "{diagnostic:?}"
         );
         assert_ne!(
@@ -4370,7 +4371,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             "retry-after hint survives the safe diagnostic: {diagnostic:?}"
         );
         assert_eq!(
-            diagnostic.message, "live compaction did not activate; every turn retained",
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
             "{diagnostic:?}"
         );
     }
