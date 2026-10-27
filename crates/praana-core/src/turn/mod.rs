@@ -4534,7 +4534,6 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             diagnostic.code, "E_COMPACTION_UNAVAILABLE",
             "{diagnostic:?}"
         );
-        assert_ne!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE", "{diagnostic:?}");
         assert_eq!(
             diagnostic.code, "E_COMPACTION_EPOCH_FAILED",
             "{diagnostic:?}"
@@ -4596,6 +4595,11 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             "a resume projection failure cannot be retried in-turn: {diagnostic:?}"
         );
         assert_eq!(diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE);
+        // Pin the wire-visible text: a reword must be a deliberate test change.
+        assert_eq!(
+            diagnostic.message,
+            "derived history could not be projected at resume; canonical history is authoritative"
+        );
         assert!(resumed.resume_projection_diagnostic.is_none());
     }
 
@@ -4743,7 +4747,6 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             assert_eq!(diagnostic.code, code, "{error}");
             assert_eq!(diagnostic.class, class, "{error}");
             assert_ne!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
-            assert_ne!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE");
             assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
             assert!(!diagnostic.retryable);
         }
