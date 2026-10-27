@@ -17,6 +17,7 @@ use praana_core::protocol::models::ProviderUsage;
 use praana_core::turn::{
     AdmittedRequest, AssistantDraft, DraftCall, HeadlessLoop, LoopConfig, LoopFault,
     PreparedRequest, ProviderOutput, ScriptedStep, StepProvider, TurnError,
+    RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
 };
 use serde_json::{json, Value};
 use tokio_util::sync::CancellationToken;
@@ -2153,5 +2154,985 @@ async fn auto_hydrate_placement_attempt_blocks_assistant_step_not_compaction() {
     assert!(
         !events2.contains("\"reason\":\"auto_hydrate\""),
         "AssistantStep attempt must block auto_hydrate event emission"
+    );
+}
+
+async fn search_session_log(cfg: &LoopConfig, query: &str) -> Value {
+    let tools = praana_core::tools::builtin::production_tools(&cfg.config.tools).unwrap();
+    let registry = praana_core::tools::ToolRegistry::try_from_erased(tools).unwrap();
+    let runtime = praana_core::tools::ToolRuntime::new(
+        registry,
+        cfg.config.tools.clone(),
+        cfg.config.risk.clone(),
+        cfg.config.circuit.clone(),
+    );
+    runtime.set_workspace(cfg.workspace.clone());
+    let session_id = get_session_id(&cfg.session_dir);
+    runtime.set_session(cfg.session_dir.clone(), session_id);
+    runtime.set_headless(true);
+    let request = praana_core::tools::ToolBatchRequest {
+        batch_id: cfg.ids.next_id().unwrap(),
+        session_id,
+        turn_id: cfg.ids.next_id().unwrap(),
+        attempt_id: cfg.ids.next_id().unwrap(),
+        calls: vec![praana_core::tools::ProviderToolCall {
+            tool_call_id: praana_core::protocol::id::ToolCallId::from_str_canonical("call-search")
+                .unwrap(),
+            tool_name: praana_core::tools::ToolName::new("search_session_log").unwrap(),
+            arguments: json!({"query": query}),
+            provider_ordinal: 0,
+        }],
+        origin: praana_core::tools::ToolCallOrigin::Model,
+    };
+    let result = runtime
+        .execute_batch(
+            request,
+            praana_core::tools::BatchOrigin::Model,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .results
+        .into_iter()
+        .next()
+        .unwrap();
+    assert!(
+        result.dto.ok,
+        "search_session_log returned {:?}",
+        result.dto.error
+    );
+    result.dto.data.expect("search result data")["page"].clone()
+}
+
+fn finished_search_result(session_dir: &std::path::Path) -> String {
+    let events: Vec<Value> = fs::read_to_string(session_dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let result = events
+        .iter()
+        .find(|event| {
+            event["event"]["kind"] == "tool_execution_finished"
+                && event["event"]["data"]["result"]["tool_name"] == "search_session_log"
+        })
+        .expect("durable search_session_log result");
+    assert_eq!(result["event"]["data"]["result"]["status"], "success");
+    result["event"]["data"]["result"]["body"]["content"]["data"]["text"]
+        .as_str()
+        .expect("inline search result")
+        .to_owned()
+}
+
+fn remove_history_database(session_dir: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = session_dir.join(format!("history.db{suffix}"));
+        if path.exists() {
+            fs::remove_file(path).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn live_history_projection_is_visible_to_search_session_log() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    // Turn 1's commit projection fails, so the marker is still unprojected
+    // when the search batch starts. The search can see it only because the
+    // batch projects before the tool reads.
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("priorprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let first_report = loop_.run_turn("first turn", &first).await.unwrap();
+    assert!(first_report.interruption.is_none(), "{first_report:?}");
+    assert_eq!(
+        first_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "turn 1 is not yet in the derived database: {first_report:?}"
+    );
+    drop_projection_trigger(&cfg.session_dir);
+
+    let search = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": "priorprojectionmarker"}),
+            ),
+            ScriptedStep {
+                text: Some("found it".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    assert!(loop_
+        .run_turn("search now", &search)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    assert!(finished_search_result(&cfg.session_dir).contains("priorprojectionmarker"));
+}
+
+#[tokio::test]
+async fn resume_rebuilds_a_missing_history_database_before_search() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let provider = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("missingdbprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("history before deletion", &provider)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    remove_history_database(&cfg.session_dir);
+
+    drop(HeadlessLoop::resume(cfg.clone()).expect("resume projects missing database"));
+    let page = search_session_log(&cfg, "missingdbprojectionmarker").await;
+    assert!(page.to_string().contains("missingdbprojectionmarker"));
+}
+
+#[tokio::test]
+async fn resume_advances_a_stale_history_checkpoint_before_search() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 3);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("checkpoint seed".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("checkpoint seed", &first)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    let db_path = cfg.session_dir.join("history.db");
+    let backup = cfg.session_dir.join("history.db.seed");
+    let checkpoint = rusqlite::Connection::open(&db_path).unwrap();
+    checkpoint
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+    drop(checkpoint);
+    fs::copy(&db_path, &backup).unwrap();
+
+    let mut loop_ = HeadlessLoop::resume(cfg.clone()).unwrap();
+    let second = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("stalecheckpointmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    assert!(loop_
+        .run_turn("stale checkpoint tail", &second)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+    remove_history_database(&cfg.session_dir);
+    fs::rename(&backup, &db_path).unwrap();
+
+    drop(HeadlessLoop::resume(cfg.clone()).expect("resume projects stale checkpoint"));
+    let page = search_session_log(&cfg, "stalecheckpointmarker").await;
+    assert!(page.to_string().contains("stalecheckpointmarker"));
+    let event_count = fs::read_to_string(cfg.session_dir.join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .count() as u64;
+    assert_eq!(page["projection_through_sequence"], json!(event_count));
+}
+
+#[tokio::test]
+async fn live_projection_failure_does_not_fail_turn_and_later_search_converges() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    let db = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_history_projection BEFORE INSERT ON projection_checkpoints \
+         WHEN NEW.projection_name = 'history_derived' \
+         BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+    )
+    .unwrap();
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("retryprojectionmarker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let first_report = loop_
+        .run_turn("projection failure turn", &first)
+        .await
+        .unwrap();
+    assert!(first_report.interruption.is_none());
+    assert_eq!(
+        first_report
+            .diagnostic
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("HISTORY_IO")
+    );
+    db.execute_batch("DROP TRIGGER fail_history_projection")
+        .unwrap();
+
+    let search = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": "retryprojectionmarker"}),
+            ),
+            ScriptedStep {
+                text: Some("recovered".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let later_report = loop_
+        .run_turn("search after recovery", &search)
+        .await
+        .unwrap();
+    assert!(later_report.interruption.is_none());
+    assert!(finished_search_result(&cfg.session_dir).contains("retryprojectionmarker"));
+}
+
+// ---------------------------------------------------------------------------
+// Round-2 regressions: resume degradation, tool-batch pre-projection, and
+// diagnostic attribution. Helpers shared by the tests below.
+// ---------------------------------------------------------------------------
+
+fn inject_projection_trigger(session_dir: &std::path::Path, message: &str) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute_batch(&format!(
+        "CREATE TRIGGER IF NOT EXISTS fail_history_projection BEFORE INSERT ON projection_checkpoints \
+         WHEN NEW.projection_name = 'history_derived' \
+         BEGIN SELECT RAISE(ABORT, '{message}'); END;"
+    ))
+    .unwrap();
+}
+
+fn drop_projection_trigger(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+        .unwrap();
+}
+
+fn read_events(session_dir: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(session_dir.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn events_of_kind(session_dir: &std::path::Path, kind: &str) -> Vec<Value> {
+    read_events(session_dir)
+        .into_iter()
+        .filter(|event| event["event"]["kind"] == kind)
+        .collect()
+}
+
+/// Parses the DTO of the last successful durable `tool_execution_finished`
+/// event for `tool`.
+fn last_tool_result_dto(session_dir: &std::path::Path, tool: &str) -> Value {
+    let event = events_of_kind(session_dir, "tool_execution_finished")
+        .into_iter()
+        .rev()
+        .find(|event| event["event"]["data"]["result"]["tool_name"] == tool)
+        .expect("durable tool result");
+    assert_eq!(
+        event["event"]["data"]["result"]["status"], "success",
+        "{event:?}"
+    );
+    let text = event["event"]["data"]["result"]["body"]["content"]["data"]["text"]
+        .as_str()
+        .expect("inline tool result");
+    serde_json::from_str(text).expect("tool result DTO JSON")
+}
+
+/// Replicates History §11.3 `derive_document_id` for an accepted assistant text
+/// block so a test can predict the result_id before the projection that creates
+/// the source row runs.
+fn predict_assistant_source_result_id(
+    event_id: &str,
+    text: &str,
+) -> praana_core::protocol::id::SearchResultId {
+    use sha2::{Digest, Sha256};
+    fn hex_lower(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    let content_sha = hex_lower(&Sha256::digest(text.as_bytes()));
+    let mut input = Vec::new();
+    input.extend_from_slice(b"praana-search-result-v1");
+    input.push(0);
+    input.extend_from_slice(b"event");
+    input.push(0);
+    input.extend_from_slice(event_id.as_bytes());
+    input.push(0);
+    input.extend_from_slice(b"assistant.blocks[0].text");
+    input.push(0);
+    input.extend_from_slice(content_sha.as_bytes());
+    let digest = Sha256::digest(&input);
+    let mut raw = [0u8; 16];
+    raw.copy_from_slice(&digest[..16]);
+    let ulid = ulid::Ulid::from_bytes(raw);
+    praana_core::protocol::id::SearchResultId::from_str_canonical(&ulid.to_string()).unwrap()
+}
+
+const STALE_MARKER: &str = "STALE_MARKER unseen-until-catchup";
+
+#[tokio::test]
+async fn resume_degrades_when_recovery_projection_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    // Make the derived rebuild fail at resume: drop the checkpoint row (so the
+    // projector must re-apply and write a row) and abort every checkpoint
+    // write. The failure message embeds the session dir so the test proves it
+    // never reaches the report.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+        )
+        .unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, 'injected resume projection failure {}'); END;",
+            cfg.session_dir.display()
+        ))
+        .unwrap();
+    }
+
+    // Resume must degrade, not abort: the derived rebuild failure is carried
+    // as a non-durable diagnostic, and the session stays usable.
+    let mut resumed =
+        HeadlessLoop::resume(cfg.clone()).expect("resume degrades when the derived rebuild fails");
+
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after degraded resume", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    // The trigger is still installed, so this turn's own projection failure
+    // outranks the parked resume diagnostic. The resume diagnostic itself
+    // (fixed message, not retryable) is asserted by reporting before any turn
+    // in `degraded_resume_diagnostic_is_not_retryable`.
+    let diagnostic = report
+        .diagnostic
+        .as_ref()
+        .expect("the turn's own projection failure surfaces on the first report");
+    assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+    assert_ne!(
+        diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
+        "the turn's own projection failure outranks the resume diagnostic: {diagnostic:?}"
+    );
+    assert!(
+        diagnostic
+            .message
+            .contains("injected resume projection failure"),
+        "{diagnostic:?}"
+    );
+    assert!(
+        !diagnostic
+            .message
+            .contains(&cfg.session_dir.display().to_string()),
+        "session path is never present: {diagnostic:?}"
+    );
+
+    // The degradation is session-local: no recovery notice is persisted, so
+    // replay cannot collide on a repeated notice id with differing content.
+    let events = read_events(&cfg.session_dir);
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("history_projection_failed"),
+        "no history projection recovery notice is persisted"
+    );
+
+    // Stop failing. The successful live projection clears the parked resume
+    // diagnostic, so a healed database is not reported as failed.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
+            .unwrap();
+    }
+    let later = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("later turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed.run_turn("later turn", &later).await.unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert!(report.diagnostic.is_none(), "{report:?}");
+}
+
+#[tokio::test]
+async fn consecutive_resume_rebuild_failures_stay_replayable() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    let inject = |message: &str| {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+        )
+        .unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, '{message}'); END;"
+        ))
+        .unwrap();
+    };
+    let clear = || {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
+            .unwrap();
+    };
+
+    // First degraded resume.
+    inject("first injected rebuild failure");
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).expect("first resume succeeds degraded");
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after first degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after first degraded resume", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{report:?}"
+    );
+    drop(resumed);
+
+    // Second degraded resume: the same failure code but different injected
+    // text. A recovery-notice id derived from the code alone would collide on
+    // replay; carrying no notice means both resumes succeed and the session
+    // still replays.
+    clear();
+    inject("second injected rebuild failure");
+    let mut resumed = HeadlessLoop::resume(cfg.clone()).expect("second resume succeeds degraded");
+    let second = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after second degraded resume".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after second degraded resume", &second)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert_eq!(
+        report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{report:?}"
+    );
+
+    // The session still replays cleanly: a later committed turn runs without
+    // errors and without any stale diagnostic.
+    clear();
+    let third = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("clean turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed.run_turn("clean turn", &third).await.unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    assert!(report.diagnostic.is_none(), "{report:?}");
+
+    // No recovery notice was ever recorded for either degradation.
+    let events = read_events(&cfg.session_dir);
+    assert!(
+        !serde_json::to_string(&events)
+            .unwrap()
+            .contains("history_projection_failed"),
+        "no history projection recovery notice is persisted"
+    );
+}
+
+#[tokio::test]
+async fn live_history_tool_batches_project_before_read() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed visible text".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+
+    // ------------------------------------------------------------- search
+    // A stale turn whose commit projection fails leaves the derived db lagging
+    // behind the log. The next batch that calls a history tool must project
+    // before the tool reads; otherwise the tool would not see the stale turn.
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let stale = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some(STALE_MARKER.into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let stale_report = loop_.run_turn("stale turn", &stale).await.unwrap();
+    assert!(stale_report.interruption.is_none(), "{stale_report:?}");
+    assert_eq!(
+        stale_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "the stale turn's commit projection fails: {stale_report:?}"
+    );
+    drop_projection_trigger(&cfg.session_dir);
+
+    let probe = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": STALE_MARKER, "mode": "exact"}),
+            ),
+            ScriptedStep {
+                text: Some("probed".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let probe_report = loop_.run_turn("probe search", &probe).await.unwrap();
+    assert!(probe_report.interruption.is_none(), "{probe_report:?}");
+    assert!(probe_report.diagnostic.is_none(), "{probe_report:?}");
+    let page = last_tool_result_dto(&cfg.session_dir, "search_session_log");
+    assert!(
+        page.to_string().contains(STALE_MARKER),
+        "search reads the catch-up projection: {page}"
+    );
+
+    // ------------------------------------------------------ read_session_source
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+    let stale_two = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some(STALE_MARKER.into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let stale_two_report = loop_.run_turn("stale turn two", &stale_two).await.unwrap();
+    assert!(
+        stale_two_report.interruption.is_none(),
+        "{stale_two_report:?}"
+    );
+    assert_eq!(
+        stale_two_report
+            .diagnostic
+            .as_ref()
+            .map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "{stale_two_report:?}"
+    );
+
+    let stale_step = events_of_kind(&cfg.session_dir, "assistant_step_accepted")
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event["event"]["data"]["message"]["blocks"]
+                .as_array()
+                .map(|blocks| blocks.iter().any(|b| b["data"]["text"] == STALE_MARKER))
+                .unwrap_or(false)
+        })
+        .expect("stale assistant step");
+    let stale_event_id = stale_step["event_id"].as_str().unwrap().to_owned();
+    let predicted = predict_assistant_source_result_id(&stale_event_id, STALE_MARKER);
+    drop_projection_trigger(&cfg.session_dir);
+
+    let probe_src = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![
+            tool_step(
+                "call-read-source",
+                "read_session_source",
+                json!({"result_id": predicted.to_string()}),
+            ),
+            ScriptedStep {
+                text: Some("source probed".into()),
+                calls: Vec::new(),
+                finish: FinishReason::Stop,
+                usage: usage(1),
+            },
+        ],
+    );
+    let probe_src_report = loop_
+        .run_turn("probe read session source", &probe_src)
+        .await
+        .unwrap();
+    assert!(
+        probe_src_report.interruption.is_none(),
+        "{probe_src_report:?}"
+    );
+    let source = last_tool_result_dto(&cfg.session_dir, "read_session_source");
+    assert!(
+        source["data"]["source"]["text"]
+            .as_str()
+            .unwrap()
+            .contains(STALE_MARKER),
+        "read_session_source reads the catch-up projection: {source}"
+    );
+    // `retrieve_artifact` is not in `HISTORY_TOOL_BATCHES_PROJECT`. Keeping
+    // the trigger active cannot tell "did not project" from "projected and
+    // the trigger aborted", because commit also projects. That case is
+    // `retrieve_only_batch_does_not_run_the_pre_batch_projection`.
+}
+
+fn history_db_inode(session_dir: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(session_dir.join("history.db")).unwrap().ino()
+}
+
+fn bad_history_files(session_dir: &std::path::Path) -> Vec<String> {
+    fs::read_dir(session_dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name();
+            let name = name.to_string_lossy().into_owned();
+            name.starts_with("history.db.bad").then_some(name)
+        })
+        .collect()
+}
+
+/// Corrupt the stored projection version so the checkpoint is `Invalid`
+/// without touching canonical tables.
+fn corrupt_history_projection_version(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM projection_checkpoints \
+             WHERE projection_name = 'history_derived'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let corrupted = payload.replace("rust-v2-projection-1", "not-a-projection-version");
+    assert_ne!(
+        payload, corrupted,
+        "checkpoint payload has a projection version"
+    );
+    conn.execute(
+        "UPDATE projection_checkpoints SET payload_json = ?1 \
+         WHERE projection_name = 'history_derived'",
+        [corrupted],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+}
+
+const CANONICAL_OPERATION_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+fn insert_operation_record(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute(
+        "INSERT INTO operation_records( \
+            operation_id, ui_contract_schema_version, operation_kind, request_sha256, \
+            status, session_id, planned_effects_json, result_json, result_sha256, \
+            first_canonical_sequence, terminal_canonical_sequence, created_at_ms, \
+            finished_at_ms) \
+         VALUES (?1, 1, 'turn_submit', \
+            '0000000000000000000000000000000000000000000000000000000000000000', \
+            'reserved', NULL, '[]', NULL, NULL, NULL, NULL, 1, NULL)",
+        [CANONICAL_OPERATION_ID],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+}
+
+fn operation_record_count(session_dir: &std::path::Path) -> i64 {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM operation_records WHERE operation_id = ?1",
+        [CANONICAL_OPERATION_ID],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn invalid_checkpoint_resume_keeps_history_db_and_operation_records() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    corrupt_history_projection_version(&cfg.session_dir);
+    insert_operation_record(&cfg.session_dir);
+    let inode = history_db_inode(&cfg.session_dir);
+    assert!(bad_history_files(&cfg.session_dir).is_empty());
+
+    let mut resumed = HeadlessLoop::resume(cfg.clone())
+        .expect("an invalid derived checkpoint degrades; it does not abort resume");
+    assert_eq!(
+        operation_record_count(&cfg.session_dir),
+        1,
+        "canonical operation_records must survive resume"
+    );
+    assert_eq!(
+        history_db_inode(&cfg.session_dir),
+        inode,
+        "history.db must be the same file after resume"
+    );
+    assert!(
+        bad_history_files(&cfg.session_dir).is_empty(),
+        "resume must not rename history.db aside: {:?}",
+        bad_history_files(&cfg.session_dir)
+    );
+
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after invalid checkpoint".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after invalid checkpoint", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    let diagnostic = report
+        .diagnostic
+        .expect("the turn's own invalid-checkpoint projection failure is reported");
+    assert_eq!(
+        diagnostic.code, "HISTORY_CHECKPOINT_INVALID",
+        "{diagnostic:?}"
+    );
+    // An invalid checkpoint cannot heal, so this turn's projection failure
+    // outranks the one-shot resume diagnostic.
+    assert_ne!(
+        diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
+        "the turn's own projection failure outranks the resume diagnostic: {diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message.contains("history checkpoint is invalid"),
+        "{diagnostic:?}"
+    );
+
+    let later = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("later turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let later_report = resumed.run_turn("later turn", &later).await.unwrap();
+    assert_ne!(
+        later_report
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.message.as_str()),
+        Some(RESUME_PROJECTION_DIAGNOSTIC_MESSAGE),
+        "later turns keep the live invalid-checkpoint failure, not the resume message: {later_report:?}"
+    );
+    assert_eq!(operation_record_count(&cfg.session_dir), 1);
+}
+
+#[tokio::test]
+async fn canonical_integrity_error_at_resume_is_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    // Recovery does not inspect derived turn rows. A sibling row that owns the
+    // real turn's start sequence makes the catch-up projection report
+    // HISTORY_EVENT_INTEGRITY. A missing artifact cannot be used here:
+    // run_recovery already aborts that with E_ARTIFACT_MISSING before projection.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        // The real turn already owns start_sequence. Rename its id so the
+        // catch-up insert of the replayed turn collides on that unique column.
+        conn.execute(
+            "UPDATE turns SET turn_id = '01ARZ3NDEKTSV4RRFFQ69G5FAV'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived';",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+    }
+
+    let error = match HeadlessLoop::resume(cfg.clone()) {
+        Err(error) => error,
+        Ok(_) => panic!("HISTORY_EVENT_INTEGRITY at resume is canonical and fatal"),
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("HISTORY_EVENT_INTEGRITY"),
+        "resume error must name the canonical code: {text}"
     );
 }

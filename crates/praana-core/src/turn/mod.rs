@@ -55,6 +55,17 @@ pub mod provider;
 /// wall time for one step reaches this cap, including under cancellation.
 const RETRY_WALL_CAP_MS: u64 = 60_000;
 
+/// History built-ins that read the derived database run the live projection
+/// before the tools read. Names come from the tool `NAME` consts so this list
+/// cannot drift from the tool catalog. `retrieve_artifact` is deliberately
+/// absent: it reads publish-written artifact tables, so it cannot observe the
+/// derived catch-up, and running the projection for it would only add a
+/// failure surface without any read benefit.
+const HISTORY_TOOL_BATCHES_PROJECT: [&str; 2] = [
+    <crate::tools::builtin::history::SearchSessionLogTool as crate::tools::TypedTool>::NAME,
+    <crate::tools::builtin::history::ReadSessionSourceTool as crate::tools::TypedTool>::NAME,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopFault {
     None,
@@ -148,6 +159,18 @@ fn provider_context_rejected() -> ProtocolError {
     }
 }
 
+/// Fixed generic message shared by every non-activation live compaction
+/// diagnostic (Compaction §14.1): never quotes provider or compactor text.
+pub const LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE: &str =
+    "live compaction did not activate; every turn retained";
+
+/// Fixed message for the degraded-resume derived-projection failure. The code
+/// and class come from `projection_error`; retryable is always false. The raw
+/// error text and paths never reach events or reports. The derived
+/// `history.db` stays behind while canonical history remains authoritative.
+pub const RESUME_PROJECTION_DIAGNOSTIC_MESSAGE: &str =
+    "derived history could not be projected at resume; canonical history is authoritative";
+
 /// Domain `COMPACTION_UNAVAILABLE` (Compaction §14.4) at the report boundary:
 /// canonical `E_COMPACTION_UNAVAILABLE` / `unavailable` (Protocol Appendix
 /// A.5). Not retryable until the compactor capability or config changes.
@@ -167,6 +190,7 @@ fn compaction_unavailable(cause_code: &str) -> ProtocolError {
 }
 
 /// Result of one live compaction epoch (see `HeadlessLoop::live_compaction_epoch`).
+#[derive(Debug)]
 enum LiveEpoch {
     Activated,
     Retained,
@@ -462,6 +486,7 @@ pub struct HeadlessLoop {
     config: LoopConfig,
     log: EventLogStore,
     artifacts: ArtifactStore,
+    history_db: crate::history::db::HistoryDatabase,
     runtime: ToolRuntime,
     session_id: SessionId,
     model: ModelSelection,
@@ -471,6 +496,26 @@ pub struct HeadlessLoop {
     cancel: CancellationToken,
     pending_notices: Vec<RecoveryNotice>,
     pending_diagnostic: Option<ProtocolError>,
+    /// Turn-scoped live compaction failure (Compaction §14.1): failed/errored
+    /// epochs set this. Reset at turn start. A committed turn's report prefers
+    /// this over the projection diagnostic; interrupted reports carry only
+    /// `pending_diagnostic`.
+    compaction_diagnostic: Option<ProtocolError>,
+    /// Turn-scoped live projection failure of the derived history database
+    /// (`project_history_live`, post-activation projection). Independent of
+    /// `compaction_diagnostic`: both can record within one turn, and the
+    /// report prefers the compaction one (the lower-priority projection
+    /// diagnostic is dropped from the report but stays recorded in its slot).
+    projection_diagnostic: Option<ProtocolError>,
+    /// Degraded-resume derived-projection failure: non-durable and resume-scoped.
+    /// Set when `resume_with_project_context` degrades instead of aborting.
+    /// A committed report checks it after the turn's own diagnostics
+    /// (`pending_diagnostic`, then compaction, then projection). An interrupted
+    /// report checks it after `pending_diagnostic` only. It is taken when it
+    /// is the diagnostic actually reported, and cleared when a later live
+    /// projection succeeds. It is never persisted as a recovery notice, so two
+    /// resumes failing with the same code can never collide during replay.
+    resume_projection_diagnostic: Option<ProtocolError>,
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
     project_context_changed: bool,
@@ -546,13 +591,52 @@ impl HeadlessLoop {
         project_context: Option<crate::system_context::load::LoadedProjectContext>,
     ) -> Result<Self, TurnError> {
         let session_id = read_session_id(&config.session_dir)?;
-        let notices = {
+        let (notices, resume_projection_diagnostic) = {
             let mut engine = SessionRecoveryEngine::new(&config.session_dir, &session_id)
                 .map_err(|err| TurnError::failed(err.to_string()))?;
             engine
                 .run_recovery()
                 .map_err(|err| TurnError::failed(err.to_string()))?;
-            engine.take_pending_notices()
+            let db =
+                crate::history::db::HistoryDatabase::open(&config.session_dir.join("history.db"))
+                    .map_err(|err| TurnError::failed(err.to_string()))?;
+            // `history.db` is derived and non-authoritative. A derived-projection
+            // failure after a successful `run_recovery` degrades; a
+            // canonical-integrity failure stays fatal, as does `run_recovery`
+            // itself. The derived failure is a NON-durable, resume-scoped
+            // diagnostic on the first turn report after resume — never a
+            // recovery notice — so identical failures across resumes cannot
+            // collide when the session replays (a recovery notice id is
+            // derived from the code alone, and replay rejects a repeated id
+            // whose content differs).
+            let notices = engine.take_pending_notices();
+            // Never rebuild here. `project()` replaces `history.db` on an
+            // invalid checkpoint and drops canonical `operation_records`
+            // (History §2.1, §9.4). Catch-up of an absent or stale checkpoint
+            // still happens in place. An invalid checkpoint degrades.
+            // Canonical-integrity errors stay fatal: the blanket catch must
+            // not resume on a corrupt event prefix or artifact table.
+            let resume_projection_diagnostic =
+                match crate::history::checkpoint::HistoryProjector::new(&db)
+                    .project_without_rebuild(engine.store())
+                {
+                    Ok(()) => None,
+                    Err(error) if resume_projection_is_canonical_integrity(error.code()) => {
+                        return Err(TurnError::failed(format!(
+                            "{}: canonical history failed integrity checks at resume",
+                            error.code()
+                        )));
+                    }
+                    Err(error) => {
+                        let mut diagnostic = projection_error(&error, &config.session_dir);
+                        diagnostic.message = RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned();
+                        // A resume failure cannot be retried inside the turn.
+                        // `projection_error` marks `HISTORY_IO` retryable.
+                        diagnostic.retryable = false;
+                        Some(diagnostic)
+                    }
+                };
+            (notices, resume_projection_diagnostic)
         };
         let parsed = SessionId::from_str_canonical(&session_id)
             .map_err(|err| TurnError::failed(err.to_string()))?;
@@ -571,6 +655,7 @@ impl HeadlessLoop {
         let log = EventLogStore::create_or_open(&config.session_dir, &session_id)
             .map_err(|err| TurnError::failed(err.to_string()))?;
         let mut loop_ = Self::assemble(config, log, parsed, notices)?;
+        loop_.resume_projection_diagnostic = resume_projection_diagnostic;
         loop_.project_context_changed = context_changed;
         Ok(loop_)
     }
@@ -792,21 +877,29 @@ impl HeadlessLoop {
             ..
         } = &mut outcome
         {
-            // Neither the artifact nor state service exposes its database
-            // handle. This separate handle must never rebuild/replace files.
-            // SQLite work is bounded to one checkpoint-tail transaction (the
-            // first projection is bounded by the existing log), with a 5 s
-            // busy timeout; no full replay or rebuild runs on this async path.
-            let projection = (|| {
-                let db = crate::history::db::HistoryDatabase::open(
-                    &self.config.session_dir.join("history.db"),
-                )?;
-                crate::history::checkpoint::HistoryProjector::new(&db)
-                    .project_without_rebuild(&self.log)
-            })();
-            if let Err(error) = projection {
-                *derived_projection_error =
-                    Some(projection_error(&error, &self.config.session_dir));
+            // Any activation, including `compact_now`, clears a failed epoch
+            // from earlier in the turn. The report must not keep that failure
+            // once an epoch has since activated (Compaction §14.1).
+            self.compaction_diagnostic = None;
+            // This persistent writer handle never rebuilds or replaces files.
+            // Projection is one checkpoint-tail transaction with the database's
+            // existing 5 s busy timeout; no full replay runs on this live path.
+            match crate::history::checkpoint::HistoryProjector::new(&self.history_db)
+                .project_without_rebuild(&self.log)
+            {
+                Err(error) => {
+                    // A post-activation derived-projection failure is not a
+                    // compaction failure: it gets its own slot, so a successful
+                    // activation is never reported as compaction failing and a
+                    // compaction failure in the same turn still wins the report.
+                    let diagnostic = projection_error(&error, &self.config.session_dir);
+                    *derived_projection_error = Some(diagnostic.clone());
+                    self.projection_diagnostic = Some(diagnostic);
+                }
+                Ok(()) => {
+                    self.projection_diagnostic = None;
+                    self.resume_projection_diagnostic = None;
+                }
             }
         }
         Ok(outcome)
@@ -837,18 +930,17 @@ impl HeadlessLoop {
             }
             Ok(CompactionOutcome::Failed { error, .. }) => {
                 // §14.1: a failed compaction retains every turn and the request
-                // still goes out. Surface the reason rather than dropping it.
-                eprintln!(
-                    "live compaction did not activate ({}): continuing with retained turns",
-                    error.code
-                );
+                // still goes out. Report the safe code, class, retry fields,
+                // and a fixed generic message that never quotes provider text.
+                self.compaction_diagnostic = Some(safe_compaction_diagnostic(&error));
                 Ok(LiveEpoch::Retained)
             }
             Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
             Err(other) => {
-                // Non-durable failure (§14.1): continue, but do not swallow the
-                // reason silently.
-                eprintln!("live compaction epoch error: {other}; continuing with retained turns");
+                // Retained: the request is still sent. The diagnostic is a
+                // canonical E_* code (Protocol Appendix A.5), never the §14.4
+                // stop `E_COMPACTION_UNAVAILABLE`.
+                self.compaction_diagnostic = Some(retained_epoch_diagnostic(&other));
                 Ok(LiveEpoch::Retained)
             }
         }
@@ -864,6 +956,11 @@ impl HeadlessLoop {
             ))),
             None => Ok(()),
         }
+    }
+
+    fn live_compaction_candidate(&self) -> Result<bool, TurnError> {
+        crate::compaction::activate::proactive_candidate(&self.log, &self.framing)
+            .map_err(|error| TurnError::failed(error.to_string()))
     }
 
     /// Whether this admission should run a compaction epoch before sending.
@@ -964,12 +1061,15 @@ impl HeadlessLoop {
         runtime.set_session(config.session_dir.clone(), session_id);
         runtime.set_headless(true);
         runtime.set_state_active_max_tokens(config.config.state.active_max_tokens);
+        let history_path = config.session_dir.join("history.db");
         let artifacts = ArtifactStore::open(
-            &config.session_dir.join("history.db"),
+            &history_path,
             policy_from_session(&config.session_dir),
             Arc::clone(&config.clock),
         )
         .map_err(|err| TurnError::failed(err.to_string()))?;
+        let history_db = crate::history::db::HistoryDatabase::open(&history_path)
+            .map_err(|err| TurnError::failed(err.to_string()))?;
         runtime
             .open_state(&log)
             .map_err(|err| TurnError::failed(err.to_string()))?;
@@ -978,6 +1078,7 @@ impl HeadlessLoop {
             config,
             log,
             artifacts,
+            history_db,
             runtime,
             session_id,
             toolset_hash,
@@ -986,6 +1087,9 @@ impl HeadlessLoop {
             cancel: CancellationToken::new(),
             pending_notices,
             pending_diagnostic: None,
+            compaction_diagnostic: None,
+            projection_diagnostic: None,
+            resume_projection_diagnostic: None,
             project_context_changed: false,
             emergency_recovery_pending: false,
             compactor: None,
@@ -1033,6 +1137,10 @@ impl HeadlessLoop {
             return Err(TurnError::failed("a turn is already active"));
         }
         self.pending_diagnostic = None;
+        // Diagnostics are turn-scoped: a fresh turn clears every slot so
+        // nothing from an earlier committed turn leaks into a later report.
+        self.compaction_diagnostic = None;
+        self.projection_diagnostic = None;
         let turn_id: TurnId = self.fresh()?;
         let message_id: MessageId = self.fresh()?;
         self.append(
@@ -1505,10 +1613,16 @@ impl HeadlessLoop {
             // in-turn tool-cycle compaction (handoff; §5.3; #634), so a step
             // after a tool call (`step_index > 0`) never compacts.
             let emergency_cycle = self.emergency_recovery_pending && !emergency_epoch_run;
-            if open.step_index == 0
-                && self.compactor.is_some()
-                && (emergency_cycle || self.live_compaction_wanted(&admission)?)
-            {
+            let compaction_wanted = if open.step_index == 0 && self.compactor.is_some() {
+                if emergency_cycle {
+                    self.live_compaction_candidate()?
+                } else {
+                    self.live_compaction_wanted(&admission)?
+                }
+            } else {
+                false
+            };
+            if compaction_wanted {
                 emergency_epoch_run |= emergency_cycle;
                 match self.live_compaction_epoch().await? {
                     LiveEpoch::Activated => continue,
@@ -2005,6 +2119,12 @@ impl HeadlessLoop {
         cancel: CancellationToken,
         recovery: RecoveryBatch,
     ) -> Result<Control, TurnError> {
+        if draft_calls
+            .iter()
+            .any(|call| HISTORY_TOOL_BATCHES_PROJECT.contains(&call.name.as_str()))
+        {
+            self.project_history_live();
+        }
         let mut calls = Vec::new();
         for call in draft_calls {
             let provider_ordinal = calls.len() as u32;
@@ -2160,6 +2280,7 @@ impl HeadlessLoop {
         )?;
         #[cfg(feature = "failpoints")]
         crate::crash_point::hit("turn.after_turn_committed");
+        self.project_history_live();
         self.pending_diagnostic = None;
         Ok(self.report(None))
     }
@@ -2211,14 +2332,37 @@ impl HeadlessLoop {
                 message: interruption_message(&reason).to_owned(),
             }),
         )?;
+        self.project_history_live();
         Ok(self.report(Some(reason)))
     }
 
-    fn report(&self, interruption: Option<InterruptionReason>) -> TurnReport {
+    fn report(&mut self, interruption: Option<InterruptionReason>) -> TurnReport {
+        // The turn's own cause (`pending_diagnostic`) always wins. A committed
+        // turn then prefers compaction, then projection, then the resume
+        // diagnostic, so a stale resume failure cannot hide this turn's own
+        // failure. An interrupted report carries `pending_diagnostic` and then
+        // the resume diagnostic (session state, not a turn cause). Compaction
+        // and projection stay out of interrupted reports. The resume
+        // diagnostic is taken only when it is the one actually reported.
+        let mut diagnostic = self.pending_diagnostic.clone();
+        if interruption.is_none() {
+            if diagnostic.is_none() {
+                diagnostic = self.compaction_diagnostic.clone();
+            }
+            if diagnostic.is_none() {
+                diagnostic = self.projection_diagnostic.clone();
+            }
+        }
+        if diagnostic.is_none() {
+            diagnostic = self.resume_projection_diagnostic.clone();
+            if diagnostic.is_some() {
+                self.resume_projection_diagnostic = None;
+            }
+        }
         TurnReport {
             interruption,
             admission_count: self.admissions,
-            diagnostic: self.pending_diagnostic.clone(),
+            diagnostic,
         }
     }
 
@@ -2261,6 +2405,28 @@ impl HeadlessLoop {
                 .map_err(|err| TurnError::failed(format!("replay: {err}")))?;
         }
         Ok(replay)
+    }
+
+    /// Projects the persistent derived handle without a rebuild. An Invalid
+    /// checkpoint cannot heal on this path or at resume (rebuild is a separate
+    /// recovery operation), so this diagnostic repeats every turn. A success
+    /// clears the turn-scoped slot, so a transient failure earlier in the turn
+    /// is not reported once the projection has recovered.
+    fn project_history_live(&mut self) {
+        match crate::history::checkpoint::HistoryProjector::new(&self.history_db)
+            .project_without_rebuild(&self.log)
+        {
+            Err(error) => {
+                let diagnostic = projection_error(&error, &self.config.session_dir);
+                self.projection_diagnostic = Some(diagnostic);
+            }
+            Ok(()) => {
+                self.projection_diagnostic = None;
+                // A healed derived database must not keep reporting the
+                // resume failure.
+                self.resume_projection_diagnostic = None;
+            }
+        }
     }
 
     fn append(
@@ -2317,6 +2483,91 @@ fn redact_provider_message(message: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Canonical diagnostic for a retained live epoch that stopped before a
+/// durable attempt (`CompactionRunError`), using Protocol Appendix A.5.
+/// `E_COMPACTION_UNAVAILABLE` is reserved for the §14.4 stop. Retained
+/// `InFlight` and `Unavailable` errors use `E_COMPACTION_EPOCH_FAILED`, as do
+/// `Request` without a concrete provider error and `Admission` of the
+/// compactor's request (not the user's active turn). `History` is handled as a
+/// durability error by the caller; this function maps it to the same code
+/// defensively if called directly.
+fn retained_epoch_diagnostic(
+    error: &crate::compaction::activate::CompactionRunError,
+) -> ProtocolError {
+    use crate::compaction::activate::CompactionRunError;
+    use crate::compaction::CompactionError;
+    let (code, class) = match error {
+        CompactionRunError::Selection(
+            CompactionError::NoEligibleTurns | CompactionError::MissingTokenMass(_),
+        ) => ("E_COMPACTION_RANGE_INVALID", ErrorClass::Validation),
+        CompactionRunError::Selection(CompactionError::ArithmeticOverflow) => {
+            ("E_ADMISSION_ACCOUNTING", ErrorClass::Internal)
+        }
+        CompactionRunError::Admission(_)
+        | CompactionRunError::Unavailable { .. }
+        | CompactionRunError::InFlight
+        | CompactionRunError::Request(_)
+        | CompactionRunError::History(_) => ("E_COMPACTION_EPOCH_FAILED", ErrorClass::Internal),
+    };
+    ProtocolError {
+        code: code.to_owned(),
+        class,
+        message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
+/// A failed/errored compaction keeps the original code, class, retryability,
+/// HTTP status, and retry-after hint (none carry provider text or host paths)
+/// but replaces the message with a fixed generic string, so no provider or
+/// transport body ever reaches events or stderr.
+fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
+    ProtocolError {
+        code: error.code.clone(),
+        class: error.class.clone(),
+        message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+        retryable: error.retryable,
+        http_status: error.http_status,
+        retry_after_ms: error.retry_after_ms,
+    }
+}
+
+/// Resume projection failures are either a derived-cache problem or a
+/// canonical-integrity problem.
+///
+/// Derived-projection (degrade, leave `history.db` in place): the codes
+/// `checkpoint.rs` / `error.rs` use when the derived write or the stored
+/// checkpoint cannot be applied, without claiming the event prefix or the
+/// artifact tables are corrupt.
+/// - `HISTORY_CHECKPOINT_INVALID` — `project_without_rebuild` refuses to rebuild
+/// - `HISTORY_IO` — `io_err` / non-busy `map_sqlite` during the derived write
+/// - `HISTORY_SQLITE_BUSY` — busy timeout on the derived database
+/// - `HISTORY_SQLITE_PRAGMA_FAILED` — required SQLite behavior unavailable
+/// - `HISTORY_INSECURE_PERMISSIONS` — private-file mode could not be set
+///
+/// Canonical-integrity (fatal): the codes those files use when the canonical
+/// prefix or artifact bytes cannot be trusted, plus anything else (capsule
+/// builders pass `err.code()` through, including `E_EVENT_SCHEMA_INVALID`).
+/// - `HISTORY_CANONICAL_DB_CORRUPT` — artifact JSON, blob hash / reference checks
+/// - `HISTORY_DANGLING_ARTIFACT` — finish event names a missing artifact row
+/// - `HISTORY_EVENT_INTEGRITY` — replay does not match the derived rows, or
+///   the checkpoint prefix hash does not parse
+/// - `HISTORY_SCHEMA_UNSUPPORTED` — canonical redaction version cannot be applied
+///
+/// Unknown codes fail closed.
+fn resume_projection_is_canonical_integrity(code: &str) -> bool {
+    !matches!(
+        code,
+        "HISTORY_CHECKPOINT_INVALID"
+            | "HISTORY_IO"
+            | "HISTORY_SQLITE_BUSY"
+            | "HISTORY_SQLITE_PRAGMA_FAILED"
+            | "HISTORY_INSECURE_PERMISSIONS"
+    )
 }
 
 /// Classification of a post-activation derived-projection failure.
@@ -3133,6 +3384,56 @@ mod poison_tests {
         }
     }
 
+    #[test]
+    fn resume_projection_failure_classifies_every_history_code() {
+        // Every code `history/error.rs`, `checkpoint.rs`, and `rebuild.rs` can
+        // surface from a projection, plus the History §13 table and the
+        // projection-id passthrough. Derived codes degrade; the rest are fatal.
+        let derived = [
+            "HISTORY_CHECKPOINT_INVALID",
+            "HISTORY_IO",
+            "HISTORY_SQLITE_BUSY",
+            "HISTORY_SQLITE_PRAGMA_FAILED",
+            "HISTORY_INSECURE_PERMISSIONS",
+        ];
+        let canonical = [
+            "HISTORY_CANONICAL_DB_CORRUPT",
+            "HISTORY_DANGLING_ARTIFACT",
+            "HISTORY_EVENT_INTEGRITY",
+            "HISTORY_SCHEMA_UNSUPPORTED",
+            "HISTORY_CANCELLED",
+            "HISTORY_SESSION_LOCKED",
+            "HISTORY_META_MISMATCH",
+            "HISTORY_ARTIFACT_NOT_FOUND",
+            "HISTORY_SOURCE_NOT_FOUND",
+            "HISTORY_ARTIFACT_RANGE",
+            "HISTORY_SELECTOR_UNSUPPORTED",
+            "HISTORY_ARTIFACT_TOO_LARGE",
+            "HISTORY_PREVIEW_BOUND",
+            "HISTORY_JSON_POINTER",
+            "HISTORY_REGEX_INVALID",
+            "HISTORY_REGEX_UNSUPPORTED",
+            "HISTORY_SEARCH_QUERY",
+            "HISTORY_SEARCH_CURSOR_STALE",
+            "HISTORY_ROLLBACK_CONFLICT",
+            "HISTORY_OPERATIONAL_RECOVERY_UNCERTAIN",
+            "E_EVENT_SCHEMA_INVALID",
+            "HISTORY_NOT_A_REAL_CODE",
+        ];
+        for code in derived {
+            assert!(
+                !super::resume_projection_is_canonical_integrity(code),
+                "{code} is a derived-projection failure"
+            );
+        }
+        for code in canonical {
+            assert!(
+                super::resume_projection_is_canonical_integrity(code),
+                "{code} is a canonical-integrity failure"
+            );
+        }
+    }
+
     struct CountingProvider {
         prepares: AtomicUsize,
         steps: Mutex<std::collections::VecDeque<ScriptedStep>>,
@@ -3353,5 +3654,1162 @@ mod live_compaction_decision_tests {
         })
         .unwrap_err();
         assert_eq!(error.to_string(), "projection failed");
+    }
+}
+
+#[cfg(test)]
+mod live_projection_regression_tests {
+    use super::*;
+    use crate::config::build_defaults;
+    use crate::credentials::store::{
+        credentials_path, save_store, upsert_credential, CredentialStoreV1,
+    };
+    use crate::id::{IdGenerationError, RandomSource};
+    use crate::tools::{
+        ToolAdapter, ToolCapabilities, ToolError, ToolExecutionContext, ToolIdempotency,
+        ToolInspectContext, ToolIntent, ToolMutation, TypedTool,
+    };
+    use rusqlite::OptionalExtension;
+    use serde_json::{json, Value};
+    use std::collections::BTreeMap;
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::sync::Mutex;
+
+    struct FixedClock(i64);
+
+    impl Clock for FixedClock {
+        fn now_ms(&self) -> i64 {
+            self.0
+        }
+    }
+
+    struct SeqRandom(u128);
+
+    impl RandomSource for SeqRandom {
+        fn next_random_80(&mut self) -> Result<u128, IdGenerationError> {
+            self.0 += 1;
+            Ok(self.0)
+        }
+    }
+
+    fn test_config(dir: &std::path::Path) -> LoopConfig {
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.join("home"), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let mut store = CredentialStoreV1::empty();
+        upsert_credential(&mut store, "openai", "p5-secret".into(), 1_700_000_000_000).unwrap();
+        save_store(&credentials_path(&dir.join("home")), &store).unwrap();
+        let mut effective = build_defaults(PathBuf::from("/praana-home").as_path());
+        effective.turn.max_steps = 4;
+        effective.turn.max_attempts = 3;
+        effective.llm.context_window = 128_000;
+        effective.llm.provider = "scripted".into();
+        effective.llm.protocol = "scripted-v1".into();
+        effective.llm.model = "fake".into();
+        effective.llm.min_output_tokens = 16;
+        effective.llm.max_output_tokens = 256;
+        effective.history.safety_margin_min_tokens = 0;
+        effective.history.safety_margin_ratio = 0.0;
+        effective.tools.max_parallel_calls = 2;
+        LoopConfig {
+            home: dir.join("home"),
+            session_dir: dir.join("session"),
+            workspace: dir.join("work"),
+            config: effective,
+            clock: Arc::new(FixedClock(1_700_000_000_000)),
+            ids: Arc::new(MonotonicUlidGenerator::new(
+                Arc::new(FixedClock(1_700_000_000_000)),
+                Arc::new(crate::clock::ThreadSleeper),
+                Box::new(SeqRandom(1)),
+            )),
+            fault: LoopFault::None,
+            extra_tools: vec![ToolAdapter::arc(DerivedDbProbe).unwrap()],
+        }
+    }
+
+    struct Scripted {
+        steps: Mutex<VecDeque<ScriptedStep>>,
+    }
+
+    impl Scripted {
+        fn new(steps: Vec<ScriptedStep>) -> Self {
+            Self {
+                steps: Mutex::new(steps.into()),
+            }
+        }
+    }
+
+    fn usage(n: u64) -> ProviderUsage {
+        ProviderUsage {
+            input_tokens: n,
+            output_tokens: 1,
+            reasoning_tokens: 0,
+            total_tokens: n + 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        }
+    }
+
+    fn text_step(text: &str) -> ScriptedStep {
+        ScriptedStep {
+            text: Some(text.to_owned()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }
+    }
+
+    fn tool_step(id: &str, name: &str, args: Value) -> ScriptedStep {
+        let mut arguments = serde_json::Map::new();
+        if let Value::Object(map) = args {
+            arguments = map;
+        }
+        ScriptedStep {
+            text: None,
+            calls: vec![DraftCall {
+                call_id: id.into(),
+                name: name.into(),
+                arguments,
+            }],
+            finish: FinishReason::ToolUse,
+            usage: usage(3),
+        }
+    }
+
+    #[async_trait]
+    impl StepProvider for Scripted {
+        fn prepare(&self, _step_index: u32) -> Result<PreparedRequest, TurnError> {
+            Ok(PreparedRequest {
+                request_body: json!({"scripted": true}),
+                component_bytes: std::array::from_fn(|_| Vec::new()),
+            })
+        }
+
+        async fn complete(
+            &self,
+            _step_index: u32,
+            admitted: &AdmittedRequest,
+            _cancel: &CancellationToken,
+        ) -> Result<ProviderOutput, TurnError> {
+            let authorization = admitted.authorize_send(admitted.body())?;
+            let step = self
+                .steps
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted step");
+            Ok(ProviderOutput {
+                draft: AssistantDraft {
+                    text: step.text,
+                    calls: step.calls,
+                    finish_reason: step.finish,
+                    usage: step.usage,
+                },
+                authorization,
+            })
+        }
+    }
+
+    fn read_events(session_dir: &Path) -> Vec<Value> {
+        std::fs::read_to_string(session_dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    fn events_of_kind(session_dir: &Path, kind: &str) -> Vec<Value> {
+        read_events(session_dir)
+            .into_iter()
+            .filter(|event| event["event"]["kind"] == kind)
+            .collect()
+    }
+
+    fn find_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+        match value {
+            Value::Object(map) => {
+                if let Some(found) = map.get(key) {
+                    return Some(found);
+                }
+                map.values().find_map(|child| find_value(child, key))
+            }
+            Value::Array(items) => items.iter().find_map(|item| find_value(item, key)),
+            _ => None,
+        }
+    }
+
+    fn last_tool_result_dto(session_dir: &Path, tool: &str) -> Value {
+        let event = events_of_kind(session_dir, "tool_execution_finished")
+            .into_iter()
+            .rev()
+            .find(|event| event["event"]["data"]["result"]["tool_name"] == tool)
+            .expect("durable tool result");
+        let text = event["event"]["data"]["result"]["body"]["content"]["data"]["text"]
+            .as_str()
+            .expect("inline tool result");
+        serde_json::from_str(text).expect("tool result DTO JSON")
+    }
+
+    fn inject_projection_trigger(session_dir: &Path, message: &str) {
+        let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS fail_history_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, '{message}'); END;"
+        ))
+        .unwrap();
+    }
+
+    fn drop_projection_trigger(session_dir: &Path) {
+        let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+        conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+            .unwrap();
+    }
+
+    fn checkpoint_applied_through(session_dir: &Path) -> Option<i64> {
+        let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+        conn.query_row(
+            "SELECT applied_through_sequence FROM projection_checkpoints \
+             WHERE projection_name = 'history_derived'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn event_line_count(session_dir: &Path) -> u64 {
+        std::fs::read_to_string(session_dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count() as u64
+    }
+
+    /// Test-only derived-db probe: reads the checkpoint cursor or drops the
+    /// injected projection-failure trigger, so a test can observe whether a
+    /// batch ran the live projection before its tools executed.
+    struct DerivedDbProbe;
+
+    #[derive(Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct DerivedDbProbeInput {
+        op: String,
+    }
+
+    #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+    struct DerivedDbProbeOutput {
+        applied_through_sequence: Option<u64>,
+        current_sequence: Option<u64>,
+        projection_name: String,
+    }
+
+    #[async_trait]
+    impl TypedTool for DerivedDbProbe {
+        type Input = DerivedDbProbeInput;
+        type Output = DerivedDbProbeOutput;
+        const NAME: &'static str = "derived_db_probe";
+        const ORDER: u16 = 150;
+        const DESCRIPTION: &'static str = "test-only derived history db probe";
+
+        fn static_capabilities(&self) -> ToolCapabilities {
+            ToolCapabilities::empty()
+        }
+
+        fn inspect(
+            &self,
+            input: &DerivedDbProbeInput,
+            _: &ToolInspectContext,
+        ) -> Result<ToolIntent, ToolError> {
+            Ok(ToolIntent {
+                mutation: match input.op.as_str() {
+                    "read_checkpoint_cursor" => ToolMutation::PureCompute,
+                    _ => ToolMutation::SessionState,
+                },
+                path_accesses: Vec::new(),
+                command: None,
+                risk_facts: Vec::new(),
+                timeout_ms: 5_000,
+                idempotency: ToolIdempotency::NonIdempotent,
+                planned: Vec::new(),
+            })
+        }
+
+        async fn execute(
+            &self,
+            context: ToolExecutionContext,
+            input: DerivedDbProbeInput,
+            _: CancellationToken,
+        ) -> Result<DerivedDbProbeOutput, ToolError> {
+            let conn = rusqlite::Connection::open(context.session_dir.join("history.db")).map_err(
+                |error| {
+                    ToolError::new(crate::tools::ToolErrorCode::ToolInternal, error.to_string())
+                },
+            )?;
+            match input.op.as_str() {
+                "read_checkpoint_cursor" => {
+                    let applied_through_sequence = conn
+                        .query_row(
+                            "SELECT applied_through_sequence FROM projection_checkpoints \
+                             WHERE projection_name = ?1",
+                            ["history_derived"],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()
+                        .map_err(|error| {
+                            ToolError::new(
+                                crate::tools::ToolErrorCode::ToolInternal,
+                                error.to_string(),
+                            )
+                        })?
+                        .map(|sequence| sequence as u64);
+                    Ok(DerivedDbProbeOutput {
+                        applied_through_sequence,
+                        current_sequence: Some(event_line_count(&context.session_dir)),
+                        projection_name: "history_derived".to_owned(),
+                    })
+                }
+                "drop_projection_trigger" => {
+                    conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+                        .map_err(|error| {
+                            ToolError::new(
+                                crate::tools::ToolErrorCode::ToolInternal,
+                                error.to_string(),
+                            )
+                        })?;
+                    Ok(DerivedDbProbeOutput {
+                        applied_through_sequence: None,
+                        current_sequence: None,
+                        projection_name: "history_derived".to_owned(),
+                    })
+                }
+                other => Err(ToolError::new(
+                    crate::tools::ToolErrorCode::ToolValidationFailed,
+                    format!("unknown probe op: {other}"),
+                )),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn retrieve_only_batch_does_not_run_the_pre_batch_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        // Create an artifact in a turn whose commit projection succeeds.
+        let artifact_turn = Scripted::new(vec![
+            tool_step(
+                "call-sh",
+                "shell",
+                json!({"command": "yes a | head -c 5000", "timeout_ms": 5000}),
+            ),
+            text_step("artifact made"),
+        ]);
+        assert!(loop_
+            .run_turn("artifact turn", &artifact_turn)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        let artifact_id = find_value(
+            &events_of_kind(&cfg.session_dir, "tool_execution_finished")
+                .into_iter()
+                .rev()
+                .find(|event| event["event"]["data"]["result"]["tool_name"] == "shell")
+                .expect("shell finish event"),
+            "artifact_id",
+        )
+        .expect("artifact id")
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+        // A stale turn whose commit projection fails leaves the derived db
+        // lagging behind the log.
+        inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+        let stale = Scripted::new(vec![text_step("stale marker")]);
+        let stale_report = loop_.run_turn("stale turn", &stale).await.unwrap();
+        assert_eq!(
+            stale_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_IO"),
+            "{stale_report:?}"
+        );
+        drop_projection_trigger(&cfg.session_dir);
+
+        let lagging_cursor = checkpoint_applied_through(&cfg.session_dir)
+            .expect("checkpoint row from the earlier projections");
+        let log_tail = event_line_count(&cfg.session_dir);
+        assert!(
+            lagging_cursor < log_tail as i64,
+            "precondition: stale turn left the checkpoint lagging ({lagging_cursor} < {log_tail})"
+        );
+
+        // A retrieve-only batch must NOT run the pre-batch projection: the
+        // probe tool in the same batch still sees the lagging checkpoint,
+        // while the artifact stays retrievable from publish-written tables.
+        let probe = Scripted::new(vec![
+            tool_step(
+                "call-retrieve",
+                "retrieve_artifact",
+                json!({"artifact_id": artifact_id}),
+            ),
+            tool_step(
+                "call-probe",
+                "derived_db_probe",
+                json!({"op": "read_checkpoint_cursor"}),
+            ),
+            text_step("artifact probed"),
+        ]);
+        let probe_report = loop_.run_turn("probe artifact", &probe).await.unwrap();
+        assert!(probe_report.interruption.is_none(), "{probe_report:?}");
+        let artifact = last_tool_result_dto(&cfg.session_dir, "retrieve_artifact");
+        let text = artifact["data"]["artifact"]["content"]["data"]
+            .as_str()
+            .unwrap();
+        assert!(
+            text.contains('a'),
+            "artifact text is retrievable: {artifact}"
+        );
+        let probed = last_tool_result_dto(&cfg.session_dir, "derived_db_probe");
+        assert_eq!(
+            probed["data"]["applied_through_sequence"].as_u64(),
+            Some(lagging_cursor as u64),
+            "a retrieve-only batch must not run the pre-batch projection: {probed}"
+        );
+        assert!(
+            probed["data"]["applied_through_sequence"].as_u64().unwrap() < log_tail,
+            "checkpoint stays lagging through a retrieve-only batch: {probed}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Minimal local fake compactor: answers the one durable request with a
+    // schema-valid candidate citing the first source-turn message, so a real
+    // `ConfiguredCompactor` can activate without any external network.
+    // -----------------------------------------------------------------------
+
+    const CONTROL_OPEN: &str = "[PRAANA:INTERNAL_COMPACTION_CONTROL]\n";
+    const CONTROL_CLOSE: &str = "\n[/PRAANA:INTERNAL_COMPACTION_CONTROL]\n";
+    const FAKE_MODEL: &str = "gpt-5.6-sol";
+
+    fn read_request(stream: &mut TcpStream) -> (String, String) {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 8192];
+        let split = loop {
+            let n = stream.read(&mut tmp).unwrap_or(0);
+            if n == 0 {
+                return (String::new(), String::new());
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break split;
+            }
+        };
+        let headers = String::from_utf8_lossy(&buf[..split]).to_string();
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while buf.len() < split + 4 + length {
+            let n = stream.read(&mut tmp).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+        }
+        (
+            headers,
+            String::from_utf8_lossy(&buf[split + 4..]).to_string(),
+        )
+    }
+
+    fn http_ok_sse(body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 200 X\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn responses_sse(text: &str) -> String {
+        let delta = serde_json::to_string(text).unwrap();
+        format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"response\":{{\"id\":\"resp_c\",\"model\":\"{FAKE_MODEL}\"}}}}\n\n\
+event: response.output_item.added\ndata: {{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg_c\",\"phase\":\"final_answer\"}}}}\n\n\
+event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":{delta}}}\n\n\
+event: response.output_text.done\ndata: {{\"type\":\"response.output_text.done\",\"output_index\":0,\"text\":{delta}}}\n\n\
+event: response.output_item.done\ndata: {{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{{\"type\":\"message\",\"id\":\"msg_c\"}}}}\n\n\
+event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"id\":\"resp_c\",\"status\":\"completed\",\"output\":[{{\"type\":\"message\",\"id\":\"msg_c\"}}],\"usage\":{{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}}}}\n\n"
+        )
+    }
+
+    fn control_of(body: &Value) -> Option<Value> {
+        let items = body.get("input")?.as_array()?;
+        items.iter().find_map(|item| {
+            let text = item.pointer("/content/0/text")?.as_str()?;
+            let inner = text
+                .strip_prefix(CONTROL_OPEN)?
+                .strip_suffix(CONTROL_CLOSE)?;
+            serde_json::from_str(inner).ok()
+        })
+    }
+
+    /// A candidate whose only cited evidence is the first source-turn message.
+    fn valid_candidate(control: &Value) -> String {
+        let cited: Vec<String> = control["source_turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|turn| turn["messages"][0]["event_id"].as_str().unwrap().to_owned())
+            .collect();
+        let evidence = json!({"event_ids": cited, "artifact_ids": [], "state_ids": [], "summary_segment_ids": []});
+        let mut candidate: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/compaction_v1/candidate_empty.json"
+        ))
+        .unwrap();
+        let statement = json!({
+            "text": "epoch one unique archived detail",
+            "confidence": "direct",
+            "evidence": evidence,
+            "uncertainty": null
+        });
+        candidate["segment"]["user_goals"] = json!([statement.clone()]);
+        candidate["handoff"]["current_goals"] = json!([json!({
+            "text": "epoch one handoff context",
+            "confidence": "direct",
+            "evidence": evidence,
+            "uncertainty": null
+        })]);
+        serde_json::to_string(&candidate).unwrap()
+    }
+
+    struct MiniFake {
+        addr: std::net::SocketAddr,
+        _thread: std::thread::JoinHandle<()>,
+    }
+
+    impl MiniFake {
+        fn spawn(session_dir: &Path) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let session_dir = session_dir.to_path_buf();
+            let _thread = std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { break };
+                    let (_headers, body) = read_request(&mut stream);
+                    let parsed: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let response = match control_of(&parsed) {
+                        Some(control) => http_ok_sse(&responses_sse(&valid_candidate(&control))),
+                        None => http_ok_sse("not a compactor request"),
+                    };
+                    let _ = stream.write_all(&response);
+                    let _ = stream.flush();
+                }
+            });
+            let _ = session_dir;
+            Self { addr, _thread }
+        }
+    }
+
+    #[tokio::test]
+    async fn compaction_diagnostic_is_cleared_when_an_epoch_activates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        let fake = MiniFake::spawn(&cfg.session_dir);
+        let compactor = crate::compaction::activate::ConfiguredCompactor {
+            provider: "openai".into(),
+            protocol: crate::provider::registry::ProviderProtocol::Responses,
+            model: FAKE_MODEL.into(),
+            base_url: format!("http://{}/v1", fake.addr),
+            extra_headers: BTreeMap::new(),
+            max_output_tokens: 4096,
+            timeout_ms: 5_000,
+            profile: crate::provider::profile::ModelCapabilityProfile {
+                profile_version: "test-v1".into(),
+                profile_source_sha256: Sha256Digest::digest_bytes(b"test-profile"),
+                catalog_cache_sha256: None,
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model_pattern: FAKE_MODEL.into(),
+                model_revision: None,
+                context_window_tokens: 128_000,
+                max_output_tokens: 4096,
+                min_output_tokens: 16,
+                reasoning_accounting:
+                    crate::provider::profile::ReasoningAccounting::IncludedInOutputLimit,
+                reasoning_context:
+                    crate::provider::profile::ReasoningContextCapability::Unsupported,
+                tokenizer: crate::provider::profile::TokenizerCapability::ConservativeGeneric {
+                    estimator_id: "praana-generic-unicode-15.1-v1".into(),
+                },
+                framing_profile_id: "adapter-estimate:generic:default:v1".into(),
+                reasoning_efforts: vec![],
+                parallel_tools: true,
+                strict_json_schema: true,
+                temperature_with_reasoning: false,
+                image_input: crate::provider::profile::ImageInputCapability::Unsupported,
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                self_compaction: crate::provider::profile::SelfCompactionCapability::Unvalidated,
+                continuation_after_internal_request: false,
+            },
+            framing: crate::token::FramingProfileV1 {
+                framing_profile_schema_version: 1,
+                framing_profile_id: "compaction-test".to_owned(),
+                fixed_tokens: 0,
+                per_item_tokens: 0,
+                item_count: 0,
+                additional_tokens: 0,
+            },
+            selection: ModelSelection {
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model: FAKE_MODEL.into(),
+                model_revision: None,
+                model_family: FAKE_MODEL.into(),
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                reasoning_effort: ReasoningEffort::Medium,
+            },
+            config_id: "unit-test".into(),
+            home: cfg.home.clone(),
+            client: reqwest::Client::new(),
+            env: Some(BTreeMap::new()),
+        };
+
+        // A failed epoch earlier in the turn left the slot populated; an epoch
+        // that then activates must clear it so the committed report does not
+        // read the recovered turn as failed.
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: true,
+            http_status: Some(500),
+            retry_after_ms: None,
+        });
+        loop_.set_compactor(Some(compactor));
+        let epoch = loop_.live_compaction_epoch().await.unwrap();
+        assert!(matches!(epoch, LiveEpoch::Activated), "{epoch:?}");
+        assert!(
+            loop_.compaction_diagnostic.is_none(),
+            "an activated epoch clears the turn-scoped compaction failure"
+        );
+    }
+
+    fn unit_compactor(
+        cfg: &LoopConfig,
+        window: u64,
+    ) -> crate::compaction::activate::ConfiguredCompactor {
+        crate::compaction::activate::ConfiguredCompactor {
+            provider: "openai".into(),
+            protocol: crate::provider::registry::ProviderProtocol::Responses,
+            model: FAKE_MODEL.into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            extra_headers: BTreeMap::new(),
+            max_output_tokens: 4096,
+            timeout_ms: 5_000,
+            profile: crate::provider::profile::ModelCapabilityProfile {
+                profile_version: "test-v1".into(),
+                profile_source_sha256: Sha256Digest::digest_bytes(b"test-profile"),
+                catalog_cache_sha256: None,
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model_pattern: FAKE_MODEL.into(),
+                model_revision: None,
+                context_window_tokens: window,
+                max_output_tokens: 4096,
+                min_output_tokens: 16,
+                reasoning_accounting:
+                    crate::provider::profile::ReasoningAccounting::IncludedInOutputLimit,
+                reasoning_context:
+                    crate::provider::profile::ReasoningContextCapability::Unsupported,
+                tokenizer: crate::provider::profile::TokenizerCapability::ConservativeGeneric {
+                    estimator_id: "praana-generic-unicode-15.1-v1".into(),
+                },
+                framing_profile_id: "adapter-estimate:generic:default:v1".into(),
+                reasoning_efforts: vec![],
+                parallel_tools: true,
+                strict_json_schema: true,
+                temperature_with_reasoning: false,
+                image_input: crate::provider::profile::ImageInputCapability::Unsupported,
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                self_compaction: crate::provider::profile::SelfCompactionCapability::Unvalidated,
+                continuation_after_internal_request: false,
+            },
+            framing: crate::token::FramingProfileV1 {
+                framing_profile_schema_version: 1,
+                framing_profile_id: "compaction-test".to_owned(),
+                fixed_tokens: 0,
+                per_item_tokens: 0,
+                item_count: 0,
+                additional_tokens: 0,
+            },
+            selection: ModelSelection {
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model: FAKE_MODEL.into(),
+                model_revision: None,
+                model_family: FAKE_MODEL.into(),
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                reasoning_effort: ReasoningEffort::Medium,
+            },
+            config_id: "unit-test".into(),
+            home: cfg.home.clone(),
+            client: reqwest::Client::new(),
+            env: Some(BTreeMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_now_activation_clears_the_compaction_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        let fake = MiniFake::spawn(&cfg.session_dir);
+        let mut compactor = unit_compactor(&cfg, 128_000);
+        compactor.base_url = format!("http://{}/v1", fake.addr);
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: true,
+            http_status: Some(500),
+            retry_after_ms: None,
+        });
+        let outcome = loop_.compact_now(&compactor).await.unwrap();
+        assert!(
+            matches!(
+                outcome,
+                crate::compaction::activate::CompactionOutcome::Activated { .. }
+            ),
+            "compact_now activated: {outcome:?}"
+        );
+        // begin_turn would clear the slot anyway. Observe the report first.
+        let report = loop_.report(None);
+        assert!(
+            report.diagnostic.is_none(),
+            "compact_now activation clears the compaction failure: {report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_inflight_epoch_is_not_the_unavailable_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        let compactor = unit_compactor(&cfg, 128_000);
+        {
+            let session_id = loop_.session_id;
+            let mut ctx = crate::compaction::activate::ActivationContext {
+                log: &mut loop_.log,
+                ids: loop_.config.ids.as_ref(),
+                clock: loop_.config.clock.as_ref(),
+                session_id,
+                config: &loop_.config.config,
+                framing: &loop_.framing,
+            };
+            let started = crate::compaction::activate::begin(&mut ctx, &compactor, None)
+                .expect("an open compaction attempt is durable");
+            drop(started);
+        }
+        loop_.set_compactor(Some(compactor));
+        let epoch = loop_.live_compaction_epoch().await.unwrap();
+        assert!(
+            matches!(epoch, LiveEpoch::Retained),
+            "an in-flight epoch retains the turn: {epoch:?}"
+        );
+        let diagnostic = loop_
+            .compaction_diagnostic
+            .clone()
+            .expect("the retained epoch records a diagnostic");
+        assert_ne!(
+            diagnostic.code, "E_COMPACTION_UNAVAILABLE",
+            "{diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.code, "E_COMPACTION_EPOCH_FAILED",
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.class, ErrorClass::Internal);
+        assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+        assert!(
+            loop_.compaction_unavailable.is_none(),
+            "a retained epoch must not stop admission"
+        );
+
+        let current = Scripted::new(vec![text_step("request still sent")]);
+        let report = loop_
+            .run_turn("request still sent", &current)
+            .await
+            .unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "the assistant request is still sent: {report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_admission_failure_is_not_the_unavailable_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step(&"seed ".repeat(400))]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        // The scripted request body is tiny. A small session window makes its
+        // fill cross the proactive trigger while the request itself still fits,
+        // so the epoch runs and the assistant request is still sent.
+        loop_.config.config.llm.context_window = 2_000;
+        loop_.config.config.history.compact_at = 0.0002;
+        loop_.config.config.history.compact_clear_at = 0.0001;
+        let mut compactor = unit_compactor(&cfg, 32);
+        compactor.max_output_tokens = 4_096;
+        loop_.set_compactor(Some(compactor));
+
+        let current = Scripted::new(vec![text_step("request still sent")]);
+        let report = loop_.run_turn("current turn", &current).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "the assistant request is still sent: {report:?}"
+        );
+        let diagnostic = report
+            .diagnostic
+            .expect("the retained admission failure is reported");
+        assert_ne!(
+            diagnostic.code, "E_COMPACTION_UNAVAILABLE",
+            "{diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.code, "E_COMPACTION_EPOCH_FAILED",
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.class, ErrorClass::Internal);
+        assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+        assert!(loop_.compaction_unavailable.is_none());
+    }
+
+    fn parked_resume_diagnostic(code: &str) -> ProtocolError {
+        ProtocolError {
+            code: code.to_owned(),
+            class: ErrorClass::Persistence,
+            message: RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned(),
+            retryable: true,
+            http_status: None,
+            retry_after_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn degraded_resume_diagnostic_is_not_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        drop(loop_);
+
+        {
+            let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+            conn.execute_batch(
+                "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+                 WHEN NEW.projection_name = 'history_derived' \
+                 BEGIN SELECT RAISE(ABORT, 'injected resume projection failure'); END;",
+            )
+            .unwrap();
+        }
+
+        let mut resumed = HeadlessLoop::resume(cfg).expect("resume degrades");
+        // No turn has run, so nothing outranks the resume diagnostic.
+        let report = resumed.report(None);
+        let diagnostic = report
+            .diagnostic
+            .expect("the resume diagnostic is reported before any turn");
+        assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+        assert!(
+            !diagnostic.retryable,
+            "a resume projection failure cannot be retried in-turn: {diagnostic:?}"
+        );
+        assert_eq!(diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE);
+        // Pin the wire-visible text: a reword must be a deliberate test change.
+        assert_eq!(
+            diagnostic.message,
+            "derived history could not be projected at resume; canonical history is authoritative"
+        );
+        assert!(resumed.resume_projection_diagnostic.is_none());
+    }
+
+    #[test]
+    fn committed_report_prefers_compaction_and_keeps_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let mut loop_ = HeadlessLoop::create(test_config(dir.path())).unwrap();
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: false,
+            http_status: Some(500),
+            retry_after_ms: None,
+        });
+        loop_.resume_projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        let first = loop_.report(None);
+        assert_eq!(
+            first.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("E_PROVIDER_STREAM"),
+            "compaction outranks the resume diagnostic: {first:?}"
+        );
+        assert!(
+            loop_.resume_projection_diagnostic.is_some(),
+            "the resume diagnostic is taken only when it is reported"
+        );
+        loop_.compaction_diagnostic = None;
+        loop_.projection_diagnostic = None;
+        loop_.pending_diagnostic = None;
+        let second = loop_.report(None);
+        assert_eq!(
+            second.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_IO"),
+            "the resume diagnostic is still reported once nothing else is pending: {second:?}"
+        );
+        assert!(loop_.resume_projection_diagnostic.is_none());
+    }
+
+    #[test]
+    fn interrupted_report_carries_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let mut loop_ = HeadlessLoop::create(test_config(dir.path())).unwrap();
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: false,
+            http_status: None,
+            retry_after_ms: None,
+        });
+        loop_.projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        loop_.resume_projection_diagnostic =
+            Some(parked_resume_diagnostic("HISTORY_CHECKPOINT_INVALID"));
+        let report = loop_.report(Some(InterruptionReason::UserAbort));
+        assert_eq!(report.interruption, Some(InterruptionReason::UserAbort));
+        assert_eq!(
+            report.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_CHECKPOINT_INVALID"),
+            "an interrupted report carries the resume diagnostic, not compaction: {report:?}"
+        );
+        assert!(loop_.resume_projection_diagnostic.is_none());
+        assert!(loop_.compaction_diagnostic.is_some());
+    }
+
+    #[tokio::test]
+    async fn successful_live_projection_clears_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        loop_.resume_projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        loop_.project_history_live();
+        assert!(
+            loop_.projection_diagnostic.is_none(),
+            "the live projection itself succeeded"
+        );
+        assert!(
+            loop_.resume_projection_diagnostic.is_none(),
+            "a healed derived database is not reported as failed"
+        );
+    }
+
+    #[test]
+    fn retained_epoch_diagnostic_maps_every_run_error() {
+        use crate::compaction::activate::{CompactionRunError, UnavailableReason};
+        use crate::compaction::CompactionError;
+        use crate::protocol::id::TurnId;
+        let turn = TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let cases: Vec<(CompactionRunError, &str, ErrorClass)> = vec![
+            (
+                CompactionRunError::Selection(CompactionError::NoEligibleTurns),
+                "E_COMPACTION_RANGE_INVALID",
+                ErrorClass::Validation,
+            ),
+            (
+                CompactionRunError::Selection(CompactionError::MissingTokenMass(turn)),
+                "E_COMPACTION_RANGE_INVALID",
+                ErrorClass::Validation,
+            ),
+            (
+                CompactionRunError::Selection(CompactionError::ArithmeticOverflow),
+                "E_ADMISSION_ACCOUNTING",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::Unavailable {
+                    reason: UnavailableReason::Empty,
+                    message: "empty".into(),
+                },
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::InFlight,
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::Admission("too large".into()),
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::Request("could not build".into()),
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::History("fsync failed".into()),
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+        ];
+        for (error, code, class) in cases {
+            let diagnostic = super::retained_epoch_diagnostic(&error);
+            assert_eq!(diagnostic.code, code, "{error}");
+            assert_eq!(diagnostic.class, class, "{error}");
+            assert_ne!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
+            assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+            assert!(!diagnostic.retryable);
+        }
+    }
+
+    #[tokio::test]
+    async fn projection_diagnostic_is_cleared_by_a_later_success_in_the_same_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        // Make the derived db lagging and keep the trigger active so the probe
+        // turn's first pre-batch projection fails too.
+        inject_projection_trigger(&cfg.session_dir, "injected projection failure");
+        let stale = Scripted::new(vec![text_step("stale marker")]);
+        let stale_report = loop_.run_turn("stale turn", &stale).await.unwrap();
+        assert_eq!(
+            stale_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_IO"),
+            "{stale_report:?}"
+        );
+
+        // Same turn: the first batch's pre-batch projection fails while the
+        // trigger is active; the second batch drops the trigger, so this
+        // turn's commit projection succeeds. A stale projection diagnostic
+        // must not survive the success.
+        let probe = Scripted::new(vec![
+            tool_step(
+                "call-search",
+                "search_session_log",
+                json!({"query": "unused", "mode": "exact"}),
+            ),
+            tool_step(
+                "call-drop",
+                "derived_db_probe",
+                json!({"op": "drop_projection_trigger"}),
+            ),
+            text_step("recovered"),
+        ]);
+        let report = loop_
+            .run_turn("transient projection failure", &probe)
+            .await
+            .unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        assert!(
+            report.diagnostic.is_none(),
+            "a recovered projection must not be reported as failed: {report:?}"
+        );
+        let cursor =
+            checkpoint_applied_through(&cfg.session_dir).expect("checkpoint row after recovery");
+        assert_eq!(
+            cursor as u64,
+            event_line_count(&cfg.session_dir),
+            "the commit projection caught up after the trigger was dropped"
+        );
     }
 }

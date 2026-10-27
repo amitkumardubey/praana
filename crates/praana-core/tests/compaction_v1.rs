@@ -2008,6 +2008,7 @@ mod activation {
     use praana_core::turn::{
         AdmittedRequest, AssistantDraft, HeadlessLoop, LoopConfig, LoopFault, PreparedRequest,
         ProviderFailure, ProviderOutput, StepProvider, TurnError,
+        LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
     };
     use serde_json::{json, Value};
     use tokio_util::sync::CancellationToken;
@@ -2032,13 +2033,21 @@ mod activation {
         Valid,
         Raw(String),
         Http(u16),
+        /// 429 with a retry-after-ms hint (mirrors provider rate limits).
+        HttpRateLimited,
         Sleep(u64),
         Cancel(tokio_util::sync::CancellationToken),
+    }
+
+    #[derive(Clone, Copy)]
+    enum MainReply {
+        ContextLength,
     }
 
     struct Script {
         session: PathBuf,
         replies: Mutex<VecDeque<Reply>>,
+        main_replies: Mutex<VecDeque<MainReply>>,
         cite_state: Mutex<Option<StateId>>,
         compactor: Mutex<Vec<Recorded>>,
         main: Mutex<Vec<Recorded>>,
@@ -2061,6 +2070,13 @@ mod activation {
         }
         fn push(&self, reply: Reply) {
             self.script.replies.lock().unwrap().push_back(reply);
+        }
+        fn reject_next_main_for_context_length(&self) {
+            self.script
+                .main_replies
+                .lock()
+                .unwrap()
+                .push_back(MainReply::ContextLength);
         }
     }
 
@@ -2223,6 +2239,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         let script = Arc::new(Script {
             session: session.to_path_buf(),
             replies: Mutex::new(VecDeque::new()),
+            main_replies: Mutex::new(VecDeque::new()),
             cite_state: Mutex::new(None),
             compactor: Mutex::new(Vec::new()),
             main: Mutex::new(Vec::new()),
@@ -2241,7 +2258,13 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                 let response = match control_of(&parsed) {
                     None => {
                         thread_script.main.lock().unwrap().push(recorded);
-                        http(200, &responses_sse("ready"))
+                        match thread_script.main_replies.lock().unwrap().pop_front() {
+                            Some(MainReply::ContextLength) => http(
+                                400,
+                                r#"{"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}"#,
+                            ),
+                            None => http(200, &responses_sse("ready")),
+                        }
                     }
                     Some(control) => {
                         thread_script.compactor.lock().unwrap().push(recorded);
@@ -2258,6 +2281,15 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
                             }
                             Reply::Raw(text) => http(200, &responses_sse(&text)),
                             Reply::Http(status) => http(status, "{\"error\":{}}"),
+                            Reply::HttpRateLimited => {
+                                let body = "{\"error\":{}}";
+                                format!(
+                                    "HTTP/1.1 429 X\r\ncontent-type: text/event-stream\r\nretry-after-ms: 5000\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                                    body.len(),
+                                    body
+                                )
+                                .into_bytes()
+                            }
                             Reply::Sleep(ms) => {
                                 std::thread::sleep(Duration::from_millis(ms));
                                 http(200, &responses_sse("{}"))
@@ -2519,6 +2551,19 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
     fn projection(session: &Path) -> ConversationProjection {
         let (events, raw) = read_log(session);
         ConversationProjection::project_with_context(&events, Some(&raw), &[], None).unwrap()
+    }
+
+    /// Aborts every derived-checkpoint write so projections fail deterministically
+    /// (used to make a live/resume projection fail, mirroring a read-only or
+    /// corrupt derived store).
+    fn inject_projection_trigger(session: &Path) {
+        let conn = rusqlite::Connection::open(session.join("history.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS fail_history_projection BEFORE INSERT ON projection_checkpoints \
+             WHEN NEW.projection_name = 'history_derived' \
+             BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
+        )
+        .unwrap();
     }
 
     fn session_id(session: &Path) -> SessionId {
@@ -4056,6 +4101,318 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert!(s.fake.compactor_requests().is_empty());
         assert!(of_kind(&s.session, "history_compacted").is_empty());
         assert_eq!(s.fake.main_requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn emergency_context_recovery_compacts_an_unconsidered_source_once() {
+        let mut s = session();
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn("closed source", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        s.fake.reject_next_main_for_context_length();
+        let report = loop_.run_turn("context rejected", &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "emergency resend commits: {report:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(
+            s.fake.main_requests().len(),
+            3,
+            "failed request plus retry after seed"
+        );
+        assert_eq!(
+            of_kind(&s.session, "assistant_attempt_started")
+                .iter()
+                .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+                .count(),
+            1,
+            "one emergency compaction epoch"
+        );
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .any(|event| event["event"]["data"]["emergency_context_retry"] == true));
+    }
+
+    #[tokio::test]
+    async fn emergency_context_recovery_skips_already_considered_source() {
+        let mut s = session();
+        s.config.history.compact_at = 1.0;
+        s.config.history.compact_clear_at = 0.9;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn("closed source", &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        s.fake.push(Reply::Http(500));
+        assert!(matches!(
+            loop_.compact_now(&compactor(&s)).await.unwrap(),
+            CompactionOutcome::Failed { .. }
+        ));
+        let compaction_starts_before = of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert_eq!(compaction_starts_before, 1);
+
+        s.fake.reject_next_main_for_context_length();
+        let report = loop_.run_turn("context rejected", &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "assistant retry still runs: {report:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(
+            of_kind(&s.session, "assistant_attempt_started")
+                .iter()
+                .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+                .count(),
+            compaction_starts_before,
+            "no durable compaction attempt for an already-considered source"
+        );
+        assert_eq!(
+            s.fake.main_requests().len(),
+            3,
+            "context retry is still sent"
+        );
+        assert!(of_kind(&s.session, "assistant_attempt_started")
+            .iter()
+            .any(|event| event["event"]["data"]["emergency_context_retry"] == true));
+    }
+
+    #[tokio::test]
+    async fn failed_live_compaction_is_reported_without_stopping_the_turn() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::Http(500));
+
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "failed compaction must not stop turn"
+        );
+        let diagnostic = report.diagnostic.expect("live failure is observable");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn aborted_turn_does_not_report_a_step_zero_compaction_failure() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // Compaction fails at step 0 (the attempt and its single schema repair
+        // both fail), then the turn is user-aborted mid-repair. The aborted
+        // report must carry only its own cause — never the compaction failure.
+        s.fake.push(Reply::Raw("not json".into()));
+        s.fake.push(Reply::Cancel(loop_.cancellation_token()));
+        let main_before = s.fake.main_requests().len();
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert_eq!(
+            report.interruption,
+            Some(praana_core::protocol::events::InterruptionReason::UserAbort)
+        );
+        assert_eq!(
+            s.fake.main_requests().len(),
+            main_before,
+            "abort fires before any assistant send"
+        );
+        assert!(
+            report.diagnostic.is_none(),
+            "an interrupted report carries only its own cause: {report:?}"
+        );
+        let compaction_failures = of_kind(&s.session, "assistant_attempt_failed")
+            .iter()
+            .filter(|event| event["event"]["data"]["purpose"]["type"] == "compaction")
+            .count();
+        assert!(
+            compaction_failures >= 2,
+            "epoch attempt and repair both failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn committed_turn_reports_only_the_compaction_failure_diagnostic() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::Http(500));
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "failed compaction must not stop the turn"
+        );
+        let diagnostic = report
+            .diagnostic
+            .expect("committed turn surfaces the compaction failure");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
+            "the generic message never quotes provider text: {diagnostic:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(s.fake.main_requests().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn committed_turn_prefers_compaction_over_projection_diagnostic() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // Both a step-0 compaction failure and a commit-time projection failure
+        // occur in this turn. Compaction wins the report; the projection
+        // failure stays in its own slot (dropped from this report, not
+        // overwritten).
+        inject_projection_trigger(&s.session);
+        s.fake.push(Reply::Http(500));
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report
+            .diagnostic
+            .expect("compaction failure wins the report");
+        assert!(diagnostic.code.starts_with("E_PROVIDER"), "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
+            "{diagnostic:?}"
+        );
+        assert_ne!(
+            diagnostic.code, "HISTORY_IO",
+            "projection failure must not win: {diagnostic:?}"
+        );
+
+        // Diagnostics are turn-scoped. Drop the trigger so this turn does not
+        // fail projection on its own. The earlier projection failure is not
+        // carried into the report.
+        {
+            let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+            conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+                .unwrap();
+        }
+        loop_.set_compactor(None);
+        let third = loop_.run_turn(&big("charlie"), &provider).await.unwrap();
+        assert!(third.interruption.is_none(), "{third:?}");
+        assert!(
+            third.diagnostic.is_none(),
+            "a projection failure is not carried into the next turn: {third:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_compactor_failure_keeps_retry_after_ms() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        s.fake.push(Reply::HttpRateLimited);
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report
+            .diagnostic
+            .expect("rate-limited compaction failure is observable");
+        assert_eq!(diagnostic.code, "E_PROVIDER_RATE_LIMIT", "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.retry_after_ms,
+            Some(5000),
+            "retry-after hint survives the safe diagnostic: {diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE,
+            "{diagnostic:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_activation_projection_failure_does_not_say_compaction_failed() {
+        let mut s = session();
+        s.config.history.compact_at = 0.0002;
+        s.config.history.compact_clear_at = 0.0001;
+        let provider = OpenAiStepProvider::new(&s.config, &s.home, &s.workspace).unwrap();
+        let mut loop_ = HeadlessLoop::create(loop_config(&s)).unwrap();
+        loop_.set_compactor(Some(compactor(&s)));
+        assert!(loop_
+            .run_turn(&big("source"), &provider)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        // The compactor succeeds (activation durably retires turns); only the
+        // post-activation derived projection fails. The report must say
+        // projection, not compaction.
+        inject_projection_trigger(&s.session);
+        let report = loop_.run_turn(&big("current"), &provider).await.unwrap();
+        assert!(report.interruption.is_none(), "{report:?}");
+        let diagnostic = report.diagnostic.expect("projection failure is observable");
+        assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+        assert!(
+            diagnostic.message.contains("injected projection failure"),
+            "{diagnostic:?}"
+        );
+        assert!(
+            !diagnostic.message.contains("did not activate"),
+            "a projection failure must not read as a compaction failure: {diagnostic:?}"
+        );
+        assert_eq!(s.fake.compactor_requests().len(), 1);
+        assert_eq!(of_kind(&s.session, "history_compacted").len(), 1);
     }
 
     #[tokio::test]

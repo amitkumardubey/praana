@@ -649,6 +649,25 @@ fn interrupted_blob_transactions_do_not_invent_a_finish() {
 }
 
 #[test]
+fn projection_rejects_non_json_canonical_artifact() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let (mut log, session) = session_with_fixture_start(temp.path());
+    let path = temp.path().join("session").join("history.db");
+    let store = ArtifactStore::open(&path, policy(), clock(1_700_000_000_000)).unwrap();
+    let input = publish_input_for_start(&session, &bytes_for_tokens(policy().inline_tokens + 6));
+    store.publish_batch(&mut log, &[input], None).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("UPDATE artifact_blobs SET canonical_result = x'00'", [])
+        .unwrap();
+    drop(conn);
+    let db = HistoryDatabase::open(&path).unwrap();
+    let err = praana_core::history::checkpoint::HistoryProjector::new(&db)
+        .project_without_rebuild(&log)
+        .unwrap_err();
+    assert_eq!(err.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+}
+
+#[test]
 fn hash_mismatched_blob_cannot_prove_a_recovered_finish() {
     let temp = tempfile::TempDir::new().unwrap();
     let (mut log, session) = session_with_fixture_start(temp.path());
