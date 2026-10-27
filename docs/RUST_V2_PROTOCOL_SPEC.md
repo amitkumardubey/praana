@@ -1833,6 +1833,7 @@ including canonical boundary codes not raised by the event replay reducer.
 | `E_COMPACTION_RANGE_INVALID` | Source range or retired turns violate compaction rules. |
 | `E_COMPACTION_SOURCE_HASH_MISMATCH` | Range bytes do not match source hash. |
 | `E_COMPACTION_EPOCH_INVALID` | Reset/compaction epoch is not the required successor. |
+| `E_COMPACTION_EPOCH_FAILED` | A live compaction epoch stopped before activation; the turn was still sent with full history. Non-stop diagnostic only (Appendix A.5). |
 | `E_ACTIVE_TURN_TOO_LARGE` | Active turn alone cannot fit after hard-ceiling policy. |
 
 ## 11. Accepted Conversation Projection
@@ -3644,7 +3645,7 @@ redaction code.
 |---|---|---|---|---|
 | `ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `E_ADMISSION_CONTEXT_WINDOW_UNKNOWN` | `validation` | n/a | No until profile/config changes |
 | `ADMISSION_ARITHMETIC_OVERFLOW`, `TOKEN_ACCOUNTING_OVERFLOW` | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
-| `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE`, `TOKEN_BOUND_EXCEEDED` for protected request content | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | Yes only after caller narrows protected content |
+| `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE` for the main request, `TOKEN_BOUND_EXCEEDED` for protected request content | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | Yes only after caller narrows protected content |
 | `STATE_ACTIVE_BUDGET_EXCEEDED` at the request-time guard (StateGraph section 8.3) | `E_ACTIVE_TURN_TOO_LARGE` | `context_length` | n/a | No in this session; recover with a new session (or a state-clearing reset, once a `ResetBoundary` producer exists) |
 | `ADMISSION_STATE_TAIL_MISMATCH` (Token Accounting section 7.3) | `E_ADMISSION_ACCOUNTING` | `internal` | n/a | No |
 | `ADMISSION_PROVIDER_CONTEXT_REJECTED` | `E_PROVIDER_CONTEXT_LENGTH` | `context_length` | n/a | P5 only, after that one emergency retry |
@@ -3652,7 +3653,7 @@ redaction code.
 | `TOKEN_INPUT_HASH_MISMATCH` | `E_ADMISSION_ACCOUNTING` | `conflict` | n/a | Yes after re-estimation |
 | `COMPACTION_NO_ELIGIBLE_TURNS`, `COMPACTION_MISSING_TOKEN_MASS` | `E_COMPACTION_RANGE_INVALID` | `validation` | n/a | Conditional on new committed history/re-estimation |
 | `COMPACTION_UNAVAILABLE` | `E_COMPACTION_UNAVAILABLE` | `unavailable` | n/a | No until capability/config changes |
-| `COMPACTION_EPOCH_FAILED` (live epoch stopped before activation while the turn was still sent with full history; reported only as a non-stop turn diagnostic; the stop case remains `E_COMPACTION_UNAVAILABLE`) | `E_COMPACTION_EPOCH_FAILED` | `internal` | n/a | No |
+| `COMPACTION_EPOCH_FAILED` (aggregate for a live epoch that stopped before activation while the turn was still sent with full history; source codes: retained `COMPACTION_UNAVAILABLE` from `InFlight`/profile unavailable, `COMPACTION_PROVIDER` before a provider error exists, and `ADMISSION_ACTIVE_CONTEXT_TOO_LARGE` raised for the compactor's own request; reported only as a non-stop turn diagnostic; the stop case remains `E_COMPACTION_UNAVAILABLE`) | `E_COMPACTION_EPOCH_FAILED` | `internal` | n/a | No |
 | `COMPACTION_CANCELLED` | `E_COMPACTION_CANCELLED` | `cancelled` | n/a | Yes only from a new trigger |
 | `COMPACTION_TIMEOUT` | `E_COMPACTION_TIMEOUT` | `timeout` | n/a | Conditional on retry policy |
 | `COMPACTION_PROVIDER` | Mapped provider `E_*` code | Provider mapping | n/a | Provider mapping |

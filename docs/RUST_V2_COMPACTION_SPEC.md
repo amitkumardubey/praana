@@ -1272,8 +1272,11 @@ A live epoch that stops before a durable attempt and still sends the turn
 reports a canonical `E_*` code from Protocol Appendix A.5. It must not report
 `E_COMPACTION_UNAVAILABLE`; that code is only the section 14.4 admission stop.
 A retained failure with no concrete appendix row (`InFlight`, profile
-`Unavailable`, or `COMPACTION_PROVIDER` before a provider error exists) reports
-`E_COMPACTION_EPOCH_FAILED` / `internal` (Protocol Appendix A.5).
+`Unavailable`, `COMPACTION_PROVIDER` before a provider error exists, or an
+admission failure of the compactor's own request, which says nothing about the
+user's active turn) reports `E_COMPACTION_EPOCH_FAILED` / `internal` (Protocol
+Appendix A.5). `E_ACTIVE_TURN_TOO_LARGE` is never used for a retained
+compaction diagnostic.
 An activation, including an on-demand `compact_now`, clears that turn-scoped
 diagnostic so the report does not keep the earlier failure.
 
