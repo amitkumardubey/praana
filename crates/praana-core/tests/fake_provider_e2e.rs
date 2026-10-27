@@ -2238,6 +2238,10 @@ async fn live_history_projection_is_visible_to_search_session_log() {
     fs::create_dir_all(dir.path().join("work")).unwrap();
     let cfg = config(dir.path(), 4);
     let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    // Turn 1's commit projection fails, so the marker is still unprojected
+    // when the search batch starts. The search can see it only because the
+    // batch projects before the tool reads.
+    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
     let first = ScriptedProvider::new(
         cfg.session_dir.clone(),
         vec![ScriptedStep {
@@ -2247,12 +2251,14 @@ async fn live_history_projection_is_visible_to_search_session_log() {
             usage: usage(1),
         }],
     );
-    assert!(loop_
-        .run_turn("first turn", &first)
-        .await
-        .unwrap()
-        .interruption
-        .is_none());
+    let first_report = loop_.run_turn("first turn", &first).await.unwrap();
+    assert!(first_report.interruption.is_none(), "{first_report:?}");
+    assert_eq!(
+        first_report.diagnostic.as_ref().map(|d| d.code.as_str()),
+        Some("HISTORY_IO"),
+        "turn 1 is not yet in the derived database: {first_report:?}"
+    );
+    drop_projection_trigger(&cfg.session_dir);
 
     let search = ScriptedProvider::new(
         cfg.session_dir.clone(),
@@ -2378,6 +2384,7 @@ async fn live_projection_failure_does_not_fail_turn_and_later_search_converges()
     let db = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
     db.execute_batch(
         "CREATE TRIGGER fail_history_projection BEFORE INSERT ON projection_checkpoints \
+         WHEN NEW.projection_name = 'history_derived' \
          BEGIN SELECT RAISE(ABORT, 'injected projection failure'); END;",
     )
     .unwrap();
@@ -2464,20 +2471,6 @@ fn events_of_kind(session_dir: &std::path::Path, kind: &str) -> Vec<Value> {
         .into_iter()
         .filter(|event| event["event"]["kind"] == kind)
         .collect()
-}
-
-/// First value of `key` anywhere in a parsed event tree (e.g. `artifact_id`).
-fn find_value<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
-    match value {
-        Value::Object(map) => {
-            if let Some(found) = map.get(key) {
-                return Some(found);
-            }
-            map.values().find_map(|child| find_value(child, key))
-        }
-        Value::Array(items) => items.iter().find_map(|item| find_value(item, key)),
-        _ => None,
-    }
 }
 
 /// Parses the DTO of the last successful durable `tool_execution_finished`
@@ -2913,89 +2906,10 @@ async fn live_history_tool_batches_project_before_read() {
             .contains(STALE_MARKER),
         "read_session_source reads the catch-up projection: {source}"
     );
-
-    // --------------------------------------------------------- retrieve_artifact
-    // `retrieve_artifact` reads publish-written artifact tables, so its read
-    // cannot observe catch-up the way search/source reads do. It is also NOT
-    // part of the projection-triggering set (`HISTORY_TOOL_BATCHES_PROJECT`;
-    // covered in `retrieve_only_batch_does_not_run_the_pre_batch_projection`
-    // in turn/mod.rs), so this batch runs no pre-batch projection. The
-    // artifact created in the stale turn remains retrievable regardless.
-    inject_projection_trigger(&cfg.session_dir, "injected projection failure");
-    let artifact_stale = ScriptedProvider::new(
-        cfg.session_dir.clone(),
-        vec![
-            tool_step(
-                "call-sh",
-                "shell",
-                json!({"command": "yes a | head -c 5000", "timeout_ms": 5000}),
-            ),
-            ScriptedStep {
-                text: Some("artifact made".into()),
-                calls: Vec::new(),
-                finish: FinishReason::Stop,
-                usage: usage(1),
-            },
-        ],
-    );
-    let artifact_report = loop_
-        .run_turn("stale artifact turn", &artifact_stale)
-        .await
-        .unwrap();
-    assert!(
-        artifact_report.interruption.is_none(),
-        "{artifact_report:?}"
-    );
-    assert_eq!(
-        artifact_report.diagnostic.as_ref().map(|d| d.code.as_str()),
-        Some("HISTORY_IO"),
-        "{artifact_report:?}"
-    );
-    let artifact_id = find_value(
-        &events_of_kind(&cfg.session_dir, "tool_execution_finished")
-            .into_iter()
-            .next_back()
-            .expect("shell finish event"),
-        "artifact_id",
-    )
-    .expect("artifact id")
-    .as_str()
-    .unwrap()
-    .to_owned();
-    drop_projection_trigger(&cfg.session_dir);
-
-    let probe_artifact = ScriptedProvider::new(
-        cfg.session_dir.clone(),
-        vec![
-            tool_step(
-                "call-retrieve",
-                "retrieve_artifact",
-                json!({"artifact_id": artifact_id}),
-            ),
-            ScriptedStep {
-                text: Some("artifact probed".into()),
-                calls: Vec::new(),
-                finish: FinishReason::Stop,
-                usage: usage(1),
-            },
-        ],
-    );
-    let probe_artifact_report = loop_
-        .run_turn("probe artifact", &probe_artifact)
-        .await
-        .unwrap();
-    assert!(
-        probe_artifact_report.interruption.is_none(),
-        "{probe_artifact_report:?}"
-    );
-    let artifact = last_tool_result_dto(&cfg.session_dir, "retrieve_artifact");
-    let text = artifact["data"]["artifact"]["content"]["data"]
-        .as_str()
-        .unwrap();
-    assert!(
-        text.contains('a'),
-        "artifact text is retrievable: {artifact}"
-    );
+    // `retrieve_artifact` is not in `HISTORY_TOOL_BATCHES_PROJECT`. Keeping
+    // the trigger active cannot tell "did not project" from "projected and
+    // the trigger aborted", because commit also projects. That case is
+    // `retrieve_only_batch_does_not_run_the_pre_batch_projection`.
 }
 
 fn history_db_inode(session_dir: &std::path::Path) -> u64 {

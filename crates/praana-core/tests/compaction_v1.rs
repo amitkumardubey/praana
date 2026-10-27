@@ -4332,15 +4332,20 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             "projection failure must not win: {diagnostic:?}"
         );
 
-        // The projection diagnostic is recorded separately: with the compactor
-        // removed, the next committed turn reports it.
+        // Diagnostics are turn-scoped. Drop the trigger so this turn does not
+        // fail projection on its own. The earlier projection failure is not
+        // carried into the report.
+        {
+            let conn = rusqlite::Connection::open(s.session.join("history.db")).unwrap();
+            conn.execute_batch("DROP TRIGGER IF EXISTS fail_history_projection")
+                .unwrap();
+        }
         loop_.set_compactor(None);
         let third = loop_.run_turn(&big("charlie"), &provider).await.unwrap();
         assert!(third.interruption.is_none(), "{third:?}");
-        assert_eq!(
-            third.diagnostic.as_ref().map(|d| d.code.as_str()),
-            Some("HISTORY_IO"),
-            "{third:?}"
+        assert!(
+            third.diagnostic.is_none(),
+            "a projection failure is not carried into the next turn: {third:?}"
         );
     }
 
