@@ -931,14 +931,10 @@ impl HeadlessLoop {
             }
             Err(CompactionRunError::History(message)) => Err(TurnError::Durability(message)),
             Err(other) => {
-                self.compaction_diagnostic = Some(ProtocolError {
-                    code: other.code().to_owned(),
-                    class: ErrorClass::Internal,
-                    message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
-                    retryable: false,
-                    http_status: None,
-                    retry_after_ms: None,
-                });
+                // Retained: the request is still sent. The diagnostic is a
+                // canonical E_* code (Protocol Appendix A.5), never the §14.4
+                // stop `E_COMPACTION_UNAVAILABLE`.
+                self.compaction_diagnostic = Some(retained_epoch_diagnostic(&other));
                 Ok(LiveEpoch::Retained)
             }
         }
@@ -2484,6 +2480,40 @@ fn redact_provider_message(message: &str) -> String {
 /// HTTP status, and retry-after hint (none carry provider text or host paths)
 /// but replaces the message with a fixed generic string, so no provider or
 /// transport body ever reaches events or stderr.
+/// Canonical diagnostic for a retained live epoch that stopped before a
+/// durable attempt (`CompactionRunError`). Appendix A.5 supplies the code and
+/// class where a row names one. `E_COMPACTION_UNAVAILABLE` is reserved for the
+/// §14.4 stop, so a retained `COMPACTION_UNAVAILABLE` (`InFlight`,
+/// `Unavailable`) does not use it. `Request` has no concrete provider error to
+/// map, and `History` is not reported here. Those use `E_COMPACTION_EPOCH_FAILED`.
+fn retained_epoch_diagnostic(
+    error: &crate::compaction::activate::CompactionRunError,
+) -> ProtocolError {
+    use crate::compaction::activate::CompactionRunError;
+    use crate::compaction::CompactionError;
+    let (code, class) = match error {
+        CompactionRunError::Selection(
+            CompactionError::NoEligibleTurns | CompactionError::MissingTokenMass(_),
+        ) => ("E_COMPACTION_RANGE_INVALID", ErrorClass::Validation),
+        CompactionRunError::Selection(CompactionError::ArithmeticOverflow) => {
+            ("E_ADMISSION_ACCOUNTING", ErrorClass::Internal)
+        }
+        CompactionRunError::Admission(_) => ("E_ACTIVE_TURN_TOO_LARGE", ErrorClass::ContextLength),
+        CompactionRunError::Unavailable { .. }
+        | CompactionRunError::InFlight
+        | CompactionRunError::Request(_)
+        | CompactionRunError::History(_) => ("E_COMPACTION_EPOCH_FAILED", ErrorClass::Internal),
+    };
+    ProtocolError {
+        code: code.to_owned(),
+        class,
+        message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+        retryable: false,
+        http_status: None,
+        retry_after_ms: None,
+    }
+}
+
 fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
     ProtocolError {
         code: error.code.clone(),
@@ -4284,6 +4314,239 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             loop_.compaction_diagnostic.is_none(),
             "an activated epoch clears the turn-scoped compaction failure"
         );
+    }
+
+    fn unit_compactor(
+        cfg: &LoopConfig,
+        window: u64,
+    ) -> crate::compaction::activate::ConfiguredCompactor {
+        crate::compaction::activate::ConfiguredCompactor {
+            provider: "openai".into(),
+            protocol: crate::provider::registry::ProviderProtocol::Responses,
+            model: FAKE_MODEL.into(),
+            base_url: "http://127.0.0.1:9/v1".into(),
+            extra_headers: BTreeMap::new(),
+            max_output_tokens: 4096,
+            timeout_ms: 5_000,
+            profile: crate::provider::profile::ModelCapabilityProfile {
+                profile_version: "test-v1".into(),
+                profile_source_sha256: Sha256Digest::digest_bytes(b"test-profile"),
+                catalog_cache_sha256: None,
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model_pattern: FAKE_MODEL.into(),
+                model_revision: None,
+                context_window_tokens: window,
+                max_output_tokens: 4096,
+                min_output_tokens: 16,
+                reasoning_accounting:
+                    crate::provider::profile::ReasoningAccounting::IncludedInOutputLimit,
+                reasoning_context:
+                    crate::provider::profile::ReasoningContextCapability::Unsupported,
+                tokenizer: crate::provider::profile::TokenizerCapability::ConservativeGeneric {
+                    estimator_id: "praana-generic-unicode-15.1-v1".into(),
+                },
+                framing_profile_id: "adapter-estimate:generic:default:v1".into(),
+                reasoning_efforts: vec![],
+                parallel_tools: true,
+                strict_json_schema: true,
+                temperature_with_reasoning: false,
+                image_input: crate::provider::profile::ImageInputCapability::Unsupported,
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                self_compaction: crate::provider::profile::SelfCompactionCapability::Unvalidated,
+                continuation_after_internal_request: false,
+            },
+            framing: crate::token::FramingProfileV1 {
+                framing_profile_schema_version: 1,
+                framing_profile_id: "compaction-test".to_owned(),
+                fixed_tokens: 0,
+                per_item_tokens: 0,
+                item_count: 0,
+                additional_tokens: 0,
+            },
+            selection: ModelSelection {
+                provider: "openai".into(),
+                protocol: "openai-responses-v1".into(),
+                model: FAKE_MODEL.into(),
+                model_revision: None,
+                model_family: FAKE_MODEL.into(),
+                endpoint_fingerprint: Sha256Digest::digest_bytes(b"test"),
+                reasoning_effort: ReasoningEffort::Medium,
+            },
+            config_id: "unit-test".into(),
+            home: cfg.home.clone(),
+            client: reqwest::Client::new(),
+            env: Some(BTreeMap::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn retained_inflight_epoch_is_not_the_unavailable_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        let compactor = unit_compactor(&cfg, 128_000);
+        {
+            let session_id = loop_.session_id;
+            let mut ctx = crate::compaction::activate::ActivationContext {
+                log: &mut loop_.log,
+                ids: loop_.config.ids.as_ref(),
+                clock: loop_.config.clock.as_ref(),
+                session_id,
+                config: &loop_.config.config,
+                framing: &loop_.framing,
+            };
+            let started = crate::compaction::activate::begin(&mut ctx, &compactor, None)
+                .expect("an open compaction attempt is durable");
+            drop(started);
+        }
+        loop_.set_compactor(Some(compactor));
+        let epoch = loop_.live_compaction_epoch().await.unwrap();
+        assert!(
+            matches!(epoch, LiveEpoch::Retained),
+            "an in-flight epoch retains the turn: {epoch:?}"
+        );
+        let diagnostic = loop_
+            .compaction_diagnostic
+            .clone()
+            .expect("the retained epoch records a diagnostic");
+        assert_ne!(
+            diagnostic.code, "E_COMPACTION_UNAVAILABLE",
+            "{diagnostic:?}"
+        );
+        assert_eq!(
+            diagnostic.code, "E_COMPACTION_EPOCH_FAILED",
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.class, ErrorClass::Internal);
+        assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+        assert!(
+            loop_.compaction_unavailable.is_none(),
+            "a retained epoch must not stop admission"
+        );
+
+        let current = Scripted::new(vec![text_step("request still sent")]);
+        let report = loop_
+            .run_turn("request still sent", &current)
+            .await
+            .unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "the assistant request is still sent: {report:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_admission_failure_is_not_the_unavailable_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step(&"seed ".repeat(400))]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        // The scripted request body is tiny. A small session window makes its
+        // fill cross the proactive trigger while the request itself still fits,
+        // so the epoch runs and the assistant request is still sent.
+        loop_.config.config.llm.context_window = 2_000;
+        loop_.config.config.history.compact_at = 0.0002;
+        loop_.config.config.history.compact_clear_at = 0.0001;
+        let mut compactor = unit_compactor(&cfg, 32);
+        compactor.max_output_tokens = 4_096;
+        loop_.set_compactor(Some(compactor));
+
+        let current = Scripted::new(vec![text_step("request still sent")]);
+        let report = loop_.run_turn("current turn", &current).await.unwrap();
+        assert!(
+            report.interruption.is_none(),
+            "the assistant request is still sent: {report:?}"
+        );
+        let diagnostic = report
+            .diagnostic
+            .expect("the retained admission failure is reported");
+        assert_ne!(
+            diagnostic.code, "E_COMPACTION_UNAVAILABLE",
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE", "{diagnostic:?}");
+        assert_eq!(diagnostic.class, ErrorClass::ContextLength);
+        assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+        assert!(loop_.compaction_unavailable.is_none());
+    }
+
+    #[test]
+    fn retained_epoch_diagnostic_maps_every_run_error() {
+        use crate::compaction::activate::{CompactionRunError, UnavailableReason};
+        use crate::compaction::CompactionError;
+        use crate::protocol::id::TurnId;
+        let turn = TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap();
+        let cases: Vec<(CompactionRunError, &str, ErrorClass)> = vec![
+            (
+                CompactionRunError::Selection(CompactionError::NoEligibleTurns),
+                "E_COMPACTION_RANGE_INVALID",
+                ErrorClass::Validation,
+            ),
+            (
+                CompactionRunError::Selection(CompactionError::MissingTokenMass(turn)),
+                "E_COMPACTION_RANGE_INVALID",
+                ErrorClass::Validation,
+            ),
+            (
+                CompactionRunError::Selection(CompactionError::ArithmeticOverflow),
+                "E_ADMISSION_ACCOUNTING",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::Unavailable {
+                    reason: UnavailableReason::Empty,
+                    message: "empty".into(),
+                },
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::InFlight,
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::Admission("too large".into()),
+                "E_ACTIVE_TURN_TOO_LARGE",
+                ErrorClass::ContextLength,
+            ),
+            (
+                CompactionRunError::Request("could not build".into()),
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+            (
+                CompactionRunError::History("fsync failed".into()),
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
+            ),
+        ];
+        for (error, code, class) in cases {
+            let diagnostic = super::retained_epoch_diagnostic(&error);
+            assert_eq!(diagnostic.code, code, "{error}");
+            assert_eq!(diagnostic.class, class, "{error}");
+            assert_ne!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
+            assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
+            assert!(!diagnostic.retryable);
+        }
     }
 
     #[tokio::test]

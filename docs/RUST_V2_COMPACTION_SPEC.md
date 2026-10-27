@@ -1268,6 +1268,13 @@ Backoff for repeated
 proactive failures is projection based: do not retry the same source hash until
 at least one new committed turn, model/config change, or manual command.
 
+A live epoch that stops before a durable attempt and still sends the turn
+reports a canonical `E_*` code from Protocol Appendix A.5. It must not report
+`E_COMPACTION_UNAVAILABLE`; that code is only the section 14.4 admission stop.
+A retained failure with no concrete appendix row (`InFlight`, profile
+`Unavailable`, or `COMPACTION_PROVIDER` before a provider error exists) reports
+`E_COMPACTION_EPOCH_FAILED` / `internal` until the appendix names a row.
+
 A recovery-synthesized `E_ATTEMPT_LOST` closes an interrupted provider attempt;
 it is not a verdict on the source and MUST NOT trigger this backoff, for either
 proactive launch or hard-ceiling recovery. Keep the latest compaction outcome:
