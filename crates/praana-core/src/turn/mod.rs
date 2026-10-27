@@ -507,12 +507,14 @@ pub struct HeadlessLoop {
     /// report prefers the compaction one (the lower-priority projection
     /// diagnostic is dropped from the report but stays recorded in its slot).
     projection_diagnostic: Option<ProtocolError>,
-    /// Degraded-resume derived-rebuild failure: non-durable and resume-scoped.
+    /// Degraded-resume derived-projection failure: non-durable and resume-scoped.
     /// Set when `resume_with_project_context` degrades instead of aborting.
-    /// Reported once on the first committed TurnReport after resume (after
-    /// `pending_diagnostic`, before the compaction/projection slots) and then
-    /// taken. It is never persisted as a recovery notice, so two resumes
-    /// failing with the same code can never collide during replay.
+    /// A committed report checks it after the turn's own diagnostics
+    /// (`pending_diagnostic`, then compaction, then projection). An interrupted
+    /// report checks it after `pending_diagnostic` only. It is taken when it
+    /// is the diagnostic actually reported, and cleared when a later live
+    /// projection succeeds. It is never persisted as a recovery notice, so two
+    /// resumes failing with the same code can never collide during replay.
     resume_projection_diagnostic: Option<ProtocolError>,
     /// The recomputed project context differs from the immutable creation
     /// digest; surfaced as a warning code before the next provider request.
@@ -628,6 +630,9 @@ impl HeadlessLoop {
                     Err(error) => {
                         let mut diagnostic = projection_error(&error, &config.session_dir);
                         diagnostic.message = RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned();
+                        // A resume failure cannot be retried inside the turn.
+                        // `projection_error` marks `HISTORY_IO` retryable.
+                        diagnostic.retryable = false;
                         Some(diagnostic)
                     }
                 };
@@ -887,7 +892,10 @@ impl HeadlessLoop {
                     *derived_projection_error = Some(diagnostic.clone());
                     self.projection_diagnostic = Some(diagnostic);
                 }
-                Ok(()) => self.projection_diagnostic = None,
+                Ok(()) => {
+                    self.projection_diagnostic = None;
+                    self.resume_projection_diagnostic = None;
+                }
             }
         }
         Ok(outcome)
@@ -2331,28 +2339,26 @@ impl HeadlessLoop {
     }
 
     fn report(&mut self, interruption: Option<InterruptionReason>) -> TurnReport {
-        // Order: the turn's own cause (`pending_diagnostic`) always wins. A
-        // committed turn additionally surfaces the degraded-resume diagnostic,
-        // then the compaction diagnostic, then the projection diagnostic; an
-        // interrupted report carries only its own cause, so an unrelated abort
-        // never inherits a resume, compaction, or projection failure from the
-        // same turn. When several fire in one committed turn, the earlier one
-        // wins and the lower-priority ones stay recorded in their slots until
-        // the next turn start. The resume diagnostic is one-shot: it is taken
-        // (cleared) the first time it is actually reported.
+        // The turn's own cause (`pending_diagnostic`) always wins. A committed
+        // turn then prefers compaction, then projection, then the resume
+        // diagnostic, so a stale resume failure cannot hide this turn's own
+        // failure. An interrupted report carries `pending_diagnostic` and then
+        // the resume diagnostic (session state, not a turn cause). Compaction
+        // and projection stay out of interrupted reports. The resume
+        // diagnostic is taken only when it is the one actually reported.
         let mut diagnostic = self.pending_diagnostic.clone();
         if interruption.is_none() {
-            if diagnostic.is_none() {
-                diagnostic = self.resume_projection_diagnostic.clone();
-                if diagnostic.is_some() {
-                    self.resume_projection_diagnostic = None;
-                }
-            }
             if diagnostic.is_none() {
                 diagnostic = self.compaction_diagnostic.clone();
             }
             if diagnostic.is_none() {
                 diagnostic = self.projection_diagnostic.clone();
+            }
+        }
+        if diagnostic.is_none() {
+            diagnostic = self.resume_projection_diagnostic.clone();
+            if diagnostic.is_some() {
+                self.resume_projection_diagnostic = None;
             }
         }
         TurnReport {
@@ -2416,7 +2422,12 @@ impl HeadlessLoop {
                 let diagnostic = projection_error(&error, &self.config.session_dir);
                 self.projection_diagnostic = Some(diagnostic);
             }
-            Ok(()) => self.projection_diagnostic = None,
+            Ok(()) => {
+                self.projection_diagnostic = None;
+                // A healed derived database must not keep reporting the
+                // resume failure.
+                self.resume_projection_diagnostic = None;
+            }
         }
     }
 
@@ -4486,6 +4497,149 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
         assert_eq!(diagnostic.class, ErrorClass::ContextLength);
         assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
         assert!(loop_.compaction_unavailable.is_none());
+    }
+
+    fn parked_resume_diagnostic(code: &str) -> ProtocolError {
+        ProtocolError {
+            code: code.to_owned(),
+            class: ErrorClass::Persistence,
+            message: RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned(),
+            retryable: true,
+            http_status: None,
+            retry_after_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn degraded_resume_diagnostic_is_not_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        drop(loop_);
+
+        {
+            let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+            conn.execute_batch(
+                "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_resume_projection BEFORE INSERT ON projection_checkpoints \
+                 WHEN NEW.projection_name = 'history_derived' \
+                 BEGIN SELECT RAISE(ABORT, 'injected resume projection failure'); END;",
+            )
+            .unwrap();
+        }
+
+        let mut resumed = HeadlessLoop::resume(cfg).expect("resume degrades");
+        // No turn has run, so nothing outranks the resume diagnostic.
+        let report = resumed.report(None);
+        let diagnostic = report
+            .diagnostic
+            .expect("the resume diagnostic is reported before any turn");
+        assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
+        assert!(
+            !diagnostic.retryable,
+            "a resume projection failure cannot be retried in-turn: {diagnostic:?}"
+        );
+        assert_eq!(diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE);
+        assert!(resumed.resume_projection_diagnostic.is_none());
+    }
+
+    #[test]
+    fn committed_report_prefers_compaction_and_keeps_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let mut loop_ = HeadlessLoop::create(test_config(dir.path())).unwrap();
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: false,
+            http_status: Some(500),
+            retry_after_ms: None,
+        });
+        loop_.resume_projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        let first = loop_.report(None);
+        assert_eq!(
+            first.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("E_PROVIDER_STREAM"),
+            "compaction outranks the resume diagnostic: {first:?}"
+        );
+        assert!(
+            loop_.resume_projection_diagnostic.is_some(),
+            "the resume diagnostic is taken only when it is reported"
+        );
+        loop_.compaction_diagnostic = None;
+        loop_.projection_diagnostic = None;
+        loop_.pending_diagnostic = None;
+        let second = loop_.report(None);
+        assert_eq!(
+            second.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_IO"),
+            "the resume diagnostic is still reported once nothing else is pending: {second:?}"
+        );
+        assert!(loop_.resume_projection_diagnostic.is_none());
+    }
+
+    #[test]
+    fn interrupted_report_carries_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let mut loop_ = HeadlessLoop::create(test_config(dir.path())).unwrap();
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: false,
+            http_status: None,
+            retry_after_ms: None,
+        });
+        loop_.projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        loop_.resume_projection_diagnostic =
+            Some(parked_resume_diagnostic("HISTORY_CHECKPOINT_INVALID"));
+        let report = loop_.report(Some(InterruptionReason::UserAbort));
+        assert_eq!(report.interruption, Some(InterruptionReason::UserAbort));
+        assert_eq!(
+            report.diagnostic.as_ref().map(|d| d.code.as_str()),
+            Some("HISTORY_CHECKPOINT_INVALID"),
+            "an interrupted report carries the resume diagnostic, not compaction: {report:?}"
+        );
+        assert!(loop_.resume_projection_diagnostic.is_none());
+        assert!(loop_.compaction_diagnostic.is_some());
+    }
+
+    #[tokio::test]
+    async fn successful_live_projection_clears_the_resume_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+        loop_.resume_projection_diagnostic = Some(parked_resume_diagnostic("HISTORY_IO"));
+        loop_.project_history_live();
+        assert!(
+            loop_.projection_diagnostic.is_none(),
+            "the live projection itself succeeded"
+        );
+        assert!(
+            loop_.resume_projection_diagnostic.is_none(),
+            "a healed derived database is not reported as failed"
+        );
     }
 
     #[test]

@@ -2594,14 +2594,24 @@ async fn resume_degrades_when_recovery_projection_fails() {
         .await
         .unwrap();
     assert!(report.interruption.is_none(), "{report:?}");
+    // The trigger is still installed, so this turn's own projection failure
+    // outranks the parked resume diagnostic. The resume diagnostic itself
+    // (fixed message, not retryable) is asserted by reporting before any turn
+    // in `degraded_resume_diagnostic_is_not_retryable`.
     let diagnostic = report
         .diagnostic
         .as_ref()
-        .expect("projection failure surfaces on the first report");
+        .expect("the turn's own projection failure surfaces on the first report");
     assert_eq!(diagnostic.code, "HISTORY_IO", "{diagnostic:?}");
-    assert_eq!(
+    assert_ne!(
         diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE,
-        "the fixed message replaces raw rebuild text: {diagnostic:?}"
+        "the turn's own projection failure outranks the resume diagnostic: {diagnostic:?}"
+    );
+    assert!(
+        diagnostic
+            .message
+            .contains("injected resume projection failure"),
+        "{diagnostic:?}"
     );
     assert!(
         !diagnostic
@@ -2620,8 +2630,8 @@ async fn resume_degrades_when_recovery_projection_fails() {
         "no history projection recovery notice is persisted"
     );
 
-    // Stop failing; the diagnostic was taken (cleared): a second turn's
-    // report carries nothing.
+    // Stop failing. The successful live projection clears the parked resume
+    // diagnostic, so a healed database is not reported as failed.
     {
         let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
         conn.execute_batch("DROP TRIGGER IF EXISTS fail_resume_projection")
