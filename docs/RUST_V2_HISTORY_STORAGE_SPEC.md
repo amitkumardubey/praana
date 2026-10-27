@@ -1430,6 +1430,15 @@ If a canonical artifact table is corrupt or a referenced body fails SHA-256,
 automatic rebuild stops with `HISTORY_CANONICAL_DB_CORRUPT`. It never rebuilds a
 body from an excerpt or summary.
 
+Session resume does not run this rebuild. It catch-up projects in place
+(`project_without_rebuild`). An invalid checkpoint is reported once and the
+file, including canonical `operation_records`, is left untouched. A
+canonical-integrity projection error (`HISTORY_CANONICAL_DB_CORRUPT`,
+`HISTORY_DANGLING_ARTIFACT`, `HISTORY_EVENT_INTEGRITY`,
+`HISTORY_SCHEMA_UNSUPPORTED`, and any code outside the derived-write set)
+aborts resume. Rebuilding a corrupt derived database remains a separate
+recovery operation.
+
 ## 10. Retrieval contract
 
 ### 10.1 Request

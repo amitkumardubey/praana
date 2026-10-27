@@ -2987,3 +2987,221 @@ async fn live_history_tool_batches_project_before_read() {
         "artifact text is retrievable: {artifact}"
     );
 }
+
+fn history_db_inode(session_dir: &std::path::Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(session_dir.join("history.db")).unwrap().ino()
+}
+
+fn bad_history_files(session_dir: &std::path::Path) -> Vec<String> {
+    fs::read_dir(session_dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name();
+            let name = name.to_string_lossy().into_owned();
+            name.starts_with("history.db.bad").then_some(name)
+        })
+        .collect()
+}
+
+/// Corrupt the stored projection version so the checkpoint is `Invalid`
+/// without touching canonical tables.
+fn corrupt_history_projection_version(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM projection_checkpoints \
+             WHERE projection_name = 'history_derived'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let corrupted = payload.replace("rust-v2-projection-1", "not-a-projection-version");
+    assert_ne!(
+        payload, corrupted,
+        "checkpoint payload has a projection version"
+    );
+    conn.execute(
+        "UPDATE projection_checkpoints SET payload_json = ?1 \
+         WHERE projection_name = 'history_derived'",
+        [corrupted],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+}
+
+const CANONICAL_OPERATION_ID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+fn insert_operation_record(session_dir: &std::path::Path) {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.execute(
+        "INSERT INTO operation_records( \
+            operation_id, ui_contract_schema_version, operation_kind, request_sha256, \
+            status, session_id, planned_effects_json, result_json, result_sha256, \
+            first_canonical_sequence, terminal_canonical_sequence, created_at_ms, \
+            finished_at_ms) \
+         VALUES (?1, 1, 'turn_submit', \
+            '0000000000000000000000000000000000000000000000000000000000000000', \
+            'reserved', NULL, '[]', NULL, NULL, NULL, NULL, 1, NULL)",
+        [CANONICAL_OPERATION_ID],
+    )
+    .unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        .unwrap();
+}
+
+fn operation_record_count(session_dir: &std::path::Path) -> i64 {
+    let conn = rusqlite::Connection::open(session_dir.join("history.db")).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM operation_records WHERE operation_id = ?1",
+        [CANONICAL_OPERATION_ID],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn invalid_checkpoint_resume_keeps_history_db_and_operation_records() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    corrupt_history_projection_version(&cfg.session_dir);
+    insert_operation_record(&cfg.session_dir);
+    let inode = history_db_inode(&cfg.session_dir);
+    assert!(bad_history_files(&cfg.session_dir).is_empty());
+
+    let mut resumed = HeadlessLoop::resume(cfg.clone())
+        .expect("an invalid derived checkpoint degrades; it does not abort resume");
+    assert_eq!(
+        operation_record_count(&cfg.session_dir),
+        1,
+        "canonical operation_records must survive resume"
+    );
+    assert_eq!(
+        history_db_inode(&cfg.session_dir),
+        inode,
+        "history.db must be the same file after resume"
+    );
+    assert!(
+        bad_history_files(&cfg.session_dir).is_empty(),
+        "resume must not rename history.db aside: {:?}",
+        bad_history_files(&cfg.session_dir)
+    );
+
+    let first = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("after invalid checkpoint".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let report = resumed
+        .run_turn("turn after invalid checkpoint", &first)
+        .await
+        .unwrap();
+    assert!(report.interruption.is_none(), "{report:?}");
+    let diagnostic = report
+        .diagnostic
+        .expect("invalid checkpoint is reported once");
+    assert_eq!(
+        diagnostic.code, "HISTORY_CHECKPOINT_INVALID",
+        "{diagnostic:?}"
+    );
+    assert_eq!(diagnostic.message, RESUME_PROJECTION_DIAGNOSTIC_MESSAGE);
+
+    let later = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("later turn".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let later_report = resumed.run_turn("later turn", &later).await.unwrap();
+    assert_ne!(
+        later_report
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.message.as_str()),
+        Some(RESUME_PROJECTION_DIAGNOSTIC_MESSAGE),
+        "the resume diagnostic is reported once: {later_report:?}"
+    );
+    assert_eq!(operation_record_count(&cfg.session_dir), 1);
+}
+
+#[tokio::test]
+async fn canonical_integrity_error_at_resume_is_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work")).unwrap();
+    let cfg = config(dir.path(), 4);
+    let seed = ScriptedProvider::new(
+        cfg.session_dir.clone(),
+        vec![ScriptedStep {
+            text: Some("seed marker".into()),
+            calls: Vec::new(),
+            finish: FinishReason::Stop,
+            usage: usage(1),
+        }],
+    );
+    let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+    assert!(loop_
+        .run_turn("seed turn", &seed)
+        .await
+        .unwrap()
+        .interruption
+        .is_none());
+    drop(loop_);
+
+    // Recovery does not inspect derived turn rows. A sibling row that owns the
+    // real turn's start sequence makes the catch-up projection report
+    // HISTORY_EVENT_INTEGRITY. A missing artifact cannot be used here:
+    // run_recovery already aborts that with E_ARTIFACT_MISSING before projection.
+    {
+        let conn = rusqlite::Connection::open(cfg.session_dir.join("history.db")).unwrap();
+        // The real turn already owns start_sequence. Rename its id so the
+        // catch-up insert of the replayed turn collides on that unique column.
+        conn.execute(
+            "UPDATE turns SET turn_id = '01ARZ3NDEKTSV4RRFFQ69G5FAV'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'history_derived';",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+    }
+
+    let error = match HeadlessLoop::resume(cfg.clone()) {
+        Err(error) => error,
+        Ok(_) => panic!("HISTORY_EVENT_INTEGRITY at resume is canonical and fatal"),
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("HISTORY_EVENT_INTEGRITY"),
+        "resume error must name the canonical code: {text}"
+    );
+}

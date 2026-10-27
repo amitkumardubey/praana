@@ -598,24 +598,39 @@ impl HeadlessLoop {
             let db =
                 crate::history::db::HistoryDatabase::open(&config.session_dir.join("history.db"))
                     .map_err(|err| TurnError::failed(err.to_string()))?;
-            // `history.db` is derived and non-authoritative: a failed rebuild
-            // after a successful `run_recovery` must degrade, not abort resume.
-            // Only failures of `run_recovery` itself stay fatal. The rebuild
-            // failure is carried as a NON-durable, resume-scoped diagnostic on
-            // the first turn report after resume — never as a recovery notice
-            // — so identical failures across resumes cannot collide when the
-            // session replays (a recovery notice id is derived from the code
-            // alone, and replay rejects a repeated id whose content differs).
+            // `history.db` is derived and non-authoritative. A derived-projection
+            // failure after a successful `run_recovery` degrades; a
+            // canonical-integrity failure stays fatal, as does `run_recovery`
+            // itself. The derived failure is a NON-durable, resume-scoped
+            // diagnostic on the first turn report after resume — never a
+            // recovery notice — so identical failures across resumes cannot
+            // collide when the session replays (a recovery notice id is
+            // derived from the code alone, and replay rejects a repeated id
+            // whose content differs).
             let notices = engine.take_pending_notices();
-            let resume_projection_diagnostic = if let Err(error) =
-                crate::history::checkpoint::HistoryProjector::new(&db).project(engine.store())
-            {
-                let mut diagnostic = projection_error(&error, &config.session_dir);
-                diagnostic.message = RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned();
-                Some(diagnostic)
-            } else {
-                None
-            };
+            // Never rebuild here. `project()` replaces `history.db` on an
+            // invalid checkpoint and drops canonical `operation_records`
+            // (History §2.1, §9.4). Catch-up of an absent or stale checkpoint
+            // still happens in place. An invalid checkpoint degrades.
+            // Canonical-integrity errors stay fatal: the blanket catch must
+            // not resume on a corrupt event prefix or artifact table.
+            let resume_projection_diagnostic =
+                match crate::history::checkpoint::HistoryProjector::new(&db)
+                    .project_without_rebuild(engine.store())
+                {
+                    Ok(()) => None,
+                    Err(error) if resume_projection_is_canonical_integrity(error.code()) => {
+                        return Err(TurnError::failed(format!(
+                            "{}: canonical history failed integrity checks at resume",
+                            error.code()
+                        )));
+                    }
+                    Err(error) => {
+                        let mut diagnostic = projection_error(&error, &config.session_dir);
+                        diagnostic.message = RESUME_PROJECTION_DIAGNOSTIC_MESSAGE.to_owned();
+                        Some(diagnostic)
+                    }
+                };
             (notices, resume_projection_diagnostic)
         };
         let parsed = SessionId::from_str_canonical(&session_id)
@@ -2393,10 +2408,10 @@ impl HeadlessLoop {
     }
 
     /// Projects the persistent derived handle without a rebuild. An Invalid
-    /// checkpoint cannot heal on the live path (only recovery rebuilds), so
-    /// this diagnostic repeats every turn until the session is resumed. A
-    /// success clears the turn-scoped slot, so a transient failure earlier in
-    /// the turn is not reported once the projection has recovered.
+    /// checkpoint cannot heal on this path or at resume (rebuild is a separate
+    /// recovery operation), so this diagnostic repeats every turn. A success
+    /// clears the turn-scoped slot, so a transient failure earlier in the turn
+    /// is not reported once the projection has recovered.
     fn project_history_live(&mut self) {
         match crate::history::checkpoint::HistoryProjector::new(&self.history_db)
             .project_without_rebuild(&self.log)
@@ -2478,6 +2493,40 @@ fn safe_compaction_diagnostic(error: &ProtocolError) -> ProtocolError {
         http_status: error.http_status,
         retry_after_ms: error.retry_after_ms,
     }
+}
+
+/// Resume projection failures are either a derived-cache problem or a
+/// canonical-integrity problem.
+///
+/// Derived-projection (degrade, leave `history.db` in place): the codes
+/// `checkpoint.rs` / `error.rs` use when the derived write or the stored
+/// checkpoint cannot be applied, without claiming the event prefix or the
+/// artifact tables are corrupt.
+/// - `HISTORY_CHECKPOINT_INVALID` — `project_without_rebuild` refuses to rebuild
+/// - `HISTORY_IO` — `io_err` / non-busy `map_sqlite` during the derived write
+/// - `HISTORY_SQLITE_BUSY` — busy timeout on the derived database
+/// - `HISTORY_SQLITE_PRAGMA_FAILED` — required SQLite behavior unavailable
+/// - `HISTORY_INSECURE_PERMISSIONS` — private-file mode could not be set
+///
+/// Canonical-integrity (fatal): the codes those files use when the canonical
+/// prefix or artifact bytes cannot be trusted, plus anything else (capsule
+/// builders pass `err.code()` through, including `E_EVENT_SCHEMA_INVALID`).
+/// - `HISTORY_CANONICAL_DB_CORRUPT` — `rebuild.rs` blob hash / reference checks
+/// - `HISTORY_DANGLING_ARTIFACT` — finish event names a missing artifact row
+/// - `HISTORY_EVENT_INTEGRITY` — replay does not match the derived rows, or
+///   the checkpoint prefix hash does not parse
+/// - `HISTORY_SCHEMA_UNSUPPORTED` — canonical redaction version cannot be applied
+///
+/// Unknown codes fail closed.
+fn resume_projection_is_canonical_integrity(code: &str) -> bool {
+    !matches!(
+        code,
+        "HISTORY_CHECKPOINT_INVALID"
+            | "HISTORY_IO"
+            | "HISTORY_SQLITE_BUSY"
+            | "HISTORY_SQLITE_PRAGMA_FAILED"
+            | "HISTORY_INSECURE_PERMISSIONS"
+    )
 }
 
 /// Classification of a post-activation derived-projection failure.
@@ -3291,6 +3340,56 @@ mod poison_tests {
             assert!(!error.retryable, "{code}");
             assert_eq!(error.class, class, "{code}");
             assert!(!error.message.contains("/session"));
+        }
+    }
+
+    #[test]
+    fn resume_projection_failure_classifies_every_history_code() {
+        // Every code `history/error.rs`, `checkpoint.rs`, and `rebuild.rs` can
+        // surface from a projection, plus the History §13 table and the
+        // projection-id passthrough. Derived codes degrade; the rest are fatal.
+        let derived = [
+            "HISTORY_CHECKPOINT_INVALID",
+            "HISTORY_IO",
+            "HISTORY_SQLITE_BUSY",
+            "HISTORY_SQLITE_PRAGMA_FAILED",
+            "HISTORY_INSECURE_PERMISSIONS",
+        ];
+        let canonical = [
+            "HISTORY_CANONICAL_DB_CORRUPT",
+            "HISTORY_DANGLING_ARTIFACT",
+            "HISTORY_EVENT_INTEGRITY",
+            "HISTORY_SCHEMA_UNSUPPORTED",
+            "HISTORY_CANCELLED",
+            "HISTORY_SESSION_LOCKED",
+            "HISTORY_META_MISMATCH",
+            "HISTORY_ARTIFACT_NOT_FOUND",
+            "HISTORY_SOURCE_NOT_FOUND",
+            "HISTORY_ARTIFACT_RANGE",
+            "HISTORY_SELECTOR_UNSUPPORTED",
+            "HISTORY_ARTIFACT_TOO_LARGE",
+            "HISTORY_PREVIEW_BOUND",
+            "HISTORY_JSON_POINTER",
+            "HISTORY_REGEX_INVALID",
+            "HISTORY_REGEX_UNSUPPORTED",
+            "HISTORY_SEARCH_QUERY",
+            "HISTORY_SEARCH_CURSOR_STALE",
+            "HISTORY_ROLLBACK_CONFLICT",
+            "HISTORY_OPERATIONAL_RECOVERY_UNCERTAIN",
+            "E_EVENT_SCHEMA_INVALID",
+            "HISTORY_NOT_A_REAL_CODE",
+        ];
+        for code in derived {
+            assert!(
+                !super::resume_projection_is_canonical_integrity(code),
+                "{code} is a derived-projection failure"
+            );
+        }
+        for code in canonical {
+            assert!(
+                super::resume_projection_is_canonical_integrity(code),
+                "{code} is a canonical-integrity failure"
+            );
         }
     }
 
