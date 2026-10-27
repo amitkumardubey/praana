@@ -2486,11 +2486,11 @@ fn redact_provider_message(message: &str) -> String {
 }
 
 /// Canonical diagnostic for a retained live epoch that stopped before a
-/// durable attempt (`CompactionRunError`). Appendix A.5 supplies the code and
-/// class where a row names one. `E_COMPACTION_UNAVAILABLE` is reserved for the
-/// §14.4 stop, so a retained `COMPACTION_UNAVAILABLE` (`InFlight`,
-/// `Unavailable`) does not use it. `Request` has no concrete provider error to
-/// map, so it uses `E_COMPACTION_EPOCH_FAILED`. `History` is handled as a
+/// durable attempt (`CompactionRunError`), using Protocol Appendix A.5.
+/// `E_COMPACTION_UNAVAILABLE` is reserved for the §14.4 stop. Retained
+/// `InFlight` and `Unavailable` errors use `E_COMPACTION_EPOCH_FAILED`, as do
+/// `Request` without a concrete provider error and `Admission` of the
+/// compactor's request (not the user's active turn). `History` is handled as a
 /// durability error by the caller; this function maps it to the same code
 /// defensively if called directly.
 fn retained_epoch_diagnostic(
@@ -2505,8 +2505,8 @@ fn retained_epoch_diagnostic(
         CompactionRunError::Selection(CompactionError::ArithmeticOverflow) => {
             ("E_ADMISSION_ACCOUNTING", ErrorClass::Internal)
         }
-        CompactionRunError::Admission(_) => ("E_ACTIVE_TURN_TOO_LARGE", ErrorClass::ContextLength),
-        CompactionRunError::Unavailable { .. }
+        CompactionRunError::Admission(_)
+        | CompactionRunError::Unavailable { .. }
         | CompactionRunError::InFlight
         | CompactionRunError::Request(_)
         | CompactionRunError::History(_) => ("E_COMPACTION_EPOCH_FAILED", ErrorClass::Internal),
@@ -4534,8 +4534,12 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             diagnostic.code, "E_COMPACTION_UNAVAILABLE",
             "{diagnostic:?}"
         );
-        assert_eq!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE", "{diagnostic:?}");
-        assert_eq!(diagnostic.class, ErrorClass::ContextLength);
+        assert_ne!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE", "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code, "E_COMPACTION_EPOCH_FAILED",
+            "{diagnostic:?}"
+        );
+        assert_eq!(diagnostic.class, ErrorClass::Internal);
         assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
         assert!(loop_.compaction_unavailable.is_none());
     }
@@ -4720,8 +4724,8 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             ),
             (
                 CompactionRunError::Admission("too large".into()),
-                "E_ACTIVE_TURN_TOO_LARGE",
-                ErrorClass::ContextLength,
+                "E_COMPACTION_EPOCH_FAILED",
+                ErrorClass::Internal,
             ),
             (
                 CompactionRunError::Request("could not build".into()),
@@ -4739,6 +4743,7 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             assert_eq!(diagnostic.code, code, "{error}");
             assert_eq!(diagnostic.class, class, "{error}");
             assert_ne!(diagnostic.code, "E_COMPACTION_UNAVAILABLE");
+            assert_ne!(diagnostic.code, "E_ACTIVE_TURN_TOO_LARGE");
             assert_eq!(diagnostic.message, LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE);
             assert!(!diagnostic.retryable);
         }

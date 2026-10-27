@@ -3652,6 +3652,7 @@ redaction code.
 | `TOKEN_INPUT_HASH_MISMATCH` | `E_ADMISSION_ACCOUNTING` | `conflict` | n/a | Yes after re-estimation |
 | `COMPACTION_NO_ELIGIBLE_TURNS`, `COMPACTION_MISSING_TOKEN_MASS` | `E_COMPACTION_RANGE_INVALID` | `validation` | n/a | Conditional on new committed history/re-estimation |
 | `COMPACTION_UNAVAILABLE` | `E_COMPACTION_UNAVAILABLE` | `unavailable` | n/a | No until capability/config changes |
+| `COMPACTION_EPOCH_FAILED` (live epoch stopped before activation while the turn was still sent with full history; reported only as a non-stop turn diagnostic; the stop case remains `E_COMPACTION_UNAVAILABLE`) | `E_COMPACTION_EPOCH_FAILED` | `internal` | n/a | No |
 | `COMPACTION_CANCELLED` | `E_COMPACTION_CANCELLED` | `cancelled` | n/a | Yes only from a new trigger |
 | `COMPACTION_TIMEOUT` | `E_COMPACTION_TIMEOUT` | `timeout` | n/a | Conditional on retry policy |
 | `COMPACTION_PROVIDER` | Mapped provider `E_*` code | Provider mapping | n/a | Provider mapping |
