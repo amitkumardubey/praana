@@ -1274,6 +1274,8 @@ reports a canonical `E_*` code from Protocol Appendix A.5. It must not report
 A retained failure with no concrete appendix row (`InFlight`, profile
 `Unavailable`, or `COMPACTION_PROVIDER` before a provider error exists) reports
 `E_COMPACTION_EPOCH_FAILED` / `internal` until the appendix names a row.
+An activation, including an on-demand `compact_now`, clears that turn-scoped
+diagnostic so the report does not keep the earlier failure.
 
 A recovery-synthesized `E_ATTEMPT_LOST` closes an interrupted provider attempt;
 it is not a verdict on the source and MUST NOT trigger this backoff, for either

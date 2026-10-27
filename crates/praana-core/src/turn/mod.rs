@@ -877,6 +877,10 @@ impl HeadlessLoop {
             ..
         } = &mut outcome
         {
+            // Any activation, including `compact_now`, clears a failed epoch
+            // from earlier in the turn. The report must not keep that failure
+            // once an epoch has since activated (Compaction §14.1).
+            self.compaction_diagnostic = None;
             // This persistent writer handle never rebuilds or replaces files.
             // Projection is one checkpoint-tail transaction with the database's
             // existing 5 s busy timeout; no full replay runs on this live path.
@@ -912,13 +916,7 @@ impl HeadlessLoop {
             return Ok(LiveEpoch::Retained);
         };
         match self.compact_once(&compactor).await {
-            Ok(CompactionOutcome::Activated { .. }) => {
-                // A later success clears the turn-scoped slot: a failed epoch
-                // earlier in this turn must not read as failed once an epoch
-                // has since activated (Compaction §14.1).
-                self.compaction_diagnostic = None;
-                Ok(LiveEpoch::Activated)
-            }
+            Ok(CompactionOutcome::Activated { .. }) => Ok(LiveEpoch::Activated),
             Ok(CompactionOutcome::Failed { error, .. })
                 if error.class == ErrorClass::Authentication =>
             {
@@ -4389,6 +4387,47 @@ event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":
             client: reqwest::Client::new(),
             env: Some(BTreeMap::new()),
         }
+    }
+
+    #[tokio::test]
+    async fn compact_now_activation_clears_the_compaction_diagnostic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("work")).unwrap();
+        let cfg = test_config(dir.path());
+        let mut loop_ = HeadlessLoop::create(cfg.clone()).unwrap();
+        let seed = Scripted::new(vec![text_step("seed marker")]);
+        assert!(loop_
+            .run_turn("seed turn", &seed)
+            .await
+            .unwrap()
+            .interruption
+            .is_none());
+
+        let fake = MiniFake::spawn(&cfg.session_dir);
+        let mut compactor = unit_compactor(&cfg, 128_000);
+        compactor.base_url = format!("http://{}/v1", fake.addr);
+        loop_.compaction_diagnostic = Some(ProtocolError {
+            code: "E_PROVIDER_STREAM".to_owned(),
+            class: ErrorClass::Transport,
+            message: LIVE_COMPACTION_NOT_ACTIVATED_MESSAGE.to_owned(),
+            retryable: true,
+            http_status: Some(500),
+            retry_after_ms: None,
+        });
+        let outcome = loop_.compact_now(&compactor).await.unwrap();
+        assert!(
+            matches!(
+                outcome,
+                crate::compaction::activate::CompactionOutcome::Activated { .. }
+            ),
+            "compact_now activated: {outcome:?}"
+        );
+        // begin_turn would clear the slot anyway. Observe the report first.
+        let report = loop_.report(None);
+        assert!(
+            report.diagnostic.is_none(),
+            "compact_now activation clears the compaction failure: {report:?}"
+        );
     }
 
     #[tokio::test]
