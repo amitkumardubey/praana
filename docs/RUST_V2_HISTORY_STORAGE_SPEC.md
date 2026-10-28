@@ -1417,9 +1417,12 @@ INSERT INTO search_fts(search_fts) VALUES('integrity-check');
 
 If only derived tables fail, the writer:
 
-1. Creates `history.db.rebuild` with private permissions and the exact schema.
-2. Copies and hash-verifies `artifact_blobs` and `artifacts` in one read
-   snapshot.
+1. Creates `history.db.rebuild` starting from the exact schema, with private
+   permissions.
+2. Copies and hash-verifies `artifact_blobs` and `artifacts`, and copies
+   `operation_records` row-for-row unchanged, in one read snapshot. The
+   ledger is canonical (§2.1) and cannot be rebuilt from the event log, so
+   the rebuilt file must carry every source row unchanged.
 3. Replays the valid event prefix into all derived tables.
 4. Runs full integrity checks.
 5. Fsyncs the rebuilt database and containing directory.
