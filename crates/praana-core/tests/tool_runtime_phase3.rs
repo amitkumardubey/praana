@@ -571,6 +571,7 @@ async fn secret_canary_is_removed_from_the_canonical_result() {
     assert!(bytes.contains("[REDACTED:aws-access-key]"));
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn process_tree_is_killed_on_timeout_and_cancel() {
     let cwd = std::env::temp_dir();
@@ -818,6 +819,7 @@ async fn same_path_later_ordinal_is_busy() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn symlink_alias_shares_the_lock() {
     let root = std::env::temp_dir().join(format!("praana-lock-{}", std::process::id()));
@@ -1149,6 +1151,7 @@ fn dropping_poisoned_runtime_outside_the_async_context_stops_the_writer() {
     assert_eq!(std::fs::read(&note).unwrap(), b"probe");
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn grandchild_and_term_ignored_processes_are_reaped() {
     let cwd = std::env::temp_dir();
