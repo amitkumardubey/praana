@@ -433,20 +433,10 @@ const toolsReal = { ...(await import("../src/tools/index.js")) };
 const autoCompactReal = { ...(await import("../src/auto-compact.js")) };
 const uiReal = { ...(await import("../src/ui.js")) };
 const nativeLlmReal = { ...(await import("../src/llm/index.js")) };
-const zodReal = { ...(await import("zod-to-json-schema")) };
 
 mock.module("../src/llm/index.js", () => ({
   ...nativeLlmReal,
   streamLlmResponse: mockStream,
-}));
-mock.module("zod-to-json-schema", () => ({
-  zodToJsonSchema: mock(() => ({
-    $schema: "http://json-schema.org/draft-07/schema#",
-    type: "object",
-    properties: { path: { type: "string" } },
-    required: ["path"],
-    definitions: {},
-  })),
 }));
 mock.module("../src/compiler.js", () => ({}));
 mock.module("../src/context-engine/index.js", () => ({
@@ -552,7 +542,6 @@ try {
     mock.module("../src/auto-compact.js", () => autoCompactReal);
     mock.module("../src/ui.js", () => uiReal);
     mock.module("../src/llm/index.js", () => nativeLlmReal);
-    mock.module("zod-to-json-schema", () => zodReal);
     mock.module("../src/compiler.js", () => ({}));
   });
 } catch {

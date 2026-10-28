@@ -8,8 +8,7 @@ import {
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
-import { zodToJsonSchema } from "zod-to-json-schema";
-import type { ZodTypeAny } from "zod";
+import { z, type ZodType } from "zod";
 import type { Session } from "./session.js";
 import type { StateObject, PraanaConfig } from "./types.js";
 import type { AutoHydrateResult } from "./state-graph.js";
@@ -1554,20 +1553,47 @@ function flushSkillTelemetry(session: Session): void {
   }
 }
 
-export function isZodSchema(schema: unknown): schema is ZodTypeAny {
+export function isZodSchema(schema: unknown): schema is ZodType {
   return !!schema && typeof schema === "object" && "_def" in (schema as Record<string, unknown>);
+}
+
+const SAFE_INTEGER_MAX = Number.MAX_SAFE_INTEGER;
+const SAFE_INTEGER_MIN = Number.MIN_SAFE_INTEGER;
+
+/**
+ * Keep the tool JSON Schema the model sees identical to what zod 3 produced:
+ * objects reject unknown properties, and integers carry no implicit safe-integer
+ * bounds (zod 4 adds `minimum`/`maximum` for every `.int()`).
+ */
+function restoreToolSchemaShape(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(restoreToolSchemaShape);
+  if (!node || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    out[key] = restoreToolSchemaShape(value);
+  }
+  if (out.type === "object" && out.properties && out.additionalProperties === undefined) {
+    out.additionalProperties = false;
+  }
+  if (out.type === "integer") {
+    if (out.maximum === SAFE_INTEGER_MAX) delete out.maximum;
+    if (out.minimum === SAFE_INTEGER_MIN) delete out.minimum;
+  }
+  return out;
 }
 
 export function normalizeToolParameters(schema: unknown): Record<string, unknown> {
   if (isZodSchema(schema)) {
-    const json = zodToJsonSchema(schema, {
-      $refStrategy: "none",
-      target: "jsonSchema7",
+    const json = z.toJSONSchema(schema, {
+      target: "draft-7",
+      io: "input",
+      unrepresentable: "any",
     }) as Record<string, unknown>;
     delete json.$schema;
     delete json.$ref;
     delete json.definitions;
-    return json;
+    delete json.$defs;
+    return restoreToolSchemaShape(json) as Record<string, unknown>;
   }
 
   return {
