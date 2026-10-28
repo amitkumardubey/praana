@@ -48,8 +48,10 @@ pub(crate) fn rebuild_derived_tables(
     // Step 1: fresh file with private permissions and the exact schema.
     let rebuild_db = HistoryDatabase::open(&rebuild_path)?;
 
-    // Step 2: copy and hash-verify the canonical artifact tables in one
-    // read snapshot of the source database.
+    // Step 2: copy and hash-verify the canonical artifact tables and the
+    // canonical operation-record ledger in one read snapshot of the source
+    // database. Operation records cannot be rebuilt from the event log and
+    // must be preserved unchanged (History §2.1).
     {
         let guard = db.lock();
         let src: &Connection = &guard;
@@ -205,7 +207,9 @@ fn copy_canonical_tables(src: &Connection, dst: &HistoryDatabase) -> Result<(), 
     let outcome = dst_conn
         .execute_batch(
             "INSERT INTO artifact_blobs SELECT * FROM rebuild_src.artifact_blobs;
-             INSERT INTO artifacts SELECT * FROM rebuild_src.artifacts;",
+             INSERT INTO artifacts SELECT * FROM rebuild_src.artifacts;
+             INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)
+             SELECT operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms FROM rebuild_src.operation_records;",
         )
         .map_err(map_sqlite);
     let _ = dst_conn.execute_batch("DETACH DATABASE rebuild_src;");
