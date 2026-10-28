@@ -59,7 +59,12 @@ pub(crate) fn rebuild_derived_tables(
     // Step 2: copy and hash-verify the canonical artifact tables and the
     // canonical operation-record ledger in one read snapshot of the source
     // database. Operation records cannot be rebuilt from the event log and
-    // must be preserved unchanged (History §2.1).
+    // must be preserved unchanged (History §2.1). The guard only excludes
+    // other in-process users of this HistoryDatabase handle; the snapshot
+    // itself runs on the destination connection, which ATTACHes the source
+    // by file path and reads the tables through one transaction below. The
+    // guard is kept so no other handle can write to this database file
+    // between the copy and the derived replay.
     {
         let guard = db.lock();
         let src: &Connection = &guard;
@@ -204,7 +209,9 @@ fn copy_canonical_tables(src: &Connection, dst: &HistoryDatabase) -> Result<(), 
         .map_err(map_sqlite)?;
     // Verification and copy share one transaction on the attached source, so
     // a failing insert rolls back the whole copy: nothing half-copied ever
-    // survives. DETACH runs on every exit path.
+    // survives. A row that violates a destination constraint means the
+    // canonical source is corrupt and must stop the rebuild (History §9.4),
+    // so the INSERT batch is classified separately from other SQLite errors.
     let outcome = (|| {
         dst_conn.execute_batch("BEGIN").map_err(map_sqlite)?;
         verify_blob_hashes(dst_conn, "rebuild_src.")?;
@@ -216,17 +223,43 @@ fn copy_canonical_tables(src: &Connection, dst: &HistoryDatabase) -> Result<(), 
                  INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)
                  SELECT operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms FROM rebuild_src.operation_records;",
             )
-            .map_err(map_sqlite)?;
+            .map_err(classify_copy_error)?;
         dst_conn.execute_batch("COMMIT").map_err(map_sqlite)
     })();
+    if outcome.is_err() {
+        let _ = dst_conn.execute_batch("ROLLBACK");
+    }
+    // DETACH must not fail on the success path: the live source would stay
+    // attached to this connection, which later runs full_integrity_check
+    // (covering every attached database) and wal_checkpoint_truncate.
+    let detach = dst_conn.execute_batch("DETACH DATABASE rebuild_src;");
     match outcome {
-        Ok(()) => {}
-        Err(_) => {
-            let _ = dst_conn.execute_batch("ROLLBACK");
+        Ok(()) => detach.map_err(map_sqlite)?,
+        Err(err) => {
+            let _ = detach;
+            return Err(err);
         }
     }
-    let _ = dst_conn.execute_batch("DETACH DATABASE rebuild_src;");
-    outcome
+    Ok(())
+}
+
+/// Classify the INSERT batch failures of the canonical copy. A constraint
+/// violation on the destination means the canonical source itself violates a
+/// destination CHECK / UNIQUE / STRICT / FOREIGN KEY rule, so the rebuild
+/// must stop with `HISTORY_CANONICAL_DB_CORRUPT` (History §9.4). Every other
+/// SQLite error keeps the `map_sqlite` mapping wholesale.
+fn classify_copy_error(err: rusqlite::Error) -> ArtifactError {
+    match &err {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            ArtifactError::new(
+                "HISTORY_CANONICAL_DB_CORRUPT",
+                format!("canonical row violates destination constraint: {err}"),
+            )
+        }
+        _ => map_sqlite(err),
+    }
 }
 
 fn verify_blob_hashes(conn: &Connection, qualifier: &str) -> Result<(), ArtifactError> {
@@ -326,4 +359,37 @@ fn full_integrity_check(conn: &Connection) -> Result<(), ArtifactError> {
         )
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sqlite_error(raw_code: i32, message: &str) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(raw_code),
+            Some(message.to_owned()),
+        )
+    }
+
+    #[test]
+    fn copy_error_constraint_violation_is_canonical_corrupt() {
+        let err = classify_copy_error(sqlite_error(
+            rusqlite::ffi::SQLITE_CONSTRAINT,
+            "CHECK constraint failed: operation_kind",
+        ));
+        assert_eq!(err.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+        assert!(err.message().contains("operation_kind"));
+    }
+
+    #[test]
+    fn copy_error_non_constraint_keeps_map_sqlite_mapping() {
+        let busy = classify_copy_error(sqlite_error(
+            rusqlite::ffi::SQLITE_BUSY,
+            "database is locked",
+        ));
+        assert_eq!(busy.code(), "HISTORY_SQLITE_BUSY");
+        let io = classify_copy_error(sqlite_error(rusqlite::ffi::SQLITE_IOERR, "disk I/O error"));
+        assert_eq!(io.code(), "HISTORY_IO");
+    }
 }

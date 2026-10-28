@@ -3082,6 +3082,11 @@ fn rebuild_copy_of_canonical_tables_is_all_or_nothing() {
     let error = HistoryProjector::new(&session.db)
         .rebuild(&session.log)
         .unwrap_err();
+    assert_eq!(
+        error.code(),
+        "HISTORY_CANONICAL_DB_CORRUPT",
+        "corrupt canonical row must stop the rebuild with the corruption code"
+    );
     let dest = rusqlite::Connection::open(dir.path().join("history.db.rebuild")).unwrap();
     for table in ["artifact_blobs", "artifacts", "operation_records"] {
         let count: i64 = dest
