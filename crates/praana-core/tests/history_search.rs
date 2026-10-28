@@ -3019,6 +3019,123 @@ fn rebuild_with_corrupt_orphan_blob_stops_and_leaves_original_db() {
     assert_eq!(page.results.len(), 1);
 }
 
+// §9.4 canonical-table copy atomicity and error-code pins
+
+fn insert_canonical_rows(writer: &rusqlite::Connection) {
+    let content = b"hello rebuild world";
+    let sha = format!("{:x}", Sha256::digest(content));
+    let zeros = "0".repeat(64);
+    writer
+        .execute(
+            "INSERT INTO artifact_blobs(blob_id, sha256, canonical_result, byte_count, line_count, estimated_tokens, token_estimator_schema_version, token_estimator_id, token_input_sha256, result_encoding, redaction_version, redaction_json, created_at_ms)\n             VALUES (?1, ?2, ?3, ?4, NULL, 1, 1, 'test-estimator', ?5, 'rfc8785-json', 'v1', '{}', 1700000000000)",
+            rusqlite::params![ulid("BC"), sha, content.as_slice(), content.len() as i64, zeros],
+        )
+        .unwrap();
+    writer
+        .execute(
+            "INSERT INTO artifacts(artifact_id, blob_id, producing_event_id, producing_sequence, turn_id, attempt_id, step_id, batch_id, execution_id, execution_started, started_event_id, tool_call_id, call_index, tool_name, result_message_id, result_status, result_media_type, result_sha256, result_byte_count, result_line_count, result_estimated_tokens, result_redacted, normalized_label, normalized_path, content_type, is_error, default_json_pointer, source_line_start, source_line_end, exit_code, text_view_byte_count, stdout_start_byte, stdout_end_byte, stderr_start_byte, stderr_end_byte, preview_schema_version, preview_json, preview_text, preview_estimated_tokens, preview_estimator_id, preview_input_sha256, created_at_ms)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, 'call_001', 0, 'read_file', ?11, 'success', 'application/vnd.praana.tool-result+json;version=1', ?12, ?13, NULL, 1, 0, NULL, NULL, 'text', 0, '', NULL, NULL, NULL, ?13, NULL, NULL, NULL, NULL, 1, '{}', 'hello rebuild world', 1, 'test-estimator', ?14, 1700000000000)",
+            rusqlite::params![
+                ulid("BD"),
+                ulid("BC"),
+                ulid("BE"),
+                7i64,
+                ulid("AY"),
+                ulid("B2"),
+                ulid("B3"),
+                ulid("B7"),
+                ulid("BF"),
+                ulid("BG"),
+                ulid("BH"),
+                sha,
+                content.len() as i64,
+                zeros,
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn rebuild_copy_of_canonical_tables_is_all_or_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        // Recreate `operation_records` in the source without its CHECK
+        // constraints so a row with an invalid `operation_kind` can be
+        // stored. The destination table keeps the constraints, so the third
+        // INSERT of the copy must fail there.
+        writer
+            .execute_batch(
+                "DROP TABLE operation_records;\n                 CREATE TABLE operation_records (\n                   operation_id TEXT PRIMARY KEY NOT NULL,\n                   ui_contract_schema_version INTEGER NOT NULL,\n                   operation_kind TEXT NOT NULL,\n                   request_sha256 TEXT NOT NULL,\n                   status TEXT NOT NULL,\n                   session_id TEXT,\n                   planned_effects_json TEXT NOT NULL,\n                   result_json TEXT,\n                   result_sha256 TEXT,\n                   first_canonical_sequence INTEGER,\n                   terminal_canonical_sequence INTEGER,\n                   created_at_ms INTEGER NOT NULL,\n                   finished_at_ms INTEGER\n                 ) STRICT, WITHOUT ROWID;",
+            )
+            .unwrap();
+        let zeros = "0".repeat(64);
+        writer
+            .execute(
+                "INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)\n                 VALUES (?1, 1, 'bogus', ?2, 'succeeded', ?3, '{}', '{}', ?4, NULL, NULL, 1700000000000, 1700000000001)",
+                rusqlite::params![ulid("FC"), zeros.clone(), SESSION_ID, zeros],
+            )
+            .unwrap();
+    }
+
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    let dest = rusqlite::Connection::open(dir.path().join("history.db.rebuild")).unwrap();
+    for table in ["artifact_blobs", "artifacts", "operation_records"] {
+        let count: i64 = dest
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "{table} must stay empty when the canonical copy fails ({error})"
+        );
+    }
+}
+
+#[test]
+fn rebuild_dangling_artifact_reference_returns_canonical_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        // The dangling reference must be storable, so disable the per-connection
+        // foreign-key enforcement for this one mutation.
+        writer.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        writer
+            .execute("UPDATE artifacts SET blob_id = ?1", [ulid("FD")])
+            .unwrap();
+    }
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+}
+
+#[test]
+fn rebuild_blob_with_bad_sha256_returns_canonical_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        writer
+            .execute(
+                "UPDATE artifact_blobs SET sha256 = ?1",
+                [format!("{:x}", Sha256::digest(b"not the stored body"))],
+            )
+            .unwrap();
+    }
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+}
+
 // §11.5 manifest
 
 #[test]
