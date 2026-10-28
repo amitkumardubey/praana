@@ -57,6 +57,7 @@ use praana_core::tools::{
     BatchOrigin, DurableBatchOutcome, DurableSession, ProviderToolCall, ToolBatchRequest,
     ToolCallOrigin, ToolName, ToolRuntime,
 };
+use praana_core::ui_contract::CoreCommand;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -2766,6 +2767,378 @@ fn rebuild_corrupt_fts_to_byte_equivalent_results() {
     .unwrap();
     assert_eq!(before.results.len(), after.results.len());
     assert_eq!(before_fts.results.len(), after_fts.results.len());
+}
+
+fn dump_operation_records(db_path: &Path) -> Vec<(String, Vec<Option<String>>)> {
+    let conn = rusqlite::Connection::open(db_path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT operation_id, ui_contract_schema_version, operation_kind,\n                    request_sha256, status, session_id, planned_effects_json,\n                    result_json, result_sha256, first_canonical_sequence,\n                    terminal_canonical_sequence, created_at_ms, finished_at_ms\n             FROM operation_records ORDER BY operation_id",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |row| {
+            let operation_id: String = row.get(0)?;
+            let mut columns = Vec::new();
+            for index in 1..13 {
+                match row.get::<_, rusqlite::types::Value>(index)? {
+                    rusqlite::types::Value::Null => columns.push(None),
+                    rusqlite::types::Value::Integer(value) => columns.push(Some(value.to_string())),
+                    rusqlite::types::Value::Real(value) => columns.push(Some(value.to_string())),
+                    rusqlite::types::Value::Text(value) => columns.push(Some(value)),
+                    rusqlite::types::Value::Blob(value) => {
+                        columns.push(Some(String::from_utf8_lossy(&value).into_owned()))
+                    }
+                }
+            }
+            Ok((operation_id, columns))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    rows
+}
+
+fn turn_submit_command(operation_id: praana_core::ui_contract::ids::OperationId) -> CoreCommand {
+    let raw = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ui_contract_v1/commands/turn_submit.json"),
+    )
+    .unwrap();
+    let mut value: Value = serde_json::from_str(&raw).unwrap();
+    value["data"]["operation_id"] = json!(operation_id.to_string());
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn rebuild_preserves_operation_records_with_idempotent_replay() {
+    use praana_core::history::operation_ledger::{
+        open_session_ledger, reserve_operation_sync, HistoryService, NullRecoveryProbe,
+    };
+    use praana_core::ui_contract::operation::{
+        OperationReservation, OperationStatus, StoredTerminalResult,
+    };
+    use praana_core::ui_contract::result::CoreCommandSuccess;
+    use praana_core::ui_contract::TurnSubmittedDto;
+
+    const FIXED_NOW_MS: i64 = 1_700_000_000_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["hello world"], &["the answer"]);
+    let session_id = session_id();
+    let history = HistoryService {
+        session_ledger: None,
+        host_ledger: None,
+        session_id: Some(session_id),
+        probe: Arc::new(NullRecoveryProbe),
+        now_ms: Arc::new(|| FIXED_NOW_MS),
+    };
+    let turn_id = TurnId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAY").unwrap();
+    let event_id = EventId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FB2").unwrap();
+    let success = CoreCommandSuccess::TurnSubmitted(TurnSubmittedDto {
+        session_id,
+        turn_id,
+        user_message_event_id: event_id,
+        canonical_sequence: 43,
+    });
+
+    // Two operation rows through the real ledger API on the same history.db:
+    // one succeeded terminal row, one still-reserved row.
+    let succeeded_id = praana_core::ui_contract::ids::OperationId(ulid::Ulid::generate());
+    let reserved_id = praana_core::ui_contract::ids::OperationId(ulid::Ulid::generate());
+    let succeeded_command = turn_submit_command(succeeded_id);
+    let reserved_command = turn_submit_command(reserved_id);
+
+    let ledger = open_session_ledger(&dir.path().join("history.db"), session_id).unwrap();
+    match reserve_operation_sync(&ledger, &succeeded_command, &history).unwrap() {
+        OperationReservation::Reserved(_) => {}
+        other => panic!("expected fresh reservation, got {other:?}"),
+    }
+    ledger
+        .complete_terminal(
+            &succeeded_id,
+            &StoredTerminalResult::Success(success.clone()),
+            Some(43),
+            Some(44),
+            FIXED_NOW_MS,
+        )
+        .unwrap();
+    assert!(matches!(
+        ledger.lookup(&succeeded_id).unwrap().unwrap().dto.status,
+        OperationStatus::Succeeded
+    ));
+    match reserve_operation_sync(&ledger, &reserved_command, &history).unwrap() {
+        OperationReservation::Reserved(_) => {}
+        other => panic!("expected reserved reservation, got {other:?}"),
+    }
+    assert!(matches!(
+        ledger.lookup(&reserved_id).unwrap().unwrap().dto.status,
+        OperationStatus::Reserved
+    ));
+    drop(ledger);
+
+    let before = dump_operation_records(&dir.path().join("history.db"));
+
+    // Force an Invalid derived checkpoint so the rebuild runs.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut value: Value = serde_json::from_str(&payload).unwrap();
+        value["search_schema_version"] = json!(99);
+        conn.execute(
+            "UPDATE projection_checkpoints SET payload_json = ?1 WHERE projection_name = 'history_derived'",
+            [serde_json::to_string(&value).unwrap()],
+        )
+        .unwrap();
+    }
+
+    HistoryProjector::new(&session.db)
+        .project(&session.log)
+        .unwrap();
+    let aside = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .find(|name| name.starts_with("history.db.bad-"))
+        .expect("the old database is renamed aside");
+    assert!(!dir.path().join("history.db.rebuild").exists(), "{aside}");
+
+    // Every operation row survived the rebuild byte-identical.
+    let after = dump_operation_records(&dir.path().join("history.db"));
+    assert_eq!(before, after);
+
+    // A retried id for the succeeded operation returns the stored result
+    // through the ledger API, never reserving or executing again.
+    let ledger = open_session_ledger(&dir.path().join("history.db"), session_id).unwrap();
+    match reserve_operation_sync(&ledger, &succeeded_command, &history).unwrap() {
+        OperationReservation::ReplayStored(StoredTerminalResult::Success(replayed)) => {
+            assert_eq!(replayed, success);
+        }
+        other => panic!("expected replay of stored success, got {other:?}"),
+    }
+    // The reserved row is still reserved and continuable.
+    match reserve_operation_sync(&ledger, &reserved_command, &history).unwrap() {
+        OperationReservation::Reserved(stored) => {
+            assert_eq!(stored.status, OperationStatus::Reserved);
+        }
+        other => panic!("expected continuable reservation, got {other:?}"),
+    }
+    assert!(ledger
+        .lookup(&reserved_id)
+        .unwrap()
+        .unwrap()
+        .result_json
+        .is_none());
+}
+
+#[test]
+fn rebuild_with_corrupt_orphan_blob_stops_and_leaves_original_db() {
+    use praana_core::history::operation_ledger::{
+        open_session_ledger, reserve_operation_sync, HistoryService, NullRecoveryProbe,
+    };
+    use praana_core::ui_contract::ids::OperationId;
+    use praana_core::ui_contract::operation::OperationStatus;
+
+    const FIXED_NOW_MS: i64 = 1_700_000_000_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let session_id = session_id();
+    let history = HistoryService {
+        session_ledger: None,
+        host_ledger: None,
+        session_id: Some(session_id),
+        probe: Arc::new(NullRecoveryProbe),
+        now_ms: Arc::new(|| FIXED_NOW_MS),
+    };
+    let operation_id = OperationId(ulid::Ulid::generate());
+    let command = turn_submit_command(operation_id);
+    let ledger = open_session_ledger(&dir.path().join("history.db"), session_id).unwrap();
+    reserve_operation_sync(&ledger, &command, &history).unwrap();
+    drop(ledger);
+
+    // Orphan blob: an artifact_blobs row with no artifacts row, whose body
+    // fails SHA-256. `verify_blob_hashes` must check every blob, including
+    // orphans.
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        writer
+            .execute(
+                "INSERT INTO artifact_blobs(blob_id, sha256, canonical_result, byte_count, line_count, estimated_tokens, token_estimator_schema_version, token_estimator_id, token_input_sha256, result_encoding, redaction_version, redaction_json, created_at_ms)\n                 VALUES (?1, ?2, ?3, ?4, NULL, 1, 1, 'test-estimator', ?5, 'rfc8785-json', 'v1', '{}', 1700000000000)",
+                rusqlite::params![
+                    ulid("B9"),
+                    "f".repeat(64),
+                    b"corrupt orphan body",
+                    17i64,
+                    "0".repeat(64),
+                ],
+            )
+            .unwrap();
+    }
+
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+
+    // No rename happened: no renamed-aside file, no half-replaced state, and
+    // the original history.db is still the live database.
+    let names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .all(|name| !name.starts_with("history.db.bad-")),
+        "unexpected aside file: {names:?}"
+    );
+    assert!(dir.path().join("history.db").is_file());
+
+    // The original database still serves its operation rows and search.
+    let ledger = open_session_ledger(&dir.path().join("history.db"), session_id).unwrap();
+    let stored = ledger.lookup(&operation_id).unwrap().unwrap();
+    assert_eq!(stored.dto.status, OperationStatus::Reserved);
+    let cancel = CancellationToken::new();
+    let key = session.hmac_key();
+    let conn = session.search_conn();
+    let page = search_session(
+        &conn,
+        &search_request("alpha", SessionSearchMode::Fts),
+        &key,
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(page.results.len(), 1);
+}
+
+// §9.4 canonical-table copy atomicity and error-code pins
+
+fn insert_canonical_rows(writer: &rusqlite::Connection) {
+    let content = b"hello rebuild world";
+    let sha = format!("{:x}", Sha256::digest(content));
+    let zeros = "0".repeat(64);
+    writer
+        .execute(
+            "INSERT INTO artifact_blobs(blob_id, sha256, canonical_result, byte_count, line_count, estimated_tokens, token_estimator_schema_version, token_estimator_id, token_input_sha256, result_encoding, redaction_version, redaction_json, created_at_ms)\n             VALUES (?1, ?2, ?3, ?4, NULL, 1, 1, 'test-estimator', ?5, 'rfc8785-json', 'v1', '{}', 1700000000000)",
+            rusqlite::params![ulid("BC"), sha, content.as_slice(), content.len() as i64, zeros],
+        )
+        .unwrap();
+    writer
+        .execute(
+            "INSERT INTO artifacts(artifact_id, blob_id, producing_event_id, producing_sequence, turn_id, attempt_id, step_id, batch_id, execution_id, execution_started, started_event_id, tool_call_id, call_index, tool_name, result_message_id, result_status, result_media_type, result_sha256, result_byte_count, result_line_count, result_estimated_tokens, result_redacted, normalized_label, normalized_path, content_type, is_error, default_json_pointer, source_line_start, source_line_end, exit_code, text_view_byte_count, stdout_start_byte, stdout_end_byte, stderr_start_byte, stderr_end_byte, preview_schema_version, preview_json, preview_text, preview_estimated_tokens, preview_estimator_id, preview_input_sha256, created_at_ms)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, 'call_001', 0, 'read_file', ?11, 'success', 'application/vnd.praana.tool-result+json;version=1', ?12, ?13, NULL, 1, 0, NULL, NULL, 'text', 0, '', NULL, NULL, NULL, ?13, NULL, NULL, NULL, NULL, 1, '{}', 'hello rebuild world', 1, 'test-estimator', ?14, 1700000000000)",
+            rusqlite::params![
+                ulid("BD"),
+                ulid("BC"),
+                ulid("BE"),
+                7i64,
+                ulid("AY"),
+                ulid("B2"),
+                ulid("B3"),
+                ulid("B7"),
+                ulid("BF"),
+                ulid("BG"),
+                ulid("BH"),
+                sha,
+                content.len() as i64,
+                zeros,
+            ],
+        )
+        .unwrap();
+}
+
+#[test]
+fn rebuild_copy_of_canonical_tables_is_all_or_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        // Recreate `operation_records` in the source without its CHECK
+        // constraints so a row with an invalid `operation_kind` can be
+        // stored. The destination table keeps the constraints, so the third
+        // INSERT of the copy must fail there.
+        writer
+            .execute_batch(
+                "DROP TABLE operation_records;\n                 CREATE TABLE operation_records (\n                   operation_id TEXT PRIMARY KEY NOT NULL,\n                   ui_contract_schema_version INTEGER NOT NULL,\n                   operation_kind TEXT NOT NULL,\n                   request_sha256 TEXT NOT NULL,\n                   status TEXT NOT NULL,\n                   session_id TEXT,\n                   planned_effects_json TEXT NOT NULL,\n                   result_json TEXT,\n                   result_sha256 TEXT,\n                   first_canonical_sequence INTEGER,\n                   terminal_canonical_sequence INTEGER,\n                   created_at_ms INTEGER NOT NULL,\n                   finished_at_ms INTEGER\n                 ) STRICT, WITHOUT ROWID;",
+            )
+            .unwrap();
+        let zeros = "0".repeat(64);
+        writer
+            .execute(
+                "INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)\n                 VALUES (?1, 1, 'bogus', ?2, 'succeeded', ?3, '{}', '{}', ?4, NULL, NULL, 1700000000000, 1700000000001)",
+                rusqlite::params![ulid("FC"), zeros.clone(), SESSION_ID, zeros],
+            )
+            .unwrap();
+    }
+
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        "HISTORY_CANONICAL_DB_CORRUPT",
+        "corrupt canonical row must stop the rebuild with the corruption code"
+    );
+    let dest = rusqlite::Connection::open(dir.path().join("history.db.rebuild")).unwrap();
+    for table in ["artifact_blobs", "artifacts", "operation_records"] {
+        let count: i64 = dest
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "{table} must stay empty when the canonical copy fails ({error})"
+        );
+    }
+}
+
+#[test]
+fn rebuild_dangling_artifact_reference_returns_canonical_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        // The dangling reference must be storable, so disable the per-connection
+        // foreign-key enforcement for this one mutation.
+        writer.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        writer
+            .execute("UPDATE artifacts SET blob_id = ?1", [ulid("FD")])
+            .unwrap();
+    }
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+}
+
+#[test]
+fn rebuild_blob_with_bad_sha256_returns_canonical_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = TestSession::new(dir.path());
+    {
+        let writer = rusqlite::Connection::open(dir.path().join("history.db")).unwrap();
+        insert_canonical_rows(&writer);
+        writer
+            .execute(
+                "UPDATE artifact_blobs SET sha256 = ?1",
+                [format!("{:x}", Sha256::digest(b"not the stored body"))],
+            )
+            .unwrap();
+    }
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
 }
 
 // §11.5 manifest

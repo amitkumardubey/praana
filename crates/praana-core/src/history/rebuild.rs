@@ -3,12 +3,15 @@
 //! A checkpoint mismatch, unclean shutdown, or explicit rebuild performs full
 //! integrity checks and, when only derived tables fail, rebuilds them in a
 //! fresh `history.db.rebuild` file: copy and hash-verify the canonical
-//! artifact tables in one read snapshot, replay the valid event prefix into
-//! all derived tables, run full integrity checks, fsync, then atomically
-//! rename the old database aside and the rebuilt database into place. A
-//! corrupt canonical table or a body that fails SHA-256 stops the rebuild
-//! with `HISTORY_CANONICAL_DB_CORRUPT`; a body is never rebuilt from an
-//! excerpt or summary.
+//! artifact tables and the canonical operation-record ledger in one read
+//! snapshot of the attached source, replay the valid event prefix into all
+//! derived tables, run full integrity checks, fsync, then atomically rename
+//! the old database aside and the rebuilt database into place. Operation
+//! records are preserved unchanged (History §2.1): they are canonical and
+//! cannot be rebuilt from the event log. A corrupt canonical table or a body
+//! that fails SHA-256 stops the rebuild with
+//! `HISTORY_CANONICAL_DB_CORRUPT`; a body is never rebuilt from an excerpt
+//! or summary.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -33,6 +36,11 @@ fn unix_ms_now() -> Result<i64, ArtifactError> {
 /// History §9.4 steps 1–6. On success the caller's database handle is
 /// re-opened on the replaced file; every `HistoryDatabase` handle opened
 /// earlier still reads the renamed-aside file and must be dropped.
+///
+/// Precondition: no other connection may commit to `history.db` while this
+/// runs. The rebuild holds the session lock but cannot fence other handles;
+/// a handle opened before the rebuild keeps pointing at the renamed-aside
+/// file and must be dropped and re-opened afterwards.
 pub(crate) fn rebuild_derived_tables(
     db: &HistoryDatabase,
     log: &EventLogStore,
@@ -48,20 +56,19 @@ pub(crate) fn rebuild_derived_tables(
     // Step 1: fresh file with private permissions and the exact schema.
     let rebuild_db = HistoryDatabase::open(&rebuild_path)?;
 
-    // Step 2: copy and hash-verify the canonical artifact tables in one
-    // read snapshot of the source database.
+    // Step 2: copy and hash-verify the canonical artifact tables and the
+    // canonical operation-record ledger in one read snapshot of the source
+    // database. Operation records cannot be rebuilt from the event log and
+    // must be preserved unchanged (History §2.1). The guard only keeps other
+    // in-process users of this HistoryDatabase handle out while the copy
+    // runs; it does not fence other connections and is released before the
+    // derived replay. The snapshot itself runs on the destination
+    // connection, which ATTACHes the source by file path and reads the
+    // tables through one transaction below.
     {
         let guard = db.lock();
         let src: &Connection = &guard;
-        src.execute_batch("BEGIN").map_err(map_sqlite)?;
-        let outcome = copy_canonical_tables(src, &rebuild_db);
-        match outcome {
-            Ok(()) => src.execute_batch("COMMIT").map_err(map_sqlite)?,
-            Err(err) => {
-                let _ = src.execute_batch("ROLLBACK");
-                return Err(err);
-            }
-        }
+        copy_canonical_tables(src, &rebuild_db)?;
     }
 
     // Step 3: replay the valid event prefix into all derived tables.
@@ -188,8 +195,6 @@ pub(crate) fn complete_interrupted_rename(db_path: &Path) -> Result<bool, Artifa
 }
 
 fn copy_canonical_tables(src: &Connection, dst: &HistoryDatabase) -> Result<(), ArtifactError> {
-    verify_blob_hashes(src)?;
-    verify_artifact_references(src)?;
     let guard = dst.lock();
     let dst_conn: &Connection = &guard;
     let escaped = src
@@ -202,19 +207,66 @@ fn copy_canonical_tables(src: &Connection, dst: &HistoryDatabase) -> Result<(), 
     dst_conn
         .execute_batch(&format!("ATTACH DATABASE '{escaped}' AS rebuild_src;"))
         .map_err(map_sqlite)?;
-    let outcome = dst_conn
-        .execute_batch(
-            "INSERT INTO artifact_blobs SELECT * FROM rebuild_src.artifact_blobs;
-             INSERT INTO artifacts SELECT * FROM rebuild_src.artifacts;",
-        )
-        .map_err(map_sqlite);
-    let _ = dst_conn.execute_batch("DETACH DATABASE rebuild_src;");
-    outcome
+    // Verification and copy share one transaction on the attached source, so
+    // a failing insert rolls back the whole copy: nothing half-copied ever
+    // survives. A row that violates a destination constraint means the
+    // canonical source is corrupt and must stop the rebuild (History §9.4),
+    // so the INSERT batch is classified separately from other SQLite errors.
+    let outcome = (|| {
+        dst_conn.execute_batch("BEGIN").map_err(map_sqlite)?;
+        verify_blob_hashes(dst_conn, "rebuild_src.")?;
+        verify_artifact_references(dst_conn, "rebuild_src.")?;
+        dst_conn
+            .execute_batch(
+                "INSERT INTO artifact_blobs SELECT * FROM rebuild_src.artifact_blobs;
+                 INSERT INTO artifacts SELECT * FROM rebuild_src.artifacts;
+                 INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)
+                 SELECT operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms FROM rebuild_src.operation_records;",
+            )
+            .map_err(classify_copy_error)?;
+        dst_conn.execute_batch("COMMIT").map_err(map_sqlite)
+    })();
+    if outcome.is_err() {
+        let _ = dst_conn.execute_batch("ROLLBACK");
+    }
+    // DETACH must not fail on the success path: the live source would stay
+    // attached to this connection, which later runs full_integrity_check
+    // (covering every attached database) and wal_checkpoint_truncate.
+    let detach = dst_conn.execute_batch("DETACH DATABASE rebuild_src;");
+    match outcome {
+        Ok(()) => detach.map_err(map_sqlite)?,
+        Err(err) => {
+            let _ = detach;
+            return Err(err);
+        }
+    }
+    Ok(())
 }
 
-fn verify_blob_hashes(src: &Connection) -> Result<(), ArtifactError> {
-    let mut stmt = src
-        .prepare("SELECT sha256, canonical_result FROM artifact_blobs")
+/// Classify the INSERT batch failures of the canonical copy. A constraint
+/// violation on the destination means the canonical source itself violates a
+/// destination CHECK / UNIQUE / STRICT / FOREIGN KEY rule, so the rebuild
+/// must stop with `HISTORY_CANONICAL_DB_CORRUPT` (History §9.4). Every other
+/// SQLite error keeps the `map_sqlite` mapping wholesale.
+fn classify_copy_error(err: rusqlite::Error) -> ArtifactError {
+    match &err {
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            ArtifactError::new(
+                "HISTORY_CANONICAL_DB_CORRUPT",
+                format!("canonical row violates destination constraint: {err}"),
+            )
+        }
+        _ => map_sqlite(err),
+    }
+}
+
+fn verify_blob_hashes(conn: &Connection, qualifier: &str) -> Result<(), ArtifactError> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT sha256, canonical_result FROM {qualifier}artifact_blobs"
+        ))
         .map_err(map_sqlite)?;
     let rows = stmt
         .query_map([], |row| {
@@ -233,12 +285,14 @@ fn verify_blob_hashes(src: &Connection) -> Result<(), ArtifactError> {
     Ok(())
 }
 
-fn verify_artifact_references(src: &Connection) -> Result<(), ArtifactError> {
-    let dangling: i64 = src
+fn verify_artifact_references(conn: &Connection, qualifier: &str) -> Result<(), ArtifactError> {
+    let dangling: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM artifacts a
-             LEFT JOIN artifact_blobs b ON b.blob_id = a.blob_id
-             WHERE b.blob_id IS NULL OR a.result_sha256 != b.sha256",
+            &format!(
+                "SELECT COUNT(*) FROM {qualifier}artifacts a
+                 LEFT JOIN {qualifier}artifact_blobs b ON b.blob_id = a.blob_id
+                 WHERE b.blob_id IS NULL OR a.result_sha256 != b.sha256"
+            ),
             [],
             |row| row.get(0),
         )
@@ -305,4 +359,37 @@ fn full_integrity_check(conn: &Connection) -> Result<(), ArtifactError> {
         )
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sqlite_error(raw_code: i32, message: &str) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(raw_code),
+            Some(message.to_owned()),
+        )
+    }
+
+    #[test]
+    fn copy_error_constraint_violation_is_canonical_corrupt() {
+        let err = classify_copy_error(sqlite_error(
+            rusqlite::ffi::SQLITE_CONSTRAINT,
+            "CHECK constraint failed: operation_kind",
+        ));
+        assert_eq!(err.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+        assert!(err.message().contains("operation_kind"));
+    }
+
+    #[test]
+    fn copy_error_non_constraint_keeps_map_sqlite_mapping() {
+        let busy = classify_copy_error(sqlite_error(
+            rusqlite::ffi::SQLITE_BUSY,
+            "database is locked",
+        ));
+        assert_eq!(busy.code(), "HISTORY_SQLITE_BUSY");
+        let io = classify_copy_error(sqlite_error(rusqlite::ffi::SQLITE_IOERR, "disk I/O error"));
+        assert_eq!(io.code(), "HISTORY_IO");
+    }
 }
