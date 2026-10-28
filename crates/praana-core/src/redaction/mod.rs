@@ -1,6 +1,6 @@
 //! Reusable report-only secret detection (P1D).
 //!
-//! Ownership: the Redaction specification (`docs/RUST_V2_REDACTION_SPEC.md`)
+//! Ownership: the Redaction specification (`RUST_V2_REDACTION_SPEC.md`)
 //! owns the detection semantics; System Context section 8.1 assigns the
 //! complete-text detector implementation to packet P1D so project-instruction
 //! loading can block on high-confidence secrets before P3A exists.

@@ -1,6 +1,6 @@
 /**
  * Idle launch canvas — ASCIIFont wordmark + version + coral breath + skills.
- * Spec: design-proto/LAUNCH-LOCK.md
+ * Spec: launch-screen design lock (internal)
  */
 import { createSignal, onCleanup, type Accessor } from "solid-js";
 import { useRenderer } from "@opentui/solid";

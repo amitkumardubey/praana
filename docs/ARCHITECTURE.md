@@ -336,7 +336,7 @@ Shell spawn uses `node:child_process` with `detached` (new process group on POSI
 - `git_branches(base?, include_remote?, limit?)` — branch list with last commit + ahead/behind vs base (read-only; allowed in plan mode)
 - `git_log(branch?, path?, max_count?, since?)` — recent history with structured commits (read-only; allowed in plan mode)
 
-Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#586`) are the harness's git surface under epic #533; see `docs/superpowers/specs/2026-08-10-deterministic-tools-harness-design.md`. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
+Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#586`) are the harness's git surface under epic #533; design notes are kept internally. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
 
 ### Cognitive Memory Tools (`src/tools/knowledge.ts`)
 - `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note

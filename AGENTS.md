@@ -574,6 +574,7 @@ Recall enforces AND-scoping: an entry is returned only if it carries *all* scope
 ## Git Conventions
 
 - **Commits:** Conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:` (release-please uses these for `CHANGELOG.md`)
+- **Specs, plans and decisions:** This repository is public. Design specs, implementation plans, owner decisions and amendment logs are kept outside it (a private repository) and must not be added here. Issues and PRs describe what changed and why in technical terms and cite spec sections by name only. Code comments may cite a spec by file name (for example `RUST_V2_CONFIG_SPEC.md §5.1`) but the files are not in this tree; set `PRAANA_SPEC_DIR` to the directory that holds them to run the one test that cross-checks a spec (`defaults_match_normative_toml`).
 - **Changelog:** Do not edit `CHANGELOG.md` by hand for releases. Release-please opens a version PR from commit history; merge that PR to cut a release.
 - **Tags:** Semver — `v0.4.0` (release-please creates tags)
 - **Branch:** `main`

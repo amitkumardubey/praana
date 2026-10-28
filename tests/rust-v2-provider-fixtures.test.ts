@@ -5,7 +5,7 @@
 // TypeScript OpenAI/OpenRouter drivers put on the wire, using a
 // mocked globalThis.fetch. Never contacts a real provider.
 // The committed fixtures are legacy TypeScript observations only;
-// normative v2 behavior is owned by docs/RUST_V2_OPENAI_SPEC.md.
+// normative v2 behavior is owned by RUST_V2_OPENAI_SPEC.md.
 // ============================================================
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";

@@ -7,7 +7,6 @@ on:
       - 'crates/praana-cli/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'docs/RUST_V2_*SPEC.md'
       - '.github/workflows/rust-v2-crash-matrix.yml'
   workflow_dispatch:
 

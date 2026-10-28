@@ -5,7 +5,7 @@
 // write-path, then lsp → verify → enrich → redact → circuit → release) with
 // injected fakes. No workspace mutation, subprocess, prompt, or network.
 // The committed fixtures are non-normative TypeScript observations; future
-// behavior is owned by docs/RUST_V2_TOOL_RUNTIME_SPEC.md.
+// behavior is owned by RUST_V2_TOOL_RUNTIME_SPEC.md.
 // ============================================================
 
 import { afterAll, describe, expect, it, mock } from "bun:test";

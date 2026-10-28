@@ -1,6 +1,6 @@
 //! Pure matching and selection for StateGraph auto-hydration.
 //!
-//! Normative owner: `docs/RUST_V2_STATE_GRAPH_SPEC.md` §10.1 and §10.2.
+//! Normative owner: `RUST_V2_STATE_GRAPH_SPEC.md` §10.1 and §10.2.
 
 use crate::protocol::constants::EVENT_SCHEMA_VERSION;
 use crate::protocol::events::{CanonicalEvent, EventEnvelope};

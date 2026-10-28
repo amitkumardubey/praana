@@ -23,7 +23,7 @@ const EMPTY: SpanStyle = {};
  * Semantic TUI styles that defer the main palette to the user's terminal.
  * Only exceptional states use standard colors.
  */
-/** Locked launch-screen palette (design-proto/LAUNCH-LOCK.md). */
+/** Locked launch-screen palette (launch-screen design lock, internal). */
 export const TUI_PALETTE = {
   coral: "#c4887a",
   steelMuted: "#7a8294",
