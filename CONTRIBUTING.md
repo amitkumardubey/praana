@@ -1,8 +1,22 @@
 # Contributing to PRAANA
 
-This repository is archived and no longer accepts issues, pull requests, or other contributions. The code remains available under the MIT license.
+PRAANA is open source under the [MIT license](./LICENSE). You can use it, read it, fork it and build on it freely.
 
-## Quick start
+**We don't accept external pull requests.** The project is developed by its maintainers, which keeps the design consistent and lets us ship fixes quickly. That doesn't mean we don't want to hear from you. Feedback from people who use PRAANA shapes what we build next.
+
+## How you can help
+
+- **Report a bug.** Use the [bug report form](https://github.com/amitkumardubey/praana/issues/new?template=bug_report.yml). The most useful reports include your PRAANA version (`praana --version`), your operating system, what you expected, and the steps to reproduce it.
+- **Suggest a feature.** Share the problem you are trying to solve in [Discussions → Ideas](https://github.com/amitkumardubey/praana/discussions/categories/ideas). A clear description of the problem helps us more than a proposed implementation.
+- **Ask a question.** Use [Discussions → Q&A](https://github.com/amitkumardubey/praana/discussions/categories/q-a) for usage help and configuration questions.
+- **Report a security problem privately.** Please don't open a public issue. Use GitHub's private reporting: open the repository's **Security** tab and choose **Report a vulnerability**.
+- **Spread the word.** A star, a post or a recommendation to a colleague helps more people find PRAANA.
+
+We read every issue and discussion. We may close requests that don't fit the project's direction, and we'll say why when we do.
+
+## Build it yourself
+
+You're welcome to fork the project, experiment, and run your own changes locally.
 
 ```bash
 git clone https://github.com/amitkumardubey/praana.git
@@ -12,44 +26,10 @@ bun typecheck
 bun test
 ```
 
-Requires **Bun ≥1.4**. Install at [bun.sh/install](https://bun.sh/install).
+PRAANA requires [Bun](https://bun.sh/install) 1.4 or newer. `bun dev` runs it without a build step.
 
-## Development workflow
-
-1. **Find or open an issue** — check [open issues](https://github.com/amitkumardubey/praana/issues). Issues labeled [`good first issue`](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) are scoped for first-time contributors.
-2. **Branch from `main`** — use conventional branch names: `feat/issue-123-short-desc`, `fix/issue-456-bug-name`.
-3. **Write or update tests** — add coverage in `tests/` for new logic. Use in-memory SQLite (`:memory:`) for memory-layer tests.
-4. **Run the suite** — `bun typecheck && bun test` must pass before you open a PR. `bun run test:parallel` is opt-in (same suite, files across CPU cores).
-5. **Open a pull request** — link the issue (`Closes #123`), describe what changed and why.
-
-## Code conventions
-
-- **TypeScript strict mode**, ES2022, NodeNext imports with `.js` extensions (`import { foo } from "./bar.js"`).
-- **Files:** `kebab-case.ts`. **Functions/vars:** `camelCase`. **Types:** `PascalCase`.
-- **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`.
-- Match the style of surrounding code. No Prettier/ESLint config — keep diffs focused.
-- Don't edit `CHANGELOG.md` by hand; release-please generates it from commit messages.
-
-See [AGENTS.md](./AGENTS.md) for architecture, memory systems, and common gotchas.
-
-## Where to contribute
-
-| Area | Entry points |
-|------|----------------|
-| TUI | `src/ui/tui/` |
-| Memory | `src/memory/`, `tests/memory*.test.ts` |
-| Context engine | `src/context-engine/`, `tests/context-engine*.test.ts` |
-| Tools | `src/tools/` |
-| Docs | `README.md`, `docs/`, `website/` (Astro GitHub Pages), `ROADMAP.md` |
-
-## Reporting bugs
-
-Use the [bug report template](https://github.com/amitkumardubey/praana/issues/new?template=bug_report.yml). Include PRAANA version (`praana --version`), Bun version (`bun --version`), OS, and steps to reproduce.
-
-## Feature ideas
-
-Open a [feature request](https://github.com/amitkumardubey/praana/issues/new?template=feature_request.yml) or start a thread in [Discussions → Ideas](https://github.com/amitkumardubey/praana/discussions/categories/ideas).
+[AGENTS.md](./AGENTS.md) describes the architecture, conventions and common pitfalls if you want to understand how the code is organised.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [MIT License](./LICENSE).
+PRAANA is released under the [MIT license](./LICENSE).
