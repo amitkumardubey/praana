@@ -1,7 +1,7 @@
 /**
  * Native capability boundary types (issues #585, #418 Phase 1).
- * See docs/superpowers/specs/2026-08-11-rust-native-runtime-design.md
- * and docs/superpowers/specs/2026-08-12-tree-sitter-code-intel-design.md
+ * See the internal design docs 2026-08-11-rust-native-runtime-design
+ * and 2026-08-12-tree-sitter-code-intel-design
  */
 
 /** Major-compatible API version expected by this PRAANA tree. */

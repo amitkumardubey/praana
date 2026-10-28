@@ -1,6 +1,6 @@
 //! Token accounting and estimation.
 //!
-//! Normative owner: `docs/RUST_V2_TOKEN_ACCOUNTING_SPEC.md`.
+//! Normative owner: `RUST_V2_TOKEN_ACCOUNTING_SPEC.md`.
 
 pub mod calibration;
 pub mod calibration_store;

@@ -1,6 +1,6 @@
 //! Versioned Unicode 15.1 utilities.
 //!
-//! Normative owner: `docs/RUST_V2_TOKEN_ACCOUNTING_SPEC.md`.
+//! Normative owner: `RUST_V2_TOKEN_ACCOUNTING_SPEC.md`.
 
 pub mod generated_v15_1;
 

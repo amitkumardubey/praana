@@ -37,7 +37,7 @@ function normalizeVersionLabel(version?: string): string {
   return `v${version.replace(/^v/, "")}`;
 }
 
-/** Version + skills lines for the idle launch canvas (LAUNCH-LOCK). */
+/** Version + skills lines for the idle launch canvas (launch-screen design lock). */
 export function formatLaunchCanvasMeta(input: {
   session: Pick<Session, "skills">;
   version?: string;

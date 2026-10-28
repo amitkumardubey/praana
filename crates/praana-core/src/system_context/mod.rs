@@ -1,6 +1,6 @@
 //! Provider-neutral system and project context (packet P1D).
 //!
-//! Ownership: `docs/RUST_V2_SYSTEM_CONTEXT_SPEC.md` exclusively owns stable
+//! Ownership: `RUST_V2_SYSTEM_CONTEXT_SPEC.md` exclusively owns stable
 //! policy bytes, project-context discovery/normalization/bounds, rendering,
 //! slot assembly, and hashes. This crate also owns the reusable report-only
 //! secret detector consumed here (see `crate::redaction`).

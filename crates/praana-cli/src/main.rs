@@ -1,7 +1,7 @@
 //! PRAANA Rust v2 headless CLI: `praana run` / `praana resume`.
 //!
 //! Grammar, stdout/stderr split, exit statuses, and resume-ID placement follow
-//! the P3D process contract in `docs/RUST_V2_IMPLEMENTATION_HANDOFF.md`.
+//! the P3D process contract in `RUST_V2_IMPLEMENTATION_HANDOFF.md`.
 
 use std::collections::HashMap;
 use std::io::Write;

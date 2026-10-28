@@ -1,6 +1,6 @@
 //! Inert tool catalog contract required before the P2B provider adapter.
 //!
-//! Normative owner: `docs/RUST_V2_TOOL_RUNTIME_SPEC.md` §6.1.
+//! Normative owner: `RUST_V2_TOOL_RUNTIME_SPEC.md` §6.1.
 //! This module does not execute tools.
 
 use bitflags::bitflags;
