@@ -61,6 +61,12 @@ P0
                                                                              P9
 ```
 
+Amended 2026-10-28 (Amit): P6 is deferred. The product has almost no users, so the
+Rust cutover may run without cross-session memory for a while. The order is
+W403 -> W402 -> P7 -> P6 -> P8 -> P9. P6 stays before P8 because the memory
+digest accounting (decision D1 under P6) needs each provider adapter to report
+the digest offset, and P8 adds providers.
+
 ## 4. Packet Index
 
 ### P0: Workspace and Oracle Fixtures
@@ -1093,6 +1099,34 @@ implementer. Issue `amitkumardubey/praana#633`.
   deterministic recall/digest/extraction/maintenance and capability tools.
 - Focused tests: `memory_contract_v1`, `memory_builtin_sqlite_v1`,
   `memory_extraction_v1`.
+- Scheduling (2026-10-28, Amit): deferred. Runs after P7 and before P8; not
+  started. Proposed slices, in order: P6-1 DTOs/traits/schemas; P6-2 real
+  bounded completion host, identity/scope derivation and privacy adapter; P6-3
+  manager, lifecycle, `none`/incognito; P6-4 standard tools; P6-5 builtin:sqlite
+  store, recall and digest; P6-6 extraction; P6-7 maintenance; P6-8 activation
+  (Config selection and parser gate, both tool-registry construction sites, CLI
+  `run`/`resume`, feedback, metrics, token-accounting split). P6-3, P6-5 and
+  P6-6 are stateful and need invariants plus a seeded randomized test.
+- Owner decisions already made (2026-10-28), to be written into the specs when
+  P6 resumes:
+  - D1: the memory digest is accounted as `memory_bootstrap`. The provider
+    reports the digest byte offset and the raw digest bytes are that component;
+    headings and separators stay in `system`. A mismatch is an internal
+    admission error like the state and handoff tails; no offset leaves the
+    digest in `system`. Amend Token Accounting section 7.3.
+  - D2: "used" for `MemoryFeedback` means delivered by a `recall` tool call the
+    model made in a turn that committed. Digest entries are surfaced but never
+    "used" by core; the plugin may infer use at session end.
+  - D3: when core trims an oversized plugin digest it keeps the first N bullet
+    lines and the first N ids of the plugin's ordered `entry_ids`; if the bullet
+    count differs from `entry_ids.len()` it drops the digest and reports no ids.
+    The label, on its own line after the retained lines, is
+    `[Some cross-session memory entries were omitted because the digest exceeded its size limit.]`.
+    Amend memory spec section 7.2 (label bytes, and that `entry_ids` are ordered
+    like the bullets).
+- Known spec fixes needed first: memory spec section 4 lists a different file
+  layout from section 16.1 (use 16.1); Config path validation for the memory DB
+  is lexical only and must reject symlink escape before SQLite opens.
 
 ### W403: Windows Private History ACLs (`amitkumardubey/praana#622`)
 
@@ -1116,7 +1150,8 @@ implementer. Issue `amitkumardubey/praana#633`.
 ### P7: Temporary OpenTUI IPC
 
 - Owner: `RUST_V2_IPC_SPEC.md`; UI Contract conversion fixtures.
-- Depends: P1C, headless Phases 1-6, W403, and W402.
+- Depends: P1C, headless Phases 1-5, W403, and W402 (Phase 6, memory, is
+  deferred until after P7; amended 2026-10-28).
 - Output: framing/handshake/conversion/ack/backpressure/restart and TypeScript
   presentation adapter. No semantic DTO duplication.
 - Focused tests: `ipc_ui_contract_v1`, `ipc_framing`, `ipc_backpressure`,
@@ -1127,7 +1162,7 @@ implementer. Issue `amitkumardubey/praana#633`.
 - Owner: a new approved provider spec and Built-in Tool Catalog schema 2 for
   each provider/tool family before coding. Plan Phase 8 is not itself an
   implementation packet.
-- Depends: P7.
+- Depends: P7 and P6 (P6 is scheduled between them; amended 2026-10-28).
 - Stop condition: do not implement reserved Phase 8 names from prose or the
   TypeScript oracle alone.
 
