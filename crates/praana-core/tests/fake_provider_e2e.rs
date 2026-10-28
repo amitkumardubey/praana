@@ -2910,6 +2910,7 @@ async fn live_history_tool_batches_project_before_read() {
     // `retrieve_only_batch_does_not_run_the_pre_batch_projection`.
 }
 
+#[cfg(unix)]
 fn history_db_inode(session_dir: &std::path::Path) -> u64 {
     use std::os::unix::fs::MetadataExt;
     fs::metadata(session_dir.join("history.db")).unwrap().ino()
@@ -2983,6 +2984,7 @@ fn operation_record_count(session_dir: &std::path::Path) -> i64 {
     .unwrap()
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn invalid_checkpoint_resume_keeps_history_db_and_operation_records() {
     let dir = tempfile::tempdir().unwrap();
