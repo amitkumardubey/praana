@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import * as toml from "toml";
+import { parseToml } from "./toml-parse.js";
 import * as yaml from "js-yaml";
 
 // ---- Types ----
@@ -123,7 +123,7 @@ function tryParseJson(path: string): Record<string, unknown> | null {
 
 function tryParseToml(path: string): Record<string, unknown> | null {
   try {
-    return toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    return parseToml(readFileSync(path, "utf-8"));
   } catch {
     return null;
   }

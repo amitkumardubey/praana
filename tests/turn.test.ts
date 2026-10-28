@@ -8,7 +8,6 @@ import * as toolsActual from "../src/tools/index.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
 import * as nativeLlmActual from "../src/llm/index.js";
-import * as zodToJsonActual from "zod-to-json-schema";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
 const ceReal = { ...contextEngineActual };
@@ -18,7 +17,6 @@ const toolsReal = { ...toolsActual };
 const autoCompactReal = { ...autoCompactActual };
 const uiReal = { ...uiActual };
 const nativeLlmReal = { ...nativeLlmActual };
-const zodReal = { ...zodToJsonActual };
 
 // ── Mock all external dependencies ──────────────────────────────────
 
@@ -27,16 +25,6 @@ const mockStream = mock();
 mock.module("../src/llm/index.js", () => ({
   ...nativeLlmActual,
   streamLlmResponse: mockStream,
-}));
-
-mock.module("zod-to-json-schema", () => ({
-  zodToJsonSchema: mock((_schema, _opts) => ({
-    $schema: "http://json-schema.org/draft-07/schema#",
-    type: "object",
-    properties: { name: { type: "string" } },
-    required: ["name"],
-    definitions: {},
-  })),
 }));
 
 mock.module("../src/compiler.js", () => ({}));
@@ -185,7 +173,6 @@ afterAll(() => {
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
   mock.module("../src/llm/index.js", () => nativeLlmReal);
-  mock.module("zod-to-json-schema", () => zodReal);
   mock.module("../src/compiler.js", () => ({}));
 });
 
