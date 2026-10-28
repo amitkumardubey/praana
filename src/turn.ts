@@ -1554,46 +1554,36 @@ function flushSkillTelemetry(session: Session): void {
 }
 
 export function isZodSchema(schema: unknown): schema is ZodType {
-  return !!schema && typeof schema === "object" && "_def" in (schema as Record<string, unknown>);
-}
-
-const SAFE_INTEGER_MAX = Number.MAX_SAFE_INTEGER;
-const SAFE_INTEGER_MIN = Number.MIN_SAFE_INTEGER;
-
-/**
- * Keep the tool JSON Schema the model sees identical to what zod 3 produced:
- * objects reject unknown properties, and integers carry no implicit safe-integer
- * bounds (zod 4 adds `minimum`/`maximum` for every `.int()`).
- */
-function restoreToolSchemaShape(node: unknown): unknown {
-  if (Array.isArray(node)) return node.map(restoreToolSchemaShape);
-  if (!node || typeof node !== "object") return node;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-    out[key] = restoreToolSchemaShape(value);
-  }
-  if (out.type === "object" && out.properties && out.additionalProperties === undefined) {
-    out.additionalProperties = false;
-  }
-  if (out.type === "integer") {
-    if (out.maximum === SAFE_INTEGER_MAX) delete out.maximum;
-    if (out.minimum === SAFE_INTEGER_MIN) delete out.minimum;
-  }
-  return out;
+  return !!schema && typeof schema === "object" && "_zod" in (schema as Record<string, unknown>);
 }
 
 export function normalizeToolParameters(schema: unknown): Record<string, unknown> {
   if (isZodSchema(schema)) {
+    // Keep the schema the model sees identical to what zod 3 produced: ordinary
+    // objects reject unknown properties, and integers carry no implicit
+    // safe-integer bounds (zod 4 adds `minimum`/`maximum` for every `.int()`).
+    // Applied per schema node through `override`, so only z.object() nodes and
+    // integers are touched (not enum/default payloads, loose objects or records).
     const json = z.toJSONSchema(schema, {
       target: "draft-7",
       io: "input",
       unrepresentable: "any",
+      override: ({ zodSchema, jsonSchema }) => {
+        const def = (zodSchema as { _zod: { def: { type: string; catchall?: unknown } } })._zod.def;
+        if (def.type === "object" && def.catchall === undefined) {
+          jsonSchema.additionalProperties = false;
+        }
+        if (jsonSchema.type === "integer") {
+          if (jsonSchema.maximum === Number.MAX_SAFE_INTEGER) delete jsonSchema.maximum;
+          if (jsonSchema.minimum === Number.MIN_SAFE_INTEGER) delete jsonSchema.minimum;
+        }
+      },
     }) as Record<string, unknown>;
     delete json.$schema;
     delete json.$ref;
     delete json.definitions;
     delete json.$defs;
-    return restoreToolSchemaShape(json) as Record<string, unknown>;
+    return json;
   }
 
   return {

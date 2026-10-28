@@ -1,0 +1,1816 @@
+{
+  "classic:batch_edit": {
+    "additionalProperties": false,
+    "properties": {
+      "edits": {
+        "description": "Array of edits to apply",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "newText": {
+              "description": "Replacement text",
+              "type": "string"
+            },
+            "oldText": {
+              "description": "Exact text to find",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "oldText",
+            "newText"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "edits"
+    ],
+    "type": "object"
+  },
+  "classic:batch_write": {
+    "additionalProperties": false,
+    "properties": {
+      "files": {
+        "description": "Array of files to write",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "File content",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "files"
+    ],
+    "type": "object"
+  },
+  "classic:code_definition": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "max_files": {
+        "description": "Max source files to scan (default 2000)",
+        "maximum": 50000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_hits": {
+        "description": "Max hits to return (default 100)",
+        "maximum": 10000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "root": {
+        "description": "Project root to search (default: cwd)",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "Symbol name to find definitions for",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "symbol"
+    ],
+    "type": "object"
+  },
+  "classic:code_imports": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:code_parse": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:code_references": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "max_files": {
+        "description": "Max source files to scan (default 2000)",
+        "maximum": 50000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_hits": {
+        "description": "Max hits to return (default 100)",
+        "maximum": 10000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "root": {
+        "description": "Project root to search (default: cwd)",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "Symbol name to find references for",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "symbol"
+    ],
+    "type": "object"
+  },
+  "classic:code_symbols": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:edit_file": {
+    "additionalProperties": false,
+    "properties": {
+      "newText": {
+        "description": "Replacement text",
+        "type": "string"
+      },
+      "oldText": {
+        "description": "Exact text to find and replace",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "oldText",
+      "newText"
+    ],
+    "type": "object"
+  },
+  "classic:find_files": {
+    "additionalProperties": false,
+    "properties": {
+      "max_results": {
+        "description": "Maximum files to return (default 50)",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "mode": {
+        "description": "Search mode: fuzzy (default, typo-resistant) or glob (pure glob filter)",
+        "enum": [
+          "fuzzy",
+          "glob"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "Directory to scope search",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Fuzzy file path pattern (e.g. 'comp butt', 'src/main.ts')",
+        "minLength": 1,
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 5000)",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "type": "object"
+  },
+  "classic:forget_memory": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Memory entry ID to retract",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "classic:git_branches": {
+    "additionalProperties": false,
+    "properties": {
+      "base": {
+        "description": "Base branch for ahead/behind (default: upstream, else main, else master)",
+        "type": "string"
+      },
+      "include_remote": {
+        "description": "Include remote-tracking branches (default: false)",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Cap branch count (default: 50)",
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "classic:git_commit": {
+    "additionalProperties": false,
+    "properties": {
+      "all": {
+        "description": "Stage all tracked modifications before committing (git commit -a)",
+        "type": "boolean"
+      },
+      "message": {
+        "description": "Commit message (prefer conventional commits)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "paths": {
+        "description": "Stage only these paths before committing",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "type": "object"
+  },
+  "classic:git_diff": {
+    "additionalProperties": false,
+    "properties": {
+      "context": {
+        "description": "Unified diff context lines (default: 3)",
+        "maximum": 20,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Limit diff to a single path",
+        "type": "string"
+      },
+      "staged": {
+        "description": "When true, show staged (index) diff; otherwise unstaged worktree diff",
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "classic:git_log": {
+    "additionalProperties": false,
+    "properties": {
+      "branch": {
+        "description": "Branch or revision to show (default: HEAD)",
+        "type": "string"
+      },
+      "max_count": {
+        "description": "Max commits to return (default: 20, hard cap 50)",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Limit history to a single path",
+        "type": "string"
+      },
+      "since": {
+        "description": "Show commits since date (e.g. '2 weeks ago' or ISO date)",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "classic:git_status": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "classic:load_skill": {
+    "additionalProperties": false,
+    "properties": {
+      "skill_id": {
+        "description": "Skill name from the catalog",
+        "type": "string"
+      }
+    },
+    "required": [
+      "skill_id"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_apply_code_action": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Opaque id from lsp_code_actions",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_code_actions": {
+    "additionalProperties": false,
+    "properties": {
+      "endCol": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "endLine": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "startCol": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "startLine": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "path",
+      "startLine",
+      "startCol",
+      "endLine",
+      "endCol"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_completions": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_definition": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_diagnostics": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_format": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_hover": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "classic:lsp_references": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "classic:read_and_summarize": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:read_file": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "description": "Maximum lines to read",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Line number to start reading from (1-indexed)",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "classic:recall": {
+    "additionalProperties": false,
+    "properties": {
+      "kinds": {
+        "description": "Filter by kinds (fact, preference, decision, pattern, mistake, constraint)",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "mode": {
+        "description": "Search mode",
+        "enum": [
+          "standard",
+          "causal_chain"
+        ],
+        "type": "string"
+      },
+      "query": {
+        "description": "Search query",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "classic:remember": {
+    "additionalProperties": false,
+    "properties": {
+      "certainty": {
+        "description": "How certain you are",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "content": {
+        "description": "What to remember",
+        "type": "string"
+      },
+      "kind": {
+        "description": "Type of knowledge",
+        "enum": [
+          "preference",
+          "context_fact",
+          "decision",
+          "mistake",
+          "pattern",
+          "fact",
+          "constraint"
+        ],
+        "type": "string"
+      },
+      "scope": {
+        "description": "Scope labels to isolate this memory (e.g. ['context:my-project']). Defaults to automatic scopes.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "content"
+    ],
+    "type": "object"
+  },
+  "classic:run_tests": {
+    "additionalProperties": false,
+    "properties": {
+      "command": {
+        "description": "Explicit test command override (e.g. 'bun test', 'npm test -- -t auth', 'go test ./...', 'cargo test', 'pytest')",
+        "type": "string"
+      },
+      "files": {
+        "description": "Specific test file paths to run (relative to cwd or absolute)",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "runner": {
+        "description": "Runner hint (auto-detected from repo if omitted)",
+        "enum": [
+          "bun",
+          "npm",
+          "pnpm",
+          "yarn",
+          "go",
+          "cargo",
+          "pytest",
+          "custom"
+        ],
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Execution timeout in milliseconds (default 30000)",
+        "minimum": 1000,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "classic:search_code": {
+    "additionalProperties": false,
+    "properties": {
+      "case_insensitive": {
+        "description": "Case-insensitive search",
+        "type": "boolean"
+      },
+      "context": {
+        "description": "Lines of context before and after each match. Default 0.",
+        "maximum": 50,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "file_type": {
+        "description": "File type filter (e.g. 'ts', 'rust', 'py') — mapped to extension glob",
+        "type": "string"
+      },
+      "glob": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "Include glob filter(s), e.g. '*.ts' or ['*.ts', '*.tsx']"
+      },
+      "glob_exclude": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "Exclude glob filter(s)"
+      },
+      "max_results": {
+        "description": "Stop after this many matches are found",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Directory or file to search (default: working directory)",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Regex pattern to search for (regex syntax, native grep)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 30000)",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "type": "object"
+  },
+  "classic:search_session_log": {
+    "additionalProperties": false,
+    "properties": {
+      "kinds": {
+        "description": "Optional event kinds to filter",
+        "items": {
+          "enum": [
+            "user_message",
+            "agent_message",
+            "tool_call",
+            "tool_result",
+            "ui_transcript",
+            "context_action",
+            "system_note"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "limit": {
+        "default": 20,
+        "description": "Max matches to return",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "description": "Search terms (ANDed, case-insensitive). Use | for OR, e.g. 'issue|review'",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "classic:shell": {
+    "additionalProperties": false,
+    "properties": {
+      "command": {
+        "description": "Shell command to execute",
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 30000)",
+        "type": "number"
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "type": "object"
+  },
+  "classic:write_file": {
+    "additionalProperties": false,
+    "properties": {
+      "content": {
+        "description": "Content to write",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ],
+    "type": "object"
+  },
+  "engine:add_constraint": {
+    "additionalProperties": false,
+    "properties": {
+      "text": {
+        "description": "The constraint text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "type": "object"
+  },
+  "engine:add_note": {
+    "additionalProperties": false,
+    "properties": {
+      "text": {
+        "description": "The note text — a finding or fact, not a list of files read",
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
+    "type": "object"
+  },
+  "engine:batch_edit": {
+    "additionalProperties": false,
+    "properties": {
+      "edits": {
+        "description": "Array of edits to apply",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "newText": {
+              "description": "Replacement text",
+              "type": "string"
+            },
+            "oldText": {
+              "description": "Exact text to find",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "oldText",
+            "newText"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "edits"
+    ],
+    "type": "object"
+  },
+  "engine:batch_write": {
+    "additionalProperties": false,
+    "properties": {
+      "files": {
+        "description": "Array of files to write",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "content": {
+              "description": "File content",
+              "type": "string"
+            },
+            "path": {
+              "description": "File path",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "files"
+    ],
+    "type": "object"
+  },
+  "engine:code_definition": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "max_files": {
+        "description": "Max source files to scan (default 2000)",
+        "maximum": 50000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_hits": {
+        "description": "Max hits to return (default 100)",
+        "maximum": 10000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "root": {
+        "description": "Project root to search (default: cwd)",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "Symbol name to find definitions for",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "symbol"
+    ],
+    "type": "object"
+  },
+  "engine:code_imports": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:code_parse": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:code_references": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "max_files": {
+        "description": "Max source files to scan (default 2000)",
+        "maximum": 50000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_hits": {
+        "description": "Max hits to return (default 100)",
+        "maximum": 10000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "root": {
+        "description": "Project root to search (default: cwd)",
+        "type": "string"
+      },
+      "symbol": {
+        "description": "Symbol name to find references for",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "symbol"
+    ],
+    "type": "object"
+  },
+  "engine:code_symbols": {
+    "additionalProperties": false,
+    "properties": {
+      "language": {
+        "description": "Language override: typescript | tsx | javascript | jsx | python | go",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:complete_task": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Task ID to complete",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:create_task": {
+    "additionalProperties": false,
+    "properties": {
+      "description": {
+        "description": "Optional details",
+        "type": "string"
+      },
+      "title": {
+        "description": "Task title",
+        "type": "string"
+      }
+    },
+    "required": [
+      "title"
+    ],
+    "type": "object"
+  },
+  "engine:decide": {
+    "additionalProperties": false,
+    "properties": {
+      "rationale": {
+        "description": "Why this decision was made",
+        "type": "string"
+      },
+      "summary": {
+        "description": "Short summary of the decision",
+        "type": "string"
+      }
+    },
+    "required": [
+      "summary",
+      "rationale"
+    ],
+    "type": "object"
+  },
+  "engine:edit_file": {
+    "additionalProperties": false,
+    "properties": {
+      "newText": {
+        "description": "Replacement text",
+        "type": "string"
+      },
+      "oldText": {
+        "description": "Exact text to find and replace",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "oldText",
+      "newText"
+    ],
+    "type": "object"
+  },
+  "engine:find_files": {
+    "additionalProperties": false,
+    "properties": {
+      "max_results": {
+        "description": "Maximum files to return (default 50)",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "mode": {
+        "description": "Search mode: fuzzy (default, typo-resistant) or glob (pure glob filter)",
+        "enum": [
+          "fuzzy",
+          "glob"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "Directory to scope search",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Fuzzy file path pattern (e.g. 'comp butt', 'src/main.ts')",
+        "minLength": 1,
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 5000)",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "type": "object"
+  },
+  "engine:focus_task": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Object ID to focus",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:forget_memory": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Memory entry ID to retract",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:git_branches": {
+    "additionalProperties": false,
+    "properties": {
+      "base": {
+        "description": "Base branch for ahead/behind (default: upstream, else main, else master)",
+        "type": "string"
+      },
+      "include_remote": {
+        "description": "Include remote-tracking branches (default: false)",
+        "type": "boolean"
+      },
+      "limit": {
+        "description": "Cap branch count (default: 50)",
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "engine:git_commit": {
+    "additionalProperties": false,
+    "properties": {
+      "all": {
+        "description": "Stage all tracked modifications before committing (git commit -a)",
+        "type": "boolean"
+      },
+      "message": {
+        "description": "Commit message (prefer conventional commits)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "paths": {
+        "description": "Stage only these paths before committing",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "type": "object"
+  },
+  "engine:git_diff": {
+    "additionalProperties": false,
+    "properties": {
+      "context": {
+        "description": "Unified diff context lines (default: 3)",
+        "maximum": 20,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Limit diff to a single path",
+        "type": "string"
+      },
+      "staged": {
+        "description": "When true, show staged (index) diff; otherwise unstaged worktree diff",
+        "type": "boolean"
+      }
+    },
+    "type": "object"
+  },
+  "engine:git_log": {
+    "additionalProperties": false,
+    "properties": {
+      "branch": {
+        "description": "Branch or revision to show (default: HEAD)",
+        "type": "string"
+      },
+      "max_count": {
+        "description": "Max commits to return (default: 20, hard cap 50)",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Limit history to a single path",
+        "type": "string"
+      },
+      "since": {
+        "description": "Show commits since date (e.g. '2 weeks ago' or ISO date)",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "engine:git_status": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "engine:hard_unload": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Object ID to demote to hard",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:hydrate": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Object ID to hydrate",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:list_state": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "engine:load_skill": {
+    "additionalProperties": false,
+    "properties": {
+      "skill_id": {
+        "description": "Skill name from the catalog",
+        "type": "string"
+      }
+    },
+    "required": [
+      "skill_id"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_apply_code_action": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Opaque id from lsp_code_actions",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_code_actions": {
+    "additionalProperties": false,
+    "properties": {
+      "endCol": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "endLine": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "startCol": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "startLine": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "path",
+      "startLine",
+      "startCol",
+      "endLine",
+      "endCol"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_completions": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_definition": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_diagnostics": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_format": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_hover": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "engine:lsp_references": {
+    "additionalProperties": false,
+    "properties": {
+      "col": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "line": {
+        "description": "1-based line or column",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to cwd or absolute)",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "line",
+      "col"
+    ],
+    "type": "object"
+  },
+  "engine:read_and_summarize": {
+    "additionalProperties": false,
+    "properties": {
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:read_file": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "description": "Maximum lines to read",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "Line number to start reading from (1-indexed)",
+        "exclusiveMinimum": 0,
+        "type": "integer"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "engine:recall": {
+    "additionalProperties": false,
+    "properties": {
+      "kinds": {
+        "description": "Filter by kinds (fact, preference, decision, pattern, mistake, constraint)",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "mode": {
+        "description": "Search mode",
+        "enum": [
+          "standard",
+          "causal_chain"
+        ],
+        "type": "string"
+      },
+      "query": {
+        "description": "Search query",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "engine:remember": {
+    "additionalProperties": false,
+    "properties": {
+      "certainty": {
+        "description": "How certain you are",
+        "enum": [
+          "high",
+          "medium",
+          "low"
+        ],
+        "type": "string"
+      },
+      "content": {
+        "description": "What to remember",
+        "type": "string"
+      },
+      "kind": {
+        "description": "Type of knowledge",
+        "enum": [
+          "preference",
+          "context_fact",
+          "decision",
+          "mistake",
+          "pattern",
+          "fact",
+          "constraint"
+        ],
+        "type": "string"
+      },
+      "scope": {
+        "description": "Scope labels to isolate this memory (e.g. ['context:my-project']). Defaults to automatic scopes.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "content"
+    ],
+    "type": "object"
+  },
+  "engine:retract_task": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Task/object ID to retract",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:run_tests": {
+    "additionalProperties": false,
+    "properties": {
+      "command": {
+        "description": "Explicit test command override (e.g. 'bun test', 'npm test -- -t auth', 'go test ./...', 'cargo test', 'pytest')",
+        "type": "string"
+      },
+      "files": {
+        "description": "Specific test file paths to run (relative to cwd or absolute)",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "runner": {
+        "description": "Runner hint (auto-detected from repo if omitted)",
+        "enum": [
+          "bun",
+          "npm",
+          "pnpm",
+          "yarn",
+          "go",
+          "cargo",
+          "pytest",
+          "custom"
+        ],
+        "type": "string"
+      },
+      "timeout_ms": {
+        "description": "Execution timeout in milliseconds (default 30000)",
+        "minimum": 1000,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "engine:search_code": {
+    "additionalProperties": false,
+    "properties": {
+      "case_insensitive": {
+        "description": "Case-insensitive search",
+        "type": "boolean"
+      },
+      "context": {
+        "description": "Lines of context before and after each match. Default 0.",
+        "maximum": 50,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "file_type": {
+        "description": "File type filter (e.g. 'ts', 'rust', 'py') — mapped to extension glob",
+        "type": "string"
+      },
+      "glob": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "Include glob filter(s), e.g. '*.ts' or ['*.ts', '*.tsx']"
+      },
+      "glob_exclude": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ],
+        "description": "Exclude glob filter(s)"
+      },
+      "max_results": {
+        "description": "Stop after this many matches are found",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "path": {
+        "description": "Directory or file to search (default: working directory)",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Regex pattern to search for (regex syntax, native grep)",
+        "minLength": 1,
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 30000)",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "type": "object"
+  },
+  "engine:search_session_log": {
+    "additionalProperties": false,
+    "properties": {
+      "kinds": {
+        "description": "Optional event kinds to filter",
+        "items": {
+          "enum": [
+            "user_message",
+            "agent_message",
+            "tool_call",
+            "tool_result",
+            "ui_transcript",
+            "context_action",
+            "system_note"
+          ],
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "limit": {
+        "default": 20,
+        "description": "Max matches to return",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "description": "Search terms (ANDed, case-insensitive). Use | for OR, e.g. 'issue|review'",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  },
+  "engine:shell": {
+    "additionalProperties": false,
+    "properties": {
+      "command": {
+        "description": "Shell command to execute",
+        "type": "string"
+      },
+      "timeout": {
+        "description": "Timeout in milliseconds (default 30000)",
+        "type": "number"
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "type": "object"
+  },
+  "engine:soft_unload": {
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "description": "Object ID to demote",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "engine:write_file": {
+    "additionalProperties": false,
+    "properties": {
+      "content": {
+        "description": "Content to write",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path (relative to working dir or absolute)",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path",
+      "content"
+    ],
+    "type": "object"
+  }
+}

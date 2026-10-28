@@ -307,7 +307,7 @@ The original 5-section budget-band allocator (`compileWithMetrics`) remains in t
 
 ## Tools
 
-Defined in `src/tools/` using Zod schemas and normalized via `zod-to-json-schema`. The registered tool set depends on compile mode (`describeTools({ contextEngineEnabled, classicMode })`).
+Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-07) with Zod's built-in `z.toJSONSchema` (`normalizeToolParameters` in `src/turn.ts`): objects reject unknown properties and integers carry no implicit bounds. `tests/fixtures/tool-parameter-schemas.json` pins the exact schema the model sees for every tool. The registered tool set depends on compile mode (`describeTools({ contextEngineEnabled, classicMode })`).
 
 ### Shared tools (classic and engine mode)
 - `search_session_log(query, kinds?, limit?)` — keyword search over the current session event log

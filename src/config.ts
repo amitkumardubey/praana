@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import * as toml from "toml";
+import { parseToml } from "./toml-parse.js";
 import type {
   LspConfig,
   PraanaConfig,
@@ -227,6 +227,9 @@ export function deepMerge<T>(
 ): T {
   const out = { ...base } as any;
   for (const [k, v] of Object.entries(override as any)) {
+    // A parsed JSON config can carry an own "__proto__" key; assigning it would
+    // change the merged object's prototype instead of setting a value.
+    if (k === "__proto__") continue;
     const bv = (base as any)[k];
     const path = pathPrefix ? `${pathPrefix}.${k}` : k;
     if (Array.isArray(v) && Array.isArray(bv)) {
@@ -262,7 +265,7 @@ function loadJsonConfig(path: string): Record<string, unknown> {
 function loadTomlConfig(path: string): Record<string, unknown> {
   if (existsSync(path)) {
     try {
-      return toml.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+      return parseToml(readFileSync(path, "utf-8"));
     } catch (err) {
       configWarn(`Failed to parse TOML config ${path}`, { cause: err as Error });
     }

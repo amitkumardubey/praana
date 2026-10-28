@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { dirname, resolve, isAbsolute, extname, normalize, relative } from "node:path";
 import { homedir } from "node:os";
-import * as toml from "toml";
+import { parseToml } from "../toml-parse.js";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
@@ -37,7 +37,7 @@ function validateStructuredContent(filePath: string, content: string): string | 
     }
   }
   if (ext === ".toml") {
-    try { toml.parse(content); } catch (e: any) {
+    try { parseToml(content); } catch (e: any) {
       return `Warning: content does not parse as valid TOML (${e.message}). File written anyway.`;
     }
   }
