@@ -59,12 +59,12 @@ pub(crate) fn rebuild_derived_tables(
     // Step 2: copy and hash-verify the canonical artifact tables and the
     // canonical operation-record ledger in one read snapshot of the source
     // database. Operation records cannot be rebuilt from the event log and
-    // must be preserved unchanged (History §2.1). The guard only excludes
-    // other in-process users of this HistoryDatabase handle; the snapshot
-    // itself runs on the destination connection, which ATTACHes the source
-    // by file path and reads the tables through one transaction below. The
-    // guard is kept so no other handle can write to this database file
-    // between the copy and the derived replay.
+    // must be preserved unchanged (History §2.1). The guard only keeps other
+    // in-process users of this HistoryDatabase handle out while the copy
+    // runs; it does not fence other connections and is released before the
+    // derived replay. The snapshot itself runs on the destination
+    // connection, which ATTACHes the source by file path and reads the
+    // tables through one transaction below.
     {
         let guard = db.lock();
         let src: &Connection = &guard;
