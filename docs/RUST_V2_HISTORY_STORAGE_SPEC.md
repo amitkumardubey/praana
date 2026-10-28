@@ -1429,6 +1429,10 @@ If only derived tables fail, the writer:
 6. Atomically renames the old database to `history.db.bad-<unix-ms>` and the
    rebuilt database to `history.db`.
 
+The rebuild requires that no other connection can commit to `history.db` while
+it runs; a handle opened before the rebuild must be dropped and re-opened
+afterwards.
+
 If a canonical artifact table is corrupt or a referenced body fails SHA-256,
 automatic rebuild stops with `HISTORY_CANONICAL_DB_CORRUPT`. It never rebuilds a
 body from an excerpt or summary.

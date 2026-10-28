@@ -610,12 +610,15 @@ impl HeadlessLoop {
             // derived from the code alone, and replay rejects a repeated id
             // whose content differs).
             let notices = engine.take_pending_notices();
-            // Never rebuild here. `project()` replaces `history.db` on an
-            // invalid checkpoint and drops canonical `operation_records`
-            // (History §2.1, §9.4). Catch-up of an absent or stale checkpoint
-            // still happens in place. An invalid checkpoint degrades.
-            // Canonical-integrity errors stay fatal: the blanket catch must
-            // not resume on a corrupt event prefix or artifact table.
+            // Never rebuild here. Rebuild replays the valid event prefix into
+            // a fresh file and preserves canonical `operation_records` (History
+            // §2.1, §9.4), but it replaces `history.db` under a live session:
+            // an invalid checkpoint must degrade, not be replaced, and other
+            // connections to the file are not fenced (History §9.4). Catch-up
+            // of an absent or stale checkpoint still happens in place. An
+            // invalid checkpoint degrades. Canonical-integrity errors stay
+            // fatal: the blanket catch must not resume on a corrupt event
+            // prefix or artifact table.
             let resume_projection_diagnostic =
                 match crate::history::checkpoint::HistoryProjector::new(&db)
                     .project_without_rebuild(engine.store())
