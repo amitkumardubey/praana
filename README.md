@@ -118,7 +118,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), and `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
+Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
 
 #### Supported providers
 
