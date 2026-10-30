@@ -33,86 +33,393 @@ fn unix_ms_now() -> Result<i64, ArtifactError> {
         .map_err(|err| io_err(format!("clock: {err}")))
 }
 
-/// History §9.4 steps 1–6. On success the caller's database handle is
-/// re-opened on the replaced file; every `HistoryDatabase` handle opened
-/// earlier still reads the renamed-aside file and must be dropped.
-///
-/// Precondition: no other connection may commit to `history.db` while this
-/// runs. The rebuild holds the session lock but cannot fence other handles;
-/// a handle opened before the rebuild keeps pointing at the renamed-aside
-/// file and must be dropped and re-opened afterwards.
+/// History §9.4 steps 1–6. The rebuild takes the write lock on this
+/// connection before the copy snapshot and holds it until the swap commits.
+/// Writes from other connections wait on that lock. Once the rebuild
+/// commits, those writes fail with `HISTORY_FILE_REPLACED` on ordinary
+/// tables instead of landing in the renamed-aside file. A handle opened
+/// before the rebuild can still read the old file; it must be dropped and
+/// re-opened afterwards. On success this handle is re-opened on the
+/// replaced file.
 pub(crate) fn rebuild_derived_tables(
     db: &HistoryDatabase,
     log: &EventLogStore,
 ) -> Result<(), ArtifactError> {
     let db_path = db.path().to_path_buf();
     let session_dir = log.session_dir().to_path_buf();
-    let rebuild_path = rebuild_path(&db_path);
+    rebuild_hook("history.rebuild_before_begin", &db_path)?;
+
+    // Held until this function returns. BEGIN IMMEDIATE runs before the copy,
+    // so another connection's commit is either already in the snapshot or
+    // blocked. After the swap commits, a blocked writer fails with
+    // HISTORY_FILE_REPLACED on ordinary tables instead of writing the
+    // renamed-aside file. A connection opened earlier can still read that
+    // file and must be dropped and re-opened.
+    let mut guard = db.lock();
+    let first = {
+        let conn: &Connection = &guard;
+        let mut held = HeldWrite { conn, open: false };
+        conn.execute_batch("BEGIN IMMEDIATE;").map_err(map_sqlite)?;
+        held.open = true;
+        prepare_and_swap(&mut held, &db_path, &session_dir, log)
+    }?;
+
+    if let Err(err) = rebuild_hook("history.rebuild_reopen", &db_path) {
+        return Err(first.unwrap_or(err));
+    }
+    if let Err(err) = db.reopen(&mut guard) {
+        return Err(first.unwrap_or(err));
+    }
+    match first {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+struct HeldWrite<'a> {
+    conn: &'a Connection,
+    open: bool,
+}
+
+impl Drop for HeldWrite<'_> {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+    }
+}
+
+struct Relocation {
+    from: PathBuf,
+    to: PathBuf,
+    main: bool,
+}
+
+fn prepare_and_swap(
+    held: &mut HeldWrite<'_>,
+    db_path: &Path,
+    session_dir: &Path,
+    log: &EventLogStore,
+) -> Result<Option<ArtifactError>, ArtifactError> {
+    rebuild_hook("history.rebuild_after_begin", db_path).map_err(|err| abort(held, err))?;
+    install_fence_triggers(held.conn).map_err(|err| abort(held, err))?;
+
+    let rebuild_path = rebuild_path(db_path);
     if rebuild_path.exists() {
         std::fs::remove_file(&rebuild_path)
-            .map_err(|err| io_err(format!("remove stale rebuild: {err}")))?;
+            .map_err(|err| abort(held, io_err(format!("remove stale rebuild: {err}"))))?;
     }
+    let rebuild_db = HistoryDatabase::open(&rebuild_path).map_err(|err| abort(held, err))?;
+    copy_canonical_tables(held.conn, &rebuild_db).map_err(|err| abort(held, err))?;
 
-    // Step 1: fresh file with private permissions and the exact schema.
-    let rebuild_db = HistoryDatabase::open(&rebuild_path)?;
+    rebuild_crash("history.rebuild_after_copy");
+    rebuild_hook("history.rebuild_after_copy", db_path).map_err(|err| abort(held, err))?;
 
-    // Step 2: copy and hash-verify the canonical artifact tables and the
-    // canonical operation-record ledger in one read snapshot of the source
-    // database. Operation records cannot be rebuilt from the event log and
-    // must be preserved unchanged (History §2.1). The guard only keeps other
-    // in-process users of this HistoryDatabase handle out while the copy
-    // runs; it does not fence other connections and is released before the
-    // derived replay. The snapshot itself runs on the destination
-    // connection, which ATTACHes the source by file path and reads the
-    // tables through one transaction below.
-    {
-        let guard = db.lock();
-        let src: &Connection = &guard;
-        copy_canonical_tables(src, &rebuild_db)?;
-    }
-
-    // Step 3: replay the valid event prefix into all derived tables.
-    HistoryProjector::new(&rebuild_db).project(log)?;
+    HistoryProjector::new(&rebuild_db)
+        .project(log)
+        .map_err(|err| abort(held, err))?;
 
     {
         let guard = rebuild_db.lock();
         let dst: &Connection = &guard;
-        // History §8: rebuild issues the FTS rebuild after all content rows
-        // are present (per-row inserts above already populated the index).
         dst.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')", [])
-            .map_err(map_sqlite)?;
-        // Step 4: full integrity checks on the rebuilt database.
-        full_integrity_check(dst)?;
-        // History §15.2 point 15: checkpoint WAL frames before fsync.
+            .map_err(|err| abort(held, map_sqlite(err)))?;
+        full_integrity_check(dst).map_err(|err| abort(held, err))?;
         drop(guard);
-        rebuild_db.wal_checkpoint_truncate()?;
+        rebuild_db
+            .wal_checkpoint_truncate()
+            .map_err(|err| abort(held, err))?;
     }
-
-    // Step 5: fsync the rebuilt database file and the containing directory.
     drop(rebuild_db);
     File::open(&rebuild_path)
         .and_then(|file| file.sync_all())
-        .map_err(|err| io_err(format!("fsync rebuild: {err}")))?;
+        .map_err(|err| abort(held, io_err(format!("fsync rebuild: {err}"))))?;
 
-    // Step 6: rename the old database aside, then the rebuild into place.
-    // The old `-wal`/`-shm` sidecars must travel with the renamed file: leaving
-    // them beside the new `history.db` would let the next opener replay the
-    // old log into the rebuilt database.
-    let bad_path = unique_bad_path(&db_path)?;
-    rename_database_with_sidecars(&db_path, &bad_path)?;
-    let renamed = std::fs::rename(&rebuild_path, &db_path);
-    fsync_dir(&session_dir).map_err(|err| io_err(err.to_string()))?;
-    renamed.map_err(|err| io_err(format!("rename rebuild into place: {err}")))?;
+    let bad_path = unique_bad_path(db_path).map_err(|err| abort(held, err))?;
+    let mut moved = Vec::new();
+    std::fs::rename(db_path, &bad_path).map_err(|err| {
+        fail_swap(
+            held,
+            db_path,
+            &bad_path,
+            &moved,
+            io_err(format!("rename aside: {err}")),
+        )
+    })?;
+    moved.push(Relocation {
+        from: db_path.to_path_buf(),
+        to: bad_path.clone(),
+        main: true,
+    });
+
+    rebuild_hook("history.rebuild_swap_sidecar", db_path)
+        .map_err(|err| fail_swap(held, db_path, &bad_path, &moved, err))?;
     for suffix in ["-wal", "-shm"] {
-        let sidecar = sidecar_path(&db_path, suffix);
-        if sidecar.exists() {
-            std::fs::remove_file(&sidecar)
-                .map_err(|err| io_err(format!("remove {}: {err}", suffix)))?;
+        let source = sidecar_path(db_path, suffix);
+        if source.exists() {
+            let dest = sidecar_path(&bad_path, suffix);
+            std::fs::rename(&source, &dest).map_err(|err| {
+                fail_swap(
+                    held,
+                    db_path,
+                    &bad_path,
+                    &moved,
+                    io_err(format!("rename sidecar: {err}")),
+                )
+            })?;
+            moved.push(Relocation {
+                from: source,
+                to: dest,
+                main: false,
+            });
         }
     }
-    fsync_dir(&session_dir).map_err(|err| io_err(err.to_string()))?;
 
-    db.reopen()
+    rebuild_hook("history.rebuild_swap_replace", db_path)
+        .map_err(|err| fail_swap(held, db_path, &bad_path, &moved, err))?;
+    std::fs::rename(&rebuild_path, db_path).map_err(|err| {
+        fail_swap(
+            held,
+            db_path,
+            &bad_path,
+            &moved,
+            io_err(format!("rename rebuild into place: {err}")),
+        )
+    })?;
+
+    let mut first: Option<ArtifactError> = None;
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = sidecar_path(db_path, suffix);
+        if sidecar.exists() {
+            if let Err(err) = std::fs::remove_file(&sidecar) {
+                if first.is_none() {
+                    first = Some(io_err(format!("remove {suffix}: {err}")));
+                }
+            }
+        }
+    }
+    if let Err(err) = rebuild_hook("history.rebuild_after_replace_fsync", db_path) {
+        if first.is_none() {
+            first = Some(err);
+        }
+    } else if let Err(err) = fsync_dir(session_dir) {
+        if first.is_none() {
+            first = Some(io_err(err.to_string()));
+        }
+    }
+
+    rebuild_crash("history.rebuild_after_rename");
+    if let Err(err) = rebuild_hook("history.rebuild_after_rename", db_path) {
+        if first.is_none() {
+            first = Some(err);
+        }
+    }
+    if let Err(err) = commit_fence(held.conn, db_path) {
+        if first.is_none() {
+            first = Some(err);
+        }
+    }
+    held.open = false;
+    Ok(first)
+}
+
+fn abort(held: &mut HeldWrite<'_>, err: ArtifactError) -> ArtifactError {
+    let err = rollback_combining(held.conn, err);
+    held.open = false;
+    err
+}
+
+fn fail_swap(
+    held: &mut HeldWrite<'_>,
+    db_path: &Path,
+    bad_path: &Path,
+    moved: &[Relocation],
+    cause: ArtifactError,
+) -> ArtifactError {
+    let err = match undo_relocations(db_path, bad_path, moved) {
+        Ok(()) if db_path.exists() => cause,
+        Ok(()) => recovery_error(db_path, bad_path, "history.db was not restored"),
+        Err(err) => err,
+    };
+    let err = rollback_combining(held.conn, err);
+    held.open = false;
+    err
+}
+
+fn undo_relocations(
+    db_path: &Path,
+    bad_path: &Path,
+    moved: &[Relocation],
+) -> Result<(), ArtifactError> {
+    let mut first = true;
+    for step in moved.iter().rev() {
+        if first {
+            first = false;
+            rebuild_hook("history.rebuild_swap_undo_first", db_path).map_err(|err| {
+                recovery_error(db_path, bad_path, &format!("undo stopped: {err}"))
+            })?;
+        }
+        if step.main {
+            rebuild_hook("history.rebuild_swap_undo_main", db_path).map_err(|err| {
+                recovery_error(db_path, bad_path, &format!("undo stopped: {err}"))
+            })?;
+        }
+        std::fs::rename(&step.to, &step.from).map_err(|err| {
+            recovery_error(
+                db_path,
+                bad_path,
+                &format!(
+                    "undo rename failed: {err}; {} -> {}",
+                    step.to.display(),
+                    step.from.display()
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn recovery_error(db_path: &Path, bad_path: &Path, detail: &str) -> ArtifactError {
+    let wal = sidecar_path(db_path, "-wal");
+    let shm = sidecar_path(db_path, "-shm");
+    let bad_wal = sidecar_path(bad_path, "-wal");
+    let bad_shm = sidecar_path(bad_path, "-shm");
+    io_err(format!(
+        "swap failed; manual recovery is needed; other connections are not fenced; {detail}; \
+         history.db {} at {}; history.db-wal {} at {}; history.db-shm {} at {}; \
+         aside {} at {}; aside-wal {} at {}; aside-shm {} at {}",
+        exists_word(db_path),
+        db_path.display(),
+        exists_word(&wal),
+        wal.display(),
+        exists_word(&shm),
+        shm.display(),
+        exists_word(bad_path),
+        bad_path.display(),
+        exists_word(&bad_wal),
+        bad_wal.display(),
+        exists_word(&bad_shm),
+        bad_shm.display(),
+    ))
+}
+
+fn exists_word(path: &Path) -> &'static str {
+    if path.exists() {
+        "present"
+    } else {
+        "missing"
+    }
+}
+
+fn rollback_combining(conn: &Connection, err: ArtifactError) -> ArtifactError {
+    match conn.execute_batch("ROLLBACK;") {
+        Ok(()) if conn.is_autocommit() => err,
+        Ok(()) => io_err(format!(
+            "{err}; ROLLBACK returned but the transaction is still open"
+        )),
+        Err(rollback) => io_err(format!(
+            "{err}; ROLLBACK failed; the transaction is still open: {rollback}"
+        )),
+    }
+}
+
+fn commit_fence(conn: &Connection, db_path: &Path) -> Result<(), ArtifactError> {
+    if let Err(err) = rebuild_hook("history.rebuild_commit", db_path) {
+        return fence_incomplete(conn, err);
+    }
+    match conn.execute_batch("COMMIT;") {
+        Ok(()) if conn.is_autocommit() => Ok(()),
+        Ok(()) => fence_incomplete(
+            conn,
+            io_err("COMMIT returned but a transaction is still open"),
+        ),
+        Err(err) => fence_incomplete(conn, map_sqlite(err)),
+    }
+}
+
+fn fence_incomplete(conn: &Connection, err: ArtifactError) -> Result<(), ArtifactError> {
+    if !conn.is_autocommit() {
+        if let Err(rollback) = conn.execute_batch("ROLLBACK;") {
+            return Err(io_err(format!(
+                "fence incomplete; ROLLBACK failed; the transaction is still open: {rollback}; {err}"
+            )));
+        }
+        if !conn.is_autocommit() {
+            return Err(io_err(format!(
+                "fence incomplete; the transaction is still open after ROLLBACK; {err}"
+            )));
+        }
+    }
+    Err(io_err(format!("fence incomplete: {err}")))
+}
+
+fn install_fence_triggers(conn: &Connection) -> Result<(), ArtifactError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .map_err(map_sqlite)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(map_sqlite)?;
+    let mut tables = Vec::new();
+    for row in rows {
+        tables.push(row.map_err(map_sqlite)?);
+    }
+    drop(stmt);
+    for (name, sql) in tables {
+        if sql.as_deref().is_some_and(is_virtual_table_sql) {
+            continue;
+        }
+        for (event, keyword) in [
+            ("insert", "INSERT"),
+            ("update", "UPDATE"),
+            ("delete", "DELETE"),
+        ] {
+            let trigger = quote_ident(&format!("praana_fence_{name}_{event}"));
+            let table = quote_ident(&name);
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER {trigger} BEFORE {keyword} ON {table} \
+                 BEGIN SELECT RAISE(ABORT, 'HISTORY_FILE_REPLACED'); END;"
+            ))
+            .map_err(map_sqlite)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_virtual_table_sql(sql: &str) -> bool {
+    sql.trim_start()
+        .to_ascii_uppercase()
+        .starts_with("CREATE VIRTUAL")
+}
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn rebuild_hook(label: &str, path: &Path) -> Result<(), ArtifactError> {
+    #[cfg(feature = "failpoints")]
+    {
+        crate::crash_point::check_rebuild_hook(label, path)
+            .map_err(|err| io_err(err.to_string()))?;
+    }
+    #[cfg(not(feature = "failpoints"))]
+    {
+        let _ = (label, path);
+    }
+    Ok(())
+}
+
+fn rebuild_crash(label: &str) {
+    #[cfg(feature = "failpoints")]
+    crate::crash_point::hit(label);
+    #[cfg(not(feature = "failpoints"))]
+    {
+        let _ = label;
+    }
 }
 
 fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
@@ -122,24 +429,6 @@ fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
         .unwrap_or_default();
     name.push(suffix);
     db_path.with_file_name(name)
-}
-
-/// Move a WAL-mode database and its sidecars under one new base name.
-fn rename_database_with_sidecars(from: &Path, to: &Path) -> Result<(), ArtifactError> {
-    std::fs::rename(from, to).map_err(|err| io_err(format!("rename aside: {err}")))?;
-    for suffix in ["-wal", "-shm"] {
-        let source = sidecar_path(from, suffix);
-        if source.exists() {
-            let mut name = to
-                .file_name()
-                .map(|name| name.to_owned())
-                .unwrap_or_default();
-            name.push(suffix);
-            std::fs::rename(&source, to.with_file_name(name))
-                .map_err(|err| io_err(format!("rename sidecar: {err}")))?;
-        }
-    }
-    Ok(())
 }
 
 fn rebuild_path(db_path: &Path) -> PathBuf {

@@ -792,15 +792,20 @@ impl OperationLedger {
                     operation_id.to_string(),
                 ],
             )
-            .map_err(|e| LedgerError::Storage(format!("complete: {e}")))?;
+            .map_err(|e| {
+                let _ = conn.execute_batch("ROLLBACK;");
+                LedgerError::Storage(format!("complete: {e}"))
+            })?;
         if updated != 1 {
             let _ = conn.execute_batch("ROLLBACK;");
             return Err(LedgerError::Storage(
                 "complete affected no reserved row".to_string(),
             ));
         }
-        conn.execute_batch("COMMIT;")
-            .map_err(|e| LedgerError::Storage(format!("commit: {e}")))?;
+        conn.execute_batch("COMMIT;").map_err(|e| {
+            let _ = conn.execute_batch("ROLLBACK;");
+            LedgerError::Storage(format!("commit: {e}"))
+        })?;
         Ok(result_json)
     }
 }
