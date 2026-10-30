@@ -10,7 +10,7 @@ Long coding sessions burn tokens faster as they grow. The prompt fills with stal
 
 PRAANA takes a different approach. A deterministic compiler curates what the model sees on every turn — tiered working memory, tool-output distillation, and a session checkpoint — instead of stuffing the full transcript into the prompt. An optional Cognitive Memory extracts learnings when a session ends and surfaces a ranked digest the next time you start, in the same repo or anywhere.
 
-Runs on Bun. One binary, pure TypeScript, local-first, any provider.
+Written in TypeScript on Bun, with a small native Rust addon for code search, tree-sitter and embeddings. Local-first, any provider.
 
 > **Status:** v0.16.0 <!-- x-release-please-version --> — experimental. The context engine and memory are ideas we're proving in real use, not solved problems. We publish [known limitations](#known-limitations-honest) and make no benchmark claims we can't back.
 
@@ -81,7 +81,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."    # or any supported provider below
 praana
 ```
 
-PRAANA auto-detects which provider key is set. On first run with no config file, it runs an interactive setup wizard. The interactive UI is a terminal-native `pi-tui` shell with native scrollback, slash-command autocomplete, transcript rendering, and full thinking-text display when `/thinking on` is enabled.
+PRAANA auto-detects which provider key is set. On first run with no config file, it runs an interactive setup wizard. The interactive UI is a terminal UI built on OpenTUI, with slash-command autocomplete, transcript rendering, and full thinking-text display when `/thinking on` is enabled.
 
 ### PATH for global install
 
@@ -118,7 +118,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), and `praana models` (lists models). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
+Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](./praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](./harbor_eval/README.md).
 
 #### Supported providers
 
@@ -133,10 +133,15 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | xAI | `XAI_API_KEY` |
 | Fireworks | `FIREWORKS_API_KEY` |
 | Together | `TOGETHER_API_KEY` |
+| Cerebras | `CEREBRAS_API_KEY` |
+| NVIDIA | `NVIDIA_API_KEY` |
+| Poolside | `POOLSIDE_API_KEY` |
+| Umans | `UMANS_API_KEY` |
 | OpenCode | `OPENCODE_API_KEY` |
 | OpenRouter | `OPENROUTER_API_KEY` |
 | Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
+| GitHub Copilot, OpenAI Codex | Sign in with `/login github-copilot` or `/login openai-codex` (OAuth) |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
@@ -157,7 +162,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 ## Five things that are genuinely different
 
-1. **Per-turn deterministic compiler with per-section token budgets.** The prompt is assembled fresh every turn across five sections — system frame, memory digest, active state, peripheral stubs, recent turns — each with its own cap. Context pressure is density-weighted, not a raw token count.
+1. **Per-turn deterministic compiler with per-section token budgets.** The prompt is assembled fresh every turn from budgeted sections: system frame, skills catalog, session checkpoint, recent turns verbatim, relevance-scored context, memory digest, active state and peripheral stubs. Context pressure is density-weighted, not a raw token count.
 
 2. **Tiered working memory with auto-hydration.** State objects (tasks, decisions, constraints, notes) demote from `active` to `soft` to `hard` based on idle turns. Two-pass hydration before each turn — substring keyword match, then BM25 — promotes them back when the current turn references them.
 
@@ -178,12 +183,12 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 | **Engine** | Yes | Tiered working memory, stub artifact cards + retrieve on demand, session checkpoint, scored prompt compilation, progressive skills. |
 | **Classic** | Fallback / explicit disable | Full verbatim transcript. Same shape as most coding agents. |
 
-**Cognitive Memory** (optional — `[memory] enabled = true`):
+**Cognitive Memory** (on by default; turn it off with `[memory] enabled = false`, or pause writes for a session with `/incognito on`):
 
 - At `/exit`, extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
 - Next session starts with a ranked digest in the prompt.
 - Project sessions query both project-scoped and global memories and merge results.
-- Confidence decays 5%/day. Entries confirmed across two or more sessions promote to Consolidated Memory (10x slower decay).
+- Entries decay over time with a half-life per kind: constraints never decay, mistakes 60 days, facts 90, preferences 180, decisions and patterns 365. Entries confirmed in two or more distinct sessions (with validity of at least 0.7) promote to deep memory (Layer 2), which decays four times slower.
 
 **Skills:** discovers `SKILL.md` files in project and user paths. Compact catalog injected every turn, sorted by usefulness score. `load_skill(id)` fetches the full body on demand. Engine mode tracks whether each skill was used and updates its score in `memory.db`.
 
@@ -191,7 +196,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 **Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
 
-**Session safety:** plan mode gates mutating tools behind your approval; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+**Session safety:** plan mode gates mutating tools behind your approval; destructive or outward actions (`rm`, force-push, package installs, writes outside the project) ask for confirmation, and headless runs refuse them unless allowed in `[risk].allow`; known secret patterns are redacted from tool results and the event log; a loop breaker blocks a third identical mutating tool call, or a third attempt after two errors on the same file or command; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
 
 Architecture details: [docs site](https://amitkumardubey.github.io/praana/) · [ARCHITECTURE.md](./docs/ARCHITECTURE.md) · [concepts.md](./docs/concepts.md)
 
@@ -205,7 +210,7 @@ These are real gaps, not a roadmap dressed as marketing.
 |---|---|
 | **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#506). |
 | **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#424) is not shipped. We don't publish benchmark claims we can't back. |
-| **Semantic recall** | ONNX weights download on first run (~25–80MB, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
+| **Semantic recall** | ONNX weights download on first run (about 90 MB for the default model, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
 | **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
 | **Background Consolidation Processor** | Schema exists, not scalable yet. The learning loop is incomplete. |
 | **Intelligent Router** | Not started. Planned for after memory is proven. |
@@ -220,12 +225,13 @@ If Cognitive Memory doesn't help you after a few real projects, tell us. That's 
 | Command | Purpose |
 |---|---|
 | `/help` | Full list |
-| `/exit` | End session — runs summariser when memory is on |
+| `/exit` (alias `/quit`) | End session — runs summariser when memory is on |
 | `/clear` | Reset in-session context (same session ID; clears working memory and model-visible history) |
 | `/new` | Start a new session (new ID, reload config, background summariser) |
 | `/state` | Working-memory objects (engine mode) |
 | `/digest` | Cognitive Memory digest |
 | `/recall <query>` | Search Cognitive Memory |
+| `/memory dedupe` | Merge duplicate Cognitive Memory entries |
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
@@ -261,7 +267,7 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 ```bash
 bun dev          # run without build step
 bun typecheck    # TypeScript type-check (no emit)
-bun test         # 2095 tests across 177 files, ~15s
+bun test         # 2209 tests across 191 files
 bun run test:parallel  # same suite, files across CPU cores (opt-in)
 ```
 
@@ -280,9 +286,7 @@ cd website && bun run build                 # output → website/dist/
 
 See [ROADMAP.md](./ROADMAP.md). Short version: closing the memory reinforcement loop (#506), finishing the A/B eval suite on top of Harbor/`praana run` (#424), and semantic tier management — the work that turns "stores and recalls" into a system that measurably improves with use.
 
-**Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md) · [good first issues](https://github.com/amitkumardubey/praana/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) · [Discussions](https://github.com/amitkumardubey/praana/discussions)
-
-Issues and PRs welcome.
+**Feedback:** [bug reports and feature ideas](./CONTRIBUTING.md) · [Discussions](https://github.com/amitkumardubey/praana/discussions). The code is MIT-licensed and open to read and fork, but external pull requests are not accepted (see [CONTRIBUTING.md](./CONTRIBUTING.md)).
 
 ---
 

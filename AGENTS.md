@@ -6,7 +6,7 @@ PRAANA is a TypeScript CLI coding agent built around two systems:
 
 - **Cognitive Memory** — cross-session persistent knowledge. SQLite-backed. At session end, an LLM summariser extracts learnings from the transcript (facts, preferences, decisions, patterns, mistakes, constraints), skipping anything already in the loaded project context (AGENTS.md / README). Each learning is classified as **project-level** (scoped to the working directory) or **global** (applies across all projects) and stored with the appropriate scope set. Memories decay over time. At session start, a ranked digest is injected into the prompt.
 
-These are separate systems. The compiler consumes a memory digest as one of its five sections; it does not merge with memory otherwise.
+These are separate systems. The compiler consumes a memory digest as one of its prompt sections; it does not merge with memory otherwise.
 
 ---
 
@@ -16,7 +16,7 @@ These are separate systems. The compiler consumes a memory digest as one of its 
 bun install
 bun typecheck    # TypeScript type-check (no emit)
 bun dev          # Run without build step
-bun test         # 177 files, 2095 tests, ~15s
+bun test         # 191 files, 2209 tests
 bun run test:parallel  # opt-in: bun test --parallel tests/
 ```
 
@@ -361,6 +361,9 @@ src/
   interactive-setup.ts — Dispatches TTY OpenTUI setup wizard vs readline fallback
   setup/         — Modular setup: types, provider-options, config-writer, logic, setup-readline
   types.ts       — Shared TypeScript types
+  git-context.ts — shared getGitContext / findGitRoot helpers
+  native/        — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
+  lsp/           — JSON-RPC LSP client + manager (stdio; crash restart + multi-root; soft-fail when disabled)
   ui/
     tui/           — OpenTUI + Solid terminal shell (Prompt, transcript, chrome, overlays, setup, consent, login)
 
@@ -380,9 +383,6 @@ src/
     test-runner/ — language-specific adapters (bun, npm/pnpm/yarn, go, cargo, pytest, generic)
     code-intel.ts — code_parse / code_imports / code_symbols / code_definition / code_references (tree-sitter via @praana/natives; TS/JS/Python/Go/Rust; issue #418 Phase 1)
     lsp.ts — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #418 Phases 2–4)
-    git-context.ts — shared getGitContext / findGitRoot helpers
-    native/ — lazy loader for @praana/natives (napi-rs); soft-fail when addon missing
-    lsp/ — JSON-RPC LSP client + manager (stdio; crash restart + multi-root; soft-fail when disabled)
   memory/
     store.ts     — MemoryStore: remember, recall, digest, session lifecycle; project/global learning scope
     db.ts        — SQLite schema, CRUD, vector search; skill_stats + skill_cooccurrence tables

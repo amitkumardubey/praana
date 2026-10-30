@@ -60,4 +60,4 @@ Smaller, concrete improvements:
 
 ## Contributing
 
-Issues and PRs welcome. The most useful feedback right now: **after a few real projects, does Cognitive Memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.
+Bug reports and ideas are welcome through [Issues and Discussions](https://github.com/amitkumardubey/praana/discussions); external pull requests are not accepted (see [CONTRIBUTING.md](./CONTRIBUTING.md)). The most useful feedback right now: **after a few real projects, does Cognitive Memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.

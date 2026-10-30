@@ -153,7 +153,7 @@ Project-level memories carry all three scopes — only visible within that proje
 
 Recalled memories are ranked by a fusion of three signals:
 - **Vector similarity** — how close the query is to the stored content
-- **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays at 5% per day
+- **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays with a half-life that depends on the entry kind (constraints never decay; mistakes 60 days, facts 90, preferences 180, decisions and patterns 365)
 - **Recency** — entries accessed recently receive a small boost
 - **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
 - **Tool outcomes** — every entry **surfaced** in a session — whether shown in the session-start digest or returned by `recall()` — has its validity reinforced at session end. Usefulness is boosted only when the entry was acted on and the placeholder session-success signal is positive; acted-on entries in sessions without that signal are neutral, and ignored entries decay. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory, 4× slower decay).
