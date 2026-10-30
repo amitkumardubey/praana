@@ -44,6 +44,9 @@ src/
   config.ts      — Multi-source JSON/TOML config loading & deep-merge (allowlists append-merge)
   types.ts       — Core shared TypeScript types
   ui.ts          — CLI output formatting, banners, and text colors
+  ui/tui/        — OpenTUI + Solid terminal shell (prompt, transcript, chrome, overlays, setup, login, download consent)
+  native/        — Lazy loader for `@praana/natives` (npm package, or `praana-natives.node` beside the binary); soft-fails when the addon is missing
+  lsp/           — JSON-RPC Language Server client and manager (stdio; crash restart, multi-root); opt-in via `[lsp]`
   utils/
     bm25.ts      — Shared BM25 tokenization, scoring, and corpus statistics
   context-engine/
@@ -83,7 +86,8 @@ src/
     search-code.ts — search_code: native grep via @praana/natives (file:line:column matches with context)
     find-files.ts — find_files: fuzzy/glob path search via @praana/natives
     code-intel.ts — code_* tree-sitter tools (issue #418 Phase 1)
-    lsp.ts + lsp/ — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions; crash restart + multi-root (issue #418 Phases 2–4)
+    lsp.ts       — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #418 Phases 2–4; client in `src/lsp/`)
+    run-tests.ts — run_tests: structured test runner with per-language adapters in `test-runner/` (issue #589)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #432; first #533 harness ship)
     knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
@@ -393,7 +397,7 @@ Global-only queries exclude entries that carry `context:`, so project facts stay
 ### Ranking and Decay
 The memory retrieval system fuses multiple signals into a unified search score:
 - **Vector distance** (from `entries_vec` BLOB rows, cosine kNN) maps candidate entries.
-- **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays at 5% per day: $\text{conf} \times 0.95^{\text{days}}$.
+- **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays exponentially with a per-kind half-life: $\text{validity} \times 0.5^{\text{days} / \text{halfLife}}$. Half-lives are 60 days for `mistake`, 90 for `fact`, 180 for `preference`, and 365 for `decision` and `pattern`; `constraint` entries and pinned entries do not decay. Layer 2 (deep memory) entries use a half-life four times longer (`src/memory/confidence.ts`).
 - **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
 - **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
 - **Tool-outcome reinforcement** (#442): any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up; usefulness boosted only when acted on and the placeholder session-success signal is positive, neutral when acted on without that signal, and decayed when ignored. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
