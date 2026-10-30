@@ -6048,23 +6048,76 @@ fn assert_undo_stopped(err: &ArtifactError, dir: &Path, probe: &rusqlite::Connec
 }
 
 #[cfg(feature = "failpoints")]
+fn seed_wal_only_row(path: &Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = FULL;
+         PRAGMA wal_autocheckpoint = 0;",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('old_wal_only', '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )
+    .unwrap();
+    assert!(
+        sidecar_path(path, "-wal").is_file(),
+        "the seeded row is not WAL-only"
+    );
+    conn
+}
+
+#[cfg(feature = "failpoints")]
 #[test]
-fn fence_t9_undo_main_names_paths() {
+fn fence_t9_undo_main_quarantines_orphan_sidecars() {
     use praana_core::RebuildHookKind;
 
-    let (dir, err, probe) = run_failed_swap(&[
-        ("history.rebuild_swap_replace", RebuildHookKind::Fail),
-        ("history.rebuild_swap_undo_main", RebuildHookKind::Fail),
-    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    // A row that exists only in the old WAL: if that WAL is left beside a
+    // missing main file, the next open promotes history.db.rebuild and
+    // replays these frames into the promoted database.
+    let seeded = seed_wal_only_row(&db_path);
+    let probe = open_production_conn(&db_path);
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_swap_replace", RebuildHookKind::Fail),
+            ("history.rebuild_swap_undo_main", RebuildHookKind::Fail),
+        ],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
     assert_undo_stopped(&err, dir.path(), &probe);
-    // Sidecars are restored before the main file. A failure on that last step
-    // leaves them beside the missing main file; that is the order the removal
-    // check distinguishes from restoring the main file first.
-    assert!(!history_db_path(dir.path()).is_file());
+    assert!(!db_path.is_file(), "history.db should not be restored");
+    // A missing main file must never be left beside a live-named WAL/SHM.
     assert!(
-        sidecar_path(&history_db_path(dir.path()), "-wal").is_file()
-            || sidecar_path(&history_db_path(dir.path()), "-shm").is_file(),
-        "undo restored the main file before the sidecars"
+        !sidecar_path(&db_path, "-wal").is_file(),
+        "orphan WAL left beside a missing history.db"
+    );
+    assert!(
+        !sidecar_path(&db_path, "-shm").is_file(),
+        "orphan SHM left beside a missing history.db"
+    );
+    // Keep the seeding connection open past the assertions: closing it would
+    // checkpoint into the aside inode and remove sidecars by name.
+    std::mem::forget(seeded);
+    let fresh = HistoryDatabase::open(&db_path).unwrap();
+    let conn = rusqlite::Connection::open(fresh.path()).unwrap();
+    let replayed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_meta WHERE key = 'old_wal_only'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        replayed, 0,
+        "old WAL frames were replayed into the promoted database"
     );
 }
 
@@ -6203,6 +6256,94 @@ fn fence_t10_commit_failure_releases_the_write_lock() {
         err.message().contains("fence incomplete"),
         "{}",
         err.message()
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_combined_failure_keeps_the_fence_diagnostic() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let stale = open_production_conn(&db_path);
+    stale.busy_handler(Some(rebuild_writer_no_retry)).unwrap();
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_after_replace_fsync", RebuildHookKind::Fail),
+            ("history.rebuild_commit", RebuildHookKind::Fail),
+        ],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    let text = err.message();
+    // The earlier post-publication error must not hide the failed fence.
+    assert!(
+        text.contains("history.rebuild_after_replace_fsync"),
+        "{text}"
+    );
+    assert!(text.contains("fence incomplete"), "{text}");
+    // The failed commit was rolled back: no write lock is left behind and the
+    // stale handle is still writable (it is simply not fenced).
+    stale
+        .execute_batch("BEGIN IMMEDIATE;")
+        .expect("the failed fence commit kept the write lock");
+    stale.execute_batch("ROLLBACK;").unwrap();
+    // The swap completed, so the live file is the rebuilt database.
+    session
+        .db
+        .record_telemetry_sample("t10-combined", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(named_sample_count(&db_path, "t10-combined"), 1);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t11_fresh_writer_survives_publication() {
+    use praana_core::{register_rebuild_hook, RebuildHookKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    drop(session);
+    let db_path = history_db_path(dir.path());
+    let hook = register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_after_publish", RebuildHookKind::Pause)],
+    );
+    let dir_buf = dir.path().to_path_buf();
+    let rebuild_path = db_path.clone();
+    let rebuild = thread::spawn(move || {
+        let log = EventLogStore::open(&dir_buf, SESSION_ID).expect("open log");
+        let db = HistoryDatabase::open(&rebuild_path).expect("open db");
+        HistoryProjector::new(&db).rebuild(&log)
+    });
+    assert!(
+        hook.wait_paused("history.rebuild_after_publish", Duration::from_secs(5)),
+        "rebuild did not pause after publication"
+    );
+    // A connection opened on the published file commits before the rebuild
+    // finishes. Its sidecars belong to the live database, not to the swap.
+    let fresh = open_production_conn(&db_path);
+    let operation_id = ulid::Ulid::generate().to_string();
+    fresh.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    insert_reserved_probe(&fresh, &operation_id).unwrap();
+    fresh.execute_batch("COMMIT;").unwrap();
+    hook.resume();
+    rebuild.join().expect("rebuild thread").expect("rebuild");
+    let verify = rusqlite::Connection::open(&db_path).unwrap();
+    let rows: i64 = verify
+        .query_row(
+            "SELECT COUNT(*) FROM operation_records WHERE operation_id = ?1",
+            [&operation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        rows, 1,
+        "a write acknowledged after publication was discarded"
     );
 }
 

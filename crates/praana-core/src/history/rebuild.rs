@@ -12,6 +12,15 @@
 //! that fails SHA-256 stops the rebuild with
 //! `HISTORY_CANONICAL_DB_CORRUPT`; a body is never rebuilt from an excerpt
 //! or summary.
+//!
+//! Publication is one-way. Nothing beside the live path is deleted after the
+//! rebuilt file is in place: any `-wal` / `-shm` that appears from then on
+//! belongs to a connection opened on the new file, and removing it would
+//! discard that connection's committed frames. A failed swap before
+//! publication restores the original and fsyncs the directory before the
+//! write lock is released. When the main file cannot be restored, the
+//! remaining live-named sidecars are moved beside the aside database, so the
+//! next open cannot pair them with the rebuilt file it promotes.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -41,6 +50,11 @@ fn unix_ms_now() -> Result<i64, ArtifactError> {
 /// before the rebuild can still read the old file; it must be dropped and
 /// re-opened afterwards. On success this handle is re-opened on the
 /// replaced file.
+///
+/// A failure before publication rolls the tombstone back and leaves the
+/// original intact and writable; a failure after publication keeps the swap
+/// and reports the error. A failed fence commit is always reported, even
+/// when another post-publication error came first.
 pub(crate) fn rebuild_derived_tables(
     db: &HistoryDatabase,
     log: &EventLogStore,
@@ -188,23 +202,22 @@ fn prepare_and_swap(
     })?;
 
     let mut first: Option<ArtifactError> = None;
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = sidecar_path(db_path, suffix);
-        if sidecar.exists() {
-            if let Err(err) = std::fs::remove_file(&sidecar) {
-                if first.is_none() {
-                    first = Some(io_err(format!("remove {suffix}: {err}")));
-                }
-            }
+    // Publication is complete: the live path now names the rebuilt database and
+    // nothing below is undone. The old database's `-wal` / `-shm` were renamed
+    // aside with it, so any sidecar that appears from here on belongs to a
+    // connection opened on the new file. Deleting it would discard that
+    // connection's committed frames, so it is left alone.
+    if let Err(err) = rebuild_hook("history.rebuild_after_publish", db_path) {
+        first = Some(err);
+    }
+    if let Err(err) = fsync_dir(session_dir) {
+        if first.is_none() {
+            first = Some(io_err(err.to_string()));
         }
     }
     if let Err(err) = rebuild_hook("history.rebuild_after_replace_fsync", db_path) {
         if first.is_none() {
             first = Some(err);
-        }
-    } else if let Err(err) = fsync_dir(session_dir) {
-        if first.is_none() {
-            first = Some(io_err(err.to_string()));
         }
     }
 
@@ -215,9 +228,12 @@ fn prepare_and_swap(
         }
     }
     if let Err(err) = commit_fence(held.conn, db_path) {
-        if first.is_none() {
-            first = Some(err);
-        }
+        // A failed fence is the safety-relevant outcome even when an earlier
+        // post-publication error already happened, so it is never dropped.
+        first = Some(match first.take() {
+            Some(prior) => merge_errors(prior, err),
+            None => err,
+        });
     }
     held.open = false;
     Ok(first)
@@ -237,13 +253,92 @@ fn fail_swap(
     cause: ArtifactError,
 ) -> ArtifactError {
     let err = match undo_relocations(db_path, bad_path, moved) {
-        Ok(()) if db_path.exists() => cause,
-        Ok(()) => recovery_error(db_path, bad_path, "history.db was not restored"),
-        Err(err) => err,
+        // The original is back in place. Make the restoration durable before
+        // the write lock is released and other handles may commit again: an
+        // unsynced reverse rename could otherwise be lost in a power failure
+        // and expose an intermediate swap layout.
+        Ok(()) if db_path.exists() => match fsync_parent(db_path) {
+            Ok(()) => cause,
+            Err(sync) => recovery_error(
+                db_path,
+                bad_path,
+                &format!("the restored original was not synced: {sync}"),
+            ),
+        },
+        // Nothing could be restored: history.db is missing. Live-named sidecars
+        // must not stay beside it, because the next open promotes
+        // `history.db.rebuild` and would replay those frames into it.
+        Ok(()) => match quarantine_orphan_sidecars(db_path, bad_path) {
+            Ok(()) => recovery_error(db_path, bad_path, "history.db was not restored"),
+            Err(quarantine) => merge_errors(
+                recovery_error(db_path, bad_path, "history.db was not restored"),
+                quarantine,
+            ),
+        },
+        // Undo stopped partway, so the live main file is still missing and some
+        // sidecars may already be back under their live names.
+        Err(err) => match quarantine_orphan_sidecars(db_path, bad_path) {
+            Ok(()) => err,
+            Err(quarantine) => merge_errors(err, quarantine),
+        },
     };
     let err = rollback_combining(held.conn, err);
     held.open = false;
     err
+}
+
+/// Move live-named `-wal` / `-shm` beside the aside database when the main
+/// file could not be restored. Those files belong to the old database, and a
+/// missing `history.db` with a live-named WAL would be paired with the rebuilt
+/// file by the next open's interrupted-rename recovery.
+fn quarantine_orphan_sidecars(db_path: &Path, bad_path: &Path) -> Result<(), ArtifactError> {
+    if db_path.exists() {
+        return Ok(());
+    }
+    let mut moved_any = false;
+    for suffix in ["-wal", "-shm"] {
+        let live = sidecar_path(db_path, suffix);
+        if !live.exists() {
+            continue;
+        }
+        let aside = sidecar_path(bad_path, suffix);
+        let target = if aside.exists() {
+            let tag = unix_ms_now()?;
+            sidecar_path(bad_path, &format!("{suffix}.orphan-{tag}"))
+        } else {
+            aside
+        };
+        std::fs::rename(&live, &target).map_err(|err| {
+            io_err(format!(
+                "orphan sidecar quarantine failed: {err}; {} -> {}",
+                live.display(),
+                target.display()
+            ))
+        })?;
+        moved_any = true;
+    }
+    if moved_any {
+        fsync_parent(db_path)?;
+    }
+    Ok(())
+}
+
+fn fsync_parent(path: &Path) -> Result<(), ArtifactError> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    fsync_dir(parent).map_err(|err| io_err(err.to_string()))
+}
+
+/// Combine two failures without losing either: the earlier one keeps its code
+/// and stays first in the message, and the later one's text is appended so a
+/// safety-relevant follow-up (for example `fence incomplete`) is never hidden.
+fn merge_errors(first: ArtifactError, later: ArtifactError) -> ArtifactError {
+    ArtifactError::new(
+        first.code(),
+        format!("{}; {}", first.message(), later.message()),
+    )
 }
 
 fn undo_relocations(
