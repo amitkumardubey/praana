@@ -2,7 +2,7 @@
 
 Where PRAANA is heading. This is **direction, not promises** — PRAANA is experimental, and we don't give dates or claim results we can't show.
 
-> For what works today and its rough edges, see **[Known limitations](./README.md#known-limitations-honest)** in the README. Version history lives in [CHANGELOG.md](./CHANGELOG.md).
+> For what works today and its rough edges, see **[Known limitations](./docs/reference.md#known-limitations)** in the reference. Version history lives in [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
