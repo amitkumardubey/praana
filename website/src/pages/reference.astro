@@ -1,0 +1,15 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { loadDoc, renderMarkdown } from "../lib/docs.ts";
+
+const html = renderMarkdown(loadDoc("reference.md"));
+---
+
+<Layout
+  title="Reference"
+  current="reference"
+  description="PRAANA reference: install options, configuration, supported providers, slash commands, features and known limitations of the terminal coding agent."
+  keywords="PRAANA reference, install PRAANA, PRAANA providers, PRAANA slash commands, PRAANA configuration, known limitations"
+>
+  <article class="prose" set:html={html} />
+</Layout>

@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "dev": "astro dev",
-    "prebuild": "mkdir -p public/assets && cp -f ../docs/assets/demo.png public/assets/demo.png 2>/dev/null || true",
     "build": "astro build",
     "preview": "astro preview"
   },

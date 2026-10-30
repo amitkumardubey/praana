@@ -1,11 +1,11 @@
 # PRAANA Architecture
 
-> **Sync date:** 2026-07-23 — reflects shipped behaviour through v0.11.1 / PR #281 (Amazon Bedrock, headless `praana run`, Harbor adapter, onboarding/settings wave).
+> **Sync date:** 2026-07-23 (v0.11.1), with corrections on 2026-10-30 to the memory decay model and the source tree. Other sections may lag later releases.
 
 PRAANA is a single-process TypeScript CLI coding agent built around two memory systems:
 
 1. **Adaptive Context** — within-session working memory
-2. **Cognitive Memory** — learns from experience across sessions, scores what's confirmed, forgets what's noise
+2. **Cognitive Memory** — cross-session memory: extracts learnings when a session ends, ranks them for the next session, and lets old ones decay
 
 No daemon, no RPC server, no multi-process coordination.
 
