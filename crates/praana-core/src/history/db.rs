@@ -425,15 +425,19 @@ impl HistoryDatabase {
     }
 
     /// Re-open the connection after the database file was atomically replaced
-    /// (History §9.4 step 6). The old handle keeps reading the renamed file;
-    /// this swaps in a handle on the new path.
-    pub(crate) fn reopen(&self) -> Result<(), ArtifactError> {
+    /// (History §9.4). The caller already holds `guard` from [`Self::lock`];
+    /// this does not lock the mutex again. The new connection is opened and
+    /// validated first, then assignment drops the old one.
+    pub(crate) fn reopen(
+        &self,
+        guard: &mut std::sync::MutexGuard<'_, Connection>,
+    ) -> Result<(), ArtifactError> {
         let conn = Connection::open(&self.path)
             .map_err(|err| super::error::io_err(format!("open {}: {err}", self.path.display())))?;
         apply_pragmas(&conn, &self.path).map_err(map_ledger)?;
         check_open_connection(&conn)?;
         assert_canonical_integrity(&conn)?;
-        *self.conn.lock().unwrap_or_else(|err| err.into_inner()) = conn;
+        **guard = conn;
         Ok(())
     }
 

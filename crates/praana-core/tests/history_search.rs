@@ -4,7 +4,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+#[cfg(feature = "failpoints")]
+use std::time::{Duration, Instant};
 
 use praana_core::canonical_json::to_canonical_json_bytes;
 use praana_core::config::types::{CircuitConfig, RiskConfig, ToolsConfig};
@@ -4989,4 +4993,1408 @@ fn summary_segment_crash_before_checkpoint_replays() {
         praana_core::history::retrieve::SearchSourceKind::SummarySegment
     );
     assert!(response.text.contains("zephyrgoal <kept"));
+}
+
+// History §9.4 rebuild fence (issue #669).
+
+fn history_db_path(dir: &Path) -> PathBuf {
+    dir.join("history.db")
+}
+
+fn open_production_conn(path: &Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = FULL;
+         PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
+         PRAGMA wal_autocheckpoint = 1000;
+         PRAGMA journal_size_limit = 67108864;
+         PRAGMA temp_store = MEMORY;
+         PRAGMA trusted_schema = OFF;
+         PRAGMA recursive_triggers = OFF;",
+    )
+    .unwrap();
+    conn
+}
+
+fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut name = db_path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    db_path.with_file_name(name)
+}
+
+fn find_bad_main(dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rest = name.strip_prefix("history.db.bad-")?;
+            if rest.is_empty() || rest.ends_with("-wal") || rest.ends_with("-shm") {
+                return None;
+            }
+            Some(entry.path())
+        })
+}
+
+fn fence_trigger_count(path: &Path) -> i64 {
+    if !path.is_file() {
+        return 0;
+    }
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'praana_fence_%'",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn table_count(path: &Path, table: &str) -> i64 {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+        row.get(0)
+    })
+    .unwrap()
+}
+
+fn named_checkpoint_count(path: &Path, name: &str) -> i64 {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM projection_checkpoints WHERE projection_name = ?1",
+        [name],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+fn force_invalid_derived_checkpoint(dir: &Path) {
+    let conn = rusqlite::Connection::open(history_db_path(dir)).unwrap();
+    let payload: String = conn
+        .query_row(
+            "SELECT payload_json FROM projection_checkpoints WHERE projection_name = 'history_derived'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut value: Value = serde_json::from_str(&payload).unwrap();
+    value["search_schema_version"] = json!(99);
+    conn.execute(
+        "UPDATE projection_checkpoints SET payload_json = ?1 WHERE projection_name = 'history_derived'",
+        [serde_json::to_string(&value).unwrap()],
+    )
+    .unwrap();
+}
+
+fn fixed_history() -> praana_core::history::operation_ledger::HistoryService {
+    use praana_core::history::operation_ledger::{HistoryService, NullRecoveryProbe};
+    HistoryService {
+        session_ledger: None,
+        host_ledger: None,
+        session_id: Some(session_id()),
+        probe: Arc::new(NullRecoveryProbe),
+        now_ms: Arc::new(|| 1_700_000_000_000),
+    }
+}
+
+fn terminal_probe_result() -> praana_core::ui_contract::operation::StoredTerminalResult {
+    use praana_core::ui_contract::operation::StoredTerminalResult;
+    use praana_core::ui_contract::result::{
+        CoreErrorCode, CoreErrorDto, ErrorDetailsDto, ErrorRetryAdvice,
+    };
+    StoredTerminalResult::Error(CoreErrorDto {
+        code: CoreErrorCode::DurabilityFailed,
+        message: "fence probe".to_string(),
+        retry: ErrorRetryAdvice::SameOperation,
+        details: ErrorDetailsDto::None,
+    })
+}
+
+fn domain_code(err: &praana_core::ui_contract::result::CoreErrorDto) -> String {
+    use praana_core::ui_contract::result::ErrorDetailsDto;
+    match &err.details {
+        ErrorDetailsDto::Domain { code, .. } => code.clone(),
+        other => format!("non-domain:{other:?}"),
+    }
+}
+
+#[cfg(feature = "failpoints")]
+fn ensure_wal_sidecars(path: &Path) {
+    let conn = open_production_conn(path);
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('wal_probe', '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(
+        sidecar_path(path, "-wal").is_file() || sidecar_path(path, "-shm").is_file(),
+        "a committed write did not create WAL sidecars"
+    );
+}
+
+#[cfg(feature = "failpoints")]
+fn insert_reserved_probe(
+    conn: &rusqlite::Connection,
+    operation_id: &str,
+) -> rusqlite::Result<usize> {
+    let zeros = "0".repeat(64);
+    conn.execute(
+        "INSERT INTO operation_records(operation_id, ui_contract_schema_version, operation_kind, request_sha256, status, session_id, planned_effects_json, result_json, result_sha256, first_canonical_sequence, terminal_canonical_sequence, created_at_ms, finished_at_ms)
+         VALUES (?1, 1, 'turn_submit', ?2, 'reserved', ?3, '{}', NULL, NULL, NULL, NULL, 1700000000000, NULL)",
+        rusqlite::params![operation_id, zeros, SESSION_ID],
+    )
+}
+
+#[cfg(feature = "failpoints")]
+fn poll_until(bound: Duration, mut pred: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    loop {
+        if pred() {
+            return true;
+        }
+        if start.elapsed() >= bound {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "failpoints")]
+static REBUILD_WRITER_CONTENDED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "failpoints")]
+fn rebuild_writer_busy(count: i32) -> bool {
+    REBUILD_WRITER_CONTENDED.store(true, Ordering::SeqCst);
+    if count >= 2000 {
+        return false;
+    }
+    thread::sleep(Duration::from_millis(5));
+    true
+}
+
+#[cfg(feature = "failpoints")]
+fn rebuild_writer_no_retry(_count: i32) -> bool {
+    false
+}
+
+#[test]
+fn fence_t1_stale_ledger_writes_are_rejected_and_ledger_stays_usable() {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+    use praana_core::ui_contract::operation::OperationStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["hello world"], &["the answer"]);
+    let history = fixed_history();
+    let reserved_id = OperationId(ulid::Ulid::generate());
+    let reserved_command = turn_submit_command(reserved_id);
+    let ledger = open_session_ledger(&history_db_path(dir.path()), session_id()).unwrap();
+    reserve_operation_sync(&ledger, &reserved_command, &history).unwrap();
+    let before = dump_operation_records(&history_db_path(dir.path()));
+    force_invalid_derived_checkpoint(dir.path());
+    HistoryProjector::new(&session.db)
+        .project(&session.log)
+        .unwrap();
+
+    let fresh_id = OperationId(ulid::Ulid::generate());
+    let fresh_command = turn_submit_command(fresh_id);
+    let mut reserve_markers = Vec::new();
+    for _ in 0..3 {
+        let err = reserve_operation_sync(&ledger, &fresh_command, &history).unwrap_err();
+        let code = domain_code(&err);
+        assert!(
+            code.contains("HISTORY_FILE_REPLACED"),
+            "reserve marker missing: {code}"
+        );
+        reserve_markers.push(code);
+    }
+    assert_eq!(reserve_markers[0], reserve_markers[1]);
+    assert_eq!(reserve_markers[1], reserve_markers[2]);
+
+    let mut complete_markers = Vec::new();
+    for _ in 0..3 {
+        let err = ledger
+            .complete_terminal(
+                &reserved_id,
+                &terminal_probe_result(),
+                None,
+                None,
+                1_700_000_000_000,
+            )
+            .unwrap_err();
+        let praana_core::history::operation_ledger::LedgerError::Storage(text) = err else {
+            panic!("expected storage error, got {err:?}");
+        };
+        assert!(
+            text.contains("HISTORY_FILE_REPLACED"),
+            "complete marker missing: {text}"
+        );
+        complete_markers.push(text);
+    }
+    assert_eq!(complete_markers[0], complete_markers[1]);
+    assert_eq!(complete_markers[1], complete_markers[2]);
+
+    let stored = ledger.lookup(&reserved_id).unwrap().unwrap();
+    assert!(matches!(stored.dto.status, OperationStatus::Reserved));
+    let bad = find_bad_main(dir.path()).expect("renamed-aside database");
+    assert_eq!(dump_operation_records(&bad), before);
+    let live_ledger = open_session_ledger(&history_db_path(dir.path()), session_id()).unwrap();
+    assert_eq!(dump_operation_records(&history_db_path(dir.path())), before);
+    assert!(matches!(
+        live_ledger
+            .lookup(&reserved_id)
+            .unwrap()
+            .unwrap()
+            .dto
+            .status,
+        OperationStatus::Reserved
+    ));
+    let _ = fresh_id;
+}
+
+#[test]
+fn fence_t2_stale_owner_handles_cannot_write() {
+    use praana_core::history::artifact::{ArtifactPolicy, ArtifactStore};
+    use praana_core::state::{StateService, StateWriteContext};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let stale_db = HistoryDatabase::open(&db_path).unwrap();
+    let stale_artifacts = ArtifactStore::open(
+        &db_path,
+        ArtifactPolicy {
+            inline_tokens: 0,
+            batch_inline_tokens: 0,
+            preview_tokens: 160,
+            orphan_retention_days: 7,
+        },
+        session.clock.clone(),
+    )
+    .unwrap();
+    // create_task requires an assistant tool-call source, and that turn has to
+    // be closed before another turn starts. Finish the batch, then open the
+    // service so its graph matches the log head.
+    let source_turn = ulid("C0");
+    let source_attempt = ulid("C1");
+    let source_step = ulid("C2");
+    let source_batch = ulid("C3");
+    let source_user = session.user_message(&source_turn, &["task source"]);
+    session.turn_started(&source_turn, &source_user);
+    session.assistant_step(
+        &source_turn,
+        &source_attempt,
+        &source_step,
+        None,
+        None,
+        None,
+        &[("create_task", json!({"title": "fence"}))],
+    );
+    let (finish_id, _) = session.tool_execution(
+        &source_turn,
+        &source_attempt,
+        &source_step,
+        &source_batch,
+        "call_001",
+        0,
+        "create_task",
+        ToolBody::Inline("ok"),
+    );
+    session.batch_completed(
+        &source_turn,
+        &source_attempt,
+        &source_step,
+        &source_batch,
+        &["call_001"],
+        &[finish_id],
+    );
+    let close_attempt = ulid("C4");
+    let close_step = ulid("C5");
+    session.assistant_step(
+        &source_turn,
+        &close_attempt,
+        &close_step,
+        Some("done"),
+        None,
+        None,
+        &[],
+    );
+    session.turn_committed(&source_turn, &source_user, &close_step);
+    let mut stale_state = StateService::open(&session.log).unwrap();
+    let clock = praana_core::clock::SystemClock;
+    let ids = praana_core::id::MonotonicUlidGenerator::system();
+    let mut ctx = StateWriteContext {
+        log: &mut session.log,
+        ids: &ids,
+        clock: &clock,
+        turn_id: TurnId::from_str_canonical(&source_turn).unwrap(),
+        attempt_id: AttemptId::from_str_canonical(&source_attempt).unwrap(),
+        call_id: ToolCallId::from_str_canonical("call_001").unwrap(),
+        cancelled: false,
+        active_max_tokens: 4096,
+    };
+    stale_state
+        .create_task(&mut ctx, "fence", None)
+        .expect("create_task before the rebuild");
+    assert!(stale_state.checkpoint_due());
+    drop(ctx);
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "DELETE FROM projection_checkpoints WHERE projection_name = 'state_graph'",
+            [],
+        )
+        .unwrap();
+    }
+
+    HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap();
+    let bad = find_bad_main(dir.path()).expect("renamed-aside database");
+    let state_live = named_checkpoint_count(&db_path, "state_graph");
+    let state_bad = named_checkpoint_count(&bad, "state_graph");
+    stale_state.persist_checkpoint(&session.log);
+    assert!(
+        stale_state.checkpoint_due(),
+        "stale state checkpoint write cleared checkpoint_due"
+    );
+    assert_eq!(named_checkpoint_count(&db_path, "state_graph"), state_live);
+    assert_eq!(named_checkpoint_count(&bad, "state_graph"), state_bad);
+
+    let docs_live = table_count(&db_path, "search_documents");
+    let docs_bad = table_count(&bad, "search_documents");
+    let turn_id = ulid("D0");
+    let attempt_id = ulid("D1");
+    let step_id = ulid("D2");
+    let user_message_id = session.user_message(&turn_id, &["after rebuild"]);
+    session.turn_started(&turn_id, &user_message_id);
+    session.assistant_step(
+        &turn_id,
+        &attempt_id,
+        &step_id,
+        Some("later"),
+        None,
+        None,
+        &[],
+    );
+    session.turn_committed(&turn_id, &user_message_id, &step_id);
+    let projected = HistoryProjector::new(&stale_db).project_without_rebuild(&session.log);
+    assert!(
+        projected.is_err(),
+        "stale history projection write succeeded"
+    );
+    assert_eq!(table_count(&db_path, "search_documents"), docs_live);
+    assert_eq!(table_count(&bad, "search_documents"), docs_bad);
+
+    let samples_live = table_count(&db_path, "telemetry_samples");
+    let samples_bad = table_count(&bad, "telemetry_samples");
+    let artifact_write = stale_artifacts.record_telemetry_sample("fence-probe", None, 1, "{}", 1);
+    assert!(artifact_write.is_err(), "stale artifact write succeeded");
+    assert_eq!(table_count(&db_path, "telemetry_samples"), samples_live);
+    assert_eq!(table_count(&bad, "telemetry_samples"), samples_bad);
+
+    let fresh_artifacts = ArtifactStore::open(
+        &db_path,
+        ArtifactPolicy {
+            inline_tokens: 0,
+            batch_inline_tokens: 0,
+            preview_tokens: 160,
+            orphan_retention_days: 7,
+        },
+        session.clock.clone(),
+    )
+    .unwrap();
+    fresh_artifacts
+        .record_telemetry_sample("fence-probe", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(table_count(&db_path, "telemetry_samples"), samples_live + 1);
+    assert_eq!(table_count(&bad, "telemetry_samples"), samples_bad);
+    HistoryProjector::new(&session.db)
+        .project_without_rebuild(&session.log)
+        .unwrap();
+    assert!(table_count(&db_path, "search_documents") > docs_live);
+    assert_eq!(table_count(&bad, "search_documents"), docs_bad);
+}
+
+#[test]
+fn fence_t3_tombstone_covers_every_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let stale = open_production_conn(&db_path);
+    HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap();
+    let bad = find_bad_main(dir.path()).expect("renamed-aside database");
+    let bad_conn = rusqlite::Connection::open(&bad).unwrap();
+    let mut tables = bad_conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .unwrap();
+    let table_rows = tables
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    drop(tables);
+    let mut fenced = Vec::new();
+    for (name, sql) in table_rows {
+        let virtual_table = sql.as_deref().is_some_and(|sql| {
+            sql.trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE VIRTUAL")
+        });
+        if virtual_table {
+            continue;
+        }
+        fenced.push(name);
+    }
+    assert!(!fenced.is_empty());
+    for name in &fenced {
+        for event in ["insert", "update", "delete"] {
+            let trigger = format!("praana_fence_{name}_{event}");
+            let body: String = bad_conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+                    [&trigger],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| panic!("missing trigger {trigger}"));
+            assert!(
+                body.contains("HISTORY_FILE_REPLACED"),
+                "{trigger} body: {body}"
+            );
+        }
+    }
+    let trigger_count = fence_trigger_count(&bad);
+    assert_eq!(trigger_count, fenced.len() as i64 * 3);
+    assert_eq!(fence_trigger_count(&db_path), 0);
+
+    let meta_bad = table_count(&bad, "schema_meta");
+    let meta_live = table_count(&db_path, "schema_meta");
+    let docs_bad = table_count(&bad, "search_documents");
+    let docs_live = table_count(&db_path, "search_documents");
+    let ordinary = stale.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('fence_probe_t3', '1')",
+        [],
+    );
+    assert!(ordinary.is_err(), "stale ordinary write succeeded");
+    assert!(
+        ordinary
+            .unwrap_err()
+            .to_string()
+            .contains("HISTORY_FILE_REPLACED"),
+        "ordinary stale write did not raise the fence"
+    );
+    let fts = stale.execute("INSERT INTO search_fts(search_fts) VALUES('rebuild')", []);
+    assert!(fts.is_err(), "stale search_fts rebuild command succeeded");
+    let fts_text = fts.unwrap_err().to_string();
+    assert!(
+        fts_text.to_lowercase().contains("constraint failed"),
+        "search_fts fence error: {fts_text}"
+    );
+    assert_eq!(table_count(&bad, "schema_meta"), meta_bad);
+    assert_eq!(table_count(&db_path, "schema_meta"), meta_live);
+    assert_eq!(table_count(&bad, "search_documents"), docs_bad);
+    assert_eq!(table_count(&db_path, "search_documents"), docs_live);
+}
+
+#[cfg(feature = "failpoints")]
+fn run_rebuild_window(label: &str, writer_commits_first: bool) {
+    use praana_core::{register_rebuild_hook, RebuildHookKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    drop(session);
+    let db_path = history_db_path(dir.path());
+    let operation_id = ulid::Ulid::generate().to_string();
+    let writer = open_production_conn(&db_path);
+    writer.busy_handler(Some(rebuild_writer_busy)).unwrap();
+    let hook = register_rebuild_hook(&db_path, &[(label, RebuildHookKind::Pause)]);
+    REBUILD_WRITER_CONTENDED.store(false, Ordering::SeqCst);
+    let dir_buf = dir.path().to_path_buf();
+    let rebuild_path = db_path.clone();
+    let rebuild = thread::spawn(move || {
+        let log = EventLogStore::open(&dir_buf, SESSION_ID).expect("open log");
+        let db = HistoryDatabase::open(&rebuild_path).expect("open db");
+        HistoryProjector::new(&db).rebuild(&log)
+    });
+    assert!(
+        hook.wait_paused(label, Duration::from_secs(5)),
+        "{label}: rebuild did not pause"
+    );
+    let finished = Arc::new(AtomicBool::new(false));
+    let outcome = Arc::new(std::sync::Mutex::new(None));
+    let finished_flag = Arc::clone(&finished);
+    let outcome_slot = Arc::clone(&outcome);
+    let writer_id = operation_id.clone();
+    let writer_thread = thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            writer
+                .execute_batch("BEGIN IMMEDIATE;")
+                .map_err(|err| err.to_string())?;
+            insert_reserved_probe(&writer, &writer_id).map_err(|err| err.to_string())?;
+            writer
+                .execute_batch("COMMIT;")
+                .map_err(|err| err.to_string())?;
+            Ok(())
+        })();
+        *outcome_slot.lock().unwrap() = Some(result);
+        finished_flag.store(true, Ordering::SeqCst);
+    });
+    if writer_commits_first {
+        assert!(
+            poll_until(Duration::from_secs(5), || finished.load(Ordering::SeqCst)),
+            "{label}: writer did not finish before the lock"
+        );
+        assert!(
+            !REBUILD_WRITER_CONTENDED.load(Ordering::SeqCst),
+            "{label}: writer contended before the rebuild took the lock"
+        );
+    } else {
+        assert!(
+            poll_until(Duration::from_secs(5), || {
+                REBUILD_WRITER_CONTENDED.load(Ordering::SeqCst)
+            }),
+            "{label}: writer was not seen contending for the write lock"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "{label}: writer finished while the rebuild held the lock"
+        );
+    }
+    hook.resume();
+    let rebuild_result = rebuild.join().expect("rebuild thread");
+    rebuild_result.expect("rebuild");
+    writer_thread.join().expect("writer thread");
+    let writer_result = outcome.lock().unwrap().clone().expect("writer result");
+    let bad = find_bad_main(dir.path());
+    let in_live = dump_operation_records(&db_path)
+        .into_iter()
+        .any(|(id, _)| id == operation_id);
+    let in_bad = bad
+        .as_ref()
+        .map(|path| {
+            dump_operation_records(path)
+                .into_iter()
+                .any(|(id, _)| id == operation_id)
+        })
+        .unwrap_or(false);
+    if writer_commits_first {
+        writer_result.expect("writer commit");
+        assert!(in_live, "{label}: committed row missing from the live file");
+    } else {
+        let err = writer_result.expect_err("writer should fail");
+        assert!(
+            err.contains("HISTORY_FILE_REPLACED"),
+            "{label}: writer error: {err}"
+        );
+        assert!(!in_live, "{label}: rejected row is in the live file");
+        assert!(
+            !in_bad,
+            "{label}: rejected row is in the renamed-aside file"
+        );
+    }
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t4_writer_before_lock_is_in_the_snapshot() {
+    run_rebuild_window("history.rebuild_before_begin", true);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t4_writer_after_begin_is_rejected() {
+    run_rebuild_window("history.rebuild_after_begin", false);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t4_writer_after_copy_is_rejected() {
+    run_rebuild_window("history.rebuild_after_copy", false);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t4_writer_after_rename_is_rejected() {
+    run_rebuild_window("history.rebuild_after_rename", false);
+}
+
+fn mix_seed(mut state: u64) -> u64 {
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    state
+}
+
+#[test]
+fn fence_t5_seeded_writer_stress() {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+
+    const SEEDS: u64 = 8;
+    let mut failed = Vec::new();
+    for seed in 0..SEEDS {
+        if let Err(message) = fence_stress_seed(seed) {
+            eprintln!("fence stress seed {seed} failed: {message}");
+            failed.push((seed, message));
+        }
+    }
+    assert!(failed.is_empty(), "fence stress failed seeds: {failed:?}");
+
+    fn fence_stress_seed(seed: u64) -> Result<(), String> {
+        let dir = tempfile::tempdir().unwrap();
+        let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+        let history = fixed_history();
+        let seeded = OperationId(ulid::Ulid::generate());
+        let ledger = Arc::new(
+            open_session_ledger(&history_db_path(dir.path()), session_id())
+                .map_err(|err| err.to_string())?,
+        );
+        reserve_operation_sync(&ledger, &turn_submit_command(seeded), &history)
+            .map_err(|err| format!("seed reserve: {}", domain_code(&err)))?;
+        let before = dump_operation_records(&history_db_path(dir.path()));
+        let mut state = seed.wrapping_add(0x9E37);
+        state = mix_seed(state);
+        let writers = 2 + (state % 3) as usize;
+        state = mix_seed(state);
+        let spins = (state % 8) as usize;
+        let stop = Arc::new(AtomicBool::new(false));
+        let records = Arc::new(std::sync::Mutex::new(
+            Vec::<(String, Result<(), String>)>::new(),
+        ));
+        thread::scope(|scope| {
+            for _ in 0..writers {
+                let ledger = Arc::clone(&ledger);
+                let history = &history;
+                let stop = Arc::clone(&stop);
+                let records = Arc::clone(&records);
+                scope.spawn(move || {
+                    let mut made = 0usize;
+                    while !stop.load(Ordering::SeqCst) && made < 20 {
+                        made += 1;
+                        let id = OperationId(ulid::Ulid::generate());
+                        let command = turn_submit_command(id);
+                        let outcome = match reserve_operation_sync(&ledger, &command, history) {
+                            Ok(_) => Ok(()),
+                            Err(err) => Err(domain_code(&err)),
+                        };
+                        records.lock().unwrap().push((id.to_string(), outcome));
+                    }
+                });
+            }
+            for _ in 0..spins {
+                thread::yield_now();
+            }
+            HistoryProjector::new(&session.db)
+                .rebuild(&session.log)
+                .map_err(|err| err.to_string())
+                .expect("rebuild");
+            stop.store(true, Ordering::SeqCst);
+        });
+        let records = records.lock().unwrap().clone();
+        let live_path = history_db_path(dir.path());
+        let live = dump_operation_records(&live_path);
+        let live_ids: HashSet<String> = live.iter().map(|(id, _)| id.clone()).collect();
+        let before_ids: HashSet<String> = before.iter().map(|(id, _)| id.clone()).collect();
+        let mut ok_ids = HashSet::new();
+        for (id, outcome) in &records {
+            match outcome {
+                Ok(()) => {
+                    if !live_ids.contains(id) {
+                        return Err(format!(
+                            "seed {seed}: ok id {id} missing from the live file"
+                        ));
+                    }
+                    ok_ids.insert(id.clone());
+                }
+                Err(text) => {
+                    if !text.contains("HISTORY_FILE_REPLACED")
+                        && !text.contains("database is locked")
+                    {
+                        return Err(format!(
+                            "seed {seed}: unexpected reserve error for {id}: {text}"
+                        ));
+                    }
+                }
+            }
+        }
+        let bad = find_bad_main(dir.path()).ok_or_else(|| format!("seed {seed}: no aside file"))?;
+        let bad_ids: HashSet<String> = dump_operation_records(&bad)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        for id in &bad_ids {
+            if !live_ids.contains(id) {
+                return Err(format!(
+                    "seed {seed}: id {id} is in the aside file and not in the live file"
+                ));
+            }
+        }
+        let mut expect = before_ids;
+        expect.extend(ok_ids);
+        if live_ids != expect {
+            return Err(format!(
+                "seed {seed}: live ids {live_ids:?} != pre-rebuild plus ok ids {expect:?}"
+            ));
+        }
+        for (id, columns) in &before {
+            let found = live.iter().find(|(live_id, _)| live_id == id);
+            if found.map(|(_, live_columns)| live_columns) != Some(columns) {
+                return Err(format!("seed {seed}: pre-rebuild row {id} changed"));
+            }
+        }
+        let conn = rusqlite::Connection::open(&live_path).unwrap();
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        if integrity != "ok" {
+            return Err(format!("seed {seed}: integrity_check {integrity}"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn fence_t6_failure_before_swap_leaves_original_usable() {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+    use praana_core::ui_contract::operation::OperationStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let history = fixed_history();
+    let operation_id = OperationId(ulid::Ulid::generate());
+    let ledger = open_session_ledger(&history_db_path(dir.path()), session_id()).unwrap();
+    reserve_operation_sync(&ledger, &turn_submit_command(operation_id), &history).unwrap();
+    drop(ledger);
+    {
+        let writer = rusqlite::Connection::open(history_db_path(dir.path())).unwrap();
+        writer
+            .execute(
+                "INSERT INTO artifact_blobs(blob_id, sha256, canonical_result, byte_count, line_count, estimated_tokens, token_estimator_schema_version, token_estimator_id, token_input_sha256, result_encoding, redaction_version, redaction_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, NULL, 1, 1, 'test-estimator', ?5, 'rfc8785-json', 'v1', '{}', 1700000000000)",
+                rusqlite::params![
+                    ulid("B9"),
+                    "f".repeat(64),
+                    b"corrupt orphan body",
+                    17i64,
+                    "0".repeat(64),
+                ],
+            )
+            .unwrap();
+    }
+    let error = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_eq!(error.code(), "HISTORY_CANONICAL_DB_CORRUPT");
+    assert_eq!(fence_trigger_count(&history_db_path(dir.path())), 0);
+    let ledger = open_session_ledger(&history_db_path(dir.path()), session_id()).unwrap();
+    let fresh = OperationId(ulid::Ulid::generate());
+    reserve_operation_sync(&ledger, &turn_submit_command(fresh), &history).unwrap();
+    assert!(matches!(
+        ledger.lookup(&operation_id).unwrap().unwrap().dto.status,
+        OperationStatus::Reserved
+    ));
+}
+
+#[test]
+fn fence_t7_closing_old_connection_keeps_live_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let before = dump_operation_records(&db_path);
+    let stale = open_production_conn(&db_path);
+    HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap();
+    let version: String = {
+        let probe = rusqlite::Connection::open(&db_path).unwrap();
+        let version: String = probe
+            .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+            .unwrap();
+        println!("sqlite_version={version}");
+        version
+    };
+    assert!(!version.is_empty(), "sqlite_version={version}");
+    let live = open_production_conn(&db_path);
+    live.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    live.execute(
+        "INSERT INTO telemetry_samples(name, event_sequence, value_integer, dimensions_json, occurred_at_ms)
+         VALUES ('t7-unflushed', NULL, 1, '{}', 1)",
+        [],
+    )
+    .unwrap();
+    assert!(sidecar_path(&db_path, "-wal").is_file());
+    assert!(sidecar_path(&db_path, "-shm").is_file());
+    drop(stale);
+    assert!(
+        sidecar_path(&db_path, "-wal").is_file(),
+        "closing the pre-rebuild connection removed history.db-wal"
+    );
+    assert!(
+        sidecar_path(&db_path, "-shm").is_file(),
+        "closing the pre-rebuild connection removed history.db-shm"
+    );
+    let third = rusqlite::Connection::open(&db_path).unwrap();
+    assert_eq!(dump_operation_records(&db_path), before);
+    let visible: i64 = third
+        .query_row(
+            "SELECT COUNT(*) FROM telemetry_samples WHERE name = 't7-unflushed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        visible, 0,
+        "uncommitted insert was visible to a new connection"
+    );
+    live.execute_batch("COMMIT;").unwrap();
+    let visible: i64 = third
+        .query_row(
+            "SELECT COUNT(*) FROM telemetry_samples WHERE name = 't7-unflushed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        visible, 1,
+        "committed row was lost after the old connection closed"
+    );
+    assert!(sidecar_path(&db_path, "-wal").is_file());
+    assert!(sidecar_path(&db_path, "-shm").is_file());
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+fn crash_fenced_rebuild(point: &str) {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let history = fixed_history();
+    let operation_id = OperationId(ulid::Ulid::generate());
+    let ledger = open_session_ledger(&history_db_path(dir.path()), session_id()).unwrap();
+    reserve_operation_sync(&ledger, &turn_submit_command(operation_id), &history).unwrap();
+    drop(ledger);
+    let before = dump_operation_records(&history_db_path(dir.path()));
+    drop(session);
+    let output = spawn_crash_child(dir.path(), point, "rebuild");
+    assert_abort(&output, point);
+    let log = EventLogStore::open(dir.path(), SESSION_ID).unwrap();
+    let db = HistoryDatabase::open(&history_db_path(dir.path())).unwrap();
+    HistoryProjector::new(&db).rebuild(&log).unwrap();
+    assert!(!dir.path().join("history.db.rebuild").exists());
+    let live_names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name == "history.db")
+        .collect();
+    assert_eq!(live_names, vec!["history.db".to_string()], "{point}");
+    assert_eq!(
+        dump_operation_records(&history_db_path(dir.path())),
+        before,
+        "{point}"
+    );
+}
+
+#[cfg(all(feature = "failpoints", unix))]
+#[test]
+fn fence_t8_crash_during_fenced_rebuild_keeps_a_rebuildable_database() {
+    crash_fenced_rebuild("history.rebuild_after_copy");
+    crash_fenced_rebuild("history.rebuild_after_rename");
+}
+
+#[cfg(feature = "failpoints")]
+fn run_failed_swap(
+    actions: &[(&str, praana_core::RebuildHookKind)],
+) -> (tempfile::TempDir, ArtifactError, rusqlite::Connection) {
+    use praana_core::register_rebuild_hook;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    ensure_wal_sidecars(&db_path);
+    let probe = open_production_conn(&db_path);
+    let _hook = register_rebuild_hook(&db_path, actions);
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    (dir, err, probe)
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t9_swap_replace_is_undone() {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    ensure_wal_sidecars(&db_path);
+    let before = dump_operation_records(&db_path);
+    let history = fixed_history();
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_swap_replace", RebuildHookKind::Fail)],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert!(
+        err.message().contains("history.rebuild_swap_replace"),
+        "{}",
+        err.message()
+    );
+    assert!(db_path.is_file());
+    assert_eq!(dump_operation_records(&db_path), before);
+    assert_eq!(fence_trigger_count(&db_path), 0);
+    assert!(sidecar_path(&db_path, "-wal").is_file() || sidecar_path(&db_path, "-shm").is_file());
+    let ledger = open_session_ledger(&db_path, session_id()).unwrap();
+    reserve_operation_sync(
+        &ledger,
+        &turn_submit_command(OperationId(ulid::Ulid::generate())),
+        &history,
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t9_swap_sidecar_is_undone() {
+    use praana_core::history::operation_ledger::{open_session_ledger, reserve_operation_sync};
+    use praana_core::ui_contract::ids::OperationId;
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    ensure_wal_sidecars(&db_path);
+    let before = dump_operation_records(&db_path);
+    let history = fixed_history();
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_swap_sidecar", RebuildHookKind::Fail)],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert!(
+        err.message().contains("history.rebuild_swap_sidecar"),
+        "{}",
+        err.message()
+    );
+    assert!(db_path.is_file());
+    assert_eq!(dump_operation_records(&db_path), before);
+    assert_eq!(fence_trigger_count(&db_path), 0);
+    assert!(sidecar_path(&db_path, "-wal").is_file() || sidecar_path(&db_path, "-shm").is_file());
+    let ledger = open_session_ledger(&db_path, session_id()).unwrap();
+    reserve_operation_sync(
+        &ledger,
+        &turn_submit_command(OperationId(ulid::Ulid::generate())),
+        &history,
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+fn assert_undo_stopped(err: &ArtifactError, dir: &Path, probe: &rusqlite::Connection) {
+    let text = err.message();
+    assert!(text.contains("swap failed"), "{text}");
+    assert!(text.contains("manual recovery is needed"), "{text}");
+    assert!(text.contains("other connections are not fenced"), "{text}");
+    assert!(
+        text.contains(&history_db_path(dir).display().to_string()),
+        "{text}"
+    );
+    // The aside file's WAL may already have been renamed back to the live
+    // sidecar names, so a fresh open of that path is a torn pair. The
+    // connection that still holds the inode can see whether a trigger committed.
+    assert_eq!(fence_trigger_count(&history_db_path(dir)), 0, "live file");
+    assert_eq!(
+        fence_trigger_count(&dir.join("history.db.rebuild")),
+        0,
+        "rebuild file"
+    );
+    let probe_triggers: i64 = probe
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'praana_fence_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(probe_triggers, 0, "old connection");
+    let operation_id = ulid::Ulid::generate().to_string();
+    probe
+        .execute_batch("BEGIN IMMEDIATE;")
+        .unwrap_or_else(|err| {
+            panic!("old connection could not start a write after rollback: {err}")
+        });
+    insert_reserved_probe(probe, &operation_id)
+        .unwrap_or_else(|err| panic!("old connection could not write after rollback: {err}"));
+    probe.execute_batch("ROLLBACK;").unwrap();
+}
+
+#[cfg(feature = "failpoints")]
+fn seed_wal_only_row(path: &Path) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = FULL;
+         PRAGMA wal_autocheckpoint = 0;",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('old_wal_only', '1')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )
+    .unwrap();
+    assert!(
+        sidecar_path(path, "-wal").is_file(),
+        "the seeded row is not WAL-only"
+    );
+    conn
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t9_undo_main_quarantines_orphan_sidecars() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    // A row that exists only in the old WAL: if that WAL is left beside a
+    // missing main file, the next open promotes history.db.rebuild and
+    // replays these frames into the promoted database.
+    let seeded = seed_wal_only_row(&db_path);
+    let probe = open_production_conn(&db_path);
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_swap_replace", RebuildHookKind::Fail),
+            ("history.rebuild_swap_undo_main", RebuildHookKind::Fail),
+        ],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert_undo_stopped(&err, dir.path(), &probe);
+    assert!(!db_path.is_file(), "history.db should not be restored");
+    // A missing main file must never be left beside a live-named WAL/SHM.
+    assert!(
+        !sidecar_path(&db_path, "-wal").is_file(),
+        "orphan WAL left beside a missing history.db"
+    );
+    assert!(
+        !sidecar_path(&db_path, "-shm").is_file(),
+        "orphan SHM left beside a missing history.db"
+    );
+    // Keep the seeding connection open past the assertions: closing it would
+    // checkpoint into the aside inode and remove sidecars by name.
+    std::mem::forget(seeded);
+    let fresh = HistoryDatabase::open(&db_path).unwrap();
+    let conn = rusqlite::Connection::open(fresh.path()).unwrap();
+    let replayed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM schema_meta WHERE key = 'old_wal_only'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        replayed, 0,
+        "old WAL frames were replayed into the promoted database"
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t9_undo_first_stops_without_a_live_main() {
+    use praana_core::RebuildHookKind;
+
+    let (dir, err, probe) = run_failed_swap(&[
+        ("history.rebuild_swap_replace", RebuildHookKind::Fail),
+        ("history.rebuild_swap_undo_first", RebuildHookKind::Fail),
+    ]);
+    assert_undo_stopped(&err, dir.path(), &probe);
+    assert!(!history_db_path(dir.path()).is_file());
+    assert!(!sidecar_path(&history_db_path(dir.path()), "-wal").is_file());
+    assert!(!sidecar_path(&history_db_path(dir.path()), "-shm").is_file());
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_fsync_error_keeps_the_swap() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_after_replace_fsync", RebuildHookKind::Fail)],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert!(
+        err.message()
+            .contains("history.rebuild_after_replace_fsync"),
+        "{}",
+        err.message()
+    );
+    let bad = find_bad_main(dir.path()).expect("aside file");
+    assert!(fence_trigger_count(&bad) > 0);
+    assert_eq!(fence_trigger_count(&db_path), 0);
+    session
+        .db
+        .record_telemetry_sample("t10-fsync", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(table_count(&db_path, "telemetry_samples"), 1);
+    assert_eq!(named_sample_count(&bad, "t10-fsync"), 0);
+}
+
+#[cfg(feature = "failpoints")]
+fn named_sample_count(path: &Path, name: &str) -> i64 {
+    if !path.is_file() {
+        return 0;
+    }
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM telemetry_samples WHERE name = ?1",
+        [name],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_commit_error_is_fence_incomplete() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let probe = open_production_conn(&db_path);
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_commit", RebuildHookKind::Fail)],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert!(
+        err.message().contains("fence incomplete"),
+        "{}",
+        err.message()
+    );
+    if let Some(bad) = find_bad_main(dir.path()) {
+        assert_eq!(fence_trigger_count(&bad), 0);
+    }
+    let operation_id = ulid::Ulid::generate().to_string();
+    probe.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    insert_reserved_probe(&probe, &operation_id).expect("old handle is not fenced");
+    probe.execute_batch("ROLLBACK;").unwrap();
+    session
+        .db
+        .record_telemetry_sample("t10-commit", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(named_sample_count(&db_path, "t10-commit"), 1);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_commit_failure_releases_the_write_lock() {
+    use praana_core::{register_rebuild_hook, RebuildHookKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    drop(session);
+    let db_path = history_db_path(dir.path());
+    let writer = open_production_conn(&db_path);
+    writer.busy_handler(Some(rebuild_writer_no_retry)).unwrap();
+    let hook = register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_commit", RebuildHookKind::Fail),
+            ("history.rebuild_reopen", RebuildHookKind::Pause),
+        ],
+    );
+    let dir_buf = dir.path().to_path_buf();
+    let rebuild_path = db_path.clone();
+    let rebuild = thread::spawn(move || {
+        let log = EventLogStore::open(&dir_buf, SESSION_ID).expect("open log");
+        let db = HistoryDatabase::open(&rebuild_path).expect("open db");
+        HistoryProjector::new(&db).rebuild(&log)
+    });
+    assert!(
+        hook.wait_paused("history.rebuild_reopen", Duration::from_secs(5)),
+        "rebuild did not pause after the failed commit"
+    );
+    writer
+        .execute_batch("BEGIN IMMEDIATE;")
+        .expect("write lock still held after the failed commit");
+    writer.execute_batch("ROLLBACK;").unwrap();
+    hook.resume();
+    let err = rebuild.join().expect("rebuild thread").unwrap_err();
+    assert!(
+        err.message().contains("fence incomplete"),
+        "{}",
+        err.message()
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_combined_failure_keeps_the_fence_diagnostic() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let stale = open_production_conn(&db_path);
+    stale.busy_handler(Some(rebuild_writer_no_retry)).unwrap();
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_after_replace_fsync", RebuildHookKind::Fail),
+            ("history.rebuild_commit", RebuildHookKind::Fail),
+        ],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    let text = err.message();
+    // The earlier post-publication error must not hide the failed fence.
+    assert!(
+        text.contains("history.rebuild_after_replace_fsync"),
+        "{text}"
+    );
+    assert!(text.contains("fence incomplete"), "{text}");
+    // The failed commit was rolled back: no write lock is left behind and the
+    // stale handle is still writable (it is simply not fenced).
+    stale
+        .execute_batch("BEGIN IMMEDIATE;")
+        .expect("the failed fence commit kept the write lock");
+    stale.execute_batch("ROLLBACK;").unwrap();
+    // The swap completed, so the live file is the rebuilt database.
+    session
+        .db
+        .record_telemetry_sample("t10-combined", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(named_sample_count(&db_path, "t10-combined"), 1);
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t11_fresh_writer_survives_publication() {
+    use praana_core::{register_rebuild_hook, RebuildHookKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    drop(session);
+    let db_path = history_db_path(dir.path());
+    let hook = register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_after_publish", RebuildHookKind::Pause)],
+    );
+    let dir_buf = dir.path().to_path_buf();
+    let rebuild_path = db_path.clone();
+    let rebuild = thread::spawn(move || {
+        let log = EventLogStore::open(&dir_buf, SESSION_ID).expect("open log");
+        let db = HistoryDatabase::open(&rebuild_path).expect("open db");
+        HistoryProjector::new(&db).rebuild(&log)
+    });
+    assert!(
+        hook.wait_paused("history.rebuild_after_publish", Duration::from_secs(5)),
+        "rebuild did not pause after publication"
+    );
+    // A connection opened on the published file commits before the rebuild
+    // finishes. Its sidecars belong to the live database, not to the swap.
+    let fresh = open_production_conn(&db_path);
+    let operation_id = ulid::Ulid::generate().to_string();
+    fresh.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    insert_reserved_probe(&fresh, &operation_id).unwrap();
+    fresh.execute_batch("COMMIT;").unwrap();
+    hook.resume();
+    rebuild.join().expect("rebuild thread").expect("rebuild");
+    let verify = rusqlite::Connection::open(&db_path).unwrap();
+    let rows: i64 = verify
+        .query_row(
+            "SELECT COUNT(*) FROM operation_records WHERE operation_id = ?1",
+            [&operation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        rows, 1,
+        "a write acknowledged after publication was discarded"
+    );
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_reopen_error_keeps_the_tombstoned_connection() {
+    use praana_core::RebuildHookKind;
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let stale = open_production_conn(&db_path);
+    let samples_before = table_count(&db_path, "telemetry_samples");
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[("history.rebuild_reopen", RebuildHookKind::Fail)],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    assert!(
+        err.message().contains("history.rebuild_reopen"),
+        "{}",
+        err.message()
+    );
+    let write = session
+        .db
+        .record_telemetry_sample("t10-reopen", None, 1, "{}", 1);
+    assert!(
+        write.is_err(),
+        "write through the retained connection succeeded"
+    );
+    let bad = find_bad_main(dir.path()).expect("aside file");
+    assert_eq!(named_sample_count(&db_path, "t10-reopen"), 0);
+    assert_eq!(named_sample_count(&bad, "t10-reopen"), 0);
+    assert_eq!(table_count(&bad, "telemetry_samples"), samples_before);
+    let ordinary = stale.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('t10_reopen', '1')",
+        [],
+    );
+    assert!(ordinary.is_err(), "stale raw write succeeded");
+    assert!(
+        ordinary
+            .unwrap_err()
+            .to_string()
+            .contains("HISTORY_FILE_REPLACED"),
+        "retained inode did not raise the fence"
+    );
+    let fresh = HistoryDatabase::open(&db_path).unwrap();
+    fresh
+        .record_telemetry_sample("t10-reopen-fresh", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(named_sample_count(&db_path, "t10-reopen-fresh"), 1);
 }

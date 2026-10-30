@@ -2,9 +2,13 @@
 //!
 //! This module is compiled only by the `failpoints` feature. Normal production
 //! builds contain no hooks; feature-enabled debug builds remain inert unless a
-//! dedicated integration-test executable calls the explicit test arm.
+//! test arms an abort or registers a rebuild pause/fail hook. Neither path
+//! reads environment variables.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Armed {
@@ -49,5 +53,112 @@ pub fn hit(label: impl AsRef<str>) {
     let hit = HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if hit == armed.occurrence {
         std::process::abort();
+    }
+}
+
+/// What a registered rebuild hook does the next time its label is reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebuildHookKind {
+    /// Block the rebuild until [`RebuildHookGuard::resume`].
+    Pause,
+    /// Fail this pass with an `io::Error` and do not run it again.
+    Fail,
+}
+
+struct HookRegistration {
+    path: PathBuf,
+    actions: HashMap<String, RebuildHookKind>,
+    paused: Option<String>,
+}
+
+static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+static HOOK: Mutex<Option<HookRegistration>> = Mutex::new(None);
+static HOOK_CV: Condvar = Condvar::new();
+
+/// Clears the rebuild hook on drop and holds the process-wide registration lock.
+pub struct RebuildHookGuard {
+    _permit: MutexGuard<'static, ()>,
+}
+
+impl Drop for RebuildHookGuard {
+    fn drop(&mut self) {
+        let mut slot = HOOK.lock().unwrap_or_else(|err| err.into_inner());
+        *slot = None;
+        HOOK_CV.notify_all();
+    }
+}
+
+/// Register pause and fail actions for a rebuild of `path`. Other databases
+/// in the same process are ignored. Drop the guard to clear the registration.
+pub fn register_rebuild_hook(path: &Path, actions: &[(&str, RebuildHookKind)]) -> RebuildHookGuard {
+    let permit = HOOK_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let mut map = HashMap::new();
+    for (label, kind) in actions {
+        map.insert((*label).to_string(), *kind);
+    }
+    *HOOK.lock().unwrap_or_else(|err| err.into_inner()) = Some(HookRegistration {
+        path: path.to_path_buf(),
+        actions: map,
+        paused: None,
+    });
+    RebuildHookGuard { _permit: permit }
+}
+
+impl RebuildHookGuard {
+    /// Wait until the rebuild of the registered path pauses at `label`.
+    pub fn wait_paused(&self, label: &str, timeout: Duration) -> bool {
+        let guard = HOOK.lock().unwrap_or_else(|err| err.into_inner());
+        let (guard, wait) = HOOK_CV
+            .wait_timeout_while(guard, timeout, |slot| {
+                slot.as_ref().and_then(|state| state.paused.as_deref()) != Some(label)
+            })
+            .unwrap_or_else(|err| err.into_inner());
+        !wait.timed_out() && guard.as_ref().and_then(|state| state.paused.as_deref()) == Some(label)
+    }
+
+    /// Release a rebuild paused at a hook label.
+    pub fn resume(&self) {
+        let mut guard = HOOK.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(state) = guard.as_mut() {
+            state.paused = None;
+        }
+        HOOK_CV.notify_all();
+    }
+}
+
+pub(crate) fn check_rebuild_hook(label: &str, path: &Path) -> Result<(), std::io::Error> {
+    let mut guard = HOOK.lock().unwrap_or_else(|err| err.into_inner());
+    {
+        let Some(state) = guard.as_mut() else {
+            return Ok(());
+        };
+        if state.path != path {
+            return Ok(());
+        }
+        let Some(kind) = state.actions.get(label).copied() else {
+            return Ok(());
+        };
+        match kind {
+            RebuildHookKind::Fail => {
+                state.actions.remove(label);
+                #[allow(clippy::io_other_error)]
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("injected failure at {label}"),
+                ));
+            }
+            RebuildHookKind::Pause => {
+                state.paused = Some(label.to_owned());
+                state.actions.remove(label);
+            }
+        }
+    }
+    HOOK_CV.notify_all();
+    loop {
+        let still = guard.as_ref().and_then(|state| state.paused.as_deref()) == Some(label);
+        if !still {
+            return Ok(());
+        }
+        guard = HOOK_CV.wait(guard).unwrap_or_else(|err| err.into_inner());
     }
 }
