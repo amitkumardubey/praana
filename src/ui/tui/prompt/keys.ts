@@ -30,8 +30,13 @@ export const SUBMIT_BINDINGS: KeyBinding[] = [
  * submitting: an odd run of backslashes immediately before the caret (a
  * single trailing `\` escapes the newline). Even runs (`\\`, `\\\\`, …)
  * submit normally.
+ *
+ * Continuation only fires at the end of a line: the caret must be at the
+ * end of the buffer or immediately before a newline (end of the current
+ * line). A backslash elsewhere mid-line submits as before.
  */
 export function shouldContinueLine(text: string, caret: number): boolean {
+  if (caret < text.length && text[caret] !== "\n") return false;
   let backslashes = 0;
   for (let i = caret - 1; i >= 0 && text[i] === "\\"; i--) {
     backslashes += 1;

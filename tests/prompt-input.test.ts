@@ -115,16 +115,28 @@ describe("shouldContinueLine", () => {
     expect(shouldContinueLine("abc\\\\\\\\", 7)).toBe(false);
   });
 
-  it("looks at the run immediately before the caret", () => {
-    // `\` mid-text with caret right after it still continues.
-    expect(shouldContinueLine("a\\b", 2)).toBe(true);
-    // `\\` mid-text with caret after the pair submits.
-    expect(shouldContinueLine("a\\\\b", 3)).toBe(false);
+  it("continues only at the end of the buffer or at the end of a line", () => {
+    // End of buffer: odd run continues, even run submits.
+    expect(shouldContinueLine("abc\\", 4)).toBe(true);
+    expect(shouldContinueLine("abc\\\\", 5)).toBe(false);
+    // Caret immediately before a newline (end of a non-last line).
+    expect(shouldContinueLine("abc\\\ndef", 4)).toBe(true);
+    expect(shouldContinueLine("abc\\\\\ndef", 5)).toBe(false);
   });
 
-  it("is unaffected by text after the caret", () => {
-    expect(shouldContinueLine("\\ trailing", 1)).toBe(true);
-    expect(shouldContinueLine("abc\\x", 4)).toBe(true);
+  it("never continues when the caret is mid-line with text after it", () => {
+    // `\` mid-text with caret right after it: Enter submits as before.
+    expect(shouldContinueLine("a\\b", 2)).toBe(false);
+    expect(shouldContinueLine("\\ trailing", 1)).toBe(false);
+    expect(shouldContinueLine("abc\\x", 4)).toBe(false);
+    expect(shouldContinueLine("abc\\\\x", 5)).toBe(false);
+  });
+
+  it("continues at the end of a non-last line (caret before a newline)", () => {
+    // "echo abc\\\necho def": backslash at index 8, newline at 9.
+    expect(shouldContinueLine("echo abc\\\necho def", 9)).toBe(true);
+    expect(shouldContinueLine("echo abc\\\necho def", 8)).toBe(false);
+    expect(shouldContinueLine("echo abc\\\\\necho def", 10)).toBe(false);
   });
 });
 

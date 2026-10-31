@@ -308,7 +308,12 @@ export function Prompt(props: PromptProps) {
       const next = applyBackslashContinue(text, caret);
       textarea.setText(next.text);
       textarea.cursorOffset = next.caret;
-      textarea.insertText("\n");
+      // Insert the real newline only when the caret is now at the end of the
+      // buffer; continuing before an existing newline (end of a non-last
+      // line) already terminates the line and must not gain a second one.
+      if (textarea.cursorOffset >= textarea.plainText.length) {
+        textarea.insertText("\n");
+      }
       syncHeight(textarea.plainText);
       const nextPlain = textarea.plainText;
       resetPromptContinuationState(history, {
