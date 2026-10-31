@@ -198,13 +198,15 @@ before the refreshed token is saved is left as it is; a successful refresh is st
 saved if the caller cancels after the refresh request has started.
 
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
-storage (`store: false`), and omit `max_output_tokens`. Codex streams report
-backend failures, an incomplete response for any reason other than
+storage (`store: false`), and omit `max_output_tokens` and `temperature`. Codex
+streams report backend failures, an incomplete response for any reason other than
 `max_output_tokens`, or a missing terminal event as errors. A finished Codex
 answer is terminal on `response.completed`, `response.incomplete`,
-`response.done`, or a final `data: [DONE]` line. `max_output_tokens`
-finishes with the partial output and reason `length`. Other Responses providers
-keep the previous stream behaviour.
+`response.done`, or a final `data: [DONE]` line. A `max_output_tokens` cutoff of
+plain text finishes with the partial output and reason `length`. A cutoff while a
+tool call is still being sent is an error: `The response was cut off while the
+model was calling a tool.` Other Responses providers keep the previous stream
+behaviour.
 
 ## Slash commands
 

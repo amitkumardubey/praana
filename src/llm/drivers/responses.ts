@@ -17,7 +17,8 @@ import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { joinUrl } from "../url.js";
-import { extractAccountId } from "../../oauth-codex.js";
+import { APP_VERSION } from "../../app-version.js";
+import { extractAccountId } from "../jwt.js";
 
 function finiteToken(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -90,8 +91,6 @@ export class OpenAIResponsesDriver implements LlmDriver {
         const accountId = overrideToken
           ? extractAccountId(overrideToken)
           : new Headers(auth.headers).get("chatgpt-account-id")?.trim() || extractAccountId(token);
-        // The banner's config imports lead back to this driver; load its version after initialization.
-        const { APP_VERSION } = await import("../../app-banner.js");
         const codexHeaders = new Headers(headers);
         codexHeaders.set("Authorization", `Bearer ${token}`);
         codexHeaders.set("chatgpt-account-id", accountId);
@@ -124,7 +123,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         ? { store: false, instructions: instructions?.trim() ? instructions : "You are a helpful assistant." }
         : instructions ? { instructions } : {}),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
-      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(req.provider !== "openai-codex" && req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.provider !== "openai-codex" && req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),
     };
 
@@ -174,6 +173,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     const codex = req.provider === "openai-codex";
     let terminalReceived = false;
     let cappedByLength = false;
+    const openFunctionCalls = new Set<number | string>();
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
       const resp = parsed.response as {
         error?: { message?: string };
@@ -218,12 +218,17 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (codex && (type === "error" || type === "response.failed")) {
           throw new Error(responsesErrorMessage(parsed, type));
         }
+        let toolCutoff = false;
         if (codex && type === "response.incomplete") {
           const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
           if (details?.reason === "max_output_tokens") {
             terminalReceived = true;
-            finishReason = "length";
-            cappedByLength = true;
+            if (openFunctionCalls.size > 0) {
+              toolCutoff = true;
+            } else {
+              finishReason = "length";
+              cappedByLength = true;
+            }
           } else {
             throw new Error(responsesErrorMessage(parsed, type));
           }
@@ -233,6 +238,14 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (usage) {
           latestUsage = usage;
           yield { type: "usage", usage: latestUsage };
+        }
+        if (toolCutoff) {
+          yield {
+            type: "error",
+            error: new Error("The response was cut off while the model was calling a tool"),
+            retryable: false,
+          };
+          return;
         }
 
         if (type === "response.output_text.delta" || type === "response.reasoning_text.delta") {
@@ -258,10 +271,19 @@ export class OpenAIResponsesDriver implements LlmDriver {
               argsDelta: typeof item.arguments === "string" ? item.arguments : undefined,
             });
             if (res.started) {
+              openFunctionCalls.add(index);
               yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
             }
           }
           continue;
+        }
+
+        if (type === "response.function_call_arguments.done" || type === "response.output_item.done") {
+          const item = parsed.item as { type?: string } | undefined;
+          if (type === "response.function_call_arguments.done" || item?.type === "function_call") {
+            const index = (parsed.output_index as number | undefined) ?? 0;
+            openFunctionCalls.delete(index);
+          }
         }
 
         if (type === "response.function_call_arguments.delta") {

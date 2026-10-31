@@ -43,7 +43,10 @@ describe("Codex outgoing request", () => {
     expect(Object.fromEntries(new Headers(calls[0]!.init.headers))).toEqual({
       authorization: `Bearer ${token}`, "chatgpt-account-id": "stored-account", originator: "praana", "openai-beta": "responses=experimental", accept: "text/event-stream", "user-agent": `praana/${APP_VERSION.replace(/^v/, "")}`, "content-type": "application/json", "x-custom": "kept",
     });
-    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ model: "gpt-5.4", input: [{ role: "user", content: "hi" }], stream: true, store: false, instructions: "Follow project rules.", temperature: 0.2, reasoning: { effort: "high" } });
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(body).toEqual({ model: "gpt-5.4", input: [{ role: "user", content: "hi" }], stream: true, store: false, instructions: "Follow project rules.", reasoning: { effort: "high" } });
+    expect(body).not.toHaveProperty("temperature");
+    expect(body).not.toHaveProperty("max_output_tokens");
   });
   it.each([undefined, "", "  \n "])("provides non-empty instructions for %j", async (systemPrompt) => {
     await run({ ...req, systemPrompt, maxTokens: 100 });
@@ -149,9 +152,22 @@ describe("Responses stream termination", () => {
     ]);
   });
 
-  it("Codex keeps reason length when max_output_tokens cuts off a tool call", async () => {
+  it("Codex errors when max_output_tokens cuts off a tool call", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{" } },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events.map((event) => event.type)).toEqual(["tool_call_start", "error"]);
+    const error = events[1];
+    expect(error?.type === "error" && error.error.message).toBe("The response was cut off while the model was calling a tool");
+    expect(events.some((event) => event.type === "done")).toBe(false);
+  });
+
+  it("Codex keeps reason length when a finished tool call is followed by a text cutoff", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "" } },
+      { type: "response.function_call_arguments.done", output_index: 0 },
+      { type: "response.output_text.delta", delta: "partial" },
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
     ]);
     const done = events.at(-1);
