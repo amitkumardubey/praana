@@ -71,6 +71,39 @@ describe("ModelSelection", () => {
     expect(sel.indexValue).toBe(31);
   });
 
+  it("keeps the key while the model is filtered out but still exists in the full list", () => {
+    const sel = new ModelSelection();
+    const orderedStatic = orderModels(STATIC, CURRENT.provider, CURRENT.modelId);
+    sel.seed(0, orderedStatic); // openai/gpt-4o pinned top
+    sel.move(orderedStatic, 1); // anthropic/claude-sonnet-4
+
+    // Filter matching nothing: empty visible list, full list unchanged.
+    sel.reconcile([], orderedStatic);
+    expect(sel.keyValue).toEqual({
+      provider: "anthropic",
+      modelId: "claude-sonnet-4",
+    });
+    expect(sel.indexValue).toBe(0); // clamped to visible rows
+
+    // Clearing the filter restores the selection to the tracked model.
+    sel.reconcile(orderedStatic, orderedStatic);
+    expect(sel.indexValue).toBe(1);
+    expect(orderedStatic[sel.indexValue]).toMatchObject({
+      modelId: "claude-sonnet-4",
+    });
+  });
+
+  it("drops the key only when the model leaves the full unfiltered list", () => {
+    const sel = new ModelSelection();
+    const orderedStatic = orderModels(STATIC, CURRENT.provider, CURRENT.modelId);
+    sel.seed(0, orderedStatic);
+    sel.move(orderedStatic, 1); // anthropic/claude-sonnet-4
+
+    const withoutM = [m("openai", "gpt-4o")];
+    sel.reconcile([], withoutM);
+    expect(sel.keyValue).toBeNull();
+  });
+
   it("falls back to numeric clamping when the selected model leaves the filtered list", () => {
     const sel = new ModelSelection();
     const orderedStatic = orderModels(STATIC, CURRENT.provider, CURRENT.modelId);

@@ -199,8 +199,14 @@ export class ModelSelection {
     return this.key;
   }
 
-  /** Recompute the row index from the tracked model identity. */
-  reconcile(list: ModelListEntry[]): void {
+  /**
+   * Recompute the row index from the tracked model identity. The key is
+   * kept as long as the model still exists in the unfiltered `all` list:
+   * a filter that hides the model must not lose the selection — clearing
+   * the filter restores it. The key lapses only when the model leaves the
+   * full list.
+   */
+  reconcile(list: ModelListEntry[], all: ModelListEntry[] = list): void {
     if (this.key !== null && list.length > 0) {
       const idx = list.findIndex(
         (m) =>
@@ -208,6 +214,19 @@ export class ModelSelection {
       );
       if (idx >= 0) {
         this.index = idx;
+        return;
+      }
+    }
+    if (this.key !== null && all.length > 0) {
+      const stillExists = all.some(
+        (m) =>
+          m.provider === this.key!.provider && m.modelId === this.key!.modelId,
+      );
+      if (stillExists) {
+        // Keep the key; clamp the visible row index to the filtered list.
+        if (this.index >= list.length) {
+          this.index = Math.max(0, list.length - 1);
+        }
         return;
       }
     }
@@ -365,7 +384,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
     // Follow model identity: after any merge/filter change, recompute the
     // row index from the selected provider/modelId. Falls back to numeric
     // clamping when the selected model is no longer visible.
-    selection.reconcile(filtered());
+    selection.reconcile(filtered(), ordered());
     const idx = selection.indexValue;
     if (selectedIndex() !== idx) setSelectedIndex(idx);
   });
