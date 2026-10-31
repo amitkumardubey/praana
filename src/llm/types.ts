@@ -111,10 +111,22 @@ export interface StreamRequest {
   bearerToken?: string;
   /**
    * When false, a clean close without the provider's final signal is a normal
-   * finish. `streamLlmResponse` sets this from `llm.stream_end_check`.
+   * finish. `streamLlmResponse` sets this from `streamEndCheck`.
    * Omitted means strict.
    */
   strictStreamEnd?: boolean;
+  /** How `strictStreamEnd` was chosen. Omitted means `auto`. */
+  streamEndCheck?: "auto" | "strict" | "lenient";
+  /**
+   * Milliseconds to wait for response headers. `0` disables.
+   * Omitted: 60s for hosted first-party providers, 300s otherwise.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Milliseconds of upstream silence before the stream is aborted. `0` disables.
+   * Omitted: 300s.
+   */
+  idleTimeoutMs?: number;
 }
 
 /** Aggregated result of an LLM turn stream. */

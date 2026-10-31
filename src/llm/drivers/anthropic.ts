@@ -15,8 +15,7 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
-import { withPreEmissionRetry } from "../retry.js";
-import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
 import { logLenientStreamEnd } from "../stream-end.js";
 
 export class AnthropicDriver implements LlmDriver {
@@ -58,49 +57,6 @@ export class AnthropicDriver implements LlmDriver {
       delete body.temperature;
     }
 
-    const timeouts = getLlmStreamTimeouts();
-    const guard = createLlmFetchGuard({
-      userSignal: req.signal,
-      connectTimeoutMs: timeouts.connectTimeoutMs,
-      idleTimeoutMs: timeouts.idleTimeoutMs,
-    });
-
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await guard.fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-          });
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: any = new Error(`Anthropic API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from Anthropic endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      guard.dispose();
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let accumulatedThinking = "";
@@ -125,28 +81,58 @@ export class AnthropicDriver implements LlmDriver {
       toolCalls: accumulator.flush(),
     });
 
-    try {
-      for await (const event of parseSseStream(guard.wrapBody(response.body!))) {
-        if (req.signal?.aborted || guard.abortKind() === "user") {
-          yield { type: "done", reason: "abort", message: haltedMessage() };
-          return;
-        }
-        if (guard.abortKind() === "idle") {
-          yield { type: "done", reason: "timeout", message: haltedMessage() };
-          return;
-        }
-
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      httpErrorLabel: "Anthropic API error",
+      emptyBodyMessage: "Empty response body from Anthropic endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
         const dataStr = event.data?.trim();
-        if (!dataStr) continue;
+        if (!dataStr) return { events };
 
         let parsed: any;
         try {
           parsed = JSON.parse(dataStr);
         } catch {
-          continue;
+          return { events };
         }
 
         const type = parsed.type;
+
+        if (event.event === "error" || type === "error") {
+          const errBody = parsed.error ?? {};
+          const errType = typeof errBody.type === "string" ? errBody.type : "";
+          const message =
+            typeof errBody.message === "string" && errBody.message
+              ? errBody.message
+              : "Anthropic stream error";
+          const known: Record<string, number> = {
+            overloaded_error: 529,
+            rate_limit_error: 429,
+            api_error: 500,
+            authentication_error: 401,
+            permission_error: 403,
+            not_found_error: 404,
+            invalid_request_error: 400,
+            request_too_large: 413,
+          };
+          const status = typeof errBody.status === "number" ? errBody.status : known[errType];
+          events.push({
+            type: "error",
+            error: new Error(message),
+            status,
+            retryable: false,
+          });
+          return { events, stop: true };
+        }
 
         if (type === "message_start") {
           const usage = parsed.message?.usage;
@@ -168,21 +154,21 @@ export class AnthropicDriver implements LlmDriver {
             });
             if (res.started) {
               emittedDelta = true;
-              yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
           }
         } else if (type === "content_block_delta") {
           const delta = parsed.delta;
-          if (!delta) continue;
+          if (!delta) return { events };
 
           if (delta.type === "text_delta") {
             accumulatedContent += delta.text;
             emittedDelta = true;
-            yield { type: "text_delta", delta: delta.text };
+            events.push({ type: "text_delta", delta: delta.text });
           } else if (delta.type === "thinking_delta") {
             accumulatedThinking += delta.thinking;
             emittedDelta = true;
-            yield { type: "thinking_delta", delta: delta.thinking };
+            events.push({ type: "thinking_delta", delta: delta.thinking });
           } else if (delta.type === "signature_delta") {
             thinkingSignature = (thinkingSignature || "") + delta.signature;
           } else if (delta.type === "input_json_delta") {
@@ -192,7 +178,7 @@ export class AnthropicDriver implements LlmDriver {
             });
             if (res.delta) {
               emittedDelta = true;
-              yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
         } else if (type === "content_block_stop") {
@@ -218,81 +204,58 @@ export class AnthropicDriver implements LlmDriver {
         } else if (type === "message_stop") {
           sawTerminal = true;
         }
-      }
-
-      const haltKind = guard.abortKind();
-      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
-        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
-        if (halted) {
-          yield halted;
-          return;
+        return { events };
+      },
+      onComplete: () => {
+        const events: StreamEvent[] = [];
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push({
+              type: "error",
+              error: new Error("stream ended before the provider sent a final event (message_stop)"),
+              retryable: !emittedDelta,
+            });
+            return events;
+          }
+          logLenientStreamEnd(req.provider);
         }
-      }
 
-      if (!sawTerminal) {
-        if (req.strictStreamEnd !== false) {
-          yield {
-            type: "error",
-            error: new Error("stream ended before the provider sent a final event (message_stop)"),
-            retryable: !emittedDelta,
-          };
-          return;
+        const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+        events.push({
+          type: "usage",
+          usage: {
+            input: inputTokens,
+            output: outputTokens,
+            totalTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+          },
+        });
+
+        const completedToolCalls = accumulator.flush();
+        if (completedToolCalls.length > 0) {
+          finishReason = "tool_use";
+          for (const tc of completedToolCalls) {
+            events.push({ type: "tool_call_end", toolCall: tc });
+          }
         }
-        logLenientStreamEnd(req.provider);
-      }
 
-      // Emit normalized usage
-      const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-      yield {
-        type: "usage",
-        usage: {
-          input: inputTokens,
-          output: outputTokens,
-          totalTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-        },
-      };
+        const finalAssistant: AssistantMessage = {
+          role: "assistant",
+          content: accumulatedContent,
+          thinking: accumulatedThinking || undefined,
+          thinkingSignature: thinkingSignature || undefined,
+          toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+        };
 
-      const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0) {
-        finishReason = "tool_use";
-        for (const tc of completedToolCalls) {
-          yield { type: "tool_call_end", toolCall: tc };
-        }
-      }
-
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        thinkingSignature: thinkingSignature || undefined,
-        toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
-      };
-
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      const haltKind = guard.abortKind();
-      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
-        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
-        if (halted) {
-          yield halted;
-          return;
-        }
-      }
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-    } finally {
-      guard.dispose();
-    }
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: finalAssistant,
+        });
+        return events;
+      },
+    });
   }
 
   private formatMessages(

@@ -5,6 +5,7 @@ import {
   type AssistantMessage,
   type StreamRequest,
 } from "./llm/index.js";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -72,6 +73,9 @@ export interface LlmStreamInput {
   piTools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
   signal?: AbortSignal;
   reasoningEffort?: string;
+  connectTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  streamEndCheck?: StreamRequest["streamEndCheck"];
   onTextDelta?: (delta: string) => void;
   onThinkingDelta?: (delta: string) => void;
   onProviderUsage?: (update: ProviderUsageUpdate) => void;
@@ -87,20 +91,29 @@ export interface LlmStreamResult {
   finalMessage: any | null;
   finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" | "timeout" | "rate_limit";
   errorMessage?: string;
+  /** HTTP status from a provider error event, when the driver reported one. */
+  status?: number;
   providerUsage: ProviderUsage | null;
   recordedProviderUsage: boolean;
   assistantTokens: number;
   interrupted: boolean;
+  /** Text or thinking was already sent to the UI. A retry would duplicate it. */
+  emittedToUi: boolean;
+  /** A tool-call event was emitted. A premature-end retry would repeat it. */
+  emittedToolCall: boolean;
+  /** Driver said this failure can be retried. Read for a premature stream end. */
+  retryable: boolean;
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
   if (result.interrupted) return false;
+  if (result.status === 429 || result.status === 529) return true;
   const reason = result.finalReason;
   const msg = (result.errorMessage ?? "").toLowerCase();
   return (
     reason === "timeout" ||
     reason === "rate_limit" ||
-    /\b(timeout|rate[ _-]?(?:limit|limited)|429|too\s+many\s+requests)\b/i.test(msg)
+    /\b(timeout|rate[ _-]?(?:limit|limited)|429|529|too\s+many\s+requests|overload(?:ed)?)\b/i.test(msg)
   );
 }
 
@@ -115,6 +128,63 @@ export function isEmptyStreamResponse(result: LlmStreamResult): boolean {
 
 export function shouldFallback(result: LlmStreamResult): boolean {
   return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
+}
+
+/** Step-0 retry for a clean close that never delivered text, thinking, or a tool call. */
+export function isPrematureEndRetry(result: LlmStreamResult): boolean {
+  if (result.interrupted || result.emittedToUi || result.emittedToolCall) return false;
+  if (result.retryable !== true) return false;
+  return (result.errorMessage ?? "").includes("stream ended before the provider sent a final event");
+}
+
+/** User-facing line when the idle timer ends a stream. `idleTimeoutMs` is the configured budget. */
+export function idleTimeoutUserMessage(idleTimeoutMs: number): string {
+  const seconds = Math.max(0, Math.round(idleTimeoutMs / 1000));
+  return `The model stopped responding (idle timeout after ${seconds}s). The partial answer above was not completed.`;
+}
+
+/**
+ * Text kept from a timed-out assistant message.
+ * Tool calls are dropped: a timeout does not run tools, so keeping them would
+ * send a tool call with no tool result on the next request.
+ * Returns null when no text remains.
+ */
+export function assistantTextAfterTimeout(message: unknown): AssistantMessage | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as {
+    content?: unknown;
+    thinking?: unknown;
+    thinkingSignature?: unknown;
+  };
+  let text = "";
+  if (typeof record.content === "string") {
+    text = record.content;
+  } else if (Array.isArray(record.content)) {
+    text = record.content
+      .filter(
+        (part): part is { type?: string; text?: string } =>
+          !!part && typeof part === "object" && (part as { type?: string }).type === "text",
+      )
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("");
+  }
+  if (!text.trim()) return null;
+  const kept: AssistantMessage = { role: "assistant", content: text };
+  if (typeof record.thinking === "string" && record.thinking) kept.thinking = record.thinking;
+  if (typeof record.thinkingSignature === "string" && record.thinkingSignature) {
+    kept.thinkingSignature = record.thinkingSignature;
+  }
+  return kept;
+}
+
+function isConnectExhausted(result: LlmStreamResult): boolean {
+  const msg = result.errorMessage ?? "";
+  return result.finalReason !== "timeout" && /\bETIMEDOUT\b|connect timeout/i.test(msg);
+}
+
+function configuredIdleTimeoutMs(value: number | undefined): number {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
 
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
@@ -208,6 +278,9 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     apiKey: piOpts.apiKey,
     bearerToken: piOpts.bearerToken,
     maxTokens: typeof runtime.maxTokens === "number" ? runtime.maxTokens : undefined,
+    connectTimeoutMs: input.connectTimeoutMs,
+    idleTimeoutMs: input.idleTimeoutMs,
+    streamEndCheck: input.streamEndCheck,
   });
 
   let fullResponse = "";
@@ -219,6 +292,10 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let finalReason: LlmStreamResult["finalReason"] = "stop";
   let finalMessage: any = null;
   let errorMessage: string | undefined;
+  let errorStatus: number | undefined;
+  let emittedToUi = false;
+  let emittedToolCall = false;
+  let retryable = false;
 
   for await (const event of stream) {
     if (input.signal?.aborted) {
@@ -226,11 +303,21 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       break;
     }
     if (event.type === "text_delta") {
+      emittedToUi = true;
       input.onTextDelta?.(event.delta);
       fullResponse += event.delta;
     }
     if (event.type === "thinking_delta") {
+      emittedToUi = true;
       input.onThinkingDelta?.(event.delta);
+    }
+    if (
+      event.type === "tool_call_start" ||
+      event.type === "tool_call_delta" ||
+      event.type === "tool_call_end" ||
+      (event as { type?: string }).type === "toolcall_end"
+    ) {
+      emittedToolCall = true;
     }
     if (event.type === "tool_call_end" || (event as any).type === "toolcall_end") {
       const tc = (event as any).toolCall;
@@ -270,6 +357,8 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     }
     if (event.type === "error") {
       finalReason = (event as any).reason ?? "error";
+      if (typeof event.status === "number") errorStatus = event.status;
+      retryable = event.retryable;
       const err = (event as any).error;
       if (err) {
         if (typeof err === "string") {
@@ -295,10 +384,14 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     finalMessage,
     finalReason,
     errorMessage,
+    status: errorStatus,
     providerUsage,
     recordedProviderUsage,
     assistantTokens,
     interrupted,
+    emittedToUi,
+    emittedToolCall,
+    retryable,
   };
 }
 
@@ -808,6 +901,7 @@ export async function runTurn(
   ];
   const maxSteps = session.config.turn?.max_steps ?? 25;
   let interrupted = false;
+  let surfacedTimeout = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
   const nudgeStart = snapshotScorecardNudge(session);
@@ -857,6 +951,9 @@ export async function runTurn(
         session.recordOutputTokens(update.step.output);
         s.onProviderUsage?.(update);
       },
+      connectTimeoutMs: session.config.llm.connect_timeout_ms,
+      idleTimeoutMs: session.config.llm.stream_idle_timeout_ms,
+      streamEndCheck: session.config.llm.stream_end_check,
     });
   }
 
@@ -934,9 +1031,14 @@ export async function runTurn(
     let streamResult = await attemptStream();
 
     // On the first step, retry once and then fall back on recoverable failures.
-    if (step === 0 && shouldFallback(streamResult)) {
+    // Once text or thinking has reached the UI, another attempt would repeat it.
+    if (
+      step === 0 &&
+      !streamResult.emittedToUi &&
+      (shouldFallback(streamResult) || isPrematureEndRetry(streamResult))
+    ) {
       streamResult = await attemptStream();
-      if (shouldFallback(streamResult) && canFallback()) {
+      if ((shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) && canFallback()) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
         const fallbackReason = streamResult.errorMessage ?? "empty response";
@@ -944,7 +1046,7 @@ export async function runTurn(
         await prepareFallback(fallbackProvider, fallbackModel);
         const fallbackResult = await attemptStream();
 
-        if (!shouldFallback(fallbackResult)) {
+        if (!shouldFallback(fallbackResult) && !isPrematureEndRetry(fallbackResult)) {
           commitFallback(fallbackProvider, fallbackModel, fallbackReason);
           streamResult = fallbackResult;
         } else {
@@ -955,9 +1057,19 @@ export async function runTurn(
       }
     }
 
+    if (streamResult.finalReason === "timeout" || isConnectExhausted(streamResult)) {
+      streamResult = {
+        ...streamResult,
+        pendingToolCalls: [],
+        finalMessage: assistantTextAfterTimeout(streamResult.finalMessage),
+      };
+    }
+
     // If we switched to a fallback model and it also failed on a recoverable
     // condition, surface it as an error rather than the empty-response fallback.
+    // An idle timeout is reported below with its own message; don't replace it.
     if (
+      streamResult.finalReason !== "timeout" &&
       (activeModelName !== modelName || activeProviderName !== providerName) &&
       shouldFallback(streamResult)
     ) {
@@ -967,8 +1079,15 @@ export async function runTurn(
     }
 
     // Log errors from the final stream attempt.
-    if (streamResult.finalReason === "error" || streamResult.finalReason === "aborted") {
-      const llmMessage = streamResult.errorMessage;
+    if (
+      streamResult.finalReason === "error" ||
+      streamResult.finalReason === "aborted" ||
+      streamResult.finalReason === "timeout"
+    ) {
+      const llmMessage =
+        streamResult.finalReason === "timeout"
+          ? idleTimeoutUserMessage(configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms))
+          : streamResult.errorMessage;
       lastStreamReason = streamResult.finalReason;
       lastLlmErrorMessage = llmMessage;
       if (streamResult.finalReason === "aborted") {
@@ -989,6 +1108,7 @@ export async function runTurn(
           details: { model: activeModelName, provider: activeProviderName, reason: streamResult.finalReason },
         };
         s.onError?.(errorEntry);
+        if (streamResult.finalReason === "timeout") surfacedTimeout = true;
       }
     }
 
@@ -1369,6 +1489,9 @@ export async function runTurn(
   }
 
   if (!fullResponse.trim()) {
+    if (surfacedTimeout && lastLlmErrorMessage) {
+      fullResponse = lastLlmErrorMessage;
+    } else {
     const code =
       lastStreamReason === "error"
         ? "LLM_STREAM_ERROR"
@@ -1402,6 +1525,7 @@ export async function runTurn(
       fullResponse = "I encountered an error while processing your request. Please try again.";
     } else {
       fullResponse = fallback;
+    }
     }
   }
 

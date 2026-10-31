@@ -40,7 +40,11 @@ function installLogger(): void {
   setAppLogger(createTestLogger((line) => lines.push(line), { debug: true }));
 }
 
-async function collect(provider: string, body: string): Promise<StreamEvent[]> {
+async function collect(
+  provider: string,
+  body: string,
+  streamEndCheck?: "auto" | "strict" | "lenient",
+): Promise<StreamEvent[]> {
   globalThis.fetch = (async () =>
     new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })) as typeof fetch;
   const events: StreamEvent[] = [];
@@ -49,6 +53,7 @@ async function collect(provider: string, body: string): Promise<StreamEvent[]> {
     provider,
     messages: [{ role: "user", content: "hi" }],
     apiKey: "test-key",
+    streamEndCheck,
   })) {
     events.push(ev);
   }
@@ -165,7 +170,7 @@ describe("stream end check plumbed through streamLlmResponse", () => {
       ),
     );
     expect(cfg.llm.stream_end_check).toBe("strict");
-    const events = await collect("my-llama", OPENAI_PARTIAL);
+    const events = await collect("my-llama", OPENAI_PARTIAL, cfg.llm.stream_end_check);
     assertPremature(events, "finish_reason or [DONE]");
     expect(lines.some((line) => line.includes(LENIENT_LOG))).toBe(false);
   });
@@ -175,7 +180,7 @@ describe("stream end check plumbed through streamLlmResponse", () => {
     getConfigWarnings();
     const cfg = loadConfig(writeConfig('[llm]\nstream_end_check = "lenient"\n'));
     expect(cfg.llm.stream_end_check).toBe("lenient");
-    const events = await collect("anthropic", ANTHROPIC_PARTIAL);
+    const events = await collect("anthropic", ANTHROPIC_PARTIAL, cfg.llm.stream_end_check);
     assertLenientDone(events, "anthropic", "Partial");
   });
 });

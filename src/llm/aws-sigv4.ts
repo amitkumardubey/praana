@@ -86,7 +86,50 @@ export function signAwsRequest(opts: {
 }
 
 /**
+ * Read AWS event-stream headers. String headers (`:exception-type`,
+ * `:message-type`) are the ones drivers use to spot exception frames.
+ */
+function parseEventStreamHeaders(bytes: Buffer): Record<string, string> {
+  const headers: Record<string, string> = {};
+  let offset = 0;
+  while (offset < bytes.length) {
+    if (offset + 1 > bytes.length) break;
+    const nameLen = bytes.readUInt8(offset);
+    offset += 1;
+    if (offset + nameLen + 1 > bytes.length) break;
+    const name = bytes.subarray(offset, offset + nameLen).toString("utf8");
+    offset += nameLen;
+    const type = bytes.readUInt8(offset);
+    offset += 1;
+    if (type === 7) {
+      if (offset + 2 > bytes.length) break;
+      const valueLen = bytes.readUInt16BE(offset);
+      offset += 2;
+      if (offset + valueLen > bytes.length) break;
+      headers[name] = bytes.subarray(offset, offset + valueLen).toString("utf8");
+      offset += valueLen;
+      continue;
+    }
+    if (type === 0 || type === 1) {
+      headers[name] = type === 0 ? "true" : "false";
+      continue;
+    }
+    const width = type === 2 ? 1 : type === 3 ? 2 : type === 4 ? 4 : type === 5 || type === 8 ? 8 : type === 9 ? 16 : 0;
+    if (type === 6) {
+      if (offset + 2 > bytes.length) break;
+      const len = bytes.readUInt16BE(offset);
+      offset += 2 + len;
+      continue;
+    }
+    if (width === 0) break;
+    offset += width;
+  }
+  return headers;
+}
+
+/**
  * Decode AWS binary EventStream chunk frames into JSON message payloads.
+ * Exception frames keep `:message-type` and `:exception-type` from the headers.
  */
 export async function* parseAwsEventStream(
   stream: ReadableStream<Uint8Array>,
@@ -111,21 +154,31 @@ export async function* parseAwsEventStream(
         const headerLength = buffer.readUInt32BE(4);
         const payloadLength = totalLength - headerLength - 16;
         const payloadStart = 12 + headerLength;
+        const headerBytes = buffer.subarray(12, payloadStart);
         const payloadBytes = buffer.subarray(payloadStart, payloadStart + payloadLength);
 
         // Advance buffer past this frame
         buffer = buffer.subarray(totalLength);
 
+        const headers = parseEventStreamHeaders(headerBytes);
         if (payloadBytes.length > 0) {
           try {
             const payloadStr = payloadBytes.toString("utf8");
             const parsed = JSON.parse(payloadStr);
             if (parsed && typeof parsed === "object") {
-              yield parsed as Record<string, unknown>;
+              const record = parsed as Record<string, unknown>;
+              if (headers[":message-type"]) record[":message-type"] = headers[":message-type"];
+              if (headers[":exception-type"]) record[":exception-type"] = headers[":exception-type"];
+              yield record;
             }
           } catch {
             // Non-JSON or binary event frame, skip
           }
+        } else if (headers[":exception-type"]) {
+          yield {
+            ":message-type": headers[":message-type"],
+            ":exception-type": headers[":exception-type"],
+          };
         }
       }
     }

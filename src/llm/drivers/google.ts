@@ -13,8 +13,7 @@ import type {
   ToolCall,
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
-import { withPreEmissionRetry } from "../retry.js";
-import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
 import { logLenientStreamEnd } from "../stream-end.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
 
@@ -72,49 +71,6 @@ export class GoogleDriver implements LlmDriver {
       },
     };
 
-    const timeouts = getLlmStreamTimeouts();
-    const guard = createLlmFetchGuard({
-      userSignal: req.signal,
-      connectTimeoutMs: timeouts.connectTimeoutMs,
-      idleTimeoutMs: timeouts.idleTimeoutMs,
-    });
-
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await guard.fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-          });
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: any = new Error(`Google Gemini API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from Google Gemini endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      guard.dispose();
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
     let accumulatedContent = "";
     let accumulatedThinking = "";
     const pendingToolCalls: ToolCall[] = [];
@@ -129,31 +85,49 @@ export class GoogleDriver implements LlmDriver {
       toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
     });
 
-    try {
-      for await (const event of parseSseStream(guard.wrapBody(response.body!))) {
-        if (req.signal?.aborted || guard.abortKind() === "user") {
-          yield { type: "done", reason: "abort", message: haltedMessage() };
-          return;
-        }
-        if (guard.abortKind() === "idle") {
-          yield { type: "done", reason: "timeout", message: haltedMessage() };
-          return;
-        }
-
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      httpErrorLabel: "Google Gemini API error",
+      emptyBodyMessage: "Empty response body from Google Gemini endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
         const dataStr = event.data?.trim();
-        if (!dataStr) continue;
+        if (!dataStr) return { events };
 
         let parsed: any;
         try {
           parsed = JSON.parse(dataStr);
         } catch {
-          continue;
+          return { events };
         }
 
-        // Token usage
+        if (parsed.error && typeof parsed.error === "object") {
+          const errBody = parsed.error;
+          const message =
+            typeof errBody.message === "string" && errBody.message
+              ? errBody.message
+              : "Google stream error";
+          const status = typeof errBody.code === "number" ? errBody.code : undefined;
+          events.push({
+            type: "error",
+            error: new Error(message),
+            status,
+            retryable: false,
+          });
+          return { events, stop: true };
+        }
+
         if (parsed.usageMetadata) {
           const u = parsed.usageMetadata;
-          yield {
+          events.push({
             type: "usage",
             usage: {
               input: u.promptTokenCount ?? 0,
@@ -161,11 +135,11 @@ export class GoogleDriver implements LlmDriver {
               totalTokens: u.totalTokenCount ?? 0,
               cacheReadTokens: u.cachedContentTokenCount ?? 0,
             },
-          };
+          });
         }
 
         const candidate = parsed.candidates?.[0];
-        if (!candidate) continue;
+        if (!candidate) return { events };
 
         if (candidate.finishReason) {
           sawTerminal = true;
@@ -179,11 +153,11 @@ export class GoogleDriver implements LlmDriver {
             if (part.thought) {
               accumulatedThinking += part.text || "";
               emittedDelta = true;
-              yield { type: "thinking_delta", delta: part.text || "" };
+              events.push({ type: "thinking_delta", delta: part.text || "" });
             } else if (part.text) {
               accumulatedContent += part.text;
               emittedDelta = true;
-              yield { type: "text_delta", delta: part.text };
+              events.push({ type: "text_delta", delta: part.text });
             }
 
             if (part.functionCall) {
@@ -194,65 +168,41 @@ export class GoogleDriver implements LlmDriver {
               };
               pendingToolCalls.push(tc);
               emittedDelta = true;
-              yield { type: "tool_call_start", id: tc.id, name: tc.name };
-              yield { type: "tool_call_end", toolCall: tc };
+              events.push({ type: "tool_call_start", id: tc.id, name: tc.name });
+              events.push({ type: "tool_call_end", toolCall: tc });
               finishReason = "tool_use";
             }
           }
         }
-      }
-
-      const haltKind = guard.abortKind();
-      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
-        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
-        if (halted) {
-          yield halted;
-          return;
+        return { events };
+      },
+      onComplete: () => {
+        const events: StreamEvent[] = [];
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push({
+              type: "error",
+              error: new Error("stream ended before the provider sent a final event (finishReason)"),
+              retryable: !emittedDelta,
+            });
+            return events;
+          }
+          logLenientStreamEnd(req.provider);
         }
-      }
 
-      if (!sawTerminal) {
-        if (req.strictStreamEnd !== false) {
-          yield {
-            type: "error",
-            error: new Error("stream ended before the provider sent a final event (finishReason)"),
-            retryable: !emittedDelta,
-          };
-          return;
-        }
-        logLenientStreamEnd(req.provider);
-      }
-
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
-      };
-
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      const haltKind = guard.abortKind();
-      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
-        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
-        if (halted) {
-          yield halted;
-          return;
-        }
-      }
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-    } finally {
-      guard.dispose();
-    }
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: {
+            role: "assistant",
+            content: accumulatedContent,
+            thinking: accumulatedThinking || undefined,
+            toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
+          },
+        });
+        return events;
+      },
+    });
   }
 
   private formatContents(

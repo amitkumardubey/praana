@@ -131,12 +131,16 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 ### LLM stream timeouts
 
-These keys live in `[llm]`. A value that is not a non-negative integer warns and falls back to the default. `0` turns that timer off.
+These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.
+
+Connect time is time until the first response headers. Local and self-hosted servers often spend that time loading a model or prefilling the prompt, so they get a longer budget than hosted APIs. Idle time is silence from the server after the response has started, including a reasoning model that has not emitted a token yet. It is not reset by the client being slow to read a chunk it already received.
 
 | Key | Default | Behaviour |
 |---|---|---|
-| `connect_timeout_ms` | `60000` | Abort the request if response headers have not arrived. The failure is retried before any tokens are emitted. |
-| `stream_idle_timeout_ms` | `120000` | Abort if the response body stays silent this long. The timer resets on every chunk, including SSE comment keep-alives. The stream ends with reason `timeout` (partial text kept) so the turn can recover. A user abort is still reason `abort`. |
+| `connect_timeout_ms` | `60000` for `anthropic`, `openai`, `google`, `vertex`, and `amazon-bedrock`; `300000` for every other provider (user-declared endpoints, Ollama, LM Studio, vLLM, and the rest of the registry). A user-declared id uses `300000` even when that id is also in the hosted list. | Abort the request if response headers have not arrived. The failure is retried before any tokens are emitted. |
+| `stream_idle_timeout_ms` | `300000` | Abort if the server stays silent this long. The timer resets when an upstream chunk arrives, including SSE comment keep-alives, and pauses while that chunk is processed. The stream ends with reason `timeout`. Partial text is kept when the assistant message has no unpaired tool call, and the turn reports `The model stopped responding (idle timeout after Ns).` A user abort is still reason `abort`. |
+
+A non-OK response body is read under the same idle budget, capped at 15 seconds (or 15 seconds when idle is disabled). If that body never arrives, the error is the HTTP status plus `response body timed out`.
 
 ### LLM stream end check
 

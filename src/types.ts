@@ -128,12 +128,14 @@ export interface LlmConfig {
   region?: string;
   /**
    * Milliseconds to wait for response headers before aborting the request.
-   * `0` disables the connect timer. Default 60000.
+   * `0` disables the connect timer. Omitted: 60000 for anthropic, openai,
+   * google, vertex, and amazon-bedrock; 300000 for every other provider.
+   * An explicit value applies to every provider.
    */
   connect_timeout_ms?: number;
   /**
-   * Milliseconds of response-body silence before the stream is aborted.
-   * Reset on every chunk, including SSE comments. `0` disables. Default 120000.
+   * Milliseconds of upstream silence before the stream is aborted.
+   * `0` disables. Omitted: 300000 for every provider.
    */
   stream_idle_timeout_ms?: number;
   /**

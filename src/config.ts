@@ -19,12 +19,7 @@ import {
 import { setUserProviders } from "./provider-registry.js";
 import { parseReasoningEffort } from "./llm.js";
 import { setBedrockConfigRegion } from "./bedrock/region.js";
-import {
-  DEFAULT_CONNECT_TIMEOUT_MS,
-  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-  setLlmStreamTimeouts,
-} from "./llm/stream-guard.js";
-import { setStreamEndCheck, type StreamEndCheck } from "./llm/stream-end.js";
+import { type StreamEndCheck } from "./llm/stream-end.js";
 import { RISK_CLASS_SET } from "./risk/classes.js";
 
 function configWarn(
@@ -59,8 +54,6 @@ const DEFAULT_CONFIG: PraanaConfig = {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
     reasoning_effort: "medium",
-    connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
-    stream_idle_timeout_ms: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     stream_end_check: "auto",
   },
   memory: {
@@ -195,11 +188,11 @@ function normalizeStreamEndCheck(value: unknown): StreamEndCheck {
   return "auto";
 }
 
-function normalizeLlmTimeout(value: unknown, name: string, fallback: number): number {
-  if (value === undefined) return fallback;
+function normalizeLlmTimeout(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    configWarn(`Invalid llm.${name}, using default ${fallback}`);
-    return fallback;
+    configWarn(`Invalid llm.${name}, using the provider default`);
+    return undefined;
   }
   return value;
 }
@@ -537,23 +530,14 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     out.llm.reasoning_effort = DEFAULT_CONFIG.llm.reasoning_effort;
   }
 
-  out.llm.connect_timeout_ms = normalizeLlmTimeout(
-    out.llm.connect_timeout_ms,
-    "connect_timeout_ms",
-    DEFAULT_CONNECT_TIMEOUT_MS,
-  );
-  out.llm.stream_idle_timeout_ms = normalizeLlmTimeout(
-    out.llm.stream_idle_timeout_ms,
-    "stream_idle_timeout_ms",
-    DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-  );
-  setLlmStreamTimeouts({
-    connectTimeoutMs: out.llm.connect_timeout_ms,
-    idleTimeoutMs: out.llm.stream_idle_timeout_ms,
-  });
+  const connectTimeout = normalizeLlmTimeout(out.llm.connect_timeout_ms, "connect_timeout_ms");
+  if (connectTimeout === undefined) delete out.llm.connect_timeout_ms;
+  else out.llm.connect_timeout_ms = connectTimeout;
+  const idleTimeout = normalizeLlmTimeout(out.llm.stream_idle_timeout_ms, "stream_idle_timeout_ms");
+  if (idleTimeout === undefined) delete out.llm.stream_idle_timeout_ms;
+  else out.llm.stream_idle_timeout_ms = idleTimeout;
 
   out.llm.stream_end_check = normalizeStreamEndCheck(out.llm.stream_end_check);
-  setStreamEndCheck(out.llm.stream_end_check);
 
   const hasFallbackProvider = !!out.llm.fallback_provider;
   const hasFallbackModel = !!out.llm.fallback_model;

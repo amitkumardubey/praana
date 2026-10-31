@@ -9,6 +9,7 @@ import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import type { LlmDriver } from "../src/llm/drivers/base.js";
+import { createLlmFetchGuard, readErrorBody } from "../src/llm/stream-guard.js";
 import { isRetryableError } from "../src/llm/retry.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
@@ -35,14 +36,16 @@ async function loadGuard(): Promise<GuardModule | null> {
   }
 }
 
+let requestTimeouts: { connectTimeoutMs: number; idleTimeoutMs: number } | null = null;
+
 async function applyTimeouts(connectTimeoutMs: number, idleTimeoutMs: number): Promise<void> {
-  const guard = await loadGuard();
-  guard?.setLlmStreamTimeouts({ connectTimeoutMs, idleTimeoutMs });
+  requestTimeouts = { connectTimeoutMs, idleTimeoutMs };
 }
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
+  requestTimeouts = null;
   const guard = await loadGuard();
   guard?.setLlmStreamTimeouts({
     connectTimeoutMs: guard.DEFAULT_CONNECT_TIMEOUT_MS,
@@ -133,7 +136,8 @@ function cases(): DriverCase[] {
 
 async function collect(driver: LlmDriver, req: StreamRequest, auth: ResolvedAuth): Promise<StreamEvent[]> {
   const events: StreamEvent[] = [];
-  for await (const ev of driver.stream(req, auth)) events.push(ev);
+  const timed = requestTimeouts ? { ...req, ...requestTimeouts } : req;
+  for await (const ev of driver.stream(timed, auth)) events.push(ev);
   return events;
 }
 
@@ -318,6 +322,44 @@ describe("llm stream timeouts", () => {
     expect(guard!.streamGuardPendingListeners()).toBe(0);
   });
 
+  it("does not idle-abort while the consumer is still holding a delivered chunk", async () => {
+    const enc = new TextEncoder();
+    let push: ((chunk: Uint8Array | null) => void) | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        push = (chunk) => {
+          if (chunk === null) controller.close();
+          else controller.enqueue(chunk);
+        };
+      },
+    });
+    let signal: AbortSignal | undefined;
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      return new Response(body);
+    }) as typeof fetch;
+
+    const guard = createLlmFetchGuard({ connectTimeoutMs: 0, idleTimeoutMs: 40 });
+    const res = await guard.fetch("https://example.test/v1/messages");
+    const reader = guard.wrapBody(res.body!).getReader();
+    const firstRead = reader.read();
+    push!(enc.encode("a"));
+    const first = await firstRead;
+    expect(new TextDecoder().decode(first.value)).toBe("a");
+    await Bun.sleep(100);
+    expect(signal?.aborted).toBe(false);
+    expect(guard.abortKind()).toBeNull();
+    const secondRead = reader.read();
+    push!(enc.encode("b"));
+    push!(null);
+    const second = await secondRead;
+    expect(second.done).toBe(false);
+    expect(new TextDecoder().decode(second.value)).toBe("b");
+    const end = await reader.read();
+    expect(end.done).toBe(true);
+    guard.dispose();
+  });
+
   it("recognises a connect timeout as retryable", async () => {
     const guard = await loadGuard();
     expect(guard).not.toBeNull();
@@ -325,6 +367,38 @@ describe("llm stream timeouts", () => {
     expect(err.message).toContain("ETIMEDOUT");
     expect(err.message).toContain("1500");
     expect(isRetryableError(err)).toBe(true);
+  });
+});
+
+describe("error body timeout", () => {
+  it("stops reading a body that never arrives", async () => {
+    const res = new Response(
+      new ReadableStream<Uint8Array>({ start() {} }),
+      { status: 502 },
+    );
+    await expect(readErrorBody(res, 30)).rejects.toThrow(/response body timed out/);
+  });
+
+  it("reports a stalled Anthropic error body with the status", async () => {
+    await applyTimeouts(0, 40);
+    const restore = accelerateLongTimers();
+    try {
+      globalThis.fetch = (async () =>
+        new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 502 })) as typeof fetch;
+      const events = await collect(
+        new AnthropicDriver(),
+        { model: "m", provider: "anthropic", messages: [{ role: "user", content: "hi" }] },
+        { apiKey: "test-key" },
+      );
+      const error = events.find((ev) => ev.type === "error");
+      expect(error && error.type === "error" ? error.error.message : "").toContain("502");
+      expect(error && error.type === "error" ? error.error.message : "").toContain(
+        "response body timed out",
+      );
+      expect(error && error.type === "error" ? error.status : undefined).toBe(502);
+    } finally {
+      restore();
+    }
   });
 });
 
@@ -353,13 +427,12 @@ describe("llm timeout config", () => {
     expect(getConfigWarnings().some((w) => w.includes("connect_timeout") || w.includes("stream_idle"))).toBe(
       false,
     );
-    expect(cfg.llm.connect_timeout_ms).toBe(60_000);
-    expect(cfg.llm.stream_idle_timeout_ms).toBe(120_000);
     const guard = await loadGuard();
-    expect(guard?.getLlmStreamTimeouts()).toEqual({
-      connectTimeoutMs: 60_000,
-      idleTimeoutMs: 120_000,
-    });
+    const before = guard?.getLlmStreamTimeouts();
+    expect(cfg.llm.connect_timeout_ms).toBeUndefined();
+    expect(cfg.llm.stream_idle_timeout_ms).toBeUndefined();
+    expect(guard?.getLlmStreamTimeouts()).toEqual(before);
+    expect(before).toEqual({ connectTimeoutMs: 60_000, idleTimeoutMs: 300_000 });
   });
 
   it("accepts 0 as a disabled timer", async () => {
@@ -390,7 +463,7 @@ describe("llm timeout config", () => {
     const warnings = getConfigWarnings();
     expect(warnings.some((w) => w.includes("Invalid llm.connect_timeout_ms"))).toBe(true);
     expect(warnings.some((w) => w.includes("Invalid llm.stream_idle_timeout_ms"))).toBe(true);
-    expect(cfg.llm.connect_timeout_ms).toBe(60_000);
-    expect(cfg.llm.stream_idle_timeout_ms).toBe(120_000);
+    expect(cfg.llm.connect_timeout_ms).toBeUndefined();
+    expect(cfg.llm.stream_idle_timeout_ms).toBeUndefined();
   });
 });

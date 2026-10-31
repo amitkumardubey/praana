@@ -553,4 +553,287 @@ describe("LLM fallback", () => {
     const tooMany: any = { interrupted: false, finalReason: "error", errorMessage: "Too Many Requests", fullResponse: "", pendingToolCalls: [] };
     expect(isRecoverableStreamError(tooMany)).toBe(true);
   });
+
+  it("retries a mid-stream overload once the provider status is visible", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("Resource exhausted"),
+            status: 429,
+            retryable: false,
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "retried" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "retried" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("retried");
+    expect(callCount).toBe(2);
+  });
+});
+
+const IDLE_TIMEOUT_ERROR =
+  "The model stopped responding (idle timeout after 5s). The partial answer above was not completed.";
+
+function unpairedToolIds(messages: unknown): string[] {
+  if (!Array.isArray(messages)) return ["invalid-history"];
+  const pending: string[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const record = message as { role?: string; toolCalls?: Array<{ id?: string }>; toolCallId?: string };
+    if (record.role === "assistant" && Array.isArray(record.toolCalls)) {
+      for (const call of record.toolCalls) {
+        if (call?.id) pending.push(call.id);
+      }
+    } else if (record.role === "tool_result" && record.toolCallId) {
+      const index = pending.indexOf(record.toolCallId);
+      if (index >= 0) pending.splice(index, 1);
+    }
+  }
+  return pending;
+}
+
+function timeoutMidToolCall(text: string) {
+  return (async function* () {
+    yield { type: "tool_call_start", id: "call_partial", name: "shell" };
+    yield { type: "tool_call_delta", id: "call_partial", argsDelta: '{"command":"ech' };
+    yield {
+      type: "done",
+      reason: "timeout",
+      message: {
+        role: "assistant",
+        content: text,
+        toolCalls: [{ id: "call_partial", name: "shell", args: { command: "ech" } }],
+      },
+    };
+  })();
+}
+
+function completedToolCall(id: string) {
+  return (async function* () {
+    yield {
+      type: "toolcall_end",
+      toolCall: { id, name: "shell", arguments: { command: "echo hi" } },
+    };
+    yield {
+      type: "done",
+      reason: "toolUse",
+      message: {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id, name: "shell", args: { command: "echo hi" } }],
+      },
+    };
+  })();
+}
+
+describe("timeout history", () => {
+  beforeEach(() => {
+    (piStream as any).mockReset();
+  });
+
+  it("keeps the step-0 retry history valid after a mid-tool-call idle timeout", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const histories: unknown[] = [];
+    const errors: string[] = [];
+    (piStream as any).mockImplementation((req: { messages: unknown }) => {
+      histories.push(req.messages);
+      return timeoutMidToolCall("");
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(histories.length).toBeGreaterThan(1);
+    expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
+    expect(JSON.stringify(histories)).not.toContain("call_partial");
+    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+
+  it("keeps history valid when a later tool step times out mid-tool-call", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const histories: unknown[] = [];
+    const errors: string[] = [];
+    const texts: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation((req: { messages: unknown }) => {
+      call += 1;
+      histories.push(req.messages);
+      if (call <= 2) return completedToolCall(`tool_${call}`);
+      return (async function* () {
+        yield { type: "text_delta", delta: "Partial answer" };
+        yield* timeoutMidToolCall("Partial answer");
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onError: (entry) => errors.push(entry.message),
+        onTextDelta: (delta) => texts.push(delta),
+      },
+    });
+
+    expect(call).toBe(3);
+    expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
+    expect(JSON.stringify(histories)).not.toContain("call_partial");
+    expect(texts).toEqual(["Partial answer"]);
+    expect(response).toContain("Partial answer");
+    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+
+  it("does not retry a step-0 idle timeout after partial text", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "text_delta", delta: "Hello" };
+        yield {
+          type: "done",
+          reason: "timeout",
+          message: { role: "assistant", content: "Hello" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onTextDelta: (delta) => texts.push(delta),
+        onError: (entry) => errors.push(entry.message),
+      },
+    });
+
+    expect(callCount).toBe(1);
+    expect(texts).toEqual(["Hello"]);
+    expect(response.match(/Hello/g)?.length).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+});
+
+function prematureEnd(retryable: boolean) {
+  return (async function* () {
+    yield {
+      type: "error",
+      error: new Error("stream ended before the provider sent a final event (message_stop)"),
+      retryable,
+    };
+  })();
+}
+
+describe("premature stream end retry", () => {
+  beforeEach(() => {
+    (piStream as any).mockReset();
+  });
+
+  it("retries once at step 0 when nothing was emitted and the end is retryable", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) return prematureEnd(true);
+      return (async function* () {
+        yield { type: "text_delta", delta: "recovered" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "recovered" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("recovered");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("falls back after the one premature-end retry also fails", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount <= 2) return prematureEnd(true);
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback recovered" };
+        yield {
+          type: "done",
+          reason: "stop",
+          message: { role: "assistant", content: "fallback recovered" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback recovered");
+    expect(callCount).toBe(3);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+  });
+
+  it("does not retry a premature end after text was already shown", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "text_delta", delta: "Partial" };
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onTextDelta: (delta) => texts.push(delta),
+        onError: (entry) => errors.push(entry.message),
+      },
+    });
+
+    expect(callCount).toBe(1);
+    expect(texts).toEqual(["Partial"]);
+    expect(response).toContain("Partial");
+    expect(errors.some((message) => message.includes("stream ended before"))).toBe(true);
+  });
+
+  it("does not retry a premature end after a tool call was emitted", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "tool_call_start", id: "call_1", name: "shell" };
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    await runTurn(session, "hello");
+    expect(callCount).toBe(1);
+  });
 });
