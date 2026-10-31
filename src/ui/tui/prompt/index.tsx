@@ -34,14 +34,11 @@ import {
   type AutocompleteResult,
 } from "./autocomplete.js";
 import { TUI_PALETTE, TUI_STYLE } from "../theme.js";
-
-const SUBMIT_BINDINGS = [
-  { name: "return", action: "submit" as const },
-  { name: "kpenter", action: "submit" as const },
-  { name: "linefeed", action: "submit" as const },
-  { name: "return", shift: true, action: "newline" as const },
-  { name: "kpenter", shift: true, action: "newline" as const },
-];
+import {
+  SUBMIT_BINDINGS,
+  applyBackslashContinue,
+  shouldContinueLine,
+} from "./keys.js";
 
 export interface PromptProps {
   cwd: string;
@@ -286,7 +283,20 @@ export function Prompt(props: PromptProps) {
       // Enter while autocomplete open is handled in onKeyDown; don't double-submit.
       return;
     }
-    const expanded = expandPasteChips(textarea.plainText, pasteStore).trim();
+    // Trailing single `\` before the caret continues the line instead of
+    // submitting: drop the backslash and insert a real newline.
+    const text = textarea.plainText;
+    const caret = textarea.cursorOffset ?? text.length;
+    if (shouldContinueLine(text, caret)) {
+      const next = applyBackslashContinue(text, caret);
+      textarea.setText(next.text);
+      textarea.cursorOffset = next.caret;
+      textarea.insertText("\n");
+      syncHeight(textarea.plainText);
+      renderer.requestRender();
+      return;
+    }
+    const expanded = expandPasteChips(text, pasteStore).trim();
     if (!expanded) return;
     history.push(expanded);
     pasteStore.clear();
