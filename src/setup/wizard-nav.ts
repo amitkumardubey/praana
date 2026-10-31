@@ -32,12 +32,23 @@ export interface WizardNavContext {
   isCustom: boolean;
   /** The provider id being configured ("" before one is chosen). */
   provider: string;
+  /**
+   * Whether the wizard asked the memory (embedder consent) question before
+   * the final config confirmation. When true, Esc from the confirmation
+   * returns to that question; otherwise it backs out to the provider list.
+   */
+  needsEmbedderConsent?: boolean;
 }
 
 /**
  * Step a back navigation (Esc) should land on from `step`.
  * Returns "none" when the step has nothing to go back to — the first
  * provider step must NOT quit the app; Ctrl+C is the only quit affordance.
+ *
+ * Two steps are intentionally absent: `fetch-models` (transient check the
+ * component ignores Esc on) and `oauth-select` (Esc cancels the OAuth
+ * select via `resolveOAuthSelect(undefined)`). Both are handled inside the
+ * component before this table is consulted.
  */
 export function wizardBackTarget(
   step: WizardStep,
@@ -53,7 +64,9 @@ export function wizardBackTarget(
     case "custom-id":
     case "verifying":
     case "manual-model":
-    case "confirm":
+    case "embedder":
+      // The memory question precedes the config confirmation; backing out
+      // here restarts the provider flow.
     case "oauth-error":
       return "provider";
     case "key-input":
@@ -70,35 +83,61 @@ export function wizardBackTarget(
           : "key-input";
     case "model-picker":
       return "manual-model";
-    case "embedder":
-      // The memory question is the final step; back returns to the config
-      // confirmation it was asked from.
-      return "confirm";
+    case "confirm":
+      // Nothing is written until the final confirmation is accepted; Esc
+      // returns to the memory question when one was asked.
+      return ctx.needsEmbedderConsent ? "embedder" : "provider";
     case "oauth-text":
     case "oauth-status":
       return "provider";
     case "fetch-models":
-      // Transient check — nothing to go back to.
-      return "none";
     case "oauth-select":
-      return "provider";
+      // Handled inside the component before this table is consulted (the
+      // transient fetch is ignored, and Esc cancels the OAuth select).
+      // Defensive fallback: neither can be escaped backward.
+      return "none";
   }
 }
 
 /**
  * Footer hint for the wizard. Must match the real behaviour on every step:
- * the first step advertises Ctrl+C (Esc does not quit); every other step
- * advertises Esc as back.
+ * - provider + transient fetch-models: Esc does nothing; Ctrl+C quits.
+ * - verifying + OAuth steps: Esc cancels the in-flight operation.
+ * - every other step: Esc navigates back one step.
  */
 export function wizardFooterHint(step: WizardStep): string {
-  return step === "provider" ? "Ctrl+C to quit setup" : "esc back · ctrl+c quit";
+  switch (step) {
+    case "provider":
+    case "fetch-models":
+      return "Ctrl+C to quit setup";
+    case "verifying":
+    case "oauth-status":
+    case "oauth-text":
+    case "oauth-select":
+      return "esc cancel · ctrl+c quit";
+    default:
+      return "esc back · ctrl+c quit";
+  }
 }
 
 /**
- * Step reached once a model has been chosen. The memory-capability question
- * moved to the end of the wizard (after the config-file confirmation), so
- * picking a model always leads to the confirmation step first.
+ * Hint text surfaced when Esc is pressed on a step whose back target is
+ * "none". Only the first provider step qualifies; every other step returns
+ * null so the wizard never routes a hint through its error `message`.
  */
-export function nextStepAfterModelChosen(): WizardStep {
-  return "confirm";
+export function escHintText(step: WizardStep): string | null {
+  return step === "provider" ? "Ctrl+C to quit setup" : null;
+}
+
+/**
+ * Step reached once a model has been chosen. The memory question comes
+ * BEFORE the config-file confirmation, so picking a model leads to the
+ * memory question when interactive consent is still needed, and to the
+ * confirmation otherwise. Nothing is written until the confirmation is
+ * accepted.
+ */
+export function nextStepAfterModelChosen(opts?: {
+  needsEmbedderConsent?: boolean;
+}): WizardStep {
+  return opts?.needsEmbedderConsent ? "embedder" : "confirm";
 }

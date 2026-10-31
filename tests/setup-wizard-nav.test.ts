@@ -2,10 +2,17 @@ import { describe, it, expect } from "bun:test";
 import {
   wizardBackTarget,
   wizardFooterHint,
+  escHintText,
   nextStepAfterModelChosen,
   type WizardStep,
 } from "../src/setup/wizard-nav.js";
 
+/**
+ * Every step the wizard component routes through `wizardBackTarget`.
+ * `fetch-models` and `oauth-select` are special-cased INSIDE the component
+ * (transient no-op / OAuth select cancel) before the target table is
+ * consulted, so they are intentionally not part of the table.
+ */
 const ALL_STEPS: WizardStep[] = [
   "provider",
   "auth-method",
@@ -18,14 +25,12 @@ const ALL_STEPS: WizardStep[] = [
   "custom-key",
   "verifying",
   "save-anyway",
-  "fetch-models",
   "model-picker",
   "manual-model",
   "embedder",
   "confirm",
   "oauth-status",
   "oauth-text",
-  "oauth-select",
   "oauth-error",
 ];
 
@@ -34,7 +39,7 @@ describe("wizardBackTarget", () => {
   const custom = { isCustom: true, provider: "mock-provider" };
   const bedrock = { isCustom: false, provider: "amazon-bedrock" };
 
-  it("describes a back target for every step", () => {
+  it("describes a back target for every reachable step", () => {
     for (const step of ALL_STEPS) {
       const target = wizardBackTarget(step, plain);
       expect(target === "none" || (ALL_STEPS as string[]).includes(target)).toBe(true);
@@ -53,8 +58,18 @@ describe("wizardBackTarget", () => {
     expect(wizardBackTarget("manual-model", plain)).toBe("provider");
   });
 
-  it("the memory question sits after the config confirmation, so back lands on confirm", () => {
-    expect(wizardBackTarget("embedder", plain)).toBe("confirm");
+  it("the memory question comes BEFORE the config confirmation, so back from confirm lands on embedder", () => {
+    expect(
+      wizardBackTarget("confirm", { ...plain, needsEmbedderConsent: true }),
+    ).toBe("embedder");
+  });
+
+  it("without a memory question, confirm backs out to the provider list", () => {
+    expect(wizardBackTarget("confirm", plain)).toBe("provider");
+  });
+
+  it("embedder backs out to the provider list (it precedes confirm)", () => {
+    expect(wizardBackTarget("embedder", plain)).toBe("provider");
   });
 
   it("save-anyway goes back to the input screen that produced it", () => {
@@ -64,13 +79,9 @@ describe("wizardBackTarget", () => {
   });
 
   it("provider-choice steps return to the provider list", () => {
-    for (const step of ["auth-method", "reuse-oauth", "key-choice", "bedrock-key", "custom-id", "verifying", "confirm", "oauth-error"] as WizardStep[]) {
+    for (const step of ["auth-method", "reuse-oauth", "key-choice", "bedrock-key", "custom-id", "verifying", "oauth-error"] as WizardStep[]) {
       expect(wizardBackTarget(step, plain)).toBe("provider");
     }
-  });
-
-  it("transient fetch-models cannot be escaped backward", () => {
-    expect(wizardBackTarget("fetch-models", plain)).toBe("none");
   });
 });
 
@@ -79,16 +90,44 @@ describe("wizardFooterHint", () => {
     expect(wizardFooterHint("provider")).toBe("Ctrl+C to quit setup");
   });
 
+  it("transient fetch-models cannot be escaped backward — no 'esc back' claim", () => {
+    expect(wizardFooterHint("fetch-models")).toBe("Ctrl+C to quit setup");
+  });
+
+  it("verifying and OAuth steps cancel on Esc, not navigate back", () => {
+    for (const step of ["verifying", "oauth-status", "oauth-text", "oauth-select"] as WizardStep[]) {
+      expect(wizardFooterHint(step)).toBe("esc cancel · ctrl+c quit");
+    }
+  });
+
   it("every other step advertises Esc as back", () => {
     for (const step of ALL_STEPS) {
-      if (step === "provider") continue;
+      if (["provider", "verifying", "oauth-status", "oauth-text", "oauth-select"].includes(step)) continue;
       expect(wizardFooterHint(step)).toBe("esc back · ctrl+c quit");
     }
   });
 });
 
+describe("escHintText", () => {
+  it("surfaces the quit hint only on the first (provider) step", () => {
+    expect(escHintText("provider")).toBe("Ctrl+C to quit setup");
+  });
+
+  it("returns null on every other step — Esc there must never reuse the error channel", () => {
+    for (const step of ALL_STEPS) {
+      if (step === "provider") continue;
+      expect(escHintText(step)).toBeNull();
+    }
+  });
+});
+
 describe("nextStepAfterModelChosen", () => {
-  it("always goes to the config confirmation (memory question moved to the end)", () => {
+  it("always goes to the memory question first when interactive consent is needed", () => {
+    expect(nextStepAfterModelChosen({ needsEmbedderConsent: true })).toBe("embedder");
+  });
+
+  it("goes straight to the config confirmation when no memory question is needed", () => {
+    expect(nextStepAfterModelChosen({ needsEmbedderConsent: false })).toBe("confirm");
     expect(nextStepAfterModelChosen()).toBe("confirm");
   });
 });

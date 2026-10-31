@@ -46,8 +46,10 @@ import { upsertUserProvider } from "../../provider-registry.js";
 import {
   needsInteractiveEmbedderConsent,
   setEmbedderConsent,
+  type EmbedderConsent,
 } from "../../memory/embedder-consent.js";
 import {
+  escHintText,
   nextStepAfterModelChosen,
   wizardBackTarget,
   wizardFooterHint,
@@ -149,6 +151,14 @@ export function SetupWizard(props: SetupWizardProps) {
   const renderer = useRenderer();
   const [step, setStep] = createSignal<WizardStep>("provider");
   const [message, setMessage] = createSignal("");
+  // Separate non-error hint channel (e.g. "Ctrl+C to quit setup" when Esc is
+  // pressed on the first step). Cleared on every step change; never routed
+  // through the error `message`.
+  const [hint, setHint] = createSignal("");
+  createEffect(() => {
+    void step();
+    setHint("");
+  });
   const [models, setModels] = createSignal<ProviderCatalogModelEntry[]>([]);
   const [oauthOptions, setOauthOptions] = createSignal<
     readonly { id: string; label: string; description?: string }[]
@@ -167,11 +177,35 @@ export function SetupWizard(props: SetupWizardProps) {
     pendingKey: "",
   };
   let settled = false;
-  let pendingResult: SetupResult | null = null;
   let oauthAbort: AbortController | undefined;
+  let keyVerifyAbort: AbortController | undefined;
+  /** Memory-question answer; recorded only when the final confirmation is accepted. */
+  let pendingConsent: EmbedderConsent | null = null;
   let resolveOAuthText: ((value: string) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
   const maxVisible = Math.max(5, Math.min(14, (process.stdout.rows ?? 24) - 14));
+
+  // Steps that render a PaletteList; the picker owns the single footer hint
+  // line there, so the wizard-level line is suppressed for them.
+  const PALETTE_STEPS = new Set<WizardStep>([
+    "provider",
+    "auth-method",
+    "reuse-oauth",
+    "key-choice",
+    "model-picker",
+    "save-anyway",
+    "confirm",
+    "embedder",
+    "oauth-select",
+    "oauth-error",
+  ]);
+  const stepShowsPalette = () => {
+    const s = step();
+    if (s === "key-choice") {
+      return hasApiKey(state.provider) || !!formatEnvKeyOfferMessage(state.provider);
+    }
+    return PALETTE_STEPS.has(s);
+  };
 
   const providerForConfig = () => (state.isCustom ? state.customProviderId : state.provider);
   const customProvider = (): CustomProviderConfig | undefined =>
@@ -190,6 +224,7 @@ export function SetupWizard(props: SetupWizardProps) {
     if (settled) return;
     settled = true;
     oauthAbort?.abort();
+    keyVerifyAbort?.abort();
     props.onDone(result);
   };
 
@@ -208,18 +243,18 @@ export function SetupWizard(props: SetupWizardProps) {
       customProvider: custom,
       keySaved: state.keySaved,
     });
-    if (needsInteractiveEmbedderConsent()) {
-      // The memory question is the last wizard step, after the config-file
-      // confirmation; finish once it is answered.
-      pendingResult = result;
-      setStep("embedder");
-    } else {
-      finish(result);
-    }
+    // The memory question was asked BEFORE this confirmation; record its
+    // answer only now that the setup actually completes.
+    if (pendingConsent) setEmbedderConsent(pendingConsent);
+    finish(result);
   };
 
   const afterModelChosen = () => {
-    setStep(nextStepAfterModelChosen());
+    setStep(
+      nextStepAfterModelChosen({
+        needsEmbedderConsent: needsInteractiveEmbedderConsent(),
+      }),
+    );
   };
 
   const acceptVerifiedKey = (provider: string, key: string) => {
@@ -231,9 +266,15 @@ export function SetupWizard(props: SetupWizardProps) {
   };
 
   const applyKey = async (provider: string, key: string, baseUrl?: string) => {
+    const abort = new AbortController();
+    keyVerifyAbort?.abort();
+    keyVerifyAbort = abort;
     setStep("verifying");
     setMessage("Verifying key…");
     const result = await verifyProviderKey(provider, key, baseUrl ? { baseUrl } : undefined);
+    // Stale: the user backed out of verification (Esc), so this result must
+    // be ignored — it must not save the key or yank the wizard forward.
+    if (abort.signal.aborted) return;
     if (result.status === "unauthorized") {
       setMessage(result.message);
       setStep(
@@ -338,13 +379,18 @@ export function SetupWizard(props: SetupWizardProps) {
       return;
     }
     if (current === "fetch-models") return;
+    // Any back navigation invalidates an in-flight key verification so a
+    // stale result cannot save the key or yank the wizard forward.
+    keyVerifyAbort?.abort();
     const target = wizardBackTarget(current, {
       isCustom: state.isCustom,
       provider: state.provider,
+      needsEmbedderConsent: needsInteractiveEmbedderConsent(),
     });
     if (target === "none") {
-      // First step: Esc must not quit — just surface the quit hint.
-      setMessage("Ctrl+C to quit setup");
+      // First step: Esc must not quit — surface the quit hint on its own
+      // channel (never the error message).
+      setHint(escHintText(current) ?? "");
       return;
     }
     if (current === "oauth-text" || current === "oauth-status") {
@@ -409,6 +455,7 @@ export function SetupWizard(props: SetupWizardProps) {
             placeholder="search providers…"
             options={toPaletteOptions(buildProviderSelectItems())}
             maxVisible={maxVisible}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => selectProvider(value)}
           />
         </>
@@ -422,6 +469,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={AUTH_METHOD_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "oauth") void startOAuth(state.provider);
               else if (value === "api_key") setStep("key-choice");
@@ -442,6 +490,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={REAUTH_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "yes") void startOAuth(state.provider);
               else if (value === "no") {
@@ -465,6 +514,7 @@ export function SetupWizard(props: SetupWizardProps) {
               <text> </text>
               <PaletteList
                 options={YES_NO_OPTIONS}
+                footerHint={hint() || wizardFooterHint(step())}
                 onSelect={(value) => {
                   if (value === "yes") enterKeyInput();
                   else if (value === "no") {
@@ -480,6 +530,7 @@ export function SetupWizard(props: SetupWizardProps) {
               <text> </text>
               <PaletteList
                 options={YES_NO_OPTIONS}
+                footerHint={hint() || wizardFooterHint(step())}
                 onSelect={(value) => {
                   if (value === "yes") {
                     state.keySaved = adoptEnvKeyForProvider(state.provider);
@@ -647,6 +698,7 @@ export function SetupWizard(props: SetupWizardProps) {
             placeholder="search models…"
             options={modelOptions()}
             maxVisible={maxVisible}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               state.model = value;
               afterModelChosen();
@@ -701,6 +753,7 @@ export function SetupWizard(props: SetupWizardProps) {
               { value: "yes", name: "Yes — save anyway", description: "" },
               { value: "no", name: "No — re-enter key", description: "" },
             ]}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "yes") {
                 acceptVerifiedKey(providerForConfig(), state.pendingKey);
@@ -729,6 +782,15 @@ export function SetupWizard(props: SetupWizardProps) {
                 : hasApiKey(providerForConfig())
                   ? ["Key: ", { text: "in credential store", style: TUI_STYLE.success }]
                   : "Key: (not set)",
+              ...(pendingConsent === "proceed"
+                ? [
+                    ["Memory recall: ", { text: "Download now", style: TUI_STYLE.success }],
+                  ]
+                : pendingConsent === "skip"
+                  ? [
+                      ["Memory recall: ", { text: "Keyword only", style: TUI_STYLE.muted }],
+                    ]
+                  : []),
               "",
               setupConfigConfirmPrompt(existsSync(getSetupConfigPath())),
             ]}
@@ -736,6 +798,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={YES_NO_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "no") finalize("skip");
               else if (value === "yes") finalize("write");
@@ -770,9 +833,9 @@ export function SetupWizard(props: SetupWizardProps) {
             ]}
             onSelect={(value) => {
               if (value === "proceed" || value === "skip") {
-                setEmbedderConsent(value);
+                pendingConsent = value;
+                setStep("confirm");
               }
-              finish(pendingResult ?? { success: true, provider: providerForConfig(), message: "Setup complete." });
             }}
           />
         </>
@@ -832,14 +895,17 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={[{ name: "Back to provider list", description: "", value: "back" }]}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={() => setStep("provider")}
           />
         </>
       )}
 
-      <text>
-        <span style={TUI_STYLE.muted}>{wizardFooterHint(step())}</span>
-      </text>
+      <Show when={!stepShowsPalette()}>
+        <text>
+          <span style={TUI_STYLE.muted}>{wizardFooterHint(step())}</span>
+        </text>
+      </Show>
     </box>
   );
 }
