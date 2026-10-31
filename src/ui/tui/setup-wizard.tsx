@@ -55,6 +55,7 @@ import {
   nextStepAfterModelChosen,
   popStep,
   pushStep,
+  removeWizardStep,
   resetWizardHistory,
   wizardFooterHint,
   type WizardStep,
@@ -405,6 +406,9 @@ export function SetupWizard(props: SetupWizardProps) {
     if (current === "oauth-text" || current === "oauth-status") {
       oauthAbort?.abort();
     }
+    // Leaving the "Save anyway?" screen in any direction forgets the
+    // refused key so it can never be resurrected by a later Yes.
+    if (current === "save-anyway") state.pendingKey = "";
     setMessage("");
     setStep(target);
   };
@@ -766,7 +770,16 @@ export function SetupWizard(props: SetupWizardProps) {
             onSelect={(value) => {
               if (value === "yes") {
                 acceptVerifiedKey(providerForConfig(), state.pendingKey);
+                // The key was accepted and saved; forget it and drop this
+                // step from the visited history so Esc cannot walk back onto
+                // a stale "Save anyway?" screen.
+                state.pendingKey = "";
+                removeWizardStep(history, "save-anyway");
               } else if (value === "no") {
+                // Refused: forget the key and drop the step so Esc cannot
+                // resurface it (and Yes cannot overwrite a later good key).
+                state.pendingKey = "";
+                removeWizardStep(history, "save-anyway");
                 setMessage("");
                 setStep(state.isCustom ? "custom-key" : state.provider === "amazon-bedrock" ? "bedrock-key" : "key-input");
               }

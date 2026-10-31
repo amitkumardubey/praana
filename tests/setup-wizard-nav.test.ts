@@ -7,6 +7,7 @@ import {
   pushStep,
   popStep,
   resetWizardHistory,
+  removeWizardStep,
   type WizardStep,
 } from "../src/setup/wizard-nav.js";
 
@@ -109,14 +110,46 @@ describe("wizard history (pushStep/popStep)", () => {
     expect(popStep(h, "provider")).toBe("none");
   });
 
-  it("every reachable step either pops or reports none", () => {
+  it("esc from an OAuth interstitial started straight from the provider list returns to the provider", () => {
+    // Codex/Copilot skip the auth-method step: the stack stays [provider]
+    // while the OAuth browser/paste screens show. Esc there must still
+    // resolve to the provider (so the component can abort), not to "none".
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    expect(popStep(h, "oauth-status")).toBe("provider");
+    expect(popStep(h, "oauth-text")).toBe("provider");
+    expect(popStep(h, "oauth-select")).toBe("provider");
+    // Transients are still never recorded — the provider stays the only entry.
+    expect(h.steps).toEqual(["provider"]);
+  });
+
+  it("transient steps resolve to the last visited destination without popping", () => {
     const h = createWizardHistory();
     pushStep(h, "provider");
     pushStep(h, "auth-method");
-    for (const step of ALL_STEPS) {
-      const target = popStep(h, step);
-      expect(target === "none" || (ALL_STEPS as string[]).includes(target)).toBe(true);
+    for (const step of ["verifying", "fetch-models", "oauth-status", "oauth-text", "oauth-select"] as const) {
+      expect(popStep(h, step)).toBe("auth-method");
     }
+    expect(h.steps).toEqual(["provider", "auth-method"]);
+  });
+
+  it("a non-transient step on a single-entry history reports none", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    expect(popStep(h, "provider")).toBe("none");
+    expect(popStep(h, "auth-method")).toBe("none");
+  });
+
+  it("removeWizardStep drops a resolved step so it cannot resurface as a back target", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "key-choice");
+    pushStep(h, "save-anyway");
+    removeWizardStep(h, "save-anyway");
+    expect(h.steps).toEqual(["provider", "key-choice"]);
+    // Esc from the key screen afterwards must not walk back onto save-anyway.
+    pushStep(h, "key-input");
+    expect(popStep(h, "key-input")).toBe("key-choice");
   });
 });
 

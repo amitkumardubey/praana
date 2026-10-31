@@ -80,12 +80,27 @@ export function popStep(
   current: WizardStep,
 ): WizardStep | "none" {
   const last = history.steps[history.steps.length - 1];
+  // Transient steps (verifying, model fetch, OAuth interstitials) resolve to
+  // the last visited destination without popping — the user never left it.
+  // This runs BEFORE the length guard so an OAuth flow started straight from
+  // the provider list (stack stuck at [provider]) still cancels back to it.
+  if (TRANSIENT_STEPS.has(current)) return last ?? "none";
   if (last === undefined || history.steps.length <= 1) return "none";
   if (last === current) {
     history.steps.pop();
     return history.steps[history.steps.length - 1] ?? "none";
   }
   return last;
+}
+
+/**
+ * Remove a specific step from the visited history. Used when a step is
+ * resolved in a direction that must not be walked back onto later (e.g.
+ * "save-anyway" when the user leaves it, so Esc cannot resurface it with a
+ * stale pending key).
+ */
+export function removeWizardStep(history: WizardHistory, step: WizardStep): void {
+  history.steps = history.steps.filter((s) => s !== step);
 }
 
 /**
