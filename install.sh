@@ -37,8 +37,23 @@ die() {
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 ||
-    die "install.sh requires '$1' on PATH (Debian/Ubuntu: apt-get install -y $1)"
+  if command -v "$1" >/dev/null 2>&1; then
+    return 0
+  fi
+  # Only curl and tar have a correct apt package name. awk/grep come from
+  # mawk/grep (or are built in on some systems), so point at the package
+  # manager in general instead of inventing an apt package.
+  case "$1" in
+    curl)
+      die "install.sh requires 'curl' on PATH (Debian/Ubuntu: apt-get install -y curl ca-certificates)"
+      ;;
+    tar)
+      die "install.sh requires 'tar' on PATH (Debian/Ubuntu: apt-get install -y tar)"
+      ;;
+    *)
+      die "install.sh requires '$1' on PATH (install '$1' with your package manager)"
+      ;;
+  esac
 }
 
 detect_libc() {

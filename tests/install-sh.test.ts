@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -79,6 +80,82 @@ describe("install.sh --print-target", () => {
       const result = printTarget(os, machine, extra);
       expect(result.exitCode).not.toBe(0);
       expect(`${result.stdout}${result.stderr}`.toLowerCase()).toContain("unsupported");
+    }
+  });
+});
+
+describe("install.sh missing-command hints", () => {
+  /** Temp PATH containing only symlinks to `names` (absolute /bin/sh launch). */
+  function binWith(names: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "praana-install-path-"));
+    for (const name of names) {
+      const found = Bun.which(name);
+      if (!found) throw new Error(`test host is missing ${name}`);
+      symlinkSync(found, join(dir, name));
+    }
+    return dir;
+  }
+
+  function runWithPath(pathValue: string) {
+    const result = Bun.spawnSync(["/bin/sh", INSTALL_SH], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        PATH: pathValue,
+        PRAANA_UNAME_S: "Linux",
+        PRAANA_UNAME_M: "x86_64",
+        PRAANA_LIBC: "gnu",
+      },
+    });
+    return {
+      exitCode: result.exitCode ?? 1,
+      output: `${result.stdout.toString("utf-8")}${result.stderr.toString("utf-8")}`,
+    };
+  }
+
+  it("offers the apt hint for curl, including ca-certificates", () => {
+    const dir = binWith(["tar", "awk", "grep"]);
+    try {
+      const result = runWithPath(dir);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.output).toContain("requires 'curl'");
+      expect(result.output).toContain("apt-get install -y curl ca-certificates");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("offers the apt hint for tar", () => {
+    const dir = binWith(["curl", "awk", "grep"]);
+    try {
+      const result = runWithPath(dir);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.output).toContain("requires 'tar'");
+      expect(result.output).toContain("apt-get install -y tar");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses a generic hint for POSIX tools instead of the wrong apt package", () => {
+    // need_cmd covers curl, tar, awk and grep; the rest of the POSIX tools are
+    // used later, so only these two take the generic branch.
+    for (const missing of ["awk", "grep"]) {
+      const dir = binWith(
+        ["curl", "tar", "awk", "grep"].filter((name) => name !== missing),
+      );
+      try {
+        const result = runWithPath(dir);
+        expect(result.exitCode).not.toBe(0);
+        expect(result.output).toContain(`requires '${missing}'`);
+        expect(result.output).toContain(
+          `install '${missing}' with your package manager`,
+        );
+        expect(result.output).not.toContain(`apt-get install -y ${missing}`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 });
