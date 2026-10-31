@@ -197,6 +197,14 @@ async function main(): Promise<void> {
       conditions: ["bun"],
       tsconfig: resolve("tsconfig.json"),
       plugins: [solidPlugin],
+      // OpenTUI core conditionally imports the musl platform packages, but Bun
+      // skips musl optionalDependencies on a glibc host and we ship no musl
+      // standalone binary (release targets are glibc/macOS/Windows). Leaving
+      // them external is safe: the branches only run with OPENTUI_LIBC=musl.
+      external: [
+        "@opentui/core-linux-x64-musl",
+        "@opentui/core-linux-arm64-musl",
+      ],
       minify: true,
       sourcemap: "none",
       define: {
