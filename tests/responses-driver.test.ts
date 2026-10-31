@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 import { APP_VERSION } from "../src/app-banner.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { streamLlmResponse } from "../src/llm/stream.js";
@@ -105,13 +105,16 @@ async function streamEvents(driver: { stream: OpenAIResponsesDriver["stream"] },
 async function mainResponsesDriver(): Promise<OpenAIResponsesDriver> {
   const repo = join(import.meta.dir, "..");
   const source = execFileSync("git", ["show", "main:src/llm/drivers/responses.ts"], { cwd: repo, encoding: "utf8" });
-  const scratch = join(homedir(), ".cache/codex-fix-scratch");
-  mkdirSync(scratch, { recursive: true });
-  const file = join(scratch, "responses-main.ts");
-  const driversDir = join(repo, "src/llm/drivers");
-  writeFileSync(file, source.replace(/from "(\.[^"]+)"/g, (_match, spec: string) => `from ${JSON.stringify(join(driversDir, spec))}`));
-  const loaded = await import(`${pathToFileURL(file).href}?main-responses`) as { OpenAIResponsesDriver: new () => OpenAIResponsesDriver };
-  return new loaded.OpenAIResponsesDriver();
+  const scratch = mkdtempSync(join(tmpdir(), "praana-responses-main-"));
+  try {
+    const file = join(scratch, "responses-main.ts");
+    const driversDir = join(repo, "src/llm/drivers");
+    writeFileSync(file, source.replace(/from "(\.[^"]+)"/g, (_match, spec: string) => `from ${JSON.stringify(join(driversDir, spec))}`));
+    const loaded = await import(`${pathToFileURL(file).href}?main-responses`) as { OpenAIResponsesDriver: new () => OpenAIResponsesDriver };
+    return new loaded.OpenAIResponsesDriver();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 const OPENAI_MAIN_STREAMS = [
@@ -239,6 +242,42 @@ describe("Responses stream termination", () => {
     expect(incompleteEvents.at(-1)).toEqual({ type: "done", reason: "length", message: { role: "assistant", content: "partial" } });
   });
 
+  it("emits top-level and nested usage, and does not zero-fill empty or partial usage", async () => {
+    const topLevel = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
+      { type: "response.output_text.delta", delta: "Hi" },
+      { type: "response.completed", response: { status: "completed" }, usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 } },
+    ]);
+    expect(topLevel.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 4, output: 1, totalTokens: 5 } },
+    ]);
+
+    const nestedOnly = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
+      { type: "response.completed", response: { status: "completed", usage: { prompt_tokens: 6, completion_tokens: 2, total_tokens: 8 } } },
+    ]);
+    expect(nestedOnly.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 6, output: 2, totalTokens: 8 } },
+    ]);
+
+    const emptyNestedFallsThrough = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
+      { type: "response.completed", response: { status: "completed", usage: {} }, usage: { input_tokens: 8, output_tokens: 1, total_tokens: 9 } },
+    ]);
+    expect(emptyNestedFallsThrough.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 8, output: 1, totalTokens: 9 } },
+    ]);
+
+    const merged = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "Hi", usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+      { usage: {} },
+      { usage: { output_tokens: 4 } },
+      { response: { usage: {} } },
+      completed,
+    ]);
+    expect(merged.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 10, output: 1, totalTokens: 11 } },
+      { type: "usage", usage: { input: 10, output: 4, totalTokens: 11 } },
+    ]);
+  });
+
   it("preserves valid OpenAI text, reasoning, tools, usage and final message", async () => {
     const events = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
       { type: "response.reasoning_text.delta", delta: "Thinking" },
@@ -272,9 +311,7 @@ it("keeps the ordinary OpenAI Responses request byte-identical", async () => {
 });
 
 it("keeps request-level token overrides consistent through the real stream facade", async () => {
-  const scratch = join(homedir(), ".cache/codex-login-scratch");
-  mkdirSync(scratch, { recursive: true });
-  const home = mkdtempSync(join(scratch, "responses-facade-"));
+  const home = mkdtempSync(join(tmpdir(), "praana-responses-facade-"));
   const previous = process.env.PRAANA_HOME;
   process.env.PRAANA_HOME = home;
   resetCredentialStoreForTests();

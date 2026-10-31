@@ -19,24 +19,47 @@ import { withPreEmissionRetry } from "../retry.js";
 import { joinUrl } from "../url.js";
 import { extractAccountId } from "../../oauth-codex.js";
 
-/** Top-level `usage` or the `response.usage` object sent on completed/incomplete events. */
-function readResponsesUsage(parsed: Record<string, unknown>): ProviderUsage | null {
+function finiteToken(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function usageRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+/** Keep earlier totals for fields this event does not report. Absent objects emit nothing. */
+function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null): ProviderUsage | null {
+  const input = finiteToken(raw.input_tokens) ?? finiteToken(raw.prompt_tokens);
+  const output = finiteToken(raw.output_tokens) ?? finiteToken(raw.completion_tokens);
+  const totalTokens = finiteToken(raw.total_tokens);
+  if (input === undefined && output === undefined && totalTokens === undefined) return null;
+  return {
+    input: input ?? previous?.input ?? 0,
+    output: output ?? previous?.output ?? 0,
+    totalTokens: totalTokens ?? previous?.totalTokens ?? 0,
+  };
+}
+
+/**
+ * Top-level `usage`, or `response.usage` on completed/incomplete events.
+ * An empty object is ignored so it cannot replace an earlier reading.
+ * When the nested object has no token counts, a top-level usage object is used.
+ */
+function readResponsesUsage(
+  parsed: Record<string, unknown>,
+  previous: ProviderUsage | null,
+): ProviderUsage | null {
   const response = parsed.response;
   const nested = response && typeof response === "object"
-    ? (response as { usage?: unknown }).usage
+    ? usageRecord((response as { usage?: unknown }).usage)
     : undefined;
-  const raw = nested && typeof nested === "object"
-    ? nested
-    : parsed.usage && typeof parsed.usage === "object"
-      ? parsed.usage
-      : undefined;
-  if (!raw || typeof raw !== "object") return null;
-  const u = raw as Record<string, number>;
-  return {
-    input: u.input_tokens ?? u.prompt_tokens ?? 0,
-    output: u.output_tokens ?? u.completion_tokens ?? 0,
-    totalTokens: u.total_tokens ?? 0,
-  };
+  const top = usageRecord(parsed.usage);
+  if (nested) {
+    const parsedNested = usageFrom(nested, previous);
+    if (parsedNested) return parsedNested;
+  }
+  return top ? usageFrom(top, previous) : null;
 }
 
 export class OpenAIResponsesDriver implements LlmDriver {
@@ -206,7 +229,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
           }
         }
 
-        const usage = readResponsesUsage(parsed);
+        const usage = readResponsesUsage(parsed, latestUsage);
         if (usage) {
           latestUsage = usage;
           yield { type: "usage", usage: latestUsage };
