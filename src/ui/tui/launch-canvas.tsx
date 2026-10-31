@@ -9,13 +9,18 @@
  * spinner host.
  */
 import { Show, type Accessor } from "solid-js";
+import { useTerminalDimensions } from "@opentui/solid";
 import { TUI_PALETTE, TUI_STYLE } from "./theme.js";
-import { LAUNCH_HINT_TEXT } from "./boot-summary.js";
+import { launchHintForWidth } from "./boot-summary.js";
 
 export function LaunchCanvas(props: {
   version: Accessor<string>;
   skillsLabel: Accessor<string>;
 }) {
+  // The canvas only mounts inside the real TUI (App/run.tsx), so there is
+  // no headless path to guard here; the width-aware hint keeps the line
+  // from wrapping on narrow terminals.
+  const dimensions = useTerminalDimensions();
   return (
     <box
       id="launch-canvas"
@@ -34,9 +39,11 @@ export function LaunchCanvas(props: {
       <text>
         <span style={TUI_STYLE.chromeMuted}>{props.skillsLabel()}</span>
       </text>
-      <Show when={process.stdout.isTTY}>
+      <Show when={dimensions().width > 0}>
         <text>
-          <span style={TUI_STYLE.faint}>{LAUNCH_HINT_TEXT}</span>
+          <span style={TUI_STYLE.faint}>
+            {launchHintForWidth(dimensions().width || 80)}
+          </span>
         </text>
       </Show>
     </box>
