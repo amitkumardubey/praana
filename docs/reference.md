@@ -129,6 +129,15 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+### LLM stream timeouts
+
+These keys live in `[llm]`. A value that is not a non-negative integer warns and falls back to the default. `0` turns that timer off.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `connect_timeout_ms` | `60000` | Abort the request if response headers have not arrived. The failure is retried before any tokens are emitted. |
+| `stream_idle_timeout_ms` | `120000` | Abort if the response body stays silent this long. The timer resets on every chunk, including SSE comment keep-alives. The stream ends with reason `timeout` (partial text kept) so the turn can recover. A user abort is still reason `abort`. |
+
 ## Slash commands
 
 | Command | Purpose |

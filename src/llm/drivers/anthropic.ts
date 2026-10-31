@@ -16,6 +16,7 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
+import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
 
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
@@ -56,15 +57,21 @@ export class AnthropicDriver implements LlmDriver {
       delete body.temperature;
     }
 
+    const timeouts = getLlmStreamTimeouts();
+    const guard = createLlmFetchGuard({
+      userSignal: req.signal,
+      connectTimeoutMs: timeouts.connectTimeoutMs,
+      idleTimeoutMs: timeouts.idleTimeoutMs,
+    });
+
     let response: Response;
     try {
       response = await withPreEmissionRetry(
         async () => {
-          const res = await fetch(endpoint, {
+          const res = await guard.fetch(endpoint, {
             method: "POST",
             headers,
             body: JSON.stringify(body),
-            signal: req.signal,
           });
 
           if (!res.ok) {
@@ -83,6 +90,7 @@ export class AnthropicDriver implements LlmDriver {
         { signal: req.signal },
       );
     } catch (err: any) {
+      guard.dispose();
       yield {
         type: "error",
         error: err instanceof Error ? err : new Error(String(err)),
@@ -108,20 +116,22 @@ export class AnthropicDriver implements LlmDriver {
     let sawTerminal = false;
     let emittedDelta = false;
 
+    const haltedMessage = (): AssistantMessage => ({
+      role: "assistant",
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
+      thinkingSignature,
+      toolCalls: accumulator.flush(),
+    });
+
     try {
-      for await (const event of parseSseStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              thinking: accumulatedThinking || undefined,
-              thinkingSignature,
-              toolCalls: accumulator.flush(),
-            },
-          };
+      for await (const event of parseSseStream(guard.wrapBody(response.body!))) {
+        if (req.signal?.aborted || guard.abortKind() === "user") {
+          yield { type: "done", reason: "abort", message: haltedMessage() };
+          return;
+        }
+        if (guard.abortKind() === "idle") {
+          yield { type: "done", reason: "timeout", message: haltedMessage() };
           return;
         }
 
@@ -209,6 +219,15 @@ export class AnthropicDriver implements LlmDriver {
         }
       }
 
+      const haltKind = guard.abortKind();
+      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
+        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
+        if (halted) {
+          yield halted;
+          return;
+        }
+      }
+
       if (!sawTerminal) {
         yield {
           type: "error",
@@ -253,12 +272,22 @@ export class AnthropicDriver implements LlmDriver {
         message: finalAssistant,
       };
     } catch (err: any) {
+      const haltKind = guard.abortKind();
+      if (req.signal?.aborted || haltKind === "user" || haltKind === "idle") {
+        const halted = streamGuardTerminal(haltKind, Boolean(req.signal?.aborted), haltedMessage());
+        if (halted) {
+          yield halted;
+          return;
+        }
+      }
       yield {
         type: "error",
         error: err instanceof Error ? err : new Error(String(err)),
         status: err.status,
         retryable: false,
       };
+    } finally {
+      guard.dispose();
     }
   }
 

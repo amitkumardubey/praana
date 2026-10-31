@@ -126,6 +126,16 @@ export interface LlmConfig {
   reasoning_effort?: string;
   /** AWS region for amazon-bedrock catalog + invoke. Ignored by other providers. */
   region?: string;
+  /**
+   * Milliseconds to wait for response headers before aborting the request.
+   * `0` disables the connect timer. Default 60000.
+   */
+  connect_timeout_ms?: number;
+  /**
+   * Milliseconds of response-body silence before the stream is aborted.
+   * Reset on every chunk, including SSE comments. `0` disables. Default 120000.
+   */
+  stream_idle_timeout_ms?: number;
 }
 
 // ---- User-Declared Providers (declarative config) ----
