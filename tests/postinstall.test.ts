@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -8,7 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 import {
   BUN_URL,
@@ -21,8 +23,42 @@ import {
   writeNotice,
 } from "../scripts/postinstall.js";
 
-const POSTINSTALL_JS = resolve("scripts/postinstall.js");
+// Resolve from this file, not the process cwd: `bun test` may be run from a
+// subdirectory, and the copies below must not depend on where it was started.
+const POSTINSTALL_JS = fileURLToPath(
+  new URL("../scripts/postinstall.js", import.meta.url),
+);
 const NODE = Bun.which("node");
+
+/**
+ * Copy the script into a throwaway package. The package.json is load-bearing:
+ * Node < 22.7 has no ESM syntax detection, so a bare directory would run
+ * postinstall.js as CommonJS and fail on `import`.
+ */
+function copyScript(root: string): string {
+  const scriptsDir = join(root, "scripts");
+  mkdirSync(scriptsDir, { recursive: true });
+  writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
+  copyFileSync(POSTINSTALL_JS, join(scriptsDir, "postinstall.js"));
+  return join(scriptsDir, "postinstall.js");
+}
+
+/**
+ * Tiny stub that satisfies the PATH lookup (a regular executable file). Do not
+ * copy the ~100 MB node binary around for this.
+ */
+function stubBunDir(root: string): string {
+  const dir = join(root, "bun-bin");
+  mkdirSync(dir, { recursive: true });
+  if (process.platform === "win32") {
+    writeFileSync(join(dir, "bun.cmd"), "@echo off\r\nexit /b 0\r\n");
+  } else {
+    const stub = join(dir, "bun");
+    writeFileSync(stub, "#!/bin/sh\nexit 0\n");
+    chmodSync(stub, 0o755);
+  }
+  return dir;
+}
 
 /** File probe that only accepts the exact paths in `present`. */
 function fakeProbe(present: string[]): (candidate: string) => boolean {
@@ -248,15 +284,10 @@ describe("postinstall script process", () => {
     if (!NODE) return;
     const root = mkdtempSync(join(tmpdir(), "praana-postinstall-"));
     try {
-      mkdirSync(join(root, "scripts"));
-      copyFileSync(POSTINSTALL_JS, join(root, "scripts", "postinstall.js"));
-      const bunDir = join(root, "bun-bin");
-      mkdirSync(bunDir);
-      // Stand-in for bun: the lookup only checks that the file exists and is +x.
-      copyFileSync(NODE, join(bunDir, "bun"));
-      Bun.spawnSync(["chmod", "+x", join(bunDir, "bun")]);
-      const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
-        env: { ...process.env, CI: "1", PATH: `${bunDir}:/usr/bin:/bin` },
+      const script = copyScript(root);
+      const bunDir = stubBunDir(root);
+      const result = Bun.spawnSync([NODE, script], {
+        env: { ...process.env, CI: "1", PATH: bunDir },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -271,10 +302,8 @@ describe("postinstall script process", () => {
     if (!NODE) return;
     const root = mkdtempSync(join(tmpdir(), "praana-postinstall-silent-"));
     try {
-      mkdirSync(join(root, "scripts"));
-      writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
-      copyFileSync(POSTINSTALL_JS, join(root, "scripts", "postinstall.js"));
-      const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
+      const script = copyScript(root);
+      const result = Bun.spawnSync([NODE, script], {
         env: {
           ...process.env,
           CI: "1",
@@ -296,14 +325,13 @@ describe("postinstall script process", () => {
     const root = mkdtempSync(join(tmpdir(), "praana-postinstall-symlink-"));
     try {
       const real = join(root, "real");
-      mkdirSync(join(real, "scripts"), { recursive: true });
-      writeFileSync(join(real, "package.json"), JSON.stringify({ type: "module" }));
-      copyFileSync(POSTINSTALL_JS, join(real, "scripts", "postinstall.js"));
+      copyScript(real);
       const link = join(root, "link");
       symlinkSync(real, link, "dir");
       // argv[1] is the symlinked path; import.meta.url is the realpath, so a
       // plain resolve() comparison silently decides "not the entry point".
       const result = Bun.spawnSync([NODE, join(link, "scripts", "postinstall.js")], {
+        // `script` is the realpath; argv[1] below goes through `link`.
         env: { ...process.env, CI: "1", PATH: "/nonexistent-dir" },
         stdout: "pipe",
         stderr: "pipe",
@@ -319,9 +347,8 @@ describe("postinstall script process", () => {
     if (!NODE) return;
     const root = mkdtempSync(join(tmpdir(), "praana-postinstall-nodeonly-"));
     try {
-      mkdirSync(join(root, "scripts"));
-      copyFileSync(POSTINSTALL_JS, join(root, "scripts", "postinstall.js"));
-      const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
+      const script = copyScript(root);
+      const result = Bun.spawnSync([NODE, script], {
         env: { ...process.env, CI: "1", PATH: "/nonexistent-dir" },
         stdout: "pipe",
         stderr: "pipe",
