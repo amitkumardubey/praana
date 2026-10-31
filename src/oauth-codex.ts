@@ -129,16 +129,30 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       interaction.notify({ type: "auth_url", url: buildAuthorizeUrl(challenge, state), instructions: NOTICE });
       if (!callback) interaction.notify({ type: "info", message: "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below." });
       const manual = async () => {
-        try {
-          return parseManualInput(await interaction.prompt({
-            type: "manual_code", message: "Paste the redirect URL or authorization code (or finish in your browser):",
-            signal: manualAbort.signal,
-          }), state);
-        } catch (error) {
-          // Callback won and aborted only this prompt. Do not fail the login.
-          if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
-          throw error;
+        let lastError: Error | undefined;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+          let input: string;
+          try {
+            input = await interaction.prompt({
+              type: "manual_code", message: "Paste the redirect URL or authorization code (or finish in your browser):",
+              signal: manualAbort.signal,
+            });
+          } catch (error) {
+            // Callback won and aborted only this prompt. Do not fail the login.
+            if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
+            throw error;
+          }
+          try {
+            return parseManualInput(input, state);
+          } catch (error) {
+            // The callback can abort this prompt after a stale paste resolves.
+            if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
+            lastError = error instanceof Error ? error : new Error(String(error));
+            interaction.notify({ type: "info", message: lastError.message });
+          }
         }
+        throw lastError ?? new Error("Missing OpenAI Codex authorization code");
       };
       const code = await withSignal(callback ? Promise.race([callback.wait(), manual()]) : manual(), signal);
       manualAbort.abort();

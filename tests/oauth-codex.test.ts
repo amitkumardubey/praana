@@ -146,6 +146,107 @@ describe("Codex browser exchange and refresh", () => {
     await expect(oauth.refresh(old)).rejects.toThrow(/run \/login openai-codex again/);
     expect(request).not.toHaveBeenCalled();
   });
+  it("re-prompts after an invalid manual paste, then exchanges a valid code", async () => {
+    const notices: string[] = [];
+    const inputs = ["http://localhost:1455/auth/callback?code=abc&state=typo", "good-code"];
+    const oauth = createOpenAICodexOAuth({
+      now: () => 1000,
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      fetch: fakeFetch((_url, init) => {
+        expect((init.body as URLSearchParams).get("code")).toBe("good-code");
+        return tokenResponse();
+      }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info" || event.type === "progress") notices.push(event.message); },
+      prompt: async (prompt) => prompt.type === "select" ? "browser" : inputs.shift()!,
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(inputs).toEqual([]);
+    expect(notices.some((message) => message.includes("state mismatch"))).toBe(true);
+  });
+
+  it("re-prompts the same way when there is no callback server", async () => {
+    const notices: string[] = [];
+    const inputs = ["", "manual-code"];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => tokenResponse()),
+      callbackServer: async () => undefined,
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info" || event.type === "progress") notices.push(event.message); },
+      prompt: async (prompt) => prompt.type === "select" ? "browser" : inputs.shift()!,
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(notices.some((message) => message.includes("Missing"))).toBe(true);
+    expect(notices.some((message) => message.includes("callback unavailable"))).toBe(true);
+  });
+
+  it("fails after five invalid manual pastes with the last reason", async () => {
+    let prompts = 0;
+    const notices: string[] = [];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    await expect(oauth.login({
+      notify: (event) => { if (event.type === "info" || event.type === "progress") notices.push(event.message); },
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        prompts++;
+        return "code=abc&state=bad";
+      },
+    })).rejects.toThrow(/state mismatch/);
+    expect(prompts).toBe(5);
+    expect(notices.filter((message) => message.includes("state mismatch"))).toHaveLength(5);
+  });
+
+  it("still completes when the callback wins while a manual prompt is pending", async () => {
+    let manualSignal: AbortSignal | undefined;
+    let finish!: (code: string) => void;
+    const callback = new Promise<string>((resolve) => { finish = resolve; });
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch((_url, init) => {
+        expect((init.body as URLSearchParams).get("code")).toBe("from-callback");
+        return tokenResponse();
+      }),
+      callbackServer: async () => ({ wait: () => callback, close() {} }),
+    });
+    const cred = await oauth.login({
+      notify() {},
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        manualSignal = prompt.signal;
+        finish("from-callback");
+        return new Promise<string>(() => {});
+      },
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(manualSignal?.aborted).toBe(true);
+  });
+
+  it("stops retrying when the user aborts after a bad paste", async () => {
+    const abort = new AbortController();
+    let prompts = 0;
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    await expect(oauth.login({
+      signal: abort.signal,
+      notify() {},
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        prompts++;
+        if (prompts === 1) return "code=abc&state=bad";
+        abort.abort(new Error("cancelled"));
+        throw abort.signal.reason;
+      },
+    })).rejects.toThrow(/cancelled/);
+    expect(prompts).toBe(2);
+  });
+
   it.each(["abort", "exchange failure"])("closes listener and cancels manual prompt on %s", async (mode) => {
     const controller = new AbortController();
     let manualSignal: AbortSignal | undefined;
