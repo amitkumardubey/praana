@@ -256,9 +256,13 @@ export function SetupWizard(props: SetupWizardProps) {
     });
     // The memory question was asked BEFORE this confirmation; record its
     // answer only now that the setup actually completes with a config write.
-    // Declining ("skip") or cancelling must leave `.embedder-consent`
-    // untouched.
-    const consentToRecord = embedderConsentToRecord(pendingConsent, action);
+    // Declining ("skip"), cancelling, or a failed write must leave
+    // `.embedder-consent` untouched.
+    const consentToRecord = embedderConsentToRecord(
+      pendingConsent,
+      action,
+      result.configWritten === true,
+    );
     if (consentToRecord) setEmbedderConsent(consentToRecord);
     finish(result);
   };

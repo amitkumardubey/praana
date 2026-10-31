@@ -14,20 +14,26 @@ import { finalizeProviderSetup, embedderConsentToRecord } from "../src/setup/log
 import { SETUP_UNSUPPORTED_PROVIDERS } from "../src/provider-registry.js";
 
 describe("embedderConsentToRecord", () => {
-  it("records the consent only when the config is actually written", () => {
-    expect(embedderConsentToRecord("proceed", "write")).toBe("proceed");
-    expect(embedderConsentToRecord("proceed", "overwrite")).toBe("proceed");
-    expect(embedderConsentToRecord("skip", "write")).toBe("skip");
+  it("passes a pending consent through for accepted config writes", () => {
+    expect(embedderConsentToRecord("proceed", "write", true)).toBe("proceed");
+    expect(embedderConsentToRecord("proceed", "overwrite", true)).toBe("proceed");
+    expect(embedderConsentToRecord("skip", "write", true)).toBe("skip");
+  });
+
+  it("records nothing when the config write failed", () => {
+    expect(embedderConsentToRecord("proceed", "write", false)).toBeNull();
+    expect(embedderConsentToRecord("proceed", "overwrite", false)).toBeNull();
+    expect(embedderConsentToRecord("skip", "write", false)).toBeNull();
   });
 
   it("declining the config confirmation leaves .embedder-consent untouched", () => {
-    expect(embedderConsentToRecord("proceed", "skip")).toBeNull();
-    expect(embedderConsentToRecord("skip", "skip")).toBeNull();
+    expect(embedderConsentToRecord("proceed", "skip", true)).toBeNull();
+    expect(embedderConsentToRecord("skip", "skip", false)).toBeNull();
   });
 
   it("no pending answer records nothing", () => {
-    expect(embedderConsentToRecord(null, "write")).toBeNull();
-    expect(embedderConsentToRecord(null, "skip")).toBeNull();
+    expect(embedderConsentToRecord(null, "write", true)).toBeNull();
+    expect(embedderConsentToRecord(null, "skip", false)).toBeNull();
   });
 });
 

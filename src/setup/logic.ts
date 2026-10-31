@@ -468,8 +468,9 @@ function patchExistingSetupConfig(
 export function embedderConsentToRecord(
   consent: EmbedderConsent | null,
   action: "write" | "skip" | "overwrite",
+  configWritten: boolean,
 ): EmbedderConsent | null {
-  if (!consent || action === "skip") return null;
+  if (!consent || action === "skip" || !configWritten) return null;
   return consent;
 }
 
@@ -494,6 +495,7 @@ export function finalizeProviderSetup(
       provider,
       model: opts?.model,
       keySaved: opts?.keySaved ?? false,
+      configWritten: false,
       message: info.keyDetected
         ? `Provider ${provider} is already configured.`
         : `Setup notes recorded for ${provider}.`,
@@ -516,6 +518,7 @@ export function finalizeProviderSetup(
     return {
       success: true,
       provider,
+      configWritten: false,
       message: writeResult.message,
     };
   }
@@ -536,6 +539,7 @@ export function finalizeProviderSetup(
     provider,
     model: opts?.model,
     keySaved,
+    configWritten: writeResult.written,
     message,
   };
 }
