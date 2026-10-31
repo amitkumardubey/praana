@@ -1038,8 +1038,15 @@ fn reserve_settings_atomic(
     );
     match result {
         Ok(reservation) => {
-            conn.execute_batch("COMMIT;")
-                .map_err(|e| CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}"))))?;
+            conn.execute_batch("COMMIT;").map_err(|e| {
+                // A failed COMMIT can leave the shared ledger connection inside
+                // BEGIN IMMEDIATE (for example a deferred constraint). Undo it
+                // so the next call is not rejected with "cannot start a
+                // transaction within a transaction" and the write lock is not
+                // held against the rebuild.
+                let _ = conn.execute_batch("ROLLBACK;");
+                CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}")))
+            })?;
             chmod_wal_shm_for(&ledger.db_path);
             Ok(reservation)
         }
@@ -1262,8 +1269,12 @@ pub fn reserve_operation_sync(
     );
     match result {
         Ok(reservation) => {
-            conn.execute_batch("COMMIT;")
-                .map_err(|e| CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}"))))?;
+            conn.execute_batch("COMMIT;").map_err(|e| {
+                // See reserve_settings_atomic: never leave the shared ledger
+                // connection inside BEGIN IMMEDIATE after a failed COMMIT.
+                let _ = conn.execute_batch("ROLLBACK;");
+                CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}")))
+            })?;
             chmod_wal_shm_for(&ledger.db_path);
             Ok(reservation)
         }
@@ -1903,8 +1914,13 @@ pub fn journal_commit_revision(
     };
     match apply() {
         Ok(()) => {
-            conn.execute_batch("COMMIT;")
-                .map_err(|e| LedgerError::Storage(format!("commit: {e}")))?;
+            conn.execute_batch("COMMIT;").map_err(|e| {
+                // A failed COMMIT can leave the shared ledger connection inside
+                // BEGIN IMMEDIATE. Undo it before reporting so the next ledger
+                // call is not rejected and the write lock is not held.
+                let _ = conn.execute_batch("ROLLBACK;");
+                LedgerError::Storage(format!("commit: {e}"))
+            })?;
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK;");
@@ -2197,4 +2213,224 @@ pub fn prune_host_terminal(
         pruned += 1;
     }
     Ok(pruned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui_contract::command::{SettingsPatchCommand, TurnSubmitCommand};
+    use crate::ui_contract::settings::SettingsPatchDto;
+
+    const TEST_NOW_MS: i64 = 1_700_000_000_000;
+
+    fn test_session_id() -> SessionId {
+        SessionId::from_str_canonical("01ARZ3NDEKTSV4RRFFQ69G5FAV").unwrap()
+    }
+
+    fn test_history() -> HistoryService {
+        HistoryService {
+            session_id: Some(test_session_id()),
+            now_ms: Arc::new(|| TEST_NOW_MS),
+            ..HistoryService::default()
+        }
+    }
+
+    fn turn_submit(operation_id: OperationId) -> CoreCommand {
+        CoreCommand::TurnSubmit(TurnSubmitCommand {
+            operation_id,
+            text: "commit probe".to_string(),
+            client_submitted_at_ms: TEST_NOW_MS,
+        })
+    }
+
+    fn settings_patch(operation_id: OperationId) -> CoreCommand {
+        CoreCommand::SettingsPatch(SettingsPatchCommand {
+            operation_id,
+            expected_revision: 0,
+            changes: SettingsPatchDto {
+                thinking_visible: None,
+                debug: Some(true),
+                theme: None,
+                tool_icons: None,
+                mouse_enabled: None,
+                animation_enabled: None,
+                syntax_highlighting: None,
+                syntax_theme: None,
+                incognito_default: None,
+            },
+        })
+    }
+
+    fn terminal_error() -> StoredTerminalResult {
+        StoredTerminalResult::Error(CoreErrorDto {
+            code: CoreErrorCode::DurabilityFailed,
+            message: "commit probe".to_string(),
+            retry: ErrorRetryAdvice::SameOperation,
+            details: ErrorDetailsDto::None,
+        })
+    }
+
+    /// Install a deferred foreign-key violation that only surfaces at COMMIT:
+    /// the trigger inserts a child row whose parent never exists, and SQLite
+    /// checks the deferred constraint when the enclosing transaction commits.
+    /// A failed deferred-FK COMMIT leaves the transaction open, which is the
+    /// failure mode the reserve paths must undo with a ROLLBACK.
+    fn install_commit_failure(conn: &Connection, event: &str) {
+        conn.execute_batch(&format!(
+            "CREATE TABLE commit_probe_parent(id TEXT PRIMARY KEY);
+             CREATE TABLE commit_probe_child(
+                 id TEXT,
+                 parent_id TEXT REFERENCES commit_probe_parent(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER commit_probe_{event} AFTER {event} ON operation_records
+             BEGIN
+                 INSERT INTO commit_probe_child(id, parent_id)
+                 VALUES (new.operation_id, 'missing-parent');
+             END;"
+        ))
+        .unwrap();
+    }
+
+    fn assert_commit_failure_and_autocommit(ledger: &OperationLedger, err: CoreErrorDto) {
+        assert!(
+            format!("{err:?}").contains("commit"),
+            "expected a COMMIT failure, got {err:?}"
+        );
+        let conn = ledger.lock().unwrap();
+        assert!(
+            conn.is_autocommit(),
+            "ledger connection was left inside a transaction after a failed COMMIT"
+        );
+    }
+
+    #[test]
+    fn reserve_commit_failure_rolls_back_so_the_next_reserve_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let ledger = open_session_ledger(&path, test_session_id()).unwrap();
+        let history = test_history();
+        install_commit_failure(&ledger.lock().unwrap(), "INSERT");
+
+        let failed_id = OperationId(ulid::Ulid::generate());
+        let err = reserve_operation_sync(&ledger, &turn_submit(failed_id), &history)
+            .expect_err("reserve COMMIT should fail");
+        assert_commit_failure_and_autocommit(&ledger, err);
+
+        ledger
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER commit_probe_INSERT;")
+            .unwrap();
+        let ok_id = OperationId(ulid::Ulid::generate());
+        reserve_operation_sync(&ledger, &turn_submit(ok_id), &history)
+            .expect("next reserve on the same ledger connection");
+        assert!(ledger.lookup(&ok_id).unwrap().is_some());
+        assert!(ledger.lookup(&failed_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn reserve_settings_commit_failure_rolls_back_so_the_next_reserve_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui-operations.db");
+        let ledger = open_host_ledger(&path).unwrap();
+        let history = test_history();
+        install_commit_failure(&ledger.lock().unwrap(), "INSERT");
+
+        let failed_id = OperationId(ulid::Ulid::generate());
+        let err = reserve_operation_sync(&ledger, &settings_patch(failed_id), &history)
+            .expect_err("settings COMMIT should fail");
+        assert_commit_failure_and_autocommit(&ledger, err);
+
+        ledger
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER commit_probe_INSERT;")
+            .unwrap();
+        let ok_id = OperationId(ulid::Ulid::generate());
+        reserve_operation_sync(&ledger, &settings_patch(ok_id), &history)
+            .expect("next settings reserve on the same ledger connection");
+        assert!(ledger.lookup(&ok_id).unwrap().is_some());
+        assert!(ledger.lookup(&failed_id).unwrap().is_none());
+        assert_eq!(
+            get_host_revision(&ledger, "credentials").unwrap().revision,
+            0
+        );
+    }
+
+    #[test]
+    fn journal_commit_commit_failure_rolls_back_so_the_next_ledger_call_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = open_host_ledger(&dir.path().join("ui-operations.db")).unwrap();
+        let operation_id = OperationId(ulid::Ulid::generate());
+        let dto = OperationRecordDto {
+            operation_id,
+            kind: OperationKind::AuthLogin,
+            request_sha256: Sha256Digest("0".repeat(64)),
+            status: OperationStatus::Reserved,
+            session_id: None,
+            planned_effects: Vec::new(),
+            result_ref: None,
+            first_canonical_sequence: None,
+            terminal_canonical_sequence: None,
+            created_at_ms: TEST_NOW_MS,
+            finished_at_ms: None,
+        };
+        {
+            let conn = ledger.lock().unwrap();
+            OperationLedger::insert_reserved_row(&conn, &dto, "[]").unwrap();
+            install_commit_failure(&conn, "UPDATE");
+        }
+        let journal_dir = dir.path().join("journal");
+        std::fs::create_dir_all(&journal_dir).unwrap();
+        let digest = crate::ui_contract::operation::sha256_hex_of(b"before");
+        let after = crate::ui_contract::operation::sha256_hex_of(b"after");
+        let mut journal = HostOperationJournalV1 {
+            schema_version: 1,
+            operation_id,
+            operation_kind: OperationKind::AuthLogin,
+            target_label: HostStateTarget::Credentials,
+            before_revision: 0,
+            after_revision: 1,
+            before_sha256: digest.clone(),
+            after_sha256: after.clone(),
+            before_file_sha256: digest,
+            after_file_sha256: after,
+            stage: HostJournalStage::Prepared,
+            created_at_ms: TEST_NOW_MS,
+        };
+        let err = journal_commit_revision(
+            &ledger,
+            &journal_dir,
+            &mut journal,
+            &terminal_error(),
+            TEST_NOW_MS,
+        )
+        .expect_err("journal COMMIT should fail");
+        assert!(
+            err.to_string().contains("commit"),
+            "expected a COMMIT failure, got {err}"
+        );
+        {
+            let conn = ledger.lock().unwrap();
+            assert!(
+                conn.is_autocommit(),
+                "ledger connection was left inside a transaction after a failed COMMIT"
+            );
+        }
+
+        ledger
+            .lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER commit_probe_UPDATE;")
+            .unwrap();
+        // The next ledger call on the same connection must work, and the
+        // failed transaction must not have advanced the host revision.
+        assert_eq!(
+            get_host_revision(&ledger, "credentials").unwrap().revision,
+            0
+        );
+        assert_eq!(journal.stage, HostJournalStage::Prepared);
+        let stored = ledger.lookup(&operation_id).unwrap().unwrap();
+        assert_eq!(stored.dto.status, OperationStatus::Reserved);
+    }
 }
