@@ -181,6 +181,35 @@ fn insecure_permissions(detail: &str) -> LedgerError {
     LedgerError::Open(format!("HISTORY_INSECURE_PERMISSIONS: {detail}"))
 }
 
+/// Undo a failed ledger transaction without changing the caller's error.
+///
+/// A failed `COMMIT` can leave the shared ledger connection inside
+/// `BEGIN IMMEDIATE` (a deferred constraint, for example). The next call is
+/// then rejected with "cannot start a transaction within a transaction" and
+/// the write lock stays held against a history rebuild, so the transaction is
+/// rolled back here. `message` is the caller's error text and is rebuilt
+/// unchanged through `build`; only when the `ROLLBACK` itself fails or the
+/// connection is still not in autocommit afterwards is the reason appended.
+/// The error code and variant therefore never change.
+fn rollback_after_failure<E>(
+    conn: &Connection,
+    message: String,
+    build: impl FnOnce(String) -> E,
+) -> E {
+    if conn.is_autocommit() {
+        return build(message);
+    }
+    match conn.execute_batch("ROLLBACK;") {
+        Ok(()) if conn.is_autocommit() => build(message),
+        Ok(()) => build(format!(
+            "{message}; ROLLBACK returned but the transaction is still open"
+        )),
+        Err(err) => build(format!(
+            "{message}; ROLLBACK failed; the transaction is still open: {err}"
+        )),
+    }
+}
+
 pub(crate) fn reject_symlink(path: &Path) -> Result<(), LedgerError> {
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if metadata.file_type().is_symlink() {
@@ -793,18 +822,17 @@ impl OperationLedger {
                 ],
             )
             .map_err(|e| {
-                let _ = conn.execute_batch("ROLLBACK;");
-                LedgerError::Storage(format!("complete: {e}"))
+                rollback_after_failure(&conn, format!("complete: {e}"), LedgerError::Storage)
             })?;
         if updated != 1 {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(LedgerError::Storage(
+            return Err(rollback_after_failure(
+                &conn,
                 "complete affected no reserved row".to_string(),
+                LedgerError::Storage,
             ));
         }
         conn.execute_batch("COMMIT;").map_err(|e| {
-            let _ = conn.execute_batch("ROLLBACK;");
-            LedgerError::Storage(format!("commit: {e}"))
+            rollback_after_failure(&conn, format!("commit: {e}"), LedgerError::Storage)
         })?;
         Ok(result_json)
     }
@@ -1044,8 +1072,9 @@ fn reserve_settings_atomic(
                 // so the next call is not rejected with "cannot start a
                 // transaction within a transaction" and the write lock is not
                 // held against the rebuild.
-                let _ = conn.execute_batch("ROLLBACK;");
-                CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}")))
+                rollback_after_failure(&conn, format!("commit: {e}"), |message| {
+                    CoreErrorDto::from(LedgerError::Storage(message))
+                })
             })?;
             chmod_wal_shm_for(&ledger.db_path);
             Ok(reservation)
@@ -1272,8 +1301,9 @@ pub fn reserve_operation_sync(
             conn.execute_batch("COMMIT;").map_err(|e| {
                 // See reserve_settings_atomic: never leave the shared ledger
                 // connection inside BEGIN IMMEDIATE after a failed COMMIT.
-                let _ = conn.execute_batch("ROLLBACK;");
-                CoreErrorDto::from(LedgerError::Storage(format!("commit: {e}")))
+                rollback_after_failure(&conn, format!("commit: {e}"), |message| {
+                    CoreErrorDto::from(LedgerError::Storage(message))
+                })
             })?;
             chmod_wal_shm_for(&ledger.db_path);
             Ok(reservation)
@@ -1918,8 +1948,7 @@ pub fn journal_commit_revision(
                 // A failed COMMIT can leave the shared ledger connection inside
                 // BEGIN IMMEDIATE. Undo it before reporting so the next ledger
                 // call is not rejected and the write lock is not held.
-                let _ = conn.execute_batch("ROLLBACK;");
-                LedgerError::Storage(format!("commit: {e}"))
+                rollback_after_failure(&conn, format!("commit: {e}"), LedgerError::Storage)
             })?;
         }
         Err(e) => {
@@ -2301,6 +2330,40 @@ mod tests {
             conn.is_autocommit(),
             "ledger connection was left inside a transaction after a failed COMMIT"
         );
+    }
+
+    /// A connection already in autocommit has nothing to undo, so the caller's
+    /// error is returned unchanged: same variant, same message.
+    #[test]
+    fn rollback_after_failure_keeps_the_error_when_no_transaction_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger =
+            open_session_ledger(&dir.path().join("history.db"), test_session_id()).unwrap();
+        let conn = ledger.lock().unwrap();
+        assert!(conn.is_autocommit());
+        let err = rollback_after_failure(&conn, "commit: probe".to_string(), LedgerError::Storage);
+        assert_eq!(err, LedgerError::Storage("commit: probe".to_string()));
+        assert!(conn.is_autocommit());
+    }
+
+    /// The rollback closes the transaction, so the connection is reusable and
+    /// the caller's error is still returned unchanged.
+    #[test]
+    fn rollback_after_failure_keeps_the_error_when_the_rollback_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger =
+            open_session_ledger(&dir.path().join("history.db"), test_session_id()).unwrap();
+        let conn = ledger.lock().unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+        assert!(!conn.is_autocommit());
+        let err = rollback_after_failure(&conn, "commit: probe".to_string(), LedgerError::Storage);
+        assert_eq!(err, LedgerError::Storage("commit: probe".to_string()));
+        assert!(
+            conn.is_autocommit(),
+            "the shared ledger connection was left inside a transaction"
+        );
+        // The next transaction on the same connection must start normally.
+        conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;").unwrap();
     }
 
     #[test]
