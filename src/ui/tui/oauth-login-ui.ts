@@ -32,6 +32,27 @@ export interface OAuthUiSink {
   signal: AbortSignal;
 }
 
+/**
+ * Thrown when the user cancels an interactive OAuth prompt (Esc). The
+ * wizard treats this as a quiet cancel back to the previous step — never
+ * as a failed login.
+ */
+export class OAuthUserCancelledError extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "OAuthUserCancelledError";
+  }
+}
+
+/**
+ * Map a select-prompt outcome to the chosen option id, treating a
+ * cancelled (undefined) selection as a user cancel.
+ */
+export function resolveOAuthSelectSelection(selected: string | undefined): string {
+  if (selected === undefined) throw new OAuthUserCancelledError();
+  return selected;
+}
+
 /** Soft-wrap a long URL so it stays readable in narrow terminals. */
 export function wrapUrlForDisplay(url: string, width = 72): string[] {
   if (url.length <= width) return [url];
@@ -115,10 +136,7 @@ export async function runOAuthLoginWithUi(
     prompt: async (prompt: AuthPrompt) => {
       if (prompt.type === "select") {
         const selected = await ui.promptSelect(prompt.message, prompt.options);
-        if (selected === undefined) {
-          throw new Error("cancelled");
-        }
-        return selected;
+        return resolveOAuthSelectSelection(selected);
       }
       // manual_code / text / secret — keep auth URL visible above the input.
       const context =

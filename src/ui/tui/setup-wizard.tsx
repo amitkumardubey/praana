@@ -39,7 +39,7 @@ import {
 import { hasApiKey } from "../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../credentials.js";
 import { isOAuthOnlyProvider } from "../../oauth.js";
-import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
+import { runOAuthLoginWithUi, OAuthUserCancelledError } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { CustomProviderConfig, SetupResult } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
@@ -375,7 +375,18 @@ export function SetupWizard(props: SetupWizardProps) {
         setStep("fetch-models");
       }
     } catch (error) {
-      if (!abort.signal.aborted) {
+      if (abort.signal.aborted) {
+        // Esc-abort (goBack already navigated back). Never surface an error.
+      } else if (error instanceof OAuthUserCancelledError) {
+        // User cancelled an interactive prompt (Esc on the method-choice
+        // list): return to the previous visited step quietly, not as a
+        // failed login.
+        const target = popStep(history, step());
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
+      } else {
         setMessage(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`);
         setStep("oauth-error");
       }
