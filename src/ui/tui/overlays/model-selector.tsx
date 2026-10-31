@@ -5,11 +5,23 @@
  * by useBindings targeting the focused search input (same pattern as the
  * slash palette).
  */
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 import { useTerminalDimensions, useRenderer } from "@opentui/solid";
 import { useBindings } from "@opentui/keymap/solid";
 import { RGBA, type InputRenderable } from "@opentui/core";
-import type { ModelListEntry } from "../../../model-listing.js";
+import type {
+  ListAllAvailableModelsOptions,
+  ModelListEntry,
+  ModelListUpdateMeta,
+} from "../../../model-listing.js";
 import { TUI_PALETTE, TUI_STYLE, truncatePlainText } from "../theme.js";
 import { OverlayFrame, OVERLAY_BACKGROUND, OVERLAY_BORDER } from "./frame.js";
 import {
@@ -20,6 +32,82 @@ import {
   orderModels,
   scrollStartOf,
 } from "./model-selector-items.js";
+
+/**
+ * Pure controller for the selector's incremental-load state machine. Kept
+ * outside the component so it is unit-testable without mounting Solid.
+ *
+ * Rules:
+ * - the first snapshot (static models, delivered synchronously) flips
+ *   `loading` off and seeds the selection once;
+ * - later live merges never re-seed (they must not move the user's
+ *   selection/scroll or clear a typed filter);
+ * - once `dispose()` runs (selector closed), all further events are ignored
+ *   so late live results never touch an unmounted component.
+ */
+export function createModelSelectorController(options: {
+  currentProvider: string;
+  currentModelId: string;
+}) {
+  let disposed = false;
+  let selectionInitialized = false;
+  let selectedIndex = 0;
+
+  const state = {
+    entries: [] as ModelListEntry[],
+    loading: true,
+    updating: false,
+    failures: [] as string[],
+  };
+
+  const seedSelection = (entries: ModelListEntry[]): void => {
+    const ordered = orderModels(
+      entries,
+      options.currentProvider,
+      options.currentModelId,
+    );
+    selectedIndex = initialSelectionIndex(
+      ordered,
+      options.currentProvider,
+      options.currentModelId,
+    );
+    selectionInitialized = true;
+  };
+
+  const apply = (entries: ModelListEntry[]): number | null => {
+    if (disposed) return null;
+    state.entries = entries;
+    state.loading = false;
+    if (!selectionInitialized) {
+      seedSelection(entries);
+      return selectedIndex;
+    }
+    return null;
+  };
+
+  return {
+    dispose() {
+      disposed = true;
+    },
+    /** Incremental snapshot (static first, then live merges). */
+    onUpdate(entries: ModelListEntry[], meta: ModelListUpdateMeta): number | null {
+      if (disposed) return null;
+      state.updating = meta.pending > 0;
+      state.failures = meta.failed;
+      return apply(entries);
+    },
+    /** Final resolved list. */
+    onFinal(entries: ModelListEntry[]): number | null {
+      if (disposed) return null;
+      state.updating = false;
+      state.failures = [];
+      return apply(entries);
+    },
+    get state() {
+      return state;
+    },
+  };
+}
 
 const MAX_VISIBLE = 10;
 const DETAIL_MIN_COLS = 64;
@@ -32,7 +120,7 @@ export interface ModelSelectorOverlayProps {
   currentProvider: string;
   currentModelId: string;
   maxVisible?: number;
-  loadModels: () => Promise<ModelListEntry[]>;
+  loadModels: (opts?: ListAllAvailableModelsOptions) => Promise<ModelListEntry[]>;
   onSelect: (provider: string, modelId: string) => void;
   onCancel: () => void;
 }
@@ -44,6 +132,10 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   const [query, setQuery] = createSignal("");
   const [allModels, setAllModels] = createSignal<ModelListEntry[]>([]);
   const [loading, setLoading] = createSignal(true);
+  /** Live `/models` fetches still running — static list is already usable. */
+  const [updating, setUpdating] = createSignal(false);
+  /** Inline (non-blocking) per-provider live-catalog failures. */
+  const [liveFailures, setLiveFailures] = createSignal<string[]>([]);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [selectedIndex, setSelectedIndex] = createSignal(0);
   const maxVisible = () => props.maxVisible ?? MAX_VISIBLE;
@@ -74,27 +166,46 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
     m.provider === props.currentProvider && m.modelId === props.currentModelId;
 
   onMount(() => {
+    const controller = createModelSelectorController({
+      currentProvider: props.currentProvider,
+      currentModelId: props.currentModelId,
+    });
+
+    const commitState = () => {
+      const s = controller.state;
+      setAllModels(s.entries);
+      setLoading(s.loading);
+      setUpdating(s.updating);
+      setLiveFailures(s.failures);
+      renderer.requestRender();
+    };
+
+    const handleUpdate = (entries: ModelListEntry[], meta: ModelListUpdateMeta) => {
+      const sel = controller.onUpdate(entries, meta);
+      if (sel !== null) setSelectedIndex(sel);
+      setLoadError(null);
+      commitState();
+    };
+
     void (async () => {
       setLoading(true);
       setLoadError(null);
       try {
-        const entries = await props.loadModels();
-        setAllModels(entries);
-        // Compute the initial selection against the ORDERED list (current
-        // pinned to top), not the raw entries — selectedIndex indexes into
-        // filtered()/ordered(), so an index from the unsorted list lands on
-        // the wrong row when the current model isn't in the catalog.
-        const ordered = orderModels(entries, props.currentProvider, props.currentModelId);
-        setSelectedIndex(
-          initialSelectionIndex(ordered, props.currentProvider, props.currentModelId),
-        );
+        const entries = await props.loadModels({ onUpdate: handleUpdate });
+        const sel = controller.onFinal(entries);
+        if (sel !== null) setSelectedIndex(sel);
+        setLoadError(null);
+        commitState();
       } catch (err) {
+        // Only reached when every selected provider failed AND nothing was
+        // produced — the static snapshot already shown keeps this off.
         setLoadError(err instanceof Error ? err.message : String(err));
-      } finally {
         setLoading(false);
         renderer.requestRender();
       }
     })();
+
+    onCleanup(() => controller.dispose());
   });
 
   createEffect(() => {
@@ -231,6 +342,14 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
             ↑↓ navigate · ↵ select · tab select · esc close ·{" "}
             {filtered().length} shown
           </span>
+          <Show when={updating()}>
+            <span style={TUI_STYLE.muted}> · updating…</span>
+          </Show>
+          <Show when={liveFailures().length > 0}>
+            <span style={TUI_STYLE.muted}>
+              {" "}· live catalog unavailable: {liveFailures().join(", ")}
+            </span>
+          </Show>
         </text>
       </Show>
     </OverlayFrame>

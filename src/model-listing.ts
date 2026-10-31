@@ -118,26 +118,91 @@ export async function listModelsForProvider(
 }
 
 /**
- * Flat list across available providers for the `/model` selector.
- * Loads fresh each open (no session-long cache).
- * Throws when every available provider fails to yield models.
+ * Static/curated models for available providers (no network). Same provider
+ * and model set the live listing starts from, minus live-catalog additions.
  */
-export async function listAllAvailableModels(): Promise<ModelListEntry[]> {
+export function listStaticAvailableModels(): ModelListEntry[] {
   const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
   const out: ModelListEntry[] = [];
-  const errors: string[] = [];
+  for (const provider of providers) {
+    out.push(...collectPiAiModels(provider, true));
+  }
+  return out;
+}
+
+/** Progress info delivered with incremental `onUpdate` snapshots. */
+export interface ModelListUpdateMeta {
+  /** Number of providers whose live `/models` fetch is still pending. */
+  pending: number;
+  /** Per-provider failures collected so far (`provider: message`). */
+  failed: string[];
+}
+
+export interface ListAllAvailableModelsOptions {
+  /**
+   * Called with the current merged snapshot whenever it changes: once
+   * synchronously with static models before any network I/O, then again as
+   * each provider's live catalog lands or fails.
+   */
+  onUpdate?: (entries: ModelListEntry[], meta: ModelListUpdateMeta) => void;
+}
+
+/**
+ * Flat list across available providers for the `/model` selector.
+ * Loads fresh each open (no session-long cache). Providers are queried in
+ * parallel; the result order is deterministic (same provider order as
+ * `listKnownProviders()`, models sorted by id within each provider).
+ * Throws when every available provider fails to yield models.
+ */
+export async function listAllAvailableModels(
+  opts?: ListAllAvailableModelsOptions,
+): Promise<ModelListEntry[]> {
+  const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
+
+  // Per-provider snapshots keep the final order identical to the old
+  // sequential listing: providers in `listKnownProviders()` order, each
+  // provider's models sorted by modelId.
+  const perProvider = new Map<string, Map<string, ModelListEntry>>();
+  const snapshot = (): ModelListEntry[] => {
+    const out: ModelListEntry[] = [];
+    for (const provider of providers) {
+      const models = perProvider.get(provider);
+      if (!models) continue;
+      for (const entry of models.values()) out.push(entry);
+    }
+    return out;
+  };
 
   for (const provider of providers) {
-    try {
-      out.push(
-        ...(await listModelsForProvider(provider, { available: true })),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push(`${provider}: ${message}`);
+    perProvider.set(provider, new Map());
+    for (const entry of collectPiAiModels(provider, true)) {
+      perProvider.get(provider)!.set(entry.modelId, entry);
     }
   }
 
+  const errors: string[] = [];
+  let pending = providers.length;
+  const emit = () => {
+    opts?.onUpdate?.(snapshot(), { pending, failed: [...errors] });
+  };
+  emit();
+
+  await Promise.allSettled(
+    providers.map(async (provider) => {
+      try {
+        const live = await listModelsForProvider(provider, { available: true });
+        perProvider.set(provider, new Map(live.map((e) => [e.modelId, e])));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`${provider}: ${message}`);
+      } finally {
+        pending -= 1;
+        emit();
+      }
+    }),
+  );
+
+  const out = snapshot();
   if (out.length === 0 && errors.length > 0) {
     throw new Error(`Failed to load models:\n${errors.join("\n")}`);
   }
