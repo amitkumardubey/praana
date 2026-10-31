@@ -8,10 +8,19 @@
  * unexplained loading indicator. Real loading is already shown by the
  * spinner host.
  */
-import { Show, type Accessor } from "solid-js";
+import type { Accessor } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import { TUI_PALETTE, TUI_STYLE } from "./theme.js";
 import { launchHintForWidth } from "./boot-summary.js";
+
+/**
+ * First-screen hint for the current terminal width. Unknown widths (0, NaN
+ * — e.g. before the terminal reports dimensions) fall back to the
+ * 80-column short form so the hint always renders.
+ */
+export function launchHintForTerminalWidth(width: number): string {
+  return launchHintForWidth(width > 0 ? width : 80);
+}
 
 export function LaunchCanvas(props: {
   version: Accessor<string>;
@@ -39,13 +48,11 @@ export function LaunchCanvas(props: {
       <text>
         <span style={TUI_STYLE.chromeMuted}>{props.skillsLabel()}</span>
       </text>
-      <Show when={dimensions().width > 0}>
-        <text>
-          <span style={TUI_STYLE.faint}>
-            {launchHintForWidth(dimensions().width || 80)}
-          </span>
-        </text>
-      </Show>
+      <text>
+        <span style={TUI_STYLE.faint}>
+          {launchHintForTerminalWidth(dimensions().width)}
+        </span>
+      </text>
     </box>
   );
 }

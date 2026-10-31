@@ -4,6 +4,20 @@ import {
   LAUNCH_HINT_TEXT_SHORT,
   launchHintForWidth,
 } from "../src/ui/tui/boot-summary.js";
+import { launchHintForTerminalWidth } from "../src/ui/tui/launch-canvas.tsx";
+
+describe("launch canvas hint fallback", () => {
+  it("unknown (zero) width falls back to the 80-column short form", () => {
+    expect(launchHintForTerminalWidth(0)).toBe(LAUNCH_HINT_TEXT_SHORT);
+    expect(launchHintForTerminalWidth(Number.NaN)).toBe(LAUNCH_HINT_TEXT_SHORT);
+  });
+
+  it("known widths still pick by column count", () => {
+    expect(launchHintForTerminalWidth(80)).toBe(LAUNCH_HINT_TEXT_SHORT);
+    expect(launchHintForTerminalWidth(99)).toBe(LAUNCH_HINT_TEXT_SHORT);
+    expect(launchHintForTerminalWidth(100)).toBe(LAUNCH_HINT_TEXT);
+  });
+});
 
 describe("launch first-screen hint is width-aware", () => {
   it("uses the shorter form below 100 columns", () => {
