@@ -125,14 +125,41 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | OpenRouter | `OPENROUTER_API_KEY` |
 | Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
-| GitHub Copilot, OpenAI Codex | Sign in with `/login github-copilot` or `/login openai-codex` (OAuth) |
+| GitHub Copilot | Sign in with `/login github-copilot` (OAuth) |
+| OpenAI Codex | ChatGPT subscription sign-in with `/login openai-codex`: browser (default) or device code |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
-Codex OAuth protocol support (`src/oauth-codex.ts`) uses PKCE authorization-code
-exchange or device authorization, validates the ChatGPT account claim, and rotates
-refresh tokens. Tokens without an account id require signing in again; they cannot
-be refreshed as a pasted-token credential.
+### ChatGPT subscription login
+
+Run `/login openai-codex` and choose a method:
+
+- **Browser login (default):** PRAANA opens the authorization URL and listens only
+  on `127.0.0.1:1455`. The registered redirect is
+  `http://localhost:1455/auth/callback`. Finish in the browser or paste the redirect
+  URL, `code#state`, a query string containing `code=`, or a bare authorization code.
+  A supplied state must match this login. The URL stays visible while paste input
+  waits; receiving the callback dismisses that input without cancelling login.
+  If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
+  mode. Browser authorization and exchange have a 10-minute overall timeout.
+- **Device-code login:** open the displayed verification URL on any browser and
+  enter the displayed code. No localhost callback is needed. PRAANA polls for up to
+  15 minutes; if the server does not offer device authorization, use browser login.
+
+Signs in with your ChatGPT account via the Codex CLI sign-in.
+PRAANA uses PKCE, validates the token's ChatGPT account id, and rotates refresh
+tokens. Old pasted Codex credentials lack the required account id:
+**run `/login openai-codex` again** to replace them.
+
+**WSL / SSH:** the browser must be able to reach the machine running PRAANA at the
+localhost redirect above. WSL tries `wslview`, then `cmd.exe`, then `xdg-open` if an
+opener fails to spawn. If opening fails or the browser cannot reach the callback,
+copy the visible URL and paste the final redirect, or choose device-code login.
+Keep the listener on `127.0.0.1:1455`; do not expose it on `0.0.0.0`.
+
+**Known limitation — left for slice C:** current turn/stream callers can silently
+fall back to stored credentials after a refresh failure. This login flow does not
+change that behavior.
 
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
 storage (`store: false`), and omit `max_output_tokens`. Responses streams report
