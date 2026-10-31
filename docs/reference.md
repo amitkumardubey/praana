@@ -58,6 +58,8 @@ tar xzf praana-linux-x64.tar.gz
 praana doctor   # native: available (…)
 ```
 
+`praana doctor` exits non-zero only when a check fails. A run where every check passes but some printed a `⚠` (for example embedder weights not downloaded yet) ends with `All checks passed (N warnings).` so the warning is not lost next to a plain "all good" summary.
+
 ### PATH for global install
 
 After `bun add -g praana`, ensure Bun's global bin directory is on your PATH:
@@ -129,6 +131,14 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+## Slash command palette
+
+Typing `/` in the prompt opens the palette. With an empty query it lists commands by usefulness, not alphabetically: `/help`, `/model`, `/sessions`, `/settings`, `/stats`, … first, and the session-ending or state-wiping commands (`/logout`, `/new`, `/clear`, `/exit`/`/quit`) last — so `/` + Enter never quits or wipes anything. Typing a query ranks by match quality instead (typing `exit` still puts `/exit` first).
+
+## Exit codes
+
+A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0`, including the first session created by the first-run setup wizard. Exit code `1` is reserved for a setup that was cancelled or failed before any session existed.
+
 ## Slash commands
 
 | Command | Purpose |
@@ -174,6 +184,7 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 - **Enter** — send the message
 - **Ctrl+J**, **Alt+Enter**, **Ctrl+Enter**, **Shift+Enter** — insert a newline (Shift+Enter only on terminals that report it distinctly)
 - A trailing **`\` + Enter** — continue the line on the next line, but only when the caret is at the end of the current line (end of the buffer, or immediately before a newline). An odd run of trailing backslashes continues the line (one backslash is dropped and a real newline inserted); an even run — for example type two to send a literal trailing backslash — submits with all backslashes kept. A backslash elsewhere mid-line is submitted literally.
+- **Mouse** — clicking or drag-selecting text in the transcript never takes the keyboard away from the prompt: you can keep typing (and paste) right after a selection. `F9` is the deliberate exception: it hands the keyboard to the transcript for entry navigation until `Esc`.
 
 ## Features
 
