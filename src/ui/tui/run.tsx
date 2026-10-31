@@ -234,7 +234,8 @@ export async function runTui(
 
   const dismissOverlay = () => {
     const kind = overlay.kind();
-    overlay.dismiss();    if (!session && kind === "consent") {
+    overlay.dismiss();
+    if (!session && kind === "consent") {
       setEmbedderConsent("skip");
       void startSessionFromOverlay();
       return;
