@@ -39,7 +39,11 @@ export async function startOAuthCallbackServer(
   };
   const server = serverFactory((req, res) => {
     const page = (status: number, message: string) => {
-      res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.writeHead(status, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        Connection: "close",
+      });
       res.end(`<!doctype html><html><head><title>PRAANA authorization</title></head><body><p>${escapeHtml(message)}</p></body></html>`);
     };
     let url: URL;
@@ -78,6 +82,8 @@ export async function startOAuthCallbackServer(
   const close = () => {
     signal.removeEventListener("abort", onAbort);
     finish(undefined, new Error("OAuth callback server closed"));
+    const sockets = server as Server & { closeAllConnections?: () => void };
+    sockets.closeAllConnections?.();
     server.close();
   };
   const onAbort = () => {

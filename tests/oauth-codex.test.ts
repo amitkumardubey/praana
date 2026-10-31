@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { request as httpRequest, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { buildAuthorizeUrl, createOpenAICodexOAuth, extractAccountId, generatePKCE, parseManualInput } from "../src/oauth-codex.js";
 import { startOAuthCallbackServer, type OAuthCallbackServer } from "../src/oauth-callback-server.js";
 import type { AuthEvent, AuthInteraction, OAuthCredential } from "../src/oauth.js";
@@ -75,7 +75,7 @@ describe("Codex callback listener", () => {
     expect(fake.send("/auth/callback?state=s").status).toBe(400);
     const response = fake.send("/auth/callback?state=s&code=x");
     expect(response.status).toBe(200);
-    expect(response.headers).toEqual({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    expect(response.headers).toEqual({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", Connection: "close" });
     expect(response.html).toContain("Authorization received; return to PRAANA.");
     expect(response.html).not.toContain("successful");
     expect(await callback!.wait()).toBe("x");
@@ -115,6 +115,39 @@ describe("Codex callback listener", () => {
     await expect(startOAuthCallbackServer({ state: "s", signal: new AbortController().signal }, denied.factory))
       .rejects.toMatchObject({ code: "EACCES" });
     expect(denied.close).toHaveBeenCalled();
+  });
+  it("releases port 1455 immediately after close when the client used keep-alive", async () => {
+    const callback = await startOAuthCallbackServer({ state: "s", signal: new AbortController().signal });
+    expect(callback).toBeDefined();
+    const agent = new Agent({ keepAlive: true });
+    try {
+      const response = await new Promise<{ status: number; connection: string | undefined }>((resolve, reject) => {
+        const req = httpRequest({
+          host: "127.0.0.1",
+          port: 1455,
+          path: "/auth/callback?code=abc&state=s",
+          headers: { Host: "127.0.0.1:1455", Connection: "keep-alive" },
+          agent,
+        }, (res) => {
+          res.resume();
+          res.on("end", () => resolve({
+            status: res.statusCode ?? 0,
+            connection: typeof res.headers.connection === "string" ? res.headers.connection : undefined,
+          }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(response.status).toBe(200);
+      expect(response.connection).toBe("close");
+      callback!.close();
+      const again = await startOAuthCallbackServer({ state: "s2", signal: new AbortController().signal });
+      expect(again).toBeDefined();
+      again!.close();
+    } finally {
+      agent.destroy();
+      callback?.close();
+    }
   });
   it("closes on abort and falls back when the port is occupied", async () => {
     const fake = fakeServer();
