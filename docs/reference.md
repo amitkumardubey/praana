@@ -85,7 +85,7 @@ bun run build:compile   # → dist/praana
 
 Unreleased / dirty trees bake `--version` as `{package}-dev.<shortsha>[.dirty]` (exact release tag + clean tree stays the package version).
 
-PRAANA pins `@opentui/core`, `@opentui/solid`, and `@opentui/keymap` to exactly `0.8.0` (no caret). OpenTUI's experimental native input parser is opt-in: try it with `OTUI_NATIVE_INPUT_PARSER=1`. Synchronized output uses OpenTUI's `"auto"` default (the wrapper is skipped in remote sessions that do not report mode 2026); pass `synchronizedOutput: "always"` to the renderer in `src/ui/tui/run.tsx` if you want whole frames on slow links.
+PRAANA pins `@opentui/core`, `@opentui/solid`, and `@opentui/keymap` to exactly `0.8.0` (no caret), and carries the eight `@opentui/core-<os>-<cpu>` native platform packages as `optionalDependencies` pinned to `0.8.0` so each platform installs (and bundles) only its own binary. OpenTUI's experimental native input parser is opt-in: try it with `OTUI_NATIVE_INPUT_PARSER=1`. Synchronized output uses OpenTUI's `"auto"` default (the wrapper is skipped in remote sessions that do not report mode 2026); pass `synchronizedOutput: "always"` to the renderer in `src/ui/tui/run.tsx` if you want whole frames on slow links.
 
 ## First run
 
