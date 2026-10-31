@@ -42,7 +42,19 @@ export async function startOAuthCallbackServer(
       res.writeHead(status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
       res.end(`<!doctype html><html><head><title>PRAANA authorization</title></head><body><p>${escapeHtml(message)}</p></body></html>`);
     };
-    const url = new URL(req.url ?? "/", "http://localhost");
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://127.0.0.1:1455");
+    } catch {
+      page(400, "Malformed request target.");
+      return;
+    }
+    const hostHeader = req.headers.host;
+    const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+    if (host !== "localhost:1455" && host !== "127.0.0.1:1455") {
+      page(400, "Invalid host.");
+      return;
+    }
     if (req.method !== "GET" || url.pathname !== "/auth/callback") {
       page(404, "Callback route not found.");
     } else if (url.searchParams.get("state") !== state) {
@@ -80,10 +92,11 @@ export async function startOAuthCallbackServer(
         yes();
       });
     });
-  } catch {
+  } catch (error) {
     close();
     signal.throwIfAborted();
-    return undefined;
+    if ((error as { code?: string }).code === "EADDRINUSE") return undefined;
+    throw error;
   }
   server.on("error", (error) => { finish(undefined, error); close(); });
   signal.addEventListener("abort", onAbort, { once: true });

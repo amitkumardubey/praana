@@ -146,7 +146,9 @@ Run `/login openai-codex` and choose a method:
   listener. Cancelling still ends the login. The same retry applies when the
   callback port is unavailable and paste is the only path.
   If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
-  mode. Browser authorization and exchange have a 10-minute overall timeout.
+  mode. Any other bind failure is reported with its error code and still allows
+  paste. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
+  rejected. Browser authorization and exchange have a 10-minute overall timeout.
 - **Device-code login:** open the displayed verification URL on any browser and
   enter the displayed code. No localhost callback is needed. PRAANA polls for up to
   15 minutes; if the server does not offer device authorization, use browser login.

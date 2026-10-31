@@ -125,9 +125,23 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       signal.throwIfAborted();
       const { verifier, challenge } = generatePKCE(randomBytes);
       const state = Buffer.from(randomBytes(16)).toString("hex");
-      callback = await callbackServer({ state, signal });
+      let bindFailure: string | undefined;
+      try {
+        callback = await callbackServer({ state, signal });
+      } catch (error) {
+        if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : error;
+        const code = (error as { code?: string }).code;
+        bindFailure = code || (error instanceof Error ? error.message : String(error));
+      }
       interaction.notify({ type: "auth_url", url: buildAuthorizeUrl(challenge, state), instructions: NOTICE });
-      if (!callback) interaction.notify({ type: "info", message: "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below." });
+      if (!callback) {
+        interaction.notify({
+          type: "info",
+          message: bindFailure
+            ? `Local callback unavailable (${bindFailure}); paste the redirect URL or authorization code below.`
+            : "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below.",
+        });
+      }
       const manual = async () => {
         let lastError: Error | undefined;
         for (let attempt = 1; attempt <= 5; attempt++) {

@@ -13,23 +13,24 @@ const fakeFetch = (fn: (url: string, init: RequestInit) => Response | Promise<Re
   mock(async (url: string | URL | Request, init?: RequestInit) => fn(String(url), init!)) as unknown as typeof fetch;
 const interaction = (method = "browser", input = "manual-code"): AuthInteraction => ({ notify() {}, prompt: async (p) => p.type === "select" ? method : input });
 
-function fakeServer(bindError = false) {
+function fakeServer(bindError: boolean | string = false) {
   let handler!: (req: IncomingMessage, res: ServerResponse) => void;
   const server = new EventEmitter() as Server;
   const close = mock(() => server);
+  const code = bindError === true ? "EADDRINUSE" : bindError || undefined;
   const listen = mock((port: number, host: string, ready: () => void) => {
-    if (bindError) server.emit("error", Object.assign(new Error("in use"), { code: "EADDRINUSE" }));
+    if (code) server.emit("error", Object.assign(new Error(code), { code }));
     else ready();
     return server;
   });
   server.close = close;
   server.listen = listen as unknown as Server["listen"];
   const factory = (fn: typeof handler) => { handler = fn; return server; };
-  const send = (url: string, method = "GET") => {
+  const send = (url: string, method = "GET", host = "127.0.0.1:1455") => {
     let status = 0;
     let headers: unknown;
     let html = "";
-    handler({ url, method } as IncomingMessage, {
+    handler({ url, method, headers: { host } } as IncomingMessage, {
       writeHead: (code: number, value: unknown) => { status = code; headers = value; },
       end: (value: string) => { html = value; },
     } as unknown as ServerResponse);
@@ -92,6 +93,29 @@ describe("Codex callback listener", () => {
     await expect(callback!.wait()).rejects.toThrow(/authorization failed/);
     callback!.close();
   });
+  it("answers 400 for a malformed request target and keeps listening", async () => {
+    const fake = fakeServer();
+    const callback = await startOAuthCallbackServer({ state: "s", signal: new AbortController().signal }, fake.factory);
+    expect(fake.send("//").status).toBe(400);
+    expect(fake.send("/auth/callback?state=s&code=still-up").status).toBe(200);
+    expect(await callback!.wait()).toBe("still-up");
+    callback!.close();
+  });
+  it("rejects a Host header other than the loopback callback", async () => {
+    const fake = fakeServer();
+    const callback = await startOAuthCallbackServer({ state: "s", signal: new AbortController().signal }, fake.factory);
+    expect(fake.send("/auth/callback?state=s&code=x", "GET", "evil.example:1455").status).toBe(400);
+    expect(fake.send("/auth/callback?state=s&code=x", "GET", "localhost:80").status).toBe(400);
+    expect(fake.send("/auth/callback?state=s&code=x", "GET", "localhost:1455").status).toBe(200);
+    expect(await callback!.wait()).toBe("x");
+    callback!.close();
+  });
+  it("surfaces bind errors other than EADDRINUSE", async () => {
+    const denied = fakeServer("EACCES");
+    await expect(startOAuthCallbackServer({ state: "s", signal: new AbortController().signal }, denied.factory))
+      .rejects.toMatchObject({ code: "EACCES" });
+    expect(denied.close).toHaveBeenCalled();
+  });
   it("closes on abort and falls back when the port is occupied", async () => {
     const fake = fakeServer();
     const abort = new AbortController();
@@ -106,6 +130,35 @@ describe("Codex callback listener", () => {
 });
 
 describe("Codex browser exchange and refresh", () => {
+  it("uses the manual fallback message when the callback port is in use", async () => {
+    const occupied = fakeServer(true);
+    const notices: string[] = [];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => tokenResponse()),
+      callbackServer: (options) => startOAuthCallbackServer(options, occupied.factory),
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => prompt.type === "select" ? "browser" : "manual-code",
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(notices.some((message) => message.includes("callback unavailable"))).toBe(true);
+    expect(notices.some((message) => message.includes("EADDRINUSE"))).toBe(false);
+  });
+  it("reports the error code and still accepts a paste when bind fails", async () => {
+    const denied = fakeServer("EACCES");
+    const notices: string[] = [];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => tokenResponse()),
+      callbackServer: (options) => startOAuthCallbackServer(options, denied.factory),
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => prompt.type === "select" ? "browser" : "manual-code",
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(notices.some((message) => message.includes("EACCES"))).toBe(true);
+  });
   it("exchanges the manual code with PKCE and reports manual-only fallback", async () => {
     const events: AuthEvent[] = [];
     const request = fakeFetch((url, init) => {
