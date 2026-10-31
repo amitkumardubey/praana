@@ -65,6 +65,11 @@ export interface ListModelsForProviderOptions {
   /** When set, skip env-key re-check (caller already gated availability). */
   available?: boolean;
   disabledReason?: string;
+  /**
+   * Called when the live catalog fails but curated models remain, so the
+   * caller can report the failure without dropping the merged list.
+   */
+  onLiveError?: (message: string) => void;
 }
 
 /** Models for one provider: pi-ai catalog merged with live `/models` when available. */
@@ -111,6 +116,8 @@ export async function listModelsForProvider(
     } catch (err) {
       // Keep any pi-ai models we already have; only fail hard when empty.
       if (byId.size === 0) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      opts?.onLiveError?.(message);
     }
   }
 
@@ -192,14 +199,24 @@ export async function listAllAvailableModels(
   const errors: string[] = [];
   let pending = providers.length;
   const emit = () => {
-    opts?.onUpdate?.(snapshot(), { pending, failed: [...errors] });
+    // Deterministic order: sort failures by provider id so the reported list
+    // never depends on which live fetch settled first.
+    opts?.onUpdate?.(snapshot(), {
+      pending,
+      failed: [...errors].sort((a, b) => a.localeCompare(b)),
+    });
   };
   emit();
 
   await Promise.allSettled(
     providers.map(async (provider) => {
       try {
-        const live = await listModelsForProvider(provider, { available: true });
+        const live = await listModelsForProvider(provider, {
+          available: true,
+          onLiveError: (message) => {
+            errors.push(`${provider}: ${message}`);
+          },
+        });
         perProvider.set(provider, new Map(live.map((e) => [e.modelId, e])));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

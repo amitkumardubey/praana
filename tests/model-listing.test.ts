@@ -440,6 +440,64 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     }
   });
 
+  it("reports live-catalog failures for curated providers without dropping their models, sorted by provider id", async () => {
+    process.env.GROQ_API_KEY = "sk-test-groq";
+    fetchSpy.mockRejectedValue(new Error("catalog unreachable"));
+    const metas: Array<{ pending: number; failed: string[] }> = [];
+    const result = await listAllAvailableModels({
+      onUpdate: (_entries, meta) => {
+        metas.push({ pending: meta.pending, failed: [...meta.failed] });
+      },
+    });
+
+    // Curated models survive the live failures.
+    expect(result.length).toBeGreaterThan(0);
+    const curatedProviders = listKnownProviders().filter(
+      (p) => isProviderAvailable(p) && getCuratedModels(p).length > 0,
+    );
+    for (const p of curatedProviders) {
+      expect(result.some((m) => m.provider === p)).toBe(true);
+    }
+
+    // Every curated provider's live failure is reported as `provider: message`.
+    const finalFailed = metas[metas.length - 1].failed;
+    expect(finalFailed.length).toBeGreaterThan(0);
+    for (const p of curatedProviders) {
+      expect(finalFailed).toContain(`${p}: catalog unreachable`);
+    }
+
+    // Deterministic order: sorted by provider id at every emit.
+    for (const meta of metas) {
+      expect(meta.failed).toEqual(
+        [...meta.failed].sort((a, b) => a.localeCompare(b)),
+      );
+    }
+  });
+
+  it("failed order is stable regardless of completion order", async () => {
+    process.env.GROQ_API_KEY = "sk-test-groq";
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      // openai fails late, groq fails early: completion order is the
+      // reverse of provider-id order.
+      if (url.includes("api.openai.com")) await delay(120);
+      throw new Error("catalog unreachable");
+    });
+    const failedSeen: string[][] = [];
+    await listAllAvailableModels({
+      onUpdate: (_entries, meta) => {
+        failedSeen.push([...meta.failed]);
+      },
+    });
+    expect(failedSeen.length).toBeGreaterThan(0);
+    for (const f of failedSeen) {
+      expect(f).toEqual([...f].sort((a, b) => a.localeCompare(b)));
+    }
+    const last = failedSeen[failedSeen.length - 1];
+    const ids = last.map((f) => f.split(":")[0]);
+    expect(ids).toEqual([...ids].sort());
+  });
+
   it("listStaticAvailableModels is sorted by modelId within each provider", () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     const byProvider = new Map<string, ModelListEntry[]>();
