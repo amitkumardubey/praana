@@ -405,5 +405,52 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     }
   });
 
+  it("static snapshot order is stable and sorted per provider even when every live fetch fails", async () => {
+    // Groq's curated catalog is deliberately unsorted (deepseek-r1… before
+    // llama-3.3…), so it proves static ordering is applied, not inherited.
+    process.env.GROQ_API_KEY = "sk-test-groq";
+    fetchSpy.mockRejectedValue(new Error("catalog unreachable"));
+    const updates: ModelListEntry[][] = [];
+    const result = await listAllAvailableModels({
+      onUpdate: (entries) => {
+        updates.push(entries);
+      },
+    });
 
+    // The first emit is the purely static snapshot; with every live fetch
+    // failing it must equal the final result — order never depends on live
+    // success.
+    expect(updates[0]).toEqual(result);
+
+    // Each provider's slice is sorted by modelId.
+    for (const provider of new Set(result.map((e) => e.provider))) {
+      const ids = result.filter((e) => e.provider === provider).map((e) => e.modelId);
+      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
+    }
+
+    // The failing-live result matches listStaticAvailableModels per provider.
+    const staticByProvider = new Map<string, ModelListEntry[]>();
+    for (const e of listStaticAvailableModels()) {
+      const list = staticByProvider.get(e.provider) ?? [];
+      list.push(e);
+      staticByProvider.set(e.provider, list);
+    }
+    for (const [provider, staticSlice] of staticByProvider) {
+      expect(result.filter((e) => e.provider === provider)).toEqual(staticSlice);
+    }
+  });
+
+  it("listStaticAvailableModels is sorted by modelId within each provider", () => {
+    process.env.GROQ_API_KEY = "sk-test-groq";
+    const byProvider = new Map<string, ModelListEntry[]>();
+    for (const e of listStaticAvailableModels()) {
+      const list = byProvider.get(e.provider) ?? [];
+      list.push(e);
+      byProvider.set(e.provider, list);
+    }
+    for (const [, list] of byProvider) {
+      const ids = list.map((e) => e.modelId);
+      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
+    }
+  });
 });

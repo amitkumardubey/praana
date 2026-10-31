@@ -120,12 +120,18 @@ export async function listModelsForProvider(
 /**
  * Static/curated models for available providers (no network). Same provider
  * and model set the live listing starts from, minus live-catalog additions.
+ * Models are sorted by modelId within each provider, matching the live
+ * listing's order so it never depends on which fetches succeed.
  */
 export function listStaticAvailableModels(): ModelListEntry[] {
   const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
   const out: ModelListEntry[] = [];
   for (const provider of providers) {
-    out.push(...collectPiAiModels(provider, true));
+    out.push(
+      ...collectPiAiModels(provider, true).sort((a, b) =>
+        a.modelId.localeCompare(b.modelId),
+      ),
+    );
   }
   return out;
 }
@@ -175,7 +181,10 @@ export async function listAllAvailableModels(
 
   for (const provider of providers) {
     perProvider.set(provider, new Map());
-    for (const entry of collectPiAiModels(provider, true)) {
+    const curated = collectPiAiModels(provider, true).sort((a, b) =>
+      a.modelId.localeCompare(b.modelId),
+    );
+    for (const entry of curated) {
       perProvider.get(provider)!.set(entry.modelId, entry);
     }
   }
