@@ -111,4 +111,45 @@ describe("oauth facade", () => {
   it("ensureFreshAccessToken returns null when no oauth credentials", async () => {
     expect(await ensureFreshAccessToken("openai-codex")).toBeNull();
   });
+
+  it("a cancelled paste prompt leaves the stored credential untouched", async () => {
+    setOAuthToken("anthropic", { access: "keep-access", refresh: "keep-refresh", expires: 50_000 });
+    const before = getOAuthToken("anthropic");
+    const reason = new DOMException("The operation was aborted.", "AbortError");
+    await expect(runOAuthLogin("anthropic", {
+      notify() {},
+      prompt: async () => { throw reason; },
+    })).rejects.toBe(reason);
+    expect(getOAuthToken("anthropic")).toEqual(before);
+  });
+
+  it.each(["", "   ", "\n\t"])("refuses a blank pasted token %j without replacing a stored credential", async (blank) => {
+    setOAuthToken("anthropic", { access: "keep-access", refresh: "keep-refresh", expires: 50_000 });
+    const before = getOAuthToken("anthropic");
+    await expect(runOAuthLogin("anthropic", {
+      notify() {},
+      prompt: async () => blank,
+    })).rejects.toThrow(/empty OAuth token/);
+    expect(getOAuthToken("anthropic")).toEqual(before);
+  });
+
+  it("runOAuthLogin refuses a blank credential even when login itself returns one", async () => {
+    setOAuthToken("anthropic", { access: "keep-access", refresh: "keep-refresh", expires: 50_000 });
+    const before = getOAuthToken("anthropic");
+    resetOAuthProvidersForTests({}, {
+      anthropic: {
+        name: "blank",
+        async login() {
+          return { type: "oauth", access: "  ", refresh: "", expires: 1 };
+        },
+        async refresh(credential) { return credential; },
+        async toAuth() { return {}; },
+      },
+    });
+    await expect(runOAuthLogin("anthropic", {
+      notify() {},
+      prompt: async () => { throw new Error("prompt should not run"); },
+    })).rejects.toThrow(/empty OAuth token/);
+    expect(getOAuthToken("anthropic")).toEqual(before);
+  });
 });

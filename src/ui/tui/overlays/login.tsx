@@ -26,7 +26,7 @@ import {
 import { hasApiKey } from "../../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../../credentials.js";
 import { isOAuthOnlyProvider } from "../../../oauth.js";
-import { runOAuthLoginWithUi } from "../oauth-login-ui.js";
+import { createOAuthTextPrompt, runOAuthLoginWithUi } from "../oauth-login-ui.js";
 import {
   isUserDeclaredProvider,
   listUserDeclaredProviderIds,
@@ -419,28 +419,20 @@ export function LoginOverlay(props: LoginOverlayProps) {
           renderer.requestRender();
         },
         promptText: (prompt, placeholder, contextLines, promptSignal) =>
-          new Promise<string>((resolve) => {
-            const signal = promptSignal ? AbortSignal.any([abort.signal, promptSignal]) : abort.signal;
-            if (signal.aborted) {
-              resolve("");
-              return;
-            }
-            const detach = () => {
-              signal.removeEventListener("abort", onAbort);
+          createOAuthTextPrompt({
+            signal: abort.signal,
+            promptSignal,
+            onDismiss: () => {
               oauthTextSubmit = undefined;
               setStep("oauth-status");
-            };
-            const onAbort = () => { detach(); resolve(""); };
-            signal.addEventListener("abort", onAbort, { once: true });
-            setOauthPrompt(prompt);
-            setOauthPlaceholder(placeholder ?? "");
-            setOauthContext(contextLines ?? []);
-            setStep("oauth-text");
-            oauthTextSubmit = (value) => {
-              if (!value.trim()) return;
-              detach();
-              resolve(value.trim());
-            };
+            },
+            present: (submit) => {
+              setOauthPrompt(prompt);
+              setOauthPlaceholder(placeholder ?? "");
+              setOauthContext(contextLines ?? []);
+              setStep("oauth-text");
+              oauthTextSubmit = submit;
+            },
           }),
         promptSelect: (prompt, options) =>
           new Promise<string | undefined>((resolve) => {

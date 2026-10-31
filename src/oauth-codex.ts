@@ -128,10 +128,18 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       callback = await callbackServer({ state, signal });
       interaction.notify({ type: "auth_url", url: buildAuthorizeUrl(challenge, state), instructions: NOTICE });
       if (!callback) interaction.notify({ type: "info", message: "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below." });
-      const manual = async () => parseManualInput(await interaction.prompt({
-        type: "manual_code", message: "Paste the redirect URL or authorization code (or finish in your browser):",
-        signal: manualAbort.signal,
-      }), state);
+      const manual = async () => {
+        try {
+          return parseManualInput(await interaction.prompt({
+            type: "manual_code", message: "Paste the redirect URL or authorization code (or finish in your browser):",
+            signal: manualAbort.signal,
+          }), state);
+        } catch (error) {
+          // Callback won and aborted only this prompt. Do not fail the login.
+          if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
+          throw error;
+        }
+      };
       const code = await withSignal(callback ? Promise.race([callback.wait(), manual()]) : manual(), signal);
       manualAbort.abort();
       callback?.close();

@@ -33,6 +33,59 @@ export interface OAuthUiSink {
   signal: AbortSignal;
 }
 
+/** AbortError carrying `signal.reason`, matching a cancelled text prompt. */
+export function oauthPromptAbortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    if (reason.name === "AbortError") return reason;
+    const error = new Error(reason.message, { cause: reason });
+    error.name = "AbortError";
+    return error;
+  }
+  const message = typeof reason === "string" && reason.trim()
+    ? reason
+    : "The operation was aborted.";
+  return new DOMException(message, "AbortError");
+}
+
+/**
+ * Single-line OAuth prompt. Abort rejects with {@link oauthPromptAbortError}.
+ * A Codex manual-prompt abort (callback already won) still rejects here; the
+ * login caller swallows only that abort so the overall login can finish.
+ */
+export function createOAuthTextPrompt(options: {
+  signal: AbortSignal;
+  promptSignal?: AbortSignal;
+  onDismiss?: () => void;
+  present: (submit: (value: string) => void) => void;
+}): Promise<string> {
+  const signal = options.promptSignal
+    ? AbortSignal.any([options.signal, options.promptSignal])
+    : options.signal;
+  return new Promise<string>((resolve, reject) => {
+    const fail = () => {
+      options.onDismiss?.();
+      reject(oauthPromptAbortError(signal));
+    };
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    const detach = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      detach();
+      fail();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    options.present((value) => {
+      if (!value.trim()) return;
+      detach();
+      options.onDismiss?.();
+      resolve(value.trim());
+    });
+  });
+}
+
 /** Soft-wrap a long URL so it stays readable in narrow terminals. */
 export function wrapUrlForDisplay(url: string, width = 72): string[] {
   if (url.length <= width) return [url];
@@ -127,7 +180,15 @@ export async function runOAuthLoginWithUi(
         prompt.type === "manual_code" && lastContext.length > 0
           ? lastContext
           : undefined;
-      return ui.promptText(prompt.message, prompt.placeholder, context, prompt.signal);
+      try {
+        return await ui.promptText(prompt.message, prompt.placeholder, context, prompt.signal);
+      } catch (error) {
+        // Callback won: only the per-prompt manual signal aborted. Detach quietly.
+        if (prompt.signal?.aborted && !ui.signal.aborted) {
+          return await new Promise<string>(() => {});
+        }
+        throw error;
+      }
     },
   };
 

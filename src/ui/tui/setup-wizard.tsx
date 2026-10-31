@@ -38,7 +38,7 @@ import {
 import { hasApiKey } from "../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../credentials.js";
 import { isOAuthOnlyProvider } from "../../oauth.js";
-import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
+import { createOAuthTextPrompt, runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { CustomProviderConfig, SetupResult } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
@@ -302,24 +302,20 @@ export function SetupWizard(props: SetupWizardProps) {
           renderer.requestRender();
         },
         promptText: (prompt, placeholder, contextLines, promptSignal) =>
-          new Promise<string>((resolve) => {
-            const signal = promptSignal ? AbortSignal.any([abort.signal, promptSignal]) : abort.signal;
-            if (signal.aborted) {
-              resolve("");
-              return;
-            }
-            const detach = () => {
-              signal.removeEventListener("abort", onAbort);
+          createOAuthTextPrompt({
+            signal: abort.signal,
+            promptSignal,
+            onDismiss: () => {
               resolveOAuthText = undefined;
               setStep("oauth-status");
-            };
-            const onAbort = () => { detach(); resolve(""); };
-            signal.addEventListener("abort", onAbort, { once: true });
-            resolveOAuthText = (value) => { detach(); resolve(value); };
-            setOauthPrompt(prompt);
-            setOauthPlaceholder(placeholder ?? "");
-            setOauthContext(contextLines ?? []);
-            setStep("oauth-text");
+            },
+            present: (submit) => {
+              resolveOAuthText = submit;
+              setOauthPrompt(prompt);
+              setOauthPlaceholder(placeholder ?? "");
+              setOauthContext(contextLines ?? []);
+              setStep("oauth-text");
+            },
           }),
         promptSelect: (prompt, options) =>
           new Promise<string | undefined>((resolve) => {

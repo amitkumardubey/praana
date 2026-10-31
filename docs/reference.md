@@ -140,6 +140,8 @@ Run `/login openai-codex` and choose a method:
   URL, `code#state`, a query string containing `code=`, or a bare authorization code.
   A supplied state must match this login. The URL stays visible while paste input
   waits; receiving the callback dismisses that input without cancelling login.
+  Closing the paste prompt cancels login and does not replace a saved credential.
+  A blank paste is refused.
   If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
   mode. Browser authorization and exchange have a 10-minute overall timeout.
 - **Device-code login:** open the displayed verification URL on any browser and

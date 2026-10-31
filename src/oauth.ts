@@ -85,13 +85,23 @@ export interface OAuthProviderInfo {
   oauth: OAuthAuth;
 }
 
+const EMPTY_OAUTH_TOKEN = "Refusing to store an empty OAuth token";
+
+function assertStorableOAuthCredential(creds: OAuthCredential): void {
+  if (typeof creds.access !== "string" || typeof creds.refresh !== "string" ||
+      !creds.access.trim() || !creds.refresh.trim()) {
+    throw new Error(EMPTY_OAUTH_TOKEN);
+  }
+}
+
 const pasteTokenAuth = (name: string, promptMessage: string): OAuthAuth => ({
   name,
   async login(interaction: AuthInteraction): Promise<OAuthCredential> {
-    const code = await interaction.prompt({
+    const code = (await interaction.prompt({
       type: "secret",
       message: promptMessage,
-    });
+    })).trim();
+    if (!code) throw new Error(EMPTY_OAUTH_TOKEN);
     return {
       type: "oauth",
       access: code,
@@ -246,11 +256,16 @@ const githubCopilotOAuth: OAuthAuth = {
   },
 };
 
+const anthropicPaste = pasteTokenAuth(
+  "Anthropic",
+  "Paste your Anthropic API key or Claude Pro OAuth token:",
+);
+
 const providers: OAuthProviderInfo[] = [
   {
     id: "anthropic",
     name: "Anthropic",
-    oauth: pasteTokenAuth("Anthropic", "Paste your Anthropic API key or Claude Pro OAuth token:"),
+    oauth: anthropicPaste,
   },
   {
     id: "openai-codex",
@@ -337,6 +352,7 @@ export async function runOAuthLogin(
     throw new Error(`Unknown OAuth provider: ${provider}`);
   }
   const creds = await oauth.login(interaction);
+  assertStorableOAuthCredential(creds);
   setOAuthToken(provider, toStored(creds));
   return getOAuthToken(provider)!;
 }
@@ -366,6 +382,10 @@ export async function resolveOAuthModelAuth(
   return oauth.toAuth(credential);
 }
 
-export function resetOAuthProvidersForTests(codexDeps: CodexOAuthDeps = {}): void {
+export function resetOAuthProvidersForTests(
+  codexDeps: CodexOAuthDeps = {},
+  overrides: { anthropic?: OAuthAuth } = {},
+): void {
   providers.find((provider) => provider.id === "openai-codex")!.oauth = createOpenAICodexOAuth(codexDeps);
+  providers.find((provider) => provider.id === "anthropic")!.oauth = overrides.anthropic ?? anthropicPaste;
 }
