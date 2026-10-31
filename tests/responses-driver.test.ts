@@ -64,13 +64,21 @@ describe("Codex outgoing request", () => {
     expect(headers.get("Authorization")).toBe(`Bearer ${jwt("override-account")}`);
     expect(headers.get("chatgpt-account-id")).toBe("override-account");
   });
-  it.each([{}, { bearerToken: "legacy-paste" }, { bearerToken: "e30.e30.sig" }])("rejects missing account id locally for %j", async (auth) => {
-    await expect(run(req, auth)).rejects.toThrow(/OpenAI Codex.*(?:account|JWT|login)/);
+  it.each([{}, { bearerToken: "legacy-paste" }, { bearerToken: "e30.e30.sig" }, { bearerToken: "opaque-token" }])("yields a non-retryable credential error for %j", async (auth) => {
+    const events = await run(req, auth);
     expect(calls).toEqual([]);
+    expect(events.map((event) => event.type)).toEqual(["error"]);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toMatch(/run \/login openai-codex again/);
   });
   it("does not borrow a stored account id when an explicit override is invalid", async () => {
-    await expect(run({ ...req, apiKey: "invalid-override" }, { bearerToken: jwt(), headers: { "chatgpt-account-id": "stored-account" } })).rejects.toThrow(/run \/login openai-codex again/);
+    const events = await run({ ...req, apiKey: "invalid-override" }, { bearerToken: jwt(), headers: { "chatgpt-account-id": "stored-account" } });
     expect(calls).toEqual([]);
+    expect(events.map((event) => event.type)).toEqual(["error"]);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toMatch(/run \/login openai-codex again/);
   });
 });
 

@@ -59,24 +59,35 @@ export class OpenAIResponsesDriver implements LlmDriver {
       ...(auth.headers || {}),
     };
     if (req.provider === "openai-codex") {
-      // Explicit request credentials supersede both stored tokens and their account header.
-      const overrideToken = req.bearerToken || req.apiKey;
-      const token = overrideToken || auth.bearerToken || auth.apiKey;
-      if (!token) throw new Error("OpenAI Codex requires an access token and account id; run /login openai-codex again");
-      const accountId = overrideToken
-        ? extractAccountId(overrideToken)
-        : new Headers(auth.headers).get("chatgpt-account-id")?.trim() || extractAccountId(token);
-      // The banner's config imports lead back to this driver; load its version after initialization.
-      const { APP_VERSION } = await import("../../app-banner.js");
-      const codexHeaders = new Headers(headers);
-      codexHeaders.set("Authorization", `Bearer ${token}`);
-      codexHeaders.set("chatgpt-account-id", accountId);
-      codexHeaders.set("originator", "praana");
-      codexHeaders.set("OpenAI-Beta", "responses=experimental");
-      codexHeaders.set("Accept", "text/event-stream");
-      codexHeaders.set("Content-Type", "application/json");
-      codexHeaders.set("User-Agent", `praana/${APP_VERSION.replace(/^v/, "")}`);
-      headers = codexHeaders;
+      try {
+        // Explicit request credentials supersede both stored tokens and their account header.
+        const overrideToken = req.bearerToken || req.apiKey;
+        const token = overrideToken || auth.bearerToken || auth.apiKey;
+        if (!token) throw new Error("OpenAI Codex requires an access token and account id; run /login openai-codex again");
+        const accountId = overrideToken
+          ? extractAccountId(overrideToken)
+          : new Headers(auth.headers).get("chatgpt-account-id")?.trim() || extractAccountId(token);
+        // The banner's config imports lead back to this driver; load its version after initialization.
+        const { APP_VERSION } = await import("../../app-banner.js");
+        const codexHeaders = new Headers(headers);
+        codexHeaders.set("Authorization", `Bearer ${token}`);
+        codexHeaders.set("chatgpt-account-id", accountId);
+        codexHeaders.set("originator", "praana");
+        codexHeaders.set("OpenAI-Beta", "responses=experimental");
+        codexHeaders.set("Accept", "text/event-stream");
+        codexHeaders.set("Content-Type", "application/json");
+        codexHeaders.set("User-Agent", `praana/${APP_VERSION.replace(/^v/, "")}`);
+        headers = codexHeaders;
+      } catch (err: unknown) {
+        const e = err as { status?: number };
+        yield {
+          type: "error",
+          error: err instanceof Error ? err : new Error(String(err)),
+          status: e.status,
+          retryable: false,
+        };
+        return;
+      }
     }
 
     const { instructions, input } = this.formatInput(req.messages, req.systemPrompt);
