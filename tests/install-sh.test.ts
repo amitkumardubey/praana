@@ -11,11 +11,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 import { formatSha256Sums } from "../scripts/package-release-binaries.js";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
 
 const INSTALL_SH = resolve("install.sh");
+const INSTALL_PS1 = resolve("install.ps1");
 
 function runInstall(
   args: string[],
@@ -82,6 +84,76 @@ describe("install.sh --print-target", () => {
       expect(`${result.stdout}${result.stderr}`.toLowerCase()).toContain("unsupported");
     }
   });
+});
+
+/**
+ * The capability regexes the installers grep out of `praana doctor`. Extracted
+ * from the scripts themselves so this test tracks the shipped check, not a copy.
+ */
+function installerSelfCheckPatterns(): RegExp[] {
+  const sh = [...readFileSync(INSTALL_SH, "utf-8").matchAll(/grep -E '([^']+)'/g)].map(
+    (m) => m[1]!,
+  );
+  const ps1 = [
+    ...readFileSync(INSTALL_PS1, "utf-8").matchAll(/-notmatch "([^"]+)"/g),
+  ].map((m) => m[1]!);
+  expect(sh).toHaveLength(2);
+  expect(ps1).toHaveLength(2);
+  // POSIX bracket class -> JS regex.
+  return [...sh, ...ps1].map((p) => new RegExp(p.replaceAll("[[:space:]]", "\\s")));
+}
+
+describe("installer self-check vs real doctor output", () => {
+  it("matches the doctor lines for a healthy native build", () => {
+    const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+    const home = mkdtempSync(join(tmpdir(), "praana-doctor-regex-"));
+    try {
+      // Run doctor's real formatting in a child process so the addon stub is
+      // confined there; stubbing in-process would leak into other test files.
+      const script = `
+        import { mock } from "bun:test";
+        mock.module("./src/native/index.js", () => ({
+          loadNative: async () => ({ ok: true, bindings: { ping: () => "pong" } }),
+          formatNativeStatus: () => ({ kind: "available", version: "0.16.0" }),
+          tryGetNative: async () => ({
+            grep: () => ({ ok: true, matches: [{ path: "probe.txt", line: 1 }] }),
+          }),
+        }));
+        const { handleDoctor } = await import("./src/doctor.js");
+        const { lines } = await handleDoctor({
+          llm: { provider: "ollama", model: "llama3" },
+          memory: { enabled: false },
+          compiler: { token_budget: 100000 },
+          tiers: {},
+          session: { log_dir: process.env.PRAANA_HOME },
+          consolidation: {},
+          shell: {},
+          edit: { confirm: false },
+          skills: { enabled: false },
+          ui: {},
+          context_engine: { enabled: false },
+          project_detection: { enabled: false },
+          turn: { max_steps: 25 },
+        });
+        console.log(lines.join("\\n"));
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: repoRoot,
+        env: { ...process.env, PRAANA_HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const output = child.stdout.toString("utf-8");
+      expect(child.stderr.toString("utf-8")).toBe("");
+      expect(child.exitCode).toBe(0);
+      // Reword any doctor capability line and one of these patterns stops matching.
+      for (const pattern of installerSelfCheckPatterns()) {
+        expect(output).toMatch(pattern);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("install.sh missing-command hints", () => {
