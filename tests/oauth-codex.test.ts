@@ -216,13 +216,39 @@ describe("Codex browser exchange and refresh", () => {
     }) });
     expect(await oauth.refresh(credential)).toEqual({ type: "oauth", access: jwt("account-2"), refresh: "rotated", expires: 3_605_000, accountId: "account-2" });
   });
+  it("keeps the previous account id when a refresh access token is not a JWT", async () => {
+    const oauth = createOpenAICodexOAuth({ now: () => 5000, fetch: fakeFetch(() => Response.json({
+      access_token: "not-a-jwt", refresh_token: "rotated", expires_in: 3600,
+    })) });
+    await expect(oauth.refresh(credential)).resolves.toEqual({
+      type: "oauth", access: "not-a-jwt", refresh: "rotated", expires: 3_605_000, accountId: "account-1",
+    });
+    const login = createOpenAICodexOAuth({
+      callbackServer: async () => undefined,
+      fetch: fakeFetch(() => Response.json({ access_token: "not-a-jwt", refresh_token: "rotated", expires_in: 3600 })),
+    });
+    await expect(login.login(interaction())).rejects.toThrow(/JWT|chatgpt_account_id|missing/);
+  });
+  it("keeps the previous refresh token when a refresh response omits one", async () => {
+    const oauth = createOpenAICodexOAuth({ now: () => 5000, fetch: fakeFetch(() => Response.json({
+      access_token: jwt("account-9"), expires_in: 3600,
+    })) });
+    await expect(oauth.refresh(credential)).resolves.toEqual({
+      type: "oauth", access: jwt("account-9"), refresh: "refresh-old", expires: 3_605_000, accountId: "account-9",
+    });
+  });
   it.each([
     { access_token: jwt(), expires_in: 3600 },
     { access_token: jwt(), refresh_token: "r", expires_in: "3600" },
     { access_token: "e30.e30.sig", refresh_token: "r", expires_in: 3600 },
-  ])("rejects invalid token bundles on both login and refresh", async (data) => {
+  ])("rejects invalid authorization-code bundles", async (data) => {
     const oauth = createOpenAICodexOAuth({ callbackServer: async () => undefined, fetch: fakeFetch(() => Response.json(data)) });
     await expect(oauth.login(interaction())).rejects.toThrow(/missing/);
+  });
+  it("rejects a refresh response without a numeric expires_in", async () => {
+    const oauth = createOpenAICodexOAuth({ fetch: fakeFetch(() => Response.json({
+      access_token: jwt(), refresh_token: "r", expires_in: "3600",
+    })) });
     await expect(oauth.refresh(credential)).rejects.toThrow(/missing/);
   });
   it("uses a legacy JWT account id for toAuth and re-login only when refresh is required", async () => {

@@ -170,7 +170,13 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
 
 Signs in with your ChatGPT account via the Codex CLI sign-in.
 PRAANA uses PKCE, validates the token's ChatGPT account id, and rotates refresh
-tokens. A previously pasted credential is used as-is while it is unexpired if
+tokens. A refresh response is saved even when the new access token is not a JWT
+or has no account id: the stored account id is kept, and a missing `refresh_token`
+keeps the previous refresh token. Those fields are written before a refresh is
+reported as failed, because the provider has already rotated the token. An
+authorization-code exchange still requires an access token, a refresh token, a
+numeric expiry, and an account id inside the access token. A previously pasted
+credential is used as-is while it is unexpired if
 the access token is a JWT that contains the ChatGPT account id. An opaque
 pasted token, or a legacy credential that actually needs a refresh (no account
 id, or the refresh token equals the access token), still requires

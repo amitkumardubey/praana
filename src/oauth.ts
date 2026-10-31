@@ -15,7 +15,7 @@ import {
 } from "./credentials.js";
 import { getAppLogger } from "./logger.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
-import { createOpenAICodexOAuth, type CodexOAuthDeps } from "./oauth-codex.js";
+import { CodexTokenResponseError, createOpenAICodexOAuth, type CodexOAuthDeps } from "./oauth-codex.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
@@ -496,6 +496,14 @@ async function refreshOAuthCredential(
       try {
         refreshed = await oauth.refresh(toOAuthCredential(stored), timeout.signal);
       } catch (err) {
+        if (err instanceof CodexTokenResponseError && err.received?.access && err.received.refresh) {
+          const received = err.received;
+          withCredentialStoreLockSync(() => {
+            const latest = readOAuthTokenFromDisk(provider);
+            if (!latest || latest.refresh !== refreshToken) return;
+            setOAuthToken(provider, toStored(received, latest));
+          });
+        }
         const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
         if (!latest || latest.refresh !== refreshToken) {
           return latest ? oauth.toAuth(toOAuthCredential(latest)) : null;

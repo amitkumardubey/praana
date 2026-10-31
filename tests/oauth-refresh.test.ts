@@ -748,6 +748,53 @@ describe("serialized OAuth refresh", () => {
     expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-after-second");
   });
 
+  it("persists a non-JWT access token and a refresh response that omits refresh_token", async () => {
+    seedExpiredCodex("refresh-old");
+    const sent: string[] = [];
+    const readRefresh = (init?: RequestInit): string => {
+      const body = init?.body;
+      const params = body instanceof URLSearchParams ? body : new URLSearchParams(String(body ?? ""));
+      return params.get("refresh_token") ?? "";
+    };
+    resetOAuthProvidersForTests({
+      fetch: (async (_url: string, init?: RequestInit) => {
+        sent.push(readRefresh(init));
+        return Response.json({ access_token: "not-a-jwt", refresh_token: "refresh-rotated", expires_in: 3600 });
+      }) as typeof fetch,
+    });
+    const first = await resolveOAuthModelAuth("openai-codex");
+    expect(first).toEqual({ apiKey: "not-a-jwt", headers: { "chatgpt-account-id": "stored-account" } });
+    expect(getOAuthToken("openai-codex")).toMatchObject({
+      access: "not-a-jwt", refresh: "refresh-rotated", accountId: "stored-account",
+    });
+    const second = await resolveOAuthModelAuth("openai-codex");
+    expect(second?.apiKey).toBe("not-a-jwt");
+    expect(sent).toEqual(["refresh-old"]);
+
+    const stored = getOAuthToken("openai-codex");
+    setOAuthToken("openai-codex", {
+      access: stored!.access,
+      refresh: stored!.refresh,
+      expires: Date.now() - 1_000,
+      accountId: stored!.accountId,
+    });
+    resetOAuthProvidersForTests({
+      fetch: (async (_url: string, init?: RequestInit) => {
+        sent.push(readRefresh(init));
+        return Response.json({ access_token: jwt("after-omit"), expires_in: 3600 });
+      }) as typeof fetch,
+    });
+    const third = await resolveOAuthModelAuth("openai-codex");
+    expect(sent).toEqual(["refresh-old", "refresh-rotated"]);
+    expect(third?.apiKey).toBe(jwt("after-omit"));
+    expect(getOAuthToken("openai-codex")).toMatchObject({
+      access: jwt("after-omit"), refresh: "refresh-rotated", accountId: "after-omit",
+    });
+    const fourth = await resolveOAuthModelAuth("openai-codex");
+    expect(fourth?.apiKey).toBe(jwt("after-omit"));
+    expect(sent).toHaveLength(2);
+  });
+
   it("tells the caller to retry in a moment when both busy waits expire", async () => {
     seedExpiredCodex();
     const refreshLock = holdLock("refresh");

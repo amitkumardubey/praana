@@ -11,6 +11,21 @@ const REDIRECT_URI = "http://localhost:1455/auth/callback";
 const DEVICE_REDIRECT_URI = `${AUTH_BASE}/deviceauth/callback`;
 const NOTICE = "Signs in with your ChatGPT account via the Codex CLI sign-in.";
 const RELOGIN = "OpenAI Codex credential missing accountId; run /login openai-codex again";
+const TOKEN_FIELDS = "OpenAI Codex token response missing access_token, refresh_token or numeric expires_in";
+
+/**
+ * A refresh grant already rotated the token at the provider. The caller must
+ * persist `received` before surfacing this error, or the new refresh token is lost.
+ */
+export class CodexTokenResponseError extends Error {
+  readonly received?: OAuthCredential;
+
+  constructor(message: string, received?: OAuthCredential) {
+    super(message);
+    this.name = "CodexTokenResponseError";
+    this.received = received;
+  }
+}
 
 type RandomBytes = (size: number) => Uint8Array;
 export interface CodexOAuthDeps {
@@ -84,20 +99,48 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
   const callbackServer = deps.callbackServer ?? startOAuthCallbackServer;
   const pause = deps.sleep ?? sleep;
 
-  const tokenRequest = async (params: Record<string, string>, signal?: AbortSignal): Promise<OAuthCredential> => {
+  const tokenRequest = async (
+    params: Record<string, string>,
+    signal?: AbortSignal,
+    previous?: OAuthCredential,
+  ): Promise<OAuthCredential> => {
     const response = await request(`${AUTH_BASE}/oauth/token`, {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ ...params, client_id: CLIENT_ID }), signal,
     });
     if (!response.ok) throw new Error(`OpenAI Codex token ${params.grant_type} failed (${response.status})`);
     const data = await response.json() as Record<string, unknown>;
-    if (typeof data.access_token !== "string" || !data.access_token ||
-        typeof data.refresh_token !== "string" || !data.refresh_token ||
-        typeof data.expires_in !== "number" || !Number.isFinite(data.expires_in) || data.expires_in <= 0) {
-      throw new Error("OpenAI Codex token response missing access_token, refresh_token or numeric expires_in");
+    const refreshGrant = params.grant_type === "refresh_token";
+    const access = typeof data.access_token === "string" ? data.access_token : "";
+    const responseRefresh = typeof data.refresh_token === "string" ? data.refresh_token : "";
+    const refresh = responseRefresh || (refreshGrant ? previous?.refresh ?? "" : "");
+    const expiresIn = typeof data.expires_in === "number" && Number.isFinite(data.expires_in) && data.expires_in > 0
+      ? data.expires_in
+      : undefined;
+    const expiresAt = expiresIn === undefined ? undefined : now() + expiresIn * 1000;
+    const previousAccountId = typeof previous?.accountId === "string" ? previous.accountId.trim() : "";
+    const fail = (message: string, accountId = previousAccountId): never => {
+      if (!refreshGrant || !previous || (!access && !responseRefresh)) throw new Error(message);
+      const received: OAuthCredential = {
+        type: "oauth",
+        access: access || previous.access,
+        refresh: refresh || previous.refresh,
+        expires: expiresAt ?? previous.expires,
+      };
+      if (accountId) received.accountId = accountId;
+      throw new CodexTokenResponseError(message, received);
+    };
+    if (!access || !refresh) fail(TOKEN_FIELDS);
+    const expires = expiresAt ?? fail(TOKEN_FIELDS);
+    let accountId: string;
+    try {
+      accountId = extractAccountId(access);
+    } catch (err) {
+      if (!refreshGrant) throw err;
+      if (!previousAccountId) fail(err instanceof Error ? err.message : String(err), "");
+      accountId = previousAccountId;
     }
-    return { type: "oauth", access: data.access_token, refresh: data.refresh_token,
-      expires: now() + data.expires_in * 1000, accountId: extractAccountId(data.access_token) };
+    return { type: "oauth", access, refresh, expires, accountId };
   };
   const exchange = (code: string, verifier: string, redirectUri: string, signal: AbortSignal) =>
     tokenRequest({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: redirectUri }, signal);
@@ -274,7 +317,11 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       const accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
       // Called only once the stored token is expired (see resolveOAuthModelAuth).
       if (!accountId || credential.refresh === credential.access) throw new Error(RELOGIN);
-      return tokenRequest({ grant_type: "refresh_token", refresh_token: credential.refresh }, signal);
+      return tokenRequest(
+        { grant_type: "refresh_token", refresh_token: credential.refresh },
+        signal,
+        credential,
+      );
     },
     async toAuth(credential) {
       let accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
