@@ -3,6 +3,7 @@
  *
  * Solid owns App shell, Prompt, chrome, toast, spinner, transcript, and overlays.
  */
+import { spawn } from "node:child_process";
 import {
   createCliRenderer,
   ConsolePosition,
@@ -46,6 +47,7 @@ import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
 import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
+import { decideCtrlC, writeClipboardText } from "./clipboard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -596,6 +598,30 @@ export async function runTui(
             renderer.requestRender();
           }}
           onCtrlC={() => {
+            const ctrlC = decideCtrlC(
+              renderer.hasSelection,
+              renderer.getSelection()?.getSelectedText() ?? "",
+            );
+            if (ctrlC.action === "copy") {
+              void (async () => {
+                const result = await writeClipboardText(ctrlC.text, {
+                  spawn,
+                  env: process.env,
+                  platform: process.platform,
+                  lookup: async (command) => Bun.which(command) ?? command,
+                  isOsc52Supported: () => renderer.isOsc52Supported(),
+                  osc52: (text) => renderer.copyToClipboardOSC52(text),
+                });
+                if (result.ok) {
+                  renderer.clearSelection();
+                  ui.toast.show(`Copied ${ctrlC.text.length} characters`, "info");
+                } else {
+                  ui.toast.show("Could not copy: no clipboard available", "warn");
+                }
+                renderer.requestRender();
+              })();
+              return;
+            }
             if (!session) {
               void doShutdown(bootOnboarding ? 1 : 0);
               return;
