@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"disposition":{"enum":["created","reinforced","replaced"],"type":"string"},"id":{"type":"string"}},"required":["disposition","id"],"type":"object"}

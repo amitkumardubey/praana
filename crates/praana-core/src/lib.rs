@@ -36,6 +36,7 @@ pub mod credentials;
 pub mod history;
 pub mod hooks;
 pub mod id;
+pub mod memory;
 pub mod process;
 pub mod protocol;
 pub mod provider;

@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"properties":{"arch":{"type":"string"},"implementation":{"type":"string"},"os":{"type":"string"},"praana_version":{"type":"string"}},"required":["arch","implementation","os","praana_version"],"type":"object"}

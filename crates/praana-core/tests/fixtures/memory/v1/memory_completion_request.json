@@ -1,0 +1,1 @@
+{"max_output_tokens":512,"prompt":"Extract learnings from the transcript.","prompt_version":"memory-extraction-v1:abcdef","purpose":"extract_learnings","response_schema":null,"system":"You extract durable memory.","temperature_milli":100,"timeout_ms":15000}

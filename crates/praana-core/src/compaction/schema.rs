@@ -274,18 +274,31 @@ pub fn candidate_json_schema() -> &'static Value {
     SCHEMA.get_or_init(|| {
         let raw = serde_json::to_value(schemars::schema_for!(CompactionCandidateV1))
             .expect("candidate schema serializes");
-        let defs = raw
-            .get("$defs")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let mut root = inline_schema(&raw, &defs, 0);
-        if let Some(map) = root.as_object_mut() {
-            map.remove("$defs");
-        }
-        normalize_objects(&mut root);
-        root
+        normalize_draft_2020_12_schema(&raw, false)
     })
+}
+
+/// Shared normalization recipe for Draft 2020-12 schemars output (Compaction
+/// §7.4 / Memory spec §2): inline local `$defs`, drop `title`, force
+/// `additionalProperties: false` on struct objects, sort each `required`
+/// array by ASCII bytes. `preserve_map_additional_properties` keeps
+/// schemars' `additionalProperties` entry on free-form map schemas (e.g.
+/// memory plugin log fields) instead of overwriting it with `false`.
+pub(crate) fn normalize_draft_2020_12_schema(
+    raw: &Value,
+    preserve_map_additional_properties: bool,
+) -> Value {
+    let defs = raw
+        .get("$defs")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut root = inline_schema(raw, &defs, 0);
+    if let Some(map) = root.as_object_mut() {
+        map.remove("$defs");
+    }
+    normalize_objects(&mut root, preserve_map_additional_properties);
+    root
 }
 
 /// RFC 8785 bytes of the normalized schema, with no trailing LF. These are the
@@ -355,12 +368,17 @@ fn inline_schema(node: &Value, defs: &Map<String, Value>, depth: usize) -> Value
     }
 }
 
-fn normalize_objects(node: &mut Value) {
+fn normalize_objects(node: &mut Value, preserve_map_additional_properties: bool) {
     match node {
-        Value::Array(items) => items.iter_mut().for_each(normalize_objects),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|v| normalize_objects(v, preserve_map_additional_properties)),
         Value::Object(map) => {
             if map.get("type") == Some(&Value::String("object".to_owned())) {
-                map.insert("additionalProperties".to_owned(), Value::Bool(false));
+                let is_map = preserve_map_additional_properties && map.contains_key("additionalProperties");
+                if !is_map {
+                    map.insert("additionalProperties".to_owned(), Value::Bool(false));
+                }
             }
             if let Some(Value::Array(required)) = map.get_mut("required") {
                 required.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
@@ -368,10 +386,12 @@ fn normalize_objects(node: &mut Value) {
             for (key, child) in map.iter_mut() {
                 if key == "properties" {
                     if let Value::Object(props) = child {
-                        props.values_mut().for_each(normalize_objects);
+                        props
+                            .values_mut()
+                            .for_each(|v| normalize_objects(v, preserve_map_additional_properties));
                     }
                 } else {
-                    normalize_objects(child);
+                    normalize_objects(child, preserve_map_additional_properties);
                 }
             }
         }

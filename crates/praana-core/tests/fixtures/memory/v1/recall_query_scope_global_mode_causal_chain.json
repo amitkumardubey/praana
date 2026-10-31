@@ -1,0 +1,1 @@
+{"kinds":["fact","decision","constraint"],"limit":10,"mode":"causal_chain","query":"deployment deadline","scope":"global"}

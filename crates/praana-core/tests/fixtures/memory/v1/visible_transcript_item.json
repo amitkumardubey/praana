@@ -1,0 +1,1 @@
+{"event_id":"01HNDKSZMVT8ZH52SF6C65RZYG","kind":{"data":{"artifact":null,"display_label":"note.md","is_error":true,"redacted_preview":"","tool_call_id":"toolcall_02","tool_name":"write_file"},"type":"tool_observation"},"sequence":5,"timestamp_ms":1735689600000,"turn_id":"01HNDKSZH5JMRNV7E9Z0C1HT0H"}
