@@ -351,7 +351,7 @@ describe("rust-v2 provider legacy fixtures", () => {
     expect(extra, `Unexpected extra provider fixture files: ${extra.join(", ")}`).toEqual([]);
   });
 
-  it("provider manifest is complete, sorted, and fixture-hash-bound", () => {
+  it("provider manifest is complete, sorted, and hash-bound", () => {
     const manifest = JSON.parse(requireFixture("manifest.json")) as {
       fixture_schema_version: number;
       fixture_kind: string;
@@ -364,7 +364,16 @@ describe("rust-v2 provider legacy fixtures", () => {
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);
-    // Oracle digests are capture-time provenance, not a pin on production implementation bytes.
+    // src/llm/drivers/responses.ts is allowlisted: the capture is of the legacy
+    // behaviour and the Rust fixtures are intentionally not regenerated here.
+    const ORACLE_HASH_ALLOWLIST = new Set(["src/llm/drivers/responses.ts"]);
+    for (const rel of ORACLE_FILES_SORTED) {
+      if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
+      const bytes = readFileSync(join(REPO_ROOT, rel));
+      expect(manifest.oracle_sha256_by_file[rel], `oracle hash mismatch: ${rel}`).toBe(
+        sha256Hex(bytes),
+      );
+    }
 
     const fixtureKeys = Object.keys(manifest.fixture_sha256_by_file);
     const diskFiles = listFixtureFiles().filter((rel) => rel !== "manifest.json");
