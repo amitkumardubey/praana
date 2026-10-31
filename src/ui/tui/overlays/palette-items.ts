@@ -11,26 +11,12 @@ export interface PaletteItem {
   argumentHint?: string;
   aliases: string[];
   category: string;
+  /** Copied from slash-command metadata. Session-ending / state-wiping commands. */
+  destructive?: true;
 }
 
-/**
- * Commands that end the session or wipe in-session state. They must never sit
- * under the palette's initial highlight (bare `/` + Enter used to quit the app),
- * so the default order always pushes them to the tail.
- */
-export const DESTRUCTIVE_COMMANDS: ReadonlySet<string> = new Set([
-  "/exit",
-  "/quit",
-  "/new",
-  "/clear",
-  "/logout",
-]);
-
 function isDestructive(item: PaletteItem): boolean {
-  return (
-    DESTRUCTIVE_COMMANDS.has(item.name) ||
-    item.aliases.some((alias) => DESTRUCTIVE_COMMANDS.has(alias))
-  );
+  return item.destructive === true;
 }
 
 /** Stable partition: non-destructive commands first, destructive ones last.
@@ -56,6 +42,7 @@ export function buildPaletteItems(
       argumentHint: m.argumentHint,
       aliases: m.aliases ?? [],
       category: m.category,
+      ...(m.destructive ? { destructive: m.destructive } : {}),
     })),
   );
 }

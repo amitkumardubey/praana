@@ -6,7 +6,6 @@
 import { describe, expect, it } from "bun:test";
 import {
   buildPaletteItems,
-  DESTRUCTIVE_COMMANDS,
   filterPaletteItems,
   orderPaletteItems,
   type PaletteItem,
@@ -19,30 +18,28 @@ const names = (list: PaletteItem[]) => list.map((i) => i.name);
 /** Commands that must be reachable in the first screenful. */
 const USEFUL_FIRST = ["/help", "/model", "/sessions", "/settings"];
 
+/** Session-ending / state-wiping commands. Each must carry `destructive: true`. */
+const REQUIRED_DESTRUCTIVE = ["/exit", "/new", "/clear", "/logout"];
+
 describe("palette default ordering", () => {
   it("opens on /help, never on a destructive command", () => {
     expect(items[0]?.name).toBe("/help");
-    expect(DESTRUCTIVE_COMMANDS.has(items[0]!.name)).toBe(false);
+    expect(items[0]?.destructive).not.toBe(true);
   });
 
   it("keeps every destructive command in the trailing block", () => {
-    const firstDestructive = items.findIndex((i) =>
-      DESTRUCTIVE_COMMANDS.has(i.name),
-    );
+    const firstDestructive = items.findIndex((i) => i.destructive === true);
     expect(firstDestructive).toBeGreaterThan(0);
     for (const item of items.slice(firstDestructive)) {
-      expect(DESTRUCTIVE_COMMANDS.has(item.name)).toBe(true);
+      expect(item.destructive).toBe(true);
     }
-    // The whole known destructive set is present exactly once.
     expect(names(items.slice(firstDestructive)).sort()).toEqual(
-      [...DESTRUCTIVE_COMMANDS].filter((c) => c !== "/quit").sort(),
+      [...REQUIRED_DESTRUCTIVE].sort(),
     );
   });
 
   it("surfaces /help, /model, /sessions, /settings before any destructive command", () => {
-    const firstDestructive = items.findIndex((i) =>
-      DESTRUCTIVE_COMMANDS.has(i.name),
-    );
+    const firstDestructive = items.findIndex((i) => i.destructive === true);
     const tail = names(items.slice(firstDestructive));
     for (const name of USEFUL_FIRST) {
       expect(tail).not.toContain(name);
@@ -75,9 +72,9 @@ describe("palette default ordering", () => {
 
   it("orderPaletteItems is a stable partition", () => {
     const sample: PaletteItem[] = [
-      { name: "/exit", description: "", aliases: [], category: "Session" },
+      { name: "/exit", description: "", aliases: [], category: "Session", destructive: true },
       { name: "/help", description: "", aliases: [], category: "Insight" },
-      { name: "/clear", description: "", aliases: [], category: "Session" },
+      { name: "/clear", description: "", aliases: [], category: "Session", destructive: true },
       { name: "/model", description: "", aliases: [], category: "Model & Config" },
     ];
     expect(names(orderPaletteItems(sample))).toEqual([
@@ -88,10 +85,26 @@ describe("palette default ordering", () => {
     ]);
   });
 
+  it("flags every hard-coded destructive command, and the highlight is never one", () => {
+    for (const name of REQUIRED_DESTRUCTIVE) {
+      const meta = SLASH_COMMAND_METADATA.find((c) => c.name === name);
+      expect(meta?.destructive, name).toBe(true);
+    }
+    expect(items[0]?.destructive).not.toBe(true);
+  });
+
+  it("orderPaletteItems partitions on the destructive flag, not the command name", () => {
+    const sample: PaletteItem[] = [
+      { name: "/exit", description: "", aliases: ["/quit"], category: "Session" },
+      { name: "/help", description: "", aliases: [], category: "Insight", destructive: true },
+    ];
+    expect(names(orderPaletteItems(sample))).toEqual(["/exit", "/help"]);
+  });
+
   it("orderPaletteItems leaves an all-destructive list untouched", () => {
     const sample: PaletteItem[] = [
-      { name: "/exit", description: "", aliases: [], category: "Session" },
-      { name: "/new", description: "", aliases: [], category: "Session" },
+      { name: "/exit", description: "", aliases: [], category: "Session", destructive: true },
+      { name: "/new", description: "", aliases: [], category: "Session", destructive: true },
     ];
     expect(names(orderPaletteItems(sample))).toEqual(["/exit", "/new"]);
   });

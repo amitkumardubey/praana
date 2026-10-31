@@ -78,6 +78,8 @@ export interface SlashCommandMeta {
   argumentHint?: string;
   aliases?: string[];
   category: SlashCommandCategory;
+  /** Session-ending or state-wiping. The palette reads this instead of a name list. */
+  destructive?: true;
 }
 
 /**
@@ -85,8 +87,7 @@ export interface SlashCommandMeta {
  * first (the palette's initial highlight is the first entry, so `/` + Enter
  * must be harmless); session-ending / state-wiping commands are last. Keep the
  * category on every entry — grouping is by usefulness, not by category.
- * See DESTRUCTIVE_COMMANDS in src/ui/tui/overlays/palette-items.ts, which
- * enforces the destructive-last invariant for the palette regardless of order.
+ * `destructive: true` is what the palette uses to keep that tail last.
  */
 export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/help", description: "Show all commands", category: "Insight" },
@@ -109,10 +110,10 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
   // Destructive / session-ending commands — always last in the palette.
-  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/new", description: "Start a new session", category: "Session" },
-  { name: "/clear", description: "Reset in-session context", category: "Session" },
-  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session" },
+  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config", destructive: true },
+  { name: "/new", description: "Start a new session", category: "Session", destructive: true },
+  { name: "/clear", description: "Reset in-session context", category: "Session", destructive: true },
+  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session", destructive: true },
 ];
 
 export interface SlashCommandResult {
