@@ -157,6 +157,10 @@ function bytesOf(text: string): Uint8Array {
 
 const LINUX_DISPLAY = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0" };
 
+// A /proc/version line without the WSL "microsoft" marker, for tests that
+// exercise plain non-WSL Linux behavior deterministically.
+const NON_WSL_PROC_VERSION = "Linux version 6.1.0-18-amd64 (debian/kernel)";
+
 describe("clipboard writer — native tool selection per environment", () => {
   it("WSL uses clip.exe with UTF-16LE+BOM", async () => {
     const spawnState = makeFakeSpawn(["ok"]);
@@ -188,6 +192,21 @@ describe("clipboard writer — native tool selection per environment", () => {
     expect(Buffer.from(spawnState.calls[0]!.stdinBytes).equals(Buffer.from(utf16leWithBom("Hi")))).toBe(true);
   });
 
+  it("Linux WSL fallback: /proc/version containing 'microsoft' (case-insensitive) selects clip.exe", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("text", {
+      spawn: spawnState.spawnFn,
+      env: envWith(),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+      readProcVersion: () => "Linux version 6.1.90.1-microsoft-standard-WSL2 (WSL kernel)",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("clip");
+    expect(spawnState.calls).toHaveLength(1);
+    expect(spawnState.calls[0]!.command).toBe("clip.exe");
+  });
+
   it("macOS uses pbcopy with raw UTF-8 on stdin", async () => {
     const spawnState = makeFakeSpawn(["ok"]);
     const result = await writeClipboardText("héllo", {
@@ -211,6 +230,7 @@ describe("clipboard writer — native tool selection per environment", () => {
       env: envWith({ WAYLAND_DISPLAY: "wayland-0" }),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("wl-copy");
@@ -225,6 +245,7 @@ describe("clipboard writer — native tool selection per environment", () => {
       env: envWith({ DISPLAY: ":0" }),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("xclip");
@@ -237,6 +258,7 @@ describe("clipboard writer — native tool selection per environment", () => {
       env: envWith({ DISPLAY: ":0" }),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result2.ok).toBe(true);
     expect(result2.method).toBe("xsel");
@@ -251,6 +273,7 @@ describe("clipboard writer — native tool selection per environment", () => {
       env: envWith(),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
       isOsc52Supported: () => false,
     });
     expect(result.ok).toBe(false);
@@ -306,6 +329,7 @@ describe("clipboard writer — tool failure and fallback", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("xclip");
@@ -318,6 +342,7 @@ describe("clipboard writer — tool failure and fallback", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("xclip");
@@ -330,6 +355,7 @@ describe("clipboard writer — tool failure and fallback", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async () => null,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
       isOsc52Supported: () => true,
       osc52: () => true,
     });
@@ -345,6 +371,7 @@ describe("clipboard writer — tool failure and fallback", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
       timeoutMs: 20,
     });
     expect(result.ok).toBe(true);
@@ -358,6 +385,7 @@ describe("clipboard writer — tool failure and fallback", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
       isOsc52Supported: () => true,
       osc52: () => true,
     });
@@ -439,6 +467,7 @@ describe("clipboard writer — stdin EPIPE resilience", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("wl-copy");
@@ -453,6 +482,7 @@ describe("clipboard writer — stdin EPIPE resilience", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
       isOsc52Supported: () => false,
     });
     expect(result.ok).toBe(false);
@@ -466,6 +496,7 @@ describe("clipboard writer — stdin EPIPE resilience", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     });
     expect(spawnState.calls[0]!.stdinEnded).toBe(true);
     expect(result.ok).toBe(true);
@@ -569,14 +600,29 @@ describe("clipboard helpers — environment predicates and candidates", () => {
     expect(isSshEnv(envWith({ SSH_TTY: "/dev/pts/0" }))).toBe(true);
   });
 
+  it("nativeToolCandidates uses /proc/version as a WSL fallback on Linux only", () => {
+    const microsoft = "Linux version 5.15.90.1-microsoft-standard-WSL2 (WSL kernel)";
+    expect(nativeToolCandidates(envWith(), "linux", () => microsoft).map((c) => c.id)).toEqual(["clip"]);
+    expect(nativeToolCandidates(envWith(), "linux", () => "Linux version 6.1.0-18-microsoft-standard")
+      .map((c) => c.id)).toEqual(["clip"]);
+    // Fallback is gated to Linux: the same marker on macOS must not select clip.exe.
+    expect(nativeToolCandidates(envWith(), "darwin", () => microsoft).map((c) => c.id)).toEqual(["pbcopy"]);
+    // No marker → unchanged non-WSL behavior (display-gated).
+    expect(
+      nativeToolCandidates(envWith({ DISPLAY: ":0" }), "linux", () => NON_WSL_PROC_VERSION)
+        .map((c) => c.id),
+    ).toEqual(["xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith(), "linux", () => NON_WSL_PROC_VERSION)).toEqual([]);
+  });
+
   it("nativeToolCandidates matches environment + platform", () => {
     expect(nativeToolCandidates(envWith({ WSL_DISTRO_NAME: "Ubuntu" }), "linux").map((c) => c.id)).toEqual(["clip"]);
     expect(nativeToolCandidates(envWith(), "win32").map((c) => c.id)).toEqual(["clip"]);
     expect(nativeToolCandidates(envWith(), "darwin").map((c) => c.id)).toEqual(["pbcopy"]);
-    expect(nativeToolCandidates(envWith({ WAYLAND_DISPLAY: "wayland-0" }), "linux").map((c) => c.id)).toEqual(["wl-copy"]);
-    expect(nativeToolCandidates(envWith({ DISPLAY: ":0" }), "linux").map((c) => c.id)).toEqual(["xclip", "xsel"]);
-    expect(nativeToolCandidates(envWith(LINUX_DISPLAY), "linux").map((c) => c.id)).toEqual(["wl-copy", "xclip", "xsel"]);
-    expect(nativeToolCandidates(envWith(), "linux")).toEqual([]);
+    expect(nativeToolCandidates(envWith({ WAYLAND_DISPLAY: "wayland-0" }), "linux", () => NON_WSL_PROC_VERSION).map((c) => c.id)).toEqual(["wl-copy"]);
+    expect(nativeToolCandidates(envWith({ DISPLAY: ":0" }), "linux", () => NON_WSL_PROC_VERSION).map((c) => c.id)).toEqual(["xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith(LINUX_DISPLAY), "linux", () => NON_WSL_PROC_VERSION).map((c) => c.id)).toEqual(["wl-copy", "xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith(), "linux", () => NON_WSL_PROC_VERSION)).toEqual([]);
     expect(nativeToolCandidates(envWith({ SSH_CONNECTION: "a b c d" }), "linux")).toEqual([]);
     expect(nativeToolCandidates(envWith(), "freebsd")).toEqual([]);
   });
@@ -605,6 +651,7 @@ describe("in-flight copy guard", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd: string) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     };
 
     const first = runGuardedCopy("one", deps, state, {
@@ -636,6 +683,7 @@ describe("in-flight copy guard", () => {
       env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd: string) => cmd,
+      readProcVersion: () => NON_WSL_PROC_VERSION,
     };
 
     runGuardedCopy("one", deps, state, {

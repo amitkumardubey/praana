@@ -13,6 +13,7 @@
  * never logged.
  */
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 export interface ClipboardWriteResult {
   ok: boolean;
@@ -53,6 +54,12 @@ export interface ClipboardWriterDeps {
   isOsc52Supported?: () => boolean;
   osc52?: (text: string) => boolean;
   timeoutMs?: number;
+  /**
+   * Returns the contents of /proc/version (Linux WSL detection fallback),
+   * or null when unreadable. Injectable for tests; defaults to reading the
+   * real file.
+   */
+  readProcVersion?: () => string | null;
 }
 
 export function isSshEnv(env: Record<string, string | undefined>): boolean {
@@ -77,16 +84,34 @@ function utf8(text: string): Uint8Array {
 }
 
 /**
+ * Default /proc/version reader: the file header line, or null when the file
+ * is absent or unreadable (non-Linux hosts, sandboxes).
+ */
+export function defaultReadProcVersion(): string | null {
+  try {
+    return readFileSync("/proc/version", "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Native clipboard tools for the current environment, in priority order.
  * Returns [] under SSH (OSC 52 only) and on unsupported platforms.
  */
 export function nativeToolCandidates(
   env: Record<string, string | undefined>,
   platform: string,
+  readProcVersion: () => string | null = defaultReadProcVersion,
 ): NativeToolCandidate[] {
   if (isSshEnv(env)) return [];
 
-  const isWsl = Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
+  // WSL is normally signaled via WSL_DISTRO_NAME/WSL_INTEROP, but both can be
+  // absent (e.g. `bun` shebang invocations that strip them). As a fallback,
+  // /proc/version on Linux carries a case-insensitive "microsoft" marker.
+  const isWsl =
+    Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP) ||
+    (platform === "linux" && /microsoft/i.test(readProcVersion() ?? ""));
   if (isWsl || platform === "win32") {
     return [{ id: "clip", command: "clip.exe", args: [], encode: utf16leWithBom }];
   }
@@ -199,7 +224,11 @@ export async function writeClipboardText(
       : { ok: false, method: "none" };
   }
 
-  for (const candidate of nativeToolCandidates(deps.env, deps.platform)) {
+  for (const candidate of nativeToolCandidates(
+    deps.env,
+    deps.platform,
+    deps.readProcVersion,
+  )) {
     const resolved = deps.lookup
       ? await deps.lookup(candidate.command)
       : candidate.command;
