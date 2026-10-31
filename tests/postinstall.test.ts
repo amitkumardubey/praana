@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
 import {
   BUN_URL,
+  INSTALL_PS1_URL,
   INSTALL_SH_URL,
   findOnPath,
   noticeText,
@@ -21,12 +22,29 @@ function fakeProbe(present: string[]): (candidate: string) => boolean {
 }
 
 describe("postinstall notice text", () => {
-  it("is three lines that name Bun and the standalone installer", () => {
-    const lines = noticeText().trimEnd().split("\n");
+  it("is three lines that name Bun and the POSIX installer on POSIX", () => {
+    const lines = noticeText("linux").trimEnd().split("\n");
     expect(lines).toHaveLength(3);
     expect(lines[0]).toContain("PRAANA runs on Bun (>= 1.4)");
+    expect(lines[1]).toContain("If you have not installed Bun yet");
     expect(lines[1]).toContain(BUN_URL);
     expect(lines[2]).toContain(`${INSTALL_SH_URL} | sh`);
+    expect(lines[2]).not.toContain("install.ps1");
+  });
+
+  it("points Windows at install.ps1 instead of curl | sh", () => {
+    const lines = noticeText("win32").trimEnd().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("PRAANA runs on Bun (>= 1.4)");
+    expect(lines[1]).toContain("If you have not installed Bun yet");
+    expect(lines[1]).toContain(BUN_URL);
+    expect(lines[2]).toContain(`irm ${INSTALL_PS1_URL} | iex`);
+    expect(lines[2]).not.toContain("install.sh");
+    expect(lines[2]).not.toContain("curl");
+  });
+
+  it("defaults to the host platform", () => {
+    expect(noticeText()).toBe(noticeText(process.platform));
   });
 });
 
@@ -115,6 +133,18 @@ describe("run", () => {
       find: () => "/home/me/.bun/bin/bun",
     });
     expect(result.notice).toBeNull();
+  });
+
+  it("uses the Windows installer notice on win32", () => {
+    const result = run({
+      env: { PATH: "C:\\Windows" },
+      platform: "win32",
+      packageRoot: "C:\\pkg",
+      exists: () => false,
+      find: () => null,
+    });
+    expect(result.notice).toContain("install.ps1");
+    expect(result.notice).not.toContain("install.sh");
   });
 
   it("prints nothing for the repo's own install (.git present)", () => {

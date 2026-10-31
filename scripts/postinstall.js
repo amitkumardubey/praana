@@ -21,18 +21,24 @@ import { fileURLToPath } from "node:url";
 export const BUN_URL = "https://bun.sh";
 export const INSTALL_SH_URL =
   "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh";
+export const INSTALL_PS1_URL =
+  "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1";
 
 const DEFAULT_PATHEXT = ".EXE;.CMD;.BAT;.COM";
 
 /** Package root (the directory that holds package.json). */
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** The three-line notice. */
-export function noticeText() {
+/** The three-line notice, with the installer command for `platform`. */
+export function noticeText(platform = process.platform) {
+  const installer =
+    platform === "win32"
+      ? `  irm ${INSTALL_PS1_URL} | iex`
+      : `  curl -fsSL ${INSTALL_SH_URL} | sh`;
   return [
     "PRAANA runs on Bun (>= 1.4).",
-    `Install Bun from ${BUN_URL}, or use the standalone installer:`,
-    `  curl -fsSL ${INSTALL_SH_URL} | sh`,
+    `If you have not installed Bun yet: install it from ${BUN_URL}, or use the standalone installer:`,
+    installer,
     "",
   ].join("\n");
 }
@@ -128,6 +134,7 @@ export function shouldNotify({ bunPath, isDevCheckout }) {
 export function run(options = {}) {
   const {
     env = process.env,
+    platform = process.platform,
     packageRoot = PACKAGE_ROOT,
     exists = existsSync,
     find = findOnPath,
@@ -141,7 +148,9 @@ export function run(options = {}) {
   // must stay quiet. Published tarballs never contain `.git`, so registry
   // installs (global or as a dependency) are unaffected by this guard.
   const isDevCheckout = exists(join(packageRoot, ".git"));
-  const notice = shouldNotify({ bunPath, isDevCheckout }) ? noticeText() : null;
+  const notice = shouldNotify({ bunPath, isDevCheckout })
+    ? noticeText(platform)
+    : null;
   return { notice, bunPath, isDevCheckout };
 }
 
