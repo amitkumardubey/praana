@@ -108,22 +108,25 @@ describe("buildProviderSelectItems", () => {
     expect(openrouter!.description).toMatch(/OPENROUTER_API_KEY/);
   });
 
-  it("sorts alphabetically within availability groups", () => {
-    const items = buildProviderSelectItems().filter(
-      (i) => i.value !== CUSTOM_PROVIDER_VALUE,
-    );
-    const labels = items.map((i) => i.value);
-    const sorted = [...labels].sort();
+  it("orders: available first, then the popular hosted group, then the rest alphabetically, custom last", () => {
+    const items = buildProviderSelectItems();
+    const values = items.map((i) => i.value);
+    expect(values[values.length - 1]).toBe(CUSTOM_PROVIDER_VALUE);
+    const popular = [
+      "openai",
+      "anthropic",
+      "google",
+      "openrouter",
+      "deepseek",
+      "groq",
+      "mistral",
+    ];
     const available = items.filter((i) => i.description?.startsWith("✓"));
-    const unavailable = items.filter((i) => !i.description?.startsWith("✓"));
-    expect([...available, ...unavailable].map((i) => i.value)).toEqual(labels);
-    expect(available.map((i) => i.value)).toEqual(
-      [...available.map((i) => i.value)].sort(),
+    const rest = values.slice(available.length + popular.length, -1);
+    expect(rest).toEqual([...rest].sort());
+    expect(values.slice(available.length, available.length + popular.length)).toEqual(
+      popular.filter((p) => !available.some((a) => a.value === p)),
     );
-    expect(unavailable.map((i) => i.value)).toEqual(
-      [...unavailable.map((i) => i.value)].sort(),
-    );
-    expect(sorted.length).toBe(labels.length);
   });
 
   it("attaches search aliases so common names resolve", () => {

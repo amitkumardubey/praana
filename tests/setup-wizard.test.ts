@@ -508,10 +508,14 @@ describe("setup wizard", () => {
   // ── provider-options: buildProviderSelectItems ──
 
   describe("buildProviderSelectItems", () => {
-    it("includes custom provider entry at top", () => {
+    it("includes custom provider entry last, with the self-hosted description", () => {
       const items = buildProviderSelectItems();
-      expect(items[0].value).toBe(CUSTOM_PROVIDER_VALUE);
-      expect(items[0].label).toContain("Custom");
+      const last = items[items.length - 1];
+      expect(last.value).toBe(CUSTOM_PROVIDER_VALUE);
+      expect(last.label).toContain("Custom");
+      expect(last.description).toBe(
+        "Local or self-hosted server (Ollama, LM Studio, vLLM, llama.cpp)",
+      );
     });
 
     it("includes known providers after custom entry", () => {

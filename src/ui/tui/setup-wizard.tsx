@@ -47,6 +47,12 @@ import {
   needsInteractiveEmbedderConsent,
   setEmbedderConsent,
 } from "../../memory/embedder-consent.js";
+import {
+  nextStepAfterModelChosen,
+  wizardBackTarget,
+  wizardFooterHint,
+  type WizardStep,
+} from "../../setup/wizard-nav.js";
 
 const YES_NO_OPTIONS = [
   { value: "yes", name: "Yes", description: "" },
@@ -62,28 +68,6 @@ const REAUTH_OPTIONS = [
   { value: "yes", name: "Yes — sign in again", description: "" },
   { value: "no", name: "No — keep existing", description: "" },
 ];
-
-type Step =
-  | "provider"
-  | "auth-method"
-  | "reuse-oauth"
-  | "key-choice"
-  | "key-input"
-  | "bedrock-key"
-  | "custom-id"
-  | "custom-url"
-  | "custom-key"
-  | "verifying"
-  | "save-anyway"
-  | "fetch-models"
-  | "model-picker"
-  | "manual-model"
-  | "embedder"
-  | "confirm"
-  | "oauth-status"
-  | "oauth-text"
-  | "oauth-select"
-  | "oauth-error";
 
 interface WizardState {
   provider: string;
@@ -163,7 +147,7 @@ function TextInput(props: {
 
 export function SetupWizard(props: SetupWizardProps) {
   const renderer = useRenderer();
-  const [step, setStep] = createSignal<Step>("provider");
+  const [step, setStep] = createSignal<WizardStep>("provider");
   const [message, setMessage] = createSignal("");
   const [models, setModels] = createSignal<ProviderCatalogModelEntry[]>([]);
   const [oauthOptions, setOauthOptions] = createSignal<
@@ -183,6 +167,7 @@ export function SetupWizard(props: SetupWizardProps) {
     pendingKey: "",
   };
   let settled = false;
+  let pendingResult: SetupResult | null = null;
   let oauthAbort: AbortController | undefined;
   let resolveOAuthText: ((value: string) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
@@ -218,18 +203,23 @@ export function SetupWizard(props: SetupWizardProps) {
         env_key: custom.envKey,
       });
     }
-    finish(
-      finalizeProviderSetup(provider, action, {
-        model: state.model || pickDefaultModel(provider) || undefined,
-        customProvider: custom,
-        keySaved: state.keySaved,
-      }),
-    );
+    const result = finalizeProviderSetup(provider, action, {
+      model: state.model || pickDefaultModel(provider) || undefined,
+      customProvider: custom,
+      keySaved: state.keySaved,
+    });
+    if (needsInteractiveEmbedderConsent()) {
+      // The memory question is the last wizard step, after the config-file
+      // confirmation; finish once it is answered.
+      pendingResult = result;
+      setStep("embedder");
+    } else {
+      finish(result);
+    }
   };
 
   const afterModelChosen = () => {
-    if (needsInteractiveEmbedderConsent()) setStep("embedder");
-    else setStep("confirm");
+    setStep(nextStepAfterModelChosen());
   };
 
   const acceptVerifiedKey = (provider: string, key: string) => {
@@ -342,51 +332,26 @@ export function SetupWizard(props: SetupWizardProps) {
   };
 
   const goBack = () => {
-    switch (step()) {
-      case "provider":
-        finish({ success: false, message: "Setup cancelled." });
-        break;
-      case "auth-method":
-      case "reuse-oauth":
-      case "key-choice":
-      case "key-input":
-      case "bedrock-key":
-      case "custom-id":
-      case "verifying":
-      case "save-anyway":
-      case "embedder":
-      case "oauth-error":
-        setStep("provider");
-        break;
-      case "custom-url":
-        setStep("custom-id");
-        break;
-      case "custom-key":
-        setStep("custom-url");
-        break;
-      case "model-picker":
-        setStep("manual-model");
-        break;
-      case "manual-model":
-        setStep("provider");
-        break;
-      case "confirm":
-        setStep("provider");
-        break;
-      case "oauth-text":
-        oauthAbort?.abort();
-        setStep("provider");
-        break;
-      case "oauth-select":
-        resolveOAuthSelect?.(undefined);
-        break;
-      case "oauth-status":
-        oauthAbort?.abort();
-        setStep("provider");
-        break;
-      case "fetch-models":
-        break;
+    const current = step();
+    if (current === "oauth-select") {
+      resolveOAuthSelect?.(undefined);
+      return;
     }
+    if (current === "fetch-models") return;
+    const target = wizardBackTarget(current, {
+      isCustom: state.isCustom,
+      provider: state.provider,
+    });
+    if (target === "none") {
+      // First step: Esc must not quit — just surface the quit hint.
+      setMessage("Ctrl+C to quit setup");
+      return;
+    }
+    if (current === "oauth-text" || current === "oauth-status") {
+      oauthAbort?.abort();
+    }
+    setMessage("");
+    setStep(target);
   };
 
   useBindings(() => ({
@@ -748,27 +713,6 @@ export function SetupWizard(props: SetupWizardProps) {
         </>
       )}
 
-      {step() === "embedder" && (
-        <>
-          <text><span style={TUI_STYLE.info}>Cognitive Memory search</span></text>
-          <text> </text>
-          <text>Download an ONNX embedding model for semantic recall (~38 MB), or keep keyword-only search?</text>
-          <text> </text>
-          <PaletteList
-            options={[
-              { value: "proceed", name: "ONNX semantic recall", description: "Download once from HuggingFace" },
-              { value: "skip", name: "Keyword-only", description: "Skip download — still works, less precise" },
-            ]}
-            onSelect={(value) => {
-              if (value === "proceed" || value === "skip") {
-                setEmbedderConsent(value);
-              }
-              setStep("confirm");
-            }}
-          />
-        </>
-      )}
-
       {step() === "confirm" && (
         <>
           <text>{`Selected: ${providerForConfig()}`}</text>
@@ -795,6 +739,40 @@ export function SetupWizard(props: SetupWizardProps) {
             onSelect={(value) => {
               if (value === "no") finalize("skip");
               else if (value === "yes") finalize("write");
+            }}
+          />
+        </>
+      )}
+
+      {step() === "embedder" && (
+        <>
+          <text><span style={TUI_STYLE.info}>Smarter memory recall?</span></text>
+          <text> </text>
+          <Lines
+            lines={[
+              "PRAANA remembers things across sessions. A small local model (about 38 MB, downloaded once from HuggingFace) makes recall smarter.",
+              "You can skip it and keep plain keyword search; change this later in config.",
+            ]}
+          />
+          <text> </text>
+          <PaletteList
+            options={[
+              {
+                value: "proceed",
+                name: "Download now (recommended)",
+                description: "Download once from HuggingFace",
+              },
+              {
+                value: "skip",
+                name: "Skip: keyword search only",
+                description: "No download — plain keyword search",
+              },
+            ]}
+            onSelect={(value) => {
+              if (value === "proceed" || value === "skip") {
+                setEmbedderConsent(value);
+              }
+              finish(pendingResult ?? { success: true, provider: providerForConfig(), message: "Setup complete." });
             }}
           />
         </>
@@ -858,6 +836,10 @@ export function SetupWizard(props: SetupWizardProps) {
           />
         </>
       )}
+
+      <text>
+        <span style={TUI_STYLE.muted}>{wizardFooterHint(step())}</span>
+      </text>
     </box>
   );
 }
