@@ -20,11 +20,11 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
     const off = keymap.intercept("key", (ctx) => {
       ctx.consume({ preventDefault: true, stopPropagation: true });
       const e = ctx.event;
-      if (e.name === "enter") {
+      if (e.name === "enter" || e.name === "return") {
         props.overlay.resolveConfirm(true);
         return;
       }
-      if (e.name === "escape" || (e.name === "c" && e.ctrl)) {
+      if (e.name === "escape" || e.name === "esc" || (e.name === "c" && e.ctrl)) {
         props.overlay.resolveConfirm(false);
         return;
       }
