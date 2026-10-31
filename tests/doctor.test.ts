@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { handleDoctor } from "../src/doctor.js";
-import { getConfigWarnings } from "../src/config.js";
+import { countPrintedWarnings, handleDoctor } from "../src/doctor.js";
+import { getConfigWarnings, loadConfig } from "../src/config.js";
 import type { PraanaConfig } from "../src/types.js";
 
 const testLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-doctor-"));
@@ -35,6 +35,7 @@ describe("handleDoctor", () => {
   });
 
   afterEach(() => {
+    getConfigWarnings();
     rmSync(praanaHome, { recursive: true, force: true });
     if (prevHome === undefined) delete process.env.PRAANA_HOME;
     else process.env.PRAANA_HOME = prevHome;
@@ -57,7 +58,7 @@ describe("handleDoctor", () => {
   it("summary names the warning count when every check passed with warnings", async () => {
     const result = await handleDoctor(baseConfig);
     expect(result.success).toBe(true);
-    const warningCount = result.lines.filter((l) => l.startsWith("⚠")).length;
+    const warningCount = countPrintedWarnings(result.lines);
     const summary = result.lines.at(-1)!;
     if (warningCount > 0) {
       expect(summary).toMatch(/^All checks passed \(\d+ warnings?\)\.$/);
@@ -86,5 +87,83 @@ describe("handleDoctor", () => {
       expect(embedderLine).toMatch(/keyword-only|weights not downloaded|addon missing|runtime missing/);
     }
     expect(result.success).toBe(true);
+  });
+
+  it("counts indented config warnings when they are the only warning lines", () => {
+    expect(
+      countPrintedWarnings([
+        "  ⚠ Invalid memory.embedder, using default 'auto'",
+        "  ⚠ Invalid compiler.token_budget, using default 100000",
+      ]),
+    ).toBe(2);
+  });
+
+  it("counts a mix of column-0 warnings and indented config warnings", () => {
+    expect(
+      countPrintedWarnings([
+        "✓ provider: ollama",
+        "⚠ embedder: runtime ready, weights not downloaded (Xenova/all-MiniLM-L6-v2)",
+        "",
+        "Configuration warnings:",
+        "  ⚠ Invalid memory.embedder, using default 'auto'",
+        "  ⚠ Invalid memory.summarizer 'nope', using 'disabled'",
+        "",
+      ]),
+    ).toBe(3);
+  });
+
+  it("counts zero when no warning lines are printed", () => {
+    expect(countPrintedWarnings(["✓ provider: ollama", "✓ model: llama3", ""])).toBe(0);
+  });
+
+  it("config warnings are indented and still fail the run", async () => {
+    writeFileSync(
+      join(praanaHome, "warn.toml"),
+      '[memory]\nembedder = "nope"\nsummarizer = "nope"\n',
+    );
+    loadConfig(join(praanaHome, "warn.toml"));
+    const result = await handleDoctor(baseConfig);
+    const indented = result.lines.filter((l) => l.startsWith("  ⚠ "));
+    expect(indented).toContain("  ⚠ Invalid memory.embedder, using default 'auto'");
+    expect(indented).toContain(
+      "  ⚠ Invalid memory.summarizer 'nope', using 'disabled'",
+    );
+    expect(result.success).toBe(false);
+    expect(result.lines.at(-1)).toBe("Some checks failed.");
+    expect(countPrintedWarnings(result.lines)).toBe(
+      result.lines.filter((l) => l.trimStart().startsWith("⚠")).length,
+    );
+  });
+
+  it("mixed unindented and indented warnings are both counted, and the run still fails", async () => {
+    writeFileSync(
+      join(praanaHome, "warn.toml"),
+      '[memory]\nembedder = "nope"\nsummarizer = "nope"\n',
+    );
+    loadConfig(join(praanaHome, "warn.toml"));
+    const result = await handleDoctor(baseConfig);
+    const indented = result.lines.filter((l) => l.startsWith("  ⚠ "));
+    const columnZero = result.lines.filter((l) => l.startsWith("⚠"));
+    expect(indented.length).toBeGreaterThanOrEqual(2);
+    expect(result.success).toBe(false);
+    expect(result.lines.at(-1)).toBe("Some checks failed.");
+    expect(countPrintedWarnings([...columnZero, ...indented])).toBe(
+      columnZero.length + indented.length,
+    );
+  });
+
+  it("with no config warnings the passing summary matches every printed warning", async () => {
+    const result = await handleDoctor(baseConfig);
+    expect(result.lines.some((l) => l.startsWith("  ⚠ "))).toBe(false);
+    expect(result.success).toBe(true);
+    const n = countPrintedWarnings(result.lines);
+    const summary = result.lines.at(-1)!;
+    if (n === 0) {
+      expect(summary).toBe("All checks passed.");
+    } else {
+      expect(summary).toBe(
+        `All checks passed (${n} warning${n === 1 ? "" : "s"}).`,
+      );
+    }
   });
 });

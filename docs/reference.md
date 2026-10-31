@@ -58,7 +58,7 @@ tar xzf praana-linux-x64.tar.gz
 praana doctor   # native: available (…)
 ```
 
-`praana doctor` exits non-zero only when a check fails. A run where every check passes but some printed a `⚠` (for example embedder weights not downloaded yet) ends with `All checks passed (N warnings).` so the warning is not lost next to a plain "all good" summary.
+`praana doctor` exits non-zero when a check fails or configuration warnings were printed. A run where every check passes but some printed a `⚠` (for example embedder weights not downloaded yet) ends with `All checks passed (N warnings).` N counts every warning line, indented or not. Configuration warnings are indented (`  ⚠ …`) and fail the run, so that summary stays `Some checks failed.`
 
 ### PATH for global install
 
