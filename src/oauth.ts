@@ -15,11 +15,18 @@ import {
 } from "./credentials.js";
 import { getAppLogger } from "./logger.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
-import { CodexTokenResponseError, createOpenAICodexOAuth, type CodexOAuthDeps } from "./oauth-codex.js";
+import {
+  bindRefreshHeadersNotifier,
+  CodexTokenResponseError,
+  createOpenAICodexOAuth,
+  type CodexOAuthDeps,
+} from "./oauth-codex.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
-const REFRESH_TIMEOUT_MS = 15_000;
+/** Connecting and response headers. The body has its own, longer budget. */
+const REFRESH_HEADERS_TIMEOUT_MS = 15_000;
+const REFRESH_BODY_TIMEOUT_MS = 60_000;
 
 const oauthRefreshInflight = new Map<string, Promise<ModelAuth | null>>();
 
@@ -506,10 +513,18 @@ async function refreshOAuthCredential(
 
     const refreshToken = stored.refresh;
     const timeout = new AbortController();
-    const timer = setTimeout(() => {
+    let timer = setTimeout(() => {
       timeout.abort(new Error("OAuth token refresh timed out"));
-    }, REFRESH_TIMEOUT_MS);
+    }, REFRESH_HEADERS_TIMEOUT_MS);
     timer.unref?.();
+    bindRefreshHeadersNotifier(timeout.signal, () => {
+      if (timeout.signal.aborted) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timeout.abort(new Error("OAuth token refresh timed out"));
+      }, REFRESH_BODY_TIMEOUT_MS);
+      timer.unref?.();
+    });
     try {
       let refreshed: OAuthCredential;
       try {

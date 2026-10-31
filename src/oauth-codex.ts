@@ -13,6 +13,17 @@ const NOTICE = "Signs in with your ChatGPT account via the Codex CLI sign-in.";
 const RELOGIN = "OpenAI Codex credential missing accountId; run /login openai-codex again";
 const TOKEN_FIELDS = "OpenAI Codex token response missing access_token, refresh_token or numeric expires_in";
 
+const refreshHeaderNotifiers = new WeakMap<AbortSignal, () => void>();
+
+/** The refresh timeout uses this to stop the header budget once the response headers arrive. */
+export function bindRefreshHeadersNotifier(signal: AbortSignal, notify: () => void): void {
+  refreshHeaderNotifiers.set(signal, notify);
+}
+
+function noteRefreshHeaders(signal?: AbortSignal): void {
+  if (signal) refreshHeaderNotifiers.get(signal)?.();
+}
+
 /**
  * A refresh grant already rotated the token at the provider. The caller must
  * persist `received` before surfacing this error, or the new refresh token is lost.
@@ -108,6 +119,7 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ ...params, client_id: CLIENT_ID }), signal,
     });
+    noteRefreshHeaders(signal);
     if (!response.ok) throw new Error(`OpenAI Codex token ${params.grant_type} failed (${response.status})`);
     const data = await response.json() as Record<string, unknown>;
     const refreshGrant = params.grant_type === "refresh_token";

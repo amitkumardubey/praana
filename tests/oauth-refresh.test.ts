@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import {
   existsSync,
   mkdirSync,
@@ -210,6 +211,41 @@ describe("serialized OAuth refresh", () => {
     expect(posts).toBe(0);
     expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
   });
+
+  it("persists a refresh whose body arrives after the header timeout", async () => {
+    seedExpiredCodex();
+    const next = jwt("slow-body");
+    const payload = JSON.stringify(tokenJson(next, "refresh-slow-body"));
+    let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+    const server: Server = createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": String(Buffer.byteLength(payload)),
+      });
+      res.flushHeaders();
+      bodyTimer = setTimeout(() => res.end(payload), 20_000);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    resetOAuthProvidersForTests({
+      fetch: (async (_url: string, init?: RequestInit) => {
+        return originalFetch(`http://127.0.0.1:${port}/token`, init);
+      }) as typeof fetch,
+    });
+    try {
+      const auth = await resolveOAuthModelAuth("openai-codex");
+      expect(auth?.apiKey).toBe(next);
+      expect(getOAuthToken("openai-codex")).toMatchObject({
+        access: next,
+        refresh: "refresh-slow-body",
+      });
+    } finally {
+      if (bodyTimer) clearTimeout(bodyTimer);
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, { timeout: 45_000 });
 
   it("persists a rotation that succeeds after the caller cancels", async () => {
     seedExpiredCodex();

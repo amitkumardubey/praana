@@ -227,8 +227,10 @@ reports the error and leaves the file untouched. A missing file is still created
 
 Cancelling one request does not cancel the refresh for anyone else. Once a refresh
 request has started, PRAANA finishes it and saves the new token even if every
-caller cancels. A logout or a newer login that lands before the refreshed token is
-saved is left as it is.
+caller cancels. The 15-second limit applies until response headers arrive. Reading
+the body may then take up to 60 seconds, so a slow body does not discard a refresh
+token the provider has already rotated. A logout or a newer login that lands before
+the refreshed token is saved is left as it is.
 
 If refresh fails and the stored access token is already expired, the turn stops
 and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
