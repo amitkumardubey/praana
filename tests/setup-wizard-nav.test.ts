@@ -1,17 +1,20 @@
 import { describe, it, expect } from "bun:test";
 import {
-  wizardBackTarget,
   wizardFooterHint,
   escHintText,
   nextStepAfterModelChosen,
+  createWizardHistory,
+  pushStep,
+  popStep,
+  resetWizardHistory,
   type WizardStep,
 } from "../src/setup/wizard-nav.js";
 
 /**
- * Every step the wizard component routes through `wizardBackTarget`.
- * `fetch-models` and `oauth-select` are special-cased INSIDE the component
- * (transient no-op / OAuth select cancel) before the target table is
- * consulted, so they are intentionally not part of the table.
+ * Every step the wizard component routes through the navigation history.
+ * `fetch-models`, `verifying` and the OAuth interstitial steps are transient
+ * and never recorded; `oauth-select` Esc cancels the select inside the
+ * component instead of navigating back.
  */
 const ALL_STEPS: WizardStep[] = [
   "provider",
@@ -34,53 +37,85 @@ const ALL_STEPS: WizardStep[] = [
   "oauth-error",
 ];
 
-describe("wizardBackTarget", () => {
-  const plain = { isCustom: false, provider: "openai" };
-  const custom = { isCustom: true, provider: "mock-provider" };
-  const bedrock = { isCustom: false, provider: "amazon-bedrock" };
+describe("wizard history (pushStep/popStep)", () => {
+  it("records visited steps in order and pops back through them", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "custom-id");
+    pushStep(h, "custom-url");
+    pushStep(h, "custom-key");
+    expect(popStep(h, "custom-key")).toBe("custom-url");
+    expect(popStep(h, "custom-url")).toBe("custom-id");
+    expect(popStep(h, "custom-id")).toBe("provider");
+    expect(popStep(h, "provider")).toBe("none");
+  });
 
-  it("describes a back target for every reachable step", () => {
+  it("never records transient steps (verifying/fetch-models/oauth interstitials)", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "key-input");
+    pushStep(h, "verifying");
+    pushStep(h, "fetch-models");
+    pushStep(h, "oauth-status");
+    pushStep(h, "oauth-text");
+    pushStep(h, "oauth-select");
+    expect(h.steps).toEqual(["provider", "key-input"]);
+    // Esc from a transient step returns to the last visited destination
+    // without popping it — the user never left it.
+    expect(popStep(h, "verifying")).toBe("key-input");
+    expect(popStep(h, "key-input")).toBe("provider");
+  });
+
+  it("esc from the memory question returns to the model step the user actually used", () => {
+    const h = createWizardHistory();
+    for (const s of ["provider", "key-choice", "model-picker", "embedder"] as const) pushStep(h, s);
+    expect(popStep(h, "embedder")).toBe("model-picker");
+  });
+
+  it("model-picker esc never invents the manual entry unless it was visited", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "key-choice");
+    pushStep(h, "model-picker");
+    expect(popStep(h, "model-picker")).toBe("key-choice");
+
+    const h2 = createWizardHistory();
+    pushStep(h2, "provider");
+    pushStep(h2, "key-choice");
+    pushStep(h2, "manual-model");
+    pushStep(h2, "model-picker");
+    expect(popStep(h2, "model-picker")).toBe("manual-model");
+  });
+
+  it("consecutive repeats collapse so failed-verification re-entry does not grow the stack", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "key-input");
+    pushStep(h, "key-input");
+    expect(h.steps).toEqual(["provider", "key-input"]);
+  });
+
+  it("explicit reset clears the history (back-to-provider actions)", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "auth-method");
+    resetWizardHistory(h);
+    expect(h.steps).toEqual([]);
+  });
+
+  it("the first provider step stays a no-op with the hint", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    expect(popStep(h, "provider")).toBe("none");
+  });
+
+  it("every reachable step either pops or reports none", () => {
+    const h = createWizardHistory();
+    pushStep(h, "provider");
+    pushStep(h, "auth-method");
     for (const step of ALL_STEPS) {
-      const target = wizardBackTarget(step, plain);
+      const target = popStep(h, step);
       expect(target === "none" || (ALL_STEPS as string[]).includes(target)).toBe(true);
-    }
-  });
-
-  it("the first (provider) step has no back target — Esc must not quit", () => {
-    expect(wizardBackTarget("provider", plain)).toBe("none");
-  });
-
-  it("goes back one step at a time from the middle of the flow", () => {
-    expect(wizardBackTarget("custom-url", custom)).toBe("custom-id");
-    expect(wizardBackTarget("custom-key", custom)).toBe("custom-url");
-    expect(wizardBackTarget("key-input", plain)).toBe("key-choice");
-    expect(wizardBackTarget("model-picker", plain)).toBe("manual-model");
-    expect(wizardBackTarget("manual-model", plain)).toBe("provider");
-  });
-
-  it("the memory question comes BEFORE the config confirmation, so back from confirm lands on embedder", () => {
-    expect(
-      wizardBackTarget("confirm", { ...plain, needsEmbedderConsent: true }),
-    ).toBe("embedder");
-  });
-
-  it("without a memory question, confirm backs out to the provider list", () => {
-    expect(wizardBackTarget("confirm", plain)).toBe("provider");
-  });
-
-  it("embedder backs out to the provider list (it precedes confirm)", () => {
-    expect(wizardBackTarget("embedder", plain)).toBe("provider");
-  });
-
-  it("save-anyway goes back to the input screen that produced it", () => {
-    expect(wizardBackTarget("save-anyway", plain)).toBe("key-input");
-    expect(wizardBackTarget("save-anyway", custom)).toBe("custom-key");
-    expect(wizardBackTarget("save-anyway", bedrock)).toBe("bedrock-key");
-  });
-
-  it("provider-choice steps return to the provider list", () => {
-    for (const step of ["auth-method", "reuse-oauth", "key-choice", "bedrock-key", "custom-id", "verifying", "oauth-error"] as WizardStep[]) {
-      expect(wizardBackTarget(step, plain)).toBe("provider");
     }
   });
 });

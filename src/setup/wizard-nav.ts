@@ -27,76 +27,74 @@ export type WizardStep =
   | "oauth-select"
   | "oauth-error";
 
-export interface WizardNavContext {
-  /** True while the custom OpenAI-compatible endpoint flow is active. */
-  isCustom: boolean;
-  /** The provider id being configured ("" before one is chosen). */
-  provider: string;
-  /**
-   * Whether the wizard asked the memory (embedder consent) question before
-   * the final config confirmation. When true, Esc from the confirmation
-   * returns to that question; otherwise it backs out to the provider list.
-   */
-  needsEmbedderConsent?: boolean;
+/**
+ * Visited-step history for the wizard. Esc pops to the PREVIOUS visited
+ * step instead of consulting a static back table, so it lands on the step
+ * the user actually came from (e.g. the memory question goes back to the
+ * model step that was used, model-picker goes back to the fetch/key step).
+ */
+export interface WizardHistory {
+  /** Visited destination steps, oldest first. Never contains transient steps. */
+  steps: WizardStep[];
 }
 
 /**
- * Step a back navigation (Esc) should land on from `step`.
- * Returns "none" when the step has nothing to go back to — the first
- * provider step must NOT quit the app; Ctrl+C is the only quit affordance.
- *
- * Two steps are intentionally absent: `fetch-models` (transient check the
- * component ignores Esc on) and `oauth-select` (Esc cancels the OAuth
- * select via `resolveOAuthSelect(undefined)`). Both are handled inside the
- * component before this table is consulted.
+ * Steps that are intermediate/transient — they render while async work is
+ * running (key verification, model fetch) or while an OAuth interstitial is
+ * showing. They are not destinations a back navigation should restore, so
+ * they are never recorded in the history.
  */
-export function wizardBackTarget(
-  step: WizardStep,
-  ctx: WizardNavContext,
+const TRANSIENT_STEPS: ReadonlySet<WizardStep> = new Set([
+  "verifying",
+  "fetch-models",
+  "oauth-status",
+  "oauth-text",
+  "oauth-select",
+]);
+
+export function createWizardHistory(): WizardHistory {
+  return { steps: [] };
+}
+
+/**
+ * Record that the wizard landed on `step`. Transient steps are skipped, and
+ * re-entering the same step consecutively collapses (e.g. returning to the
+ * key screen after a failed verification must not grow the stack).
+ */
+export function pushStep(history: WizardHistory, step: WizardStep): void {
+  if (TRANSIENT_STEPS.has(step)) return;
+  if (history.steps[history.steps.length - 1] === step) return;
+  history.steps.push(step);
+}
+
+/**
+ * Resolve where Esc should land from the current `step`. Pops the current
+ * step off the history when it is a visited destination and returns the
+ * previous one; when the wizard is on a transient step (verifying, model
+ * fetch, OAuth interstitial) the last visited destination is returned
+ * without popping — the user never left it. Returns "none" at the first
+ * provider step: Esc must not quit, the component surfaces the hint.
+ */
+export function popStep(
+  history: WizardHistory,
+  current: WizardStep,
 ): WizardStep | "none" {
-  switch (step) {
-    case "provider":
-      return "none";
-    case "auth-method":
-    case "reuse-oauth":
-    case "key-choice":
-    case "bedrock-key":
-    case "custom-id":
-    case "verifying":
-    case "manual-model":
-    case "embedder":
-      // The memory question precedes the config confirmation; backing out
-      // here restarts the provider flow.
-    case "oauth-error":
-      return "provider";
-    case "key-input":
-      return "key-choice";
-    case "custom-url":
-      return "custom-id";
-    case "custom-key":
-      return "custom-url";
-    case "save-anyway":
-      return ctx.isCustom
-        ? "custom-key"
-        : ctx.provider === "amazon-bedrock"
-          ? "bedrock-key"
-          : "key-input";
-    case "model-picker":
-      return "manual-model";
-    case "confirm":
-      // Nothing is written until the final confirmation is accepted; Esc
-      // returns to the memory question when one was asked.
-      return ctx.needsEmbedderConsent ? "embedder" : "provider";
-    case "oauth-text":
-    case "oauth-status":
-      return "provider";
-    case "fetch-models":
-    case "oauth-select":
-      // Handled inside the component before this table is consulted (the
-      // transient fetch is ignored, and Esc cancels the OAuth select).
-      // Defensive fallback: neither can be escaped backward.
-      return "none";
+  const last = history.steps[history.steps.length - 1];
+  if (last === undefined || history.steps.length <= 1) return "none";
+  if (last === current) {
+    history.steps.pop();
+    return history.steps[history.steps.length - 1] ?? "none";
   }
+  return last;
+}
+
+/**
+ * Clear the history. Used when an explicit action restarts the flow from
+ * the provider step (e.g. "Back to provider list" on the OAuth error step)
+ * so stale visited steps cannot resurface on later Esc presses.
+ */
+export function resetWizardHistory(history: WizardHistory): void {
+  history.steps = [];
 }
 
 /**

@@ -50,9 +50,12 @@ import {
   type EmbedderConsent,
 } from "../../memory/embedder-consent.js";
 import {
+  createWizardHistory,
   escHintText,
   nextStepAfterModelChosen,
-  wizardBackTarget,
+  popStep,
+  pushStep,
+  resetWizardHistory,
   wizardFooterHint,
   type WizardStep,
 } from "../../setup/wizard-nav.js";
@@ -152,6 +155,12 @@ export function SetupWizard(props: SetupWizardProps) {
   const renderer = useRenderer();
   const [step, setStep] = createSignal<WizardStep>("provider");
   const [message, setMessage] = createSignal("");
+  // Visited-step stack; Esc pops to the previous visited step (see wizard-nav.ts).
+  const history = createWizardHistory();
+  // Record every landed-on destination (transient steps are skipped by pushStep).
+  createEffect(() => {
+    pushStep(history, step());
+  });
   // Separate non-error hint channel (e.g. "Ctrl+C to quit setup" when Esc is
   // pressed on the first step). Cleared on every step change; never routed
   // through the error `message`.
@@ -386,11 +395,7 @@ export function SetupWizard(props: SetupWizardProps) {
     // Any back navigation invalidates an in-flight key verification so a
     // stale result cannot save the key or yank the wizard forward.
     keyVerifyAbort?.abort();
-    const target = wizardBackTarget(current, {
-      isCustom: state.isCustom,
-      provider: state.provider,
-      needsEmbedderConsent: needsInteractiveEmbedderConsent(),
-    });
+    const target = popStep(history, current);
     if (target === "none") {
       // First step: Esc must not quit — surface the quit hint on its own
       // channel (never the error message).
@@ -902,7 +907,10 @@ export function SetupWizard(props: SetupWizardProps) {
           <PaletteList
             options={[{ name: "Back to provider list", description: "", value: "back" }]}
             footerHint={hint() || wizardFooterHint(step())}
-            onSelect={() => setStep("provider")}
+            onSelect={() => {
+              resetWizardHistory(history);
+              setStep("provider");
+            }}
           />
         </>
       )}
