@@ -104,6 +104,22 @@ praana setup   # Interactive provider/config setup wizard (also `praana init` al
 
 Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
 
+### Per-turn step budget
+
+A *step* is one model round-trip (it may contain several parallel tool calls). The `[turn]` section controls how long a single turn may keep calling tools:
+
+| Key | Default | Meaning |
+|---|---|---|---|
+| `max_steps` | 25 | Hard cap on steps per user message for **headless** runs (`praana run`, Harbor, CI). `--max-steps N` overrides it for one run. |
+| `pause_after_steps` | 50 | Interactive (TTY) sessions pause before executing the next tool batch every time steps used reaches a multiple of this value. |
+| `hard_max_steps` | 300 | Absolute ceiling for interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. |
+
+When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` — **Enter** continues (the next pause is another `pause_after_steps` later), **Esc** (or Ctrl+C) stops. In headless mode nothing ever prompts; `max_steps` is enforced silently.
+
+**Wrap-up:** whenever a turn stops at any limit — soft-pause stop, `hard_max_steps`, or headless `max_steps` — the results of the last executed tool batch stay in history, and the agent runs one final no-tool call asking for a short summary of what was done and what remains. That summary streams like a normal reply. If the wrap-up call itself fails, the turn ends with the normal end-of-turn banner text instead of an error.
+
+Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default.
+
 ### Supported providers
 
 | Provider | Environment variable |
