@@ -7,7 +7,6 @@ import {
   shouldContinueLine,
 } from "../src/ui/tui/prompt/keys.js";
 import { PromptHistory } from "../src/ui/tui/prompt/history.js";
-import { resetPromptContinuationState } from "../src/ui/tui/prompt/index.js";
 
 /**
  * Navigation-key routing logic mirrored from TuiApp handleNavigationKey.
@@ -140,30 +139,66 @@ describe("shouldContinueLine", () => {
   });
 });
 
-describe("resetPromptContinuationState", () => {
-  it("clears the autocomplete popup and history browsing cursor after a continued line", () => {
+describe("PromptHistory.resetBrowse (called inline after a continuation)", () => {
+  it("resets the history browsing cursor so Up starts fresh", () => {
     const history = new PromptHistory();
     history.push("one");
     history.push("two");
     expect(history.up("draft")).toBe("two");
     expect(history.isBrowsing()).toBe(true);
 
-    let acCleared = false;
-    let prevSynced = false;
-    resetPromptContinuationState(history, {
-      clearAutocomplete: () => {
-        acCleared = true;
-      },
-      syncPrevText: () => {
-        prevSynced = true;
-      },
-    });
+    history.resetBrowse();
 
-    expect(acCleared).toBe(true);
-    expect(prevSynced).toBe(true);
     expect(history.isBrowsing()).toBe(false);
     // Browsing afterwards starts from a fresh draft, not a stale cursor.
     expect(history.down()).toBeNull();
+  });
+});
+
+describe("continuation edit is in-place and keeps undo history", () => {
+  it("deleteCharBackward + insertText reproduces applyBackslashContinue and stays undoable", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    try {
+      const ta = new TextareaRenderable(setup.renderer, {
+        id: "cont-edit",
+        width: 60,
+        height: 5,
+      });
+      setup.renderer.root.add(ta);
+
+      // End of buffer: drop the backslash, then insert the real newline.
+      ta.setText("abc\\");
+      ta.setCursor(0, 4);
+      ta.deleteCharBackward();
+      expect(ta.plainText).toBe("abc");
+      expect(ta.cursorOffset).toBe(3);
+      ta.insertText("\n");
+      expect(ta.plainText).toBe("abc\n");
+
+      // Undo survives: first step removes the newline, second restores the
+      // backslash (impossible after a setText rewrite, which clears history).
+      ta.undo();
+      expect(ta.plainText).toBe("abc");
+      ta.undo();
+      expect(ta.plainText).toBe("abc\\");
+
+      // End of a non-last line: drop the backslash only; the existing
+      // newline already terminates the line (no second newline).
+      const tb = new TextareaRenderable(setup.renderer, {
+        id: "cont-edit2",
+        width: 60,
+        height: 5,
+      });
+      setup.renderer.root.add(tb);
+      tb.setText("abc\\\ndef");
+      tb.setCursor(0, 4);
+      tb.deleteCharBackward();
+      expect(tb.plainText).toBe("abc\ndef");
+      expect(tb.cursorOffset).toBe(3);
+      expect(tb.plainText[tb.cursorOffset]).toBe("\n");
+    } finally {
+      setup.renderer.destroy();
+    }
   });
 });
 

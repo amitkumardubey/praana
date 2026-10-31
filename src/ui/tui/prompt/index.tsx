@@ -34,11 +34,7 @@ import {
   type AutocompleteResult,
 } from "./autocomplete.js";
 import { TUI_PALETTE, TUI_STYLE } from "../theme.js";
-import {
-  SUBMIT_BINDINGS,
-  applyBackslashContinue,
-  shouldContinueLine,
-} from "./keys.js";
+import { SUBMIT_BINDINGS, shouldContinueLine } from "./keys.js";
 
 export interface PromptProps {
   cwd: string;
@@ -57,23 +53,6 @@ export interface PromptHandle {
   clear(): void;
   setText(text: string): void;
   getText(): string;
-}
-
-/**
- * Bookkeeping after a trailing-backslash continuation: the autocomplete
- * popup and any history browsing cursor must not survive the multiline edit.
- * `syncPrevText` refreshes `prevText` exactly like `onContentChange` does.
- */
-export function resetPromptContinuationState(
-  history: PromptHistory,
-  opts: {
-    clearAutocomplete(): void;
-    syncPrevText(): void;
-  },
-): void {
-  opts.clearAutocomplete();
-  history.resetBrowse();
-  opts.syncPrevText();
 }
 
 export function Prompt(props: PromptProps) {
@@ -305,23 +284,22 @@ export function Prompt(props: PromptProps) {
     const text = textarea.plainText;
     const caret = textarea.cursorOffset ?? text.length;
     if (shouldContinueLine(text, caret)) {
-      const next = applyBackslashContinue(text, caret);
-      textarea.setText(next.text);
-      textarea.cursorOffset = next.caret;
-      // Insert the real newline only when the caret is now at the end of the
-      // buffer; continuing before an existing newline (end of a non-last
-      // line) already terminates the line and must not gain a second one.
+      // In-place edit: delete the terminating backslash before the caret
+      // (keeps undo history and selection), then insert the real newline
+      // only when the caret is now at the end of the buffer — continuing
+      // before an existing newline (end of a non-last line) already
+      // terminates the line and must not gain a second one.
+      textarea.deleteCharBackward();
       if (textarea.cursorOffset >= textarea.plainText.length) {
         textarea.insertText("\n");
       }
       syncHeight(textarea.plainText);
-      const nextPlain = textarea.plainText;
-      resetPromptContinuationState(history, {
-        clearAutocomplete: () => setAc(null),
-        syncPrevText: () => {
-          prevText = nextPlain;
-        },
-      });
+      // Inlined continuation-state reset: the autocomplete popup and any
+      // history browsing cursor must not survive the multiline edit, and
+      // `prevText` refreshes exactly like `onContentChange` does.
+      setAc(null);
+      history.resetBrowse();
+      prevText = textarea.plainText;
       renderer.requestRender();
       return;
     }
