@@ -36,7 +36,8 @@ function fakeServer(bindError: boolean | string = false) {
     } as unknown as ServerResponse);
     return { status, headers, html };
   };
-  return { factory, send, close, listen };
+  const fail = (error: Error) => { server.emit("error", error); };
+  return { factory, send, close, listen, fail };
 }
 
 describe("Codex protocol helpers", () => {
@@ -397,6 +398,29 @@ describe("Codex browser exchange and refresh", () => {
     });
     expect(cred.accountId).toBe("account-1");
     expect(manualSignal?.aborted).toBe(true);
+  });
+
+  it("finishes via manual paste when the callback server errors at runtime", async () => {
+    const fake = fakeServer();
+    const notices: string[] = [];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch((_url, init) => {
+        expect((init.body as URLSearchParams).get("code")).toBe("manual-code");
+        return tokenResponse();
+      }),
+      callbackServer: (options) => startOAuthCallbackServer(options, fake.factory),
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        fake.fail(Object.assign(new Error("listener failed"), { code: "EIO" }));
+        await Promise.resolve();
+        return "manual-code";
+      },
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(notices.some((message) => message.includes("EIO") && /paste/i.test(message))).toBe(true);
   });
 
   it("stops retrying when the user aborts after a bad paste", async () => {

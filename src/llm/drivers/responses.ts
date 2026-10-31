@@ -298,7 +298,15 @@ export class OpenAIResponsesDriver implements LlmDriver {
           continue;
         }
 
-        if (type === "response.completed" || (codex && type === "response.done")) {
+        if (codex && type === "response.done") {
+          const resp = parsed.response as Record<string, unknown> | undefined;
+          const status = typeof resp?.status === "string" ? resp.status : "";
+          if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
+            throw new Error(responsesErrorMessage(parsed, type));
+          }
+          terminalReceived = true;
+          if (status === "incomplete") finishReason = "length";
+        } else if (type === "response.completed") {
           if (codex) terminalReceived = true;
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = String(resp?.status ?? "");
@@ -309,7 +317,8 @@ export class OpenAIResponsesDriver implements LlmDriver {
       if (codex && !terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
 
       const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0 && !cappedByLength) {
+      const publishToolCalls = completedToolCalls.length > 0 && !cappedByLength;
+      if (publishToolCalls) {
         finishReason = "tool_use";
         for (const tc of completedToolCalls) {
           yield { type: "tool_call_end", toolCall: tc };
@@ -319,7 +328,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
       const finalAssistant: AssistantMessage = {
         role: "assistant",
         content: accumulatedContent,
-        toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+        toolCalls: publishToolCalls ? completedToolCalls : undefined,
       };
       yield { type: "done", reason: finishReason, message: finalAssistant };
     } catch (err: unknown) {

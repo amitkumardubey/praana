@@ -38,7 +38,7 @@ export class OAuthRefreshBusyError extends Error {
   readonly provider: string;
 
   constructor(provider: string) {
-    super("another PRAANA session is refreshing; try again");
+    super("another PRAANA session is refreshing; try again in a moment");
     this.name = "OAuthRefreshBusyError";
     this.provider = provider;
   }
@@ -458,14 +458,25 @@ function useCurrentAfterBusyWait(
   throw new OAuthRefreshBusyError(provider);
 }
 
+function storedTokenStillValid(token: StoredOAuthCredential | undefined): token is StoredOAuthCredential {
+  return token !== undefined && token.expires > Date.now();
+}
+
 async function refreshOAuthCredential(
   provider: string,
   oauth: OAuthAuth,
 ): Promise<ModelAuth | null> {
-  const acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
+  let acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
   if (!acquired) {
     const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
-    return useCurrentAfterBusyWait(provider, oauth, latest);
+    if (storedTokenStillValid(latest)) return useCurrentAfterBusyWait(provider, oauth, latest);
+    acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
+    if (!acquired) {
+      const after = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+      if (storedTokenStillValid(after)) return useCurrentAfterBusyWait(provider, oauth, after);
+      if (!after) return null;
+      throw new OAuthRefreshBusyError(provider);
+    }
   }
   try {
     const stored = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));

@@ -155,7 +155,9 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   listener is running.
   If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
   mode. Any other bind failure is reported with its error code and still allows
-  paste. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
+  paste. If the listener fails after it has started, PRAANA reports that failure
+  and keeps waiting for a paste. That error does not cancel login while paste can
+  still finish it. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
   rejected. When login finishes or is cancelled, PRAANA closes the listener and
   drops open connections so port 1455 can be used again immediately. Browser
   authorization and exchange have a 10-minute overall timeout.
@@ -198,14 +200,30 @@ request runs. Other sessions wait for that lock without freezing, checking about
 every tenth of a second for up to 30 seconds. When the lock is free they re-read
 the saved token. If another session already refreshed it, they use that token and
 do not send a second refresh. If the wait runs out and the access token is still
-usable, PRAANA uses it. If the access token is already expired, PRAANA reports
-`another PRAANA session is refreshing; try again`. That is not a session expiry.
+usable, PRAANA uses it and does not ask you to log in again. If the access token
+is already expired, PRAANA waits for that same bound once more. If it is still
+expired, PRAANA reports `another PRAANA session is refreshing; try again in a
+moment`. That is not a session expiry and it does not say to run `/login` again.
 
-The lock is published together with its contents, so a lock that is still empty
-is not treated as abandoned unless it is more than 5 seconds old. A lock whose
-process is gone, or that is older than 60 seconds, is removed. PRAANA reads the
-lock again immediately before removing it, so a lock that was just replaced is
-left alone.
+A save re-reads the credentials file under the lock before writing. If that read
+fails (the file is unreadable, not valid JSON, or only partly written), PRAANA
+reports the error and leaves the file untouched. A missing file is still created.
+
+The lock file records the process id, the host name, and on Linux the boot id
+from `/proc/sys/kernel/random/boot_id`. Publishing prefers a hard link so readers
+never see an empty lock. On a filesystem that rejects hard links
+(`EPERM`, `ENOTSUP`, `ENOSYS`, or `EXDEV`), PRAANA creates the lock with an
+exclusive write instead. That can leave an empty lock for a moment; the empty-lock
+rule below covers it.
+
+| Lock state | What PRAANA does |
+|---|---|
+| Empty, younger than 5 seconds | Leave it. The publisher may still be writing. |
+| Empty, older than 5 seconds | Take it over. |
+| Same host and boot id, and the recorded pid is not alive | Take it over. A missing boot id matches only when this machine has none. |
+| Different host, or a different boot id | Do not trust the pid. Use the age rule only. |
+| Older than 60 seconds (file mtime or the lock's start time) | Take it over. |
+| Takeover | Rename the lock to `<lock>.stale.<pid>.<rand>`. Only one rename wins; the loser sees the name gone and tries to acquire again. The winner keeps it only when the renamed bytes are the lock it judged stale, then deletes that renamed file. If the bytes differ, it links or renames the file back and does not take over. |
 
 Cancelling one request does not cancel the refresh for anyone else. Once a refresh
 request has started, PRAANA finishes it and saves the new token even if every
@@ -222,10 +240,13 @@ storage (`store: false`), and omit `max_output_tokens` and `temperature`. Codex
 streams report backend failures, an incomplete response for any reason other than
 `max_output_tokens`, or a missing terminal event as errors. A finished Codex
 answer is terminal on `response.completed`, `response.incomplete`,
-`response.done`, or a final `data: [DONE]` line. A `max_output_tokens` cutoff of
+`response.done`, or a final `data: [DONE]` line. A `response.done` whose payload
+status is `failed` or `cancelled`, or that carries an error, is a failure, the
+same as `response.failed`. A `max_output_tokens` cutoff of
 plain text finishes with the partial output and reason `length`. A cutoff while a
 tool call is still being sent is an error: `The response was cut off while the
-model was calling a tool.` Other Responses providers keep the previous stream
+model was calling a tool.` A length cutoff does not leave that in-flight tool
+call on the assistant message. Other Responses providers keep the previous stream
 behaviour.
 
 ## Slash commands

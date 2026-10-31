@@ -22,6 +22,7 @@ import {
   removeCredentials,
   resetCredentialStoreForTests,
   setApiKey,
+  setLockIdentityForTests,
   setOAuthToken,
 } from "../src/credentials.js";
 import { streamLlmResponse } from "../src/llm/stream.js";
@@ -61,7 +62,27 @@ function lockPath(): string {
 function writeLock(pid: number, startedAt = Date.now()): void {
   const path = lockPath();
   mkdirSync(join(path, ".."), { recursive: true });
-  writeFileSync(path, JSON.stringify({ pid, startedAt }), { mode: 0o600 });
+  setLockIdentityForTests({ host: "praana-test-host", bootId: "praana-test-boot" });
+  writeFileSync(path, JSON.stringify({
+    pid,
+    startedAt,
+    host: "praana-test-host",
+    bootId: "praana-test-boot",
+  }), { mode: 0o600 });
+}
+
+function turnConfig(logDir: string, home: string): PraanaConfig {
+  return {
+    llm: { provider: "openai-codex", model: "gpt-6.1-sol" },
+    memory: { enabled: false, summarizer: "disabled", db_path: join(home, "memory.db") },
+    compiler: { token_budget: 100_000, recent_turns: 2, recent_turns_token_budget: 8_000 },
+    tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
+    session: { log_dir: logDir },
+    shell: { enabled: false, allowed_paths: [] },
+    edit: { confirm: false },
+    skills: { enabled: false, max_token_budget_ratio: 0.2, max_loaded_skills: 1, stale_threshold_turns: 10, max_depth: 1 },
+    context_engine: { enabled: true },
+  } as PraanaConfig;
 }
 
 function seedExpiredCodex(refresh = "refresh-old", access = jwt("stored-account")): void {
@@ -708,7 +729,7 @@ describe("serialized OAuth refresh", () => {
     });
     setRefreshLockWaitMsForTests(200);
     await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
-      "another PRAANA session is refreshing; try again",
+      "another PRAANA session is refreshing; try again in a moment",
     );
     expect(posts).toBe(0);
     expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
@@ -734,6 +755,118 @@ describe("serialized OAuth refresh", () => {
     expect(auth?.apiKey).toBe(access);
     expect(warnings.join("\n")).not.toContain("session expired");
     expect(warnings.join("\n")).toContain("using the current access token");
+  });
+
+  it("waits a second time before reporting a busy refresh of an expired token", async () => {
+    seedExpiredCodex();
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const next = jwt("after-second-wait");
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        posts += 1;
+        return Response.json(tokenJson(next, "refresh-after-second"));
+      }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(200);
+    const pending = resolveOAuthModelAuth("openai-codex").then(
+      (auth) => ({ ok: true as const, auth }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+    const state = await Promise.race([
+      pending.then((result) => result.ok ? "done" as const : "failed" as const),
+      Bun.sleep(280).then(() => "waiting" as const),
+    ]);
+    expect(state).toBe("waiting");
+    unlinkSync(refreshLock);
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(posts).toBe(1);
+    expect(result.auth?.apiKey).toBe(next);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-after-second");
+  });
+
+  it("tells the caller to retry in a moment when both busy waits expire", async () => {
+    seedExpiredCodex();
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(40);
+    await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
+      "another PRAANA session is refreshing; try again in a moment",
+    );
+    expect(posts).toBe(0);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+  });
+
+  it("does not surface a busy refresh from a turn when the access token is still valid", async () => {
+    const access = jwt("turn-still-valid");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-turn-valid",
+      expires: Date.now() + 30_000,
+      accountId: "turn-still-valid",
+    });
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(40);
+    globalThis.fetch = (async () => new Response(
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "hello" })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`,
+    )) as typeof fetch;
+    const logDir = join(praanaHome, "sessions");
+    mkdirSync(logDir, { recursive: true });
+    const session = await Session.create(praanaHome, turnConfig(logDir, praanaHome), { incognito: true });
+    const errors: string[] = [];
+    try {
+      const text = await runTurn(session, "hello", undefined, {
+        sink: { onError: (entry) => { errors.push(entry.message); } },
+      });
+      expect(text).toContain("hello");
+      expect(text).not.toContain("Run /login");
+      expect(text).not.toContain("try again in a moment");
+      expect(errors.join("\n")).not.toContain("Run /login");
+      expect(errors.join("\n")).not.toContain("refreshing");
+    } finally {
+      await session.end("clean", [], { memoryTimeoutMs: 1 });
+    }
+  });
+
+  it("shows a retry-in-a-moment message from a turn when the refresh lock outlasts an expired token", async () => {
+    seedExpiredCodex();
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    let chatCalls = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(30);
+    globalThis.fetch = (async () => {
+      chatCalls += 1;
+      throw new Error("stale token was sent");
+    }) as typeof fetch;
+    const logDir = join(praanaHome, "sessions");
+    mkdirSync(logDir, { recursive: true });
+    const session = await Session.create(praanaHome, turnConfig(logDir, praanaHome), { incognito: true });
+    const errors: string[] = [];
+    try {
+      const text = await runTurn(session, "hello", undefined, {
+        sink: { onError: (entry) => { errors.push(entry.message); } },
+      });
+      expect(chatCalls).toBe(0);
+      expect(text).toContain("another PRAANA session is refreshing; try again in a moment");
+      expect(text).not.toContain("Run /login");
+      expect(errors).toEqual([text.trim()]);
+    } finally {
+      await session.end("clean", [], { memoryTimeoutMs: 1 });
+    }
   });
 });
 

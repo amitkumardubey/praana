@@ -108,6 +108,7 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
     const signal = interaction.signal ? AbortSignal.any([interaction.signal, timeout.signal]) : timeout.signal;
     const manualAbort = new AbortController();
     let callback: OAuthCallbackServer | undefined;
+    let ignoreCallbackError = false;
     try {
       signal.throwIfAborted();
       const { verifier, challenge } = generatePKCE(randomBytes);
@@ -160,11 +161,25 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
         }
         throw lastError ?? new Error("Missing OpenAI Codex authorization code");
       };
-      const code = await withSignal(callback ? Promise.race([callback.wait(), manual()]) : manual(), signal);
+      const callbackTask = callback
+        ? callback.wait().catch((error: unknown) => {
+            if (ignoreCallbackError) return new Promise<string>(() => {});
+            const code = (error as { code?: string }).code;
+            const detail = code || (error instanceof Error ? error.message : String(error));
+            interaction.notify({
+              type: "info",
+              message: `Local callback failed (${detail}); paste the redirect URL or authorization code below.`,
+            });
+            return new Promise<string>(() => {});
+          })
+        : undefined;
+      const code = await withSignal(callbackTask ? Promise.race([callbackTask, manual()]) : manual(), signal);
+      ignoreCallbackError = true;
       manualAbort.abort();
       callback?.close();
       return await withSignal(exchange(code, verifier, REDIRECT_URI, signal), signal);
     } finally {
+      ignoreCallbackError = true;
       clearTimeout(timer);
       manualAbort.abort();
       callback?.close();

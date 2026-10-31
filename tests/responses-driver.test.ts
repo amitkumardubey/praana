@@ -163,6 +163,26 @@ describe("Responses stream termination", () => {
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
 
+  it.each(["failed", "cancelled"] as const)("Codex treats response.done status %s as a failure", async (status) => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.done", response: { status, error: { message: "Backend unavailable" } } },
+    ]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.error.message).toBe("Backend unavailable");
+  });
+
+  it("Codex treats response.done with an error payload as a failure", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.done", response: { status: "completed" }, error: { message: "Backend unavailable" } },
+    ]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.error.message).toBe("Backend unavailable");
+  });
+
   it("Codex keeps reason length when a finished tool call is followed by a text cutoff", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "" } },
@@ -174,6 +194,22 @@ describe("Responses stream termination", () => {
     expect(done?.type).toBe("done");
     if (done?.type === "done") expect(done.reason).toBe("length");
     expect(events.some((event) => event.type === "error")).toBe(false);
+  });
+
+  it("does not leave a tool call on the length-capped message when tool_call_end was skipped", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } },
+      { type: "response.function_call_arguments.done", output_index: 0 },
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
+    const done = events.at(-1);
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") {
+      expect(done.reason).toBe("length");
+      expect(done.message.toolCalls).toBeUndefined();
+    }
   });
 
   it.each(["content_filter", "server_error"])("Codex errors on incomplete reason %s", async (reason) => {
