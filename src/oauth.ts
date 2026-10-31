@@ -5,9 +5,12 @@
 
 import {
   getOAuthToken,
+  readCachedOAuthIfUnchanged,
   readOAuthTokenFromDisk,
+  releaseProviderRefreshLock,
   setOAuthToken,
-  withCredentialLock,
+  waitForProviderRefreshLock,
+  withCredentialStoreLockSync,
   type StoredOAuthCredential,
 } from "./credentials.js";
 import { getAppLogger } from "./logger.js";
@@ -30,8 +33,56 @@ export class OAuthRefreshError extends Error {
   }
 }
 
+/** Another session still holds the refresh lock and the access token is already expired. */
+export class OAuthRefreshBusyError extends Error {
+  readonly provider: string;
+
+  constructor(provider: string) {
+    super("another PRAANA session is refreshing; try again");
+    this.name = "OAuthRefreshBusyError";
+    this.provider = provider;
+  }
+}
+
+export const REFRESH_LOCK_WAIT_MS = 30_000;
+let refreshLockWaitOverride: number | null = null;
+
+export function setRefreshLockWaitMsForTests(ms: number): void {
+  refreshLockWaitOverride = ms;
+}
+
+function refreshLockWaitMs(): number {
+  return refreshLockWaitOverride ?? REFRESH_LOCK_WAIT_MS;
+}
+
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message));
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    if (reason.name === "AbortError") return reason;
+    const err = new Error(reason.message);
+    err.name = "AbortError";
+    return err;
+  }
+  const err = new Error(typeof reason === "string" && reason ? reason : "The operation was aborted.");
+  err.name = "AbortError";
+  return err;
+}
+
+function raceWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([work, aborted]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
 }
 
 function refreshFailureReason(err: unknown): string {
@@ -388,21 +439,36 @@ export async function ensureFreshAccessToken(
   return auth?.apiKey ?? null;
 }
 
+function useCurrentAfterBusyWait(
+  provider: string,
+  oauth: OAuthAuth,
+  latest: StoredOAuthCredential | undefined,
+): Promise<ModelAuth | null> {
+  if (!latest) return Promise.resolve(null);
+  if (latest.expires > Date.now() + REFRESH_SKEW_MS) {
+    return oauth.toAuth(toOAuthCredential(latest));
+  }
+  if (latest.expires > Date.now()) {
+    getAppLogger().child("credentials").warn(
+      "another PRAANA session is refreshing; using the current access token",
+      { code: "UNKNOWN", details: { provider } },
+    );
+    return oauth.toAuth(toOAuthCredential(latest));
+  }
+  throw new OAuthRefreshBusyError(provider);
+}
+
 async function refreshOAuthCredential(
   provider: string,
   oauth: OAuthAuth,
-  signal?: AbortSignal,
 ): Promise<ModelAuth | null> {
-  signal?.throwIfAborted();
-  const peeked = readOAuthTokenFromDisk(provider);
-  if (!peeked) return null;
-  if (peeked.expires > Date.now() + REFRESH_SKEW_MS) {
-    return oauth.toAuth(toOAuthCredential(peeked));
+  const acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
+  if (!acquired) {
+    const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+    return useCurrentAfterBusyWait(provider, oauth, latest);
   }
-
-  return withCredentialLock(async () => {
-    signal?.throwIfAborted();
-    const stored = readOAuthTokenFromDisk(provider);
+  try {
+    const stored = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
     if (!stored) return null;
     if (stored.expires > Date.now() + REFRESH_SKEW_MS) {
       return oauth.toAuth(toOAuthCredential(stored));
@@ -419,7 +485,7 @@ async function refreshOAuthCredential(
       try {
         refreshed = await oauth.refresh(toOAuthCredential(stored), timeout.signal);
       } catch (err) {
-        const latest = readOAuthTokenFromDisk(provider);
+        const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
         if (!latest || latest.refresh !== refreshToken) {
           return latest ? oauth.toAuth(toOAuthCredential(latest)) : null;
         }
@@ -437,59 +503,69 @@ async function refreshOAuthCredential(
         return oauth.toAuth(toOAuthCredential(latest));
       }
 
-      // The request finished. Persist a rotation even if the caller has since cancelled.
-      const latest = readOAuthTokenFromDisk(provider);
-      if (!latest || latest.refresh !== refreshToken) {
-        return latest ? oauth.toAuth(toOAuthCredential(latest)) : null;
-      }
-      setOAuthToken(provider, toStored(refreshed, latest));
-      const committed = readOAuthTokenFromDisk(provider);
+      // Persist before releasing the refresh lock, and only if this refresh token is still current.
+      const committed = withCredentialStoreLockSync(() => {
+        const latest = readOAuthTokenFromDisk(provider);
+        if (!latest || latest.refresh !== refreshToken) return latest ?? null;
+        setOAuthToken(provider, toStored(refreshed, latest));
+        return readOAuthTokenFromDisk(provider) ?? null;
+      });
       if (!committed) return null;
       return oauth.toAuth(toOAuthCredential(committed));
     } finally {
       clearTimeout(timer);
     }
-  });
+  } finally {
+    releaseProviderRefreshLock(provider);
+  }
 }
 
 export async function resolveOAuthModelAuth(
   provider: string,
   signal?: AbortSignal,
 ): Promise<ModelAuth | null> {
-  const existing = oauthRefreshInflight.get(provider);
-  if (existing) return existing;
-
   const oauth = getOAuthAuth(provider);
-  const flight = (async () => {
-    if (!oauth) {
-      const stored = readOAuthTokenFromDisk(provider);
-      return stored ? { apiKey: stored.access } : null;
+  if (!oauth) return null;
+
+  const cached = readCachedOAuthIfUnchanged(provider);
+  if (cached.unchanged) {
+    if (!cached.token || cached.token.expires > Date.now() + REFRESH_SKEW_MS) {
+      return cached.token ? oauth.toAuth(toOAuthCredential(cached.token)) : null;
     }
-    try {
-      return await refreshOAuthCredential(provider, oauth, signal);
-    } catch (err) {
-      if (err instanceof OAuthRefreshError || isAbortError(err)) throw err;
-      const latest = readOAuthTokenFromDisk(provider);
-      if (!latest || latest.expires <= Date.now()) {
-        throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
-      }
-      getAppLogger().child("credentials").warn(
-        `OAuth token refresh failed; using the current access token (${refreshFailureReason(err)})`,
-        {
-          cause: err instanceof Error ? err : new Error(refreshFailureReason(err)),
-          code: "UNKNOWN",
-          details: { provider },
-        },
-      );
-      return oauth.toAuth(toOAuthCredential(latest));
-    }
-  })();
-  oauthRefreshInflight.set(provider, flight);
-  try {
-    return await flight;
-  } finally {
-    if (oauthRefreshInflight.get(provider) === flight) oauthRefreshInflight.delete(provider);
   }
+
+  if (signal?.aborted) throw abortError(signal);
+
+  let shared = oauthRefreshInflight.get(provider);
+  if (!shared) {
+    shared = (async () => {
+      try {
+        return await refreshOAuthCredential(provider, oauth);
+      } catch (err) {
+        if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError || isAbortError(err)) {
+          throw err;
+        }
+        const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+        if (!latest || latest.expires <= Date.now()) {
+          throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
+        }
+        getAppLogger().child("credentials").warn(
+          `OAuth token refresh failed; using the current access token (${refreshFailureReason(err)})`,
+          {
+            cause: err instanceof Error ? err : new Error(refreshFailureReason(err)),
+            code: "UNKNOWN",
+            details: { provider },
+          },
+        );
+        return oauth.toAuth(toOAuthCredential(latest));
+      }
+    })();
+    oauthRefreshInflight.set(provider, shared);
+    void shared.finally(() => {
+      if (oauthRefreshInflight.get(provider) === shared) oauthRefreshInflight.delete(provider);
+    }).catch(() => {});
+  }
+  return raceWithSignal(shared, signal);
 }
 
 export function resetOAuthProvidersForTests(
@@ -497,6 +573,7 @@ export function resetOAuthProvidersForTests(
   overrides: { anthropic?: OAuthAuth } = {},
 ): void {
   oauthRefreshInflight.clear();
+  refreshLockWaitOverride = null;
   providers.find((provider) => provider.id === "openai-codex")!.oauth = createOpenAICodexOAuth(codexDeps);
   providers.find((provider) => provider.id === "anthropic")!.oauth = overrides.anthropic ?? anthropicPaste;
 }

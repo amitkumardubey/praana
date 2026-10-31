@@ -15,7 +15,7 @@ import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
-import { OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
+import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 
 /**
  * Execute a streaming LLM response using the appropriate protocol driver.
@@ -81,12 +81,20 @@ export async function* streamLlmResponse(
         };
       }
     } catch (err) {
-      if (err instanceof OAuthRefreshError) {
+      if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
         yield {
           type: "error",
           error: err,
           status: 401,
           retryable: false,
+        };
+        return;
+      }
+      if (err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message))) {
+        yield {
+          type: "done",
+          reason: "abort",
+          message: { role: "assistant", content: "" },
         };
         return;
       }

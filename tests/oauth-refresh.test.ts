@@ -7,6 +7,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  credentialDiskReadCountForTests,
   getApiKey,
   getCredentialsFilePath,
   getOAuthToken,
@@ -28,6 +30,7 @@ import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import {
   resetOAuthProvidersForTests,
   resolveOAuthModelAuth,
+  setRefreshLockWaitMsForTests,
 } from "../src/oauth.js";
 import { Session } from "../src/session.js";
 import { runTurn } from "../src/turn.js";
@@ -216,11 +219,21 @@ describe("serialized OAuth refresh", () => {
       }) as typeof fetch,
     });
     const pending = resolveOAuthModelAuth("openai-codex", caller.signal);
-    await Promise.resolve();
+    const settled = pending.then(
+      () => ({ aborted: false as const }),
+      (err: unknown) => ({ aborted: true as const, err }),
+    );
+    await Bun.sleep(20);
     release(Response.json(tokenJson(next, "refresh-after-cancel")));
-    const auth = await pending;
+    const outcome = await settled;
+    expect(outcome.aborted).toBe(true);
+    if (outcome.aborted) expect(String(outcome.err)).toMatch(/abort/i);
+    const deadline = Date.now() + 2_000;
+    while (getOAuthToken("openai-codex")?.refresh !== "refresh-after-cancel") {
+      if (Date.now() > deadline) break;
+      await Bun.sleep(10);
+    }
     expect(sawAbortedRequest).toBe(false);
-    expect(auth?.apiKey).toBe(next);
     expect(getOAuthToken("openai-codex")).toMatchObject({ access: next, refresh: "refresh-after-cancel" });
   });
 
@@ -399,20 +412,328 @@ describe("serialized OAuth refresh", () => {
       shell: { enabled: false, allowed_paths: [] },
       edit: { confirm: false },
       skills: { enabled: false, max_token_budget_ratio: 0.2, max_loaded_skills: 1, stale_threshold_turns: 10, max_depth: 1 },
-      context_engine: { enabled: false },
+      context_engine: { enabled: true },
     } as PraanaConfig;
     const session = await Session.create(praanaHome, config, { incognito: true });
+    const errors: string[] = [];
     const fallbacks: string[] = [];
+    let postTurns = 0;
+    session.hooks.onPostTurn(() => { postTurns += 1; });
+    const turnsBefore = session.getTurnCount();
     try {
       const text = await runTurn(session, "hello", undefined, {
-        sink: { onFallback: (line) => { fallbacks.push(line); } },
+        sink: {
+          onError: (entry) => { errors.push(entry.message); },
+          onFallback: (line) => { fallbacks.push(line); },
+        },
       });
       expect(chatCalls).toBe(0);
       expect(text).toContain("Run /login openai-codex again");
-      expect(fallbacks.join("\n")).toContain("token endpoint down");
+      expect(text).toContain("token endpoint down");
+      expect(errors).toEqual([text.trim()]);
+      expect(fallbacks).toEqual([]);
+      expect(session.getTurnCount()).toBe(turnsBefore + 1);
+      expect(postTurns).toBe(1);
+      const messages = session.eventLog.readAll().filter((event) => event.kind === "agent_message");
+      expect(messages).toHaveLength(1);
+      expect(session.contextEngine).not.toBeNull();
+      expect(session.contextEngine!.ledger.list().length).toBe(1);
     } finally {
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }
+  });
+
+  it("does not treat a fresh empty credential lock as abandoned", async () => {
+    mkdirSync(join(lockPath(), ".."), { recursive: true });
+    writeFileSync(lockPath(), "", { mode: 0o600 });
+    const started = Date.now();
+    await expect(Promise.resolve().then(() => setApiKey("openrouter", "sk-empty"))).rejects.toThrow(/Timed out waiting for the credential lock/);
+    expect(Date.now() - started).toBeGreaterThan(1_500);
+    expect(readFileSync(lockPath(), "utf8")).toBe("");
+    expect(getApiKey("openrouter")).toBeUndefined();
+  }, { timeout: 8_000 });
+
+  it("recovers an empty credential lock only after it has aged", () => {
+    mkdirSync(join(lockPath(), ".."), { recursive: true });
+    writeFileSync(lockPath(), "{", { mode: 0o600 });
+    const stale = new Date(Date.now() - 6_000);
+    utimesSync(lockPath(), stale, stale);
+    setApiKey("openrouter", "sk-aged-empty");
+    expect(getApiKey("openrouter")).toBe("sk-aged-empty");
+    expect(existsSync(lockPath())).toBe(false);
+  });
+
+  it("waits on a live refresh lock and does not start a second refresh", async () => {
+    seedExpiredCodex();
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    let posts = 0;
+    const next = jwt("after-wait");
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        posts += 1;
+        return Response.json(tokenJson(next, "refresh-after-wait"));
+      }) as typeof fetch,
+    });
+    const pending = resolveOAuthModelAuth("openai-codex");
+    const settled = pending.then(
+      (auth) => ({ ok: true as const, auth }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+    const state = await Promise.race([
+      settled.then((result) => result.ok ? "done" as const : "failed" as const),
+      Bun.sleep(400).then(() => "waiting" as const),
+    ]);
+    expect(state).toBe("waiting");
+    expect(posts).toBe(0);
+    unlinkSync(refreshLock);
+    const result = await settled;
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(posts).toBe(1);
+    expect(result.auth?.apiKey).toBe(next);
+  });
+
+  it("gives the rotated token to the caller that did not abort", async () => {
+    seedExpiredCodex();
+    const next = jwt("shared-abort");
+    const aborted = new AbortController();
+    let release!: (response: Response) => void;
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (() => {
+        posts += 1;
+        return new Promise<Response>((resolve) => { release = resolve; });
+      }) as typeof fetch,
+    });
+    const first = resolveOAuthModelAuth("openai-codex", aborted.signal);
+    const firstSettled = first.then(
+      () => ({ aborted: false as const }),
+      (err: unknown) => ({ aborted: true as const, err }),
+    );
+    const second = resolveOAuthModelAuth("openai-codex");
+    await Bun.sleep(20);
+    aborted.abort();
+    release(Response.json(tokenJson(next, "refresh-shared-abort")));
+    const firstOutcome = await firstSettled;
+    expect(firstOutcome.aborted).toBe(true);
+    if (firstOutcome.aborted) expect(String(firstOutcome.err)).toMatch(/abort/i);
+    await expect(second).resolves.toMatchObject({ apiKey: next });
+    expect(posts).toBe(1);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-shared-abort");
+  });
+
+  it("persists the rotated token when every caller aborts", async () => {
+    seedExpiredCodex();
+    const next = jwt("both-abort");
+    const firstCtl = new AbortController();
+    const secondCtl = new AbortController();
+    let release!: (response: Response) => void;
+    resetOAuthProvidersForTests({
+      fetch: (() => new Promise<Response>((resolve) => { release = resolve; })) as typeof fetch,
+    });
+    const first = resolveOAuthModelAuth("openai-codex", firstCtl.signal);
+    const second = resolveOAuthModelAuth("openai-codex", secondCtl.signal);
+    const settled = Promise.all([
+      first.then(() => ({ aborted: false as const }), (err: unknown) => ({ aborted: true as const, err })),
+      second.then(() => ({ aborted: false as const }), (err: unknown) => ({ aborted: true as const, err })),
+    ]);
+    await Bun.sleep(20);
+    firstCtl.abort();
+    secondCtl.abort();
+    release(Response.json(tokenJson(next, "refresh-both-abort")));
+    const [left, right] = await settled;
+    expect(left.aborted).toBe(true);
+    expect(right.aborted).toBe(true);
+    if (left.aborted) expect(String(left.err)).toMatch(/abort/i);
+    if (right.aborted) expect(String(right.err)).toMatch(/abort/i);
+    const deadline = Date.now() + 2_000;
+    while (getOAuthToken("openai-codex")?.refresh !== "refresh-both-abort") {
+      if (Date.now() > deadline) break;
+      await Bun.sleep(10);
+    }
+    expect(getOAuthToken("openai-codex")).toMatchObject({ access: next, refresh: "refresh-both-abort" });
+  });
+
+  it("refreshes two providers and keeps an api key written during both", async () => {
+    seedExpiredCodex();
+    setOAuthToken("anthropic", {
+      access: "ant-old",
+      refresh: "ant-old",
+      expires: Date.now() - 1_000,
+    });
+    let releaseCodex!: (response: Response) => void;
+    let releaseAnthropic!: () => void;
+    const posts: string[] = [];
+    resetOAuthProvidersForTests({
+      fetch: (() => {
+        posts.push("refresh-old");
+        return new Promise<Response>((resolve) => { releaseCodex = resolve; });
+      }) as typeof fetch,
+    }, {
+      anthropic: {
+        name: "Anthropic",
+        async login() { throw new Error("unused"); },
+        async refresh(cred) {
+          posts.push(cred.refresh);
+          await new Promise<void>((resolve) => { releaseAnthropic = resolve; });
+          return {
+            type: "oauth",
+            access: "ant-new",
+            refresh: "ant-next",
+            expires: Date.now() + 3_600_000,
+          };
+        },
+        async toAuth(cred) { return { apiKey: cred.access }; },
+      },
+    });
+    const codex = resolveOAuthModelAuth("openai-codex");
+    const anthropic = resolveOAuthModelAuth("anthropic");
+    const started = Date.now();
+    while ((!releaseCodex || !releaseAnthropic) && Date.now() - started < 1_000) {
+      await Bun.sleep(10);
+    }
+    expect(typeof releaseCodex).toBe("function");
+    expect(typeof releaseAnthropic).toBe("function");
+    setApiKey("openrouter", "sk-mid");
+    const next = jwt("codex-mid");
+    releaseAnthropic();
+    releaseCodex(Response.json(tokenJson(next, "codex-next")));
+    const [codexAuth, anthropicAuth] = await Promise.all([codex, anthropic]);
+    expect(posts.filter((item) => item === "refresh-old")).toHaveLength(1);
+    expect(posts.filter((item) => item === "ant-old")).toHaveLength(1);
+    expect(codexAuth?.apiKey).toBe(next);
+    expect(anthropicAuth?.apiKey).toBe("ant-new");
+    resetCredentialStoreForTests();
+    expect(getApiKey("openrouter")).toBe("sk-mid");
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("codex-next");
+    expect(getOAuthToken("anthropic")?.refresh).toBe("ant-next");
+  });
+
+  it("does not hold the credential file lock across a refresh", async () => {
+    seedExpiredCodex();
+    const dir = mkdtempSync(join(tmpdir(), "praana-refresh-lockfree-"));
+    const started = join(dir, "started");
+    const script = join(dir, "write-other.ts");
+    const repo = join(import.meta.dir, "..");
+    writeFileSync(script, `
+      import { writeFileSync } from "node:fs";
+      import { setApiKey } from ${JSON.stringify(pathToFileURL(join(repo, "src/credentials.ts")).href)};
+      writeFileSync(${JSON.stringify(started)}, "1");
+      setApiKey("openrouter", "sk-during-refresh");
+    `);
+    const next = jwt("lockfree");
+    let child: ChildProcess | undefined;
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        const storeLocked = existsSync(lockPath());
+        child = spawn(process.execPath, [script], {
+          env: { ...process.env, PRAANA_HOME: praanaHome },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        const exitP = waitExit(child);
+        await waitForFile(started);
+        const finished = await Promise.race([
+          exitP.then(() => "done" as const),
+          Bun.sleep(500).then(() => "blocked" as const),
+        ]);
+        if (storeLocked || finished === "blocked") {
+          throw new Error(`credential file lock was held across refresh (locked=${storeLocked}, writer=${finished})`);
+        }
+        return Response.json(tokenJson(next, "refresh-lockfree"));
+      }) as typeof fetch,
+    });
+    try {
+      const auth = await resolveOAuthModelAuth("openai-codex");
+      expect(auth?.apiKey).toBe(next);
+      resetCredentialStoreForTests();
+      expect(getApiKey("openrouter")).toBe("sk-during-refresh");
+    } finally {
+      child?.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not read the credential file for a non-OAuth provider", async () => {
+    mkdirSync(join(getCredentialsFilePath(), ".."), { recursive: true });
+    writeFileSync(getCredentialsFilePath(), "{", { mode: 0o600 });
+    resetCredentialStoreForTests();
+    warnings.length = 0;
+    const reads = credentialDiskReadCountForTests();
+    await expect(resolveOAuthModelAuth("openrouter")).resolves.toBeNull();
+    await expect(resolveOAuthModelAuth("openai")).resolves.toBeNull();
+    expect(warnings.join("\n")).not.toContain("Failed to read credentials store");
+    expect(credentialDiskReadCountForTests()).toBe(reads);
+  });
+
+  it("does not re-read a fresh cached OAuth token", async () => {
+    const access = jwt("fresh-cache");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-fresh",
+      expires: Date.now() + 3_600_000,
+      accountId: "fresh-cache",
+    });
+    const reads = credentialDiskReadCountForTests();
+    const first = await resolveOAuthModelAuth("openai-codex");
+    const second = await resolveOAuthModelAuth("openai-codex");
+    expect(first?.apiKey).toBe(access);
+    expect(second?.apiKey).toBe(access);
+    expect(credentialDiskReadCountForTests()).toBe(reads);
+  });
+
+  it("re-reads when the credentials file changes under a fresh cache", async () => {
+    const access = jwt("cached-account");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-cached",
+      expires: Date.now() + 3_600_000,
+      accountId: "cached-account",
+    });
+    const replacement = jwt("external-account");
+    const stored = JSON.parse(readFileSync(getCredentialsFilePath(), "utf8")) as Record<string, { access: string }>;
+    stored["openai-codex"]!.access = replacement;
+    writeFileSync(getCredentialsFilePath(), JSON.stringify(stored), { mode: 0o600 });
+    const auth = await resolveOAuthModelAuth("openai-codex");
+    expect(auth?.apiKey).toBe(replacement);
+  });
+
+  it("reports a busy refresh instead of a session expiry when the refresh lock stays held", async () => {
+    seedExpiredCodex();
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(200);
+    await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
+      "another PRAANA session is refreshing; try again",
+    );
+    expect(posts).toBe(0);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+  });
+
+  it("keeps a still-valid token when the refresh lock wait runs out", async () => {
+    const access = jwt("still-valid");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-soon",
+      expires: Date.now() + 30_000,
+      accountId: "still-valid",
+    });
+    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(200);
+    const auth = await resolveOAuthModelAuth("openai-codex");
+    expect(posts).toBe(0);
+    expect(auth?.apiKey).toBe(access);
+    expect(warnings.join("\n")).not.toContain("session expired");
+    expect(warnings.join("\n")).toContain("using the current access token");
   });
 });
 
@@ -526,6 +847,93 @@ describe("credential refresh across processes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, { timeout: 20_000 });
+
+  it("lets a second process use the rotated token without a second refresh", async () => {
+    seedExpiredCodex();
+    const next = jwt("waited-account");
+    let posts = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch() {
+        posts += 1;
+        await Bun.sleep(300);
+        return Response.json(tokenJson(next, "refresh-waited"));
+      },
+    });
+    const dir = mkdtempSync(join(tmpdir(), "praana-refresh-waiters-"));
+    const repo = join(import.meta.dir, "..");
+    const script = join(dir, "worker.ts");
+    writeFileSync(script, `
+      import { existsSync, writeFileSync } from "node:fs";
+      import { resolveOAuthModelAuth, resetOAuthProvidersForTests } from ${JSON.stringify(pathToFileURL(join(repo, "src/oauth.ts")).href)};
+      const originalFetch = globalThis.fetch.bind(globalThis);
+      resetOAuthProvidersForTests({
+        fetch: (async (_url, init) => {
+          if (process.env.HOLD_FILE) writeFileSync(process.env.HOLD_FILE, "1");
+          return originalFetch(process.env.REFRESH_URL, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: init?.body,
+          });
+        }) as typeof fetch,
+      });
+      if (process.env.WAIT_FILE) {
+        const deadline = Date.now() + 15_000;
+        while (!existsSync(process.env.WAIT_FILE)) {
+          if (Date.now() > deadline) throw new Error("wait timeout");
+          await Bun.sleep(10);
+        }
+      }
+      try {
+        const auth = await resolveOAuthModelAuth("openai-codex");
+        writeFileSync(process.env.RESULT_FILE, JSON.stringify({ ok: true, apiKey: auth?.apiKey ?? null }));
+      } catch (err) {
+        writeFileSync(process.env.RESULT_FILE, JSON.stringify({
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }));
+        process.exitCode = 1;
+      }
+    `);
+    const children: ChildProcess[] = [];
+    try {
+      const first = spawn(process.execPath, [script], {
+        env: {
+          ...process.env,
+          PRAANA_HOME: praanaHome,
+          REFRESH_URL: `http://127.0.0.1:${server.port}/refresh`,
+          HOLD_FILE: join(dir, "holding"),
+          RESULT_FILE: join(dir, "a.json"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(first);
+      await waitForFile(join(dir, "holding"));
+      const second = spawn(process.execPath, [script], {
+        env: {
+          ...process.env,
+          PRAANA_HOME: praanaHome,
+          REFRESH_URL: `http://127.0.0.1:${server.port}/refresh`,
+          WAIT_FILE: join(dir, "holding"),
+          RESULT_FILE: join(dir, "b.json"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      children.push(second);
+      const finished = await Promise.all([waitExit(first), waitExit(second)]);
+      for (const result of finished) {
+        expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      }
+      const results = ["a", "b"].map((id) => JSON.parse(readFileSync(join(dir, `${id}.json`), "utf8")) as { apiKey: string });
+      expect(posts).toBe(1);
+      expect(results.map((result) => result.apiKey)).toEqual([next, next]);
+    } finally {
+      for (const child of children) child.kill();
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, { timeout: 20_000 });
 });
 
 function mulberry32(seed: number): () => number {
@@ -566,17 +974,31 @@ describe("seeded credential interleaving", () => {
     resetCredentialStoreForTests();
     const rand = mulberry32(seed);
     const posts: string[] = [];
+    const recordRefresh = async (refresh: string) => {
+      posts.push(refresh);
+      const pauses = 1 + Math.floor(rand() * 3);
+      for (let i = 0; i < pauses; i++) await Promise.resolve();
+      return `next-${refresh}-${posts.length}`;
+    };
     resetOAuthProvidersForTests({
       fetch: (async (_url, init) => {
         const body = init?.body instanceof URLSearchParams
           ? init.body
           : new URLSearchParams(typeof init?.body === "string" ? init.body : "");
         const refresh = body.get("refresh_token") ?? "";
-        posts.push(refresh);
-        const pauses = 1 + Math.floor(rand() * 3);
-        for (let i = 0; i < pauses; i++) await Promise.resolve();
-        return Response.json(tokenJson(jwt(`rot-${refresh}`), `next-${refresh}-${posts.length}`));
+        const next = await recordRefresh(refresh);
+        return Response.json(tokenJson(jwt(`rot-${refresh}`), next));
       }) as typeof fetch,
+    }, {
+      anthropic: {
+        name: "Anthropic",
+        async login() { throw new Error("unused"); },
+        async refresh(cred) {
+          const next = await recordRefresh(cred.refresh);
+          return { type: "oauth", access: `ant-${next}`, refresh: next, expires: Date.now() + 3_600_000 };
+        },
+        async toAuth(cred) { return { apiKey: cred.access }; },
+      },
     });
     setOAuthToken("openai-codex", {
       access: jwt("seed-account"),
@@ -584,6 +1006,23 @@ describe("seeded credential interleaving", () => {
       expires: Date.now() - 1_000,
       accountId: "seed-account",
     });
+    setOAuthToken("anthropic", {
+      access: "ant-seed",
+      refresh: "ant-seed",
+      expires: Date.now() - 1_000,
+    });
+    const partial = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
+    writeFileSync(partial, "", { mode: 0o600 });
+    const probeCtl = new AbortController();
+    const probe = resolveOAuthModelAuth("openai-codex", probeCtl.signal).catch((err: unknown) => err);
+    await Bun.sleep(30);
+    if (posts.length > 0) {
+      throw new Error(`refresh started while the lock file was only partially written (${posts.join(",")})`);
+    }
+    const partialBody = existsSync(partial) ? readFileSync(partial, "utf8") : "missing";
+    if (partialBody !== "") throw new Error(`partial lock was replaced (${JSON.stringify(partialBody.slice(0, 80))})`);
+    if (rand() < 0.5) probeCtl.abort();
+    unlinkSync(partial);
     const providers = ["openai-codex", "anthropic", "openrouter"] as const;
     const events: Array<{ provider: string; kind: "api" | "login" | "logout" }> = [];
     const values = new Map<string, string>();
@@ -593,15 +1032,26 @@ describe("seeded credential interleaving", () => {
         for (let i = 0; i < pauses; i++) await Promise.resolve();
         const roll = rand();
         const provider = providers[Math.floor(rand() * providers.length)]!;
-        if (roll < 0.34) {
-          await resolveOAuthModelAuth("openai-codex");
-        } else if (roll < 0.56) {
+        if (roll < 0.28) {
+          const ctl = new AbortController();
+          const pending = resolveOAuthModelAuth(rand() < 0.5 ? "openai-codex" : "anthropic", ctl.signal)
+            .catch(() => {});
+          if (rand() < 0.4) ctl.abort();
+          await pending;
+        } else if (roll < 0.48) {
+          await Promise.all([
+            resolveOAuthModelAuth("openai-codex").catch(() => {}),
+            resolveOAuthModelAuth("anthropic").catch(() => {}),
+          ]);
+        } else if (roll < 0.66) {
           const key = `k-${seed}-${worker}-${step}`;
           setApiKey(provider, key);
           values.set(`${events.length}`, key);
           events.push({ provider, kind: "api" });
-        } else if (roll < 0.78) {
-          const access = jwt(`login-${seed}-${worker}-${step}`);
+        } else if (roll < 0.84) {
+          const access = provider === "openai-codex"
+            ? jwt(`login-${seed}-${worker}-${step}`)
+            : `login-${seed}-${worker}-${step}`;
           setOAuthToken(provider, {
             access,
             refresh: `login-rt-${seed}-${worker}-${step}`,
@@ -617,6 +1067,9 @@ describe("seeded credential interleaving", () => {
         JSON.parse(readFileSync(getCredentialsFilePath(), "utf8"));
       }
     }));
+    await probe;
+    await resolveOAuthModelAuth("openai-codex").catch(() => {});
+    await resolveOAuthModelAuth("anthropic").catch(() => {});
     const counts = new Map<string, number>();
     for (const refresh of posts) counts.set(refresh, (counts.get(refresh) ?? 0) + 1);
     for (const [refresh, count] of counts) {
@@ -651,5 +1104,5 @@ describe("seeded credential interleaving", () => {
     if (failed.length > 0) {
       throw new Error(`${failed.length}/300 seeds failed\n${failed.slice(0, 8).join("\n")}`);
     }
-  }, { timeout: 60_000 });
+  }, { timeout: 180_000 });
 });

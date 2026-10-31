@@ -23,13 +23,11 @@
 // Legacy entries without `type` and with a non-empty `key` are treated as api_key.
 
 import {
-  closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
   writeFileSync,
-  writeSync,
   chmodSync,
   renameSync,
   statSync,
@@ -40,8 +38,12 @@ import { appHomePath } from "./app-identity.js";
 import { getAppLogger } from "./logger.js";
 
 const FILE_MODE = 0o600;
-const LOCK_WAIT_MS = 10_000;
+/** Store-lock wait. Holders only rewrite the file synchronously, so the spin stays short. */
+const STORE_LOCK_WAIT_MS = 2_000;
+const REFRESH_LOCK_POLL_MS = 100;
 const LOCK_STALE_MS = 60_000;
+/** An empty lock is a publisher that has not finished writing. Do not treat it as dead immediately. */
+const EMPTY_LOCK_GRACE_MS = 5_000;
 
 /**
  * Resolve the credentials file path lazily on each call so that
@@ -81,12 +83,23 @@ interface CredentialsFile {
 }
 
 let memoryCache: CredentialsFile | null = null;
-let mutationChain: Promise<void> = Promise.resolve();
-let lockDepth = 0;
-let ownedLockRaw: string | null = null;
+let credentialsMtimeMs: number | null = null;
+let credentialContentReads = 0;
+/**
+ * Reentrancy for the store lock only. The counter is safe because the critical
+ * section is synchronous: no other turn can run until it returns. It must never
+ * stay raised across an await.
+ */
+let storeLockDepth = 0;
+const ownedLockRaw = new Map<string, string>();
 
 function credentialsLockPath(): string {
   return `${credentialsFilePath()}.lock`;
+}
+
+function refreshLockPath(provider: string): string {
+  const safe = provider.replace(/[^A-Za-z0-9._-]/g, "_");
+  return `${credentialsFilePath()}.refresh-${safe}.lock`;
 }
 
 function sleepSync(ms: number): void {
@@ -103,31 +116,47 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
-function readLockFile(path: string): { raw: string; pid: number; startedAt: number; mtimeMs: number } | null {
+interface LockInfo {
+  raw: string;
+  pid: number;
+  startedAt: number;
+  mtimeMs: number;
+  /** True when the file contains a published `{ pid }` object, not a partial write. */
+  published: boolean;
+}
+
+function readLockFile(path: string): LockInfo | null {
   try {
     const raw = readFileSync(path, "utf8");
     const stat = statSync(path);
     let pid = 0;
     let startedAt = 0;
+    let published = false;
     try {
       const parsed = JSON.parse(raw) as { pid?: unknown; startedAt?: unknown };
-      if (typeof parsed.pid === "number") pid = parsed.pid;
-      if (typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt)) {
-        startedAt = parsed.startedAt;
+      if (parsed && typeof parsed === "object" && typeof parsed.pid === "number" && Number.isInteger(parsed.pid)) {
+        pid = parsed.pid;
+        published = true;
+        if (typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt)) {
+          startedAt = parsed.startedAt;
+        }
       }
     } catch {
-      return { raw, pid: 0, startedAt: 0, mtimeMs: stat.mtimeMs };
+      published = false;
     }
-    return { raw, pid, startedAt, mtimeMs: stat.mtimeMs };
+    return { raw, pid, startedAt, mtimeMs: stat.mtimeMs, published };
   } catch {
     return null;
   }
 }
 
-function isStaleLock(info: { pid: number; startedAt: number; mtimeMs: number }): boolean {
-  if (!isPidAlive(info.pid)) return true;
+function isStaleLock(info: LockInfo): boolean {
   const now = Date.now();
-  return now - info.mtimeMs > LOCK_STALE_MS || now - info.startedAt > LOCK_STALE_MS;
+  if (!info.published) return now - info.mtimeMs > EMPTY_LOCK_GRACE_MS;
+  if (!isPidAlive(info.pid)) return true;
+  if (now - info.mtimeMs > LOCK_STALE_MS) return true;
+  if (info.startedAt > 0 && now - info.startedAt > LOCK_STALE_MS) return true;
+  return false;
 }
 
 /** Re-read the lock immediately before unlink so a replaced lock is left alone. */
@@ -144,46 +173,39 @@ function recoverStaleLock(path: string): boolean {
   }
 }
 
-function acquireCredentialFileLockSync(): void {
-  const path = credentialsLockPath();
+/**
+ * Publish a lock by linking a temp file that already holds the payload.
+ * `link` fails if the lock name exists, so readers never see an empty lock
+ * from this process.
+ */
+function publishLock(path: string): boolean {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  let delay = 20;
-  for (;;) {
-    try {
-      const fd = openSync(path, "wx", FILE_MODE);
-      const payload = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
-      try {
-        writeSync(fd, payload);
-        ownedLockRaw = payload;
-      } catch (writeErr) {
-        try { unlinkSync(path); } catch { /* best-effort */ }
-        throw writeErr;
-      } finally {
-        closeSync(fd);
-      }
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw err;
-      if (recoverStaleLock(path)) continue;
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `Timed out waiting for the credential lock (${path}). Another PRAANA process may be updating credentials.`,
-        );
-      }
-      sleepSync(Math.min(delay, Math.max(1, deadline - Date.now())));
-      delay = Math.min(delay * 2, 100);
-    }
+  const tmp = join(dir, `.credlock.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+  const payload = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
+  writeFileSync(tmp, payload, { encoding: "utf8", mode: FILE_MODE });
+  try {
+    linkSync(tmp, path);
+  } catch (err) {
+    try { unlinkSync(tmp); } catch { /* best-effort */ }
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
   }
+  try { unlinkSync(tmp); } catch { /* the lock path still names the inode */ }
+  ownedLockRaw.set(path, payload);
+  return true;
 }
 
-function releaseCredentialFileLock(): void {
-  const path = credentialsLockPath();
-  const raw = ownedLockRaw;
-  ownedLockRaw = null;
-  if (raw === null) return;
+function tryAcquirePublishedLock(path: string): boolean {
+  if (publishLock(path)) return true;
+  if (recoverStaleLock(path) && publishLock(path)) return true;
+  return false;
+}
+
+function releaseLock(path: string): void {
+  const raw = ownedLockRaw.get(path);
+  ownedLockRaw.delete(path);
+  if (raw === undefined) return;
   try {
     if (readFileSync(path, "utf8") === raw) unlinkSync(path);
   } catch {
@@ -192,47 +214,69 @@ function releaseCredentialFileLock(): void {
 }
 
 /**
- * Serialize credential read-modify-write in this process, then hold the
- * cross-process lock for the duration of `fn` (including awaits).
- * Callers that already hold the in-process lock run immediately.
+ * Store lock. Synchronous on purpose: the caller must not await while it is
+ * held. Waiters spin at most 2 seconds because a holder only reads and
+ * rewrites credentials.json.
  */
-export async function withCredentialLock<T>(fn: () => Promise<T>): Promise<T> {
-  if (lockDepth > 0) return fn();
-  const previous = mutationChain;
-  let releaseQueue!: () => void;
-  mutationChain = new Promise<void>((resolve) => { releaseQueue = resolve; });
-  await previous;
-  try {
-    acquireCredentialFileLockSync();
-    lockDepth += 1;
-    return await fn();
-  } finally {
-    if (ownedLockRaw !== null) {
-      lockDepth = Math.max(0, lockDepth - 1);
-      releaseCredentialFileLock();
+function acquireStoreLockSync(): void {
+  const path = credentialsLockPath();
+  const deadline = Date.now() + STORE_LOCK_WAIT_MS;
+  let delay = 5;
+  for (;;) {
+    if (tryAcquirePublishedLock(path)) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for the credential lock (${path}). Another PRAANA process may be updating credentials.`,
+      );
     }
-    releaseQueue();
+    sleepSync(Math.min(delay, Math.max(1, deadline - Date.now())));
+    delay = Math.min(delay * 2, 40);
   }
 }
 
-function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
-  if (lockDepth > 0) {
-    const creds = readCredentialsFromDisk();
-    const result = mutator(creds);
-    persistCredentials(creds);
-    return result;
-  }
-  acquireCredentialFileLockSync();
-  lockDepth += 1;
+function withStoreLockSync<T>(fn: () => T): T {
+  if (storeLockDepth > 0) return fn();
+  acquireStoreLockSync();
+  storeLockDepth += 1;
   try {
+    return fn();
+  } finally {
+    storeLockDepth -= 1;
+    releaseLock(credentialsLockPath());
+  }
+}
+
+/** Short critical section around a credentials.json read or rewrite. Never await inside `fn`. */
+export function withCredentialStoreLockSync<T>(fn: () => T): T {
+  return withStoreLockSync(fn);
+}
+
+/**
+ * Per-provider refresh lock. Waiters poll asynchronously so the event loop
+ * stays free while another session refreshes. Returns false when `waitMs` elapses.
+ */
+export async function waitForProviderRefreshLock(provider: string, waitMs: number): Promise<boolean> {
+  const path = refreshLockPath(provider);
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    if (tryAcquirePublishedLock(path)) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return tryAcquirePublishedLock(path);
+    await Bun.sleep(Math.min(REFRESH_LOCK_POLL_MS, remaining));
+  }
+}
+
+export function releaseProviderRefreshLock(provider: string): void {
+  releaseLock(refreshLockPath(provider));
+}
+
+function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
+  return withStoreLockSync(() => {
     const creds = readCredentialsFromDisk();
     const result = mutator(creds);
     persistCredentials(creds);
     return result;
-  } finally {
-    lockDepth = Math.max(0, lockDepth - 1);
-    releaseCredentialFileLock();
-  }
+  });
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -281,22 +325,63 @@ function sanitizeCredentials(parsed: unknown): CredentialsFile {
   return out;
 }
 
+function rememberCredentialsMtime(): void {
+  try {
+    credentialsMtimeMs = statSync(credentialsFilePath()).mtimeMs;
+  } catch {
+    credentialsMtimeMs = null;
+  }
+}
+
+function noteCredentialContentRead(): void {
+  credentialContentReads += 1;
+}
+
+/** How many times this process has read credentials.json contents. */
+export function credentialDiskReadCountForTests(): number {
+  return credentialContentReads;
+}
+
+/**
+ * Memory-cache lookup that does not read file contents.
+ * `unchanged` is false when the cache is cold or the file mtime moved.
+ */
+export function readCachedOAuthIfUnchanged(
+  provider: string,
+): { unchanged: true; token: StoredOAuthCredential | undefined } | { unchanged: false } {
+  if (memoryCache === null || credentialsMtimeMs === null) return { unchanged: false };
+  let mtime: number;
+  try {
+    mtime = statSync(credentialsFilePath()).mtimeMs;
+  } catch {
+    return { unchanged: false };
+  }
+  if (mtime !== credentialsMtimeMs) return { unchanged: false };
+  const entry = memoryCache[provider];
+  if (!entry || !isOAuthEntry(entry)) return { unchanged: true, token: undefined };
+  return { unchanged: true, token: entry };
+}
+
 /** Always read the file. Locked mutations must not trust memoryCache. */
 function readCredentialsFromDisk(): CredentialsFile {
   const credPath = credentialsFilePath();
   if (!existsSync(credPath)) {
     memoryCache = {};
+    credentialsMtimeMs = null;
     return memoryCache;
   }
   try {
+    noteCredentialContentRead();
     const parsed = JSON.parse(readFileSync(credPath, "utf-8")) as unknown;
     memoryCache = sanitizeCredentials(parsed);
+    rememberCredentialsMtime();
   } catch (err) {
     getAppLogger().child("credentials").warn(
       "Failed to read credentials store, treating as empty",
       { cause: err as Error, code: "CREDENTIALS_READ_FAILED" },
     );
     memoryCache = {};
+    credentialsMtimeMs = null;
   }
   return memoryCache;
 }
@@ -314,19 +399,23 @@ function loadCredentials(): CredentialsFile {
   const credPath = credentialsFilePath();
   if (!existsSync(credPath)) {
     memoryCache = {};
+    credentialsMtimeMs = null;
     return memoryCache;
   }
 
   try {
+    noteCredentialContentRead();
     const raw = readFileSync(credPath, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
     memoryCache = sanitizeCredentials(parsed);
+    rememberCredentialsMtime();
   } catch (err) {
     getAppLogger().child("credentials").warn(
       "Failed to read credentials store, treating as empty",
       { cause: err as Error, code: "CREDENTIALS_READ_FAILED" },
     );
     memoryCache = {};
+    credentialsMtimeMs = null;
   }
   return memoryCache;
 }
@@ -353,6 +442,7 @@ function persistCredentials(creds: CredentialsFile): void {
   }
 
   memoryCache = creds;
+  rememberCredentialsMtime();
 }
 
 /**
@@ -544,4 +634,7 @@ export function ensureCredentialsFileMode(): void {
 /** Test helper — reset in-memory cache so the next read hits disk. */
 export function resetCredentialStoreForTests(): void {
   memoryCache = null;
+  credentialsMtimeMs = null;
+  credentialContentReads = 0;
+  storeLockDepth = 0;
 }

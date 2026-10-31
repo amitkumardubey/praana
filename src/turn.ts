@@ -25,7 +25,7 @@ import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
-import { OAuthRefreshError, resolveOAuthModelAuth } from "./oauth.js";
+import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth } from "./oauth.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -753,29 +753,19 @@ export async function runTurn(
   const effectiveLlm = session.getEffectiveLlmConfig();
   // Refresh OAuth access tokens / baseUrl before building the model (no-op when unused).
   let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
+  let credentialError: string | undefined;
   try {
     oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
   } catch (err) {
-    if (err instanceof OAuthRefreshError) {
-      s.onError?.({
-        level: "error",
-        domain: "credentials",
-        message: err.message,
+    if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
+      credentialError = err.message;
+    } else if (!(err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message)))) {
+      session.getLogger().child("credentials").warn("OAuth token refresh failed", {
+        cause: err as Error,
         code: "UNKNOWN",
+        details: { provider: effectiveLlm.provider },
       });
-      s.onFallback?.(err.message);
-      session.eventLog.append({
-        kind: "agent_message",
-        actor: "agent",
-        payload: { text: err.message },
-      });
-      return err.message;
     }
-    session.getLogger().child("credentials").warn("OAuth token refresh failed", {
-      cause: err as Error,
-      code: "UNKNOWN",
-      details: { provider: effectiveLlm.provider },
-    });
   }
   const providerFn = createProvider(effectiveLlm, contextWindowTokens);
   const model = providerFn(resolveModel(modelName)) as Record<string, unknown> & {
@@ -940,7 +930,7 @@ export async function runTurn(
     ]);
   }
 
-  for (let step = 0; step < maxSteps; step++) {
+  for (let step = 0; step < maxSteps && !credentialError; step++) {
     if (options?.signal?.aborted) {
       interrupted = true;
       break;
@@ -1383,7 +1373,15 @@ export async function runTurn(
     fullResponse += "\n";
   }
 
-  if (!fullResponse.trim()) {
+  if (credentialError) {
+    s.onError?.({
+      level: "error",
+      domain: "credentials",
+      message: credentialError,
+      code: "UNKNOWN",
+    });
+    fullResponse = credentialError;
+  } else if (!fullResponse.trim()) {
     const code =
       lastStreamReason === "error"
         ? "LLM_STREAM_ERROR"

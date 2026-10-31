@@ -184,18 +184,38 @@ copy the visible URL and paste the final redirect, or choose device-code login.
 Keep the listener on `127.0.0.1:1455`; do not expose it on `0.0.0.0`.
 
 PRAANA refreshes an access token that is expired or inside 60 seconds of expiry
-before a Codex request. Refresh tokens rotate, so overlapping refreshes share one
-request: a lock file beside `credentials.json` (`credentials.json.lock`) is created
-with `O_EXCL` and held across the refresh and the following write. Other credential
-updates wait for that lock, re-read the file, and then write, so one update does not
-erase another. A lock whose process is gone, or that is older than 60 seconds, is
-removed. Waiting longer than 10 seconds fails with a timeout instead of using a
-stale file. If refresh fails and the stored access token is already expired, the
-turn stops and reports `OpenAI Codex session expired and could not be refreshed:
-<reason>. Run /login openai-codex again.` If the access token is not yet expired,
-PRAANA keeps using it and logs a warning. A logout or a newer login that lands
-before the refreshed token is saved is left as it is; a successful refresh is still
-saved if the caller cancels after the refresh request has started.
+before a Codex request. Refresh tokens rotate, so overlapping refreshes for the
+same sign-in share one request.
+
+Saving a credential and refreshing a token are separate. A save (a new key, a
+login, or a logout) is a short update: PRAANA locks the credentials file, re-reads
+it, writes, and releases the lock before any network call. Another save waits at
+most 2 seconds for that lock. The wait is short because the lock is never held
+during a refresh.
+
+A refresh takes its own lock for that provider and holds it while the refresh
+request runs. Other sessions wait for that lock without freezing, checking about
+every tenth of a second for up to 30 seconds. When the lock is free they re-read
+the saved token. If another session already refreshed it, they use that token and
+do not send a second refresh. If the wait runs out and the access token is still
+usable, PRAANA uses it. If the access token is already expired, PRAANA reports
+`another PRAANA session is refreshing; try again`. That is not a session expiry.
+
+The lock is published together with its contents, so a lock that is still empty
+is not treated as abandoned unless it is more than 5 seconds old. A lock whose
+process is gone, or that is older than 60 seconds, is removed. PRAANA reads the
+lock again immediately before removing it, so a lock that was just replaced is
+left alone.
+
+Cancelling one request does not cancel the refresh for anyone else. Once a refresh
+request has started, PRAANA finishes it and saves the new token even if every
+caller cancels. A logout or a newer login that lands before the refreshed token is
+saved is left as it is.
+
+If refresh fails and the stored access token is already expired, the turn stops
+and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
+Run /login openai-codex again.` once, as an error, and the turn is still recorded.
+If the access token is not yet expired, PRAANA keeps using it and logs a warning.
 
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
 storage (`store: false`), and omit `max_output_tokens` and `temperature`. Codex
