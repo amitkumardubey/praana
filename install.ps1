@@ -107,7 +107,7 @@ function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
   }
   $uri = "$Base/$Name"
   # PS 5.1 `curl` is an alias for Invoke-WebRequest. Use curl.exe so GitHub's
-  # latest → tag → release-assets.githubusercontent.com redirects succeed.
+  # latest -> tag -> release-assets.githubusercontent.com redirects succeed.
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
     & curl.exe -fsSL --retry 3 -A "praana-install" -o $Dest $uri
@@ -158,8 +158,9 @@ function Invoke-InstalledExe {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   # Windows PowerShell decodes native stdout with [Console]::OutputEncoding,
-  # which is the ANSI/OEM code page (cp437/cp1252), not UTF-8 — that mangles
-  # "✓" and "⚠" in `praana doctor` output. Decode as UTF-8 for the capture.
+  # which is the ANSI/OEM code page (cp437/cp1252), not UTF-8 - that mangles
+  # the check-mark and warning glyphs in `praana doctor` output. Decode as
+  # UTF-8 for the capture.
   $prevEncoding = $null
   try {
     $prevEncoding = [Console]::OutputEncoding
@@ -203,7 +204,7 @@ $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) ("praana-install-" + [guid
 New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null
 
 try {
-  Write-Host "Downloading $ArchiveName …"
+  Write-Host "Downloading $ArchiveName ..."
   $sumsPath = Join-Path $tmpdir "SHA256SUMS"
   $archivePath = Join-Path $tmpdir $ArchiveName
   Get-ReleaseFile -Base $base -Name "SHA256SUMS" -Dest $sumsPath
@@ -272,8 +273,10 @@ try {
     Remove-Item -LiteralPath $selfCheckHome -Recurse -Force -ErrorAction SilentlyContinue
   }
   $docOut = [string]$doc.Output
-  # Match the capability words, not the "✓" glyph: the console code page can
-  # mangle the check mark without changing the report.
+  # Match the capability words, not the check-mark glyph: the console code page
+  # can mangle the glyph without changing the report. Keep this file ASCII-only:
+  # Windows PowerShell 5.1 decodes a BOM-less .ps1 as the ANSI code page and
+  # treats cp1252 0x93 as a smart quote, which breaks parsing of a literal glyph.
   if ($docOut -notmatch "native:\s+available") {
     Write-Host $docOut
     Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"

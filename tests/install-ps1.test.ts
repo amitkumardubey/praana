@@ -116,6 +116,10 @@ describe("install.ps1", () => {
     expect(source).toContain("native:\\s+available");
     expect(source).toContain("search:\\s+native grep available");
     expect(source).toContain("selfcheck-home");
+    // Windows PowerShell 5.1 decodes a BOM-less .ps1 as the ANSI code page and
+    // accepts cp1252 0x93 as a string delimiter, so one non-ASCII literal
+    // breaks parsing when the script runs from a file (-File, praana upgrade).
+    expect(source).toMatch(/^[\x09\x0a\x0d\x20-\x7e]*$/);
   });
 
   it("targets windows-x64 and rejects ARM64", () => {
