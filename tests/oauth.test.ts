@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import {
   getOAuthToken,
   resetCredentialStoreForTests,
@@ -23,9 +23,7 @@ describe("oauth facade", () => {
   let prevHome: string | undefined;
 
   beforeEach(() => {
-    const scratch = join(homedir(), ".cache/codex-login-scratch");
-    mkdirSync(scratch, { recursive: true });
-    praanaHome = mkdtempSync(join(scratch, "praana-oauth-"));
+    praanaHome = mkdtempSync(join(tmpdir(), "praana-oauth-"));
     prevHome = process.env.PRAANA_HOME;
     process.env.PRAANA_HOME = praanaHome;
     setAppLogger(new PraanaLogger({ domain: "credentials", writeLine: () => {} }));

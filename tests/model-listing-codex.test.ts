@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
 import { listAllAvailableModels, listModelsForProvider } from "../src/model-listing.js";
@@ -30,9 +30,7 @@ describe("openai-codex model catalog", () => {
     resetProviderCatalogCacheForTests();
     fetchSpy = spyOn(globalThis, "fetch");
     fetchSpy.mockRejectedValue(new Error("no network in catalog tests"));
-    const scratch = join(homedir(), ".cache/codex-fix2-scratch");
-    mkdirSync(scratch, { recursive: true });
-    home = mkdtempSync(join(scratch, "codex-models-"));
+    home = mkdtempSync(join(tmpdir(), "praana-codex-models-"));
     previousHome = process.env.PRAANA_HOME;
     process.env.PRAANA_HOME = home;
     resetCredentialStoreForTests();

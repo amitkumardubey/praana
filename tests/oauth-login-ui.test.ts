@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAuthorizeUrl } from "../src/oauth-codex.js";
 import {
@@ -48,9 +48,7 @@ it("keeps a Codex authorize URL on one line that fits a 24x80 login overlay", ()
 });
 
 it("keeps the auth URL visible and passes only the manual prompt cancellation signal", async () => {
-  const scratch = join(homedir(), ".cache/codex-login-scratch");
-  mkdirSync(scratch, { recursive: true });
-  const home = mkdtempSync(join(scratch, "oauth-ui-"));
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-"));
   const previousHome = process.env.PRAANA_HOME;
   process.env.PRAANA_HOME = home;
   resetCredentialStoreForTests();
@@ -121,9 +119,7 @@ it("rejects immediately when the prompt signal is already aborted", async () => 
 });
 
 it("completes Codex login when the callback wins and the manual prompt rejects", async () => {
-  const scratch = join(homedir(), ".cache/codex-fix-scratch");
-  mkdirSync(scratch, { recursive: true });
-  const home = mkdtempSync(join(scratch, "oauth-ui-abort-"));
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-abort-"));
   const previousHome = process.env.PRAANA_HOME;
   process.env.PRAANA_HOME = home;
   resetCredentialStoreForTests();
