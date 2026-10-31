@@ -61,7 +61,8 @@ fn unix_ms_now() -> Result<i64, ArtifactError> {
 /// A failure before publication rolls the tombstone back and leaves the
 /// original intact and writable; a failure after publication keeps the swap
 /// and reports the error. A failed fence commit is always reported, even
-/// when another post-publication error came first.
+/// when another post-publication error came first, and a failed re-open is
+/// combined with it rather than dropped.
 pub(crate) fn rebuild_derived_tables(
     db: &HistoryDatabase,
     log: &EventLogStore,
@@ -77,7 +78,7 @@ pub(crate) fn rebuild_derived_tables(
     // renamed-aside file. A connection opened earlier can still read that
     // file and must be dropped and re-opened.
     let mut guard = db.lock();
-    let first = {
+    let mut first = {
         let conn: &Connection = &guard;
         let mut held = HeldWrite { conn, open: false };
         conn.execute_batch("BEGIN IMMEDIATE;").map_err(map_sqlite)?;
@@ -85,11 +86,21 @@ pub(crate) fn rebuild_derived_tables(
         prepare_and_swap(&mut held, &db_path, &session_dir, log)
     }?;
 
-    if let Err(err) = rebuild_hook("history.rebuild_reopen", &db_path) {
-        return Err(first.unwrap_or(err));
-    }
-    if let Err(err) = db.reopen(&mut guard) {
-        return Err(first.unwrap_or(err));
+    // A failed re-open leaves this handle on the renamed-aside database: its
+    // writes raise HISTORY_FILE_REPLACED when the fence committed and are
+    // accepted into the aside file when the fence was rolled back. Either way
+    // the caller has to know, so the failure is combined with any earlier
+    // post-publication error instead of replacing it. A failing hook still
+    // skips the re-open.
+    let reopen = match rebuild_hook("history.rebuild_reopen", &db_path) {
+        Ok(()) => db.reopen(&mut guard),
+        Err(err) => Err(err),
+    };
+    if let Err(err) = reopen {
+        first = Some(match first.take() {
+            Some(prior) => merge_errors(prior, err),
+            None => err,
+        });
     }
     match first {
         Some(err) => Err(err),

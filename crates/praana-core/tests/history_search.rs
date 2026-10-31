@@ -6466,3 +6466,71 @@ fn fence_t10_reopen_error_keeps_the_tombstoned_connection() {
         .unwrap();
     assert_eq!(named_sample_count(&db_path, "t10-reopen-fresh"), 1);
 }
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn fence_t10_commit_and_reopen_failures_are_both_reported() {
+    use praana_core::RebuildHookKind;
+
+    // Control run: only the fence COMMIT fails. Its error is the primary one,
+    // so its code and message must survive the second failure below.
+    let control = {
+        let dir = tempfile::tempdir().unwrap();
+        let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+        let db_path = history_db_path(dir.path());
+        let _hook = praana_core::register_rebuild_hook(
+            &db_path,
+            &[("history.rebuild_commit", RebuildHookKind::Fail)],
+        );
+        HistoryProjector::new(&session.db)
+            .rebuild(&session.log)
+            .unwrap_err()
+    };
+    assert!(
+        control.message().contains("fence incomplete"),
+        "{}",
+        control.message()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
+    let db_path = history_db_path(dir.path());
+    let _hook = praana_core::register_rebuild_hook(
+        &db_path,
+        &[
+            ("history.rebuild_commit", RebuildHookKind::Fail),
+            ("history.rebuild_reopen", RebuildHookKind::Fail),
+        ],
+    );
+    let err = HistoryProjector::new(&session.db)
+        .rebuild(&session.log)
+        .unwrap_err();
+    // Both post-publication failures are reported, the failed fence first.
+    assert_eq!(
+        err.code(),
+        control.code(),
+        "the primary error code changed: {}",
+        err.message()
+    );
+    assert!(
+        err.message().starts_with(control.message()),
+        "the primary error message changed: {}",
+        err.message()
+    );
+    assert!(
+        err.message().contains("history.rebuild_reopen"),
+        "the dropped reopen error is not reported: {}",
+        err.message()
+    );
+    // The re-open never ran, so the caller's handle still points at the
+    // renamed-aside database. With the fence commit rolled back those writes
+    // are accepted there and lost from the live history, which is why the
+    // combined error must name the failed re-open.
+    session
+        .db
+        .record_telemetry_sample("t10-combined-reopen", None, 1, "{}", 1)
+        .unwrap();
+    assert_eq!(named_sample_count(&db_path, "t10-combined-reopen"), 0);
+    let bad = find_bad_main(dir.path()).expect("aside file");
+    assert_eq!(named_sample_count(&bad, "t10-combined-reopen"), 1);
+}
