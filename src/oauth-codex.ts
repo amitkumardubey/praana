@@ -201,21 +201,28 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       let intervalMs = Math.max(1000, Math.floor(interval * 1000));
       interaction.notify({ type: "info", message: NOTICE });
       interaction.notify({ type: "device_code", userCode: data.user_code, verificationUri: `${AUTH_BASE}/codex/device`, intervalSeconds: interval, expiresInSeconds: 900 });
+      const releaseBody = async (response: Response) => {
+        try { await response.body?.cancel(); } catch { /* json() already drained and locked the body. */ }
+      };
       while (now() < deadline) {
         const response = await post("/api/accounts/deviceauth/token", { device_auth_id: data.device_auth_id, user_code: data.user_code });
-        if (response.ok) {
-          const result = await response.json() as Record<string, unknown>;
-          if (typeof result.authorization_code !== "string" || !result.authorization_code || typeof result.code_verifier !== "string" || !result.code_verifier) throw new Error("Invalid OpenAI Codex device authorization response");
-          return await withSignal(exchange(result.authorization_code, result.code_verifier, DEVICE_REDIRECT_URI, signal), signal);
-        }
-        if (response.status !== 403 && response.status !== 404) {
-          let error: unknown;
-          try {
-            const result = await response.json() as { error?: string | { code?: string } };
-            error = typeof result.error === "object" ? result.error?.code : result.error;
-          } catch { /* Non-JSON failures are reported by status below. */ }
-          if (error === "slow_down") intervalMs += 5000;
-          else if (error !== "deviceauth_authorization_pending") throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
+        try {
+          if (response.ok) {
+            const result = await response.json() as Record<string, unknown>;
+            if (typeof result.authorization_code !== "string" || !result.authorization_code || typeof result.code_verifier !== "string" || !result.code_verifier) throw new Error("Invalid OpenAI Codex device authorization response");
+            return await withSignal(exchange(result.authorization_code, result.code_verifier, DEVICE_REDIRECT_URI, signal), signal);
+          }
+          if (response.status !== 403 && response.status !== 404) {
+            let error: unknown;
+            try {
+              const result = await response.json() as { error?: string | { code?: string } };
+              error = typeof result.error === "object" ? result.error?.code : result.error;
+            } catch { /* Non-JSON failures are reported by status below. */ }
+            if (error === "slow_down") intervalMs += 5000;
+            else if (error !== "deviceauth_authorization_pending") throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
+          }
+        } finally {
+          await releaseBody(response);
         }
         const remaining = deadline - now();
         if (remaining > 0) await withSignal(pause(Math.min(intervalMs, remaining), signal), signal);

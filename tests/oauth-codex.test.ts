@@ -344,6 +344,59 @@ describe("Codex device authorization", () => {
     expect(waits).toEqual([2000, 2000, 2000, 7000]);
     expect(events).toContainEqual({ type: "device_code", userCode: "ABCD", verificationUri: "https://auth.openai.com/codex/device", intervalSeconds: 2, expiresInSeconds: 900 });
   });
+  it("cancels or drains device-poll bodies, including when polling is aborted", async () => {
+    const tracked: Array<{ label: string; cancelled: boolean; drained: boolean }> = [];
+    const track = (label: string, status: number, json?: unknown) => {
+      const entry = { label, cancelled: false, drained: false };
+      tracked.push(entry);
+      const payload = json === undefined ? undefined : JSON.stringify(json);
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (payload === undefined) return;
+          entry.drained = true;
+          controller.enqueue(new TextEncoder().encode(payload));
+          controller.close();
+        },
+        cancel() { entry.cancelled = true; },
+      }), { status, headers: payload === undefined ? {} : { "Content-Type": "application/json" } });
+    };
+    let clock = 0;
+    const polls = [
+      track("forbidden", 403),
+      track("missing", 404),
+      track("pending", 400, { error: { code: "deviceauth_authorization_pending" } }),
+      track("slow", 429, { error: "slow_down" }),
+      track("ready", 200, { authorization_code: "device-code", code_verifier: "device-verifier" }),
+    ];
+    const oauth = createOpenAICodexOAuth({
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      fetch: fakeFetch((url) => {
+        if (url.endsWith("/usercode")) return Response.json({ device_auth_id: "device", user_code: "ABCD", interval: 1 });
+        if (url.endsWith("/oauth/token")) return tokenResponse();
+        return polls.shift()!;
+      }),
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    for (const entry of tracked) {
+      if (entry.label === "ready") continue;
+      expect(entry.cancelled || entry.drained, entry.label).toBe(true);
+    }
+    expect(tracked.find((entry) => entry.label === "forbidden")?.cancelled).toBe(true);
+    expect(tracked.find((entry) => entry.label === "missing")?.cancelled).toBe(true);
+
+    tracked.length = 0;
+    const abort = new AbortController();
+    const aborted = createOpenAICodexOAuth({
+      now: () => 0,
+      sleep: async () => { abort.abort(new Error("cancelled")); },
+      fetch: fakeFetch((url) => url.endsWith("/usercode")
+        ? Response.json({ device_auth_id: "device", user_code: "ABCD", interval: 1 })
+        : track("aborted", 403)),
+    });
+    await expect(aborted.login({ ...interaction("device_code"), signal: abort.signal })).rejects.toThrow(/cancelled/);
+    expect(tracked.find((entry) => entry.label === "aborted")?.cancelled).toBe(true);
+  });
   it.each(["timeout", "abort", "404", "denied"])("handles device %s", async (mode) => {
     let clock = 0;
     const abort = new AbortController();
