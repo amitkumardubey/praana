@@ -87,7 +87,8 @@ export type SetupOutcome =
   | "pending"
   | "completed"
   | "cancelled"
-  | "failed";
+  | "failed"
+  | "start-failed";
 
 export interface ShutdownExitContext {
   setupOutcome: SetupOutcome;
@@ -95,16 +96,13 @@ export interface ShutdownExitContext {
 }
 
 /**
- * Exit code for a TUI shutdown. A normal exit (including `/exit` right after a
- * successful first-run setup) is 0; 1 is reserved for "setup was cancelled or
- * failed before a session existed", so a stale onboarding flag can never turn a
- * clean exit into a failure code.
+ * Exit code for a TUI shutdown. A live session is 0. With no session, exit 1
+ * unless setup was not needed — a stale `completed` (wizard succeeded, session
+ * never started) is a failure, same as cancelled, failed, or start-failed.
  */
 export function resolveShutdownExitCode(ctx: ShutdownExitContext): 0 | 1 {
   if (ctx.hasSession) return 0;
-  return ctx.setupOutcome === "completed" || ctx.setupOutcome === "not-needed"
-    ? 0
-    : 1;
+  return ctx.setupOutcome === "not-needed" ? 0 : 1;
 }
 
 export async function runTui(
@@ -117,8 +115,8 @@ export async function runTui(
   const useUnicode = config.ui.tool_icons === "unicode";
   let bootOnboarding = Boolean(launch.needsOnboarding);
   let bootConsent = Boolean(launch.needsEmbedderConsent);
-  // Drives the shutdown exit code; cleared as soon as setup succeeds so a
-  // completed first-run never exits 1 (see resolveShutdownExitCode).
+  // Passed into doShutdown, which is the only reader. "completed" is set only
+  // after startSessionFromOverlay returns true (see resolveShutdownExitCode).
   let setupOutcome: SetupOutcome = launch.needsOnboarding ? "pending" : "not-needed";
 
   const launchMeta = session
@@ -271,7 +269,7 @@ export async function runTui(
     }
     if (bootOnboarding && !session && kind === "setup") {
       setupOutcome = "cancelled";
-      void doShutdown();
+      void doShutdown(setupOutcome);
       return;
     }
     focusPrompt();
@@ -424,15 +422,19 @@ export async function runTui(
       }
     }
     overlay.dismiss();
-    setupOutcome = result.success ? "completed" : "failed";
     if (!session) {
       if (!result.success) {
-        void doShutdown();
+        setupOutcome = "failed";
+        void doShutdown(setupOutcome);
         return;
       }
-      void startSessionFromOverlay();
+      void (async () => {
+        const started = await startSessionFromOverlay();
+        setupOutcome = started ? "completed" : "start-failed";
+      })();
       return;
     }
+    setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
     focusPrompt();
   };
@@ -467,9 +469,9 @@ export async function runTui(
     renderer.requestRender();
   };
 
-  async function doShutdown(): Promise<void> {
+  async function doShutdown(outcome: SetupOutcome): Promise<void> {
     const exitCode = resolveShutdownExitCode({
-      setupOutcome,
+      setupOutcome: outcome,
       hasSession: Boolean(session),
     });
     setSpinnerSink();
@@ -527,7 +529,7 @@ export async function runTui(
     }
 
     if (result.action === "exit") {
-      await doShutdown();
+      await doShutdown(setupOutcome);
       return;
     }
     if (result.action === "clear_transcript") {
@@ -632,7 +634,7 @@ export async function runTui(
           }}
           onCtrlC={() => {
             if (!session) {
-              void doShutdown();
+              void doShutdown(setupOutcome);
               return;
             }
             const action = controller.handleUserInterrupt(
@@ -650,7 +652,7 @@ export async function runTui(
               return;
             }
             if (action === "exit") {
-              void doShutdown();
+              void doShutdown(setupOutcome);
               return;
             }
           }}

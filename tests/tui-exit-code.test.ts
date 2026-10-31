@@ -1,7 +1,7 @@
 /**
- * Exit-code decision for the TUI: a normal exit after a successful first-run
- * setup exits 0; 1 is reserved for setup cancelled/failed before a session
- * existed.
+ * Exit-code decision for the TUI. A session at shutdown exits 0. With no
+ * session, exit 1 unless setup was not needed (cancelled, failed, or the
+ * wizard succeeded but the session never started).
  */
 import { describe, expect, it } from "bun:test";
 import { resolveShutdownExitCode } from "../src/ui/tui/run.js";
@@ -19,9 +19,21 @@ describe("resolveShutdownExitCode", () => {
     ).toBe(0);
   });
 
-  it("exits 0 when setup succeeded even if the session never came up", () => {
+  it("exits 1 when setup succeeded but the session never came up", () => {
     expect(
       resolveShutdownExitCode({ setupOutcome: "completed", hasSession: false }),
+    ).toBe(1);
+  });
+
+  it("exits 1 when the session failed to start after setup", () => {
+    expect(
+      resolveShutdownExitCode({ setupOutcome: "start-failed", hasSession: false }),
+    ).toBe(1);
+  });
+
+  it("exits 0 when setup was not needed and there is no session", () => {
+    expect(
+      resolveShutdownExitCode({ setupOutcome: "not-needed", hasSession: false }),
     ).toBe(0);
   });
 
