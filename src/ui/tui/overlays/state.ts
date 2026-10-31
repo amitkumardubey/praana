@@ -65,30 +65,39 @@ export function createOverlayUi(): OverlayUi {
       logoutHint,
       confirmPrompt,
       showSlash(lines: string[]) {
+        flushConfirm(false);
         setSlashLines(lines);
         setKind("slash");
       },
       showModel() {
+        flushConfirm(false);
         setKind("model");
       },
       showLogin(providerHint?: string) {
+        flushConfirm(false);
         setLoginHint(providerHint);
         setKind("login");
       },
       showLogout(providerHint?: string) {
+        flushConfirm(false);
         setLogoutHint(providerHint);
         setKind("logout");
       },
       showPalette() {
+        flushConfirm(false);
         setKind("palette");
       },
       showSetup() {
+        flushConfirm(false);
         setKind("setup");
       },
       showConsent() {
+        flushConfirm(false);
         setKind("consent");
       },
       showConfirm(message: string) {
+        // Replacing an open confirm is a transition away from it.
+        flushConfirm(false);
         return new Promise<boolean>((resolve) => {
           confirmResolver = resolve;
           setConfirmPrompt({ message, resolve });

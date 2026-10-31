@@ -34,4 +34,51 @@ describe("createOverlayUi", () => {
     expect(ui.logoutHint()).toBeUndefined();
     ui.dispose();
   });
+
+  async function expectStopped(pending: Promise<boolean>): Promise<void> {
+    const result = await Promise.race([
+      pending.then((value) => ({ settled: true as const, value })),
+      new Promise<{ settled: false }>((resolve) => {
+        setTimeout(() => resolve({ settled: false }), 50);
+      }),
+    ]);
+    expect(result).toEqual({ settled: true, value: false });
+  }
+
+  it("resolves a pending confirm with stop on every transition, including showConfirm", async () => {
+    const ui = createOverlayUi();
+
+    const first = ui.showConfirm("first?");
+    ui.showModel();
+    await expectStopped(first);
+    expect(ui.kind()).toBe("model");
+
+    const replaced = ui.showConfirm("replaced?");
+    const next = ui.showConfirm("next?");
+    await expectStopped(replaced);
+    expect(ui.kind()).toBe("confirm");
+    expect(ui.confirmPrompt()?.message).toBe("next?");
+    ui.resolveConfirm(true);
+    expect(await next).toBe(true);
+
+    const transitions: Array<(ui: ReturnType<typeof createOverlayUi>) => void> = [
+      (overlay) => overlay.showSlash(["line"]),
+      (overlay) => overlay.showModel(),
+      (overlay) => overlay.showLogin("anthropic"),
+      (overlay) => overlay.showLogout("openai"),
+      (overlay) => overlay.showPalette(),
+      (overlay) => overlay.showSetup(),
+      (overlay) => overlay.showConsent(),
+      (overlay) => overlay.dismiss(),
+    ];
+    for (const transition of transitions) {
+      const pending = ui.showConfirm("still open?");
+      transition(ui);
+      await expectStopped(pending);
+    }
+
+    const disposed = ui.showConfirm("dispose?");
+    ui.dispose();
+    await expectStopped(disposed);
+  });
 });
