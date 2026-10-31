@@ -1,4 +1,12 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -45,6 +53,16 @@ describe("postinstall notice text", () => {
 
   it("defaults to the host platform", () => {
     expect(noticeText()).toBe(noticeText(process.platform));
+  });
+});
+
+describe("package.json postinstall hook", () => {
+  it("cannot fail an install, even when node is missing or broken", () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+    ) as { scripts?: Record<string, string> };
+    // Works in both sh and cmd: a missing node must not fail `bun install`.
+    expect(pkg.scripts?.postinstall).toBe("node scripts/postinstall.js || exit 0");
   });
 });
 
