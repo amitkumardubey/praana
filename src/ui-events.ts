@@ -51,8 +51,8 @@ export interface TurnUiSink {
   /**
    * Interactive soft-pause: called before a tool batch executes when this turn
    * has used a multiple of `turn.pause_after_steps` steps. Resolve `true` to
-   * continue, `false` to stop with a wrap-up summary. Absent ⇒ never pause
-   * (headless / non-interactive sinks).
+   * continue, `false` to stop with a wrap-up summary. Absent ⇒ the turn uses
+   * `max_steps` as a hard cap (last batch executes, then a wrap-up) and never pauses.
    */
   onStepPause?(stepsUsed: number): boolean | Promise<boolean>;
   /** Slash command result output to display in a distinct overlay. */
@@ -113,22 +113,30 @@ export function createDefaultTurnSink(options?: {
 }
 
 /**
- * Plain-terminal soft pause (createDefaultTurnSink). Enter continues; any
- * other key (e.g. Esc) stops with a wrap-up. Non-TTY stdin never prompts.
+ * Plain-terminal soft pause (createDefaultTurnSink). Enter, y, or yes
+ * continues; anything else stops with a wrap-up. Readline has no Esc
+ * handling here. Non-TTY stdin never prompts.
  */
 async function promptContinueSteps(stepsUsed: number): Promise<boolean> {
   if (!process.stdin.isTTY) return true;
   const answer = await new Promise<string>((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false,
+    });
     rl.question(
-      `Used ${stepsUsed} steps this turn. Continue? [Enter=continue, Esc=stop] `,
+      `Used ${stepsUsed} steps this turn. Continue? Enter or y = continue, anything else = stop `,
       (ans) => {
         rl.close();
+        // close() pauses stdin. Resume so the next reader is not stuck.
+        process.stdin.resume();
         resolve(ans);
       },
     );
   });
-  return answer.trim() === "";
+  const normalized = answer.trim().toLowerCase();
+  return normalized === "" || normalized === "y" || normalized === "yes";
 }
 
 export function hasTurnUiSink(sink?: TurnUiSink): sink is TurnUiSink {
