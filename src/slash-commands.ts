@@ -7,7 +7,6 @@ import {
 } from "./event-log.js";
 import type { Session } from "./session.js";
 import { nativeStatusToString } from "./native/index.js";
-import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig, resolveContextDbPath } from "./context-engine/index.js";
 import {
@@ -105,6 +104,68 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/new", description: "Start a new session", category: "Session" },
   { name: "/help", description: "Show all commands", category: "Insight" },
 ];
+
+const HELP_LINE_WIDTH = 66;
+
+function helpCommandLines(meta: SlashCommandMeta): string[] {
+  const hint = meta.argumentHint ? ` ${meta.argumentHint}` : "";
+  const alias = meta.aliases?.length ? ` (${meta.aliases.join(", ")})` : "";
+  const head = `  ${meta.name}${hint}${alias}`;
+  const oneLine = `${head} — ${meta.description}`;
+  if (oneLine.length <= HELP_LINE_WIDTH) return [oneLine];
+  return [head, `    ${meta.description}`];
+}
+
+/**
+ * Plain-text /help. Built from SLASH_COMMAND_METADATA (the palette table)
+ * so the list cannot drift. No ANSI and no box drawing — the overlay
+ * prints these lines as-is.
+ */
+export function buildInAppHelpLines(): string[] {
+  const lines: string[] = ["Slash commands", ""];
+  const groups = new Map<SlashCommandCategory, SlashCommandMeta[]>();
+  for (const meta of SLASH_COMMAND_METADATA) {
+    const bucket = groups.get(meta.category);
+    if (bucket) bucket.push(meta);
+    else groups.set(meta.category, [meta]);
+  }
+  let first = true;
+  for (const [category, metas] of groups) {
+    if (!first) lines.push("");
+    first = false;
+    lines.push(category);
+    for (const meta of metas) lines.push(...helpCommandLines(meta));
+  }
+
+  lines.push(
+    "",
+    "Keys",
+    "  Enter — send the message",
+    "  Ctrl+J, Alt+Enter, Ctrl+Enter, Shift+Enter — insert a newline",
+    "  \\ + Enter — newline when the caret is at the end of the line",
+    "  Esc — close autocomplete, overlays, or transcript focus",
+    "  Ctrl+C — abort a running turn",
+    "    Idle: clear the input, or exit when it is empty",
+    "  F9 — focus the transcript",
+    "    Up/Down move, Enter expands, Esc returns",
+    "",
+    "Status bar",
+    "  ctx — tokens in use / window, and how full it is",
+    "  %w — weighted fill percent (engine). Classic mode uses %",
+    "  wm — working memory: nA active, nS soft, nH hard",
+    "    Hidden when every tier is zero",
+    "  skills — loaded count, or catalog size if none are loaded",
+    "  think — effort level (think medium), or the stream",
+    "    Shown when thinking is on or an effort is set",
+    "  engine — context engine is on",
+    "  mem — memory writes on or off (incognito replaces mem)",
+    "  in, out — session input tokens and output tokens",
+    "    Shown when cost display is on",
+    "",
+    "Command-line commands: praana --help",
+  );
+  return lines;
+}
 
 export interface SlashCommandResult {
   action: SlashCommandAction;
@@ -1031,7 +1092,7 @@ export async function executeSlashCommand(
     }
 
     case "/help": {
-      return { action: "none", lines: bannerHelpLines() };
+      return { action: "none", lines: buildInAppHelpLines() };
     }
 
     default:

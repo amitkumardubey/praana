@@ -133,7 +133,7 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 | Command | Purpose |
 |---|---|
-| `/help` | Full list |
+| `/help` | Slash commands (grouped, with aliases), prompt keys, and the status-bar legend. Command-line commands stay on `praana --help` |
 | `/exit` (alias `/quit`) | End session — runs summariser when memory is on |
 | `/clear` | Reset in-session context (same session ID; clears working memory and model-visible history) |
 | `/new` | Start a new session (new ID, reload config, background summariser) |
@@ -174,6 +174,26 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 - **Enter** — send the message
 - **Ctrl+J**, **Alt+Enter**, **Ctrl+Enter**, **Shift+Enter** — insert a newline (Shift+Enter only on terminals that report it distinctly)
 - A trailing **`\` + Enter** — continue the line on the next line, but only when the caret is at the end of the current line (end of the buffer, or immediately before a newline). An odd run of trailing backslashes continues the line (one backslash is dropped and a real newline inserted); an even run — for example type two to send a literal trailing backslash — submits with all backslashes kept. A backslash elsewhere mid-line is submitted literally.
+- **Esc** — close autocomplete, leave transcript focus, or dismiss an overlay
+- **Ctrl+C** — abort a running turn; when idle, clear the input, or exit if the input is already empty
+- **F9** — focus the transcript (Up/Down move the selection, Enter expands a tool row, Esc returns to the prompt)
+
+`/help` prints this same key list. The result overlay scrolls with Up/Down/PageUp/PageDown when the text is taller than the frame (`↑↓ scroll · esc close`).
+
+## Status bar
+
+The footer abbreviations, also listed by `/help`:
+
+| Label | Meaning |
+|---|---|
+| `ctx` | Tokens in use / model window, plus how full the window is |
+| `%w` | Weighted fill percent in engine mode. Classic mode shows a plain `%` |
+| `wm` | Working memory tiers: `nA` active, `nS` soft, `nH` hard. Hidden when all are zero |
+| `skills` | Loaded skills, or the catalog size when none are loaded |
+| `think` | Reasoning effort (`think medium`), or the stream when thinking is on |
+| `engine` | Context engine is on |
+| `mem` | Cognitive Memory writes are on or off. Incognito replaces this with `incognito` |
+| `in` / `out` | Session input and output tokens, when cost display is on |
 
 ## Features
 
