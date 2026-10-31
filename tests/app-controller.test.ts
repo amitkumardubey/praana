@@ -6,7 +6,7 @@ import { AppController } from "../src/app-controller.js";
 import type { CliArgs } from "../src/cli-args.js";
 import type { PraanaConfig } from "../src/types.js";
 import * as sessionActual from "../src/session.js";
-import { Session } from "../src/session.js";
+import { Session, AGENTS_TRUNCATION_LOG_LINE, AGENTS_TRUNCATION_MARKER } from "../src/session.js";
 import * as turnActual from "../src/turn.js";
 import { runTurn } from "../src/turn.js";
 import { TurnAbortedError } from "../src/turn-control.js";
@@ -833,10 +833,12 @@ describe("AppController AGENTS truncation capture", () => {
     const createMock = Session.create as Mock<typeof Session.create>;
     const opts = createMock.mock.calls.at(-1)?.[2] as { captureNotice?: (line: string) => void } | undefined;
     expect(opts?.captureNotice).toBeTypeOf("function");
-    opts?.captureNotice?.("[session] AGENTS.md content truncated to ~4000 tokens");
+    // Feed the exact line the producer composes (from the shared constant), so
+    // a rewording of the producer is caught by the consumer's shared predicate.
+    opts?.captureNotice?.(AGENTS_TRUNCATION_LOG_LINE);
 
     expect(info.agentTruncationNotices).toHaveLength(1);
-    expect(info.agentTruncationNotices[0]).toContain("AGENTS.md content truncated");
+    expect(info.agentTruncationNotices[0]).toContain(AGENTS_TRUNCATION_MARKER);
     // It must NOT be promoted into stderr-printed startup notices.
     expect(info.startupNotices).toEqual([]);
   });

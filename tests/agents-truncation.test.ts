@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadAgentsContext } from "../src/session.js";
+import { loadAgentsContext, isAgentsTruncationNotice, AGENTS_TRUNCATION_MARKER, AGENTS_TRUNCATION_LOG_LINE } from "../src/session.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import { formatAgentsTruncationNotice, AGENTS_TRUNCATION_NOTICE_TEXT } from "../src/ui/tui/boot-summary.js";
 
@@ -32,7 +32,7 @@ describe("AGENTS.md truncation notice", () => {
 
   it("truncates long project instructions and marks the cut", () => {
     writeFileSync(join(cwd, "AGENTS.md"), LONG_AGENTS, "utf-8");
-    const loaded = loadAgentsContext(cwd, { captureNotice: () => {} });
+    const loaded = loadAgentsContext(cwd);
     expect(loaded).toBeTruthy();
     expect(loaded!.length).toBeLessThan(LONG_AGENTS.length);
     expect(loaded).toContain("<!-- [truncated] -->");
@@ -41,7 +41,12 @@ describe("AGENTS.md truncation notice", () => {
   it("routes the raw notice through captureNotice instead of stderr when provided", () => {
     writeFileSync(join(cwd, "AGENTS.md"), LONG_AGENTS, "utf-8");
     const captured: string[] = [];
-    loadAgentsContext(cwd, { captureNotice: (line) => captured.push(line) });
+    const logger = new PraanaLogger({
+      domain: "session",
+      captureNotice: (line) => captured.push(line),
+      suppressStderr: true,
+    });
+    loadAgentsContext(cwd, { logger });
     expect(captured).toHaveLength(1);
     expect(captured[0]).toContain("[session]");
     expect(captured[0]).toContain("AGENTS.md content truncated to ~4000 tokens");
@@ -50,9 +55,38 @@ describe("AGENTS.md truncation notice", () => {
   it("does not call captureNotice when nothing was truncated", () => {
     writeFileSync(join(cwd, "AGENTS.md"), "short instructions\n", "utf-8");
     const captured: string[] = [];
-    const loaded = loadAgentsContext(cwd, { captureNotice: (line) => captured.push(line) });
+    const logger = new PraanaLogger({
+      domain: "session",
+      captureNotice: (line) => captured.push(line),
+      suppressStderr: true,
+    });
+    const loaded = loadAgentsContext(cwd, { logger });
     expect(loaded).toContain("short instructions");
     expect(captured).toHaveLength(0);
+  });
+
+  it("the shared consumer predicate matches what the producer emits", () => {
+    writeFileSync(join(cwd, "AGENTS.md"), LONG_AGENTS, "utf-8");
+    const captured: string[] = [];
+    const logger = new PraanaLogger({
+      domain: "session",
+      captureNotice: (line) => captured.push(line),
+      suppressStderr: true,
+    });
+    loadAgentsContext(cwd, { logger });
+    expect(captured).toHaveLength(1);
+    expect(isAgentsTruncationNotice(captured[0])).toBe(true);
+    expect(captured[0]).toContain(AGENTS_TRUNCATION_MARKER);
+  });
+
+  it("rewording the producer notice is caught by the shared constant", () => {
+    // The capture line is composed from the same constant the consumer's
+    // predicate matches on, so a rewording propagates to both sides.
+    expect(AGENTS_TRUNCATION_LOG_LINE).toContain(AGENTS_TRUNCATION_MARKER);
+    expect(isAgentsTruncationNotice(AGENTS_TRUNCATION_LOG_LINE)).toBe(true);
+    // Unrelated log lines are not truncation notices.
+    expect(isAgentsTruncationNotice("[session] context 1200 tok")).toBe(false);
+    expect(isAgentsTruncationNotice("")).toBe(false);
   });
 
   it("supports being called without captureNotice (headless fallback)", () => {

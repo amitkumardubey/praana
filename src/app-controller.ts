@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import type { PraanaConfig } from "./types.js";
 import type { CliArgs } from "./cli-args.js";
 import { loadConfig } from "./config.js";
-import { Session, type SessionEndStatus } from "./session.js";
+import { Session, isAgentsTruncationNotice, type SessionEndStatus } from "./session.js";
 import { findLatestSessionForCwd, resolveSessionId } from "./event-log.js";
 import { runTurn } from "./turn.js";
 import { TurnController, TurnAbortedError } from "./turn-control.js";
@@ -66,7 +66,7 @@ export class AppController {
     const { sessionId, resumeMode, debug } = this.parsed;
     const agentTruncationNotices: string[] = [];
     const captureNotice = (line: string) => {
-      if (line.includes("AGENTS.md content truncated")) {
+      if (isAgentsTruncationNotice(line)) {
         agentTruncationNotices.push(line);
       }
     };
@@ -358,7 +358,7 @@ export class AppController {
       this.session = await Session.create(this.cwd, newConfig, {
         incognito: this.parsed.incognito,
         captureNotice: (line) => {
-          if (line.includes("AGENTS.md content truncated")) {
+          if (isAgentsTruncationNotice(line)) {
             agentTruncationNotices.push(line);
           }
         },
