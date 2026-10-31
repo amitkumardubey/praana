@@ -75,6 +75,11 @@ describe("AGENTS.md", () => {
     expect(missing).toEqual([]);
   });
 
+  test("documents the AGENTS.md load order and 16000-char cap", () => {
+    expect(AGENTS).toContain("loadAgentsContext()");
+    expect(AGENTS).toContain("16,000");
+  });
+
   test("keeps the public-repo and Git Conventions rules within the first 6000 chars", () => {
     const head = AGENTS.slice(0, 6_000);
     expect(head.toLowerCase()).toContain("public");

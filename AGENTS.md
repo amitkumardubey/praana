@@ -2,7 +2,7 @@
 
 PRAANA is a TypeScript CLI coding agent built around two systems:
 
-- **Adaptive Context** — state objects (tasks, decisions, constraints, notes) are tiered `active` / `soft` / `hard` by idle turn count; a deterministic compiler assembles a token-budgeted context window every turn.
+- **Adaptive Context** — state objects (tasks, decisions, constraints, notes) are tiered `active` / `soft` / `hard` by idle turn count; in engine mode a compiler assembles a token-budgeted context window every turn (classic mode appends full history).
 - **Cognitive Memory** — cross-session persistent knowledge (SQLite); at session end an LLM summariser extracts concise learnings, scoped project/global, decaying over time; at session start a ranked digest is injected into the prompt. Separate systems: the compiler consumes a memory digest as one prompt section; it does not merge with memory otherwise.
 
 ## Public repository
@@ -25,14 +25,13 @@ bun install
 bun typecheck    # TypeScript type-check (no emit)
 bun dev          # run without build step
 bun test         # full suite (tests/)
-bun run test:parallel  # same suite, files across CPU cores (opt-in)
 ```
 
-Requires **Bun ≥1.4**. Native dependencies are optional (see Architecture). Rust dev profile (`debug = "line-tables-only"`) keeps full test builds ~4 GB; in throwaway worktrees use `CARGO_INCREMENTAL=0` and `cargo clean` once merged.
+Requires **Bun ≥1.4**. Native dependencies are optional (see Architecture).
 
 **Global CLI (`bun link`):** `package.json` exposes `praana` via `bin/praana.js` (registers a package-scoped OpenTUI Solid JSX transform before loading `src/`; stock preload skips `node_modules`, breaking `bun add -g`). Run `bun link` and add `$(bun pm bin -g)` to PATH.
 
-**Standalone binary:** `bun run build:compile` → `dist/praana` (host platform); options `--target bun-linux-x64`, `--outfile …`. Baked `--version`: exact tag `v{package.json version}` on a clean tree → that version; otherwise `{version}-dev.<shortsha>[.dirty]`. Prefer `bin/praana.js` for npm-style installs. Full release/packaging details: docs/ARCHITECTURE.md.
+**Standalone binary:** `bun run build:compile` → `dist/praana` (host platform); options `--target bun-linux-x64`, `--outfile …`. Baked `--version`: exact tag `v{package.json version}` on a clean tree → that version; otherwise `{version}-dev.<shortsha>[.dirty]`. Prefer `bin/praana.js` for npm-style installs.
 
 ## Running
 
@@ -43,7 +42,7 @@ praana resume <session_id>   # resume (no id → most recent session for this cw
 bun start -- resume <session_id>
 praana run "fix the failing tests"   # headless one-shot (no TTY — Harbor / CI)
 praana upgrade               # install latest GitHub Release (binary + sidecar)
-bun start --debug            # save compiled prompts per turn + verbose tool blocks
+bun start --debug            # save compiled prompts per turn
 praana --config /path/to/praana.config.toml
 ```
 
@@ -51,9 +50,9 @@ praana --config /path/to/praana.config.toml
 
 Config is deep-merged, later overrides earlier: `~/.praana/praana.config.json` → `~/.praana/config.toml` → `./praana.config.json` → `./praana.config.toml`.
 
-Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `consolidation`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine` (with `distiller` / `scoring` / `pressure`), `project_detection`, `turn`. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
+Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `consolidation`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine` (with `distiller` / `scoring` / `pressure`), `project_detection`, `turn`; optional `[providers]` / `[search_code]` tables are validated but have no defaults. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
 
-Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role), `AWS_BEARER_TOKEN_BEDROCK` or stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_SUMMARIZER_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode is `--debug` / `/debug`: it saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` and prints verbose tool blocks.
+Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / web identity / container role), `AWS_BEARER_TOKEN_BEDROCK` or stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_SUMMARIZER_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode is `--debug` / `/debug`: it saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` (plus `scores.jsonl` in engine mode).
 
 ## Slash Commands
 
@@ -85,7 +84,7 @@ Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHRO
 
 Typing `/` opens the slash palette (fuzzy filter; Enter runs no-arg commands, Tab/Enter inserts arg-taking ones).
 
-**`/model` resolution order:** native curated catalog (`src/llm/catalog.ts`) → live provider `/models` API via `src/provider-catalog.ts` (6h disk cache) → reject with a toast if still unknown. Syntax `/model [provider] <model-id>` (space-separated provider only); routing prefixes are stripped before API calls; overrides persist to the event log and restore on resume. Ollama accepts any local model name.
+**`/model` resolution order:** native curated catalog (`src/llm/catalog.ts`) → live provider `/models` API via `src/provider-catalog.ts` (6h disk cache) → reject with a toast if still unknown. Syntax `/model [provider] <model-id>` (space-separated provider only); overrides persist to the event log and restore on resume.
 
 ## Testing
 
@@ -116,7 +115,7 @@ Full detail: docs/ARCHITECTURE.md. Key terms: docs/concepts.md.
 src/
   main.ts / app-controller.ts / headless-run.ts — CLI entry, TUI orchestration, headless run
   turn.ts / session.ts — per-turn orchestration; lifecycle, `loadAgentsContext()`, memory init
-  compile-classic.ts / compiler.ts — classic compiler; legacy budget-band compiler (tests only)
+  compile-classic.ts / compiler.ts — classic compiler (full history); shared prompt-section builders + legacy budget-band compiler (only `compile()` / `compileWithMetrics()` are test-used)
   llm/ — native LLM engine (no external SDKs): drivers/ (anthropic, openai, azure, google, bedrock, responses), resolver.ts, catalog.ts, sse.ts, stream.ts, retry.ts, auth.ts
   llm.ts / provider-registry.ts — provider/model facade + definitions (incl. user-declared)
   model-resolver.ts / model-listing.ts / provider-catalog.ts / bedrock/ — /model resolution; live `/models` catalogs (6h disk cache)
@@ -133,38 +132,38 @@ src/
   event-log.ts / state-graph.ts / state-graph-checkpoint.ts / sqlite.ts — events.jsonl (fsyncSync), tiered state + resume snapshot, openDatabase()/WAL pragmas
 ```
 
-**Rust v2:** `crates/` holds a work-in-progress Rust next-generation core (`praana-core`, `praana-cli`, `praana-natives`, `praana-native-core`, `praana-xtask`). Not user-facing — the TypeScript CLI is what ships today. Specs are private and not in this tree.
+**Rust v2:** `crates/` holds a work-in-progress Rust next-generation core (`praana-core`, `praana-cli`, `praana-natives`, `praana-native-core`, `praana-xtask`). Not user-facing — the TypeScript CLI is what ships today.
 
-**Native addon (`@praana/natives`):** optional cdylib providing tree-sitter `code_*`, `search_code` / `find_files`, and ONNX embeddings. Availability is probed once at session start (`loadNative()`), surfaced in the boot banner and the compiled system frame (so the agent avoids `code_*` when unavailable). Native grep is synchronous — blocks the event loop and cannot be aborted; use `shell rg` outside the project root.
+**Native addon (`@praana/natives`):** optional cdylib providing tree-sitter `code_*`, `search_code` / `find_files`, and ONNX embeddings. Availability is probed once at session start (`loadNative()`), surfaced in the boot banner and the compiled system frame (so the agent avoids `code_*` when unavailable). Native grep is synchronous — blocks the event loop and cannot be aborted; use `shell rg` for huge trees or when you need abort. `search_code` accepts an absolute `path` (shell sandbox is off by default).
 
 **Harbor / Terminal-Bench** adapter: `harbor_eval/README.md` — installed agent that runs `praana run --incognito` inside the task container.
 
 ## Behaviours agents must know
 
+- `loadAgentsContext()` merges `~/.praana/AGENTS.md`, `<git root>/AGENTS.md`, `<cwd>/AGENTS.md` (if cwd ≠ root), then `CLAUDE.md` only if no project-root `AGENTS.md`; cut at 16,000 chars (~4,000 tokens).
 - **Hook pipeline (always-on):** pre-tool-call = plan-mode → validate (missing paths, unread `edit_file`, shell cwd/PATH) → risk confirm (destructive/outward classes; TTY `[y/N]`, headless deny unless in `[risk].allow`) → circuit loop gate (3rd identical mutating tool+args, or 3rd attempt after two errors on the same path/command; reads/tests never gated) → write-path acquire. Post-tool-call = LSP post-edit → verify (opt-in `[verify]`) → enrich → redact → circuit error-count → write-path release.
 - Concurrent mutating writes to the same path fail fast — serialize dependent mutations.
-- `/plan on` blocks `write_file` / `edit_file` / `batch_*` / `git_commit` / LSP edit tools / branch-creating shell until an approval word (`go`/`execute`/`proceed`/`continue`) or `/plan execute`.
+- `/plan on` blocks `write_file` / `edit_file` / `batch_*` / `git_commit` / LSP edit tools / branch-creating shell until an approval word (`go`/`execute`/`proceed`/`continue`) or `/plan execute`; plan mode is user-armed only (no intent detection), and approval words are ignored before deferrals like `continue reading` / `execute a search`.
 - Repeat-read interceptor: a second read of an unchanged file returns the artifact card (configurable `[tools] block_repeat_reads`); in engine mode use `retrieve_artifact(id)` instead of re-reading.
-- Skills: catalog (name + description) injected every turn; `load_skill(skill_id)` fetches the body on demand (engine mode also tracks loads, evicts stale skills, ranks by usefulness).
-- Memory scopes: default `user:<sha256>`, `agent:praana`, `context:<sha256_of_cwd>`; project memories carry all three, global `user` + `agent` only; recall enforces AND-scoping.
+- Skills: catalog (name + description) injected every turn, ranked by usefulness in both modes; `load_skill(skill_id)` fetches the body on demand (load tracking + stale eviction are engine mode only).
+- Memory scopes: default `user:<prefix>`, `agent:praana`, `context:<prefix>` — 12-char SHA-256 prefixes (`hashString`) of `$USER` / cwd, `agent:praana` literal; project memories carry all three, global `user` + `agent` only; recall enforces AND-scoping.
 
 ## Common Gotchas
 
 - `edit_file` requires exact unique text match — whitespace-sensitive; fails on duplicate code blocks or trailing-space differences.
-- Event log `fsyncSync` on every write — intentional for durability; affects throughput on fast tool loops.
+- Event log `fsyncSync` on every write — intentional for durability; affects throughput on fast tool loops. Legacy `events.log` files are renamed or merged into `events.jsonl` on session open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
-- Session resume replays `context_action` events to rebuild the state graph; a truncated or corrupted log rebuilds empty state — not an error, just blank state.
-- Config merge order is global-first, local-last; `./praana.config.toml` always wins. Array allowlists (`[shell] allowed_paths`, etc.) **append-merge** across layers instead of replacing.
-- Embedder dimension matters: switching dims (transformers 384 vs nomic/ollama 768) triggers re-embedding in `openMemoryDb()`; `entries_vec` is a plain BLOB table with cosine kNN in TypeScript — no sqlite-vec. A legacy `vec0` ghost table is kept; new vectors go to `entries_vec_blob`. First ONNX weight download prompts for consent.
-- `applyTierManagement()` runs after every turn — objects demote from `touchedTurn` vs `currentTurn`; new state tools must call `stateGraph.setTier()` or the object won't register as touched.
-- **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` creates a real on-disk file named `:memory:` (also for cwd-joined forms like `/project/:memory:`). Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`; `new Database(realPath)` with a genuine path is fine.
-- **Concurrent DB access:** `openMemoryDb()` and `openContextEngineDb()` set WAL mode plus `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`. Skipping the pragmas makes parallel sessions fail with `SQLITE_BUSY` instead of retrying.
+- Session resume restores the state-graph checkpoint and replays later `context_action` events; a log failing JSON parsing clears the cache, and only a missing checkpoint anchor starts empty (warn, not an error).
+- Config merge order is global-first, local-last; `./praana.config.toml` wins unless an explicit `--config` path replaces the chain. Only `[shell] allowed_paths` / `[risk] allow` arrays **append-merge**; other arrays replace.
+- Embedder dimension matters: switching dims (transformers 384 vs nomic/ollama 768) triggers re-embedding in `openMemoryDb()`, as does changing `embedding_backend` at the same dimension; `entries_vec` is a plain BLOB table with cosine kNN in TypeScript — no sqlite-vec. `entries_vec_blob` is used only when a leftover sqlite-vec `vec0` table can't be dropped; new installs always use `entries_vec`. First ONNX weight download prompts for consent.
+- `applyTierManagement()` demotes idle objects (engine mode only) from `touchedTurn` vs `currentTurn`; `create()`, `update()`, `setTier()`, `retractObject()` all mark an object touched.
+- **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` creates a real on-disk file named `:memory:`. Always open `:memory:` databases through `openDatabase()` in `src/sqlite.ts`; `new Database(realPath)` with a genuine path is fine.
+- **Concurrent DB access:** `openMemoryDb()` and `openContextEngineDb()` set WAL mode plus `busy_timeout` via `applyConcurrencyPragmas()` in `src/sqlite.ts`; without them, parallel sessions fail with `SQLITE_BUSY`.
 - Shell timeouts kill the process **group** (SIGTERM→SIGKILL) so orphaned children like `find` cannot hang the session. Do not replace with `Bun.spawn` / `Bun.Terminal` unless process-tree cancellation is equivalent; `Bun.Terminal` is reserved for a future interactive PTY shell.
 
 ## Docs
 
 - `docs/ARCHITECTURE.md` — detailed internals (turn flow, compiler, tools, memory, hooks, config).
 - `docs/concepts.md` — key terms.
-- `docs/reference.md` — install options, configuration, commands, limitations for the current release; `website/` builds the Astro docs site from `docs/` + README.
+- `docs/reference.md` — install options, configuration, commands, limitations for the current release; `website/` builds the Astro docs site from `docs/` (`ARCHITECTURE.md`, `concepts.md`, `reference.md`); `index.astro` is hand-written.
 - `praana.config.example.toml` — annotated config with defaults.
-- `harbor_eval/README.md` — Harbor / Terminal-Bench adapter.
