@@ -404,8 +404,12 @@ export interface ProjectDetectionConfig {
 }
 
 export interface TurnConfig {
-  /** Max LLM rounds per user message (each round may batch multiple tool calls). */
+  /** Max LLM rounds per user message (each round may batch multiple tool calls). Default: 25. */
   max_steps: number;
+  /** Interactive soft-pause interval in steps. Default: 50. */
+  pause_after_steps: number;
+  /** Absolute interactive ceiling in steps (wrap-up without prompting). Default: 300. */
+  hard_max_steps: number;
 }
 
 export interface CircuitConfig {

@@ -173,6 +173,8 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   turn: {
     max_steps: 25,
+    pause_after_steps: 50,
+    hard_max_steps: 300,
   },
 };
 
@@ -826,6 +828,33 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.ui.banner !== "boolean") {
       out.ui.banner = DEFAULT_CONFIG.ui.banner;
     }
+  }
+
+  // Turn step budget validation ([turn]) — invalid/zero values fall back to defaults.
+  const turnDefaults = DEFAULT_CONFIG.turn;
+  if (
+    !Number.isFinite(out.turn.max_steps) ||
+    !Number.isInteger(out.turn.max_steps) ||
+    out.turn.max_steps <= 0
+  ) {
+    configWarn(`Invalid turn.max_steps, using default ${turnDefaults.max_steps}`);
+    out.turn.max_steps = turnDefaults.max_steps;
+  }
+  if (
+    !Number.isFinite(out.turn.pause_after_steps) ||
+    !Number.isInteger(out.turn.pause_after_steps) ||
+    out.turn.pause_after_steps <= 0
+  ) {
+    configWarn(`Invalid turn.pause_after_steps, using default ${turnDefaults.pause_after_steps}`);
+    out.turn.pause_after_steps = turnDefaults.pause_after_steps;
+  }
+  if (
+    !Number.isFinite(out.turn.hard_max_steps) ||
+    !Number.isInteger(out.turn.hard_max_steps) ||
+    out.turn.hard_max_steps <= 0
+  ) {
+    configWarn(`Invalid turn.hard_max_steps, using default ${turnDefaults.hard_max_steps}`);
+    out.turn.hard_max_steps = turnDefaults.hard_max_steps;
   }
 
   // User-declared providers validation ([providers.<id>] sections)
