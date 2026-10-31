@@ -9,6 +9,7 @@ import {
   CUSTOM_PROVIDER_VALUE,
   providerHintMatchesList,
   resolveProviderHint,
+  type SelectItem,
 } from "../../../setup/provider-options.js";
 import {
   bedrockNeedsApiKeyPrompt,
@@ -125,6 +126,26 @@ export function routeLoginHint(
     return { provider: hint, step: capabilities.hasApiKey ? "has-key" : "key" };
   }
   return { customId: hint, step: "custom-url" };
+}
+
+/**
+ * Login picker items: the curated provider list with user-declared custom
+ * providers inserted BEFORE the generic "Custom OpenAI-compatible endpoint"
+ * entry, which must stay last. The readline setup list
+ * (`buildProviderSelectItems`) is intentionally untouched, so its numbering
+ * stays stable with the generic Custom entry at the highest number.
+ */
+export function buildLoginPickerItems(): SelectItem[] {
+  const items = buildProviderSelectItems();
+  const customIndex = items.findIndex(
+    (item) => item.value === CUSTOM_PROVIDER_VALUE,
+  );
+  const declared: SelectItem[] = listUserDeclaredProviderIds()
+    .filter((id) => !items.some((item) => item.value === id))
+    .map((id) => ({ value: id, label: id, description: "(custom)" }));
+  if (customIndex >= 0) items.splice(customIndex, 0, ...declared);
+  else items.push(...declared);
+  return items;
 }
 
 const YES_NO_OPTIONS = [
@@ -465,15 +486,7 @@ export function LoginOverlay(props: LoginOverlayProps) {
   };
 
   let oauthTextSubmit: ((value: string) => void) | undefined;
-  const pickerOptions = () => {
-    const items = buildProviderSelectItems();
-    for (const id of listUserDeclaredProviderIds()) {
-      if (!items.some((item) => item.value === id)) {
-        items.push({ value: id, label: id, description: "(custom)" });
-      }
-    }
-    return toPaletteOptions(items);
-  };
+  const pickerOptions = () => toPaletteOptions(buildLoginPickerItems());
 
   return (
     <OverlayFrame width={64}>
