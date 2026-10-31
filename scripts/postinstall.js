@@ -14,7 +14,15 @@
  *
  * Plain Node, no dependencies, ESM (package.json has "type": "module").
  */
-import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { delimiter, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,13 +108,39 @@ export function findOnPath(command, options = {}) {
  * (CI, piped install, no controlling tty), so the caller falls back to stdout.
  */
 function defaultWriteToTerminal(text, platform = process.platform) {
-  const device = platform === "win32" ? "CONOUT$" : "/dev/tty";
+  if (platform === "win32") {
+    // writeFileSync("CONOUT$") opens with O_TRUNC, which Windows rejects for a
+    // console device. Open for write and writeSync instead.
+    let fd;
+    try {
+      fd = openSync("CONOUT$", "w");
+      writeSync(fd, text);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          // Nothing to do: the console handle is process-owned.
+        }
+      }
+    }
+  }
   try {
-    writeFileSync(device, text);
+    writeFileSync("/dev/tty", text);
     return true;
   } catch {
     return false;
   }
+}
+
+/** npm sets npm_config_loglevel for lifecycle scripts; --silent maps to "silent". */
+export function isSilentLogLevel(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase() === "silent";
 }
 
 /** Print the notice. Injectable for tests. */
@@ -122,8 +156,8 @@ export function writeNotice(text, options = {}) {
 }
 
 /** Decide whether the notice is worth printing. Pure. */
-export function shouldNotify({ bunPath, isDevCheckout }) {
-  return !bunPath && !isDevCheckout;
+export function shouldNotify({ bunPath, isDevCheckout, silent = false }) {
+  return !bunPath && !isDevCheckout && !silent;
 }
 
 /**
@@ -148,7 +182,8 @@ export function run(options = {}) {
   // must stay quiet. Published tarballs never contain `.git`, so registry
   // installs (global or as a dependency) are unaffected by this guard.
   const isDevCheckout = exists(join(packageRoot, ".git"));
-  const notice = shouldNotify({ bunPath, isDevCheckout })
+  const silent = isSilentLogLevel(env.npm_config_loglevel);
+  const notice = shouldNotify({ bunPath, isDevCheckout, silent })
     ? noticeText(platform)
     : null;
   return { notice, bunPath, isDevCheckout };

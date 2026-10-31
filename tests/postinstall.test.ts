@@ -112,6 +112,12 @@ describe("shouldNotify", () => {
   it("notifies on a Node-only machine outside a checkout", () => {
     expect(shouldNotify({ bunPath: null, isDevCheckout: false })).toBe(true);
   });
+
+  it("stays quiet when npm runs with --silent", () => {
+    expect(
+      shouldNotify({ bunPath: null, isDevCheckout: false, silent: true }),
+    ).toBe(false);
+  });
 });
 
 describe("run", () => {
@@ -145,6 +151,26 @@ describe("run", () => {
     });
     expect(result.notice).toContain("install.ps1");
     expect(result.notice).not.toContain("install.sh");
+  });
+
+  it("prints nothing when npm_config_loglevel=silent", () => {
+    const result = run({
+      env: { PATH: "/usr/bin:/bin", npm_config_loglevel: "silent" },
+      packageRoot: "/pkg",
+      exists: () => false,
+      find: () => null,
+    });
+    expect(result.notice).toBeNull();
+  });
+
+  it("still notifies at the default npm log level", () => {
+    const result = run({
+      env: { PATH: "/usr/bin:/bin", npm_config_loglevel: "warn" },
+      packageRoot: "/pkg",
+      exists: () => false,
+      find: () => null,
+    });
+    expect(result.notice).toBe(noticeText());
   });
 
   it("prints nothing for the repo's own install (.git present)", () => {
@@ -213,6 +239,30 @@ describe("postinstall script process", () => {
       Bun.spawnSync(["chmod", "+x", join(bunDir, "bun")]);
       const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
         env: { ...process.env, CI: "1", PATH: `${bunDir}:/usr/bin:/bin` },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString("utf-8")).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("stays silent when npm runs with --silent", () => {
+    if (!NODE) return;
+    const root = mkdtempSync(join(tmpdir(), "praana-postinstall-silent-"));
+    try {
+      mkdirSync(join(root, "scripts"));
+      writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
+      copyFileSync(POSTINSTALL_JS, join(root, "scripts", "postinstall.js"));
+      const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
+        env: {
+          ...process.env,
+          CI: "1",
+          PATH: "/nonexistent-dir",
+          npm_config_loglevel: "silent",
+        },
         stdout: "pipe",
         stderr: "pipe",
       });
