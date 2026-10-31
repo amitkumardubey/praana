@@ -1,6 +1,6 @@
 /**
  * Shared OAuth login UI helpers for TUI wizards.
- * Bridges pi-ai AuthInteraction to status lines + text/select prompts.
+ * Bridges AuthInteraction to status lines + text/select prompts.
  */
 import { openBrowserUrl } from "../../oauth-browser.js";
 import {
@@ -22,6 +22,7 @@ export interface OAuthUiSink {
     message: string,
     placeholder?: string,
     contextLines?: string[],
+    signal?: AbortSignal,
   ): Promise<string>;
   /** Interactive select; return option id or undefined on cancel. */
   promptSelect(
@@ -81,6 +82,7 @@ function deviceCodeContext(
 export async function runOAuthLoginWithUi(
   provider: string,
   ui: OAuthUiSink,
+  openBrowser: (url: string) => void | Promise<boolean> = openBrowserUrl,
 ): Promise<StoredOAuthCredential> {
   let lastContext: string[] = [];
 
@@ -91,7 +93,7 @@ export async function runOAuthLoginWithUi(
         case "auth_url":
           lastContext = authUrlContext(provider, event.url, event.instructions);
           ui.showStatus(lastContext);
-          openBrowserUrl(event.url);
+          void openBrowser(event.url);
           break;
         case "device_code":
           lastContext = deviceCodeContext(
@@ -100,7 +102,7 @@ export async function runOAuthLoginWithUi(
             event.userCode,
           );
           ui.showStatus(lastContext);
-          openBrowserUrl(event.verificationUri);
+          void openBrowser(event.verificationUri);
           break;
         case "progress":
         case "info":
@@ -125,7 +127,7 @@ export async function runOAuthLoginWithUi(
         prompt.type === "manual_code" && lastContext.length > 0
           ? lastContext
           : undefined;
-      return ui.promptText(prompt.message, prompt.placeholder, context);
+      return ui.promptText(prompt.message, prompt.placeholder, context, prompt.signal);
     },
   };
 

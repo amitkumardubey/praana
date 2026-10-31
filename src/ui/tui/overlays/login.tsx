@@ -231,7 +231,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
   let customId = routed?.customId ?? "";
   let customBaseUrl = "";
   let oauthAbort: AbortController | undefined;
-  let rejectOAuthText: ((error: Error) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
   let settled = false;
 
@@ -242,7 +241,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
 
   onCleanup(() => {
     oauthAbort?.abort();
-    rejectOAuthText?.(new Error("cancelled"));
     resolveOAuthSelect?.(undefined);
   });
 
@@ -420,26 +418,29 @@ export function LoginOverlay(props: LoginOverlayProps) {
           setMessage(lines.join("\n"));
           renderer.requestRender();
         },
-        promptText: (prompt, placeholder, contextLines) =>
-          new Promise<string>((resolve, reject) => {
-            if (abort.signal.aborted) {
-              reject(new Error("cancelled"));
+        promptText: (prompt, placeholder, contextLines, promptSignal) =>
+          new Promise<string>((resolve) => {
+            const signal = promptSignal ? AbortSignal.any([abort.signal, promptSignal]) : abort.signal;
+            if (signal.aborted) {
+              resolve("");
               return;
             }
-            rejectOAuthText = reject;
-            abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
-              once: true,
-            });
+            const detach = () => {
+              signal.removeEventListener("abort", onAbort);
+              oauthTextSubmit = undefined;
+              setStep("oauth-status");
+            };
+            const onAbort = () => { detach(); resolve(""); };
+            signal.addEventListener("abort", onAbort, { once: true });
             setOauthPrompt(prompt);
             setOauthPlaceholder(placeholder ?? "");
             setOauthContext(contextLines ?? []);
             setStep("oauth-text");
-            const submit = (value: string) => {
+            oauthTextSubmit = (value) => {
               if (!value.trim()) return;
-              rejectOAuthText = undefined;
+              detach();
               resolve(value.trim());
             };
-            oauthTextSubmit = submit;
           }),
         promptSelect: (prompt, options) =>
           new Promise<string | undefined>((resolve) => {
@@ -458,7 +459,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
       }
     } finally {
       if (oauthAbort === abort) oauthAbort = undefined;
-      rejectOAuthText = undefined;
       resolveOAuthSelect = undefined;
       oauthTextSubmit = undefined;
     }

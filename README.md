@@ -34,6 +34,10 @@ praana
 
 On first run without a config file, `praana` opens a short setup wizard. Update later with `praana upgrade`.
 
+ChatGPT subscription: `/login openai-codex` offers browser sign-in (localhost
+callback with paste fallback) or device-code sign-in. Signs in with your ChatGPT
+account via the Codex CLI sign-in.
+
 ## Status
 
 v0.16.0 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).

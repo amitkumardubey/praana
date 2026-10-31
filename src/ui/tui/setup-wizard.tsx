@@ -301,16 +301,21 @@ export function SetupWizard(props: SetupWizardProps) {
           setMessage(lines.join("\n"));
           renderer.requestRender();
         },
-        promptText: (prompt, placeholder, contextLines) =>
-          new Promise<string>((resolve, reject) => {
-            if (abort.signal.aborted) {
-              reject(new Error("cancelled"));
+        promptText: (prompt, placeholder, contextLines, promptSignal) =>
+          new Promise<string>((resolve) => {
+            const signal = promptSignal ? AbortSignal.any([abort.signal, promptSignal]) : abort.signal;
+            if (signal.aborted) {
+              resolve("");
               return;
             }
-            resolveOAuthText = resolve;
-            abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
-              once: true,
-            });
+            const detach = () => {
+              signal.removeEventListener("abort", onAbort);
+              resolveOAuthText = undefined;
+              setStep("oauth-status");
+            };
+            const onAbort = () => { detach(); resolve(""); };
+            signal.addEventListener("abort", onAbort, { once: true });
+            resolveOAuthText = (value) => { detach(); resolve(value); };
             setOauthPrompt(prompt);
             setOauthPlaceholder(placeholder ?? "");
             setOauthContext(contextLines ?? []);

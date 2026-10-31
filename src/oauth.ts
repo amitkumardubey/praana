@@ -9,6 +9,7 @@ import {
   type StoredOAuthCredential,
 } from "./credentials.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
+import { createOpenAICodexOAuth, type CodexOAuthDeps } from "./oauth-codex.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
@@ -254,7 +255,7 @@ const providers: OAuthProviderInfo[] = [
   {
     id: "openai-codex",
     name: "OpenAI Codex",
-    oauth: pasteTokenAuth("OpenAI Codex", "Paste your ChatGPT / Codex access token:"),
+    oauth: createOpenAICodexOAuth(),
   },
   { id: "github-copilot", name: "GitHub Copilot", oauth: githubCopilotOAuth },
 ];
@@ -365,6 +366,6 @@ export async function resolveOAuthModelAuth(
   return oauth.toAuth(credential);
 }
 
-export function resetOAuthProvidersForTests(): void {
-  // no-op for native providers
+export function resetOAuthProvidersForTests(codexDeps: CodexOAuthDeps = {}): void {
+  providers.find((provider) => provider.id === "openai-codex")!.oauth = createOpenAICodexOAuth(codexDeps);
 }
