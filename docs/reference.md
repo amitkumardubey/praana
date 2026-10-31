@@ -164,8 +164,11 @@ fall back to stored credentials after a refresh failure. This login flow does no
 change that behavior.
 
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
-storage (`store: false`), and omit `max_output_tokens`. Responses streams report
-backend failures or a missing terminal response as errors, not successful completions.
+storage (`store: false`), and omit `max_output_tokens`. Codex streams report
+backend failures, an incomplete response for any reason other than
+`max_output_tokens`, or a missing terminal event as errors. `max_output_tokens`
+finishes with the partial output and reason `length`. Other Responses providers
+keep the previous stream behaviour.
 
 ## Slash commands
 

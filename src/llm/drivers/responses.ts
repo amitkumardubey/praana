@@ -116,7 +116,20 @@ export class OpenAIResponsesDriver implements LlmDriver {
     let finishReason: Extract<StreamEvent, { type: "done" }>["reason"] = "stop";
     let latestUsage: Extract<StreamEvent, { type: "usage" }>["usage"] | null = null;
     let itemIndex = 0;
+    const codex = req.provider === "openai-codex";
     let terminalReceived = false;
+    let cappedByLength = false;
+    const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
+      const resp = parsed.response as {
+        error?: { message?: string };
+        incomplete_details?: { message?: string; reason?: string };
+      } | undefined;
+      const error = parsed.error as { message?: string } | string | undefined;
+      const message = resp?.error?.message || resp?.incomplete_details?.message ||
+        resp?.incomplete_details?.reason || (typeof error === "string" ? error : error?.message) ||
+        (typeof parsed.message === "string" ? parsed.message : undefined);
+      return message || `OpenAI Responses stream ${type}`;
+    };
 
     try {
       for await (const event of parseSseStream(response.body!)) {
@@ -143,16 +156,18 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         const type = String(event.event || parsed.type || "");
-        if (type === "error" || type === "response.failed" || type === "response.incomplete") {
-          const resp = parsed.response as {
-            error?: { message?: string };
-            incomplete_details?: { message?: string; reason?: string };
-          } | undefined;
-          const error = parsed.error as { message?: string } | string | undefined;
-          const message = resp?.error?.message || resp?.incomplete_details?.message ||
-            resp?.incomplete_details?.reason || (typeof error === "string" ? error : error?.message) ||
-            parsed.message;
-          throw new Error(typeof message === "string" && message ? message : `OpenAI Responses stream ${type}`);
+        if (codex && (type === "error" || type === "response.failed")) {
+          throw new Error(responsesErrorMessage(parsed, type));
+        }
+        if (codex && type === "response.incomplete") {
+          const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
+          if (details?.reason === "max_output_tokens") {
+            terminalReceived = true;
+            finishReason = "length";
+            cappedByLength = true;
+          } else {
+            throw new Error(responsesErrorMessage(parsed, type));
+          }
         }
 
         if (parsed.usage && typeof parsed.usage === "object") {
@@ -207,17 +222,17 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (type === "response.completed") {
-          terminalReceived = true;
+          if (codex) terminalReceived = true;
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = String(resp?.status ?? "");
           if (status === "incomplete") finishReason = "length";
         }
       }
 
-      if (!terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
+      if (codex && !terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
 
       const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0) {
+      if (completedToolCalls.length > 0 && !cappedByLength) {
         finishReason = "tool_use";
         for (const tc of completedToolCalls) {
           yield { type: "tool_call_end", toolCall: tc };

@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 import { APP_VERSION } from "../src/app-banner.js";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { streamLlmResponse } from "../src/llm/stream.js";
 import { resetCredentialStoreForTests, setOAuthToken } from "../src/credentials.js";
 
@@ -72,26 +74,112 @@ describe("Codex outgoing request", () => {
   });
 });
 
-describe("Responses stream termination", () => {
-  for (const provider of ["openai-codex", "openai"]) {
-    it.each([
-      { type: "error", message: "Backend unavailable" },
-      { type: "error", error: { message: "Backend unavailable" } },
-      { type: "response.failed", response: { status: "failed", error: { message: "Backend unavailable" } } },
-      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "Backend unavailable" } } },
-    ])(`${provider} emits backend errors instead of done for %j`, async (frame) => {
-      const events = await run({ ...req, provider }, { bearerToken: jwt() }, [{ type: "response.output_text.delta", delta: "partial" }, frame]);
-      expect(events.map((event) => event.type)).toEqual(["text_delta", "error"]);
-      const error = events[1];
-      expect(error?.type === "error" && error.error.message).toBe("Backend unavailable");
-    });
-    it.each([{ frames: [] }, { frames: [{ type: "response.output_text.delta", delta: "partial" }] }, { frames: ["data: [DONE]\n\n"] }])(`${provider} rejects EOF without a terminal Responses event (%j)`, async ({ frames }) => {
-      const events = await run({ ...req, provider }, { bearerToken: jwt() }, frames);
-      expect(events.some((event) => event.type === "done")).toBe(false);
-      const last = events.at(-1);
-      expect(last?.type === "error" && last.error.message).toMatch(/without.*terminal/);
-    });
+function eventSequence(events: StreamEvent[]): string {
+  return `${events.map((event) => JSON.stringify(event.type === "error"
+    ? { type: "error", message: event.error.message, name: event.error.name, retryable: event.retryable, status: event.status ?? null }
+    : event)).join("\n")}\n`;
+}
+
+async function streamEvents(driver: { stream: OpenAIResponsesDriver["stream"] }, sse: string, provider: string): Promise<string> {
+  const previous = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(sse, { headers: { "Content-Type": "text/event-stream" } })) as typeof fetch;
+  try {
+    const events: StreamEvent[] = [];
+    const request: StreamRequest = { provider, model: "gpt-5.4", messages: [{ role: "user", content: "hi" }] };
+    const auth: ResolvedAuth = provider === "openai-codex" ? { bearerToken: jwt() } : { apiKey: "synthetic-openai-key" };
+    for await (const event of driver.stream(request, auth)) events.push(event);
+    return eventSequence(events);
+  } finally {
+    globalThis.fetch = previous;
   }
+}
+
+async function mainResponsesDriver(): Promise<OpenAIResponsesDriver> {
+  const repo = join(import.meta.dir, "..");
+  const source = execFileSync("git", ["show", "main:src/llm/drivers/responses.ts"], { cwd: repo, encoding: "utf8" });
+  const scratch = join(homedir(), ".cache/codex-fix-scratch");
+  mkdirSync(scratch, { recursive: true });
+  const file = join(scratch, "responses-main.ts");
+  const driversDir = join(repo, "src/llm/drivers");
+  writeFileSync(file, source.replace(/from "(\.[^"]+)"/g, (_match, spec: string) => `from ${JSON.stringify(join(driversDir, spec))}`));
+  const loaded = await import(`${pathToFileURL(file).href}?main-responses`) as { OpenAIResponsesDriver: new () => OpenAIResponsesDriver };
+  return new loaded.OpenAIResponsesDriver();
+}
+
+const OPENAI_MAIN_STREAMS = [
+  "incomplete-length.sse",
+  "incomplete-content-filter.sse",
+  "incomplete-tool-arguments.sse",
+  "disconnect-before-created.sse",
+  "disconnect-after-reasoning.sse",
+  "response-failed.sse",
+];
+
+describe("Responses stream termination", () => {
+  it.each([
+    { type: "error", message: "Backend unavailable" },
+    { type: "error", error: { message: "Backend unavailable" } },
+    { type: "response.failed", response: { status: "failed", error: { message: "Backend unavailable" } } },
+  ])("Codex emits backend errors instead of done for %j", async (frame) => {
+    const events = await run(req, { bearerToken: jwt() }, [{ type: "response.output_text.delta", delta: "partial" }, frame]);
+    expect(events.map((event) => event.type)).toEqual(["text_delta", "error"]);
+    const error = events[1];
+    expect(error?.type === "error" && error.error.message).toBe("Backend unavailable");
+  });
+
+  it("Codex finishes max_output_tokens as length and keeps the partial output", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events).toEqual([
+      { type: "text_delta", delta: "partial" },
+      { type: "done", reason: "length", message: { role: "assistant", content: "partial" } },
+    ]);
+  });
+
+  it("Codex keeps reason length when max_output_tokens cuts off a tool call", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{" } },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    const done = events.at(-1);
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") expect(done.reason).toBe("length");
+    expect(events.some((event) => event.type === "error")).toBe(false);
+  });
+
+  it.each(["content_filter", "server_error"])("Codex errors on incomplete reason %s", async (reason) => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason } } },
+    ]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.error.message).toBe(reason);
+  });
+
+  it.each([{ frames: [] }, { frames: [{ type: "response.output_text.delta", delta: "partial" }] }, { frames: ["data: [DONE]\n\n"] }])("Codex rejects EOF without a terminal Responses event (%j)", async ({ frames }) => {
+    const events = await run(req, { bearerToken: jwt() }, frames);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.error.message).toMatch(/without.*terminal/);
+  });
+
+  it("plain OpenAI incomplete and unterminated streams match main byte for byte", async () => {
+    const mainDriver = await mainResponsesDriver();
+    const current = new OpenAIResponsesDriver();
+    const root = join(import.meta.dir, "../tests/fixtures/rust-v2/providers/v1/openai-responses/streams");
+    for (const provider of ["openai", "openai-responses"]) {
+      for (const name of OPENAI_MAIN_STREAMS) {
+        const sse = readFileSync(join(root, name), "utf8");
+        const mainBytes = await streamEvents(mainDriver, sse, provider);
+        const currentBytes = await streamEvents(current, sse, provider);
+        expect(currentBytes, `${provider} ${name}`).toBe(mainBytes);
+      }
+    }
+  });
+
   it("preserves valid OpenAI text, reasoning, tools, usage and final message", async () => {
     const events = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
       { type: "response.reasoning_text.delta", delta: "Thinking" },
