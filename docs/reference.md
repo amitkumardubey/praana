@@ -138,6 +138,14 @@ These keys live in `[llm]`. A value that is not a non-negative integer warns and
 | `connect_timeout_ms` | `60000` | Abort the request if response headers have not arrived. The failure is retried before any tokens are emitted. |
 | `stream_idle_timeout_ms` | `120000` | Abort if the response body stays silent this long. The timer resets on every chunk, including SSE comment keep-alives. The stream ends with reason `timeout` (partial text kept) so the turn can recover. A user abort is still reason `abort`. |
 
+### LLM stream end check
+
+`stream_end_check` lives in `[llm]`. A value other than `auto`, `strict`, or `lenient` warns and falls back to `auto`.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `stream_end_check` | `auto` | What to do when a stream closes cleanly without the provider's final signal (Anthropic `message_stop` / `stop_reason`, OpenAI-compatible `finish_reason` or `[DONE]`, Google `finishReason`, Bedrock `messageStop`). `strict` returns an error. `lenient` treats the close as a normal finish (text received so far, same reason mapping as a completed stream) and writes a debug log: `<provider>: stream ended without a final event; accepted (lenient)`. `auto` is strict for `anthropic`, `openai`, `google`, `vertex`, and `amazon-bedrock`, and lenient for every other provider, including user-declared `[providers.<id>]` endpoints and local servers. A user-declared id is lenient under `auto` even if that id is also in the strict list. |
+
 ## Slash commands
 
 | Command | Purpose |

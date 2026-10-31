@@ -17,6 +17,7 @@ import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { logLenientStreamEnd } from "../stream-end.js";
 
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
@@ -229,12 +230,15 @@ export class AnthropicDriver implements LlmDriver {
       }
 
       if (!sawTerminal) {
-        yield {
-          type: "error",
-          error: new Error("stream ended before the provider sent a final event (message_stop)"),
-          retryable: !emittedDelta,
-        };
-        return;
+        if (req.strictStreamEnd !== false) {
+          yield {
+            type: "error",
+            error: new Error("stream ended before the provider sent a final event (message_stop)"),
+            retryable: !emittedDelta,
+          };
+          return;
+        }
+        logLenientStreamEnd(req.provider);
       }
 
       // Emit normalized usage

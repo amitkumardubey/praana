@@ -18,6 +18,7 @@ import { parseAwsEventStream } from "../aws-sigv4.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { logLenientStreamEnd } from "../stream-end.js";
 import { authorizeAwsRequest } from "../aws-credentials.js";
 import { resolveBedrockRegion } from "../../bedrock/region.js";
 
@@ -229,12 +230,15 @@ export class BedrockDriver implements LlmDriver {
       }
 
       if (!sawTerminal) {
-        yield {
-          type: "error",
-          error: new Error("stream ended before the provider sent a final event (messageStop)"),
-          retryable: !emittedDelta,
-        };
-        return;
+        if (req.strictStreamEnd !== false) {
+          yield {
+            type: "error",
+            error: new Error("stream ended before the provider sent a final event (messageStop)"),
+            retryable: !emittedDelta,
+          };
+          return;
+        }
+        logLenientStreamEnd(req.provider);
       }
 
       const completedToolCalls = accumulator.flush();

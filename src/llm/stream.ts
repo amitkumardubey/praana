@@ -16,6 +16,7 @@ import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
 import { resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
+import { resolveStreamEndMode } from "./stream-end.js";
 
 /**
  * Execute a streaming LLM response using the appropriate protocol driver.
@@ -102,6 +103,7 @@ export async function* streamLlmResponse(
     headers: mergedAuth.headers,
     compat: req.compat ?? wire.compat,
     api: req.api ?? wire.api,
+    strictStreamEnd: req.strictStreamEnd ?? resolveStreamEndMode(req.provider) === "strict",
   };
 
   const driver = getDriverForProvider(req.provider, mergedReq.api);

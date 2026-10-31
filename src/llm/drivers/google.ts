@@ -15,6 +15,7 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { logLenientStreamEnd } from "../stream-end.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
 
 export class GoogleDriver implements LlmDriver {
@@ -211,12 +212,15 @@ export class GoogleDriver implements LlmDriver {
       }
 
       if (!sawTerminal) {
-        yield {
-          type: "error",
-          error: new Error("stream ended before the provider sent a final event (finishReason)"),
-          retryable: !emittedDelta,
-        };
-        return;
+        if (req.strictStreamEnd !== false) {
+          yield {
+            type: "error",
+            error: new Error("stream ended before the provider sent a final event (finishReason)"),
+            retryable: !emittedDelta,
+          };
+          return;
+        }
+        logLenientStreamEnd(req.provider);
       }
 
       const finalAssistant: AssistantMessage = {

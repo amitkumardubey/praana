@@ -109,6 +109,12 @@ export interface StreamRequest {
   /** Request-level credential overlay (OAuth refresh / RuntimeModel). */
   apiKey?: string;
   bearerToken?: string;
+  /**
+   * When false, a clean close without the provider's final signal is a normal
+   * finish. `streamLlmResponse` sets this from `llm.stream_end_check`.
+   * Omitted means strict.
+   */
+  strictStreamEnd?: boolean;
 }
 
 /** Aggregated result of an LLM turn stream. */

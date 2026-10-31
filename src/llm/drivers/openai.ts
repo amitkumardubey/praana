@@ -17,6 +17,7 @@ import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { createLlmFetchGuard, getLlmStreamTimeouts, streamGuardTerminal } from "../stream-guard.js";
+import { logLenientStreamEnd } from "../stream-end.js";
 import { joinUrl } from "../url.js";
 
 export class OpenAICompatibleDriver implements LlmDriver {
@@ -226,14 +227,17 @@ export class OpenAICompatibleDriver implements LlmDriver {
       }
 
       if (!sawTerminal) {
-        yield {
-          type: "error",
-          error: new Error(
-            "stream ended before the provider sent a final event (finish_reason or [DONE])",
-          ),
-          retryable: !emittedDelta,
-        };
-        return;
+        if (req.strictStreamEnd !== false) {
+          yield {
+            type: "error",
+            error: new Error(
+              "stream ended before the provider sent a final event (finish_reason or [DONE])",
+            ),
+            retryable: !emittedDelta,
+          };
+          return;
+        }
+        logLenientStreamEnd(req.provider);
       }
 
       const completedToolCalls = accumulator.flush();

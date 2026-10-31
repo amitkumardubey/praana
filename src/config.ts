@@ -24,6 +24,7 @@ import {
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   setLlmStreamTimeouts,
 } from "./llm/stream-guard.js";
+import { setStreamEndCheck, type StreamEndCheck } from "./llm/stream-end.js";
 import { RISK_CLASS_SET } from "./risk/classes.js";
 
 function configWarn(
@@ -60,6 +61,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     reasoning_effort: "medium",
     connect_timeout_ms: DEFAULT_CONNECT_TIMEOUT_MS,
     stream_idle_timeout_ms: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    stream_end_check: "auto",
   },
   memory: {
     enabled: true,
@@ -182,6 +184,16 @@ const DEFAULT_CONFIG: PraanaConfig = {
     max_steps: 25,
   },
 };
+
+const STREAM_END_CHECK_VALUES = new Set<StreamEndCheck>(["auto", "strict", "lenient"]);
+
+function normalizeStreamEndCheck(value: unknown): StreamEndCheck {
+  if (value === undefined) return "auto";
+  const text = typeof value === "string" ? value.trim() : "";
+  if (STREAM_END_CHECK_VALUES.has(text as StreamEndCheck)) return text as StreamEndCheck;
+  configWarn(`Invalid llm.stream_end_check ${JSON.stringify(value)}, using auto`);
+  return "auto";
+}
 
 function normalizeLlmTimeout(value: unknown, name: string, fallback: number): number {
   if (value === undefined) return fallback;
@@ -539,6 +551,9 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     connectTimeoutMs: out.llm.connect_timeout_ms,
     idleTimeoutMs: out.llm.stream_idle_timeout_ms,
   });
+
+  out.llm.stream_end_check = normalizeStreamEndCheck(out.llm.stream_end_check);
+  setStreamEndCheck(out.llm.stream_end_check);
 
   const hasFallbackProvider = !!out.llm.fallback_provider;
   const hasFallbackModel = !!out.llm.fallback_model;

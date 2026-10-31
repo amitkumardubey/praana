@@ -136,6 +136,11 @@ export interface LlmConfig {
    * Reset on every chunk, including SSE comments. `0` disables. Default 120000.
    */
   stream_idle_timeout_ms?: number;
+  /**
+   * How to treat a clean stream close that lacks the provider's final signal.
+   * `auto` (default), `strict`, or `lenient`. Invalid values fall back to `auto`.
+   */
+  stream_end_check?: "auto" | "strict" | "lenient";
 }
 
 // ---- User-Declared Providers (declarative config) ----

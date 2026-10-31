@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { AzureDriver } from "../src/llm/drivers/azure.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import type { LlmDriver } from "../src/llm/drivers/base.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
+import { createTestLogger, getAppLogger, setAppLogger, type PraanaLogger } from "../src/logger.js";
 
 const originalFetch = globalThis.fetch;
 const originalRandom = Math.random;
@@ -492,5 +494,256 @@ describe("terminal stream events", () => {
         message: { role: "assistant", content: "Hello", toolCalls: [] },
       },
     ]);
+  });
+});
+
+const LENIENT_LOG = "stream ended without a final event; accepted (lenient)";
+
+function loggedLenient(lines: string[], provider: string): boolean {
+  return lines.some((line) => line.includes(provider) && line.includes(LENIENT_LOG));
+}
+
+function expectLenientDone(
+  events: unknown[],
+  opts: { text: string; reason: string; message: Record<string, unknown> },
+): void {
+  expect(events.filter((ev) => (ev as { type?: string }).type === "error")).toEqual([]);
+  const text = events
+    .filter(
+      (ev): ev is { type: "text_delta"; delta: string } =>
+        typeof ev === "object" && ev !== null && (ev as { type?: string }).type === "text_delta",
+    )
+    .map((ev) => ev.delta)
+    .join("");
+  expect(text).toBe(opts.text);
+  const dones = events.filter((ev) => (ev as { type?: string }).type === "done");
+  expect(dones).toEqual([
+    { type: "done", reason: opts.reason, message: opts.message },
+  ]);
+}
+
+describe("configurable stream-end strictness", () => {
+  let lines: string[] = [];
+  let previousLogger: PraanaLogger;
+
+  beforeEach(() => {
+    lines = [];
+    previousLogger = getAppLogger();
+    setAppLogger(createTestLogger((line) => lines.push(line), { debug: true }));
+  });
+
+  afterEach(() => {
+    setAppLogger(previousLogger);
+  });
+
+  const anthropicPartial =
+    'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial"}}\n\n';
+  const openaiPartial =
+    'data: {"choices":[{"delta":{"content":"Partial"},"finish_reason":null}]}\n\n';
+  const googlePartial = 'data: {"candidates":[{"content":{"parts":[{"text":"Partial"}]}}]}\n\n';
+  const bedrockPartial = bedrockBody([
+    { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Partial" } } },
+  ]);
+
+  it("strict Anthropic still errors when message_stop is missing", async () => {
+    const events = await collect(
+      new AnthropicDriver(),
+      anthropicPartial,
+      { ...user("anthropic"), strictStreamEnd: true },
+      keyAuth,
+    );
+    expectPrematureEnd(events, { signal: "message_stop", retryable: false, text: "Partial" });
+    expect(loggedLenient(lines, "anthropic")).toBe(false);
+  });
+
+  it("lenient Anthropic accepts a clean close without message_stop", async () => {
+    const events = await collect(
+      new AnthropicDriver(),
+      anthropicPartial,
+      { ...user("anthropic"), strictStreamEnd: false },
+      keyAuth,
+    );
+    expectLenientDone(events, {
+      text: "Partial",
+      reason: "stop",
+      message: { role: "assistant", content: "Partial" },
+    });
+    expect(loggedLenient(lines, "anthropic")).toBe(true);
+  });
+
+  it("strict OpenAI still errors when finish_reason and [DONE] are missing", async () => {
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      openaiPartial,
+      { ...user("openai"), strictStreamEnd: true },
+      keyAuth,
+    );
+    expectPrematureEnd(events, {
+      signal: "finish_reason or [DONE]",
+      retryable: false,
+      text: "Partial",
+    });
+    expect(loggedLenient(lines, "openai")).toBe(false);
+  });
+
+  it("lenient OpenAI accepts a clean close without finish_reason or [DONE]", async () => {
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      openaiPartial,
+      { ...user("openai"), strictStreamEnd: false },
+      keyAuth,
+    );
+    expectLenientDone(events, {
+      text: "Partial",
+      reason: "stop",
+      message: { role: "assistant", content: "Partial" },
+    });
+    expect(loggedLenient(lines, "openai")).toBe(true);
+  });
+
+  it("lenient OpenAI maps a tool-call stream without finish_reason to tool_use", async () => {
+    const body = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"a.ts\\"}"}}]}}]}\n\n',
+    ].join("");
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      body,
+      { ...user("openai"), strictStreamEnd: false },
+      keyAuth,
+    );
+    expect(events.filter((ev) => (ev as { type?: string }).type === "error")).toEqual([]);
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      reason: "tool_use",
+      message: {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_1",
+            name: "read_file",
+            args: { path: "a.ts" },
+            rawArgs: '{"path":"a.ts"}',
+          },
+        ],
+      },
+    });
+    expect(loggedLenient(lines, "openai")).toBe(true);
+  });
+
+  it("lenient OpenAI does not log when [DONE] is present", async () => {
+    const body = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n';
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      body,
+      { ...user("openai"), strictStreamEnd: false },
+      keyAuth,
+    );
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop" });
+    expect(loggedLenient(lines, "openai")).toBe(false);
+  });
+
+  it("lenient OpenAI still reports a user abort as abort", async () => {
+    const body = 'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n';
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      body,
+      { ...user("openai"), strictStreamEnd: false },
+      keyAuth,
+      { abortOnText: true },
+    );
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "abort" });
+    expect(loggedLenient(lines, "openai")).toBe(false);
+  });
+
+  it("strict Azure still errors when finish_reason and [DONE] are missing", async () => {
+    const events = await collect(
+      new AzureDriver(),
+      openaiPartial,
+      {
+        ...user("azure"),
+        baseUrl: "https://example.openai.azure.com/openai/deployments/gpt-4o",
+        strictStreamEnd: true,
+      },
+      keyAuth,
+    );
+    expectPrematureEnd(events, {
+      signal: "finish_reason or [DONE]",
+      retryable: false,
+      text: "Partial",
+    });
+    expect(loggedLenient(lines, "azure")).toBe(false);
+  });
+
+  it("lenient Azure accepts a clean close without finish_reason or [DONE]", async () => {
+    const events = await collect(
+      new AzureDriver(),
+      openaiPartial,
+      {
+        ...user("azure"),
+        baseUrl: "https://example.openai.azure.com/openai/deployments/gpt-4o",
+        strictStreamEnd: false,
+      },
+      keyAuth,
+    );
+    expectLenientDone(events, {
+      text: "Partial",
+      reason: "stop",
+      message: { role: "assistant", content: "Partial" },
+    });
+    expect(loggedLenient(lines, "azure")).toBe(true);
+  });
+
+  it("strict Google still errors when finishReason is missing", async () => {
+    const events = await collect(
+      new GoogleDriver(),
+      googlePartial,
+      { ...user("google"), strictStreamEnd: true },
+      keyAuth,
+    );
+    expectPrematureEnd(events, { signal: "finishReason", retryable: false, text: "Partial" });
+    expect(loggedLenient(lines, "google")).toBe(false);
+  });
+
+  it("lenient Google accepts a clean close without finishReason", async () => {
+    const events = await collect(
+      new GoogleDriver(),
+      googlePartial,
+      { ...user("google"), strictStreamEnd: false },
+      keyAuth,
+    );
+    expectLenientDone(events, {
+      text: "Partial",
+      reason: "stop",
+      message: { role: "assistant", content: "Partial" },
+    });
+    expect(loggedLenient(lines, "google")).toBe(true);
+  });
+
+  it("strict Bedrock still errors when messageStop is missing", async () => {
+    const events = await collect(
+      new BedrockDriver(),
+      bedrockPartial,
+      { ...user("amazon-bedrock"), region: "us-east-1", strictStreamEnd: true },
+      bearerAuth,
+    );
+    expectPrematureEnd(events, { signal: "messageStop", retryable: false, text: "Partial" });
+    expect(loggedLenient(lines, "amazon-bedrock")).toBe(false);
+  });
+
+  it("lenient Bedrock accepts a clean close without messageStop", async () => {
+    const events = await collect(
+      new BedrockDriver(),
+      bedrockPartial,
+      { ...user("amazon-bedrock"), region: "us-east-1", strictStreamEnd: false },
+      bearerAuth,
+    );
+    expectLenientDone(events, {
+      text: "Partial",
+      reason: "stop",
+      message: { role: "assistant", content: "Partial" },
+    });
+    expect(loggedLenient(lines, "amazon-bedrock")).toBe(true);
   });
 });
