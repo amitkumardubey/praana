@@ -6,6 +6,8 @@
       "name": "praana",
       "dependencies": {
         "@opentui/core": "0.8.0",
+        "@opentui/core-linux-x64": "0.8.0",
+        "@opentui/core-linux-x64-musl": "0.8.0",
         "@opentui/keymap": "0.8.0",
         "@opentui/solid": "0.8.0",
         "ansi-styles": "^4.3.0",

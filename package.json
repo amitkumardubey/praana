@@ -70,7 +70,9 @@
     "toml": "^5.0.1",
     "ulid": "^2.4.0",
     "wrap-ansi": "^10.0.0",
-    "zod": "^4.6.6"
+    "zod": "^4.6.6",
+    "@opentui/core-linux-x64": "0.8.0",
+    "@opentui/core-linux-x64-musl": "0.8.0"
   },
   "optionalDependencies": {
     "@praana/natives": "0.16.0"
