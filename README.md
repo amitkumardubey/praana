@@ -25,7 +25,7 @@ irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | i
 bun add -g praana
 ```
 
-The installer needs `curl` and `tar` (POSIX `sh`; no Bun). Alpine/musl is not supported by the standalone binary — use `bun add -g praana` there.
+The installer needs `curl`, `tar` and the standard POSIX tools (`sha256sum` or `shasum`) — no Bun. Alpine/musl is not supported by the standalone binary; use `bun add -g praana` there.
 
 Then set a provider key and start:
 

@@ -12,7 +12,7 @@ Install options, configuration, commands and known limitations for the current r
 curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 ```
 
-The installer needs `curl` and `tar` on `PATH` (bare Debian/Ubuntu: `apt-get install -y curl tar`). Alpine/musl is not supported on this path; use `bun add -g praana` instead.
+The installer needs `curl`, `tar` and the standard POSIX tools (`sha256sum` or `shasum`) on `PATH` (bare Debian/Ubuntu: `apt-get install -y curl tar coreutils`). Alpine/musl is not supported on this path; use `bun add -g praana` instead.
 
 **Windows** (PowerShell — use this instead of `curl | sh`):
 
