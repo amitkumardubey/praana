@@ -38,7 +38,7 @@ import {
 import { hasApiKey } from "../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../credentials.js";
 import { isOAuthOnlyProvider } from "../../oauth.js";
-import { createOAuthTextPrompt, runOAuthLoginWithUi } from "./oauth-login-ui.js";
+import { createOAuthTextPrompt, formatOAuthManualPrompt, runOAuthLoginWithUi } from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { CustomProviderConfig, SetupResult } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
@@ -434,7 +434,7 @@ export function SetupWizard(props: SetupWizardProps) {
     }));
 
   return (
-    <box id="setup-wizard-root" flexDirection="column">
+    <box id="setup-wizard-root" flexDirection="column" flexGrow={1} minHeight={0}>
       {step() === "provider" && (
         <>
           <text>
@@ -812,21 +812,23 @@ export function SetupWizard(props: SetupWizardProps) {
 
       {step() === "oauth-text" && (
         <>
-          <text>{`OAuth: ${state.provider}`}</text>
-          <text> </text>
-          <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
-          <Show when={oauthPlaceholder()}>
-            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
-          </Show>
-          <text> </text>
-          <TextInput
-            id="setup-oauth-input"
-            focused
-            onSubmit={(value) => {
-              if (value.trim()) resolveOAuthText?.(value.trim());
-            }}
-          />
-          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          <text flexShrink={0}>{`OAuth: ${state.provider}`}</text>
+          <scrollbox flexGrow={1} flexShrink={1} minHeight={0} scrollY stickyScroll={false}>
+            <text wrapMode="char">{formatOAuthManualPrompt(oauthContext(), oauthPrompt())}</text>
+            <Show when={oauthPlaceholder()}>
+              <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+            </Show>
+          </scrollbox>
+          <box flexShrink={0} flexDirection="column">
+            <TextInput
+              id="setup-oauth-input"
+              focused
+              onSubmit={(value) => {
+                if (value.trim()) resolveOAuthText?.(value.trim());
+              }}
+            />
+            <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          </box>
         </>
       )}
 

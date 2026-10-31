@@ -2,7 +2,14 @@ import { describe, it, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { createOAuthTextPrompt, runOAuthLoginWithUi, wrapUrlForDisplay } from "../src/ui/tui/oauth-login-ui.js";
+import { buildAuthorizeUrl } from "../src/oauth-codex.js";
+import {
+  createOAuthTextPrompt,
+  formatOAuthManualPrompt,
+  oauthManualPromptFits,
+  runOAuthLoginWithUi,
+  wrapUrlForDisplay,
+} from "../src/ui/tui/oauth-login-ui.js";
 import { resetOAuthProvidersForTests } from "../src/oauth.js";
 import { resetCredentialStoreForTests } from "../src/credentials.js";
 
@@ -13,12 +20,31 @@ describe("wrapUrlForDisplay", () => {
     ]);
   });
 
-  it("wraps long urls", () => {
+  it("does not insert newlines into a long url", () => {
     const url = "https://example.com/" + "a".repeat(100);
-    const lines = wrapUrlForDisplay(url, 40);
-    expect(lines.length).toBeGreaterThan(1);
-    expect(lines.join("")).toBe(url);
+    expect(wrapUrlForDisplay(url, 40)).toEqual([url]);
   });
+});
+
+it("keeps a Codex authorize URL on one line that fits a 24x80 login overlay", () => {
+  const url = buildAuthorizeUrl("A".repeat(43), "b".repeat(32));
+  const prompt = "Paste the redirect URL or authorization code (or finish in your browser):";
+  const context = [
+    "Sign in to openai-codex",
+    "",
+    "Signs in with your ChatGPT account via the Codex CLI sign-in.",
+    "",
+    "Open this URL:",
+    ...wrapUrlForDisplay(url),
+    "",
+    "If the browser did not open, copy the URL above into your browser.",
+  ];
+  const body = formatOAuthManualPrompt(context, prompt);
+  expect(body.split("\n").includes(url)).toBe(true);
+  expect(body.includes("\n\n")).toBe(false);
+  expect(body).toContain("Signs in with your ChatGPT account via the Codex CLI sign-in.");
+  expect(body).toContain(prompt);
+  expect(oauthManualPromptFits(24, 80, body)).toBe(true);
 });
 
 it("keeps the auth URL visible and passes only the manual prompt cancellation signal", async () => {
@@ -56,7 +82,7 @@ it("keeps the auth URL visible and passes only the manual prompt cancellation si
     expect(credential.accountId).toBe("ui-account");
     expect(receivedSignal?.aborted).toBe(true);
     expect(overall.signal.aborted).toBe(false);
-    expect(opened).toEqual([status[0]!.slice(5, -2).join("")]);
+    expect(opened).toEqual([status[0]!.find((line) => line.startsWith("https://"))]);
   } finally {
     resetOAuthProvidersForTests();
     resetCredentialStoreForTests();

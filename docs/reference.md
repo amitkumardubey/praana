@@ -145,7 +145,9 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   `http://localhost:1455/auth/callback`. Finish in the browser or paste the redirect
   URL, `code#state`, a query string containing `code=`, or a bare authorization code.
   A supplied state must match this login. The URL stays visible while paste input
-  waits; receiving the callback dismisses that input without cancelling login.
+  waits, as one copyable string (the overlay soft-wraps it; it is not broken with
+  blank lines). The paste field stays on screen. Receiving the callback dismisses
+  that input without cancelling login.
   Closing the paste prompt cancels login and does not replace a saved credential.
   A blank paste is refused. An invalid paste (typo, state mismatch, or empty code)
   is reported and asked for again, up to five times, without stopping the browser

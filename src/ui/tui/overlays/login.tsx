@@ -3,7 +3,7 @@
  */
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { InputRenderable } from "@opentui/core";
-import { useRenderer } from "@opentui/solid";
+import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
@@ -26,7 +26,7 @@ import {
 import { hasApiKey } from "../../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../../credentials.js";
 import { isOAuthOnlyProvider } from "../../../oauth.js";
-import { createOAuthTextPrompt, runOAuthLoginWithUi } from "../oauth-login-ui.js";
+import { createOAuthTextPrompt, formatOAuthManualPrompt, loginOauthFrame, runOAuthLoginWithUi } from "../oauth-login-ui.js";
 import {
   isUserDeclaredProvider,
   listUserDeclaredProviderIds,
@@ -205,6 +205,8 @@ function providerMap(): Record<string, true> {
 
 export function LoginOverlay(props: LoginOverlayProps) {
   const renderer = useRenderer();
+  const dimensions = useTerminalDimensions();
+  const oauthFrame = () => loginOauthFrame(dimensions().height || 24, dimensions().width || 80);
   const rawHint = props.initialProvider?.toLowerCase().trim();
   const providerItems = buildProviderSelectItems();
   const resolvedHint = rawHint
@@ -468,7 +470,10 @@ export function LoginOverlay(props: LoginOverlayProps) {
   };
 
   return (
-    <OverlayFrame width={64}>
+    <OverlayFrame
+      width={step() === "oauth-text" ? oauthFrame().width : 64}
+      maxHeight={step() === "oauth-text" ? oauthFrame().maxHeight : undefined}
+    >
       {step() === "picker" && (
         <>
           <text><span style={TUI_STYLE.info}>{"Login — select a provider"}</span></text>
@@ -628,13 +633,17 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "oauth-text" && (
         <>
-          <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
-          <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
-          <Show when={oauthPlaceholder()}>
-            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
-          </Show>
-          <TextInput id="login-oauth-input" focused onSubmit={(value) => oauthTextSubmit?.(value)} />
-          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          <text flexShrink={0}><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
+          <scrollbox flexGrow={1} flexShrink={1} minHeight={0} scrollY stickyScroll={false}>
+            <text wrapMode="char">{formatOAuthManualPrompt(oauthContext(), oauthPrompt())}</text>
+            <Show when={oauthPlaceholder()}>
+              <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+            </Show>
+          </scrollbox>
+          <box flexShrink={0} flexDirection="column">
+            <TextInput id="login-oauth-input" focused onSubmit={(value) => oauthTextSubmit?.(value)} />
+            <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          </box>
         </>
       )}
       {step() === "oauth-select" && (

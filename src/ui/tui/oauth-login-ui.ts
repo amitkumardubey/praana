@@ -86,14 +86,64 @@ export function createOAuthTextPrompt(options: {
   });
 }
 
-/** Soft-wrap a long URL so it stays readable in narrow terminals. */
-export function wrapUrlForDisplay(url: string, width = 72): string[] {
-  if (url.length <= width) return [url];
-  const lines: string[] = [];
-  for (let i = 0; i < url.length; i += width) {
-    lines.push(url.slice(i, i + width));
+/**
+ * Leave the URL as one string. The login `<text>` uses `wrapMode="char"`,
+ * which soft-wraps on screen without writing newlines into the buffer, so a
+ * copy is still the original URL. Hard wraps become real line breaks and
+ * break paste. `width` is unused; callers used to pass a column budget.
+ */
+export function wrapUrlForDisplay(url: string, _width = 72): string[] {
+  return [url];
+}
+
+/** Login OAuth frame width. 76 columns leaves 72 for text after border and padding. */
+export const LOGIN_OAUTH_FRAME_WIDTH = 76;
+/** Title, paste field, and hint stay outside the scrolling URL block. */
+const LOGIN_OAUTH_CHROME_ROWS = 3;
+
+/** Join the auth-url lines and the paste prompt. Empty separators are dropped so the URL is not split by blank lines. */
+export function formatOAuthManualPrompt(contextLines: readonly string[], prompt: string): string {
+  return [...contextLines, prompt].filter((line) => line.length > 0).join("\n");
+}
+
+/** Rows a char-wrapped block occupies. A URL has no spaces, so word wrap would not break it. */
+export function charWrappedRows(text: string, columns: number): number {
+  if (columns < 1) return 0;
+  let rows = 0;
+  for (const line of text.split("\n")) {
+    rows += Math.max(1, Math.ceil(line.length / columns));
   }
-  return lines;
+  return rows;
+}
+
+/** Geometry shared by the login overlay and the headless fit check. Matches OverlayFrame. */
+export function loginOauthFrame(rows: number, cols: number): {
+  width: number;
+  top: number;
+  maxHeight: number;
+  contentColumns: number;
+  bodyRows: number;
+} {
+  const height = rows || 24;
+  const widthCols = cols || 80;
+  const width = Math.min(LOGIN_OAUTH_FRAME_WIDTH, Math.max(20, widthCols - 4));
+  const top = Math.max(1, Math.floor(height / 5));
+  const maxHeight = Math.max(8, height - top);
+  const contentColumns = Math.max(1, width - 4);
+  const contentRows = Math.max(1, maxHeight - 4);
+  return {
+    width,
+    top,
+    maxHeight,
+    contentColumns,
+    bodyRows: Math.max(1, contentRows - LOGIN_OAUTH_CHROME_ROWS),
+  };
+}
+
+/** True when the paste body fits the login overlay without scrolling, input included. */
+export function oauthManualPromptFits(rows: number, cols: number, body: string): boolean {
+  const frame = loginOauthFrame(rows, cols);
+  return charWrappedRows(body, frame.contentColumns) <= frame.bodyRows;
 }
 
 function authUrlContext(
@@ -103,12 +153,9 @@ function authUrlContext(
 ): string[] {
   return [
     `Sign in to ${provider}`,
-    "",
     instructions ?? "Complete login in the browser to finish.",
-    "",
     "Open this URL:",
     ...wrapUrlForDisplay(url),
-    "",
     "If the browser did not open, copy the URL above into your browser.",
   ];
 }
