@@ -70,11 +70,17 @@
     "toml": "^5.0.1",
     "ulid": "^2.4.0",
     "wrap-ansi": "^10.0.0",
-    "zod": "^4.6.6",
-    "@opentui/core-linux-x64": "0.8.0",
-    "@opentui/core-linux-x64-musl": "0.8.0"
+    "zod": "^4.6.6"
   },
   "optionalDependencies": {
+    "@opentui/core-darwin-arm64": "0.8.0",
+    "@opentui/core-darwin-x64": "0.8.0",
+    "@opentui/core-linux-arm64": "0.8.0",
+    "@opentui/core-linux-arm64-musl": "0.8.0",
+    "@opentui/core-linux-x64": "0.8.0",
+    "@opentui/core-linux-x64-musl": "0.8.0",
+    "@opentui/core-win32-arm64": "0.8.0",
+    "@opentui/core-win32-x64": "0.8.0",
     "@praana/natives": "0.16.0"
   },
   "devDependencies": {
