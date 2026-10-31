@@ -407,6 +407,15 @@ fn exists_word(path: &Path) -> &'static str {
 }
 
 fn rollback_combining(conn: &Connection, err: ArtifactError) -> ArtifactError {
+    // SQLite may already have rolled the transaction back on its own
+    // (SQLITE_FULL / IOERR / INTERRUPT). Issuing ROLLBACK then fails with
+    // "no transaction is active", which would replace the typed error with an
+    // untyped IO error and tell operators the transaction is still open. When
+    // the connection is already in autocommit mode, there is nothing to undo:
+    // return the original error unchanged.
+    if conn.is_autocommit() {
+        return err;
+    }
     match conn.execute_batch("ROLLBACK;") {
         Ok(()) if conn.is_autocommit() => err,
         Ok(()) => io_err(format!(
@@ -754,6 +763,25 @@ mod tests {
             rusqlite::ffi::Error::new(raw_code),
             Some(message.to_owned()),
         )
+    }
+
+    #[test]
+    fn rollback_combining_keeps_the_typed_error_when_already_autocommit() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(conn.is_autocommit());
+        let original = ArtifactError::new("HISTORY_SQLITE_BUSY", "sqlite busy timeout expired");
+        let combined = rollback_combining(&conn, original.clone());
+        assert_eq!(combined, original);
+    }
+
+    #[test]
+    fn rollback_combining_rolls_back_an_open_transaction() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("BEGIN;").unwrap();
+        let original = ArtifactError::new("HISTORY_IO", "original failure");
+        let combined = rollback_combining(&conn, original.clone());
+        assert_eq!(combined, original);
+        assert!(conn.is_autocommit());
     }
 
     #[test]
