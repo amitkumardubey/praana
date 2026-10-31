@@ -109,14 +109,21 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 A *step* is one model round-trip (it may contain several parallel tool calls). The `[turn]` section controls how long a single turn may keep calling tools:
 
 | Key | Default | Meaning |
-|---|---|---|---|
-| `max_steps` | 25 | Hard cap on steps per user message for **headless** runs (`praana run`, Harbor, CI). `--max-steps N` overrides it for one run. |
-| `pause_after_steps` | 50 | Interactive (TTY) sessions pause before executing the next tool batch every time steps used reaches a multiple of this value. |
-| `hard_max_steps` | 300 | Absolute ceiling for interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. |
+|---|---|---|
+| `max_steps` | 25 | Hard cap on steps per user message when the session is **headless** (`praana run`, Harbor, CI) **or** the UI sink does not provide `onStepPause` (non-interactive sinks, subagents, tests). `--max-steps N` overrides it for one headless run. Reaching the cap executes the current tool batch, then runs the wrap-up. |
+| `pause_after_steps` | 50 | When the sink provides `onStepPause`, the session pauses before executing the next tool batch every time steps used reaches a multiple of this value. |
+| `hard_max_steps` | 300 | Absolute ceiling for those interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. If this is set below `pause_after_steps`, PRAANA warns and raises it to `pause_after_steps` so the ceiling is not lower than the pause interval (the pause spacing is kept; the ceiling moves up). When the two are equal, that shared step still stops without asking, because the ceiling is checked first. |
 
-When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` — **Enter** continues (the next pause is another `pause_after_steps` later), **Esc** (or Ctrl+C) stops. In headless mode nothing ever prompts; `max_steps` is enforced silently.
+The pause/ceiling path runs only when the sink provides `onStepPause`. Headless runs and every other sink use `max_steps` and never prompt.
 
-**Wrap-up:** whenever a turn stops at any limit — soft-pause stop, `hard_max_steps`, or headless `max_steps` — the results of the last executed tool batch stay in history, and the agent runs one final no-tool call asking for a short summary of what was done and what remains. That summary streams like a normal reply. If the wrap-up call itself fails, the turn ends with the normal end-of-turn banner text instead of an error.
+When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` In the TUI, **Enter** continues and **Esc** (or Ctrl+C) stops. On the plain terminal the prompt says `Enter or y = continue, anything else = stop` — **Enter**, **y**, or **yes** continues, and any other line stops (readline has no Esc key). The next pause is another `pause_after_steps` later.
+
+**Wrap-up:** a turn that stops at a limit runs one final model call with **no tools**, asking for a short summary of what was done and what remains. That summary streams like a normal reply. If the model still returns tool calls, they are dropped and not executed. If the wrap-up call fails, the turn ends with the normal end-of-turn banner text instead of an error. Ctrl+C during the wrap-up interrupts the turn.
+
+What is already in history depends on which limit fired:
+
+- **Soft-pause stop** and **hard ceiling** (`hard_max_steps`): the model has already asked for a tool batch, but that batch is **not executed** (stopping must not edit files). Each pending tool call is recorded as an error result: `Not executed: the step budget was reached and the turn was stopped.` Then the wrap-up runs.
+- **Headless cap** and **any sink without `onStepPause`** (`max_steps`): the last tool batch **runs first**, its results stay in history, and then the wrap-up runs.
 
 Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default.
 

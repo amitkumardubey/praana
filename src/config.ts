@@ -32,6 +32,15 @@ function configWarn(
   });
 }
 
+/** Keep a positive integer, or warn and use `fallback`. */
+function requirePositiveInt(value: number, key: string, fallback: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    configWarn(`Invalid ${key}, using default ${fallback}`);
+    return fallback;
+  }
+  return value;
+}
+
 /** Tracks which config files were loaded in the last loadConfig() call. */
 let _loadedSources: string[] = [];
 
@@ -832,29 +841,31 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
 
   // Turn step budget validation ([turn]) — invalid/zero values fall back to defaults.
   const turnDefaults = DEFAULT_CONFIG.turn;
-  if (
-    !Number.isFinite(out.turn.max_steps) ||
-    !Number.isInteger(out.turn.max_steps) ||
-    out.turn.max_steps <= 0
-  ) {
-    configWarn(`Invalid turn.max_steps, using default ${turnDefaults.max_steps}`);
-    out.turn.max_steps = turnDefaults.max_steps;
-  }
-  if (
-    !Number.isFinite(out.turn.pause_after_steps) ||
-    !Number.isInteger(out.turn.pause_after_steps) ||
-    out.turn.pause_after_steps <= 0
-  ) {
-    configWarn(`Invalid turn.pause_after_steps, using default ${turnDefaults.pause_after_steps}`);
-    out.turn.pause_after_steps = turnDefaults.pause_after_steps;
-  }
-  if (
-    !Number.isFinite(out.turn.hard_max_steps) ||
-    !Number.isInteger(out.turn.hard_max_steps) ||
-    out.turn.hard_max_steps <= 0
-  ) {
-    configWarn(`Invalid turn.hard_max_steps, using default ${turnDefaults.hard_max_steps}`);
-    out.turn.hard_max_steps = turnDefaults.hard_max_steps;
+  out.turn.max_steps = requirePositiveInt(
+    out.turn.max_steps,
+    "turn.max_steps",
+    turnDefaults.max_steps,
+  );
+  out.turn.pause_after_steps = requirePositiveInt(
+    out.turn.pause_after_steps,
+    "turn.pause_after_steps",
+    turnDefaults.pause_after_steps,
+  );
+  out.turn.hard_max_steps = requirePositiveInt(
+    out.turn.hard_max_steps,
+    "turn.hard_max_steps",
+    turnDefaults.hard_max_steps,
+  );
+  // A ceiling below the pause interval stops the turn before the first pause,
+  // with no warning. Raise the ceiling to the pause interval (keep the user's
+  // pause spacing) rather than shortening the pause, which would ask sooner
+  // than they configured. When the two are equal, the ceiling still wins on
+  // that shared step and stops without asking.
+  if (out.turn.hard_max_steps < out.turn.pause_after_steps) {
+    configWarn(
+      `turn.hard_max_steps (${out.turn.hard_max_steps}) is below turn.pause_after_steps (${out.turn.pause_after_steps}); raising hard_max_steps to ${out.turn.pause_after_steps} so the ceiling is not lower than the pause interval. The pause spacing is kept; the ceiling moves up to meet it.`,
+    );
+    out.turn.hard_max_steps = out.turn.pause_after_steps;
   }
 
   // User-declared providers validation ([providers.<id>] sections)

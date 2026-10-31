@@ -11,7 +11,11 @@ import * as toolsActual from "../src/tools/index.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
 import * as nativeLlmActual from "../src/llm/index.js";
+import * as loggerActual from "../src/logger.js";
 import type { PraanaConfig, TurnConfig } from "../src/types.js";
+import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
+import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
+import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
 const ceReal = { ...contextEngineActual };
@@ -23,6 +27,36 @@ const uiReal = { ...uiActual };
 const nativeLlmReal = { ...nativeLlmActual };
 
 const mockStream = mock();
+
+/** Warn calls made by the per-turn llm logger (wrap-up failures). */
+const llmWarns: Array<{ message: string; opts?: { details?: Record<string, unknown> } }> = [];
+
+// Capture the real function before mock.module replaces the live binding.
+const realCreateSessionLogger = loggerActual.createSessionLogger;
+
+mock.module("../src/logger.js", () => ({
+  ...loggerActual,
+  createSessionLogger: async (opts: {
+    sessionId: string;
+    sessionLogDir: string;
+    debug?: boolean;
+    captureNotice?: (line: string) => void;
+    suppressStderr?: boolean;
+  }) => {
+    const logger = await realCreateSessionLogger(opts);
+    const realChild = logger.child.bind(logger);
+    logger.child = ((domain: Parameters<typeof logger.child>[0]) => {
+      const child = realChild(domain);
+      const realWarn = child.warn.bind(child);
+      child.warn = (message: string, warnOpts?: { details?: Record<string, unknown> }) => {
+        if (domain === "llm") llmWarns.push({ message, opts: warnOpts });
+        return realWarn(message, warnOpts);
+      };
+      return child;
+    }) as typeof logger.child;
+    return logger;
+  },
+}));
 
 mock.module("../src/llm/index.js", () => ({
   ...nativeLlmActual,
@@ -131,6 +165,8 @@ mock.module("../src/ui.js", () => ({
 }));
 
 import { runTurn } from "../src/turn.js";
+import { createAllTools } from "../src/tools/index.js";
+import { TurnAbortedError } from "../src/turn-control.js";
 import { loadConfig, getConfigWarnings } from "../src/config.js";
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
@@ -146,6 +182,7 @@ afterAll(() => {
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
   mock.module("../src/llm/index.js", () => nativeLlmReal);
+  mock.module("../src/logger.js", () => loggerActual);
   mock.module("../src/compiler.js", () => ({}));
 });
 
@@ -343,11 +380,26 @@ interface FakeStreamRequest {
     content?: unknown;
     toolCallId?: string;
     toolName?: string;
+    result?: unknown;
+    isError?: boolean;
+    toolCalls?: Array<{ id: string; name: string; args?: Record<string, unknown> }>;
   }>;
+  tools?: Array<{ name: string }>;
+}
+
+const NOT_EXECUTED =
+  "Not executed: the step budget was reached and the turn was stopped.";
+
+interface LoopStreamOpts {
+  failWrapUp?: boolean;
+  /** Put toolCalls on the assistant message, as the real drivers do. */
+  withToolCalls?: boolean;
+  wrapUp?: "summary" | "error" | "interrupt" | "tools";
+  abort?: AbortController;
 }
 
 /** Stream that requests `loop` tool calls, then answers. */
-function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: { failWrapUp?: boolean }) {
+function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: LoopStreamOpts) {
   const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
   const lastUserText =
     typeof lastUser?.content === "string" ? lastUser.content : "";
@@ -358,6 +410,46 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: { failWrapU
     if (opts?.failWrapUp) {
       return (async function* () {
         throw new Error("wrap-up provider failure");
+      })();
+    }
+    if (opts?.wrapUp === "error") {
+      return (async function* () {
+        yield {
+          type: "error",
+          error: new Error("wrap-up provider 500"),
+          retryable: false,
+        };
+      })();
+    }
+    if (opts?.wrapUp === "interrupt") {
+      return (async function* () {
+        yield { type: "text_delta", delta: "partial wrap" };
+        opts.abort?.abort();
+        yield { type: "text_delta", delta: " tail" };
+      })();
+    }
+    if (opts?.wrapUp === "tools") {
+      return (async function* () {
+        yield { type: "text_delta", delta: "[summary] wrapped up" };
+        yield {
+          type: "toolcall_end",
+          toolCall: {
+            id: "wrap-call",
+            name: "shell",
+            arguments: { command: "echo should-not-run" },
+          },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "[summary] wrapped up",
+            toolCalls: [
+              { id: "wrap-call", name: "shell", args: { command: "echo should-not-run" } },
+            ],
+          },
+        };
       })();
     }
     return (async function* () {
@@ -371,19 +463,27 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: { failWrapU
   }
 
   if (toolResultsSoFar < loop) {
+    const id = `call-${toolResultsSoFar}`;
+    const toolCalls = opts?.withToolCalls
+      ? [{ id, name: "shell", args: { command: `echo ${id}` } }]
+      : undefined;
     return (async function* () {
       yield {
         type: "toolcall_end",
         toolCall: {
-          id: `call-${toolResultsSoFar}`,
+          id,
           name: "shell",
-          arguments: { command: "echo hi" },
+          arguments: { command: `echo ${id}` },
         },
       };
       yield {
         type: "done",
         reason: "toolUse",
-        message: { role: "assistant", content: [] },
+        message: {
+          role: "assistant",
+          content: toolCalls ? "" : [],
+          ...(toolCalls ? { toolCalls } : {}),
+        },
       };
     })();
   }
@@ -398,10 +498,21 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: { failWrapU
   })();
 }
 
-function installLoopStream(loop: number, opts?: { failWrapUp?: boolean }) {
+function installLoopStream(loop: number, opts?: LoopStreamOpts) {
   (mockStream as ReturnType<typeof mock>).mockImplementation((req: FakeStreamRequest) => {
     return makeLoopStream(req, loop, opts);
   });
+}
+
+function shellExecuteCount(): number {
+  const fn = createAllTools as unknown as {
+    mock: {
+      results: Array<{
+        value?: { shell?: { execute?: { mock?: { calls: unknown[] } } } };
+      }>;
+    };
+  };
+  return fn.mock.results.at(-1)?.value?.shell?.execute?.mock?.calls.length ?? -1;
 }
 
 function makePauseSink() {
@@ -443,6 +554,107 @@ function toolResultsBeforeCall(callIndex: number): number {
   const req = streamRequestCalls()[callIndex];
   if (!req) return -1;
   return req.messages.filter((m) => m.role === "tool_result").length;
+}
+
+/**
+ * Feed canonical history through a real provider driver (fetch mocked) and
+ * return the JSON body the driver would POST. No network.
+ */
+async function captureDriverBody(
+  driver: AnthropicDriver | OpenAICompatibleDriver,
+  messages: ConversationMessage[],
+): Promise<Record<string, unknown>> {
+  const original = globalThis.fetch;
+  let body: Record<string, unknown> | null = null;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+  try {
+    const req: StreamRequest = {
+      model: "test-model",
+      provider: "test",
+      messages,
+      tools: [],
+    };
+    for await (const _event of driver.stream(req, { apiKey: "test-key" })) {
+      // Body is captured when fetch runs, before events are yielded.
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+  if (!body) throw new Error("driver did not serialize a request body");
+  return body;
+}
+
+function toolUseIds(body: Record<string, unknown>, protocol: "anthropic" | "openai"): string[] {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const ids: string[] = [];
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const record = msg as Record<string, unknown>;
+    if (protocol === "openai" && Array.isArray(record.tool_calls)) {
+      for (const tc of record.tool_calls) {
+        if (tc && typeof tc === "object" && typeof (tc as { id?: unknown }).id === "string") {
+          ids.push((tc as { id: string }).id);
+        }
+      }
+    }
+    if (!Array.isArray(record.content)) continue;
+    for (const part of record.content) {
+      if (!part || typeof part !== "object") continue;
+      const block = part as { type?: unknown; id?: unknown };
+      if (protocol === "anthropic" && block.type === "tool_use" && typeof block.id === "string") {
+        ids.push(block.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function toolResultIds(body: Record<string, unknown>, protocol: "anthropic" | "openai"): Set<string> {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const ids = new Set<string>();
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") continue;
+    const record = msg as Record<string, unknown>;
+    if (protocol === "openai" && record.role === "tool" && typeof record.tool_call_id === "string") {
+      ids.add(record.tool_call_id);
+    }
+    if (!Array.isArray(record.content)) continue;
+    for (const part of record.content) {
+      if (!part || typeof part !== "object") continue;
+      const block = part as { type?: unknown; tool_use_id?: unknown };
+      if (
+        protocol === "anthropic" &&
+        block.type === "tool_result" &&
+        typeof block.tool_use_id === "string"
+      ) {
+        ids.add(block.tool_use_id);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Every tool_use / tool_calls id in a serialized provider payload has a result. */
+async function expectEveryToolCallHasResult(messages: ConversationMessage[]): Promise<void> {
+  const anthropic = await captureDriverBody(new AnthropicDriver(), messages);
+  const openai = await captureDriverBody(new OpenAICompatibleDriver(), messages);
+  for (const [protocol, body] of [
+    ["anthropic", anthropic],
+    ["openai", openai],
+  ] as const) {
+    const used = toolUseIds(body, protocol);
+    const resolved = toolResultIds(body, protocol);
+    expect(used.length).toBeGreaterThan(0);
+    expect(used.filter((id) => !resolved.has(id))).toEqual([]);
+  }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -494,11 +706,14 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(sink.pauseCalls).toEqual([3]);
     // 3 tool rounds + 1 wrap-up call = 4 stream calls. No further tool rounds.
     expect(streamRequestCalls().length).toBe(4);
-    // The batch requested at the pause point was never executed: only 2 tool
-    // results (rounds 1 and 2) made it into history.
+    // Rounds 1 and 2 ran. The batch requested at the pause was not executed;
+    // it is recorded as one error result so the wrap-up history stays valid.
     const lastReq = streamRequestCalls().at(-1)!;
     const toolResults = lastReq.messages.filter((m) => m.role === "tool_result");
-    expect(toolResults.length).toBe(2);
+    expect(toolResults).toHaveLength(3);
+    expect(
+      toolResults.filter((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
+    ).toHaveLength(1);
     // The wrap-up request is a user instruction asking for a summary.
     const lastUser = [...lastReq.messages].reverse().find((m) => m.role === "user");
     expect(String(lastUser?.content ?? "")).toContain("Do not call tools");
@@ -526,7 +741,11 @@ describe("per-turn step budget — interactive soft pause", () => {
     // 3 tool rounds then wrap-up: no prompting, no extra tool rounds.
     expect(streamRequestCalls().length).toBe(4);
     const lastReq = streamRequestCalls().at(-1)!;
-    expect(lastReq.messages.filter((m) => m.role === "tool_result").length).toBe(2);
+    const ceilingResults = lastReq.messages.filter((m) => m.role === "tool_result");
+    expect(ceilingResults).toHaveLength(3);
+    expect(
+      ceilingResults.filter((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
+    ).toHaveLength(1);
     expect(response).toContain("[summary] wrapped up");
   });
 
@@ -551,6 +770,113 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(sink.pauseCalls).toEqual([3]);
     // No summary text; falls back to the existing empty-response banner.
     expect(response).not.toContain("[summary]");
+  });
+
+  it("stop and hard ceiling serialize every pending tool call id with a result", async () => {
+    const stopAt = async (kind: "pause" | "ceiling") => {
+      installLoopStream(6, { withToolCalls: true });
+      const session = makeMockSession({
+        config: makeConfig({
+          turn: {
+            max_steps: 25,
+            pause_after_steps: kind === "pause" ? 3 : 100,
+            hard_max_steps: kind === "ceiling" ? 3 : 300,
+          },
+        }),
+      });
+      const sink = makePauseSink();
+      sink.setPauseAnswer(false);
+      await runTurn(session, `loop ${kind}`, undefined, { sink });
+      // The stopped batch was not executed.
+      expect(shellExecuteCount()).toBe(2);
+      const last = streamRequestCalls().at(-1)!;
+      // Prove the wrap-up payload through the real Anthropic and OpenAI
+      // serializers before checking the synthetic result text.
+      await expectEveryToolCallHasResult(last.messages as ConversationMessage[]);
+      const synthetic = last.messages.filter(
+        (m) => m.role === "tool_result" && String(m.result ?? "").includes(NOT_EXECUTED),
+      );
+      expect(synthetic).toHaveLength(1);
+      expect(synthetic[0]?.isError).toBe(true);
+    };
+
+    await stopAt("pause");
+    await stopAt("ceiling");
+  });
+
+  it("Ctrl+C during wrap-up finalizes the turn as an interrupt", async () => {
+    const abort = new AbortController();
+    installLoopStream(6, { wrapUp: "interrupt", abort });
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: 25, pause_after_steps: 3, hard_max_steps: 300 },
+      }),
+    });
+    const sink = makePauseSink();
+    sink.setPauseAnswer(false);
+
+    let thrown: unknown;
+    try {
+      await runTurn(session, "interrupt wrap", undefined, { sink, signal: abort.signal });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TurnAbortedError);
+    expect((thrown as TurnAbortedError).partialResponse).toContain("partial wrap");
+  });
+
+  it("a wrap-up stream error is logged and shown as the end-of-turn banner", async () => {
+    llmWarns.length = 0;
+    installLoopStream(6, { wrapUp: "error" });
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: 25, pause_after_steps: 3, hard_max_steps: 300 },
+      }),
+    });
+    const sink = makePauseSink();
+    sink.setPauseAnswer(false);
+    const fallbacks: string[] = [];
+    sink.onFallback = (text: string) => {
+      fallbacks.push(text);
+    };
+
+    const response = await runTurn(session, "error wrap", undefined, { sink });
+
+    expect(fallbacks.join("\n")).toContain("[LLM error: wrap-up provider 500]");
+    expect(response).toContain("I encountered an error while processing your request.");
+    const logged = llmWarns.find((w) => w.message.toLowerCase().includes("wrap-up"));
+    expect(logged).toBeDefined();
+    expect(logged?.opts?.details?.error).toBe("wrap-up provider 500");
+    expect(logged?.opts?.details?.model).toBe("test-model");
+    expect(logged?.opts?.details?.provider).toBe("openrouter");
+  });
+
+  it("wrap-up offers no tools and does not run tool calls from that reply", async () => {
+    installLoopStream(6, { wrapUp: "tools" });
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: 25, pause_after_steps: 3, hard_max_steps: 300 },
+      }),
+    });
+    const sink = makePauseSink();
+    sink.setPauseAnswer(false);
+
+    const response = await runTurn(session, "tools wrap", undefined, { sink });
+
+    const calls = streamRequestCalls();
+    const wrap = calls.at(-1)!;
+    expect(wrap.tools ?? []).toEqual([]);
+    expect(calls).toHaveLength(4);
+    expect(shellExecuteCount()).toBe(2);
+    expect(response).toContain("[summary] wrapped up");
+    const sawWrapCall = calls.some((req) =>
+      req.messages.some(
+        (m) =>
+          m.role === "assistant" &&
+          (m.toolCalls ?? []).some((tc) => tc.id === "wrap-call"),
+      ),
+    );
+    expect(sawWrapCall).toBe(false);
   });
 });
 
@@ -611,6 +937,47 @@ describe("per-turn step budget — headless hard cap", () => {
     expect(streamRequestCalls().length).toBe(5);
     expect(response).toContain("final answer reached");
   });
+
+  it("a sink without onStepPause uses max_steps as a hard cap with wrap-up", async () => {
+    installLoopStream(6);
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: 3, pause_after_steps: 2, hard_max_steps: 300 },
+      }),
+    });
+    const sink: TurnUiSink = { onTextDelta: () => {}, onSystemLines: () => {} };
+
+    const response = await runTurn(session, "no hook", undefined, { sink });
+
+    expect(streamRequestCalls().length).toBe(4);
+    const last = streamRequestCalls().at(-1)!;
+    expect(last.messages.filter((m) => m.role === "tool_result")).toHaveLength(3);
+    expect(
+      last.messages.some((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
+    ).toBe(false);
+    const lastUser = [...last.messages].reverse().find((m) => m.role === "user");
+    expect(String(lastUser?.content ?? "")).toContain("Do not call tools");
+    expect(response).toContain("[summary] wrapped up");
+    expect(shellExecuteCount()).toBe(3);
+  });
+
+  it("a sink with onStepPause keeps going past max_steps until the pause or ceiling", async () => {
+    installLoopStream(4);
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: 2, pause_after_steps: 100, hard_max_steps: 10 },
+      }),
+    });
+    const sink = makePauseSink();
+    sink.setPauseAnswer(true);
+
+    const response = await runTurn(session, "hook ignores max_steps", undefined, { sink });
+
+    expect(sink.pauseCalls).toEqual([]);
+    expect(streamRequestCalls().length).toBe(5);
+    expect(response).toContain("final answer reached");
+    expect(shellExecuteCount()).toBe(4);
+  });
 });
 
 describe("per-turn step budget — config validation", () => {
@@ -669,5 +1036,19 @@ describe("per-turn step budget — config validation", () => {
     expect(warnings.some((w) => w.includes("turn.max_steps"))).toBe(true);
     expect(warnings.some((w) => w.includes("turn.pause_after_steps"))).toBe(true);
     expect(warnings.some((w) => w.includes("turn.hard_max_steps"))).toBe(true);
+  });
+
+  it("raises hard_max_steps to pause_after_steps when the ceiling is lower", () => {
+    writeTurnConfig("[turn]\npause_after_steps = 40\nhard_max_steps = 10\n");
+    const config = loadConfig();
+    const t = config.turn as TurnConfig;
+    expect(t.pause_after_steps).toBe(40);
+    expect(t.hard_max_steps).toBe(40);
+    const warnings = getConfigWarnings();
+    expect(
+      warnings.some(
+        (w) => w.includes("hard_max_steps") && w.includes("pause_after_steps"),
+      ),
+    ).toBe(true);
   });
 });

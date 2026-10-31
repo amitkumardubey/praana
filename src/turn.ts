@@ -807,13 +807,14 @@ export async function runTurn(
     },
   ];
   const maxSteps = session.config.turn?.max_steps ?? 25;
-  // Headless runs keep the hard `max_steps` cap and never prompt. Interactive
-  // (TTY) sessions get a soft pause every `pause_after_steps` steps and an
-  // absolute `hard_max_steps` ceiling.
+  // Pause/ceiling only when the sink can ask. Headless runs, and any sink
+  // without `onStepPause` (subagents, tests, non-interactive UIs), use
+  // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
   const isHeadless = !!session.headless;
   const pauseAfterSteps = Math.max(1, session.config.turn?.pause_after_steps ?? 50);
   const hardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
-  const loopCap = isHeadless ? maxSteps : hardMaxSteps;
+  const pauseEnabled = !isHeadless && typeof s.onStepPause === "function";
+  const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
@@ -836,7 +837,9 @@ export async function runTurn(
     parameters: normalizeToolParameters((def as any).parameters),
   }));
 
-  async function attemptStream(): Promise<LlmStreamResult> {
+  async function attemptStream(
+    toolsForCall: typeof piTools = piTools,
+  ): Promise<LlmStreamResult> {
     const reasoningEffort = getReasoningEffort(
       activeModel as Record<string, unknown>,
       activeModelName,
@@ -850,7 +853,7 @@ export async function runTurn(
       providerName: activeProviderName,
       compiledPrompt,
       history,
-      piTools,
+      piTools: toolsForCall,
       signal: options?.signal,
       reasoningEffort,
       onTextDelta: (delta) => {
@@ -932,12 +935,66 @@ export async function runTurn(
     ]);
   }
 
+  const NOT_EXECUTED_TEXT =
+    "Not executed: the step budget was reached and the turn was stopped.";
+
+  /** Record pending tool calls as errors without running them. */
+  function appendNotExecutedResults(
+    calls: Array<{ toolCallId?: string; toolName: string }>,
+  ): void {
+    for (const tc of calls) {
+      history.push({
+        role: "toolResult",
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        content: [{ type: "text", text: NOT_EXECUTED_TEXT }],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
+  function withoutWrapUpToolCalls(message: any): any {
+    if (!message || typeof message !== "object") return message;
+    const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+    let content = message.content;
+    let strippedContent = false;
+    if (Array.isArray(content)) {
+      const next = content.filter((part: any) => {
+        if (!part || typeof part !== "object") return true;
+        return part.type !== "tool_use" && part.type !== "toolUse" && part.type !== "toolCall";
+      });
+      strippedContent = next.length !== content.length;
+      content = next;
+    }
+    if (!hadCalls && !strippedContent) return message;
+    const nextMessage = { ...message, content };
+    delete nextMessage.toolCalls;
+    return nextMessage;
+  }
+
+  function logWrapUpFailure(reason: string, error: string | undefined): void {
+    llmLogger.warn("Wrap-up summary stream failed; ending turn", {
+      code: "LLM_STREAM_ERROR",
+      details: {
+        reason,
+        error,
+        model: activeModelName,
+        provider: activeProviderName,
+      },
+    });
+    lastStreamReason = "error";
+    lastLlmErrorMessage = error ?? lastLlmErrorMessage;
+  }
+
   /**
    * Stop the turn gracefully at a step budget limit: append a no-tool
-   * instruction asking for a short summary, stream one final model call like
-   * a normal reply, and record its output. If that final call fails, swallow
-   * the error — the caller falls back to the existing end-of-turn banner
-   * text instead of surfacing an exception.
+   * instruction asking for a short summary, stream one final model call
+   * with an empty tool list, and record its text. Tool calls in that reply
+   * are dropped and not executed. A stream error is logged and left for the
+   * existing end-of-turn banner. Ctrl+C sets `interrupted` so the caller
+   * finalizes the turn the same way as an interrupt in a normal step.
    */
   async function wrapUpStep(reason: string): Promise<void> {
     s.onSpinnerStop?.();
@@ -947,7 +1004,18 @@ export async function runTurn(
       timestamp: Date.now(),
     });
     try {
-      const wrap = await attemptStream();
+      const wrap = await attemptStream([]);
+      if (wrap.interrupted || options?.signal?.aborted) {
+        fullResponse += wrap.fullResponse;
+        providerUsage = wrap.providerUsage ?? providerUsage;
+        recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+        interrupted = true;
+        return;
+      }
+      if (wrap.finalReason === "error") {
+        logWrapUpFailure(reason, wrap.errorMessage);
+        return;
+      }
       fullResponse += wrap.fullResponse;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
@@ -959,16 +1027,14 @@ export async function runTurn(
             source: "assistant",
           });
         }
-        history.push(wrap.finalMessage);
+        history.push(withoutWrapUpToolCalls(wrap.finalMessage));
       }
     } catch (err) {
-      llmLogger.warn("Wrap-up summary stream failed; ending turn", {
-        code: "LLM_STREAM_ERROR",
-        details: {
-          reason,
-          error: err instanceof Error ? err.message : String(err),
-        },
-      });
+      if (options?.signal?.aborted) {
+        interrupted = true;
+        return;
+      }
+      logWrapUpFailure(reason, err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -1094,11 +1160,13 @@ export async function runTurn(
       }
     }
 
-    // Interactive soft pause & hard ceiling (TTY sessions only). Headless runs
-    // never prompt and rely on the hard max_steps cap after tool execution.
-    if (!isHeadless && pendingToolCalls.length > 0) {
+    // Interactive soft pause and hard ceiling. Only when the sink provides
+    // onStepPause. The pending batch is not executed: stopping must not edit
+    // files. Each call is recorded as an error so the wrap-up request is valid.
+    if (pauseEnabled && pendingToolCalls.length > 0) {
       const stepsUsed = step + 1;
       if (stepsUsed >= hardMaxSteps) {
+        appendNotExecutedResults(pendingToolCalls);
         await wrapUpStep("Hard per-turn step ceiling reached.");
         break;
       }
@@ -1109,6 +1177,7 @@ export async function runTurn(
           break;
         }
         if (!cont) {
+          appendNotExecutedResults(pendingToolCalls);
           await wrapUpStep("Stopped at per-turn step pause.");
           break;
         }
@@ -1390,9 +1459,9 @@ export async function runTurn(
 
     if (interrupted) break;
 
-    // Headless hard cap: the results of the last executed batch are already in
-    // history; run one no-tool wrap-up summary call before ending the turn.
-    if (isHeadless && step === maxSteps - 1) {
+    // Hard cap for headless runs and sinks that cannot pause: the last batch
+    // has already executed. One no-tool wrap-up, then the turn ends.
+    if (!pauseEnabled && step === maxSteps - 1) {
       await wrapUpStep("Reached per-turn tool step limit.");
       break;
     }
