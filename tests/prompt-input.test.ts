@@ -167,6 +167,53 @@ describe("resetPromptContinuationState", () => {
   });
 });
 
+describe("cursorOffset is a UTF-16 index into plainText", () => {
+  it("round-trips exactly for every UTF-16 index incl. CJK and emoji", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    try {
+      const ta = new TextareaRenderable(setup.renderer, {
+        id: "probe-offset",
+        width: 60,
+        height: 5,
+      });
+      setup.renderer.root.add(ta);
+      // CJK chars are one UTF-16 unit each; the emoji is a surrogate pair;
+      // the trailing backslash sits on the second line.
+      const TEXT = "あいうえお\nカキクケコ😀\\";
+      ta.setText(TEXT);
+      expect(ta.plainText).toBe(TEXT);
+      expect(TEXT.length).toBe(14); // 5 + 1 + 5 + 2 (emoji) + 1
+
+      // Setting any UTF-16 index (including inside the surrogate pair) must
+      // round-trip unchanged — cursorOffset indexes by code unit.
+      for (let off = 0; off <= TEXT.length; off++) {
+        ta.cursorOffset = off;
+        expect(ta.cursorOffset).toBe(off);
+      }
+
+      // Caret at the end of the buffer = plainText.length; the trailing
+      // backslash on the second line is what the continuation sees.
+      ta.cursorOffset = TEXT.length;
+      expect(ta.cursorOffset).toBe(TEXT.length);
+      expect(ta.logicalCursor.offset).toBe(TEXT.length);
+      expect(ta.plainText[TEXT.length - 1]).toBe("\\");
+      expect(shouldContinueLine(ta.plainText, ta.cursorOffset)).toBe(true);
+
+      // End of a non-last line: the caret sits immediately before the
+      // newline, which cursorOffset reports as the newline's UTF-16 index.
+      const MULTI = "abc\\\ndef";
+      ta.setText(MULTI);
+      ta.setCursor(0, 4); // after the backslash, end of line 0
+      const nl = MULTI.indexOf("\n");
+      expect(ta.cursorOffset).toBe(nl);
+      expect(ta.plainText[ta.cursorOffset]).toBe("\n");
+      expect(shouldContinueLine(ta.plainText, ta.cursorOffset)).toBe(true);
+    } finally {
+      setup.renderer.destroy();
+    }
+  });
+});
+
 describe("applyBackslashContinue", () => {
   it("drops the terminating backslash and moves the caret back", () => {
     expect(applyBackslashContinue("abc\\", 4)).toEqual({ text: "abc", caret: 3 });
