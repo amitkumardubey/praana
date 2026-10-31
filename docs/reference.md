@@ -132,7 +132,13 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 ### ChatGPT subscription login
 
-Run `/login openai-codex` and choose a method:
+Run `/login openai-codex` and choose a method. After sign-in, the default
+model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
+`gpt-6-astra`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`). There is no bare `gpt-5.6` id.
+`gpt-reserve` and `codex-auto-review` are not listed.
+
+
 
 - **Browser login (default):** PRAANA opens the authorization URL and listens only
   on `127.0.0.1:1455`. The registered redirect is
