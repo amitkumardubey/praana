@@ -87,12 +87,13 @@ export function TranscriptView(props: TranscriptViewProps) {
   }
 
   return (
-    // NOTE: no flexDirection prop here. OpenTUI's ScrollBox root must stay at
-    // its default flexDirection="row" (content wrapper + vertical scrollbar
-    // side-by-side) with alignItems="stretch", so the vertical scrollbar
-    // stretches to the full viewport height. Passing flexDirection="column"
-    // overrides the root to stack the scrollbar under the content, collapsing
-    // the scrollbar track to ~6 rows (thumb becomes a tiny stub).
+    // NOTE: no flexDirection prop here. OpenTUI 0.8.0 ScrollBox scrollbars are
+    // native scene state, not Yoga children, so the root's flexDirection can
+    // no longer collapse the vertical scrollbar track; the scrolled content
+    // also always flows vertically regardless of flexDirection (verified
+    // empirically with the test renderer: column vs default produce identical
+    // frames). We keep the root at its default (no flexDirection prop) and
+    // rely on native vertical content flow + full-height native scrollbar.
     <scrollbox
       id="transcript"
       flexGrow={1}
