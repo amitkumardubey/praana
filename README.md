@@ -36,6 +36,6 @@ On first run without a config file, `praana` opens a short setup wizard. Update 
 
 ## Status
 
-v0.16.0 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).
+v0.16.1 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).
 
 [Docs](https://amitkumardubey.github.io/praana/) · [Reference](./docs/reference.md) · [Roadmap](./ROADMAP.md) · [Feedback](./CONTRIBUTING.md) · [MIT license](./LICENSE)
