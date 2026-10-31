@@ -180,6 +180,28 @@ describe("Responses stream termination", () => {
     }
   });
 
+  it("reads usage nested under response.completed and response.incomplete", async () => {
+    const nested = {
+      input_tokens: 11,
+      output_tokens: 7,
+      total_tokens: 18,
+      input_tokens_details: { cached_tokens: 4 },
+      output_tokens_details: { reasoning_tokens: 3 },
+    };
+    const mapped = { input: 11, output: 7, totalTokens: 18 };
+    const completedEvents = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
+      { type: "response.output_text.delta", delta: "Hi" },
+      { type: "response.completed", response: { status: "completed", usage: nested } },
+    ]);
+    expect(completedEvents).toContainEqual({ type: "usage", usage: mapped });
+    const incompleteEvents = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: nested } },
+    ]);
+    expect(incompleteEvents).toContainEqual({ type: "usage", usage: mapped });
+    expect(incompleteEvents.at(-1)).toEqual({ type: "done", reason: "length", message: { role: "assistant", content: "partial" } });
+  });
+
   it("preserves valid OpenAI text, reasoning, tools, usage and final message", async () => {
     const events = await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" }, [
       { type: "response.reasoning_text.delta", delta: "Thinking" },

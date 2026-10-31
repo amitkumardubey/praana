@@ -490,7 +490,16 @@ describe("rust-v2 provider legacy fixtures", () => {
       ],
     };
     const events = await collectDriverEvents(driver, req, OPENAI_AUTH);
-    compareEventsJsonl("legacy-ts/openai-responses/tool-call.events.jsonl", events);
+    // The committed jsonl was captured before nested response.usage was read.
+    // Leave that fixture and manifest.json unchanged; assert the new usage
+    // event beside the previous sequence.
+    compareEventsJsonl(
+      "legacy-ts/openai-responses/tool-call.events.jsonl",
+      events.filter((event) => event.type !== "usage"),
+    );
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 90, output: 25, totalTokens: 115 } },
+    ]);
   });
 
   it("legacy openrouter request url and headers match committed evidence", async () => {

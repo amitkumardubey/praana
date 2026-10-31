@@ -11,12 +11,33 @@ import type {
   ConversationMessage,
   ToolDefinition,
   AssistantMessage,
+  ProviderUsage,
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { joinUrl } from "../url.js";
 import { extractAccountId } from "../../oauth-codex.js";
+
+/** Top-level `usage` or the `response.usage` object sent on completed/incomplete events. */
+function readResponsesUsage(parsed: Record<string, unknown>): ProviderUsage | null {
+  const response = parsed.response;
+  const nested = response && typeof response === "object"
+    ? (response as { usage?: unknown }).usage
+    : undefined;
+  const raw = nested && typeof nested === "object"
+    ? nested
+    : parsed.usage && typeof parsed.usage === "object"
+      ? parsed.usage
+      : undefined;
+  if (!raw || typeof raw !== "object") return null;
+  const u = raw as Record<string, number>;
+  return {
+    input: u.input_tokens ?? u.prompt_tokens ?? 0,
+    output: u.output_tokens ?? u.completion_tokens ?? 0,
+    totalTokens: u.total_tokens ?? 0,
+  };
+}
 
 export class OpenAIResponsesDriver implements LlmDriver {
   readonly protocol = "openai-responses";
@@ -170,13 +191,9 @@ export class OpenAIResponsesDriver implements LlmDriver {
           }
         }
 
-        if (parsed.usage && typeof parsed.usage === "object") {
-          const u = parsed.usage as Record<string, number>;
-          latestUsage = {
-            input: u.input_tokens ?? u.prompt_tokens ?? 0,
-            output: u.output_tokens ?? u.completion_tokens ?? 0,
-            totalTokens: u.total_tokens ?? 0,
-          };
+        const usage = readResponsesUsage(parsed);
+        if (usage) {
+          latestUsage = usage;
           yield { type: "usage", usage: latestUsage };
         }
 
