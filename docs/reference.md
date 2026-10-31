@@ -145,7 +145,10 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   A supplied state must match this login. The URL stays visible while paste input
   waits, as one copyable string (the overlay soft-wraps it; it is not broken with
   blank lines). The paste field stays on screen. Receiving the callback dismisses
-  that input without cancelling login.
+  that input without cancelling login. Dismissing the paste prompt on its own
+  rejects that prompt with a dedicated error instead of leaving it pending.
+  Login continues when the browser callback can still finish it. When paste is
+  the only path, that error ends the login.
   Closing the paste prompt cancels login and does not replace a saved credential.
   A blank paste is refused. An invalid paste (typo, state mismatch, or empty code)
   is reported and asked for again. While the callback listener is running, a bad

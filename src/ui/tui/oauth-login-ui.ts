@@ -3,6 +3,7 @@
  * Bridges AuthInteraction to status lines + text/select prompts.
  */
 import { openBrowserUrl } from "../../oauth-browser.js";
+import { CodexManualPromptSuperseded } from "../../oauth-codex.js";
 import {
   runOAuthLogin,
   type AuthEvent,
@@ -230,9 +231,9 @@ export async function runOAuthLoginWithUi(
       try {
         return await ui.promptText(prompt.message, prompt.placeholder, context, prompt.signal);
       } catch (error) {
-        // Callback won: only the per-prompt manual signal aborted. Detach quietly.
+        // Only this paste prompt was aborted. Reject so login can settle; do not wait forever.
         if (prompt.signal?.aborted && !ui.signal.aborted) {
-          return await new Promise<string>(() => {});
+          throw new CodexManualPromptSuperseded();
         }
         throw error;
       }

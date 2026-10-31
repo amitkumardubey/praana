@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAuthorizeUrl } from "../src/oauth-codex.js";
+import { buildAuthorizeUrl, CodexManualPromptSuperseded } from "../src/oauth-codex.js";
 import {
   createOAuthTextPrompt,
   formatOAuthManualPrompt,
@@ -116,6 +116,56 @@ it("rejects immediately when the prompt signal is already aborted", async () => 
     name: "AbortError",
     message: "The operation was aborted.",
   });
+});
+
+it("rejects a dismissed manual prompt instead of hanging when paste is the only path", async () => {
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-dismiss-"));
+  const previousHome = process.env.PRAANA_HOME;
+  process.env.PRAANA_HOME = home;
+  resetCredentialStoreForTests();
+  const OriginalAbortController = globalThis.AbortController;
+  const created: AbortController[] = [];
+  globalThis.AbortController = class extends OriginalAbortController {
+    constructor() {
+      super();
+      created.push(this);
+    }
+  };
+  const overall = new OriginalAbortController();
+  resetOAuthProvidersForTests({
+    fetch: (async () => { throw new Error("token endpoint should not be called"); }) as typeof fetch,
+    callbackServer: async () => undefined,
+  });
+  try {
+    const login = runOAuthLoginWithUi("openai-codex", {
+      signal: overall.signal,
+      showStatus: () => {},
+      promptSelect: async () => "browser",
+      promptText: async (_message, _placeholder, _context, signal) => {
+        const manual = created.find((controller) => controller.signal === signal);
+        expect(manual).toBeDefined();
+        manual!.abort();
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    }, () => {});
+    const result = await Promise.race([
+      login.then(() => "resolved" as const, (error: unknown) => error),
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 300)),
+    ]);
+    if (result === "hung" || result === "resolved") {
+      throw new Error(`login ${result}`);
+    }
+    expect(result).toBeInstanceOf(CodexManualPromptSuperseded);
+    expect(overall.signal.aborted).toBe(false);
+  } finally {
+    overall.abort();
+    globalThis.AbortController = OriginalAbortController;
+    resetOAuthProvidersForTests();
+    resetCredentialStoreForTests();
+    if (previousHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 it("completes Codex login when the callback wins and the manual prompt rejects", async () => {

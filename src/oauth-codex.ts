@@ -38,6 +38,17 @@ export class CodexTokenResponseError extends Error {
   }
 }
 
+/**
+ * The paste prompt's own signal aborted while login itself did not.
+ * Callers must reject with this instead of leaving the prompt pending.
+ */
+export class CodexManualPromptSuperseded extends Error {
+  constructor() {
+    super("OpenAI Codex manual prompt was dismissed");
+    this.name = "CodexManualPromptSuperseded";
+  }
+}
+
 type RandomBytes = (size: number) => Uint8Array;
 export interface CodexOAuthDeps {
   fetch?: typeof fetch;
@@ -201,15 +212,17 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
               signal: manualAbort.signal,
             });
           } catch (error) {
-            // Callback won and aborted only this prompt. Do not fail the login.
-            if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
+            // Callback won, or the paste prompt was dismissed, without cancelling login.
+            if (error instanceof CodexManualPromptSuperseded) throw error;
+            if (manualAbort.signal.aborted && !signal.aborted) throw new CodexManualPromptSuperseded();
             throw error;
           }
           try {
             return parseManualInput(input, state);
           } catch (error) {
             // The callback can abort this prompt after a stale paste resolves.
-            if (manualAbort.signal.aborted && !signal.aborted) return await new Promise<string>(() => {});
+            if (error instanceof CodexManualPromptSuperseded) throw error;
+            if (manualAbort.signal.aborted && !signal.aborted) throw new CodexManualPromptSuperseded();
             lastError = error instanceof Error ? error : new Error(String(error));
             interaction.notify({ type: "info", message: lastError.message });
           }
@@ -228,7 +241,23 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
             return new Promise<string>(() => {});
           })
         : undefined;
-      const code = await withSignal(callbackTask ? Promise.race([callbackTask, manual()]) : manual(), signal);
+      const manualTask = manual().then(
+        (value) => value,
+        (error: unknown) => {
+          if (error instanceof CodexManualPromptSuperseded) return null;
+          throw error;
+        },
+      );
+      const raced = callbackTask
+        ? Promise.race([
+            callbackTask,
+            manualTask.then((value) => value ?? callbackTask),
+          ])
+        : manualTask.then((value) => {
+            if (value === null) throw new CodexManualPromptSuperseded();
+            return value;
+          });
+      const code = await withSignal(raced, signal);
       ignoreCallbackError = true;
       manualAbort.abort();
       callback?.close();
