@@ -175,10 +175,12 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 - **Ctrl+J**, **Alt+Enter**, **Ctrl+Enter**, **Shift+Enter** — insert a newline (Shift+Enter only on terminals that report it distinctly)
 - A trailing **`\` + Enter** — continue the line on the next line, but only when the caret is at the end of the current line (end of the buffer, or immediately before a newline). An odd run of trailing backslashes continues the line (one backslash is dropped and a real newline inserted); an even run — for example type two to send a literal trailing backslash — submits with all backslashes kept. A backslash elsewhere mid-line is submitted literally.
 - **Esc** — close autocomplete, leave transcript focus, or dismiss an overlay
+- **`!<command>`** — run a shell command directly, the same as `/shell <command>` (a bare `!` shows `Usage: !<command>`)
+- **Esc Esc** — interrupt a running turn (single Esc only closes autocomplete/overlays/focus; it does not interrupt)
 - **Ctrl+C** — abort a running turn; when idle, clear the input, or exit if the input is already empty
 - **F9** — focus the transcript (Up/Down move the selection, Enter expands a tool row, Esc returns to the prompt)
 
-`/help` prints this same key list. The result overlay scrolls with Up/Down/PageUp/PageDown when the text is taller than the frame (`↑↓ scroll · esc close`).
+`/help` prints this same key list. The result overlay scrolls with Up/Down/PageUp/PageDown when the text is taller than the frame (`↑↓ scroll · enter/esc close`); scroll keys never dismiss the overlay — only Esc/Enter or any other key does.
 
 ## Status bar
 
@@ -193,6 +195,12 @@ The footer abbreviations, also listed by `/help`:
 | `think` | Reasoning effort (`think medium`), or the stream when thinking is on |
 | `engine` | Context engine is on |
 | `mem` | Cognitive Memory writes are on or off. Incognito replaces this with `incognito` |
+| `debug` | Debug mode is on |
+| `plan` | Plan mode is on: mutating tools are blocked |
+| `update` | A newer version is available |
+| `restart` | An update was installed; restart to apply it |
+| `(N% raw)` | Raw fill percent, shown when it diverges from the weighted % by more than 15 points |
+| `compact` / `emergency` | Context pressure mode, shown when not normal |
 | `in` / `out` | Session input and output tokens, when cost display is on |
 
 ## Features
