@@ -563,6 +563,33 @@ describe("Ctrl+C decision — overlay kind precedence", () => {
   });
 });
 
+describe("Ctrl+C decision — running turn with palette/model overlays", () => {
+  it("model selector + no selection + running turn → interrupt (not cancel_overlay)", () => {
+    expect(decideCtrlC(false, "", "model", true)).toEqual({ action: "interrupt" });
+  });
+
+  it("palette + no selection + running turn → interrupt", () => {
+    expect(decideCtrlC(false, "", "palette", true)).toEqual({ action: "interrupt" });
+  });
+
+  it("model/palette + no selection + idle → still cancel the overlay", () => {
+    expect(decideCtrlC(false, "", "model", false)).toEqual({ action: "cancel_overlay", overlay: "model" });
+    expect(decideCtrlC(false, "", "palette", false)).toEqual({ action: "cancel_overlay", overlay: "palette" });
+  });
+
+  it("selection still copies in the model selector while a turn runs", () => {
+    expect(decideCtrlC(true, "sel", "model", true)).toEqual({ action: "copy", text: "sel" });
+  });
+
+  it("modal overlays still defer while a turn runs", () => {
+    expect(decideCtrlC(false, "", "login", true)).toEqual({ action: "defer" });
+  });
+
+  it("main UI keeps the interrupt path while a turn runs", () => {
+    expect(decideCtrlC(false, "", "none", true)).toEqual({ action: "interrupt" });
+  });
+});
+
 describe("copy outcome — toast text, tone, and selection clearing", () => {
   it("native tool success → info toast 'Copied N characters', clears selection", () => {
     expect(copyOutcomeOf({ ok: true, method: "xclip" }, "some text")).toEqual({

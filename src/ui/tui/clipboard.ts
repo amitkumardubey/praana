@@ -286,13 +286,16 @@ export type CtrlCCopyDecision =
  *   missing or empty-string selection falls through.
  * - Modal overlays (setup/consent/login/logout) own Ctrl+C themselves; the
  *   decision defers to them.
- * - Palette/model overlays cancel (close) when there is no selection, matching
- *   what Escape does; the main UI falls through to the interrupt path.
+ * - Palette/model overlays close when there is no selection, matching what
+ *   Escape does — unless a turn is running, in which case Ctrl+C must still
+ *   interrupt the turn (and may close the overlay).
+ * - The main UI falls through to the interrupt path.
  */
 export function decideCtrlC(
   hasSelection: boolean,
   getSelectedText: string,
   overlayKind: string = "none",
+  turnRunning: boolean = false,
 ): CtrlCCopyDecision {
   if (isModalOverlay(overlayKind)) {
     return { action: "defer" };
@@ -302,6 +305,9 @@ export function decideCtrlC(
     return { action: "copy", text };
   }
   if (overlayKind === "palette" || overlayKind === "model") {
+    if (turnRunning) {
+      return { action: "interrupt" };
+    }
     return { action: "cancel_overlay", overlay: overlayKind };
   }
   return { action: "interrupt" };

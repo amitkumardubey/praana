@@ -179,6 +179,10 @@ export async function runTui(
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
   let turnStartedAt = 0;
+  // True while controller.runUserTurn is awaited; lets the Ctrl+C decision
+  // interrupt a running turn even when a non-modal overlay (palette/model) is
+  // open without a selection.
+  let turnRunning = false;
   let ready = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
   let updateAvailable = false;
@@ -629,10 +633,12 @@ export async function runTui(
     openTuiSink.appendUser(input);
     ui.spinner.start("thinking…");
     turnStartedAt = Date.now();
+    turnRunning = true;
 
     try {
       await controller.runUserTurn(input, openTuiSink);
     } finally {
+      turnRunning = false;
       ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
@@ -661,6 +667,7 @@ export async function runTui(
               renderer.hasSelection,
               renderer.getSelection()?.getSelectedText() ?? "",
               overlay.kind(),
+              turnRunning,
             );
             if (ctrlC.action === "copy") {
               // Re-entrancy guard: a second Ctrl+C while a copy is in flight is
@@ -679,6 +686,16 @@ export async function runTui(
               return;
             }
             if (ctrlC.action === "defer") return;
+            // An interrupting Ctrl+C closes an open non-modal overlay too, like
+            // Escape would; the turn interrupt below still applies when a turn
+            // is running (decideCtrlC returns interrupt for palette/model with
+            // no selection while turnRunning is set).
+            if (overlay.kind() === "palette") {
+              handlePaletteCancel();
+            } else if (overlay.kind() === "model") {
+              dismissOverlay();
+              focusPrompt();
+            }
             if (!session) {
               void doShutdown(bootOnboarding ? 1 : 0);
               return;
