@@ -461,17 +461,19 @@ describe("serialized OAuth refresh", () => {
           onFallback: (line) => { fallbacks.push(line); },
         },
       });
+      const failure = "OpenAI Codex session expired and could not be refreshed: token endpoint down. Run /login openai-codex again.";
       expect(chatCalls).toBe(0);
-      expect(text).toContain("Run /login openai-codex again");
-      expect(text).toContain("token endpoint down");
-      expect(errors).toEqual([text.trim()]);
+      expect(text).not.toContain("Run /login openai-codex again");
+      expect(text).not.toContain("token endpoint down");
+      expect(errors).toEqual([failure]);
       expect(fallbacks).toEqual([]);
       expect(session.getTurnCount()).toBe(turnsBefore + 1);
       expect(postTurns).toBe(1);
       const messages = session.eventLog.readAll().filter((event) => event.kind === "agent_message");
-      expect(messages).toHaveLength(1);
+      expect(messages).toHaveLength(0);
       expect(session.contextEngine).not.toBeNull();
       expect(session.contextEngine!.ledger.list().length).toBe(1);
+      expect(session.contextEngine!.ledger.list()[0]?.assistantMessage ?? "").not.toContain("token endpoint down");
     } finally {
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }
@@ -956,6 +958,51 @@ describe("serialized OAuth refresh", () => {
     }
   });
 
+  it("does not replay a failed refresh as the assistant's own message", async () => {
+    seedExpiredCodex();
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("token endpoint down"); }) as typeof fetch,
+    });
+    globalThis.fetch = (async () => { throw new Error("stale token was sent"); }) as typeof fetch;
+    const logDir = join(praanaHome, "sessions");
+    mkdirSync(logDir, { recursive: true });
+    const session = await Session.create(praanaHome, turnConfig(logDir, praanaHome), { incognito: true });
+    const errors: string[] = [];
+    const failure = "OpenAI Codex session expired and could not be refreshed: token endpoint down. Run /login openai-codex again.";
+    try {
+      const text = await runTurn(session, "hello", undefined, {
+        sink: { onError: (entry) => { errors.push(entry.message); } },
+      });
+      expect(text).not.toContain("token endpoint down");
+      expect(text).not.toContain("Run /login");
+      expect(errors).toEqual([failure]);
+      const agentText = () => session.eventLog.readAll()
+        .filter((event) => event.kind === "agent_message")
+        .map((event) => String(event.payload.text ?? ""))
+        .join("\n");
+      expect(agentText()).not.toContain("token endpoint down");
+      expect(agentText()).not.toContain("Run /login");
+
+      const access = jwt("recovered");
+      setOAuthToken("openai-codex", {
+        access,
+        refresh: "rt-recovered",
+        expires: Date.now() + 3_600_000,
+        accountId: "recovered",
+      });
+      globalThis.fetch = (async () => new Response(
+        `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "next-turn" })}\n\ndata: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`,
+      )) as typeof fetch;
+      const second = await runTurn(session, "again", undefined, { sink: {} });
+      expect(second).toContain("next-turn");
+      expect(second).not.toContain("token endpoint down");
+      expect(agentText()).not.toContain("token endpoint down");
+      expect(agentText()).not.toContain("Run /login");
+    } finally {
+      await session.end("clean", [], { memoryTimeoutMs: 1 });
+    }
+  });
+
   it("shows a retry-in-a-moment message from a turn when the refresh lock outlasts an expired token", async () => {
     seedExpiredCodex();
     const refreshLock = holdLock("refresh");
@@ -976,10 +1023,16 @@ describe("serialized OAuth refresh", () => {
       const text = await runTurn(session, "hello", undefined, {
         sink: { onError: (entry) => { errors.push(entry.message); } },
       });
+      const busy = "another PRAANA session is refreshing; try again in a moment";
       expect(chatCalls).toBe(0);
-      expect(text).toContain("another PRAANA session is refreshing; try again in a moment");
+      expect(text).not.toContain(busy);
       expect(text).not.toContain("Run /login");
-      expect(errors).toEqual([text.trim()]);
+      expect(errors).toEqual([busy]);
+      const agentText = session.eventLog.readAll()
+        .filter((event) => event.kind === "agent_message")
+        .map((event) => String(event.payload.text ?? ""))
+        .join("\n");
+      expect(agentText).not.toContain(busy);
     } finally {
       refreshLock.release();
       await session.end("clean", [], { memoryTimeoutMs: 1 });

@@ -236,8 +236,9 @@ the refreshed token is saved is left as it is.
 
 If refresh fails and the stored access token is already expired, the turn stops
 and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
-Run /login openai-codex again.` once, as an error, and the turn is still recorded.
-If the access token is not yet expired, PRAANA keeps using it and logs a warning.
+Run /login openai-codex again.` once, as an error line. That text is not saved as
+the assistant's reply and is not sent back to the model on the next turn. If the
+access token is not yet expired, PRAANA keeps using it and logs a warning.
 
 Codex requests identify PRAANA and the ChatGPT account saved with the
 credential. When that saved account id is present, PRAANA sends it even if the

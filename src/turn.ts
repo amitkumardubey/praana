@@ -1374,13 +1374,14 @@ export async function runTurn(
   }
 
   if (credentialError) {
+    // Shown as an error line only. Storing it as the assistant reply replays
+    // the credential text to the model on the next turn.
     s.onError?.({
       level: "error",
       domain: "credentials",
       message: credentialError,
       code: "UNKNOWN",
     });
-    fullResponse = credentialError;
   } else if (!fullResponse.trim()) {
     const code =
       lastStreamReason === "error"
@@ -1418,12 +1419,14 @@ export async function runTurn(
     }
   }
 
-  // 6. Append agent_message
-  session.eventLog.append({
-    kind: "agent_message",
-    actor: "agent",
-    payload: { text: fullResponse },
-  });
+  // 6. Append agent_message. A credential failure is not the assistant's reply.
+  if (!credentialError) {
+    session.eventLog.append({
+      kind: "agent_message",
+      actor: "agent",
+      payload: { text: fullResponse },
+    });
+  }
 
   const turnInputTokens = providerUsage?.input ?? promptMetrics.totalTokens;
   const turnOutputTokens = providerUsage?.output ?? estimateTokens(fullResponse);
