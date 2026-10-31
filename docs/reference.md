@@ -129,6 +129,11 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+Codex OAuth protocol support (`src/oauth-codex.ts`) uses PKCE authorization-code
+exchange or device authorization, validates the ChatGPT account claim, and rotates
+refresh tokens. Tokens without an account id require signing in again; they cannot
+be refreshed as a pasted-token credential.
+
 ## Slash commands
 
 | Command | Purpose |
