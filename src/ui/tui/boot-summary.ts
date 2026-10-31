@@ -37,6 +37,24 @@ function normalizeVersionLabel(version?: string): string {
   return `v${version.replace(/^v/, "")}`;
 }
 
+/**
+ * Dim first-screen hint shown under the launch-canvas meta while the
+ * transcript is still empty. Disappears once the first entry exists.
+ */
+export const LAUNCH_HINT_TEXT: string =
+  "Type a message to start · /help for commands · /model to switch model · Ctrl+J for a new line";
+
+/**
+ * Friendlier user-facing copy for the AGENTS.md truncation notice
+ * (the raw internal log line never appears on the launch canvas).
+ */
+export const AGENTS_TRUNCATION_NOTICE_TEXT: string =
+  "Project instructions (AGENTS.md) are long; using the first ~4000 tokens.";
+
+export function formatAgentsTruncationNotice(): string {
+  return AGENTS_TRUNCATION_NOTICE_TEXT;
+}
+
 /** Version + skills lines for the idle launch canvas (launch-screen design lock). */
 export function formatLaunchCanvasMeta(input: {
   session: Pick<Session, "skills">;

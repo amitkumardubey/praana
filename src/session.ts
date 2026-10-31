@@ -267,7 +267,9 @@ export class Session {
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
-    session.agentsContext = loadAgentsContext(cwd);
+    session.agentsContext = loadAgentsContext(cwd, {
+      captureNotice: session.noticeCapture,
+    });
     if (session.agentsContext) {
       const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
@@ -384,7 +386,9 @@ export class Session {
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
-    session.agentsContext = loadAgentsContext(cwd);
+    session.agentsContext = loadAgentsContext(cwd, {
+      captureNotice: session.noticeCapture,
+    });
     if (session.agentsContext) {
       const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
@@ -1718,8 +1722,15 @@ async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): 
  *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
  *
  * Combined content is capped at ~4000 tokens (16000 chars).
+ *
+ * When truncation happens, the notice is routed through `opts.captureNotice`
+ * (if provided) instead of the raw app-logger stderr write, so it never
+ * paints onto the TUI launch canvas. The log-file entry is kept either way.
  */
-export function loadAgentsContext(cwd: string): string | null {
+export function loadAgentsContext(
+  cwd: string,
+  opts?: { captureNotice?: (line: string) => void },
+): string | null {
   const MAX_CHARS = 16_000; // ~4000 tokens
   const parts: string[] = [];
 
@@ -1755,9 +1766,21 @@ export function loadAgentsContext(cwd: string): string | null {
 
   const combined = parts.join("\n\n");
   if (combined.length > MAX_CHARS) {
-    getAppLogger().child("session").notice("AGENTS.md content truncated to ~4000 tokens", {
-      details: { tokenEstimate: estimateTokens(combined) },
-    });
+    const details = { tokenEstimate: estimateTokens(combined) };
+    if (opts?.captureNotice) {
+      // TUI session: the capture hook owns stderr; keep the file log entry.
+      getAppLogger().child("session").info(
+        "AGENTS.md content truncated to ~4000 tokens",
+        { details },
+      );
+      opts.captureNotice("[session] AGENTS.md content truncated to ~4000 tokens");
+    } else {
+      // Headless / CLI: preserve the historical stderr-visible notice.
+      getAppLogger().child("session").notice(
+        "AGENTS.md content truncated to ~4000 tokens",
+        { details },
+      );
+    }
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
   }
   return combined;

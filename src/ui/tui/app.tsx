@@ -79,7 +79,12 @@ export function App(props: AppProps) {
     props.ui.chrome.setWidth(dimensions().width || 80);
   });
 
-  const showLaunch = createMemo(() => props.transcript.entries.length === 0);
+  // Launch canvas (and its first-screen hint) only while the transcript is
+  // empty AND no overlay (setup wizard, consent, login, …) is open — the
+  // idle canvas must not bleed through behind an overlay.
+  const showLaunch = createMemo(
+    () => props.transcript.entries.length === 0 && props.overlay.kind() === "none",
+  );
 
   return (
     <box id="tui-root" flexDirection="column" width="100%" height="100%">

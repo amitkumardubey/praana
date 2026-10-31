@@ -1,27 +1,21 @@
 /**
- * Idle launch canvas — ASCIIFont wordmark + version + coral breath + skills.
+ * Idle launch canvas — ASCIIFont wordmark + version + skills, plus a dim
+ * first-screen hint while the transcript is empty.
  * Spec: launch-screen design lock (internal)
+ *
+ * The coral-breath pulse was removed: the canvas only renders while the app
+ * is idle (no transcript entries), so a perpetual animated dash read as an
+ * unexplained loading indicator. Real loading is already shown by the
+ * spinner host.
  */
-import { createSignal, onCleanup, type Accessor } from "solid-js";
-import { useRenderer } from "@opentui/solid";
+import { Show, type Accessor } from "solid-js";
 import { TUI_PALETTE, TUI_STYLE } from "./theme.js";
-
-const PULSE_FRAMES = ["  -  ", " --- ", "-----", " --- ", "  -  "] as const;
-const PULSE_MS = 480;
+import { LAUNCH_HINT_TEXT } from "./boot-summary.js";
 
 export function LaunchCanvas(props: {
   version: Accessor<string>;
   skillsLabel: Accessor<string>;
 }) {
-  const renderer = useRenderer();
-  const [frame, setFrame] = createSignal(0);
-
-  const timer = setInterval(() => {
-    setFrame((f) => (f + 1) % PULSE_FRAMES.length);
-    renderer.requestRender();
-  }, PULSE_MS);
-  onCleanup(() => clearInterval(timer));
-
   return (
     <box
       id="launch-canvas"
@@ -38,11 +32,13 @@ export function LaunchCanvas(props: {
         <span style={TUI_STYLE.chromeMuted}>{props.version()}</span>
       </text>
       <text>
-        <span style={TUI_STYLE.accent}>{PULSE_FRAMES[frame()]}</span>
-      </text>
-      <text>
         <span style={TUI_STYLE.chromeMuted}>{props.skillsLabel()}</span>
       </text>
+      <Show when={process.stdout.isTTY}>
+        <text>
+          <span style={TUI_STYLE.faint}>{LAUNCH_HINT_TEXT}</span>
+        </text>
+      </Show>
     </box>
   );
 }
