@@ -254,12 +254,81 @@ describe("Codex browser exchange and refresh", () => {
     expect(notices.some((message) => message.includes("callback unavailable"))).toBe(true);
   });
 
-  it("fails after five invalid manual pastes with the last reason", async () => {
+  it("keeps prompting for bad pastes while the callback listener is alive", async () => {
+    const notices: string[] = [];
+    const messages: string[] = [];
+    const inputs = [...Array.from({ length: 6 }, () => "code=abc&state=bad"), "good-code"];
+    const oauth = createOpenAICodexOAuth({
+      now: () => 1000,
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      fetch: fakeFetch((_url, init) => {
+        expect((init.body as URLSearchParams).get("code")).toBe("good-code");
+        return tokenResponse();
+      }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    const cred = await oauth.login({
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        messages.push(prompt.message);
+        return inputs.shift()!;
+      },
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(messages).toHaveLength(7);
+    expect(messages.every((message) => message.includes("or finish in your browser"))).toBe(true);
+    expect(notices.filter((message) => message.includes("state mismatch"))).toHaveLength(6);
+  });
+
+  it("caps manual-only pastes at five and does not mention the browser", async () => {
+    const messages: string[] = [];
+    const notices: string[] = [];
+    let prompts = 0;
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
+      callbackServer: async () => undefined,
+    });
+    await expect(oauth.login({
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        prompts++;
+        messages.push(prompt.message);
+        return "code=abc&state=bad";
+      },
+    })).rejects.toThrow(/state mismatch/);
+    expect(prompts).toBe(5);
+    expect(messages.every((message) => message.includes("or finish in your browser"))).toBe(false);
+    expect(messages.every((message) => message.startsWith("Paste the redirect URL or authorization code"))).toBe(true);
+    expect(notices.filter((message) => message.includes("state mismatch"))).toHaveLength(5);
+  });
+
+  it("a cancelled paste still ends login while the listener is alive", async () => {
+    const reason = new Error("cancelled");
+    let prompts = 0;
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    await expect(oauth.login({
+      notify() {},
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        prompts++;
+        if (prompts === 1) return "code=abc&state=bad";
+        throw reason;
+      },
+    })).rejects.toBe(reason);
+    expect(prompts).toBe(2);
+  });
+
+  it("fails after five invalid manual pastes when paste is the only path", async () => {
     let prompts = 0;
     const notices: string[] = [];
     const oauth = createOpenAICodexOAuth({
       fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
-      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+      callbackServer: async () => undefined,
     });
     await expect(oauth.login({
       notify: (event) => { if (event.type === "info" || event.type === "progress") notices.push(event.message); },

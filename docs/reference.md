@@ -138,8 +138,6 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
 `gpt-5.6-terra`, `gpt-5.6-luna`). There is no bare `gpt-5.6` id.
 `gpt-reserve` and `codex-auto-review` are not listed.
 
-
-
 - **Browser login (default):** PRAANA opens the authorization URL and listens only
   on `127.0.0.1:1455`. The registered redirect is
   `http://localhost:1455/auth/callback`. Finish in the browser or paste the redirect
@@ -150,9 +148,11 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   that input without cancelling login.
   Closing the paste prompt cancels login and does not replace a saved credential.
   A blank paste is refused. An invalid paste (typo, state mismatch, or empty code)
-  is reported and asked for again, up to five times, without stopping the browser
-  listener. Cancelling still ends the login. The same retry applies when the
-  callback port is unavailable and paste is the only path.
+  is reported and asked for again. While the callback listener is running, a bad
+  paste does not end the login. Cancelling still ends the login. When the callback
+  port is unavailable and paste is the only path, PRAANA stops after five bad
+  pastes. The paste prompt mentions finishing in the browser only when that
+  listener is running.
   If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
   mode. Any other bind failure is reported with its error code and still allows
   paste. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
@@ -181,9 +181,19 @@ or the browser cannot reach the callback,
 copy the visible URL and paste the final redirect, or choose device-code login.
 Keep the listener on `127.0.0.1:1455`; do not expose it on `0.0.0.0`.
 
-**Known limitation — left for slice C:** current turn/stream callers can silently
-fall back to stored credentials after a refresh failure. This login flow does not
-change that behavior.
+PRAANA refreshes an access token that is expired or inside 60 seconds of expiry
+before a Codex request. Refresh tokens rotate, so overlapping refreshes share one
+request: a lock file beside `credentials.json` (`credentials.json.lock`) is created
+with `O_EXCL` and held across the refresh and the following write. Other credential
+updates wait for that lock, re-read the file, and then write, so one update does not
+erase another. A lock whose process is gone, or that is older than 60 seconds, is
+removed. Waiting longer than 10 seconds fails with a timeout instead of using a
+stale file. If refresh fails and the stored access token is already expired, the
+turn stops and reports `OpenAI Codex session expired and could not be refreshed:
+<reason>. Run /login openai-codex again.` If the access token is not yet expired,
+PRAANA keeps using it and logs a warning. A logout or a newer login that lands
+before the refreshed token is saved is left as it is; a successful refresh is still
+saved if the caller cancels after the refresh request has started.
 
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
 storage (`store: false`), and omit `max_output_tokens`. Codex streams report

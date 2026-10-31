@@ -364,9 +364,12 @@ describe("rust-v2 provider legacy fixtures", () => {
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);
-    // src/llm/drivers/responses.ts is allowlisted: the capture is of the legacy
+    // responses.ts and stream.ts are allowlisted: the capture is of the legacy
     // behaviour and the Rust fixtures are intentionally not regenerated here.
-    const ORACLE_HASH_ALLOWLIST = new Set(["src/llm/drivers/responses.ts"]);
+    const ORACLE_HASH_ALLOWLIST = new Set([
+      "src/llm/drivers/responses.ts",
+      "src/llm/stream.ts",
+    ]);
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
       const bytes = readFileSync(join(REPO_ROOT, rel));

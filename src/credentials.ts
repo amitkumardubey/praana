@@ -23,19 +23,25 @@
 // Legacy entries without `type` and with a non-empty `key` are treated as api_key.
 
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   writeFileSync,
+  writeSync,
   chmodSync,
   renameSync,
   statSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { appHomePath } from "./app-identity.js";
 import { getAppLogger } from "./logger.js";
 
 const FILE_MODE = 0o600;
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 60_000;
 
 /**
  * Resolve the credentials file path lazily on each call so that
@@ -75,6 +81,159 @@ interface CredentialsFile {
 }
 
 let memoryCache: CredentialsFile | null = null;
+let mutationChain: Promise<void> = Promise.resolve();
+let lockDepth = 0;
+let ownedLockRaw: string | null = null;
+
+function credentialsLockPath(): string {
+  return `${credentialsFilePath()}.lock`;
+}
+
+function sleepSync(ms: number): void {
+  if (ms > 0) Bun.sleepSync(ms);
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function readLockFile(path: string): { raw: string; pid: number; startedAt: number; mtimeMs: number } | null {
+  try {
+    const raw = readFileSync(path, "utf8");
+    const stat = statSync(path);
+    let pid = 0;
+    let startedAt = 0;
+    try {
+      const parsed = JSON.parse(raw) as { pid?: unknown; startedAt?: unknown };
+      if (typeof parsed.pid === "number") pid = parsed.pid;
+      if (typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt)) {
+        startedAt = parsed.startedAt;
+      }
+    } catch {
+      return { raw, pid: 0, startedAt: 0, mtimeMs: stat.mtimeMs };
+    }
+    return { raw, pid, startedAt, mtimeMs: stat.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function isStaleLock(info: { pid: number; startedAt: number; mtimeMs: number }): boolean {
+  if (!isPidAlive(info.pid)) return true;
+  const now = Date.now();
+  return now - info.mtimeMs > LOCK_STALE_MS || now - info.startedAt > LOCK_STALE_MS;
+}
+
+/** Re-read the lock immediately before unlink so a replaced lock is left alone. */
+function recoverStaleLock(path: string): boolean {
+  const first = readLockFile(path);
+  if (!first || !isStaleLock(first)) return false;
+  const second = readLockFile(path);
+  if (!second || second.raw !== first.raw || !isStaleLock(second)) return false;
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function acquireCredentialFileLockSync(): void {
+  const path = credentialsLockPath();
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let delay = 20;
+  for (;;) {
+    try {
+      const fd = openSync(path, "wx", FILE_MODE);
+      const payload = JSON.stringify({ pid: process.pid, startedAt: Date.now() });
+      try {
+        writeSync(fd, payload);
+        ownedLockRaw = payload;
+      } catch (writeErr) {
+        try { unlinkSync(path); } catch { /* best-effort */ }
+        throw writeErr;
+      } finally {
+        closeSync(fd);
+      }
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw err;
+      if (recoverStaleLock(path)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Timed out waiting for the credential lock (${path}). Another PRAANA process may be updating credentials.`,
+        );
+      }
+      sleepSync(Math.min(delay, Math.max(1, deadline - Date.now())));
+      delay = Math.min(delay * 2, 100);
+    }
+  }
+}
+
+function releaseCredentialFileLock(): void {
+  const path = credentialsLockPath();
+  const raw = ownedLockRaw;
+  ownedLockRaw = null;
+  if (raw === null) return;
+  try {
+    if (readFileSync(path, "utf8") === raw) unlinkSync(path);
+  } catch {
+    // The lock is already gone.
+  }
+}
+
+/**
+ * Serialize credential read-modify-write in this process, then hold the
+ * cross-process lock for the duration of `fn` (including awaits).
+ * Callers that already hold the in-process lock run immediately.
+ */
+export async function withCredentialLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (lockDepth > 0) return fn();
+  const previous = mutationChain;
+  let releaseQueue!: () => void;
+  mutationChain = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  await previous;
+  try {
+    acquireCredentialFileLockSync();
+    lockDepth += 1;
+    return await fn();
+  } finally {
+    if (ownedLockRaw !== null) {
+      lockDepth = Math.max(0, lockDepth - 1);
+      releaseCredentialFileLock();
+    }
+    releaseQueue();
+  }
+}
+
+function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
+  if (lockDepth > 0) {
+    const creds = readCredentialsFromDisk();
+    const result = mutator(creds);
+    persistCredentials(creds);
+    return result;
+  }
+  acquireCredentialFileLockSync();
+  lockDepth += 1;
+  try {
+    const creds = readCredentialsFromDisk();
+    const result = mutator(creds);
+    persistCredentials(creds);
+    return result;
+  } finally {
+    lockDepth = Math.max(0, lockDepth - 1);
+    releaseCredentialFileLock();
+  }
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -120,6 +279,33 @@ function sanitizeCredentials(parsed: unknown): CredentialsFile {
     out[providerId] = { type: "api_key", key: entry.key, savedAt };
   }
   return out;
+}
+
+/** Always read the file. Locked mutations must not trust memoryCache. */
+function readCredentialsFromDisk(): CredentialsFile {
+  const credPath = credentialsFilePath();
+  if (!existsSync(credPath)) {
+    memoryCache = {};
+    return memoryCache;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(credPath, "utf-8")) as unknown;
+    memoryCache = sanitizeCredentials(parsed);
+  } catch (err) {
+    getAppLogger().child("credentials").warn(
+      "Failed to read credentials store, treating as empty",
+      { cause: err as Error, code: "CREDENTIALS_READ_FAILED" },
+    );
+    memoryCache = {};
+  }
+  return memoryCache;
+}
+
+/** Disk read of one OAuth entry. Does not take the credential lock. */
+export function readOAuthTokenFromDisk(provider: string): StoredOAuthCredential | undefined {
+  const entry = readCredentialsFromDisk()[provider];
+  if (!entry || !isOAuthEntry(entry)) return undefined;
+  return entry;
 }
 
 function loadCredentials(): CredentialsFile {
@@ -185,10 +371,10 @@ export function getApiKey(provider: string): string | undefined {
  * (including replacing a prior oauth bundle).
  */
 export function setApiKey(provider: string, key: string): void {
-  const creds = loadCredentials();
-  // Trim paste noise (leading/trailing whitespace / newlines) that breaks auth.
-  creds[provider] = { type: "api_key", key: key.trim(), savedAt: Date.now() };
-  persistCredentials(creds);
+  runCredentialMutation((creds) => {
+    // Trim paste noise (leading/trailing whitespace / newlines) that breaks auth.
+    creds[provider] = { type: "api_key", key: key.trim(), savedAt: Date.now() };
+  });
 }
 
 /** Store an OAuth token bundle for a provider (overwrites any prior entry). */
@@ -203,31 +389,31 @@ export function setOAuthToken(
     [key: string]: unknown;
   },
 ): void {
-  const creds = loadCredentials();
-  const access = String(credsBundle.access);
-  const refresh = String(credsBundle.refresh);
-  const expires = Number(credsBundle.expires);
-  const entry: StoredOAuthCredential = {
-    type: "oauth",
-    access,
-    refresh,
-    expires,
-    savedAt: Date.now(),
-  };
-  for (const [k, v] of Object.entries(credsBundle)) {
-    if (
-      k === "type" ||
-      k === "access" ||
-      k === "refresh" ||
-      k === "expires" ||
-      k === "savedAt"
-    ) {
-      continue;
+  runCredentialMutation((creds) => {
+    const access = String(credsBundle.access);
+    const refresh = String(credsBundle.refresh);
+    const expires = Number(credsBundle.expires);
+    const entry: StoredOAuthCredential = {
+      type: "oauth",
+      access,
+      refresh,
+      expires,
+      savedAt: Date.now(),
+    };
+    for (const [k, v] of Object.entries(credsBundle)) {
+      if (
+        k === "type" ||
+        k === "access" ||
+        k === "refresh" ||
+        k === "expires" ||
+        k === "savedAt"
+      ) {
+        continue;
+      }
+      entry[k] = v;
     }
-    entry[k] = v;
-  }
-  creds[provider] = entry;
-  persistCredentials(creds);
+    creds[provider] = entry;
+  });
 }
 
 /** Get the OAuth token bundle for a provider, if present. */
@@ -248,11 +434,11 @@ export function hasOAuthToken(provider: string): boolean {
  * Returns true if an entry was removed, false if none existed.
  */
 export function removeCredentials(provider: string): boolean {
-  const creds = loadCredentials();
-  if (!(provider in creds)) return false;
-  delete creds[provider];
-  persistCredentials(creds);
-  return true;
+  return runCredentialMutation((creds) => {
+    if (!(provider in creds)) return false;
+    delete creds[provider];
+    return true;
+  });
 }
 
 /** @deprecated Alias for {@link removeCredentials}. */

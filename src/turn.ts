@@ -25,7 +25,7 @@ import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
-import { resolveOAuthModelAuth } from "./oauth.js";
+import { OAuthRefreshError, resolveOAuthModelAuth } from "./oauth.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -754,8 +754,23 @@ export async function runTurn(
   // Refresh OAuth access tokens / baseUrl before building the model (no-op when unused).
   let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
   try {
-    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider);
+    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
   } catch (err) {
+    if (err instanceof OAuthRefreshError) {
+      s.onError?.({
+        level: "error",
+        domain: "credentials",
+        message: err.message,
+        code: "UNKNOWN",
+      });
+      s.onFallback?.(err.message);
+      session.eventLog.append({
+        kind: "agent_message",
+        actor: "agent",
+        payload: { text: err.message },
+      });
+      return err.message;
+    }
     session.getLogger().child("credentials").warn("OAuth token refresh failed", {
       cause: err as Error,
       code: "UNKNOWN",

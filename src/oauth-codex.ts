@@ -142,14 +142,19 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
             : "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below.",
         });
       }
+      const manualMessage = callback
+        ? "Paste the redirect URL or authorization code (or finish in your browser):"
+        : "Paste the redirect URL or authorization code:";
       const manual = async () => {
         let lastError: Error | undefined;
-        for (let attempt = 1; attempt <= 5; attempt++) {
+        // A live callback can still win, so a bad paste must not exhaust the login.
+        const attemptLimit = callback ? Number.POSITIVE_INFINITY : 5;
+        for (let attempt = 1; attempt <= attemptLimit; attempt++) {
           if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
           let input: string;
           try {
             input = await interaction.prompt({
-              type: "manual_code", message: "Paste the redirect URL or authorization code (or finish in your browser):",
+              type: "manual_code", message: manualMessage,
               signal: manualAbort.signal,
             });
           } catch (error) {
