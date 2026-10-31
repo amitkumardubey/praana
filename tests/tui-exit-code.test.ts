@@ -1,7 +1,7 @@
 /**
  * Exit-code decision for the TUI. A session at shutdown exits 0. With no
- * session, exit 1 unless setup was not needed (cancelled, failed, or the
- * wizard succeeded but the session never started).
+ * session, exit 1 only when setup was cancelled, failed, pending, or
+ * succeeded but the session never started; otherwise exit 0.
  */
 import { describe, expect, it } from "bun:test";
 import { resolveShutdownExitCode } from "../src/ui/tui/run.js";

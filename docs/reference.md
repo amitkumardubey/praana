@@ -137,7 +137,7 @@ Typing `/` in the prompt opens the palette. With an empty query it lists command
 
 ## Exit codes
 
-A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a session exists, including the first session created by the first-run setup wizard, and when setup was not needed. Exit code `1` is used whenever shutdown happens with no session, unless setup was not needed: the wizard was cancelled, the wizard failed, or it succeeded but the session did not start.
+A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a session exists, including the first session created by the first-run setup wizard, and when setup was not needed. Exit code `1` is used only when shutdown happens with no session and setup was cancelled, failed, pending, or succeeded but the session never started.
 
 ## Slash commands
 
