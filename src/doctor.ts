@@ -133,7 +133,19 @@ export async function handleDoctor(
   }
 
   lines.push("");
-  lines.push(success ? "All checks passed." : "Some checks failed.");
+  // A passing run can still carry warnings (e.g. embedder weights not
+  // downloaded). Say so instead of a bare "All checks passed.", which reads as
+  // if nothing needed attention.
+  const warningCount = lines.filter((line) => line.startsWith("⚠")).length;
+  if (!success) {
+    lines.push("Some checks failed.");
+  } else if (warningCount > 0) {
+    lines.push(
+      `All checks passed (${warningCount} warning${warningCount === 1 ? "" : "s"}).`,
+    );
+  } else {
+    lines.push("All checks passed.");
+  }
 
   return { success, lines };
 }

@@ -54,6 +54,27 @@ describe("handleDoctor", () => {
     expect(result.lines.some((l) => l.includes("model: not set"))).toBe(true);
   });
 
+  it("summary names the warning count when every check passed with warnings", async () => {
+    const result = await handleDoctor(baseConfig);
+    expect(result.success).toBe(true);
+    const warningCount = result.lines.filter((l) => l.startsWith("⚠")).length;
+    const summary = result.lines.at(-1)!;
+    if (warningCount > 0) {
+      expect(summary).toMatch(/^All checks passed \(\d+ warnings?\)\.$/);
+      expect(summary).toContain(String(warningCount));
+      expect(summary).toContain(warningCount === 1 ? "warning" : "warnings");
+    } else {
+      expect(summary).toBe("All checks passed.");
+    }
+  });
+
+  it("summary stays failure-only when a check failed", async () => {
+    const config = { ...baseConfig, llm: { ...baseConfig.llm, model: "" } };
+    const result = await handleDoctor(config);
+    expect(result.success).toBe(false);
+    expect(result.lines.at(-1)).toBe("Some checks failed.");
+  });
+
   it("treats missing embedder weights as a warning, not a failure", async () => {
     const result = await handleDoctor(baseConfig);
     const embedderLine = result.lines.find((l) => l.includes("embedder:"));
