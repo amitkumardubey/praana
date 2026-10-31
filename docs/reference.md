@@ -180,7 +180,9 @@ change that behavior.
 Codex requests identify PRAANA and the token's ChatGPT account, disable response
 storage (`store: false`), and omit `max_output_tokens`. Codex streams report
 backend failures, an incomplete response for any reason other than
-`max_output_tokens`, or a missing terminal event as errors. `max_output_tokens`
+`max_output_tokens`, or a missing terminal event as errors. A finished Codex
+answer is terminal on `response.completed`, `response.incomplete`,
+`response.done`, or a final `data: [DONE]` line. `max_output_tokens`
 finishes with the partial output and reason `length`. Other Responses providers
 keep the previous stream behaviour.
 

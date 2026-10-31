@@ -167,11 +167,40 @@ describe("Responses stream termination", () => {
     expect(last?.type === "error" && last.error.message).toBe(reason);
   });
 
-  it.each([{ frames: [] }, { frames: [{ type: "response.output_text.delta", delta: "partial" }] }, { frames: ["data: [DONE]\n\n"] }])("Codex rejects EOF without a terminal Responses event (%j)", async ({ frames }) => {
+  it.each([
+    ["response.completed", completed],
+    ["response.done", { type: "response.done", response: { status: "completed" } }],
+    ["[DONE]", "data: [DONE]\n\n"],
+  ] as const)("Codex treats %s as a terminal event", async (_name, frame) => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "Hello" },
+      frame,
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop", message: { role: "assistant", content: "Hello" } });
+  });
+
+  it.each([{ frames: [] }, { frames: [{ type: "response.output_text.delta", delta: "partial" }] }])("Codex rejects EOF without a terminal Responses event (%j)", async ({ frames }) => {
     const events = await run(req, { bearerToken: jwt() }, frames);
     expect(events.some((event) => event.type === "done")).toBe(false);
     const last = events.at(-1);
     expect(last?.type === "error" && last.error.message).toMatch(/without.*terminal/);
+  });
+
+  it("plain OpenAI response.done and [DONE] match main byte for byte", async () => {
+    const mainDriver = await mainResponsesDriver();
+    const current = new OpenAIResponsesDriver();
+    const streams = [
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hi" })}\n\ndata: ${JSON.stringify({ type: "response.done", response: { status: "completed" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hi" })}\n\ndata: [DONE]\n\n`,
+    ];
+    for (const provider of ["openai", "openai-responses"]) {
+      for (const sse of streams) {
+        const mainBytes = await streamEvents(mainDriver, sse, provider);
+        const currentBytes = await streamEvents(current, sse, provider);
+        expect(currentBytes, provider).toBe(mainBytes);
+      }
+    }
   });
 
   it("plain OpenAI incomplete and unterminated streams match main byte for byte", async () => {

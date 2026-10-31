@@ -179,7 +179,11 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         const dataStr = event.data?.trim();
-        if (!dataStr || dataStr === "[DONE]") continue;
+        if (!dataStr) continue;
+        if (dataStr === "[DONE]") {
+          if (codex) terminalReceived = true;
+          continue;
+        }
         let parsed: Record<string, unknown>;
         try {
           parsed = JSON.parse(dataStr) as Record<string, unknown>;
@@ -249,7 +253,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
           continue;
         }
 
-        if (type === "response.completed") {
+        if (type === "response.completed" || (codex && type === "response.done")) {
           if (codex) terminalReceived = true;
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = String(resp?.status ?? "");
