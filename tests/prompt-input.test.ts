@@ -6,6 +6,8 @@ import {
   applyBackslashContinue,
   shouldContinueLine,
 } from "../src/ui/tui/prompt/keys.js";
+import { PromptHistory } from "../src/ui/tui/prompt/history.js";
+import { resetPromptContinuationState } from "../src/ui/tui/prompt/index.js";
 
 /**
  * Navigation-key routing logic mirrored from TuiApp handleNavigationKey.
@@ -123,6 +125,33 @@ describe("shouldContinueLine", () => {
   it("is unaffected by text after the caret", () => {
     expect(shouldContinueLine("\\ trailing", 1)).toBe(true);
     expect(shouldContinueLine("abc\\x", 4)).toBe(true);
+  });
+});
+
+describe("resetPromptContinuationState", () => {
+  it("clears the autocomplete popup and history browsing cursor after a continued line", () => {
+    const history = new PromptHistory();
+    history.push("one");
+    history.push("two");
+    expect(history.up("draft")).toBe("two");
+    expect(history.isBrowsing()).toBe(true);
+
+    let acCleared = false;
+    let prevSynced = false;
+    resetPromptContinuationState(history, {
+      clearAutocomplete: () => {
+        acCleared = true;
+      },
+      syncPrevText: () => {
+        prevSynced = true;
+      },
+    });
+
+    expect(acCleared).toBe(true);
+    expect(prevSynced).toBe(true);
+    expect(history.isBrowsing()).toBe(false);
+    // Browsing afterwards starts from a fresh draft, not a stale cursor.
+    expect(history.down()).toBeNull();
   });
 });
 

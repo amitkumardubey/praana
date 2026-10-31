@@ -59,6 +59,23 @@ export interface PromptHandle {
   getText(): string;
 }
 
+/**
+ * Bookkeeping after a trailing-backslash continuation: the autocomplete
+ * popup and any history browsing cursor must not survive the multiline edit.
+ * `syncPrevText` refreshes `prevText` exactly like `onContentChange` does.
+ */
+export function resetPromptContinuationState(
+  history: PromptHistory,
+  opts: {
+    clearAutocomplete(): void;
+    syncPrevText(): void;
+  },
+): void {
+  opts.clearAutocomplete();
+  history.resetBrowse();
+  opts.syncPrevText();
+}
+
 export function Prompt(props: PromptProps) {
   const dimensions = useTerminalDimensions();
   const renderer = useRenderer();
@@ -293,6 +310,13 @@ export function Prompt(props: PromptProps) {
       textarea.cursorOffset = next.caret;
       textarea.insertText("\n");
       syncHeight(textarea.plainText);
+      const nextPlain = textarea.plainText;
+      resetPromptContinuationState(history, {
+        clearAutocomplete: () => setAc(null),
+        syncPrevText: () => {
+          prevText = nextPlain;
+        },
+      });
       renderer.requestRender();
       return;
     }
