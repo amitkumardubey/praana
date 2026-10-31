@@ -81,6 +81,32 @@ export interface TuiLaunchOptions {
   needsEmbedderConsent?: boolean;
 }
 
+/** Where the first-run setup landed for this process. */
+export type SetupOutcome =
+  | "not-needed"
+  | "pending"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface ShutdownExitContext {
+  setupOutcome: SetupOutcome;
+  hasSession: boolean;
+}
+
+/**
+ * Exit code for a TUI shutdown. A normal exit (including `/exit` right after a
+ * successful first-run setup) is 0; 1 is reserved for "setup was cancelled or
+ * failed before a session existed", so a stale onboarding flag can never turn a
+ * clean exit into a failure code.
+ */
+export function resolveShutdownExitCode(ctx: ShutdownExitContext): 0 | 1 {
+  if (ctx.hasSession) return 0;
+  return ctx.setupOutcome === "completed" || ctx.setupOutcome === "not-needed"
+    ? 0
+    : 1;
+}
+
 export async function runTui(
   controller: AppController,
   info: StartupInfo | undefined,
@@ -91,6 +117,9 @@ export async function runTui(
   const useUnicode = config.ui.tool_icons === "unicode";
   let bootOnboarding = Boolean(launch.needsOnboarding);
   let bootConsent = Boolean(launch.needsEmbedderConsent);
+  // Drives the shutdown exit code; cleared as soon as setup succeeds so a
+  // completed first-run never exits 1 (see resolveShutdownExitCode).
+  let setupOutcome: SetupOutcome = launch.needsOnboarding ? "pending" : "not-needed";
 
   const launchMeta = session
     ? formatLaunchCanvasMeta({ session, version: APP_VERSION })
@@ -241,7 +270,8 @@ export async function runTui(
       return;
     }
     if (bootOnboarding && !session && kind === "setup") {
-      void doShutdown(1);
+      setupOutcome = "cancelled";
+      void doShutdown();
       return;
     }
     focusPrompt();
@@ -394,9 +424,10 @@ export async function runTui(
       }
     }
     overlay.dismiss();
+    setupOutcome = result.success ? "completed" : "failed";
     if (!session) {
       if (!result.success) {
-        void doShutdown(1);
+        void doShutdown();
         return;
       }
       void startSessionFromOverlay();
@@ -436,7 +467,11 @@ export async function runTui(
     renderer.requestRender();
   };
 
-  async function doShutdown(exitCode = 0): Promise<void> {
+  async function doShutdown(): Promise<void> {
+    const exitCode = resolveShutdownExitCode({
+      setupOutcome,
+      hasSession: Boolean(session),
+    });
     setSpinnerSink();
     transcript.dispose();
     overlay.dispose();
@@ -597,7 +632,7 @@ export async function runTui(
           }}
           onCtrlC={() => {
             if (!session) {
-              void doShutdown(bootOnboarding ? 1 : 0);
+              void doShutdown();
               return;
             }
             const action = controller.handleUserInterrupt(
