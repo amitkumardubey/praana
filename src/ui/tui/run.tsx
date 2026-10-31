@@ -80,6 +80,18 @@ function toastToneToType(
   return "info";
 }
 
+/**
+ * Whether to surface the AGENTS.md truncation toast for a startup info
+ * bundle. Shown at most once per process (boot, or after /new), only when
+ * the raw truncation notice was captured during session startup.
+ */
+export function shouldShowAgentsTruncationToast(
+  started: Pick<StartupInfo, "agentTruncationNotices">,
+  alreadyShown: boolean,
+): boolean {
+  return !alreadyShown && started.agentTruncationNotices.length > 0;
+}
+
 export interface TuiLaunchOptions {
   needsOnboarding?: boolean;
   needsEmbedderConsent?: boolean;
@@ -165,6 +177,7 @@ export async function runTui(
   let openTuiSink: OpenTuiSink | null = null;
   let turnStartedAt = 0;
   let ready = false;
+  let agentsTruncationToastShown = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
   let updateAvailable = false;
   let updateRestart = false;
@@ -507,7 +520,7 @@ export async function runTui(
       refreshChrome();
     }
     if (result.action === "new_session") {
-      await controller.startNewSession();
+      const started = await controller.startNewSession();
       config = controller.config;
       session = controller.session;
 
@@ -525,6 +538,13 @@ export async function runTui(
       ui.launch.setMeta(
         formatLaunchCanvasMeta({ session, version: APP_VERSION }),
       );
+
+      // A /new session may re-truncate AGENTS.md; surface the notice once
+      // per process (skipped when the boot toast already showed it).
+      if (shouldShowAgentsTruncationToast(started, agentsTruncationToastShown)) {
+        agentsTruncationToastShown = true;
+        ui.toast.show(formatAgentsTruncationNotice(), "warn");
+      }
 
       refreshChrome();
     }
@@ -711,7 +731,8 @@ export async function runTui(
             // Surface the AGENTS.md truncation notice once as a warn-level
             // toast now that the TUI is ready (headless/CLI paths keep the
             // stderr notice instead).
-            if (started.agentTruncationNotices.length > 0) {
+            if (shouldShowAgentsTruncationToast(started, agentsTruncationToastShown)) {
+              agentsTruncationToastShown = true;
               ui.toast.show(formatAgentsTruncationNotice(), "warn");
             }
             refreshChrome();

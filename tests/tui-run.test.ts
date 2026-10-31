@@ -10,6 +10,24 @@ import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { createShellUi } from "../src/ui/tui/shell-ui.js";
 import { createTranscriptStore } from "../src/ui/tui/transcript/store.js";
 import { segmentsToPlainText } from "../src/ui/tui/theme.js";
+import { shouldShowAgentsTruncationToast } from "../src/ui/tui/run.tsx";
+
+describe("AGENTS truncation toast on /new", () => {
+  it("surfaces the notice for a fresh startup info when not yet shown", () => {
+    expect(
+      shouldShowAgentsTruncationToast({ agentTruncationNotices: ["n"] }, false),
+    ).toBe(true);
+    expect(
+      shouldShowAgentsTruncationToast({ agentTruncationNotices: [] }, false),
+    ).toBe(false);
+  });
+
+  it("honors the once-per-process rule", () => {
+    expect(
+      shouldShowAgentsTruncationToast({ agentTruncationNotices: ["n"] }, true),
+    ).toBe(false);
+  });
+});
 
 describe("runTui Solid shell primitives", () => {
   it("creates disposable shell, overlay, and transcript stores", () => {
