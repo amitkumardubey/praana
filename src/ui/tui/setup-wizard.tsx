@@ -22,6 +22,7 @@ import { toPaletteOptions } from "./overlays/picker-items.js";
 import {
   adoptEnvKeyForProvider,
   bedrockNeedsApiKeyPrompt,
+  embedderConsentToRecord,
   fetchCustomProviderModels,
   fetchProviderModels,
   finalizeProviderSetup,
@@ -244,8 +245,11 @@ export function SetupWizard(props: SetupWizardProps) {
       keySaved: state.keySaved,
     });
     // The memory question was asked BEFORE this confirmation; record its
-    // answer only now that the setup actually completes.
-    if (pendingConsent) setEmbedderConsent(pendingConsent);
+    // answer only now that the setup actually completes with a config write.
+    // Declining ("skip") or cancelling must leave `.embedder-consent`
+    // untouched.
+    const consentToRecord = embedderConsentToRecord(pendingConsent, action);
+    if (consentToRecord) setEmbedderConsent(consentToRecord);
     finish(result);
   };
 

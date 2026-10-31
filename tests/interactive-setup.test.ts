@@ -10,8 +10,26 @@ import {
   setupProviderIntroLines,
 } from "../src/setup/provider-options.js";
 import { generateSetupConfigContent, resolveDefaultModel } from "../src/setup/config-writer.js";
-import { finalizeProviderSetup } from "../src/setup/logic.js";
+import { finalizeProviderSetup, embedderConsentToRecord } from "../src/setup/logic.js";
 import { SETUP_UNSUPPORTED_PROVIDERS } from "../src/provider-registry.js";
+
+describe("embedderConsentToRecord", () => {
+  it("records the consent only when the config is actually written", () => {
+    expect(embedderConsentToRecord("proceed", "write")).toBe("proceed");
+    expect(embedderConsentToRecord("proceed", "overwrite")).toBe("proceed");
+    expect(embedderConsentToRecord("skip", "write")).toBe("skip");
+  });
+
+  it("declining the config confirmation leaves .embedder-consent untouched", () => {
+    expect(embedderConsentToRecord("proceed", "skip")).toBeNull();
+    expect(embedderConsentToRecord("skip", "skip")).toBeNull();
+  });
+
+  it("no pending answer records nothing", () => {
+    expect(embedderConsentToRecord(null, "write")).toBeNull();
+    expect(embedderConsentToRecord(null, "skip")).toBeNull();
+  });
+});
 
 describe("providerPageLines", () => {
   it("renders a single page without pagination hint", () => {

@@ -28,6 +28,7 @@ import {
   writeProviderConfig,
 } from "./config-writer.js";
 import type { SetupResult, CustomProviderConfig, WriteConfigResult } from "./types.js";
+import type { EmbedderConsent } from "../memory/embedder-consent.js";
 
 export interface ProviderSetupInfo {
   provider: string;
@@ -455,6 +456,21 @@ function patchExistingSetupConfig(
     path: llmResult.path,
     message: `${llmResult.message} Added [providers.${opts.customProvider.id}].`,
   };
+}
+
+/**
+ * Decide which pending embedder-consent answer to persist when the
+ * interactive setup finalizes. The answer is recorded only when the setup
+ * actually completes with a config write (accepted); declining ("skip") or
+ * cancelling must leave the previously recorded `.embedder-consent`
+ * untouched.
+ */
+export function embedderConsentToRecord(
+  consent: EmbedderConsent | null,
+  action: "write" | "skip" | "overwrite",
+): EmbedderConsent | null {
+  if (!consent || action === "skip") return null;
+  return consent;
 }
 
 export function finalizeProviderSetup(
