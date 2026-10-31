@@ -157,7 +157,10 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   rejected. Browser authorization and exchange have a 10-minute overall timeout.
 - **Device-code login:** open the displayed verification URL on any browser and
   enter the displayed code. No localhost callback is needed. PRAANA polls for up to
-  15 minutes; if the server does not offer device authorization, use browser login.
+  15 minutes. HTTP 429, 502, 503, and 504 (including a non-JSON body) are retried
+  until that deadline, waiting the poll interval or `Retry-After` seconds when
+  present, capped at 30 seconds. Any other unexpected status stops the login.
+  If the server does not offer device authorization, use browser login.
 
 Signs in with your ChatGPT account via the Codex CLI sign-in.
 PRAANA uses PKCE, validates the token's ChatGPT account id, and rotates refresh

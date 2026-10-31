@@ -411,3 +411,101 @@ describe("Codex device authorization", () => {
     if (mode === "timeout") expect(clock).toBe(900_000);
   });
 });
+
+describe("Codex device poll transient retries", () => {
+  function deviceOauth(options: {
+    polls: Array<Response | (() => Response)>;
+    interval?: number;
+    clock?: { value: number };
+    waits?: number[];
+    usercode?: Response;
+  }) {
+    const clock = options.clock ?? { value: 0 };
+    const waits = options.waits ?? [];
+    const polls = [...options.polls];
+    return createOpenAICodexOAuth({
+      now: () => clock.value,
+      sleep: async (ms) => { waits.push(ms); clock.value += ms; },
+      fetch: fakeFetch((url) => {
+        if (url.endsWith("/usercode")) {
+          return options.usercode ?? Response.json({ device_auth_id: "device", user_code: "ABCD", interval: options.interval ?? 2 });
+        }
+        if (url.endsWith("/deviceauth/token")) {
+          const next = polls[0];
+          if (typeof next === "function") return next();
+          return polls.shift()!;
+        }
+        return tokenResponse();
+      }),
+    });
+  }
+
+  it.each([502, 503, 504])("retries HTTP %s and then succeeds", async (status) => {
+    const waits: number[] = [];
+    const oauth = deviceOauth({
+      waits,
+      polls: [
+        new Response("upstream", { status }),
+        Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" }),
+      ],
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    expect(waits).toEqual([2000]);
+  });
+
+  it("retries a non-JSON 502 body", async () => {
+    const waits: number[] = [];
+    const oauth = deviceOauth({
+      waits,
+      polls: [
+        new Response("not-json", { status: 502 }),
+        Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" }),
+      ],
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    expect(waits).toEqual([2000]);
+  });
+
+  it("honours Retry-After seconds on 429 and caps them at 30s", async () => {
+    const waits: number[] = [];
+    const oauth = deviceOauth({
+      waits,
+      polls: [
+        new Response("", { status: 429, headers: { "Retry-After": "5" } }),
+        new Response("later", { status: 429, headers: { "Retry-After": "45" } }),
+        Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" }),
+      ],
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    expect(waits).toEqual([5000, 30_000]);
+  });
+
+  it("keeps an unexpected 400 fatal", async () => {
+    const oauth = deviceOauth({
+      polls: [Response.json({ error: "access_denied" }, { status: 400 })],
+    });
+    await expect(oauth.login(interaction("device_code"))).rejects.toThrow(/device authorization failed \(400\)/);
+  });
+
+  it("still ends the login at the 15 minute deadline while 502s continue", async () => {
+    const clock = { value: 0 };
+    const oauth = deviceOauth({
+      clock,
+      interval: 600,
+      polls: [() => new Response("upstream", { status: 502 })],
+    });
+    await expect(oauth.login(interaction("device_code"))).rejects.toThrow(/timed out/);
+    expect(clock.value).toBe(900_000);
+  });
+
+  it("cancels the usercode body when that request is not ok", async () => {
+    let cancelled = false;
+    const usercode = new Response(new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() { cancelled = true; },
+    }), { status: 500 });
+    const oauth = deviceOauth({ polls: [], usercode });
+    await expect(oauth.login(interaction("device_code"))).rejects.toThrow(/device-code request failed \(500\)/);
+    expect(cancelled).toBe(true);
+  });
+});

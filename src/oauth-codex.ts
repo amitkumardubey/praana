@@ -190,10 +190,23 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
       }), signal);
     };
+    const releaseBody = async (response: Response) => {
+      try { await response.body?.cancel(); } catch { /* json() already drained and locked the body. */ }
+    };
+    const retryAfterMs = (response: Response): number | undefined => {
+      const raw = response.headers.get("retry-after")?.trim();
+      if (!raw) return undefined;
+      const seconds = Number(raw);
+      if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+      return Math.min(seconds, 30) * 1000;
+    };
     try {
       const initial = await post("/api/accounts/deviceauth/usercode", { client_id: CLIENT_ID });
-      if (initial.status === 404) throw new Error("OpenAI Codex device-code login unavailable; use browser login");
-      if (!initial.ok) throw new Error(`OpenAI Codex device-code request failed (${initial.status})`);
+      if (!initial.ok) {
+        await releaseBody(initial);
+        if (initial.status === 404) throw new Error("OpenAI Codex device-code login unavailable; use browser login");
+        throw new Error(`OpenAI Codex device-code request failed (${initial.status})`);
+      }
       const data = await initial.json() as Record<string, unknown>;
       const interval = typeof data.interval === "string" ? Number(data.interval.trim()) : data.interval;
       if (typeof data.device_auth_id !== "string" || !data.device_auth_id || typeof data.user_code !== "string" || !data.user_code ||
@@ -201,10 +214,8 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       let intervalMs = Math.max(1000, Math.floor(interval * 1000));
       interaction.notify({ type: "info", message: NOTICE });
       interaction.notify({ type: "device_code", userCode: data.user_code, verificationUri: `${AUTH_BASE}/codex/device`, intervalSeconds: interval, expiresInSeconds: 900 });
-      const releaseBody = async (response: Response) => {
-        try { await response.body?.cancel(); } catch { /* json() already drained and locked the body. */ }
-      };
       while (now() < deadline) {
+        let waitMs = intervalMs;
         const response = await post("/api/accounts/deviceauth/token", { device_auth_id: data.device_auth_id, user_code: data.user_code });
         try {
           if (response.ok) {
@@ -218,14 +229,23 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
               const result = await response.json() as { error?: string | { code?: string } };
               error = typeof result.error === "object" ? result.error?.code : result.error;
             } catch { /* Non-JSON failures are reported by status below. */ }
-            if (error === "slow_down") intervalMs += 5000;
-            else if (error !== "deviceauth_authorization_pending") throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
+            if (error === "slow_down") {
+              intervalMs += 5000;
+              waitMs = intervalMs;
+            } else if (error !== "deviceauth_authorization_pending") {
+              if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
+                const retry = retryAfterMs(response);
+                if (retry !== undefined) waitMs = retry;
+              } else {
+                throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
+              }
+            }
           }
         } finally {
           await releaseBody(response);
         }
         const remaining = deadline - now();
-        if (remaining > 0) await withSignal(pause(Math.min(intervalMs, remaining), signal), signal);
+        if (remaining > 0) await withSignal(pause(Math.min(waitMs, remaining), signal), signal);
       }
       throw new Error("OpenAI Codex device login timed out");
     } finally { clearTimeout(timer); }
