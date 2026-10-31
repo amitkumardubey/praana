@@ -6,13 +6,22 @@
  * SSH, Windows), UTF-16LE+BOM bytes for clip.exe, tool-failure fallback,
  * total-failure result when no tool and OSC 52 are available, "text never in
  * argv", timeout handling, and the selection→copy vs empty-selection→interrupt
- * decision.
+ * decision. Also: whitespace-only selections copy, overlay-kind precedence,
+ * Linux display-server gating, default `which` lookup (null on miss), the
+ * in-flight copy guard, stdin EPIPE resilience, and toast wording (OSC 52 vs
+ * native, code-point counts, failed-copy selection clearing).
  */
 import { describe, expect, it } from "bun:test";
 import {
+  copyOutcomeOf,
+  copyToastMessage,
+  createCopyRunState,
   decideCtrlC,
+  defaultToolLookup,
+  isModalOverlay,
   isSshEnv,
   nativeToolCandidates,
+  runGuardedCopy,
   utf16leWithBom,
   writeClipboardText,
   type SpawnedProcess,
@@ -24,9 +33,15 @@ interface FakeSpawnCall {
   command: string;
   args: readonly string[];
   stdinBytes: Uint8Array;
+  stdinEnded: boolean;
 }
 
-function makeFakeSpawn(modes: FakeExitMode[]) {
+interface FakeSpawnOptions {
+  /** Emit an EPIPE error on the child's stdin before it closes. */
+  epipe?: boolean;
+}
+
+function makeFakeSpawn(modes: FakeExitMode[], opts: FakeSpawnOptions = {}) {
   const calls: FakeSpawnCall[] = [];
   let index = 0;
   const spawnFn = (
@@ -34,12 +49,13 @@ function makeFakeSpawn(modes: FakeExitMode[]) {
     args: readonly string[],
     _opts?: unknown,
   ): SpawnedProcess => {
-    const call: FakeSpawnCall = { command, args, stdinBytes: new Uint8Array() };
+    const call: FakeSpawnCall = { command, args, stdinBytes: new Uint8Array(), stdinEnded: false };
     calls.push(call);
     const mode = modes[Math.min(index, modes.length - 1)] ?? "ok";
     index += 1;
 
     const stdin = {
+      errorListener: null as ((err: Error) => void) | null,
       write(data: Uint8Array, cb?: () => void) {
         const next = new Uint8Array(call.stdinBytes.length + data.length);
         next.set(call.stdinBytes, 0);
@@ -47,8 +63,18 @@ function makeFakeSpawn(modes: FakeExitMode[]) {
         call.stdinBytes = next;
         cb?.();
       },
-      end() {},
-      on(_ev: string, _cb: unknown) {},
+      end(data?: Uint8Array) {
+        if (data) {
+          const next = new Uint8Array(call.stdinBytes.length + data.length);
+          next.set(call.stdinBytes, 0);
+          next.set(data, call.stdinBytes.length);
+          call.stdinBytes = next;
+        }
+        call.stdinEnded = true;
+      },
+      on(ev: string, cb: unknown) {
+        if (ev === "error") stdin.errorListener = cb as (err: Error) => void;
+      },
     };
 
     const proc = {
@@ -78,12 +104,47 @@ function makeFakeSpawn(modes: FakeExitMode[]) {
         // Never closes; the parent timeout must kill + fail us.
         return;
       }
+      if (opts.epipe) {
+        const err = new Error("write EPIPE") as NodeJS.ErrnoException;
+        err.code = "EPIPE";
+        stdin.errorListener?.(err);
+      }
       proc.listeners.close(mode === "fail" ? 1 : 0);
     });
 
     return proc;
   };
   return { spawnFn, calls };
+}
+
+/** A spawn whose close is deferred until the test decides (for in-flight guard tests). */
+function makeDeferredSpawn() {
+  const calls: FakeSpawnCall[] = [];
+  let closeFn: (code: number | null) => void = () => {};
+  const proc = {
+    stdin: {
+      end() {},
+      on() {},
+    } as unknown as NodeJS.WritableStream,
+    listeners: {
+      error: (_err: Error) => {},
+      close: (_code: number | null) => {},
+    },
+    on(ev: "error" | "close", cb: unknown) {
+      if (ev === "error") {
+        this.listeners.error = cb as (err: Error) => void;
+      } else {
+        closeFn = cb as (code: number | null) => void;
+      }
+      return proc;
+    },
+    kill() {},
+  };
+  const spawnFn = (command: string, args: readonly string[]): SpawnedProcess => {
+    calls.push({ command, args, stdinBytes: new Uint8Array(), stdinEnded: false });
+    return proc;
+  };
+  return { spawnFn, calls, close: (code: number | null) => closeFn(code) };
 }
 
 function envWith(overrides: Record<string, string | undefined> = {}): Record<string, string | undefined> {
@@ -93,6 +154,8 @@ function envWith(overrides: Record<string, string | undefined> = {}): Record<str
 function bytesOf(text: string): Uint8Array {
   return Buffer.from(text, "utf8");
 }
+
+const LINUX_DISPLAY = { DISPLAY: ":0", WAYLAND_DISPLAY: "wayland-0" };
 
 describe("clipboard writer — native tool selection per environment", () => {
   it("WSL uses clip.exe with UTF-16LE+BOM", async () => {
@@ -145,7 +208,7 @@ describe("clipboard writer — native tool selection per environment", () => {
     const spawnState = makeFakeSpawn(["ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith({ WAYLAND_DISPLAY: "wayland-0" }),
       platform: "linux",
       lookup: async (cmd) => cmd,
     });
@@ -155,32 +218,44 @@ describe("clipboard writer — native tool selection per environment", () => {
     expect(spawnState.calls[0]!.command).toBe("wl-copy");
   });
 
-  it("Linux X11 falls back to xclip", async () => {
-    const spawnState = makeFakeSpawn(["fail", "ok"]);
+  it("Linux X11 (no Wayland) uses xclip, then falls back to xsel", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith({ DISPLAY: ":0" }),
       platform: "linux",
       lookup: async (cmd) => cmd,
     });
     expect(result.ok).toBe(true);
     expect(result.method).toBe("xclip");
-    expect(spawnState.calls.map((c) => c.command)).toEqual(["wl-copy", "xclip"]);
-    expect(spawnState.calls[1]!.args).toEqual(["-selection", "clipboard"]);
+    expect(spawnState.calls.map((c) => c.command)).toEqual(["xclip"]);
+    expect(spawnState.calls[0]!.args).toEqual(["-selection", "clipboard"]);
+
+    const fallback = makeFakeSpawn(["fail", "ok"]);
+    const result2 = await writeClipboardText("text", {
+      spawn: fallback.spawnFn,
+      env: envWith({ DISPLAY: ":0" }),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+    });
+    expect(result2.ok).toBe(true);
+    expect(result2.method).toBe("xsel");
+    expect(fallback.calls.map((c) => c.command)).toEqual(["xclip", "xsel"]);
+    expect(fallback.calls[1]!.args).toEqual(["--clipboard", "--input"]);
   });
 
-  it("Linux X11 falls back to xsel when xclip also fails", async () => {
-    const spawnState = makeFakeSpawn(["fail", "fail", "ok"]);
+  it("Linux with no display-server env has no native candidates (skip lists)", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
       env: envWith(),
       platform: "linux",
       lookup: async (cmd) => cmd,
+      isOsc52Supported: () => false,
     });
-    expect(result.ok).toBe(true);
-    expect(result.method).toBe("xsel");
-    expect(spawnState.calls.map((c) => c.command)).toEqual(["wl-copy", "xclip", "xsel"]);
-    expect(spawnState.calls[2]!.args).toEqual(["--clipboard", "--input"]);
+    expect(result.ok).toBe(false);
+    expect(result.method).toBe("none");
+    expect(spawnState.calls).toHaveLength(0);
   });
 
   it("SSH mode never spawns a native tool and uses OSC 52 only", async () => {
@@ -228,7 +303,7 @@ describe("clipboard writer — tool failure and fallback", () => {
     const spawnState = makeFakeSpawn(["fail", "ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
     });
@@ -240,7 +315,7 @@ describe("clipboard writer — tool failure and fallback", () => {
     const spawnState = makeFakeSpawn(["spawn-error", "ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
     });
@@ -252,7 +327,7 @@ describe("clipboard writer — tool failure and fallback", () => {
     const spawnState = makeFakeSpawn(["ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async () => null,
       isOsc52Supported: () => true,
@@ -267,7 +342,7 @@ describe("clipboard writer — tool failure and fallback", () => {
     const spawnState = makeFakeSpawn(["timeout", "ok"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
       timeoutMs: 20,
@@ -280,7 +355,7 @@ describe("clipboard writer — tool failure and fallback", () => {
     const spawnState = makeFakeSpawn(["fail"]);
     const result = await writeClipboardText("text", {
       spawn: spawnState.spawnFn,
-      env: envWith(),
+      env: envWith(LINUX_DISPLAY),
       platform: "linux",
       lookup: async (cmd) => cmd,
       isOsc52Supported: () => true,
@@ -356,6 +431,47 @@ describe("clipboard writer — text never appears in argv", () => {
   });
 });
 
+describe("clipboard writer — stdin EPIPE resilience", () => {
+  it("EPIPE on the child's stdin does not fail a copy that exits 0", async () => {
+    const spawnState = makeFakeSpawn(["ok"], { epipe: true });
+    const result = await writeClipboardText("hi", {
+      spawn: spawnState.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("wl-copy");
+    expect(spawnState.calls).toHaveLength(1);
+    expect(spawnState.calls[0]!.stdinEnded).toBe(true);
+  });
+
+  it("a non-zero exit still fails the copy even when stdin errored", async () => {
+    const spawnState = makeFakeSpawn(["fail"], { epipe: true });
+    const result = await writeClipboardText("hi", {
+      spawn: spawnState.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+      isOsc52Supported: () => false,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.method).toBe("none");
+  });
+
+  it("stdin end() is always reached and the promise always settles", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("hi", {
+      spawn: spawnState.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+    });
+    expect(spawnState.calls[0]!.stdinEnded).toBe(true);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("Ctrl+C decision — selection present vs empty selection", () => {
   it("selection present with non-empty text → copy, no interrupt", () => {
     const decision = decideCtrlC(true, "some text");
@@ -370,6 +486,11 @@ describe("Ctrl+C decision — selection present vs empty selection", () => {
     expect(decision).toEqual({ action: "copy", text: "  padded  " });
   });
 
+  it("whitespace-only selection still copies (any non-empty selection)", () => {
+    expect(decideCtrlC(true, "  \n\t ")).toEqual({ action: "copy", text: "  \n\t " });
+    expect(decideCtrlC(true, "   ")).toEqual({ action: "copy", text: "   " });
+  });
+
   it("empty selection → existing interrupt path", () => {
     expect(decideCtrlC(false, "")).toEqual({ action: "interrupt" });
   });
@@ -377,9 +498,67 @@ describe("Ctrl+C decision — selection present vs empty selection", () => {
   it("selection present but text empty → existing interrupt path", () => {
     expect(decideCtrlC(true, "")).toEqual({ action: "interrupt" });
   });
+});
 
-  it("whitespace-only selection → existing interrupt path", () => {
-    expect(decideCtrlC(true, "  \n\t ")).toEqual({ action: "interrupt" });
+describe("Ctrl+C decision — overlay kind precedence", () => {
+  it("palette: selection copies, no selection cancels the palette", () => {
+    expect(decideCtrlC(true, "sel", "palette")).toEqual({ action: "copy", text: "sel" });
+    expect(decideCtrlC(false, "", "palette")).toEqual({ action: "cancel_overlay", overlay: "palette" });
+  });
+
+  it("model: selection copies, no selection dismisses the selector", () => {
+    expect(decideCtrlC(true, "sel", "model")).toEqual({ action: "copy", text: "sel" });
+    expect(decideCtrlC(false, "", "model")).toEqual({ action: "cancel_overlay", overlay: "model" });
+  });
+
+  it("slash: selection copies, no selection falls through to the overlay's any-key dismiss", () => {
+    expect(decideCtrlC(true, "sel", "slash")).toEqual({ action: "copy", text: "sel" });
+    expect(decideCtrlC(false, "", "slash")).toEqual({ action: "interrupt" });
+  });
+
+  it("modal overlays (setup/consent/login/logout) defer to their own Ctrl+C handling", () => {
+    for (const kind of ["setup", "consent", "login", "logout"]) {
+      expect(decideCtrlC(true, "sel", kind)).toEqual({ action: "defer" });
+      expect(decideCtrlC(false, "", kind)).toEqual({ action: "defer" });
+      expect(isModalOverlay(kind)).toBe(true);
+    }
+  });
+
+  it("isModalOverlay is false for the main UI and non-modal overlays", () => {
+    expect(isModalOverlay("none")).toBe(false);
+    expect(isModalOverlay("palette")).toBe(false);
+    expect(isModalOverlay("model")).toBe(false);
+    expect(isModalOverlay("slash")).toBe(false);
+  });
+});
+
+describe("copy outcome — toast text, tone, and selection clearing", () => {
+  it("native tool success → info toast 'Copied N characters', clears selection", () => {
+    expect(copyOutcomeOf({ ok: true, method: "xclip" }, "some text")).toEqual({
+      toast: "Copied 9 characters",
+      tone: "info",
+      clearSelection: true,
+    });
+  });
+
+  it("OSC 52 success → info toast 'Sent N characters … (OSC 52)', counts code points", () => {
+    expect(copyOutcomeOf({ ok: true, method: "osc52" }, "a😀b")).toEqual({
+      toast: "Sent 3 characters to the terminal clipboard (OSC 52)",
+      tone: "info",
+      clearSelection: true,
+    });
+    expect(copyToastMessage({ ok: true, method: "osc52" }, "a😀b")).toBe(
+      "Sent 3 characters to the terminal clipboard (OSC 52)",
+    );
+    expect(copyToastMessage({ ok: true, method: "xclip" }, "a😀b")).toBe("Copied 3 characters");
+  });
+
+  it("failed copy → warn toast AND still clears the selection (trap fix)", () => {
+    expect(copyOutcomeOf({ ok: false, method: "none" }, "sel")).toEqual({
+      toast: "Could not copy: no clipboard available",
+      tone: "warn",
+      clearSelection: true,
+    });
   });
 });
 
@@ -394,8 +573,86 @@ describe("clipboard helpers — environment predicates and candidates", () => {
     expect(nativeToolCandidates(envWith({ WSL_DISTRO_NAME: "Ubuntu" }), "linux").map((c) => c.id)).toEqual(["clip"]);
     expect(nativeToolCandidates(envWith(), "win32").map((c) => c.id)).toEqual(["clip"]);
     expect(nativeToolCandidates(envWith(), "darwin").map((c) => c.id)).toEqual(["pbcopy"]);
-    expect(nativeToolCandidates(envWith(), "linux").map((c) => c.id)).toEqual(["wl-copy", "xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith({ WAYLAND_DISPLAY: "wayland-0" }), "linux").map((c) => c.id)).toEqual(["wl-copy"]);
+    expect(nativeToolCandidates(envWith({ DISPLAY: ":0" }), "linux").map((c) => c.id)).toEqual(["xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith(LINUX_DISPLAY), "linux").map((c) => c.id)).toEqual(["wl-copy", "xclip", "xsel"]);
+    expect(nativeToolCandidates(envWith(), "linux")).toEqual([]);
     expect(nativeToolCandidates(envWith({ SSH_CONNECTION: "a b c d" }), "linux")).toEqual([]);
     expect(nativeToolCandidates(envWith(), "freebsd")).toEqual([]);
+  });
+});
+
+describe("default tool lookup", () => {
+  it("resolves a binary that exists on PATH to its path", async () => {
+    const found = await defaultToolLookup("bun");
+    expect(typeof found).toBe("string");
+    expect(found!.length).toBeGreaterThan(0);
+  });
+
+  it("returns null for a binary that does not exist", async () => {
+    const missing = await defaultToolLookup("praana-definitely-not-a-real-binary-xyz");
+    expect(missing).toBeNull();
+  });
+});
+
+describe("in-flight copy guard", () => {
+  it("a second copy while one is in flight is ignored and spawns nothing", async () => {
+    const deferred = makeDeferredSpawn();
+    const state = createCopyRunState();
+    const settled: string[] = [];
+    const deps = {
+      spawn: deferred.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd: string) => cmd,
+    };
+
+    const first = runGuardedCopy("one", deps, state, {
+      onSettled: (_result, text) => settled.push(text),
+    });
+    expect(first.started).toBe(true);
+    expect(state.inFlight).toBe(true);
+
+    const second = runGuardedCopy("two", deps, state, {
+      onSettled: (_result, text) => settled.push(text),
+    });
+    expect(second.started).toBe(false);
+    // Let the async write reach the spawn so the close listener is registered.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deferred.calls).toHaveLength(1);
+
+    deferred.close(0);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled).toEqual(["one"]);
+    expect(state.inFlight).toBe(false);
+  });
+
+  it("the guard releases in a finally, so a later copy starts", async () => {
+    const deferred = makeDeferredSpawn();
+    const state = createCopyRunState();
+    const settled: string[] = [];
+    const deps = {
+      spawn: deferred.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd: string) => cmd,
+    };
+
+    runGuardedCopy("one", deps, state, {
+      onSettled: (_result, text) => settled.push(text),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    deferred.close(0);
+    await new Promise((r) => setTimeout(r, 5));
+
+    const again = runGuardedCopy("three", deps, state, {
+      onSettled: (_result, text) => settled.push(text),
+    });
+    expect(again.started).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(deferred.calls).toHaveLength(2);
+    deferred.close(0);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled).toEqual(["one", "three"]);
   });
 });
