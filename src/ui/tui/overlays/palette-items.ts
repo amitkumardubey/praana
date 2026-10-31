@@ -13,17 +13,51 @@ export interface PaletteItem {
   category: string;
 }
 
+/**
+ * Commands that end the session or wipe in-session state. They must never sit
+ * under the palette's initial highlight (bare `/` + Enter used to quit the app),
+ * so the default order always pushes them to the tail.
+ */
+export const DESTRUCTIVE_COMMANDS: ReadonlySet<string> = new Set([
+  "/exit",
+  "/quit",
+  "/new",
+  "/clear",
+  "/logout",
+]);
+
+function isDestructive(item: PaletteItem): boolean {
+  return (
+    DESTRUCTIVE_COMMANDS.has(item.name) ||
+    item.aliases.some((alias) => DESTRUCTIVE_COMMANDS.has(alias))
+  );
+}
+
+/** Stable partition: non-destructive commands first, destructive ones last.
+ *  A list with nothing to protect is returned untouched. */
+export function orderPaletteItems(items: PaletteItem[]): PaletteItem[] {
+  const safe: PaletteItem[] = [];
+  const destructive: PaletteItem[] = [];
+  for (const item of items) {
+    (isDestructive(item) ? destructive : safe).push(item);
+  }
+  if (safe.length === 0) return items;
+  return [...safe, ...destructive];
+}
+
 /** One palette item per canonical command; aliases are folded into the item. */
 export function buildPaletteItems(
   metadata: readonly SlashCommandMeta[],
 ): PaletteItem[] {
-  return metadata.map((m) => ({
-    name: m.name,
-    description: m.description,
-    argumentHint: m.argumentHint,
-    aliases: m.aliases ?? [],
-    category: m.category,
-  }));
+  return orderPaletteItems(
+    metadata.map((m) => ({
+      name: m.name,
+      description: m.description,
+      argumentHint: m.argumentHint,
+      aliases: m.aliases ?? [],
+      category: m.category,
+    })),
+  );
 }
 
 /** Bare query preserves curated metadata order; otherwise fuzzy over name + aliases.
