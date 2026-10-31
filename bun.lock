@@ -34,12 +34,12 @@
         "typescript": "^5.9.3",
       },
       "optionalDependencies": {
-        "@praana/natives": "0.15.1",
+        "@praana/natives": "0.16.0",
       },
     },
     "packages/praana-natives": {
       "name": "@praana/natives",
-      "version": "0.15.1",
+      "version": "0.16.0",
       "devDependencies": {
         "@napi-rs/cli": "^3.8.5",
       },
