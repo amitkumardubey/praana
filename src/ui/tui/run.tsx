@@ -628,7 +628,7 @@ export async function runTui(
           transcriptOpts={transcriptOpts}
           currentProvider={() => session?.getEffectiveProvider() ?? config.llm.provider}
           currentModelId={() => session?.getActiveModelId() ?? config.llm.model}
-          loadModels={() => listAllAvailableModels()}
+          loadModels={(opts) => listAllAvailableModels(opts)}
           onModelSelect={handleModelSelect}
           onLoginComplete={handleLoginComplete}
           onLogoutComplete={handleLogoutComplete}

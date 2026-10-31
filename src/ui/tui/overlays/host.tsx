@@ -4,7 +4,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { useRenderer } from "@opentui/solid";
 import { useBindings, useKeymap } from "@opentui/keymap/solid";
-import type { ModelListEntry } from "../../../model-listing.js";
+import type { ListAllAvailableModelsOptions, ModelListEntry } from "../../../model-listing.js";
 import type { OverlayUi } from "./state.js";
 import { SlashResultOverlay } from "./slash-result.js";
 import { ModelSelectorOverlay } from "./model-selector.js";
@@ -21,7 +21,7 @@ export interface OverlayHostProps {
   overlay: OverlayUi;
   currentProvider: () => string;
   currentModelId: () => string;
-  loadModels: () => Promise<ModelListEntry[]>;
+  loadModels: (opts?: ListAllAvailableModelsOptions) => Promise<ModelListEntry[]>;
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;

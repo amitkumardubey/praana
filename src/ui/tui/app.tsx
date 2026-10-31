@@ -17,7 +17,7 @@ import type { TranscriptStoreApi } from "./transcript/store.js";
 import type { TranscriptRenderOpts } from "./transcript/opts.js";
 import type { ExpandedContentResult, IndexedTranscriptEntry } from "./transcript/index.js";
 import type { ShellUi } from "./shell-ui.js";
-import type { ModelListEntry } from "../../model-listing.js";
+import type { ListAllAvailableModelsOptions, ModelListEntry } from "../../model-listing.js";
 import type { LoginWizardResult } from "./overlays/login.js";
 import type { LogoutWizardResult } from "./overlays/logout.js";
 import type { SetupResult } from "../../setup/types.js";
@@ -35,7 +35,7 @@ export interface AppProps {
   transcriptOpts: TranscriptRenderOpts;
   currentProvider: () => string;
   currentModelId: () => string;
-  loadModels: () => Promise<ModelListEntry[]>;
+  loadModels: (opts?: ListAllAvailableModelsOptions) => Promise<ModelListEntry[]>;
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
