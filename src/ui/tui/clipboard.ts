@@ -94,11 +94,28 @@ export function nativeToolCandidates(
     return [{ id: "pbcopy", command: "pbcopy", args: [], encode: utf8 }];
   }
   if (platform === "linux") {
-    return [
-      { id: "wl-copy", command: "wl-copy", args: [], encode: utf8 },
-      { id: "xclip", command: "xclip", args: ["-selection", "clipboard"], encode: utf8 },
-      { id: "xsel", command: "xsel", args: ["--clipboard", "--input"], encode: utf8 },
-    ];
+    // Gate X11/Wayland tools on the display server actually being present; a
+    // tool spawned without a display can only fail (or hang). WSL is handled
+    // above via clip.exe and is unaffected by this gate.
+    const candidates: NativeToolCandidate[] = [];
+    if (env.WAYLAND_DISPLAY) {
+      candidates.push({ id: "wl-copy", command: "wl-copy", args: [], encode: utf8 });
+    }
+    if (env.DISPLAY) {
+      candidates.push({
+        id: "xclip",
+        command: "xclip",
+        args: ["-selection", "clipboard"],
+        encode: utf8,
+      });
+      candidates.push({
+        id: "xsel",
+        command: "xsel",
+        args: ["--clipboard", "--input"],
+        encode: utf8,
+      });
+    }
+    return candidates;
   }
   return [];
 }
@@ -148,17 +165,15 @@ async function runSpawnWrite(
       finish(false);
       return;
     }
-    child.stdin.on("error", () => finish(false));
+    // A stream error on stdin (most commonly EPIPE because the tool closed its
+    // input early) never decides the outcome by itself — the process exit code
+    // does. We also always reach end(): the data + EOF are sent in one call,
+    // and the promise is settled exclusively by close (or the timeout).
+    child.stdin.on("error", () => {});
     try {
-      child.stdin.write(encode(text), () => {
-        try {
-          child.stdin?.end();
-        } catch {
-          // stdin already closed
-        }
-      });
+      child.stdin.end(encode(text));
     } catch {
-      finish(false);
+      // stdin already unusable; still wait for close or the timeout to settle.
     }
   });
 }
@@ -206,25 +221,143 @@ export async function writeClipboardText(
   return { ok: false, method: "none" };
 }
 
-export type CtrlCCopyDecision =
-  | { action: "copy"; text: string }
-  | { action: "interrupt" };
+/** Overlay kinds reported by the TUI overlay state (`overlays/state.ts`). */
+export type TuiOverlayKind =
+  | "none"
+  | "slash"
+  | "model"
+  | "login"
+  | "logout"
+  | "palette"
+  | "setup"
+  | "consent";
 
 /**
- * Pure decision for the TUI Ctrl+C handler. A non-empty (non-whitespace)
- * OpenTUI selection wins over every existing interrupt behaviour; a missing,
- * empty, or whitespace-only selection falls through to the existing path
- * (abort turn / clear input / exit).
+ * Modal overlays take over the whole screen and own Ctrl+C themselves (cancel).
+ * The global Ctrl+C binding deactivates while one of these is open so the
+ * overlay's own handler always wins.
+ */
+const MODAL_OVERLAY_KINDS: readonly TuiOverlayKind[] = ["setup", "consent", "login", "logout"];
+
+export function isModalOverlay(kind: string): boolean {
+  return MODAL_OVERLAY_KINDS.includes(kind as TuiOverlayKind);
+}
+
+export type CtrlCCopyDecision =
+  | { action: "copy"; text: string }
+  | { action: "interrupt" }
+  | { action: "cancel_overlay"; overlay: "palette" | "model" }
+  | { action: "defer" };
+
+/**
+ * Pure decision for the TUI Ctrl+C handler.
+ *
+ * - Any selection with at least one character (including whitespace/newlines)
+ *   copies — in the main UI and in the palette/model/slash overlays. Only a
+ *   missing or empty-string selection falls through.
+ * - Modal overlays (setup/consent/login/logout) own Ctrl+C themselves; the
+ *   decision defers to them.
+ * - Palette/model overlays cancel (close) when there is no selection, matching
+ *   what Escape does; the main UI falls through to the interrupt path.
  */
 export function decideCtrlC(
   hasSelection: boolean,
   getSelectedText: string,
+  overlayKind: string = "none",
 ): CtrlCCopyDecision {
-  if (hasSelection) {
-    const text = getSelectedText ?? "";
-    if (text.trim().length > 0) {
-      return { action: "copy", text };
-    }
+  if (isModalOverlay(overlayKind)) {
+    return { action: "defer" };
+  }
+  const text = getSelectedText ?? "";
+  if (hasSelection && [...text].length > 0) {
+    return { action: "copy", text };
+  }
+  if (overlayKind === "palette" || overlayKind === "model") {
+    return { action: "cancel_overlay", overlay: overlayKind };
   }
   return { action: "interrupt" };
+}
+
+export interface CopyOutcome {
+  toast: string;
+  tone: "info" | "warn";
+  /** The selection must always be cleared after a copy attempt (success or failure). */
+  clearSelection: boolean;
+}
+
+/**
+ * Human-readable toast for a copy result. Counts code points (`[...text].length`),
+ * not UTF-16 units. OSC 52 copies are honest about where the text went.
+ */
+export function copyToastMessage(result: ClipboardWriteResult, text: string): string {
+  const count = [...text].length;
+  if (!result.ok) {
+    return "Could not copy: no clipboard available";
+  }
+  if (result.method === "osc52") {
+    return `Sent ${count} characters to the terminal clipboard (OSC 52)`;
+  }
+  return `Copied ${count} characters`;
+}
+
+/** Outcome of a copy attempt: what toast to show and whether to clear the selection. */
+export function copyOutcomeOf(result: ClipboardWriteResult, text: string): CopyOutcome {
+  return {
+    toast: copyToastMessage(result, text),
+    tone: result.ok ? "info" : "warn",
+    clearSelection: true,
+  };
+}
+
+/**
+ * Default `which`-style lookup: resolves to the tool path, or null when the
+ * tool is missing — so missing tools are skipped instead of spawned blind.
+ */
+export async function defaultToolLookup(command: string): Promise<string | null> {
+  return (await Bun.which(command)) ?? null;
+}
+
+export interface CopyRunState {
+  inFlight: boolean;
+}
+
+export function createCopyRunState(): CopyRunState {
+  return { inFlight: false };
+}
+
+export interface CopyRunCallbacks {
+  onStarted?: () => void;
+  onSettled?: (result: ClipboardWriteResult, text: string) => void;
+}
+
+/**
+ * Run one copy attempt guarded against re-entrancy: while `state.inFlight` is
+ * true, further calls are ignored (returning `started: false`), so rapid
+ * Ctrl+C presses cannot spawn duplicate writes or double toasts. The flag is
+ * always cleared in a `finally`, never leaving the copy permanently blocked.
+ * Returns `{ started: false }` when a copy is already in flight.
+ */
+export function runGuardedCopy(
+  text: string,
+  deps: ClipboardWriterDeps,
+  state: CopyRunState,
+  callbacks: CopyRunCallbacks = {},
+): { started: boolean } {
+  if (state.inFlight) {
+    return { started: false };
+  }
+  state.inFlight = true;
+  callbacks.onStarted?.();
+  void (async () => {
+    let result: ClipboardWriteResult = { ok: false, method: "none" };
+    try {
+      result = await writeClipboardText(text, deps);
+    } catch {
+      result = { ok: false, method: "none" };
+    } finally {
+      state.inFlight = false;
+      callbacks.onSettled?.(result, text);
+    }
+  })();
+  return { started: true };
 }

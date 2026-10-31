@@ -47,7 +47,14 @@ import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
 import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
-import { decideCtrlC, writeClipboardText } from "./clipboard.js";
+import {
+  copyOutcomeOf,
+  createCopyRunState,
+  decideCtrlC,
+  defaultToolLookup,
+  isModalOverlay,
+  runGuardedCopy,
+} from "./clipboard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -57,13 +64,23 @@ interface GlobalKeyBindingsProps {
   onF9: () => void;
   onCtrlC: () => void;
   onToggleConsole: () => void;
+  /** Deactivates the global Ctrl+C while a modal overlay owns Ctrl+C itself. */
+  ctrlCEnabled: () => boolean;
 }
 
 function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
   useBindings(() => ({
+    // Above the overlay layers (all default priority 0), so the single copy /
+    // interrupt decision here wins for non-modal overlays; the modal overlays
+    // disable this binding via `ctrlCEnabled` and keep their own Ctrl+C.
+    priority: 1,
     bindings: [
       { key: "f9", cmd: () => props.onF9() },
-      { key: "ctrl+c", cmd: () => props.onCtrlC() },
+      {
+        key: "ctrl+c",
+        enabled: props.ctrlCEnabled,
+        cmd: () => props.onCtrlC(),
+      },
       { key: "`", cmd: () => props.onToggleConsole() },
     ],
   }));
@@ -440,6 +457,7 @@ export async function runTui(
 
   async function doShutdown(exitCode = 0): Promise<void> {
     setSpinnerSink();
+    offSlashCtrlCHook();
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
@@ -547,6 +565,46 @@ export async function runTui(
     renderer.requestRender();
   };
 
+  let offSlashCtrlCHook: () => void = () => {};
+
+  const ctrlCCopyState = createCopyRunState();
+
+  const startCopy = (text: string): { started: boolean } =>
+    runGuardedCopy(
+      text,
+      {
+        spawn,
+        env: process.env,
+        platform: process.platform,
+        lookup: defaultToolLookup,
+        isOsc52Supported: () => renderer.isOsc52Supported(),
+        osc52: (t) => renderer.copyToClipboardOSC52(t),
+      },
+      ctrlCCopyState,
+      {
+        onSettled: (result, copiedText) => {
+          const outcome = copyOutcomeOf(result, copiedText);
+          renderer.clearSelection();
+          ui.toast.show(outcome.toast, outcome.tone);
+          renderer.requestRender();
+        },
+      },
+    );
+
+  // Slash overlays dismiss on ANY key via a key intercept (host.tsx), so the
+  // global Ctrl+C binding never sees the event there. Priority 1 keeps this
+  // hook ahead of the slash overlay's own (priority 0) intercept: when a
+  // selection exists we copy it without consuming the event, so the overlay
+  // still dismisses as usual for any key.
+  offSlashCtrlCHook = keymap.intercept("key", (ctx) => {
+    if (!ctx.event.ctrl || ctx.event.name !== "c") return;
+    if (overlay.kind() !== "slash") return;
+    if (!renderer.hasSelection) return;
+    const text = renderer.getSelection()?.getSelectedText() ?? "";
+    if ([...text].length === 0) return;
+    startCopy(text);
+  }, { priority: 1 });
+
   const handleSubmit = async (rawInput: string) => {
     if (!openTuiSink || !ready || !session) return;
     let input = rawInput.trim();
@@ -586,6 +644,7 @@ export async function runTui(
     () => (
       <KeymapProvider keymap={keymap}>
         <GlobalKeyBindings
+          ctrlCEnabled={() => !isModalOverlay(overlay.kind())}
           onF9={() => {
             transcript.setFocused(true);
             // Blur the prompt so its focus-scoped keymap layer deactivates and
@@ -601,27 +660,25 @@ export async function runTui(
             const ctrlC = decideCtrlC(
               renderer.hasSelection,
               renderer.getSelection()?.getSelectedText() ?? "",
+              overlay.kind(),
             );
             if (ctrlC.action === "copy") {
-              void (async () => {
-                const result = await writeClipboardText(ctrlC.text, {
-                  spawn,
-                  env: process.env,
-                  platform: process.platform,
-                  lookup: async (command) => Bun.which(command) ?? command,
-                  isOsc52Supported: () => renderer.isOsc52Supported(),
-                  osc52: (text) => renderer.copyToClipboardOSC52(text),
-                });
-                if (result.ok) {
-                  renderer.clearSelection();
-                  ui.toast.show(`Copied ${ctrlC.text.length} characters`, "info");
-                } else {
-                  ui.toast.show("Could not copy: no clipboard available", "warn");
-                }
-                renderer.requestRender();
-              })();
+              // Re-entrancy guard: a second Ctrl+C while a copy is in flight is
+              // ignored; a Ctrl+C with no selection still takes the normal path.
+              startCopy(ctrlC.text);
               return;
             }
+            if (ctrlC.action === "cancel_overlay") {
+              if (ctrlC.overlay === "palette") {
+                handlePaletteCancel();
+              } else {
+                dismissOverlay();
+                focusPrompt();
+              }
+              renderer.requestRender();
+              return;
+            }
+            if (ctrlC.action === "defer") return;
             if (!session) {
               void doShutdown(bootOnboarding ? 1 : 0);
               return;
