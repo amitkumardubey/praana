@@ -38,12 +38,16 @@ import {
  * outside the component so it is unit-testable without mounting Solid.
  *
  * Rules:
- * - the first snapshot (static models, delivered synchronously) flips
- *   `loading` off and seeds the selection once;
+ * - the first non-empty snapshot — or the final result (pending 0) —
+ *   flips `loading` off and seeds the selection once. An empty snapshot
+ *   while live fetches are still pending (only live-catalog providers, or
+ *   zero providers) must not show the empty-list message or waste the seed;
  * - later live merges never re-seed (they must not move the user's
  *   selection/scroll or clear a typed filter);
  * - once `dispose()` runs (selector closed), all further events are ignored
- *   so late live results never touch an unmounted component.
+ *   so late live results never touch an unmounted component. `disposed` is
+ *   exposed for the component to guard its post-await signal/renderer calls
+ *   (including the load-failure path via `onReject`).
  */
 export function createModelSelectorController(options: {
   currentProvider: string;
@@ -74,9 +78,13 @@ export function createModelSelectorController(options: {
     selectionInitialized = true;
   };
 
-  const apply = (entries: ModelListEntry[]): number | null => {
+  const apply = (entries: ModelListEntry[], loadComplete: boolean): number | null => {
     if (disposed) return null;
     state.entries = entries;
+    // Purely-live providers deliver an empty static snapshot while their
+    // `/models` fetches are pending; keep `loading` on and hold the seed
+    // until the snapshot is non-empty or the load is complete.
+    if (entries.length === 0 && !loadComplete) return null;
     state.loading = false;
     if (!selectionInitialized) {
       seedSelection(entries);
@@ -89,24 +97,110 @@ export function createModelSelectorController(options: {
     dispose() {
       disposed = true;
     },
+    /** True once the selector closed; late load results must be dropped. */
+    get disposed() {
+      return disposed;
+    },
     /** Incremental snapshot (static first, then live merges). */
     onUpdate(entries: ModelListEntry[], meta: ModelListUpdateMeta): number | null {
       if (disposed) return null;
       state.updating = meta.pending > 0;
       state.failures = meta.failed;
-      return apply(entries);
+      return apply(entries, meta.pending === 0);
     },
     /** Final resolved list. */
     onFinal(entries: ModelListEntry[]): number | null {
       if (disposed) return null;
       state.updating = false;
-      state.failures = [];
-      return apply(entries);
+      // Do not clear failures here: they are the last onUpdate's inline
+      // "live catalog unavailable" note and must survive loading finishing.
+      return apply(entries, true);
+    },
+    /**
+     * Late load failure. While the selector is open, reports the message and
+     * flips `loading` off; after dispose it is a silent no-op (no state
+     * change, no throw) so a rejection after close cannot touch the UI.
+     */
+    onReject(err: unknown): string | null {
+      if (disposed) return null;
+      state.loading = false;
+      return err instanceof Error ? err.message : String(err);
     },
     get state() {
       return state;
     },
   };
+}
+
+export interface ModelSelectionKey {
+  provider: string;
+  modelId: string;
+}
+
+/**
+ * Selection state for the model selector, keyed by model identity instead of
+ * a numeric row index. Live merges that insert rows before the highlighted
+ * model keep the highlight on the same model: `reconcile` recomputes the
+ * numeric index from the tracked key after every merge/filter change. When
+ * the selected model leaves the visible list the key lapses and today's
+ * numeric clamping applies.
+ */
+export class ModelSelection {
+  private index = 0;
+  private key: ModelSelectionKey | null = null;
+
+  /** Numeric row index into the latest filtered list (render position). */
+  get indexValue(): number {
+    return this.index;
+  }
+
+  /** Identity of the highlighted model; null while nothing is selected. */
+  get keyValue(): ModelSelectionKey | null {
+    return this.key;
+  }
+
+  /** Recompute the row index from the tracked model identity. */
+  reconcile(list: ModelListEntry[]): void {
+    if (this.key !== null && list.length > 0) {
+      const idx = list.findIndex(
+        (m) =>
+          m.provider === this.key!.provider && m.modelId === this.key!.modelId,
+      );
+      if (idx >= 0) {
+        this.index = idx;
+        return;
+      }
+    }
+    // Fallback: clamp as before; the key lapses so a later change does not
+    // resurrect a selection the user could no longer see.
+    if (this.index >= list.length) this.index = Math.max(0, list.length - 1);
+    this.key = null;
+  }
+
+  /** Seed the initial selection (current model pinned / first available). */
+  seed(index: number, list: ModelListEntry[]): void {
+    this.index = index;
+    this.setKeyAt(list, index);
+  }
+
+  /** Move up/down by visible row (skipping unavailable rows). */
+  move(list: ModelListEntry[], direction: 1 | -1): void {
+    this.index = moveSelection(list, this.index, direction);
+    this.setKeyAt(list, this.index);
+  }
+
+  /** Jump to the top of the current (post-filter) list. */
+  jumpToTop(list: ModelListEntry[]): void {
+    this.index = 0;
+    this.setKeyAt(list, 0);
+  }
+
+  private setKeyAt(list: ModelListEntry[], index: number): void {
+    const entry = list[index];
+    this.key = entry
+      ? { provider: entry.provider, modelId: entry.modelId }
+      : null;
+  }
 }
 
 const MAX_VISIBLE = 10;
@@ -138,6 +232,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   const [liveFailures, setLiveFailures] = createSignal<string[]>([]);
   const [loadError, setLoadError] = createSignal<string | null>(null);
   const [selectedIndex, setSelectedIndex] = createSignal(0);
+  const selection = new ModelSelection();
   const maxVisible = () => props.maxVisible ?? MAX_VISIBLE;
 
   const ordered = createMemo(() =>
@@ -180,9 +275,20 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       renderer.requestRender();
     };
 
+    const seedSelectionAt = (sel: number, entries: ModelListEntry[]) => {
+      // Seed against the ordered snapshot the controller computed `sel` for;
+      // the reconcile effect re-adjusts if a typed filter differs.
+      selection.seed(
+        sel,
+        orderModels(entries, props.currentProvider, props.currentModelId),
+      );
+      setSelectedIndex(sel);
+    };
+
     const handleUpdate = (entries: ModelListEntry[], meta: ModelListUpdateMeta) => {
+      if (controller.disposed) return;
       const sel = controller.onUpdate(entries, meta);
-      if (sel !== null) setSelectedIndex(sel);
+      if (sel !== null) seedSelectionAt(sel, entries);
       setLoadError(null);
       commitState();
     };
@@ -192,14 +298,19 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       setLoadError(null);
       try {
         const entries = await props.loadModels({ onUpdate: handleUpdate });
+        if (controller.disposed) return;
         const sel = controller.onFinal(entries);
-        if (sel !== null) setSelectedIndex(sel);
+        if (sel !== null) seedSelectionAt(sel, entries);
         setLoadError(null);
         commitState();
       } catch (err) {
         // Only reached when every selected provider failed AND nothing was
         // produced — the static snapshot already shown keeps this off.
-        setLoadError(err instanceof Error ? err.message : String(err));
+        // After dispose the controller reports null: drop everything without
+        // touching signals or the renderer.
+        const message = controller.onReject(err);
+        if (message === null) return;
+        setLoadError(message);
         setLoading(false);
         renderer.requestRender();
       }
@@ -209,8 +320,12 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   });
 
   createEffect(() => {
-    const n = filtered().length;
-    if (selectedIndex() >= n) setSelectedIndex(Math.max(0, n - 1));
+    // Follow model identity: after any merge/filter change, recompute the
+    // row index from the selected provider/modelId. Falls back to numeric
+    // clamping when the selected model is no longer visible.
+    selection.reconcile(filtered());
+    const idx = selection.indexValue;
+    if (selectedIndex() !== idx) setSelectedIndex(idx);
   });
 
   const commitCurrent = () => {
@@ -224,11 +339,17 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
     bindings: [
       {
         key: "up",
-        cmd: () => setSelectedIndex((i) => moveSelection(filtered(), i, -1)),
+        cmd: () => {
+          selection.move(filtered(), -1);
+          setSelectedIndex(selection.indexValue);
+        },
       },
       {
         key: "down",
-        cmd: () => setSelectedIndex((i) => moveSelection(filtered(), i, 1)),
+        cmd: () => {
+          selection.move(filtered(), 1);
+          setSelectedIndex(selection.indexValue);
+        },
       },
       { key: "tab", cmd: () => commitCurrent() },
     ],
@@ -251,6 +372,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
         placeholder="search models…"
         onInput={(v: string) => {
           setQuery(v);
+          selection.jumpToTop(filtered());
           setSelectedIndex(0);
         }}
         onSubmit={() => commitCurrent()}

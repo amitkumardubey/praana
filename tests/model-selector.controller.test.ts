@@ -2,6 +2,10 @@ import { describe, it, expect } from "bun:test";
 import { createModelSelectorController } from "../src/ui/tui/overlays/model-selector.js";
 import type { ModelListEntry } from "../src/model-listing.js";
 
+function m(provider: string, modelId: string): ModelListEntry {
+  return { provider, modelId, label: modelId, contextWindow: null, available: true };
+}
+
 const models: ModelListEntry[] = [
   { provider: "openai", modelId: "gpt-4o", label: "gpt-4o", contextWindow: 128_000, available: true },
   { provider: "openai", modelId: "gpt-4o-mini", label: "gpt-4o-mini", contextWindow: null, available: true },
@@ -71,5 +75,58 @@ describe("createModelSelectorController", () => {
   it("loading stays true until the first snapshot", () => {
     const c = createModelSelectorController({ currentProvider: "openai", currentModelId: "gpt-4o" });
     expect(c.state.loading).toBe(true);
+  });
+
+  it("onFinal keeps the failures reported by the last onUpdate (live catalog note survives)", () => {
+    const c = createModelSelectorController({ currentProvider: "openai", currentModelId: "gpt-4o" });
+    c.onUpdate(models, { pending: 0, failed: ["ollama: catalog unreachable"] });
+    const sel = c.onFinal(models);
+    expect(sel).toBeNull();
+    expect(c.state.failures).toEqual(["ollama: catalog unreachable"]);
+  });
+
+  it("keeps loading while the static snapshot is empty and live fetches are still pending", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    const sel = c.onUpdate([], { pending: 3, failed: [] });
+    expect(sel).toBeNull();
+    expect(c.state.loading).toBe(true);
+    expect(c.state.updating).toBe(true);
+    expect(c.state.entries).toEqual([]);
+  });
+
+  it("seeds once a live merge delivers a non-empty snapshot after an empty static one", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    c.onUpdate([], { pending: 3, failed: [] });
+    const live = [m("ollama", "llama3.1")];
+    const sel = c.onUpdate(live, { pending: 0, failed: [] });
+    expect(sel).toBe(0);
+    expect(c.state.loading).toBe(false);
+  });
+
+  it("treats an empty final snapshot (pending 0) as loaded", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    const sel = c.onUpdate([], { pending: 0, failed: [] });
+    expect(sel).toBe(0);
+    expect(c.state.loading).toBe(false);
+  });
+
+  it("exposes a disposed flag that flips on dispose", () => {
+    const c = createModelSelectorController({ currentProvider: "openai", currentModelId: "gpt-4o" });
+    expect(c.disposed).toBe(false);
+    c.dispose();
+    expect(c.disposed).toBe(true);
+  });
+
+  it("onReject reports the load error while open and is a no-op after dispose", () => {
+    const c = createModelSelectorController({ currentProvider: "openai", currentModelId: "gpt-4o" });
+    const msg = c.onReject(new Error("catalog unreachable"));
+    expect(msg).toBe("catalog unreachable");
+    expect(c.state.loading).toBe(false);
+
+    c.dispose();
+    const after = c.onReject(new Error("late rejection"));
+    expect(after).toBeNull();
+    expect(c.state.loading).toBe(false); // unchanged
+    expect(c.state.entries).toEqual([]);
   });
 });
