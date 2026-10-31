@@ -56,6 +56,12 @@ export function createModelSelectorController(options: {
   let disposed = false;
   let selectionInitialized = false;
   let selectedIndex = 0;
+  // True once the user has moved the selection or typed a filter; after that
+  // the live-merge current-model acquisition below must never move it.
+  let userInteracted = false;
+  // Whether the seed already saw the current model (live-only providers only
+  // deliver it with a merge, so we move the highlight to it exactly once).
+  let currentModelSeeded = false;
 
   const state = {
     entries: [] as ModelListEntry[],
@@ -75,6 +81,11 @@ export function createModelSelectorController(options: {
       options.currentProvider,
       options.currentModelId,
     );
+    currentModelSeeded = ordered.some(
+      (m) =>
+        m.provider === options.currentProvider &&
+        m.modelId === options.currentModelId,
+    );
     selectionInitialized = true;
   };
 
@@ -90,12 +101,41 @@ export function createModelSelectorController(options: {
       seedSelection(entries);
       return selectedIndex;
     }
+    // Live-only current model: when the static snapshot never contained it
+    // and it only arrives with a live merge, move the highlight onto it the
+    // first time it appears — unless the user already moved the selection or
+    // typed a filter.
+    if (!userInteracted && !currentModelSeeded) {
+      const ordered = orderModels(
+        entries,
+        options.currentProvider,
+        options.currentModelId,
+      );
+      const idx = ordered.findIndex(
+        (m) =>
+          m.provider === options.currentProvider &&
+          m.modelId === options.currentModelId,
+      );
+      if (idx >= 0) {
+        currentModelSeeded = true;
+        selectedIndex = idx;
+        return selectedIndex;
+      }
+    }
     return null;
   };
 
   return {
     dispose() {
       disposed = true;
+    },
+    /**
+     * Record that the user has interacted (moved the selection or typed a
+     * filter); the live-merge current-model acquisition will never move the
+     * selection after this.
+     */
+    markUserInteracted(): void {
+      userInteracted = true;
     },
     /** True once the selector closed; late load results must be dropped. */
     get disposed() {
@@ -260,14 +300,16 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
   const isCurrent = (m: ModelListEntry) =>
     m.provider === props.currentProvider && m.modelId === props.currentModelId;
 
+  let controller: ReturnType<typeof createModelSelectorController> | undefined;
   onMount(() => {
-    const controller = createModelSelectorController({
+    const ctrl = createModelSelectorController({
       currentProvider: props.currentProvider,
       currentModelId: props.currentModelId,
     });
+    controller = ctrl;
 
     const commitState = () => {
-      const s = controller.state;
+      const s = ctrl.state;
       setAllModels(s.entries);
       setLoading(s.loading);
       setUpdating(s.updating);
@@ -286,8 +328,8 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
     };
 
     const handleUpdate = (entries: ModelListEntry[], meta: ModelListUpdateMeta) => {
-      if (controller.disposed) return;
-      const sel = controller.onUpdate(entries, meta);
+      if (ctrl.disposed) return;
+      const sel = ctrl.onUpdate(entries, meta);
       if (sel !== null) seedSelectionAt(sel, entries);
       setLoadError(null);
       commitState();
@@ -298,8 +340,8 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       setLoadError(null);
       try {
         const entries = await props.loadModels({ onUpdate: handleUpdate });
-        if (controller.disposed) return;
-        const sel = controller.onFinal(entries);
+        if (ctrl.disposed) return;
+        const sel = ctrl.onFinal(entries);
         if (sel !== null) seedSelectionAt(sel, entries);
         setLoadError(null);
         commitState();
@@ -308,7 +350,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
         // produced — the static snapshot already shown keeps this off.
         // After dispose the controller reports null: drop everything without
         // touching signals or the renderer.
-        const message = controller.onReject(err);
+        const message = ctrl.onReject(err);
         if (message === null) return;
         setLoadError(message);
         setLoading(false);
@@ -316,7 +358,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       }
     })();
 
-    onCleanup(() => controller.dispose());
+    onCleanup(() => ctrl.dispose());
   });
 
   createEffect(() => {
@@ -340,6 +382,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       {
         key: "up",
         cmd: () => {
+          controller?.markUserInteracted();
           selection.move(filtered(), -1);
           setSelectedIndex(selection.indexValue);
         },
@@ -347,6 +390,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
       {
         key: "down",
         cmd: () => {
+          controller?.markUserInteracted();
           selection.move(filtered(), 1);
           setSelectedIndex(selection.indexValue);
         },
@@ -371,6 +415,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
         focused
         placeholder="search models…"
         onInput={(v: string) => {
+          controller?.markUserInteracted();
           setQuery(v);
           selection.jumpToTop(filtered());
           setSelectedIndex(0);

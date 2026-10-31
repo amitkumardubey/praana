@@ -117,6 +117,50 @@ describe("createModelSelectorController", () => {
     expect(c.disposed).toBe(true);
   });
 
+  it("moves the selection to the current model the first time a live merge brings it in (no user interaction)", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    // Static snapshot without the current model (live-only provider): the
+    // seed falls back to the first available row.
+    const statics = [m("openai", "gpt-4o"), m("openai", "gpt-4o-mini")];
+    const sel0 = c.onUpdate(statics, { pending: 2, failed: [] });
+    expect(sel0).toBe(0);
+    expect(c.state.loading).toBe(false);
+
+    // A live merge delivers the current model: selection must move to it.
+    const live = [...statics, m("ollama", "llama3.1")];
+    const sel1 = c.onUpdate(live, { pending: 1, failed: [] });
+    expect(sel1).toBe(0); // current model pinned to top by orderModels
+    expect(c.state.entries).toBe(live);
+  });
+
+  it("moves at most once, even if more live merges arrive", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    c.onUpdate([m("openai", "gpt-4o")], { pending: 3, failed: [] });
+    expect(
+      c.onUpdate(
+        [m("openai", "gpt-4o"), m("ollama", "llama3.1")],
+        { pending: 2, failed: [] },
+      ),
+    ).toBe(0);
+    expect(
+      c.onUpdate(
+        [m("openai", "gpt-4o"), m("ollama", "llama3.1"), m("ollama", "extra")],
+        { pending: 0, failed: [] },
+      ),
+    ).toBeNull();
+  });
+
+  it("never moves the selection once the user has moved it or typed a filter", () => {
+    const c = createModelSelectorController({ currentProvider: "ollama", currentModelId: "llama3.1" });
+    c.onUpdate([m("openai", "gpt-4o")], { pending: 2, failed: [] });
+    c.markUserInteracted();
+    const late = c.onUpdate(
+      [m("openai", "gpt-4o"), m("ollama", "llama3.1")],
+      { pending: 1, failed: [] },
+    );
+    expect(late).toBeNull();
+  });
+
   it("onReject reports the load error while open and is a no-op after dispose", () => {
     const c = createModelSelectorController({ currentProvider: "openai", currentModelId: "gpt-4o" });
     const msg = c.onReject(new Error("catalog unreachable"));
