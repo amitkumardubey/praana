@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-#[cfg(feature = "failpoints")]
 use std::time::{Duration, Instant};
 
 use praana_core::canonical_json::to_canonical_json_bytes;
@@ -5643,15 +5642,26 @@ fn fence_t5_seeded_writer_stress() {
 
     const SEEDS: u64 = 8;
     let mut failed = Vec::new();
+    let mut replaced = 0usize;
     for seed in 0..SEEDS {
-        if let Err(message) = fence_stress_seed(seed) {
-            eprintln!("fence stress seed {seed} failed: {message}");
-            failed.push((seed, message));
+        match fence_stress_seed(seed) {
+            Ok(observed) => replaced += observed,
+            Err(message) => {
+                eprintln!("fence stress seed {seed} failed: {message}");
+                failed.push((seed, message));
+            }
         }
     }
     assert!(failed.is_empty(), "fence stress failed seeds: {failed:?}");
+    eprintln!(
+        "fence stress: {replaced} writer attempt(s) observed HISTORY_FILE_REPLACED across {SEEDS} seeds"
+    );
+    assert!(
+        replaced > 0,
+        "no writer observed HISTORY_FILE_REPLACED in {SEEDS} seeds; the fence was not exercised"
+    );
 
-    fn fence_stress_seed(seed: u64) -> Result<(), String> {
+    fn fence_stress_seed(seed: u64) -> Result<usize, String> {
         let dir = tempfile::tempdir().unwrap();
         let session = build_session_with_texts(dir.path(), &["alpha"], &["beta"]);
         let history = fixed_history();
@@ -5672,7 +5682,7 @@ fn fence_t5_seeded_writer_stress() {
         let records = Arc::new(std::sync::Mutex::new(
             Vec::<(String, Result<(), String>)>::new(),
         ));
-        thread::scope(|scope| {
+        let observed = thread::scope(|scope| {
             for _ in 0..writers {
                 let ledger = Arc::clone(&ledger);
                 let history = &history;
@@ -5680,7 +5690,11 @@ fn fence_t5_seeded_writer_stress() {
                 let records = Arc::clone(&records);
                 scope.spawn(move || {
                     let mut made = 0usize;
-                    while !stop.load(Ordering::SeqCst) && made < 20 {
+                    // The cap only bounds a pathological run. It is high enough
+                    // that the writers are still alive when the rebuild takes
+                    // the write lock, so at least one attempt is queued behind
+                    // the swap instead of every writer exiting first.
+                    while !stop.load(Ordering::SeqCst) && made < 500 {
                         made += 1;
                         let id = OperationId(ulid::Ulid::generate());
                         let command = turn_submit_command(id);
@@ -5695,12 +5709,60 @@ fn fence_t5_seeded_writer_stress() {
             for _ in 0..spins {
                 thread::yield_now();
             }
-            HistoryProjector::new(&session.db)
-                .rebuild(&session.log)
-                .map_err(|err| err.to_string())
-                .expect("rebuild");
+            // Failpoints builds force the window deterministically: the rebuild
+            // pauses after the rebuilt file is renamed into place but before
+            // the fence transaction commits and the handle re-opens. Writers
+            // that reach a write then block on the write lock and must observe
+            // HISTORY_FILE_REPLACED once the fence commits.
+            #[cfg(feature = "failpoints")]
+            let hook = praana_core::register_rebuild_hook(
+                &history_db_path(dir.path()),
+                &[(
+                    "history.rebuild_after_rename",
+                    praana_core::RebuildHookKind::Pause,
+                )],
+            );
+            let rebuild = scope.spawn(|| {
+                HistoryProjector::new(&session.db)
+                    .rebuild(&session.log)
+                    .map_err(|err| err.to_string())
+            });
+            #[cfg(feature = "failpoints")]
+            {
+                assert!(
+                    hook.wait_paused("history.rebuild_after_rename", Duration::from_secs(5)),
+                    "seed {seed}: rebuild did not pause in the rename window"
+                );
+                // Let the writers reach BEGIN IMMEDIATE and queue behind the
+                // rebuild's write lock.
+                thread::sleep(Duration::from_millis(100));
+                hook.resume();
+            }
+            rebuild.join().expect("rebuild thread").expect("rebuild");
+            // The rebuild has published the new file and committed the fence,
+            // so every stale writer attempt from now on is rejected. Wait for
+            // one observation instead of racing the stop flag against the
+            // writer threads.
+            let observed = {
+                let start = Instant::now();
+                loop {
+                    let seen = records.lock().unwrap().iter().any(|(_, outcome)| {
+                        matches!(outcome, Err(text) if text.contains("HISTORY_FILE_REPLACED"))
+                    });
+                    if seen || start.elapsed() >= Duration::from_secs(5) {
+                        break seen;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            };
             stop.store(true, Ordering::SeqCst);
+            observed
         });
+        if !observed {
+            return Err(format!(
+                "seed {seed}: no writer observed HISTORY_FILE_REPLACED; the fence was not exercised"
+            ));
+        }
         let records = records.lock().unwrap().clone();
         let live_path = history_db_path(dir.path());
         let live = dump_operation_records(&live_path);
@@ -5760,7 +5822,13 @@ fn fence_t5_seeded_writer_stress() {
         if integrity != "ok" {
             return Err(format!("seed {seed}: integrity_check {integrity}"));
         }
-        Ok(())
+        let replaced = records
+            .iter()
+            .filter(|(_, outcome)| {
+                matches!(outcome, Err(text) if text.contains("HISTORY_FILE_REPLACED"))
+            })
+            .count();
+        Ok(replaced)
     }
 }
 
