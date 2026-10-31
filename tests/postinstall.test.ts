@@ -9,6 +9,7 @@ import {
   noticeText,
   run,
   shouldNotify,
+  writeNotice,
 } from "../scripts/postinstall.js";
 
 const POSTINSTALL_JS = resolve("scripts/postinstall.js");
@@ -128,6 +129,46 @@ describe("run", () => {
   });
 });
 
+describe("writeNotice", () => {
+  it("writes to the terminal when one is reachable, not to captured stdout", () => {
+    const chunks: string[] = [];
+    let terminal = "";
+    const via = writeNotice(noticeText(), {
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      writeToTerminal: (chunk: string) => {
+        terminal += chunk;
+        return true;
+      },
+    });
+    expect(via).toBe("terminal");
+    expect(terminal).toBe(noticeText());
+    expect(chunks).toEqual([]);
+  });
+
+  it("uses stdout when the terminal is not wanted (CI)", () => {
+    const chunks: string[] = [];
+    const via = writeNotice(noticeText(), {
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      useTerminal: false,
+      writeToTerminal: () => {
+        throw new Error("must not touch the terminal in CI");
+      },
+    });
+    expect(via).toBe("stdout");
+    expect(chunks.join("")).toBe(noticeText());
+  });
+
+  it("falls back to stdout when there is no terminal", () => {
+    const chunks: string[] = [];
+    const via = writeNotice(noticeText(), {
+      stdout: { write: (chunk: string) => chunks.push(chunk) },
+      writeToTerminal: () => false,
+    });
+    expect(via).toBe("stdout");
+    expect(chunks.join("")).toBe(noticeText());
+  });
+});
+
 describe("postinstall script process", () => {
   it("exits 0 and stays silent when bun is on PATH", () => {
     if (!NODE) return;
@@ -141,7 +182,7 @@ describe("postinstall script process", () => {
       copyFileSync(NODE, join(bunDir, "bun"));
       Bun.spawnSync(["chmod", "+x", join(bunDir, "bun")]);
       const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
-        env: { ...process.env, PATH: `${bunDir}:/usr/bin:/bin` },
+        env: { ...process.env, CI: "1", PATH: `${bunDir}:/usr/bin:/bin` },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -159,7 +200,7 @@ describe("postinstall script process", () => {
       mkdirSync(join(root, "scripts"));
       copyFileSync(POSTINSTALL_JS, join(root, "scripts", "postinstall.js"));
       const result = Bun.spawnSync([NODE, join(root, "scripts", "postinstall.js")], {
-        env: { ...process.env, PATH: "/nonexistent-dir" },
+        env: { ...process.env, CI: "1", PATH: "/nonexistent-dir" },
         stdout: "pipe",
         stderr: "pipe",
       });

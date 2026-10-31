@@ -14,7 +14,7 @@
  *
  * Plain Node, no dependencies, ESM (package.json has "type": "module").
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -86,6 +86,35 @@ export function findOnPath(command, options = {}) {
   return null;
 }
 
+/**
+ * Best-effort write straight to the terminal, bypassing whatever captured our
+ * stdout. npm >= 7 swallows a dependency's lifecycle output and only replays it
+ * when the script fails, so a plain stdout write would never be seen by the
+ * person running `npm i -g praana`. Returns false when there is no terminal
+ * (CI, piped install, no controlling tty), so the caller falls back to stdout.
+ */
+function defaultWriteToTerminal(text, platform = process.platform) {
+  const device = platform === "win32" ? "CONOUT$" : "/dev/tty";
+  try {
+    writeFileSync(device, text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Print the notice. Injectable for tests. */
+export function writeNotice(text, options = {}) {
+  const {
+    stdout = process.stdout,
+    useTerminal = true,
+    writeToTerminal = (chunk) => defaultWriteToTerminal(chunk),
+  } = options;
+  if (useTerminal && writeToTerminal(text)) return "terminal";
+  stdout.write(text);
+  return "stdout";
+}
+
 /** Decide whether the notice is worth printing. Pure. */
 export function shouldNotify({ bunPath, isDevCheckout }) {
   return !bunPath && !isDevCheckout;
@@ -129,7 +158,8 @@ function isMainModule() {
 if (isMainModule()) {
   try {
     const { notice } = run();
-    if (notice) process.stdout.write(notice);
+    // CI has no terminal to write to; keep the plain stdout write there.
+    if (notice) writeNotice(notice, { useTerminal: !process.env.CI });
   } catch {
     // A postinstall notice must never fail the install.
   }
