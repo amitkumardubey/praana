@@ -642,6 +642,77 @@ describe("serialized OAuth refresh", () => {
     expect(credentialDiskReadCountForTests()).toBe(reads);
   });
 
+  it("returns a still-valid token without waiting on another session's refresh lock", async () => {
+    const access = jwt("fresh-while-locked");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-fresh-locked",
+      expires: Date.now() + 3_600_000,
+      accountId: "fresh-while-locked",
+    });
+    resetCredentialStoreForTests();
+    const refreshLock = holdLock("refresh");
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(2_000);
+    try {
+      const started = Date.now();
+      const auth = await resolveOAuthModelAuth("openai-codex");
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(posts).toBe(0);
+      expect(auth?.apiKey).toBe(access);
+    } finally {
+      refreshLock.release();
+    }
+  });
+
+  it("does not wait on the refresh lock when another write leaves a still-valid token", async () => {
+    const access = jwt("rewritten-valid");
+    setOAuthToken("openai-codex", {
+      access,
+      refresh: "rt-rewritten",
+      expires: Date.now() + 3_600_000,
+      accountId: "rewritten-valid",
+    });
+    const credPath = getCredentialsFilePath();
+    const parsed = JSON.parse(readFileSync(credPath, "utf8")) as Record<string, { savedAt?: number }>;
+    parsed["openai-codex"]!.savedAt = Date.now();
+    writeFileSync(credPath, JSON.stringify(parsed), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(2_000);
+    try {
+      const started = Date.now();
+      const auth = await resolveOAuthModelAuth("openai-codex");
+      expect(Date.now() - started).toBeLessThan(200);
+      expect(auth?.apiKey).toBe(access);
+    } finally {
+      refreshLock.release();
+    }
+  });
+
+  it("still waits for the refresh lock when the stored token is expired", async () => {
+    seedExpiredCodex();
+    const refreshLock = holdLock("refresh");
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(300);
+    try {
+      const started = Date.now();
+      await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
+        "another PRAANA session is refreshing; try again in a moment",
+      );
+      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    } finally {
+      refreshLock.release();
+    }
+  });
+
   it("does not re-read a fresh cached OAuth token", async () => {
     const access = jwt("fresh-cache");
     setOAuthToken("openai-codex", {

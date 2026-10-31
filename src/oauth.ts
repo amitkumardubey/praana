@@ -442,9 +442,10 @@ export async function ensureFreshAccessToken(
 function useCurrentAfterBusyWait(
   provider: string,
   oauth: OAuthAuth,
-  latest: StoredOAuthCredential | undefined,
+  latest: StoredOAuthCredential,
 ): Promise<ModelAuth | null> {
-  if (!latest) return Promise.resolve(null);
+  // A concurrent refresh can store a token that is outside the skew while this
+  // session is still waiting on the lock. Use that token with no warning.
   if (latest.expires > Date.now() + REFRESH_SKEW_MS) {
     return oauth.toAuth(toOAuthCredential(latest));
   }
@@ -455,7 +456,25 @@ function useCurrentAfterBusyWait(
     );
     return oauth.toAuth(toOAuthCredential(latest));
   }
+  // Callers pass a token that was still unexpired. If it expires in the gap
+  // before this check, fail closed instead of sending it.
   throw new OAuthRefreshBusyError(provider);
+}
+
+/** Fresh tokens are returned before any refresh lock. `"refresh"` means the lock is required. */
+async function readOAuthAuthIfFresh(
+  provider: string,
+  oauth: OAuthAuth,
+): Promise<ModelAuth | null | "refresh"> {
+  const cached = readCachedOAuthIfUnchanged(provider);
+  const token = cached.unchanged
+    ? cached.token
+    : withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+  if (!token) return null;
+  if (token.expires > Date.now() + REFRESH_SKEW_MS) {
+    return oauth.toAuth(toOAuthCredential(token));
+  }
+  return "refresh";
 }
 
 function storedTokenStillValid(token: StoredOAuthCredential | undefined): token is StoredOAuthCredential {
@@ -546,12 +565,8 @@ export async function resolveOAuthModelAuth(
   const oauth = getOAuthAuth(provider);
   if (!oauth) return null;
 
-  const cached = readCachedOAuthIfUnchanged(provider);
-  if (cached.unchanged) {
-    if (!cached.token || cached.token.expires > Date.now() + REFRESH_SKEW_MS) {
-      return cached.token ? oauth.toAuth(toOAuthCredential(cached.token)) : null;
-    }
-  }
+  const fresh = await readOAuthAuthIfFresh(provider, oauth);
+  if (fresh !== "refresh") return fresh;
 
   if (signal?.aborted) throw abortError(signal);
 

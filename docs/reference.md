@@ -202,14 +202,19 @@ most 2 seconds for that lock. The wait is short because the lock is never held
 during a refresh.
 
 A refresh takes its own lock for that provider and holds it while the refresh
-request runs. Other sessions wait for that lock without freezing, checking a
-few times a second for up to 30 seconds. When the lock is free they re-read
-the saved token. If another session already refreshed it, they use that token and
-do not send a second refresh. If the wait runs out and the access token is still
-usable, PRAANA uses it and does not ask you to log in again. If the access token
-is already expired, PRAANA waits for that same bound once more. If it is still
-expired, PRAANA reports `another PRAANA session is refreshing; try again in a
-moment`. That is not a session expiry and it does not say to run `/login` again.
+request runs. PRAANA reads the saved token under the short credentials lock
+first, including when this process has not cached the file yet or another
+process has rewritten it. If the access token is still outside the 60-second
+refresh window, that token is used immediately and the refresh lock is not
+taken. Other sessions wait for the refresh lock only when a refresh is actually
+needed. They wait without freezing, checking a few times a second for up to 30
+seconds. When the lock is free they re-read the saved token. If another session
+already refreshed it, they use that token and do not send a second refresh. If
+the wait runs out and the access token is still usable, PRAANA uses it and does
+not ask you to log in again. If the access token is already expired, PRAANA
+waits for that same bound once more. If it is still expired, PRAANA reports
+`another PRAANA session is refreshing; try again in a moment`. That is not a
+session expiry and it does not say to run `/login` again.
 
 The lock is held by the operating system for the life of the process that took
 it. When that process exits, crashes, or is killed, the system releases the lock
