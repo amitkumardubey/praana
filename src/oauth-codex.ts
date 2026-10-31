@@ -276,9 +276,23 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       let intervalMs = Math.max(1000, Math.floor(interval * 1000));
       interaction.notify({ type: "info", message: NOTICE });
       interaction.notify({ type: "device_code", userCode: data.user_code, verificationUri: `${AUTH_BASE}/codex/device`, intervalSeconds: interval, expiresInSeconds: 900 });
+      let consecutiveNetworkFailures = 0;
       while (now() < deadline) {
         let waitMs = intervalMs;
-        const response = await post("/api/accounts/deviceauth/token", { device_auth_id: data.device_auth_id, user_code: data.user_code });
+        let response: Response;
+        try {
+          response = await post("/api/accounts/deviceauth/token", { device_auth_id: data.device_auth_id, user_code: data.user_code });
+        } catch (err) {
+          if (signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          consecutiveNetworkFailures += 1;
+          if (consecutiveNetworkFailures >= 10) throw err;
+          const remaining = deadline - now();
+          if (remaining > 0) await withSignal(pause(Math.min(waitMs, remaining), signal), signal);
+          continue;
+        }
+        consecutiveNetworkFailures = 0;
         try {
           if (response.ok) {
             const result = await response.json() as Record<string, unknown>;

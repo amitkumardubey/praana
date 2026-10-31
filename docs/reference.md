@@ -165,7 +165,9 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   enter the displayed code. No localhost callback is needed. PRAANA polls for up to
   15 minutes. HTTP 429, 502, 503, and 504 (including a non-JSON body) are retried
   until that deadline, waiting the poll interval or `Retry-After` seconds when
-  present, capped at 30 seconds. Any other unexpected status stops the login.
+  present, capped at 30 seconds. A network failure while polling (connection
+  reset, DNS, timeout) is retried the same way. Ten of those failures in a row
+  stop the login and report that error. Any other unexpected status stops the login.
   If the server does not offer device authorization, use browser login.
 
 Signs in with your ChatGPT account via the Codex CLI sign-in.

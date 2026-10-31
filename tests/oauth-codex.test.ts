@@ -650,6 +650,50 @@ describe("Codex device poll transient retries", () => {
     expect(waits).toEqual([5000, 30_000]);
   });
 
+  it("retries a rejected device poll twice and then succeeds", async () => {
+    const waits: number[] = [];
+    const clock = { value: 0 };
+    let polls = 0;
+    const oauth = createOpenAICodexOAuth({
+      now: () => clock.value,
+      sleep: async (ms) => { waits.push(ms); clock.value += ms; },
+      fetch: fakeFetch((url) => {
+        if (url.endsWith("/usercode")) {
+          return Response.json({ device_auth_id: "device", user_code: "ABCD", interval: 2 });
+        }
+        if (url.endsWith("/deviceauth/token")) {
+          polls += 1;
+          if (polls <= 2) {
+            return Promise.reject(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }));
+          }
+          return Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" });
+        }
+        return tokenResponse();
+      }),
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    expect(polls).toBe(3);
+    expect(waits).toEqual([2000, 2000]);
+  });
+
+  it("stops device polling after 10 consecutive network errors and reports the cause", async () => {
+    const clock = { value: 0 };
+    let polls = 0;
+    const oauth = createOpenAICodexOAuth({
+      now: () => clock.value,
+      sleep: async (ms) => { clock.value += ms; },
+      fetch: fakeFetch((url) => {
+        if (url.endsWith("/usercode")) {
+          return Response.json({ device_auth_id: "device", user_code: "ABCD", interval: 1 });
+        }
+        polls += 1;
+        return Promise.reject(Object.assign(new Error("getaddrinfo ENOTFOUND auth.openai.com"), { code: "ENOTFOUND" }));
+      }),
+    });
+    await expect(oauth.login(interaction("device_code"))).rejects.toThrow(/ENOTFOUND/);
+    expect(polls).toBe(10);
+  });
+
   it("keeps an unexpected 400 fatal", async () => {
     const oauth = deviceOauth({
       polls: [Response.json({ error: "access_denied" }, { status: 400 })],
