@@ -134,6 +134,10 @@ exchange or device authorization, validates the ChatGPT account claim, and rotat
 refresh tokens. Tokens without an account id require signing in again; they cannot
 be refreshed as a pasted-token credential.
 
+Codex requests identify PRAANA and the token's ChatGPT account, disable response
+storage (`store: false`), and omit `max_output_tokens`. Responses streams report
+backend failures or a missing terminal response as errors, not successful completions.
+
 ## Slash commands
 
 | Command | Purpose |

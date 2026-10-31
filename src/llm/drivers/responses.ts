@@ -16,6 +16,7 @@ import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { joinUrl } from "../url.js";
+import { extractAccountId } from "../../oauth-codex.js";
 
 export class OpenAIResponsesDriver implements LlmDriver {
   readonly protocol = "openai-responses";
@@ -29,13 +30,33 @@ export class OpenAIResponsesDriver implements LlmDriver {
     const path = req.provider === "openai-codex" ? "/codex/responses" : "/responses";
     const endpoint = req.endpointUrl || joinUrl(baseUrl, path, req.query);
 
-    const headers: Record<string, string> = {
+    let headers: Record<string, string> | Headers = {
       "Content-Type": "application/json",
       ...(auth.apiKey ? { Authorization: `Bearer ${auth.apiKey}` } : {}),
       ...(auth.bearerToken ? { Authorization: `Bearer ${auth.bearerToken}` } : {}),
       ...(req.headers || {}),
       ...(auth.headers || {}),
     };
+    if (req.provider === "openai-codex") {
+      // Explicit request credentials supersede both stored tokens and their account header.
+      const overrideToken = req.bearerToken || req.apiKey;
+      const token = overrideToken || auth.bearerToken || auth.apiKey;
+      if (!token) throw new Error("OpenAI Codex requires an access token and account id; run /login openai-codex again");
+      const accountId = overrideToken
+        ? extractAccountId(overrideToken)
+        : new Headers(auth.headers).get("chatgpt-account-id")?.trim() || extractAccountId(token);
+      // The banner's config imports lead back to this driver; load its version after initialization.
+      const { APP_VERSION } = await import("../../app-banner.js");
+      const codexHeaders = new Headers(headers);
+      codexHeaders.set("Authorization", `Bearer ${token}`);
+      codexHeaders.set("chatgpt-account-id", accountId);
+      codexHeaders.set("originator", "praana");
+      codexHeaders.set("OpenAI-Beta", "responses=experimental");
+      codexHeaders.set("Accept", "text/event-stream");
+      codexHeaders.set("Content-Type", "application/json");
+      codexHeaders.set("User-Agent", `praana/${APP_VERSION.replace(/^v/, "")}`);
+      headers = codexHeaders;
+    }
 
     const { instructions, input } = this.formatInput(req.messages, req.systemPrompt);
     const tools = this.formatTools(req.tools);
@@ -44,10 +65,12 @@ export class OpenAIResponsesDriver implements LlmDriver {
       model: req.model,
       input,
       stream: true,
-      ...(instructions ? { instructions } : {}),
+      ...(req.provider === "openai-codex"
+        ? { store: false, instructions: instructions?.trim() ? instructions : "You are a helpful assistant." }
+        : instructions ? { instructions } : {}),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-      ...(req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),
+      ...(req.provider !== "openai-codex" && req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),
     };
 
     if (req.reasoningEffort && req.reasoningEffort !== "off") {
@@ -93,6 +116,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     let finishReason: Extract<StreamEvent, { type: "done" }>["reason"] = "stop";
     let latestUsage: Extract<StreamEvent, { type: "usage" }>["usage"] | null = null;
     let itemIndex = 0;
+    let terminalReceived = false;
 
     try {
       for await (const event of parseSseStream(response.body!)) {
@@ -119,6 +143,17 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         const type = String(event.event || parsed.type || "");
+        if (type === "error" || type === "response.failed" || type === "response.incomplete") {
+          const resp = parsed.response as {
+            error?: { message?: string };
+            incomplete_details?: { message?: string; reason?: string };
+          } | undefined;
+          const error = parsed.error as { message?: string } | string | undefined;
+          const message = resp?.error?.message || resp?.incomplete_details?.message ||
+            resp?.incomplete_details?.reason || (typeof error === "string" ? error : error?.message) ||
+            parsed.message;
+          throw new Error(typeof message === "string" && message ? message : `OpenAI Responses stream ${type}`);
+        }
 
         if (parsed.usage && typeof parsed.usage === "object") {
           const u = parsed.usage as Record<string, number>;
@@ -172,11 +207,14 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (type === "response.completed") {
+          terminalReceived = true;
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = String(resp?.status ?? "");
           if (status === "incomplete") finishReason = "length";
         }
       }
+
+      if (!terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
 
       const completedToolCalls = accumulator.flush();
       if (completedToolCalls.length > 0) {
