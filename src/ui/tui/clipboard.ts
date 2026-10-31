@@ -335,6 +335,24 @@ export function copyToastMessage(result: ClipboardWriteResult, text: string): st
   return `Copied ${count} characters`;
 }
 
+export interface SelectionSnapshot {
+  hasSelection: boolean;
+  text: string;
+}
+
+/**
+ * Whether to clear the selection after a copy settles. The copy clears the
+ * selection only when the selection still holds exactly the text that was
+ * copied; a selection made or changed while the copy was in flight is left
+ * alone (it belongs to something else now).
+ */
+export function shouldClearSelectionAfterCopy(
+  copiedText: string,
+  current: SelectionSnapshot,
+): boolean {
+  return current.hasSelection && current.text === copiedText;
+}
+
 /** Outcome of a copy attempt: what toast to show and whether to clear the selection. */
 export function copyOutcomeOf(result: ClipboardWriteResult, text: string): CopyOutcome {
   return {

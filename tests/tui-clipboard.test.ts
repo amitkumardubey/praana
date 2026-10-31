@@ -22,6 +22,7 @@ import {
   isSshEnv,
   nativeToolCandidates,
   runGuardedCopy,
+  shouldClearSelectionAfterCopy,
   utf16leWithBom,
   writeClipboardText,
   type SpawnedProcess,
@@ -587,6 +588,15 @@ describe("Ctrl+C decision — running turn with palette/model overlays", () => {
 
   it("main UI keeps the interrupt path while a turn runs", () => {
     expect(decideCtrlC(false, "", "none", true)).toEqual({ action: "interrupt" });
+  });
+});
+
+describe("copy selection identity clearing after settle", () => {
+  it("clears only when the current selection is exactly the copied text", () => {
+    expect(shouldClearSelectionAfterCopy("abc", { hasSelection: true, text: "abc" })).toBe(true);
+    expect(shouldClearSelectionAfterCopy("abc", { hasSelection: true, text: "xyz" })).toBe(false);
+    expect(shouldClearSelectionAfterCopy("abc", { hasSelection: true, text: "ab" })).toBe(false);
+    expect(shouldClearSelectionAfterCopy("abc", { hasSelection: false, text: "" })).toBe(false);
   });
 });
 

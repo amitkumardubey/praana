@@ -54,6 +54,7 @@ import {
   defaultToolLookup,
   isModalOverlay,
   runGuardedCopy,
+  shouldClearSelectionAfterCopy,
 } from "./clipboard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
@@ -572,6 +573,9 @@ export async function runTui(
   let offSlashCtrlCHook: () => void = () => {};
 
   const ctrlCCopyState = createCopyRunState();
+  // The text of the in-flight copy, so settle can tell whether the selection
+  // that exists now is still the one that was copied.
+  let pendingCopyText: string | null = null;
 
   const startCopy = (text: string): { started: boolean } =>
     runGuardedCopy(
@@ -586,9 +590,24 @@ export async function runTui(
       },
       ctrlCCopyState,
       {
+        onStarted: () => {
+          pendingCopyText = text;
+        },
         onSettled: (result, copiedText) => {
           const outcome = copyOutcomeOf(result, copiedText);
-          renderer.clearSelection();
+          // Clear the selection only when it still holds exactly the copied
+          // text; a selection made or changed while the copy was in flight is
+          // not the copy's to clear.
+          if (
+            pendingCopyText !== null &&
+            shouldClearSelectionAfterCopy(pendingCopyText, {
+              hasSelection: renderer.hasSelection,
+              text: renderer.getSelection()?.getSelectedText() ?? "",
+            })
+          ) {
+            renderer.clearSelection();
+          }
+          pendingCopyText = null;
           ui.toast.show(outcome.toast, outcome.tone);
           renderer.requestRender();
         },
