@@ -152,13 +152,22 @@ export function releaseProviderRefreshLock(provider: string): void {
   lock?.release();
 }
 
+function cloneCredentials(creds: CredentialsFile): CredentialsFile {
+  return structuredClone(creds);
+}
+
 function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
   return withStoreLockSync(() => {
-    const creds = readCredentialsFromDisk();
+    const creds = cloneCredentials(readCredentialsFromDisk());
     const result = mutator(creds);
     persistCredentials(creds);
     return result;
   });
+}
+
+/** @internal A throw must leave the cache and the file unchanged. */
+export function mutateCredentialsForTests(mutator: (creds: CredentialsFile) => void): void {
+  runCredentialMutation(mutator);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

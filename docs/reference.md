@@ -223,9 +223,11 @@ it. When that process exits, crashes, or is killed, the system releases the lock
 at once. PRAANA does not decide that a lock has gone stale, and it does not
 replace a lock another live process still holds.
 
-A save re-reads the credentials file under the lock before writing. If that read
-fails (the file is unreadable, not valid JSON, or only partly written), PRAANA
-reports the error and leaves the file untouched. A missing file is still created.
+A save re-reads the credentials file under the lock before writing, edits a copy,
+and replaces the in-memory cache only after that write succeeds. If the update
+throws, or the read fails (the file is unreadable, not valid JSON, or only partly
+written), PRAANA leaves both the file and the cache unchanged. A missing file is
+still created.
 
 Cancelling one request does not cancel the refresh for anyone else. Once a refresh
 request has started, PRAANA finishes it and saves the new token even if every

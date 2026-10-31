@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   getApiKey,
@@ -19,6 +19,7 @@ import {
   resolveAuth,
   getCredentialsFilePath,
   ensureCredentialsFileMode,
+  mutateCredentialsForTests,
   resetCredentialStoreForTests,
   type StoredOAuthCredential,
 } from "../src/credentials.js";
@@ -269,5 +270,25 @@ describe("resolveApiKey precedence", () => {
     savedEnv.UNSET_KEY = process.env.UNSET_KEY;
     delete process.env.UNSET_KEY;
     expect(resolveApiKey("provider-z", "UNSET_KEY")).toBe("");
+  });
+
+  it("a throwing mutator leaves the credential cache and file unchanged", () => {
+    setOAuthToken("openai-codex", {
+      access: "access-1",
+      refresh: "refresh-1",
+      expires: 123,
+      accountId: "acct",
+    });
+    const before = readFileSync(getCredentialsFilePath());
+    const cached = getOAuthToken("openai-codex");
+    expect(cached?.access).toBe("access-1");
+    expect(() => mutateCredentialsForTests((creds) => {
+      const entry = creds["openai-codex"];
+      if (entry && entry.type === "oauth") entry.access = "mutated";
+      throw new Error("boom");
+    })).toThrow("boom");
+    expect(readFileSync(getCredentialsFilePath())).toEqual(before);
+    expect(getOAuthToken("openai-codex")?.access).toBe("access-1");
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-1");
   });
 });
