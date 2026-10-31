@@ -35,6 +35,12 @@ export interface StartupInfo {
   isResume: boolean;
   /** Shown at startup (e.g. bare resume fell back to a new session). */
   startupNotices: string[];
+  /**
+   * Raw session notices captured during startup (e.g. the AGENTS.md
+   * truncation notice). The TUI surfaces these as toasts; headless/CLI
+   * paths keep the historical stderr notice instead.
+   */
+  agentTruncationNotices: string[];
 }
 
 export class AppController {
@@ -58,7 +64,12 @@ export class AppController {
 
   async start(): Promise<StartupInfo> {
     const { sessionId, resumeMode, debug } = this.parsed;
-    const captureNotice = (_line: string) => {};
+    const agentTruncationNotices: string[] = [];
+    const captureNotice = (line: string) => {
+      if (line.includes("AGENTS.md content truncated")) {
+        agentTruncationNotices.push(line);
+      }
+    };
     const startupNotices: string[] = [];
     let didResume = false;
 
@@ -131,6 +142,7 @@ export class AppController {
         : { groups: [] },
       isResume: didResume,
       startupNotices,
+      agentTruncationNotices,
     };
   }
 
@@ -342,9 +354,14 @@ export class AppController {
 
     try {
       this.config = newConfig;
+      const agentTruncationNotices: string[] = [];
       this.session = await Session.create(this.cwd, newConfig, {
         incognito: this.parsed.incognito,
-        captureNotice: () => {},
+        captureNotice: (line) => {
+          if (line.includes("AGENTS.md content truncated")) {
+            agentTruncationNotices.push(line);
+          }
+        },
       });
       this.session.debug = this.parsed.debug;
       this.sessionEnded = false;
@@ -360,6 +377,7 @@ export class AppController {
         transcriptBootstrap: { groups: [] },
         isResume: false,
         startupNotices: settingsNotices,
+        agentTruncationNotices,
       };
     } catch (err) {
       // Roll back to a working session using the last known-good config so the

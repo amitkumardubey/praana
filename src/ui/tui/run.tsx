@@ -17,7 +17,11 @@ import {
   formatSessionEndEpilogue,
 } from "../../app-banner.js";
 import { APP_NAME } from "../../app-identity.js";
-import { formatLaunchCanvasMeta, formatTuiWelcomeLine } from "./boot-summary.js";
+import {
+  formatAgentsTruncationNotice,
+  formatLaunchCanvasMeta,
+  formatTuiWelcomeLine,
+} from "./boot-summary.js";
 import { loadUserSettings } from "../../user-settings.js";
 import { formatUpdateNotice, refreshUpdateCheck } from "../../update/check.js";
 import { beginUpgradeLock, endUpgradeLock, runUpgrade } from "../../update/upgrade.js";
@@ -703,6 +707,12 @@ export async function runTui(
             if (line) {
               openTuiSink.onSystemLines([line]);
               openTuiSink.nextGroup();
+            }
+            // Surface the AGENTS.md truncation notice once as a warn-level
+            // toast now that the TUI is ready (headless/CLI paths keep the
+            // stderr notice instead).
+            if (started.agentTruncationNotices.length > 0) {
+              ui.toast.show(formatAgentsTruncationNotice(), "warn");
             }
             refreshChrome();
             prompt?.focus();

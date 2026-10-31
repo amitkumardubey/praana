@@ -816,3 +816,28 @@ afterAll(() => {
   mock.module("../src/session.js", () => sessionReal);
   mock.module("../src/turn.js", () => turnReal);
 });
+
+describe("AppController AGENTS truncation capture", () => {
+  it("routes the captured truncation notice into agentTruncationNotices, not startupNotices/stderr", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    const info = await controller.start();
+    expect(info.agentTruncationNotices).toEqual([]);
+    expect(info.startupNotices).toEqual([]);
+
+    // The capture callback the controller wired into Session.create must
+    // collect the raw session notice into agentTruncationNotices.
+    const createMock = Session.create as Mock<typeof Session.create>;
+    const opts = createMock.mock.calls.at(-1)?.[2] as { captureNotice?: (line: string) => void } | undefined;
+    expect(opts?.captureNotice).toBeTypeOf("function");
+    opts?.captureNotice?.("[session] AGENTS.md content truncated to ~4000 tokens");
+
+    expect(info.agentTruncationNotices).toHaveLength(1);
+    expect(info.agentTruncationNotices[0]).toContain("AGENTS.md content truncated");
+    // It must NOT be promoted into stderr-printed startup notices.
+    expect(info.startupNotices).toEqual([]);
+  });
+});
