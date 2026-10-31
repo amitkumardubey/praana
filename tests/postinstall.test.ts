@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
@@ -218,6 +218,30 @@ describe("postinstall script process", () => {
       });
       expect(result.exitCode).toBe(0);
       expect(result.stdout.toString("utf-8")).toBe("");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("prints the notice when the package dir is reached through a symlink", () => {
+    if (!NODE) return;
+    const root = mkdtempSync(join(tmpdir(), "praana-postinstall-symlink-"));
+    try {
+      const real = join(root, "real");
+      mkdirSync(join(real, "scripts"), { recursive: true });
+      writeFileSync(join(real, "package.json"), JSON.stringify({ type: "module" }));
+      copyFileSync(POSTINSTALL_JS, join(real, "scripts", "postinstall.js"));
+      const link = join(root, "link");
+      symlinkSync(real, link, "dir");
+      // argv[1] is the symlinked path; import.meta.url is the realpath, so a
+      // plain resolve() comparison silently decides "not the entry point".
+      const result = Bun.spawnSync([NODE, join(link, "scripts", "postinstall.js")], {
+        env: { ...process.env, CI: "1", PATH: "/nonexistent-dir" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString("utf-8")).toBe(noticeText());
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

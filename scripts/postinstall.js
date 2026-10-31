@@ -14,7 +14,7 @@
  *
  * Plain Node, no dependencies, ESM (package.json has "type": "module").
  */
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -154,11 +154,28 @@ export function run(options = {}) {
   return { notice, bunPath, isDevCheckout };
 }
 
+/** realpath when the path exists, otherwise an absolute path. */
+function realpathOrResolve(path) {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * True when this file is the script Node was asked to run. Compare realpaths on
+ * both sides: `process.argv[1]` keeps the symlinked path the user typed while
+ * `import.meta.url` is already resolved, so a plain resolve() mismatch would
+ * silently skip the notice for `npm i -g` through a symlinked prefix.
+ */
 function isMainModule() {
   try {
     const entry = process.argv[1];
     if (!entry) return false;
-    return resolve(entry) === resolve(fileURLToPath(import.meta.url));
+    return (
+      realpathOrResolve(entry) === realpathOrResolve(fileURLToPath(import.meta.url))
+    );
   } catch {
     return false;
   }
