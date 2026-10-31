@@ -6,14 +6,21 @@
  * with the same style. `markup.raw.block` is background-only so a fenced
  * block's language tokens keep their own colours. SyntaxStyle has no
  * strikethrough bit; `markup.strikethrough` is dim and coloured instead.
- * `syntaxTheme` is accepted and unused (theme selection is separate). */
+ * `syntaxTheme` is accepted and unused (theme selection is separate).
+ *
+ * Styles are native resources, so we memoise one SyntaxStyle per syntaxTheme
+ * string at module level instead of allocating a fresh one on every JSX prop
+ * re-evaluation. Adjusting for OpenTUI 0.8 (where fromStyles takes an owner)
+ * means keying this cache by owner too — see note in buildMarkdownSyntaxStyle. */
 import { SyntaxStyle, type StyleDefinitionInput } from "@opentui/core";
 
 const HEADING: StyleDefinitionInput = { bold: true, fg: "#7aa2f7" };
 const LIST: StyleDefinitionInput = { fg: "#c4887a", dim: true };
 
-export function buildMarkdownSyntaxStyle(syntaxTheme: string): SyntaxStyle {
-  void syntaxTheme;
+/** One shared SyntaxStyle per syntaxTheme string, for the process lifetime. */
+const syntaxStyleCache = new Map<string, SyntaxStyle>();
+
+function buildStyles(): Record<string, StyleDefinitionInput> {
   const styles: Record<string, StyleDefinitionInput> = {
     "markup.heading": HEADING,
     "markup.strong": { bold: true },
@@ -45,5 +52,23 @@ export function buildMarkdownSyntaxStyle(syntaxTheme: string): SyntaxStyle {
   for (let level = 1; level <= 6; level++) {
     styles[`markup.heading.${level}`] = HEADING;
   }
-  return SyntaxStyle.fromStyles(styles);
+  return styles;
+}
+
+/**
+ * Memoised style builder: one SyntaxStyle per syntaxTheme string.
+ *
+ * OpenTUI 0.5.8's `SyntaxStyle.fromStyles(styles)` takes no owner, so a single
+ * module-level cache is safe. On the chore/opentui-0.8 branch this call takes a
+ * NativeResourceOwner and that branch already caches per renderer with a
+ * releaseMarkdownSyntaxStyles(owner) helper — merging there means keying this
+ * cache by the owner as well (or dropping it in favour of the per-renderer
+ * cache) and releasing styles with the owner instead of keeping them forever.
+ */
+export function buildMarkdownSyntaxStyle(syntaxTheme: string): SyntaxStyle {
+  const cached = syntaxStyleCache.get(syntaxTheme);
+  if (cached) return cached;
+  const style = SyntaxStyle.fromStyles(buildStyles());
+  syntaxStyleCache.set(syntaxTheme, style);
+  return style;
 }
