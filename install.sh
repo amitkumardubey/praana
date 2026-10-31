@@ -37,7 +37,8 @@ die() {
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "install.sh requires '$1' on PATH"
+  command -v "$1" >/dev/null 2>&1 ||
+    die "install.sh requires '$1' on PATH (Debian/Ubuntu: apt-get install -y $1)"
 }
 
 detect_libc() {
@@ -225,12 +226,14 @@ if ! "$dest/praana" --version >/dev/null 2>&1; then
 fi
 # Doctor strings are a best-effort check. curl-from-main can install the
 # previous GitHub Release (e.g. v0.14.0) whose doctor still says "fff".
+# Match the capability words, not the "✓" glyph: a non-UTF-8 console or locale
+# can mangle the check mark without changing the report.
 doc_out=$("$dest/praana" doctor 2>&1) || true
-if ! printf '%s\n' "$doc_out" | grep '✓ native:' >/dev/null; then
+if ! printf '%s\n' "$doc_out" | grep -E 'native:[[:space:]]+available' >/dev/null; then
   printf '%s\n' "$doc_out" >&2
   printf 'warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)\n' >&2
 fi
-if ! printf '%s\n' "$doc_out" | grep '✓ search:' >/dev/null; then
+if ! printf '%s\n' "$doc_out" | grep -E 'search:[[:space:]]+native grep available' >/dev/null; then
   printf 'warning: doctor did not report search capability (this GitHub Release may predate native grep; merge/release 0.15+)\n' >&2
 fi
 printf 'Run: praana --version\n'

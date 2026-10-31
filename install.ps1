@@ -157,6 +157,16 @@ function Invoke-InstalledExe {
   # PS 5.1 + ErrorAction Stop treats native stderr as NativeCommandError.
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
+  # Windows PowerShell decodes native stdout with [Console]::OutputEncoding,
+  # which is the ANSI/OEM code page (cp437/cp1252), not UTF-8 — that mangles
+  # "✓" and "⚠" in `praana doctor` output. Decode as UTF-8 for the capture.
+  $prevEncoding = $null
+  try {
+    $prevEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  } catch {
+    $prevEncoding = $null
+  }
   try {
     $output = & $Exe @ExeArgs 2>&1 | Out-String
     $code = 0
@@ -164,6 +174,9 @@ function Invoke-InstalledExe {
     return @{ ExitCode = $code; Output = $output }
   } finally {
     $ErrorActionPreference = $prev
+    if ($null -ne $prevEncoding) {
+      try { [Console]::OutputEncoding = $prevEncoding } catch { }
+    }
   }
 }
 
@@ -248,11 +261,13 @@ try {
   }
   $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
   $docOut = [string]$doc.Output
-  if ($docOut -notmatch "✓ native:") {
+  # Match the capability words, not the "✓" glyph: the console code page can
+  # mangle the check mark without changing the report.
+  if ($docOut -notmatch "native:\s+available") {
     Write-Host $docOut
     Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"
   }
-  if ($docOut -notmatch "✓ search:") {
+  if ($docOut -notmatch "search:\s+native grep available") {
     Write-Host "warning: doctor did not report search capability (this GitHub Release may predate native grep; merge/release 0.15+)"
   }
   Write-Host "Run: praana --version"

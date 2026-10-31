@@ -90,15 +90,66 @@ describe("install.sh POSIX", () => {
       .split("\n")
       .filter((line) => !line.trimStart().startsWith("#"))
       .join("\n");
-    expect(body).not.toContain("[[");
+    // `[[:space:]]` is a POSIX bracket class, not the bash `[[` keyword.
+    expect(body).not.toMatch(/\[\[(?!:)/);
     expect(body).not.toMatch(/\bsource\b/);
     expect(body).not.toMatch(/\bdeclare\b/);
     expect(body).not.toMatch(/\w+=\(/);
+  });
+
+  it("checks doctor capabilities without depending on the ✓ glyph", () => {
+    const source = readFileSync(INSTALL_SH, "utf-8");
+    expect(source).not.toContain("grep '✓");
+    expect(source).toContain("native:[[:space:]]+available");
+    expect(source).toContain("search:[[:space:]]+native grep available");
   });
 });
 
 function fileReleaseBase(dir: string): string {
   return `file://${dir}`;
+}
+
+/** Fake `praana` binary: `doctor` prints $doctorBody. */
+function fixturePraana(doctorBody: string): string {
+  return `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "PRAANA v0.0.0-fixture"
+  exit 0
+fi
+if [ "$1" = "doctor" ]; then
+${doctorBody}
+  exit 0
+fi
+echo fixture-praana
+`;
+}
+
+async function buildRelease(root: string, praanaSource: string) {
+  const releaseDir = join(root, "release");
+  const prefix = join(root, "bin");
+  mkdirSync(releaseDir, { recursive: true });
+
+  const staging = join(root, "staging");
+  mkdirSync(staging);
+  writeFileSync(join(staging, "praana"), praanaSource);
+  chmodSync(join(staging, "praana"), 0o755);
+  writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\n");
+
+  const archiveName = "praana-linux-x64.tar.gz";
+  const archivePath = join(releaseDir, archiveName);
+  const packed = Bun.spawnSync(["tar", "-czf", archivePath, "praana", SIDECAR_ADDON_FILENAME], {
+    cwd: staging,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(packed.exitCode).toBe(0);
+
+  const hash = await sha256File(archivePath);
+  writeFileSync(
+    join(releaseDir, "SHA256SUMS"),
+    formatSha256Sums([{ filename: archiveName, hash }]),
+  );
+  return { releaseDir, prefix };
 }
 
 describe("install.sh checksum install", () => {
@@ -258,6 +309,62 @@ echo fixture-praana
       });
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr.toLowerCase()).toContain("no archive on latest release");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when the console mangles the check mark", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-install-sh-mangled-"));
+    try {
+      const { releaseDir, prefix } = await buildRelease(
+        root,
+        fixturePraana(
+          [
+            '  echo "Γ£ô native: available (0.3.0, ping ok)"',
+            '  echo "Γ£ô search: native grep available (search_code, find_files)"',
+            '  echo "All checks passed."',
+          ].join("\n"),
+        ),
+      );
+      const result = runInstall(["--prefix", prefix], {
+        PRAANA_UNAME_S: "Linux",
+        PRAANA_UNAME_M: "x86_64",
+        PRAANA_LIBC: "gnu",
+        PRAANA_RELEASE_BASE: fileReleaseBase(releaseDir),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).not.toContain("warning: doctor did not report");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still warns when doctor does not report the native capability", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-install-sh-no-native-"));
+    try {
+      const { releaseDir, prefix } = await buildRelease(
+        root,
+        fixturePraana(
+          [
+            '  echo "✓ search: native grep available (search_code, find_files)"',
+            '  echo "⚠ native: unavailable: sidecar missing"',
+          ].join("\n"),
+        ),
+      );
+      const result = runInstall(["--prefix", prefix], {
+        PRAANA_UNAME_S: "Linux",
+        PRAANA_UNAME_M: "x86_64",
+        PRAANA_LIBC: "gnu",
+        PRAANA_RELEASE_BASE: fileReleaseBase(releaseDir),
+      });
+      expect(result.exitCode).toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        "doctor did not report native capability",
+      );
+      expect(`${result.stdout}${result.stderr}`).not.toContain(
+        "doctor did not report search capability",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
