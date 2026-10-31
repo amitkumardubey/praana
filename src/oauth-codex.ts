@@ -264,12 +264,21 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       throw new Error("OpenAI Codex login cancelled");
     },
     async refresh(credential, signal) {
-      if (typeof credential.accountId !== "string" || !credential.accountId.trim()) throw new Error(RELOGIN);
+      const accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
+      // Called only once the stored token is expired (see resolveOAuthModelAuth).
+      if (!accountId || credential.refresh === credential.access) throw new Error(RELOGIN);
       return tokenRequest({ grant_type: "refresh_token", refresh_token: credential.refresh }, signal);
     },
     async toAuth(credential) {
-      if (typeof credential.accountId !== "string" || !credential.accountId.trim()) throw new Error(RELOGIN);
-      return { apiKey: credential.access, headers: { "chatgpt-account-id": credential.accountId } };
+      let accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
+      if (!accountId) {
+        try {
+          accountId = extractAccountId(credential.access);
+        } catch {
+          throw new Error(RELOGIN);
+        }
+      }
+      return { apiKey: credential.access, headers: { "chatgpt-account-id": accountId } };
     },
   };
 }

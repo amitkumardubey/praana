@@ -39,7 +39,9 @@ ChatGPT subscription: `/login openai-codex` offers browser sign-in by default
 ChatGPT account via the Codex CLI sign-in. The default model is `gpt-6.1-sol`.
 On WSL/SSH, keep the listener on
 `127.0.0.1:1455`; use device code or paste the redirect if your browser cannot reach
-it. Old pasted Codex credentials require signing in again.
+it. An old pasted Codex credential still works when its access token is a JWT
+with a ChatGPT account id; an opaque paste, or one that needs a refresh, requires
+signing in again.
 See [login details and the current refresh-failure limitation](./docs/reference.md#chatgpt-subscription-login).
 
 ## Status

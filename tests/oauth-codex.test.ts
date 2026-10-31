@@ -191,11 +191,29 @@ describe("Codex browser exchange and refresh", () => {
     await expect(oauth.login(interaction())).rejects.toThrow(/missing/);
     await expect(oauth.refresh(credential)).rejects.toThrow(/missing/);
   });
-  it("rejects legacy paste credentials without contacting the token endpoint", async () => {
+  it("uses a legacy JWT account id for toAuth and re-login only when refresh is required", async () => {
+    const request = fakeFetch(() => { throw new Error("unexpected fetch"); });
+    const oauth = createOpenAICodexOAuth({ fetch: request });
+    const legacy = { type: "oauth" as const, access: jwt("legacy-account"), refresh: "refresh-old", expires: 0 };
+    expect(await oauth.toAuth(legacy)).toEqual({ apiKey: legacy.access, headers: { "chatgpt-account-id": "legacy-account" } });
+    await expect(oauth.refresh(legacy)).rejects.toThrow(/run \/login openai-codex again/);
+    const pasted = { ...credential, refresh: credential.access };
+    await expect(oauth.refresh(pasted)).rejects.toThrow(/run \/login openai-codex again/);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("requires re-login for an opaque legacy token", async () => {
+    const request = fakeFetch(() => { throw new Error("unexpected fetch"); });
+    const oauth = createOpenAICodexOAuth({ fetch: request });
+    const opaque = { type: "oauth" as const, access: "opaque-token", refresh: "opaque-token", expires: 0 };
+    await expect(oauth.toAuth(opaque)).rejects.toThrow(/run \/login openai-codex again/);
+    await expect(oauth.refresh(opaque)).rejects.toThrow(/run \/login openai-codex again/);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("refreshes a legacy JWT only by asking the user to sign in again, without a token request", async () => {
     const request = fakeFetch(() => { throw new Error("unexpected fetch"); });
     const oauth = createOpenAICodexOAuth({ fetch: request });
     const old = { ...credential, accountId: undefined };
-    await expect(oauth.toAuth(old)).rejects.toThrow(/run \/login openai-codex again/);
+    expect(await oauth.toAuth(old)).toEqual({ apiKey: old.access, headers: { "chatgpt-account-id": "account-1" } });
     await expect(oauth.refresh(old)).rejects.toThrow(/run \/login openai-codex again/);
     expect(request).not.toHaveBeenCalled();
   });

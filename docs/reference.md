@@ -164,8 +164,11 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
 
 Signs in with your ChatGPT account via the Codex CLI sign-in.
 PRAANA uses PKCE, validates the token's ChatGPT account id, and rotates refresh
-tokens. Old pasted Codex credentials lack the required account id:
-**run `/login openai-codex` again** to replace them.
+tokens. A previously pasted credential is used as-is while it is unexpired if
+the access token is a JWT that contains the ChatGPT account id. An opaque
+pasted token, or a legacy credential that actually needs a refresh (no account
+id, or the refresh token equals the access token), still requires
+**`/login openai-codex` again**.
 
 **WSL / SSH:** the browser must be able to reach the machine running PRAANA at the
 localhost redirect above. WSL tries `wslview`, then

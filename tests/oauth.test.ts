@@ -15,6 +15,7 @@ import {
   ensureFreshAccessToken,
   OAUTH_PROVIDER_IDS,
   resetOAuthProvidersForTests,
+  resolveOAuthModelAuth,
 } from "../src/oauth.js";
 
 describe("oauth facade", () => {
@@ -110,6 +111,21 @@ describe("oauth facade", () => {
 
   it("ensureFreshAccessToken returns null when no oauth credentials", async () => {
     expect(await ensureFreshAccessToken("openai-codex")).toBeNull();
+  });
+
+  it("does not fail a non-expired legacy JWT, so the per-turn refresh warning does not fire", async () => {
+    const access = `e30.${Buffer.from(JSON.stringify({
+      "https://api.openai.com/auth": { chatgpt_account_id: "legacy-account" },
+    })).toString("base64url")}.sig`;
+    let fetches = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => { fetches += 1; throw new Error("refresh should not run"); }) as typeof fetch,
+    });
+    setOAuthToken("openai-codex", { access, refresh: access, expires: Date.now() + 3_600_000 });
+    // turn.ts catches resolveOAuthModelAuth and warns "OAuth token refresh failed".
+    const auth = await resolveOAuthModelAuth("openai-codex");
+    expect(fetches).toBe(0);
+    expect(auth).toEqual({ apiKey: access, headers: { "chatgpt-account-id": "legacy-account" } });
   });
 
   it("a cancelled paste prompt leaves the stored credential untouched", async () => {
