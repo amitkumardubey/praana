@@ -24,33 +24,28 @@
 
 import {
   chmodSync,
-  closeSync,
   existsSync,
-  fsyncSync,
-  linkSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   statSync,
-  unlinkSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
-import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { appHomePath } from "./app-identity.js";
+import {
+  acquireAsync,
+  acquireSync,
+  CredentialLockTimeoutError,
+  resetCredentialLocksForTests,
+  type CredentialLock,
+} from "./credential-lock.js";
 import { getAppLogger } from "./logger.js";
 
 const FILE_MODE = 0o600;
-/** Store-lock wait. Holders only rewrite the file synchronously, so the spin stays short. */
+/** Store-lock wait. Holders only rewrite the file synchronously, so the wait stays short. */
 const STORE_LOCK_WAIT_MS = 2_000;
 const REFRESH_LOCK_POLL_MS = 100;
-const LOCK_STALE_MS = 60_000;
-/** An empty lock is a publisher that has not finished writing. Do not treat it as dead immediately. */
-const EMPTY_LOCK_GRACE_MS = 5_000;
-const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
-const HARDLINK_UNSUPPORTED = new Set(["EPERM", "ENOTSUP", "ENOSYS", "EXDEV"]);
 
 /**
  * Resolve the credentials file path lazily on each call so that
@@ -92,265 +87,38 @@ interface CredentialsFile {
 let memoryCache: CredentialsFile | null = null;
 let credentialsMtimeMs: number | null = null;
 let credentialContentReads = 0;
-/** Test seam: runs after a lock is judged stale and before it is removed. */
-let beforeStaleLockRename: ((path: string) => void) | null = null;
-let linkSyncImpl: typeof linkSync = linkSync;
-/** When set, lock identity checks use these values instead of the machine's. */
-let identityOverride: { host: string; bootId: string | null } | null = null;
 /**
  * Reentrancy for the store lock only. The counter is safe because the critical
  * section is synchronous: no other turn can run until it returns. It must never
  * stay raised across an await.
  */
 let storeLockDepth = 0;
-const ownedLockRaw = new Map<string, string>();
+const heldRefreshLocks = new Map<string, CredentialLock>();
 
 function credentialsLockPath(): string {
-  return `${credentialsFilePath()}.lock`;
+  return join(dirname(credentialsFilePath()), "credentials.lock.db");
 }
 
 function refreshLockPath(provider: string): string {
   const safe = provider.replace(/[^A-Za-z0-9._-]/g, "_");
-  return `${credentialsFilePath()}.refresh-${safe}.lock`;
-}
-
-function sleepSync(ms: number): void {
-  if (ms > 0) Bun.sleepSync(ms);
-}
-
-function isPidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-interface LockInfo {
-  raw: string;
-  pid: number;
-  startedAt: number;
-  host: string;
-  bootId: string | null;
-  mtimeMs: number;
-  /** True when the file contains a published `{ pid }` object, not a partial write. */
-  published: boolean;
-}
-
-function localHost(): string {
-  return identityOverride?.host ?? hostname();
-}
-
-function localBootId(): string | null {
-  if (identityOverride) return identityOverride.bootId;
-  if (process.platform !== "linux") return null;
-  try {
-    const value = readFileSync(BOOT_ID_PATH, "utf8").trim();
-    return value.length > 0 ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function lockPayload(): string {
-  const bootId = localBootId();
-  return JSON.stringify({
-    pid: process.pid,
-    startedAt: Date.now(),
-    host: localHost(),
-    ...(bootId ? { bootId } : {}),
-  });
-}
-
-/** Trust pid liveness only for a lock written on this host and boot. */
-function pidIsLocal(info: LockInfo): boolean {
-  if (!info.host || info.host !== localHost()) return false;
-  return info.bootId === localBootId();
-}
-
-function readLockFile(path: string): LockInfo | null {
-  try {
-    const raw = readFileSync(path, "utf8");
-    const stat = statSync(path);
-    let pid = 0;
-    let startedAt = 0;
-    let host = "";
-    let bootId: string | null = null;
-    let published = false;
-    try {
-      const parsed = JSON.parse(raw) as { pid?: unknown; startedAt?: unknown; host?: unknown; bootId?: unknown };
-      if (parsed && typeof parsed === "object" && typeof parsed.pid === "number" && Number.isInteger(parsed.pid)) {
-        pid = parsed.pid;
-        published = true;
-        if (typeof parsed.startedAt === "number" && Number.isFinite(parsed.startedAt)) {
-          startedAt = parsed.startedAt;
-        }
-        if (typeof parsed.host === "string") host = parsed.host;
-        if (typeof parsed.bootId === "string" && parsed.bootId.length > 0) bootId = parsed.bootId;
-      }
-    } catch {
-      published = false;
-    }
-    return { raw, pid, startedAt, host, bootId, mtimeMs: stat.mtimeMs, published };
-  } catch {
-    return null;
-  }
-}
-
-function isStaleLock(info: LockInfo): boolean {
-  const now = Date.now();
-  if (!info.published) return now - info.mtimeMs > EMPTY_LOCK_GRACE_MS;
-  if (pidIsLocal(info) && !isPidAlive(info.pid)) return true;
-  if (now - info.mtimeMs > LOCK_STALE_MS) return true;
-  if (info.startedAt > 0 && now - info.startedAt > LOCK_STALE_MS) return true;
-  return false;
-}
-
-type StaleTakeover = "removed" | "absent" | "held";
-
-/**
- * Move a stale lock aside with rename. Only one caller wins. The renamed
- * bytes must still be the lock we judged stale; otherwise put that file back.
- */
-function recoverStaleLock(path: string): StaleTakeover {
-  const judged = readLockFile(path);
-  if (!judged || !isStaleLock(judged)) return existsSync(path) ? "held" : "absent";
-  beforeStaleLockRename?.(path);
-  const dest = `${path}.stale.${process.pid}.${Math.random().toString(16).slice(2)}`;
-  try {
-    renameSync(path, dest);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "absent";
-    return existsSync(path) ? "held" : "absent";
-  }
-  let renamed: string;
-  try {
-    renamed = readFileSync(dest, "utf8");
-  } catch {
-    return "absent";
-  }
-  if (renamed !== judged.raw) {
-    restoreDisplacedLock(dest, path);
-    return "held";
-  }
-  try { unlinkSync(dest); } catch { /* the stale file is already off the lock name */ }
-  return "removed";
-}
-
-/** Put a lock we renamed by mistake back on its original name. */
-function restoreDisplacedLock(dest: string, path: string): void {
-  if (existsSync(path)) return;
-  try {
-    linkSyncImpl(dest, path);
-    try { unlinkSync(dest); } catch { /* path still names the inode */ }
-    return;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return;
-    try {
-      if (!existsSync(path)) renameSync(dest, path);
-    } catch {
-      // The live lock could not be restored. Do not take it over.
-    }
-  }
-}
-
-/**
- * Publish a lock by linking a temp file that already holds the payload.
- * `link` fails if the lock name exists, so readers never see an empty lock
- * from this process.
- */
-function publishLock(path: string): boolean {
-  const dir = dirname(path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const tmp = join(dir, `.credlock.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
-  const payload = lockPayload();
-  writeFileSync(tmp, payload, { encoding: "utf8", mode: FILE_MODE });
-  try {
-    linkSyncImpl(tmp, path);
-  } catch (err) {
-    try { unlinkSync(tmp); } catch { /* best-effort */ }
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === "EEXIST") return false;
-    if (code && HARDLINK_UNSUPPORTED.has(code)) return publishLockExclusive(path, payload);
-    throw err;
-  }
-  try { unlinkSync(tmp); } catch { /* the lock path still names the inode */ }
-  ownedLockRaw.set(path, payload);
-  return true;
-}
-
-/** Exclusive create for filesystems that cannot hard-link. An empty file may exist until the write finishes. */
-function publishLockExclusive(path: string, payload: string): boolean {
-  let fd: number;
-  try {
-    fd = openSync(path, "wx", FILE_MODE);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw err;
-  }
-  try {
-    writeSync(fd, payload);
-    fsyncSync(fd);
-  } catch (err) {
-    try { unlinkSync(path); } catch { /* best-effort */ }
-    throw err;
-  } finally {
-    try { closeSync(fd); } catch { /* best-effort */ }
-  }
-  ownedLockRaw.set(path, payload);
-  return true;
-}
-
-function tryAcquirePublishedLock(path: string): boolean {
-  if (publishLock(path)) return true;
-  const takeover = recoverStaleLock(path);
-  if (takeover === "held") return false;
-  return publishLock(path);
-}
-
-function releaseLock(path: string): void {
-  const raw = ownedLockRaw.get(path);
-  ownedLockRaw.delete(path);
-  if (raw === undefined) return;
-  try {
-    if (readFileSync(path, "utf8") === raw) unlinkSync(path);
-  } catch {
-    // The lock is already gone.
-  }
+  return join(dirname(credentialsFilePath()), `credentials.refresh-${safe}.lock.db`);
 }
 
 /**
  * Store lock. Synchronous on purpose: the caller must not await while it is
- * held. Waiters spin at most 2 seconds because a holder only reads and
- * rewrites credentials.json.
+ * held. Waiters block at most 2 seconds because a holder only reads and
+ * rewrites credentials.json. The operating system drops the lock if this
+ * process dies.
  */
-function acquireStoreLockSync(): void {
-  const path = credentialsLockPath();
-  const deadline = Date.now() + STORE_LOCK_WAIT_MS;
-  let delay = 5;
-  for (;;) {
-    if (tryAcquirePublishedLock(path)) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `Timed out waiting for the credential lock (${path}). Another PRAANA process may be updating credentials.`,
-      );
-    }
-    sleepSync(Math.min(delay, Math.max(1, deadline - Date.now())));
-    delay = Math.min(delay * 2, 40);
-  }
-}
-
 function withStoreLockSync<T>(fn: () => T): T {
   if (storeLockDepth > 0) return fn();
-  acquireStoreLockSync();
+  const lock = acquireSync(credentialsLockPath(), { waitMs: STORE_LOCK_WAIT_MS });
   storeLockDepth += 1;
   try {
     return fn();
   } finally {
     storeLockDepth -= 1;
-    releaseLock(credentialsLockPath());
+    lock.release();
   }
 }
 
@@ -360,22 +128,28 @@ export function withCredentialStoreLockSync<T>(fn: () => T): T {
 }
 
 /**
- * Per-provider refresh lock. Waiters poll asynchronously so the event loop
+ * Per-provider refresh lock. Waiters sleep asynchronously so the event loop
  * stays free while another session refreshes. Returns false when `waitMs` elapses.
+ * The rotated credential is persisted before the caller releases this lock.
  */
 export async function waitForProviderRefreshLock(provider: string, waitMs: number): Promise<boolean> {
-  const path = refreshLockPath(provider);
-  const deadline = Date.now() + Math.max(0, waitMs);
-  for (;;) {
-    if (tryAcquirePublishedLock(path)) return true;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return tryAcquirePublishedLock(path);
-    await Bun.sleep(Math.min(REFRESH_LOCK_POLL_MS, remaining));
+  try {
+    const lock = await acquireAsync(refreshLockPath(provider), {
+      waitMs,
+      pollMs: REFRESH_LOCK_POLL_MS,
+    });
+    heldRefreshLocks.set(provider, lock);
+    return true;
+  } catch (err) {
+    if (err instanceof CredentialLockTimeoutError) return false;
+    throw err;
   }
 }
 
 export function releaseProviderRefreshLock(provider: string): void {
-  releaseLock(refreshLockPath(provider));
+  const lock = heldRefreshLocks.get(provider);
+  heldRefreshLocks.delete(provider);
+  lock?.release();
 }
 
 function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
@@ -745,36 +519,12 @@ export function resetCredentialStoreForTests(): void {
   credentialsMtimeMs = null;
   credentialContentReads = 0;
   storeLockDepth = 0;
-  beforeStaleLockRename = null;
-  linkSyncImpl = linkSync;
-  identityOverride = null;
+  for (const lock of heldRefreshLocks.values()) lock.release();
+  heldRefreshLocks.clear();
+  resetCredentialLocksForTests();
 }
 
-/** @internal Injected between the staleness check and the takeover. */
-export function setBeforeStaleLockRenameForTests(hook: ((path: string) => void) | null): void {
-  beforeStaleLockRename = hook;
-}
-
-/** @internal Replaces `linkSync` used to publish a lock. */
-export function setLockLinkSyncForTests(fn: typeof linkSync | null): void {
-  linkSyncImpl = fn ?? linkSync;
-}
-
-/** @internal Host and boot id used for lock staleness. `bootId` null means none. */
-export function setLockIdentityForTests(identity: { host: string; bootId: string | null } | null): void {
-  identityOverride = identity;
-}
-
-function credentialLockPathForTests(kind: "store" | "refresh", provider: string): string {
+/** @internal Lock database path for store or refresh locks. */
+export function credentialLockPathForTests(kind: "store" | "refresh", provider = "openai-codex"): string {
   return kind === "store" ? credentialsLockPath() : refreshLockPath(provider);
-}
-
-/** @internal Acquire a store or refresh lock and leave it held. */
-export function tryAcquireCredentialLockForTests(kind: "store" | "refresh", provider = "openai-codex"): boolean {
-  return tryAcquirePublishedLock(credentialLockPathForTests(kind, provider));
-}
-
-/** @internal Release a lock acquired by {@link tryAcquireCredentialLockForTests}. */
-export function releaseCredentialLockForTests(kind: "store" | "refresh", provider = "openai-codex"): void {
-  releaseLock(credentialLockPathForTests(kind, provider));
 }

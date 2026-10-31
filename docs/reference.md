@@ -196,8 +196,8 @@ most 2 seconds for that lock. The wait is short because the lock is never held
 during a refresh.
 
 A refresh takes its own lock for that provider and holds it while the refresh
-request runs. Other sessions wait for that lock without freezing, checking about
-every tenth of a second for up to 30 seconds. When the lock is free they re-read
+request runs. Other sessions wait for that lock without freezing, checking a
+few times a second for up to 30 seconds. When the lock is free they re-read
 the saved token. If another session already refreshed it, they use that token and
 do not send a second refresh. If the wait runs out and the access token is still
 usable, PRAANA uses it and does not ask you to log in again. If the access token
@@ -205,25 +205,14 @@ is already expired, PRAANA waits for that same bound once more. If it is still
 expired, PRAANA reports `another PRAANA session is refreshing; try again in a
 moment`. That is not a session expiry and it does not say to run `/login` again.
 
+The lock is held by the operating system for the life of the process that took
+it. When that process exits, crashes, or is killed, the system releases the lock
+at once. PRAANA does not decide that a lock has gone stale, and it does not
+replace a lock another live process still holds.
+
 A save re-reads the credentials file under the lock before writing. If that read
 fails (the file is unreadable, not valid JSON, or only partly written), PRAANA
 reports the error and leaves the file untouched. A missing file is still created.
-
-The lock file records the process id, the host name, and on Linux the boot id
-from `/proc/sys/kernel/random/boot_id`. Publishing prefers a hard link so readers
-never see an empty lock. On a filesystem that rejects hard links
-(`EPERM`, `ENOTSUP`, `ENOSYS`, or `EXDEV`), PRAANA creates the lock with an
-exclusive write instead. That can leave an empty lock for a moment; the empty-lock
-rule below covers it.
-
-| Lock state | What PRAANA does |
-|---|---|
-| Empty, younger than 5 seconds | Leave it. The publisher may still be writing. |
-| Empty, older than 5 seconds | Take it over. |
-| Same host and boot id, and the recorded pid is not alive | Take it over. A missing boot id matches only when this machine has none. |
-| Different host, or a different boot id | Do not trust the pid. Use the age rule only. |
-| Older than 60 seconds (file mtime or the lock's start time) | Take it over. |
-| Takeover | Rename the lock to `<lock>.stale.<pid>.<rand>`. Only one rename wins; the loser sees the name gone and tries to acquire again. The winner keeps it only when the renamed bytes are the lock it judged stale, then deletes that renamed file. If the bytes differ, it links or renames the file back and does not take over. |
 
 Cancelling one request does not cancel the refresh for anyone else. Once a refresh
 request has started, PRAANA finishes it and saves the new token even if every
@@ -235,7 +224,11 @@ and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
 Run /login openai-codex again.` once, as an error, and the turn is still recorded.
 If the access token is not yet expired, PRAANA keeps using it and logs a warning.
 
-Codex requests identify PRAANA and the token's ChatGPT account, disable response
+Codex requests identify PRAANA and the ChatGPT account saved with the
+credential. When that saved account id is present, PRAANA sends it even if the
+access token's own account id is missing or different. A different token supplied
+for one request, and no account id with it, uses the account id inside that
+token. Codex requests disable response
 storage (`store: false`), and omit `max_output_tokens` and `temperature`. Codex
 streams report backend failures, an incomplete response for any reason other than
 `max_output_tokens`, or a missing terminal event as errors. A finished Codex

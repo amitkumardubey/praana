@@ -7,22 +7,22 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  unlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { acquireAsync, acquireSync, CredentialLockTimeoutError, type CredentialLock } from "../src/credential-lock.js";
 import {
   credentialDiskReadCountForTests,
+  credentialLockPathForTests,
   getApiKey,
   getCredentialsFilePath,
   getOAuthToken,
   removeCredentials,
   resetCredentialStoreForTests,
   setApiKey,
-  setLockIdentityForTests,
   setOAuthToken,
 } from "../src/credentials.js";
 import { streamLlmResponse } from "../src/llm/stream.js";
@@ -55,20 +55,8 @@ function tokenJson(access: string, refresh: string) {
   return { access_token: access, refresh_token: refresh, expires_in: 3600 };
 }
 
-function lockPath(): string {
-  return `${getCredentialsFilePath()}.lock`;
-}
-
-function writeLock(pid: number, startedAt = Date.now()): void {
-  const path = lockPath();
-  mkdirSync(join(path, ".."), { recursive: true });
-  setLockIdentityForTests({ host: "praana-test-host", bootId: "praana-test-boot" });
-  writeFileSync(path, JSON.stringify({
-    pid,
-    startedAt,
-    host: "praana-test-host",
-    bootId: "praana-test-boot",
-  }), { mode: 0o600 });
+function holdLock(kind: "store" | "refresh", provider = "openai-codex"): CredentialLock {
+  return acquireSync(credentialLockPathForTests(kind, provider), { waitMs: 0 });
 }
 
 function turnConfig(logDir: string, home: string): PraanaConfig {
@@ -333,29 +321,18 @@ describe("serialized OAuth refresh", () => {
     expect(getOAuthToken("openai-codex")).toBeUndefined();
   });
 
-  it("recovers a credential lock left by a dead pid", async () => {
-    writeLock(2_147_483_646, Date.now());
-    setApiKey("openrouter", "sk-recovered");
-    expect(getApiKey("openrouter")).toBe("sk-recovered");
-    expect(existsSync(lockPath())).toBe(false);
-  });
-
-  it("recovers a credential lock whose mtime is older than 60s", () => {
-    writeLock(process.pid, Date.now());
-    const stale = new Date(Date.now() - 90_000);
-    utimesSync(lockPath(), stale, stale);
-    setApiKey("openrouter", "sk-mtime");
-    expect(getApiKey("openrouter")).toBe("sk-mtime");
-    expect(existsSync(lockPath())).toBe(false);
-  });
-
   it("times out instead of stealing a live credential lock", async () => {
-    writeLock(process.pid, Date.now());
-    await expect(Promise.resolve().then(() => setApiKey("openrouter", "sk-blocked")))
-      .rejects.toThrow(/Timed out waiting for the credential lock/);
-    expect(existsSync(lockPath())).toBe(true);
-    expect(getApiKey("openrouter")).toBeUndefined();
-  }, { timeout: 20_000 });
+    const lock = holdLock("store");
+    try {
+      const started = Date.now();
+      await expect(Promise.resolve().then(() => setApiKey("openrouter", "sk-blocked")))
+        .rejects.toThrow(/Timed out waiting for the credential lock/);
+      expect(Date.now() - started).toBeGreaterThan(1_500);
+      expect(getApiKey("openrouter")).toBeUndefined();
+    } finally {
+      lock.release();
+    }
+  }, { timeout: 8_000 });
 
   it("reports an expired refresh failure as an error and does not send the stale token", async () => {
     seedExpiredCodex("refresh-old", jwt("stale-account"));
@@ -464,30 +441,9 @@ describe("serialized OAuth refresh", () => {
     }
   });
 
-  it("does not treat a fresh empty credential lock as abandoned", async () => {
-    mkdirSync(join(lockPath(), ".."), { recursive: true });
-    writeFileSync(lockPath(), "", { mode: 0o600 });
-    const started = Date.now();
-    await expect(Promise.resolve().then(() => setApiKey("openrouter", "sk-empty"))).rejects.toThrow(/Timed out waiting for the credential lock/);
-    expect(Date.now() - started).toBeGreaterThan(1_500);
-    expect(readFileSync(lockPath(), "utf8")).toBe("");
-    expect(getApiKey("openrouter")).toBeUndefined();
-  }, { timeout: 8_000 });
-
-  it("recovers an empty credential lock only after it has aged", () => {
-    mkdirSync(join(lockPath(), ".."), { recursive: true });
-    writeFileSync(lockPath(), "{", { mode: 0o600 });
-    const stale = new Date(Date.now() - 6_000);
-    utimesSync(lockPath(), stale, stale);
-    setApiKey("openrouter", "sk-aged-empty");
-    expect(getApiKey("openrouter")).toBe("sk-aged-empty");
-    expect(existsSync(lockPath())).toBe(false);
-  });
-
   it("waits on a live refresh lock and does not start a second refresh", async () => {
     seedExpiredCodex();
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     let posts = 0;
     const next = jwt("after-wait");
     resetOAuthProvidersForTests({
@@ -507,7 +463,7 @@ describe("serialized OAuth refresh", () => {
     ]);
     expect(state).toBe("waiting");
     expect(posts).toBe(0);
-    unlinkSync(refreshLock);
+    refreshLock.release();
     const result = await settled;
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -647,7 +603,6 @@ describe("serialized OAuth refresh", () => {
     let child: ChildProcess | undefined;
     resetOAuthProvidersForTests({
       fetch: (async () => {
-        const storeLocked = existsSync(lockPath());
         child = spawn(process.execPath, [script], {
           env: { ...process.env, PRAANA_HOME: praanaHome },
           stdio: ["ignore", "pipe", "pipe"],
@@ -658,8 +613,8 @@ describe("serialized OAuth refresh", () => {
           exitP.then(() => "done" as const),
           Bun.sleep(500).then(() => "blocked" as const),
         ]);
-        if (storeLocked || finished === "blocked") {
-          throw new Error(`credential file lock was held across refresh (locked=${storeLocked}, writer=${finished})`);
+        if (finished === "blocked") {
+          throw new Error("credential file lock was held across refresh");
         }
         return Response.json(tokenJson(next, "refresh-lockfree"));
       }) as typeof fetch,
@@ -721,18 +676,21 @@ describe("serialized OAuth refresh", () => {
 
   it("reports a busy refresh instead of a session expiry when the refresh lock stays held", async () => {
     seedExpiredCodex();
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     let posts = 0;
     resetOAuthProvidersForTests({
       fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
     });
     setRefreshLockWaitMsForTests(200);
-    await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
-      "another PRAANA session is refreshing; try again in a moment",
-    );
-    expect(posts).toBe(0);
-    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+    try {
+      await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
+        "another PRAANA session is refreshing; try again in a moment",
+      );
+      expect(posts).toBe(0);
+      expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+    } finally {
+      refreshLock.release();
+    }
   });
 
   it("keeps a still-valid token when the refresh lock wait runs out", async () => {
@@ -743,24 +701,26 @@ describe("serialized OAuth refresh", () => {
       expires: Date.now() + 30_000,
       accountId: "still-valid",
     });
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     let posts = 0;
     resetOAuthProvidersForTests({
       fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
     });
     setRefreshLockWaitMsForTests(200);
-    const auth = await resolveOAuthModelAuth("openai-codex");
-    expect(posts).toBe(0);
-    expect(auth?.apiKey).toBe(access);
-    expect(warnings.join("\n")).not.toContain("session expired");
-    expect(warnings.join("\n")).toContain("using the current access token");
+    try {
+      const auth = await resolveOAuthModelAuth("openai-codex");
+      expect(posts).toBe(0);
+      expect(auth?.apiKey).toBe(access);
+      expect(warnings.join("\n")).not.toContain("session expired");
+      expect(warnings.join("\n")).toContain("using the current access token");
+    } finally {
+      refreshLock.release();
+    }
   });
 
   it("waits a second time before reporting a busy refresh of an expired token", async () => {
     seedExpiredCodex();
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     const next = jwt("after-second-wait");
     let posts = 0;
     resetOAuthProvidersForTests({
@@ -779,7 +739,7 @@ describe("serialized OAuth refresh", () => {
       Bun.sleep(280).then(() => "waiting" as const),
     ]);
     expect(state).toBe("waiting");
-    unlinkSync(refreshLock);
+    refreshLock.release();
     const result = await pending;
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -790,18 +750,21 @@ describe("serialized OAuth refresh", () => {
 
   it("tells the caller to retry in a moment when both busy waits expire", async () => {
     seedExpiredCodex();
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     let posts = 0;
     resetOAuthProvidersForTests({
       fetch: (async () => { posts += 1; throw new Error("should not refresh"); }) as typeof fetch,
     });
     setRefreshLockWaitMsForTests(40);
-    await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
-      "another PRAANA session is refreshing; try again in a moment",
-    );
-    expect(posts).toBe(0);
-    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+    try {
+      await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(
+        "another PRAANA session is refreshing; try again in a moment",
+      );
+      expect(posts).toBe(0);
+      expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
+    } finally {
+      refreshLock.release();
+    }
   });
 
   it("does not surface a busy refresh from a turn when the access token is still valid", async () => {
@@ -812,8 +775,7 @@ describe("serialized OAuth refresh", () => {
       expires: Date.now() + 30_000,
       accountId: "turn-still-valid",
     });
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     resetOAuthProvidersForTests({
       fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
     });
@@ -835,14 +797,14 @@ describe("serialized OAuth refresh", () => {
       expect(errors.join("\n")).not.toContain("Run /login");
       expect(errors.join("\n")).not.toContain("refreshing");
     } finally {
+      refreshLock.release();
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }
   });
 
   it("shows a retry-in-a-moment message from a turn when the refresh lock outlasts an expired token", async () => {
     seedExpiredCodex();
-    const refreshLock = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(refreshLock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 });
+    const refreshLock = holdLock("refresh");
     let chatCalls = 0;
     resetOAuthProvidersForTests({
       fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
@@ -865,6 +827,7 @@ describe("serialized OAuth refresh", () => {
       expect(text).not.toContain("Run /login");
       expect(errors).toEqual([text.trim()]);
     } finally {
+      refreshLock.release();
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }
   });
@@ -1081,6 +1044,7 @@ function mulberry32(seed: number): () => number {
 
 describe("seeded credential interleaving", () => {
   let root: string;
+  let holderScript: string;
   let prevHome: string | undefined;
   let originalFetch: typeof fetch;
 
@@ -1090,6 +1054,16 @@ describe("seeded credential interleaving", () => {
     originalFetch = globalThis.fetch;
     globalThis.fetch = (async () => { throw new Error("unexpected network call"); }) as typeof fetch;
     setAppLogger(new PraanaLogger({ domain: "credentials", writeLine: () => {} }));
+    holderScript = join(root, "hold-lock.ts");
+    const lockUrl = pathToFileURL(join(import.meta.dir, "../src/credential-lock.ts")).href;
+    writeFileSync(holderScript, `
+      import { writeFileSync } from "node:fs";
+      import { acquireSync } from ${JSON.stringify(lockUrl)};
+      const handle = acquireSync(process.argv[2], { waitMs: 0 });
+      (globalThis as { __lock?: unknown }).__lock = handle;
+      writeFileSync(process.argv[3], "1");
+      setInterval(() => {}, 1000);
+    `);
   });
 
   afterEach(() => {
@@ -1144,18 +1118,52 @@ describe("seeded credential interleaving", () => {
       refresh: "ant-seed",
       expires: Date.now() - 1_000,
     });
-    const partial = `${getCredentialsFilePath()}.refresh-openai-codex.lock`;
-    writeFileSync(partial, "", { mode: 0o600 });
-    const probeCtl = new AbortController();
-    const probe = resolveOAuthModelAuth("openai-codex", probeCtl.signal).catch((err: unknown) => err);
-    await Bun.sleep(30);
-    if (posts.length > 0) {
-      throw new Error(`refresh started while the lock file was only partially written (${posts.join(",")})`);
+    const refreshPath = credentialLockPathForTests("refresh");
+    const held = acquireSync(refreshPath, { waitMs: 0 });
+    try {
+      const aged = new Date(Date.now() - 90_000);
+      utimesSync(refreshPath, aged, aged);
+      let stolen: CredentialLock | undefined;
+      try {
+        stolen = await acquireAsync(refreshPath, { waitMs: 0, pollMs: 100 });
+      } catch (err) {
+        if (!(err instanceof CredentialLockTimeoutError)) throw err;
+      }
+      if (stolen) {
+        stolen.release();
+        throw new Error("live lock was taken over");
+      }
+      const ctl = new AbortController();
+      const waiter = acquireAsync(refreshPath, { waitMs: 5_000, signal: ctl.signal, pollMs: 100 })
+        .then(() => "acquired" as const, (err: unknown) => err);
+      await Bun.sleep(20);
+      ctl.abort();
+      const aborted = await waiter;
+      if (!(aborted instanceof Error) || aborted.name !== "AbortError") {
+        throw new Error(`abort did not end only the waiter (${String(aborted)})`);
+      }
+    } finally {
+      held.release();
     }
-    const partialBody = existsSync(partial) ? readFileSync(partial, "utf8") : "missing";
-    if (partialBody !== "") throw new Error(`partial lock was replaced (${JSON.stringify(partialBody.slice(0, 80))})`);
-    if (rand() < 0.5) probeCtl.abort();
-    unlinkSync(partial);
+    const ready = join(home, "killed-ready");
+    const child = spawn(process.execPath, [holderScript, refreshPath, ready], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let childErr = "";
+    child.stderr?.on("data", (chunk: Buffer) => { childErr += String(chunk); });
+    try {
+      await waitForFile(ready);
+      child.kill("SIGKILL");
+      const killed = await waitExit(child);
+      if (killed.code !== null && killed.code !== 137 && killed.code !== 9) {
+        throw new Error(`holder exited before SIGKILL (${killed.code}): ${childErr || killed.stderr}`);
+      }
+      const afterKill = acquireSync(refreshPath, { waitMs: 1_000 });
+      afterKill.release();
+    } catch (err) {
+      child.kill("SIGKILL");
+      throw new Error(`${err instanceof Error ? err.message : String(err)}${childErr ? `: ${childErr}` : ""}`);
+    }
     const providers = ["openai-codex", "anthropic", "openrouter"] as const;
     const events: Array<{ provider: string; kind: "api" | "login" | "logout" }> = [];
     const values = new Map<string, string>();
@@ -1200,7 +1208,6 @@ describe("seeded credential interleaving", () => {
         JSON.parse(readFileSync(getCredentialsFilePath(), "utf8"));
       }
     }));
-    await probe;
     await resolveOAuthModelAuth("openai-codex").catch(() => {});
     await resolveOAuthModelAuth("anthropic").catch(() => {});
     const counts = new Map<string, number>();
@@ -1237,5 +1244,5 @@ describe("seeded credential interleaving", () => {
     if (failed.length > 0) {
       throw new Error(`${failed.length}/300 seeds failed\n${failed.slice(0, 8).join("\n")}`);
     }
-  }, { timeout: 180_000 });
+  }, { timeout: 240_000 });
 });

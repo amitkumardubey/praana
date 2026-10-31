@@ -20,6 +20,20 @@ import { joinUrl } from "../url.js";
 import { APP_VERSION } from "../../app-version.js";
 import { extractAccountId } from "../jwt.js";
 
+function presentToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function headerAccountId(headers: HeadersInit | Record<string, string> | undefined): string {
+  if (!headers) return "";
+  try {
+    return new Headers(headers as HeadersInit).get("chatgpt-account-id")?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function finiteToken(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -84,13 +98,22 @@ export class OpenAIResponsesDriver implements LlmDriver {
     };
     if (req.provider === "openai-codex") {
       try {
-        // Explicit request credentials supersede both stored tokens and their account header.
-        const overrideToken = req.bearerToken || req.apiKey;
-        const token = overrideToken || auth.bearerToken || auth.apiKey;
+        // The turn loop copies the stored access token onto the request. That is
+        // the stored credential, so its chatgpt-account-id header wins over the
+        // JWT claim. A different token supplied by the caller is a separate
+        // credential: its account id comes from that token, not from the stored header.
+        const requestToken = presentToken(req.bearerToken) ?? presentToken(req.apiKey);
+        const authBearer = presentToken(auth.bearerToken);
+        const authKey = presentToken(auth.apiKey);
+        const callerOverride = requestToken !== undefined && (
+          (authBearer !== undefined && requestToken !== authBearer) ||
+          (authBearer === undefined && authKey !== undefined && requestToken !== authKey)
+        );
+        const token = callerOverride ? requestToken : (authBearer ?? authKey ?? requestToken);
         if (!token) throw new Error("OpenAI Codex requires an access token and account id; run /login openai-codex again");
-        const accountId = overrideToken
-          ? extractAccountId(overrideToken)
-          : new Headers(auth.headers).get("chatgpt-account-id")?.trim() || extractAccountId(token);
+        const accountId = callerOverride
+          ? extractAccountId(token)
+          : headerAccountId(auth.headers) || headerAccountId(req.headers) || extractAccountId(token);
         const codexHeaders = new Headers(headers);
         codexHeaders.set("Authorization", `Bearer ${token}`);
         codexHeaders.set("chatgpt-account-id", accountId);

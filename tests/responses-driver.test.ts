@@ -55,6 +55,35 @@ describe("Codex outgoing request", () => {
     expect(body.store).toBe(false);
     expect(body).not.toHaveProperty("max_output_tokens");
   });
+  it("uses a stored account id when the access token has no chatgpt_account_id claim", async () => {
+    const legacy = "e30.e30.sig";
+    await run(
+      { ...req, apiKey: legacy, headers: { "chatgpt-account-id": "stored-account" } },
+      { bearerToken: legacy, headers: { "chatgpt-account-id": "stored-account" } },
+    );
+    const headers = new Headers(calls[0]!.init.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${legacy}`);
+    expect(headers.get("chatgpt-account-id")).toBe("stored-account");
+  });
+  it("prefers a stored account id that differs from the access token claim", async () => {
+    const token = jwt("claim-account");
+    await run(
+      { ...req, apiKey: token },
+      { bearerToken: token, headers: { "chatgpt-account-id": "stored-account" } },
+    );
+    const headers = new Headers(calls[0]!.init.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${token}`);
+    expect(headers.get("chatgpt-account-id")).toBe("stored-account");
+  });
+  it("derives the account id from an override token when the caller sends no account header", async () => {
+    await run(
+      { ...req, apiKey: jwt("override-account") },
+      { bearerToken: jwt("stored-account"), headers: { "chatgpt-account-id": "stored-account" } },
+    );
+    const headers = new Headers(calls[0]!.init.headers);
+    expect(headers.get("Authorization")).toBe(`Bearer ${jwt("override-account")}`);
+    expect(headers.get("chatgpt-account-id")).toBe("override-account");
+  });
   it("derives the account id from the actual bearer JWT when no OAuth header is available", async () => {
     await run(req, { apiKey: jwt("other-api-key"), bearerToken: jwt("bearer-account") });
     const headers = new Headers(calls[0]!.init.headers);
@@ -384,6 +413,44 @@ it("keeps request-level token overrides consistent through the real stream facad
     expect(sent?.get("originator")).toBe("praana");
     expect(sent?.get("Accept")).toBe("text/event-stream");
     expect(events.at(-1)?.type).toBe("done");
+  } finally {
+    resetCredentialStoreForTests();
+    if (previous === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("sends the saved account id when the turn passes the stored token as the request key", async () => {
+  const home = mkdtempSync(join(tmpdir(), "praana-responses-account-"));
+  const previous = process.env.PRAANA_HOME;
+  process.env.PRAANA_HOME = home;
+  resetCredentialStoreForTests();
+  const legacy = "e30.e30.sig";
+  const claimed = jwt("claim-account");
+  try {
+    for (const [access, accountId] of [[legacy, "stored-legacy"], [claimed, "stored-id"]] as const) {
+      setOAuthToken("openai-codex", {
+        access,
+        refresh: "synthetic-refresh",
+        expires: Date.now() + 3_600_000,
+        accountId,
+      });
+      let sent: Headers | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        sent = new Headers(init?.headers);
+        return new Response(`data: ${JSON.stringify(completed)}\n\n`);
+      }) as typeof fetch;
+      const events: StreamEvent[] = [];
+      for await (const event of streamLlmResponse({
+        ...req,
+        apiKey: access,
+        headers: { "chatgpt-account-id": accountId },
+      })) events.push(event);
+      expect(sent?.get("Authorization")).toBe(`Bearer ${access}`);
+      expect(sent?.get("chatgpt-account-id")).toBe(accountId);
+      expect(events.at(-1)?.type).toBe("done");
+    }
   } finally {
     resetCredentialStoreForTests();
     if (previous === undefined) delete process.env.PRAANA_HOME;
