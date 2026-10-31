@@ -32,6 +32,11 @@ export interface SinkOpts {
   persistEntry?: (entry: TranscriptEntry) => void;
   /** Called when a slash command wants its output shown in an overlay. */
   onSlashCommandResult?: (lines: string[]) => void;
+  /**
+   * Interactive step-pause implementation (Enter = continue, Esc = stop).
+   * Absent ⇒ the turn never pauses (headless / non-interactive sinks).
+   */
+  onStepPause?: (stepsUsed: number) => Promise<boolean>;
 }
 
 export class OpenTuiSink implements TurnUiSink {
@@ -287,6 +292,10 @@ export class OpenTuiSink implements TurnUiSink {
     } else {
       this.onSystemLines(lines);
     }
+  }
+
+  onStepPause(stepsUsed: number): Promise<boolean> {
+    return this.opts.onStepPause?.(stepsUsed) ?? Promise.resolve(true);
   }
 
   appendShellRun(run: {

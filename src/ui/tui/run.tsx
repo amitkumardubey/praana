@@ -234,8 +234,7 @@ export async function runTui(
 
   const dismissOverlay = () => {
     const kind = overlay.kind();
-    overlay.dismiss();
-    if (!session && kind === "consent") {
+    overlay.dismiss();    if (!session && kind === "consent") {
       setEmbedderConsent("skip");
       void startSessionFromOverlay();
       return;
@@ -410,6 +409,17 @@ export async function runTui(
     setEmbedderConsent(proceed ? "proceed" : "skip");
     overlay.dismiss();
     if (!session) void startSessionFromOverlay();
+  };
+
+  /**
+   * Interactive step-pause: open a small confirm overlay (spinner stopped)
+   * and resolve on Enter (continue) / Esc/Ctrl+C (stop → wrap-up).
+   */
+  const askContinueFromOverlay = (stepsUsed: number): Promise<boolean> => {
+    ui.spinner.stop();
+    const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`);
+    renderer.requestRender();
+    return pending;
   };
 
   const handleLogoutComplete = (result: LogoutWizardResult) => {
@@ -683,6 +693,7 @@ export async function runTui(
                 overlay.showSlash(lines);
                 renderer.requestRender();
               },
+              onStepPause: askContinueFromOverlay,
               onContextPreview: (snapshot: ContextDisplaySnapshot) => {
                 ui.chrome.setStatus(withUpdateFlags(controller.getStatusBarInput()), {
                   showCost: config.ui.show_cost,

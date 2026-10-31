@@ -283,6 +283,7 @@ export class AppController {
       onNewline: () => uiSink.onNewline?.(),
       onFallback: (text) => uiSink.onFallback?.(text),
       onSystemLines: (lines) => uiSink.onSystemLines?.(lines),
+      onStepPause: (stepsUsed) => uiSink.onStepPause?.(stepsUsed) ?? true,
       onError: (entry) => uiSink.onError?.(entry),
       flushText: () => uiSink.flushText?.(),
       consumeTurnStats: () => uiSink.consumeTurnStats?.() ?? null,

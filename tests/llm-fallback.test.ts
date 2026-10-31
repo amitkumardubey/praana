@@ -125,7 +125,7 @@ const makeConfig = () => ({
     compression_flush_fraction: 0.30,
   },
   session: { log_dir: fallbackLogDir },
-  turn: { max_steps: 25 },
+  turn: { max_steps: 25, pause_after_steps: 50, hard_max_steps: 300 },
   tools: { block_repeat_reads: false },
   skills: {
     enabled: false,

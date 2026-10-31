@@ -20,7 +20,7 @@ const baseConfig: PraanaConfig = {
   ui: {},
   context_engine: { enabled: false },
   project_detection: { enabled: false },
-  turn: { max_steps: 25 },
+  turn: { max_steps: 25, pause_after_steps: 50, hard_max_steps: 300 },
 } as unknown as PraanaConfig;
 
 describe("handleDoctor", () => {

@@ -6,6 +6,7 @@ import {
   startSpinner,
   stopSpinner,
 } from "./ui.js";
+import { createInterface } from "node:readline";
 import type { LogEntry } from "./logger.js";
 import type { ContextDisplaySnapshot, ContextHistoryDelta } from "./context-display.js";
 import type { MemoryBannerStats, ProviderUsageUpdate } from "./turn.js";
@@ -47,6 +48,13 @@ export interface TurnUiSink {
   onFallback?(text: string): void;
   /** System lines for informational messages (e.g., step limit warnings). */
   onSystemLines?(lines: string[]): void;
+  /**
+   * Interactive soft-pause: called before a tool batch executes when this turn
+   * has used a multiple of `turn.pause_after_steps` steps. Resolve `true` to
+   * continue, `false` to stop with a wrap-up summary. Absent ⇒ never pause
+   * (headless / non-interactive sinks).
+   */
+  onStepPause?(stepsUsed: number): boolean | Promise<boolean>;
   /** Slash command result output to display in a distinct overlay. */
   onSlashCommandResult?(lines: string[]): void;
   /** Structured error for UI display (LLM failures, etc.). */
@@ -90,6 +98,7 @@ export function createDefaultTurnSink(options?: {
         process.stdout.write(line + "\n");
       }
     },
+    onStepPause: (stepsUsed) => promptContinueSteps(stepsUsed),
     onSlashCommandResult: (lines) => {
       for (const line of lines) {
         process.stdout.write(line + "\n");
@@ -101,6 +110,25 @@ export function createDefaultTurnSink(options?: {
       }
     },
   };
+}
+
+/**
+ * Plain-terminal soft pause (createDefaultTurnSink). Enter continues; any
+ * other key (e.g. Esc) stops with a wrap-up. Non-TTY stdin never prompts.
+ */
+async function promptContinueSteps(stepsUsed: number): Promise<boolean> {
+  if (!process.stdin.isTTY) return true;
+  const answer = await new Promise<string>((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    rl.question(
+      `Used ${stepsUsed} steps this turn. Continue? [Enter=continue, Esc=stop] `,
+      (ans) => {
+        rl.close();
+        resolve(ans);
+      },
+    );
+  });
+  return answer.trim() === "";
 }
 
 export function hasTurnUiSink(sink?: TurnUiSink): sink is TurnUiSink {

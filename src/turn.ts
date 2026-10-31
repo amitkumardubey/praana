@@ -807,6 +807,13 @@ export async function runTurn(
     },
   ];
   const maxSteps = session.config.turn?.max_steps ?? 25;
+  // Headless runs keep the hard `max_steps` cap and never prompt. Interactive
+  // (TTY) sessions get a soft pause every `pause_after_steps` steps and an
+  // absolute `hard_max_steps` ceiling.
+  const isHeadless = !!session.headless;
+  const pauseAfterSteps = Math.max(1, session.config.turn?.pause_after_steps ?? 50);
+  const hardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
+  const loopCap = isHeadless ? maxSteps : hardMaxSteps;
   let interrupted = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
@@ -925,7 +932,47 @@ export async function runTurn(
     ]);
   }
 
-  for (let step = 0; step < maxSteps; step++) {
+  /**
+   * Stop the turn gracefully at a step budget limit: append a no-tool
+   * instruction asking for a short summary, stream one final model call like
+   * a normal reply, and record its output. If that final call fails, swallow
+   * the error — the caller falls back to the existing end-of-turn banner
+   * text instead of surfacing an exception.
+   */
+  async function wrapUpStep(reason: string): Promise<void> {
+    s.onSpinnerStop?.();
+    history.push({
+      role: "user",
+      content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
+      timestamp: Date.now(),
+    });
+    try {
+      const wrap = await attemptStream();
+      fullResponse += wrap.fullResponse;
+      providerUsage = wrap.providerUsage ?? providerUsage;
+      recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+      if (wrap.finalMessage) {
+        if (wrap.assistantTokens > 0) {
+          turnHistoryTokens += wrap.assistantTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: wrap.assistantTokens,
+            source: "assistant",
+          });
+        }
+        history.push(wrap.finalMessage);
+      }
+    } catch (err) {
+      llmLogger.warn("Wrap-up summary stream failed; ending turn", {
+        code: "LLM_STREAM_ERROR",
+        details: {
+          reason,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
+  for (let step = 0; step < loopCap; step++) {
     if (options?.signal?.aborted) {
       interrupted = true;
       break;
@@ -1047,11 +1094,25 @@ export async function runTurn(
       }
     }
 
-    // Check if we've reached the step limit
-    if (step === maxSteps - 1) {
-      // We're on the last step and the model wants more tools — warn the user
-      const limitBanner = `Reached per-turn tool step limit (${maxSteps}/${maxSteps}). Send another message to continue, or raise turn.max_steps in praana.config.toml.`;
-      s.onSystemLines?.([limitBanner]);
+    // Interactive soft pause & hard ceiling (TTY sessions only). Headless runs
+    // never prompt and rely on the hard max_steps cap after tool execution.
+    if (!isHeadless && pendingToolCalls.length > 0) {
+      const stepsUsed = step + 1;
+      if (stepsUsed >= hardMaxSteps) {
+        await wrapUpStep("Hard per-turn step ceiling reached.");
+        break;
+      }
+      if (stepsUsed % pauseAfterSteps === 0) {
+        const cont = (await s.onStepPause?.(stepsUsed)) !== false;
+        if (options?.signal?.aborted) {
+          interrupted = true;
+          break;
+        }
+        if (!cont) {
+          await wrapUpStep("Stopped at per-turn step pause.");
+          break;
+        }
+      }
     }
 
     const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
@@ -1328,6 +1389,13 @@ export async function runTurn(
     }
 
     if (interrupted) break;
+
+    // Headless hard cap: the results of the last executed batch are already in
+    // history; run one no-tool wrap-up summary call before ending the turn.
+    if (isHeadless && step === maxSteps - 1) {
+      await wrapUpStep("Reached per-turn tool step limit.");
+      break;
+    }
 
     stepIndex++;
     if (session.debug) {

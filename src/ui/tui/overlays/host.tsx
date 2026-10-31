@@ -14,6 +14,7 @@ import { LoginOverlay, type LoginWizardResult } from "./login.js";
 import type { LogoutWizardResult } from "./logout.js";
 import { SetupOverlay } from "./setup.js";
 import { ConsentOverlay } from "./consent.js";
+import { ConfirmOverlay } from "./confirm.js";
 import type { SetupResult } from "../../../setup/types.js";
 import type { Session } from "../../../session.js";
 
@@ -137,6 +138,9 @@ export function OverlayHost(props: OverlayHostProps) {
         </Show>
         <Show when={kind() === "consent"}>
           <ConsentOverlay onComplete={props.onConsentComplete} />
+        </Show>
+        <Show when={kind() === "confirm"}>
+          <ConfirmOverlay overlay={props.overlay} />
         </Show>
         <Show when={kind() === "palette"}>
           <PaletteOverlay
