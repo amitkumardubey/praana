@@ -831,6 +831,7 @@ export function SetupWizard(props: SetupWizardProps) {
                 description: "No download — plain keyword search",
               },
             ]}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "proceed" || value === "skip") {
                 pendingConsent = value;
@@ -882,6 +883,7 @@ export function SetupWizard(props: SetupWizardProps) {
               description: option.description ?? "",
               value: option.id,
             }))}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => resolveOAuthSelect?.(value)}
           />
         </>
