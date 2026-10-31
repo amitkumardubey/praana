@@ -18,9 +18,15 @@ async function spawnDetached(command: string, args: string[], spawnChild: typeof
   });
 }
 
+/** Quote a URL for PowerShell single quotes. `&` stays inside the string. */
+function powershellStartCommand(url: string): string {
+  return `Start-Process -FilePath '${url.replaceAll("'", "''")}'`;
+}
+
 /**
  * Best-effort open a URL in the user's default browser.
- * On WSL, prefers wslview / Windows `cmd.exe start` because xdg-open is often a no-op.
+ * On WSL, prefers wslview, then PowerShell Start-Process, because xdg-open is often a no-op.
+ * The URL is never passed through cmd.exe, which would split on `&`.
  */
 export async function openBrowserUrl(url: string, deps: BrowserOpenerDeps = {}): Promise<boolean> {
   const spawnChild = deps.spawn ?? spawn;
@@ -28,10 +34,12 @@ export async function openBrowserUrl(url: string, deps: BrowserOpenerDeps = {}):
   const isWsl = deps.isWsl ?? Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
   if (isWsl) {
     if (await spawnDetached("wslview", [url], spawnChild)) return true;
-    if (await spawnDetached("cmd.exe", ["/c", "start", "", url], spawnChild)) return true;
+    if (await spawnDetached("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command", powershellStartCommand(url),
+    ], spawnChild)) return true;
     return spawnDetached("xdg-open", [url], spawnChild);
   }
   if (platform === "darwin") return spawnDetached("open", [url], spawnChild);
-  if (platform === "win32") return spawnDetached("cmd", ["/c", "start", "", url], spawnChild);
+  if (platform === "win32") return spawnDetached("rundll32", ["url.dll,FileProtocolHandler", url], spawnChild);
   return spawnDetached("xdg-open", [url], spawnChild);
 }

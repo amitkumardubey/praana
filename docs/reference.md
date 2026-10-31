@@ -159,8 +159,11 @@ tokens. Old pasted Codex credentials lack the required account id:
 **run `/login openai-codex` again** to replace them.
 
 **WSL / SSH:** the browser must be able to reach the machine running PRAANA at the
-localhost redirect above. WSL tries `wslview`, then `cmd.exe`, then `xdg-open` if an
-opener fails to spawn. If opening fails or the browser cannot reach the callback,
+localhost redirect above. WSL tries `wslview`, then
+`powershell.exe -NoProfile -NonInteractive -Command Start-Process`, then `xdg-open`
+if an opener fails to spawn. Windows uses `rundll32 url.dll,FileProtocolHandler`
+so `&` in the authorize URL is not treated as a command separator. If opening fails
+or the browser cannot reach the callback,
 copy the visible URL and paste the final redirect, or choose device-code login.
 Keep the listener on `127.0.0.1:1455`; do not expose it on `0.0.0.0`.
 

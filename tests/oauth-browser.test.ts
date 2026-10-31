@@ -19,10 +19,32 @@ describe("OAuth browser opener", () => {
     expect(await openBrowserUrl(url, { spawn: fakeSpawn, isWsl: true })).toBe(true);
     expect(calls).toEqual([
       ["wslview", [url], { detached: true, stdio: "ignore" }],
-      ["cmd.exe", ["/c", "start", "", url], { detached: true, stdio: "ignore" }],
+      ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Start-Process -FilePath '${url}'`], { detached: true, stdio: "ignore" }],
       ["xdg-open", [url], { detached: true, stdio: "ignore" }],
     ].slice(0, successAt));
     expect(unref).toHaveBeenCalledTimes(1);
+  });
+  it("passes a URL containing & ' and % without a shell", async () => {
+    const url = "https://auth.openai.com/oauth/authorize?a=1&b=o'hare&c=100%";
+    const calls: Array<[string, string[]]> = [];
+    const fakeSpawn = ((command: string, args: string[]) => {
+      calls.push([command, args]);
+      const child = new EventEmitter() as ChildProcess;
+      child.unref = () => {};
+      queueMicrotask(() => child.emit("error", new Error("ENOENT")));
+      return child;
+    }) as typeof spawn;
+    expect(await openBrowserUrl(url, { spawn: fakeSpawn, isWsl: true })).toBe(false);
+    expect(calls).toEqual([
+      ["wslview", [url]],
+      ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Start-Process -FilePath 'https://auth.openai.com/oauth/authorize?a=1&b=o''hare&c=100%'"]],
+      ["xdg-open", [url]],
+    ]);
+    calls.length = 0;
+    expect(await openBrowserUrl(url, { spawn: fakeSpawn, platform: "win32", isWsl: false })).toBe(false);
+    expect(calls).toEqual([
+      ["rundll32", ["url.dll,FileProtocolHandler", url]],
+    ]);
   });
   it("reports all unavailable openers without throwing", async () => {
     const fakeSpawn = (() => { throw new Error("unavailable"); }) as typeof spawn;
