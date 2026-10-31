@@ -228,7 +228,12 @@ fi
 # previous GitHub Release (e.g. v0.14.0) whose doctor still says "fff".
 # Match the capability words, not the "✓" glyph: a non-UTF-8 console or locale
 # can mangle the check mark without changing the report.
-doc_out=$("$dest/praana" doctor 2>&1) || true
+# Run the self-check with a throwaway PRAANA_HOME so it never touches the
+# user's real ~/.praana (no config writes, no logs, no embedder download).
+selfcheck_home="$tmpdir/selfcheck-home"
+mkdir -p "$selfcheck_home"
+doc_out=$(PRAANA_HOME="$selfcheck_home" "$dest/praana" doctor 2>&1) || true
+rm -rf "$selfcheck_home"
 if ! printf '%s\n' "$doc_out" | grep -E 'native:[[:space:]]+available' >/dev/null; then
   printf '%s\n' "$doc_out" >&2
   printf 'warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)\n' >&2

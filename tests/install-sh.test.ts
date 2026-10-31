@@ -109,7 +109,7 @@ function fileReleaseBase(dir: string): string {
   return `file://${dir}`;
 }
 
-/** Fake `praana` binary: `doctor` prints $doctorBody. */
+/** Fake `praana` binary: `doctor` prints $doctorBody, records PRAANA_HOME. */
 function fixturePraana(doctorBody: string): string {
   return `#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -117,6 +117,12 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "doctor" ]; then
+  if [ -n "\${PRAANA_TEST_RECORD:-}" ]; then
+    printf '%s\\n' "\${PRAANA_HOME:-unset}" > "$PRAANA_TEST_RECORD"
+  fi
+  home="\${PRAANA_HOME:-$HOME/.praana}"
+  mkdir -p "$home" 2>/dev/null || true
+  : > "$home/doctor-ran"
 ${doctorBody}
   exit 0
 fi
@@ -365,6 +371,45 @@ echo fixture-praana
       expect(`${result.stdout}${result.stderr}`).not.toContain(
         "doctor did not report search capability",
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the doctor self-check with an isolated PRAANA_HOME", async () => {
+    const root = mkdtempSync(join(tmpdir(), "praana-install-sh-home-"));
+    const fakeHome = join(root, "home");
+    const record = join(root, "doctor-home.txt");
+    mkdirSync(fakeHome, { recursive: true });
+    try {
+      const { releaseDir, prefix } = await buildRelease(
+        root,
+        fixturePraana(
+          [
+            '  echo "✓ native: available (0.3.0, ping ok)"',
+            '  echo "✓ search: native grep available (search_code, find_files)"',
+          ].join("\n"),
+        ),
+      );
+      const result = runInstall(["--prefix", prefix], {
+        HOME: fakeHome,
+        PRAANA_TEST_RECORD: record,
+        PRAANA_UNAME_S: "Linux",
+        PRAANA_UNAME_M: "x86_64",
+        PRAANA_LIBC: "gnu",
+        PRAANA_RELEASE_BASE: fileReleaseBase(releaseDir),
+      });
+      expect(result.exitCode).toBe(0);
+
+      // doctor ran with a PRAANA_HOME of its own, not the user's real home…
+      const doctorHome = readFileSync(record, "utf-8").trim();
+      expect(doctorHome).not.toBe("unset");
+      expect(doctorHome.startsWith(fakeHome)).toBe(false);
+      expect(doctorHome.endsWith("selfcheck-home")).toBe(true);
+      // …and that directory is deleted again before the installer exits.
+      expect(existsSync(doctorHome)).toBe(false);
+      // The real home was never touched.
+      expect(existsSync(join(fakeHome, ".praana"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

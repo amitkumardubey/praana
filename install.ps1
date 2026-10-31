@@ -259,7 +259,18 @@ try {
   if ($ver.ExitCode -ne 0) {
     Write-Err "smoke --version failed after install"
   }
-  $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  # The self-check must not touch the user's real ~/.praana: run `doctor` with a
+  # throwaway PRAANA_HOME under $tmpdir and delete it right after.
+  $selfCheckHome = Join-Path $tmpdir "selfcheck-home"
+  New-Item -ItemType Directory -Path $selfCheckHome -Force | Out-Null
+  $prevPraanaHome = [Environment]::GetEnvironmentVariable("PRAANA_HOME")
+  [Environment]::SetEnvironmentVariable("PRAANA_HOME", $selfCheckHome)
+  try {
+    $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  } finally {
+    [Environment]::SetEnvironmentVariable("PRAANA_HOME", $prevPraanaHome)
+    Remove-Item -LiteralPath $selfCheckHome -Recurse -Force -ErrorAction SilentlyContinue
+  }
   $docOut = [string]$doc.Output
   # Match the capability words, not the "✓" glyph: the console code page can
   # mangle the check mark without changing the report.

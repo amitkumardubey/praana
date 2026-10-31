@@ -57,6 +57,12 @@ if [ "$1" = "--version" ]; then
   exit 0
 fi
 if [ "$1" = "doctor" ]; then
+  if [ -n "\${PRAANA_TEST_RECORD:-}" ]; then
+    printf '%s\\n' "\${PRAANA_HOME:-unset}" > "$PRAANA_TEST_RECORD"
+  fi
+  home="\${PRAANA_HOME:-$HOME/.praana}"
+  mkdir -p "$home" 2>/dev/null || true
+  : > "$home/doctor-ran"
 ${doctorBody}
   exit 0
 fi
@@ -109,6 +115,7 @@ describe("install.ps1", () => {
     expect(source).not.toContain("✓ search:");
     expect(source).toContain("native:\\s+available");
     expect(source).toContain("search:\\s+native grep available");
+    expect(source).toContain("selfcheck-home");
   });
 
   it("targets windows-x64 and rejects ARM64", () => {
@@ -253,6 +260,42 @@ echo fixture-praana
       expect(`${result.stdout}${result.stderr}`).not.toContain(
         "doctor did not report search capability",
       );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("runs the doctor self-check with an isolated PRAANA_HOME", async () => {
+    if (!POWERSHELL) return;
+    const root = mkdtempSync(join(tmpdir(), "praana-install-ps1-home-"));
+    const fakeHome = join(root, "home");
+    const record = join(root, "doctor-home.txt");
+    mkdirSync(fakeHome, { recursive: true });
+    try {
+      const { releaseDir, prefix } = await buildRelease(
+        root,
+        fixturePraana(
+          [
+            '  echo "✓ native: available (0.3.0, ping ok)"',
+            '  echo "✓ search: native grep available (search_code, find_files)"',
+          ].join("\n"),
+        ),
+      );
+      const result = runInstall(["-Prefix", prefix], {
+        HOME: fakeHome,
+        USERPROFILE: fakeHome,
+        PRAANA_TEST_RECORD: record,
+        PRAANA_PROCESSOR_ARCHITECTURE: "AMD64",
+        PRAANA_RELEASE_BASE: releaseDir,
+      });
+      expect(result.exitCode).toBe(0);
+
+      const doctorHome = readFileSync(record, "utf-8").trim();
+      expect(doctorHome).not.toBe("unset");
+      expect(doctorHome.startsWith(fakeHome)).toBe(false);
+      expect(doctorHome).toContain("selfcheck-home");
+      expect(existsSync(doctorHome)).toBe(false);
+      expect(existsSync(join(fakeHome, ".praana"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
