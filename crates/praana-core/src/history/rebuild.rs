@@ -28,6 +28,26 @@
 //! into place and does not inspect sidecars, so a stale live-named `-wal` /
 //! `-shm` can remain beside the promoted file. That crash window is tracked as
 //! issue #670 and is not closed here.
+//!
+//! Reopening is the caller's duty, and only for the handle the rebuild was
+//! given. Every other connection opened before the rebuild stays on the old
+//! inode that the swap renamed aside: it keeps reading the renamed-aside
+//! database, and every write through it fails with `HISTORY_FILE_REPLACED`
+//! until its owner drops it and opens the live path again. This module cannot
+//! close those handles.
+//!
+//! The known case is the session-scoped
+//! [`super::operation_ledger::OperationLedger`] connection: it lives in the same
+//! `history.db` file, but it is not the handle the rebuild is given, so a
+//! rebuild leaves it fenced. A [`super::db::HistoryDatabase::open_read_only`]
+//! reader opened before the rebuild is in the same position for reads: it keeps
+//! serving the renamed-aside file and stops seeing later history. The built-in
+//! history tools open that reader per call, so they are not a stale-handle
+//! case. No production caller reopens the ledger after a rebuild yet, because
+//! the session ledger is not wired into the session (`open_session_ledger` is
+//! called only from tests), so nothing in production is left fenced by a
+//! rebuild today. A caller that does wire it in must drop and reopen it after a
+//! successful rebuild.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -55,8 +75,9 @@ fn unix_ms_now() -> Result<i64, ArtifactError> {
 /// commits, those writes fail with `HISTORY_FILE_REPLACED` on ordinary
 /// tables instead of landing in the renamed-aside file. A handle opened
 /// before the rebuild can still read the old file; it must be dropped and
-/// re-opened afterwards. On success this handle is re-opened on the
-/// replaced file.
+/// re-opened afterwards. On success only this handle is re-opened on the
+/// replaced file; every other handle stays fenced until its owner re-opens it
+/// (see the module docs).
 ///
 /// A failure before publication rolls the tombstone back and leaves the
 /// original intact and writable; a failure after publication keeps the swap
