@@ -118,6 +118,8 @@ export class BedrockDriver implements LlmDriver {
     let accumulatedContent = "";
     let accumulatedThinking = "";
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
+    let sawTerminal = false;
+    let emittedDelta = false;
 
     try {
       for await (const frame of parseAwsEventStream(response.body!)) {
@@ -143,10 +145,12 @@ export class BedrockDriver implements LlmDriver {
 
           if (delta?.text) {
             accumulatedContent += delta.text;
+            emittedDelta = true;
             yield { type: "text_delta", delta: delta.text };
           }
           if (delta?.reasoningContent?.text) {
             accumulatedThinking += delta.reasoningContent.text;
+            emittedDelta = true;
             yield { type: "thinking_delta", delta: delta.reasoningContent.text };
           }
           if (delta?.toolUse) {
@@ -155,6 +159,7 @@ export class BedrockDriver implements LlmDriver {
               argsDelta: delta.toolUse.input,
             });
             if (res.delta) {
+              emittedDelta = true;
               yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
             }
           }
@@ -173,6 +178,7 @@ export class BedrockDriver implements LlmDriver {
               name: start.toolUse.name,
             });
             if (res.started) {
+              emittedDelta = true;
               yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
             }
           }
@@ -195,11 +201,21 @@ export class BedrockDriver implements LlmDriver {
 
         // 4. Message stop
         if (frame.messageStop) {
+          sawTerminal = true;
           const stop = frame.messageStop as any;
           if (stop.stopReason === "tool_use") finishReason = "tool_use";
           else if (stop.stopReason === "max_tokens") finishReason = "length";
           else finishReason = "stop";
         }
+      }
+
+      if (!sawTerminal) {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (messageStop)"),
+          retryable: !emittedDelta,
+        };
+        return;
       }
 
       const completedToolCalls = accumulator.flush();

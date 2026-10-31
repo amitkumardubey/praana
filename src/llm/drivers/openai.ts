@@ -109,6 +109,8 @@ export class OpenAICompatibleDriver implements LlmDriver {
     let accumulatedThinking = "";
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
     let latestUsage: (Extract<StreamEvent, { type: "usage" }>)["usage"] | null = null;
+    let sawTerminal = false;
+    let emittedDelta = false;
 
     try {
       for await (const event of parseSseStream(response.body!)) {
@@ -127,7 +129,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
         }
 
         const dataStr = event.data?.trim();
-        if (!dataStr || dataStr === "[DONE]") continue;
+        if (!dataStr || dataStr === "[DONE]") {
+          if (dataStr === "[DONE]") sawTerminal = true;
+          continue;
+        }
 
         let parsed: any;
         try {
@@ -155,6 +160,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
         if (!choice) continue;
 
         if (choice.finish_reason) {
+          sawTerminal = true;
           if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
           else if (choice.finish_reason === "length") finishReason = "length";
           else finishReason = "stop";
@@ -166,12 +172,14 @@ export class OpenAICompatibleDriver implements LlmDriver {
         // Reasoning / Thinking delta (DeepSeek, Groq, etc.)
         if (delta.reasoning_content) {
           accumulatedThinking += delta.reasoning_content;
+          emittedDelta = true;
           yield { type: "thinking_delta", delta: delta.reasoning_content };
         }
 
         // Text delta
         if (delta.content) {
           accumulatedContent += delta.content;
+          emittedDelta = true;
           yield { type: "text_delta", delta: delta.content };
         }
 
@@ -187,13 +195,26 @@ export class OpenAICompatibleDriver implements LlmDriver {
             });
 
             if (res.started) {
+              emittedDelta = true;
               yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
             }
             if (res.delta) {
+              emittedDelta = true;
               yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
             }
           }
         }
+      }
+
+      if (!sawTerminal) {
+        yield {
+          type: "error",
+          error: new Error(
+            "stream ended before the provider sent a final event (finish_reason or [DONE])",
+          ),
+          retryable: !emittedDelta,
+        };
+        return;
       }
 
       const completedToolCalls = accumulator.flush();

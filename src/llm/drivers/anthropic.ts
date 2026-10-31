@@ -105,6 +105,8 @@ export class AnthropicDriver implements LlmDriver {
 
     let currentBlockIndex = -1;
     let currentBlockType: string | null = null;
+    let sawTerminal = false;
+    let emittedDelta = false;
 
     try {
       for await (const event of parseSseStream(response.body!)) {
@@ -154,6 +156,7 @@ export class AnthropicDriver implements LlmDriver {
               name: block.name,
             });
             if (res.started) {
+              emittedDelta = true;
               yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
             }
           }
@@ -163,9 +166,11 @@ export class AnthropicDriver implements LlmDriver {
 
           if (delta.type === "text_delta") {
             accumulatedContent += delta.text;
+            emittedDelta = true;
             yield { type: "text_delta", delta: delta.text };
           } else if (delta.type === "thinking_delta") {
             accumulatedThinking += delta.thinking;
+            emittedDelta = true;
             yield { type: "thinking_delta", delta: delta.thinking };
           } else if (delta.type === "signature_delta") {
             thinkingSignature = (thinkingSignature || "") + delta.signature;
@@ -175,6 +180,7 @@ export class AnthropicDriver implements LlmDriver {
               argsDelta: delta.partial_json,
             });
             if (res.delta) {
+              emittedDelta = true;
               yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
             }
           }
@@ -189,6 +195,7 @@ export class AnthropicDriver implements LlmDriver {
         } else if (type === "message_delta") {
           const delta = parsed.delta;
           if (delta?.stop_reason) {
+            sawTerminal = true;
             if (delta.stop_reason === "tool_use") finishReason = "tool_use";
             else if (delta.stop_reason === "max_tokens") finishReason = "length";
             else finishReason = "stop";
@@ -197,7 +204,18 @@ export class AnthropicDriver implements LlmDriver {
           if (usage) {
             outputTokens += usage.output_tokens ?? 0;
           }
+        } else if (type === "message_stop") {
+          sawTerminal = true;
         }
+      }
+
+      if (!sawTerminal) {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: !emittedDelta,
+        };
+        return;
       }
 
       // Emit normalized usage

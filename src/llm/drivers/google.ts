@@ -110,6 +110,8 @@ export class GoogleDriver implements LlmDriver {
     let accumulatedThinking = "";
     const pendingToolCalls: ToolCall[] = [];
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
+    let sawTerminal = false;
+    let emittedDelta = false;
 
     try {
       for await (const event of parseSseStream(response.body!)) {
@@ -154,17 +156,22 @@ export class GoogleDriver implements LlmDriver {
         const candidate = parsed.candidates?.[0];
         if (!candidate) continue;
 
-        if (candidate.finishReason === "STOP") finishReason = "stop";
-        else if (candidate.finishReason === "MAX_TOKENS") finishReason = "length";
+        if (candidate.finishReason) {
+          sawTerminal = true;
+          if (candidate.finishReason === "STOP") finishReason = "stop";
+          else if (candidate.finishReason === "MAX_TOKENS") finishReason = "length";
+        }
 
         const parts = candidate.content?.parts;
         if (Array.isArray(parts)) {
           for (const part of parts) {
             if (part.thought) {
               accumulatedThinking += part.text || "";
+              emittedDelta = true;
               yield { type: "thinking_delta", delta: part.text || "" };
             } else if (part.text) {
               accumulatedContent += part.text;
+              emittedDelta = true;
               yield { type: "text_delta", delta: part.text };
             }
 
@@ -175,12 +182,22 @@ export class GoogleDriver implements LlmDriver {
                 args: part.functionCall.args || {},
               };
               pendingToolCalls.push(tc);
+              emittedDelta = true;
               yield { type: "tool_call_start", id: tc.id, name: tc.name };
               yield { type: "tool_call_end", toolCall: tc };
               finishReason = "tool_use";
             }
           }
         }
+      }
+
+      if (!sawTerminal) {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (finishReason)"),
+          retryable: !emittedDelta,
+        };
+        return;
       }
 
       const finalAssistant: AssistantMessage = {
