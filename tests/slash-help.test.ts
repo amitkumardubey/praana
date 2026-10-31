@@ -62,16 +62,18 @@ describe("/help", () => {
     expect(text).toContain("Ctrl+C");
   });
 
-  it("lists the shell shortcut and the Esc Esc interrupt key with their behaviour", async () => {
+  it("lists the shell shortcut and the Ctrl+C interrupt key with their behaviour", async () => {
     const text = await helpText();
     // !<command> is handled in src/ui/tui/run.tsx (handleSubmit): it rewrites
     // `!cmd` to `/shell cmd`; a bare `!` shows a usage error.
     expect(text).toContain("!<command>");
     expect(text).toContain("/shell");
     expect(text).toContain("Usage: !<command>");
-    // Esc Esc interrupts a running turn (src/turn-control.ts EscInterruptListener).
-    expect(text).toContain("Esc Esc");
-    expect(text).toContain("interrupt");
+    // Ctrl+C interrupts a running turn (the TUI binds Ctrl+C in run.tsx).
+    expect(text).toContain("Ctrl+C");
+    expect(text).toContain("abort");
+    // Esc Esc must not be advertised: EscInterruptListener is never constructed.
+    expect(text).not.toContain("Esc Esc");
     // Single Esc must not be described as if it interrupts.
     const escLine = text.split("\n").find((l) => l.includes("Esc"));
     expect(escLine, "an Esc line should exist").toBeTruthy();

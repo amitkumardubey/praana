@@ -146,8 +146,6 @@ export function buildInAppHelpLines(): string[] {
     "  Esc — close autocomplete, overlays, or transcript focus",
     "  !<command> — run a shell command directly (same as /shell <command>)",
     "    A command is required after !; bare ! shows Usage: !<command>",
-    "  Esc Esc — interrupt a running turn",
-    "    Single Esc only closes autocomplete/overlays/focus; it does not interrupt",
     "  Ctrl+C — abort a running turn",
     "    Idle: clear the input, or exit when it is empty",
     "  F9 — focus the transcript",
@@ -411,7 +409,7 @@ export async function executeSlashCommand(
   // ever reaches /clear or /new mid-turn, refuse rather than wipe state that
   // the running turn is still appending to.
   if ((cmd === "/clear" || cmd === "/new") && handlers.isTurnActive?.()) {
-    lines.push("A turn is still running. Interrupt it first (Esc Esc), then retry.");
+    lines.push("A turn is still running. Interrupt it first (Ctrl+C), then retry.");
     return result("none", "toast", "error");
   }
 

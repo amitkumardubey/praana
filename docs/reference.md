@@ -176,7 +176,6 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 - A trailing **`\` + Enter** — continue the line on the next line, but only when the caret is at the end of the current line (end of the buffer, or immediately before a newline). An odd run of trailing backslashes continues the line (one backslash is dropped and a real newline inserted); an even run — for example type two to send a literal trailing backslash — submits with all backslashes kept. A backslash elsewhere mid-line is submitted literally.
 - **Esc** — close autocomplete, leave transcript focus, or dismiss an overlay
 - **`!<command>`** — run a shell command directly, the same as `/shell <command>` (a bare `!` shows `Usage: !<command>`)
-- **Esc Esc** — interrupt a running turn (single Esc only closes autocomplete/overlays/focus; it does not interrupt)
 - **Ctrl+C** — abort a running turn; when idle, clear the input, or exit if the input is already empty
 - **F9** — focus the transcript (Up/Down move the selection, Enter expands a tool row, Esc returns to the prompt)
 
