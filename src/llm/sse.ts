@@ -10,7 +10,12 @@ export interface SseEvent {
 
 /**
  * Parses a byte/string stream of Server-Sent Events (SSE) into discrete events.
- * Correctly handles multibyte UTF-8 splits, partial line buffers, and CRLF/LF line breaks.
+ *
+ * Event fields may span any number of chunks. Line endings are CRLF, CR, or LF.
+ * A trailing CR is held back so a CRLF split across chunks is not read as a
+ * bare CR plus an extra blank line. A blank line dispatches the event. At
+ * end of stream, a final event with no terminating blank line is dispatched
+ * once.
  */
 export async function* parseSseStream(
   stream: ReadableStream<Uint8Array>,
@@ -18,81 +23,92 @@ export async function* parseSseStream(
   const reader = stream.getReader();
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
+  let current: { event?: string; data?: string; id?: string } = {};
+  let hasData = false;
+
+  const reset = (): void => {
+    current = {};
+    hasData = false;
+  };
+
+  const dispatch = (): SseEvent | null => {
+    if (!hasData || current.data === undefined) {
+      reset();
+      return null;
+    }
+    const ev: SseEvent = { data: current.data };
+    if (current.event !== undefined) ev.event = current.event;
+    if (current.id !== undefined) ev.id = current.id;
+    reset();
+    return ev;
+  };
+
+  const applyLine = function* (line: string): Generator<SseEvent, void, unknown> {
+    if (line === "") {
+      const ev = dispatch();
+      if (ev) yield ev;
+      return;
+    }
+    if (line.startsWith(":")) return;
+
+    const colonIdx = line.indexOf(":");
+    let field: string;
+    let val: string;
+    if (colonIdx === -1) {
+      field = line;
+      val = "";
+    } else {
+      field = line.slice(0, colonIdx);
+      val = line[colonIdx + 1] === " " ? line.slice(colonIdx + 2) : line.slice(colonIdx + 1);
+    }
+
+    if (field === "data") {
+      current.data = current.data !== undefined ? `${current.data}\n${val}` : val;
+      hasData = true;
+    } else if (field === "event") {
+      current.event = val;
+    } else if (field === "id") {
+      current.id = val;
+    }
+  };
+
+  /**
+   * Pull complete lines out of `buffer`. When this is not the end of the
+   * stream and the buffer ends in CR, that CR stays buffered: the next byte
+   * may be LF and the pair is one CRLF ending.
+   */
+  const takeLines = (eof: boolean): string[] => {
+    let heldCr = false;
+    if (!eof && buffer.endsWith("\r")) {
+      buffer = buffer.slice(0, -1);
+      heldCr = true;
+    }
+    const parts = buffer.split(/\r\n|\r|\n/);
+    const incomplete = parts.pop() ?? "";
+    buffer = heldCr ? `${incomplete}\r` : incomplete;
+    if (eof && buffer !== "") {
+      parts.push(buffer);
+      buffer = "";
+    }
+    return parts;
+  };
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r\n|\r|\n/);
-      // The last element is the incomplete remainder line
-      buffer = lines.pop() ?? "";
-
-      let currentEvent: Partial<SseEvent> = {};
-      let hasData = false;
-
-      for (const line of lines) {
-        if (line.trim() === "") {
-          // Empty line indicates event boundary
-          if (hasData && currentEvent.data !== undefined) {
-            yield {
-              event: currentEvent.event,
-              data: currentEvent.data,
-              id: currentEvent.id,
-            };
-          }
-          currentEvent = {};
-          hasData = false;
-          continue;
-        }
-
-        if (line.startsWith(":")) {
-          // SSE comment, ignore
-          continue;
-        }
-
-        const colonIdx = line.indexOf(":");
-        let field: string;
-        let val: string;
-
-        if (colonIdx === -1) {
-          field = line;
-          val = "";
-        } else {
-          field = line.slice(0, colonIdx);
-          // Standard SSE: if space follows colon, strip single leading space
-          val = line[colonIdx + 1] === " " ? line.slice(colonIdx + 2) : line.slice(colonIdx + 1);
-        }
-
-        if (field === "data") {
-          currentEvent.data = currentEvent.data !== undefined ? `${currentEvent.data}\n${val}` : val;
-          hasData = true;
-        } else if (field === "event") {
-          currentEvent.event = val;
-        } else if (field === "id") {
-          currentEvent.id = val;
-        }
-      }
-
-      // If there's an unclosed event at end of chunk without trailing newline, handle on boundary
-      if (hasData && currentEvent.data !== undefined && buffer === "") {
-        yield {
-          event: currentEvent.event,
-          data: currentEvent.data,
-          id: currentEvent.id,
-        };
+      for (const line of takeLines(false)) {
+        yield* applyLine(line);
       }
     }
 
-    // Flush any remaining line
-    if (buffer.trim() !== "") {
-      const line = buffer;
-      if (line.startsWith("data:")) {
-        const val = line.slice(5).trimStart();
-        yield { data: val };
-      }
+    buffer += decoder.decode();
+    for (const line of takeLines(true)) {
+      yield* applyLine(line);
     }
+    const tail = dispatch();
+    if (tail) yield tail;
   } finally {
     reader.releaseLock();
   }
