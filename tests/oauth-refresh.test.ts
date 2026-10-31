@@ -21,10 +21,12 @@ import {
   getApiKey,
   getCredentialsFilePath,
   getOAuthToken,
+  releaseProviderRefreshLock,
   removeCredentials,
   resetCredentialStoreForTests,
   setApiKey,
   setOAuthToken,
+  waitForProviderRefreshLock,
 } from "../src/credentials.js";
 import { streamLlmResponse } from "../src/llm/stream.js";
 import type { StreamEvent } from "../src/llm/types.js";
@@ -678,6 +680,85 @@ describe("serialized OAuth refresh", () => {
     await expect(resolveOAuthModelAuth("openai")).resolves.toBeNull();
     expect(warnings.join("\n")).not.toContain("Failed to read credentials store");
     expect(credentialDiskReadCountForTests()).toBe(reads);
+  });
+
+  it("stops an aborted refresh-lock wait without releasing the holder", async () => {
+    const holder = holdLock("refresh");
+    const ctl = new AbortController();
+    const started = Date.now();
+    const pending = waitForProviderRefreshLock("openai-codex", 1_500, ctl.signal);
+    await Bun.sleep(30);
+    ctl.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(Date.now() - started).toBeLessThan(500);
+    await expect(waitForProviderRefreshLock("openai-codex", 0)).resolves.toBe(false);
+    holder.release();
+    await expect(waitForProviderRefreshLock("openai-codex", 1_000)).resolves.toBe(true);
+    releaseProviderRefreshLock("openai-codex");
+  });
+
+  it("an aborted caller stops only its own refresh-lock wait", async () => {
+    seedExpiredCodex();
+    const holder = holdLock("refresh");
+    const next = jwt("after-own-abort");
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        posts += 1;
+        return Response.json(tokenJson(next, "refresh-after-own-abort"));
+      }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(5_000);
+    const abort = new AbortController();
+    const first = resolveOAuthModelAuth("openai-codex", abort.signal).then(
+      () => "ok" as const,
+      (err: unknown) => err,
+    );
+    const second = resolveOAuthModelAuth("openai-codex").then(
+      (auth) => ({ ok: true as const, auth }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+    await Bun.sleep(40);
+    abort.abort();
+    const firstResult = await Promise.race([
+      first,
+      Bun.sleep(400).then(() => "still-waiting" as const),
+    ]);
+    expect(firstResult).toMatchObject({ name: "AbortError" });
+    const mid = await Promise.race([
+      second.then(() => "done" as const),
+      Bun.sleep(120).then(() => "waiting" as const),
+    ]);
+    expect(mid).toBe("waiting");
+    holder.release();
+    const done = await second;
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.auth?.apiKey).toBe(next);
+    expect(posts).toBe(1);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-after-own-abort");
+  });
+
+  it("does not refresh after the only waiting caller aborts", async () => {
+    seedExpiredCodex();
+    const holder = holdLock("refresh");
+    let posts = 0;
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        posts += 1;
+        return Response.json(tokenJson(jwt("should-not-run"), "refresh-should-not"));
+      }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(5_000);
+    const abort = new AbortController();
+    const pending = resolveOAuthModelAuth("openai-codex", abort.signal);
+    await Bun.sleep(40);
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    holder.release();
+    await Bun.sleep(250);
+    expect(posts).toBe(0);
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-old");
   });
 
   it("returns a still-valid token without waiting on another session's refresh lock", async () => {

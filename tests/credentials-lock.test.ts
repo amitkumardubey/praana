@@ -1,8 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   acquireAsync,
@@ -180,6 +180,33 @@ describe("credential advisory locks", () => {
       }
     }
   }, { timeout: 60_000 });
+
+  it("recreates a corrupt lock database instead of waiting out the timeout", () => {
+    const path = pathFor("refresh");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "this is not a sqlite database");
+    const started = Date.now();
+    const lock = acquireSync(path, { waitMs: 1_500 });
+    expect(Date.now() - started).toBeLessThan(500);
+    lock.release();
+    const again = acquireSync(path, { waitMs: 0 });
+    again.release();
+  });
+
+  it("fails clearly when a corrupt lock database cannot be replaced", () => {
+    const path = pathFor("store");
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, "this is not a sqlite database");
+    chmodSync(dir, 0o500);
+    try {
+      const started = Date.now();
+      expect(() => acquireSync(path, { waitMs: 1_500 })).toThrow(/corrupt/i);
+      expect(Date.now() - started).toBeLessThan(500);
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+  });
 
   it("leaves a corrupt credentials file byte-identical when setApiKey cannot read it", () => {
     const path = getCredentialsFilePath();

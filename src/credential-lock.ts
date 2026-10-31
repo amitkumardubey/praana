@@ -11,7 +11,7 @@
 // async waiters queue in memory and a sync waiter does not open another
 // connection while this process already holds the path.
 
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
 
@@ -19,6 +19,8 @@ const MAX_SYNC_WAIT_MS = 2_000;
 const MAX_ASYNC_WAIT_MS = 30_000;
 const MIN_POLL_MS = 100;
 const MAX_POLL_MS = 250;
+/** A brand-new lock file can report this briefly. A corrupt file does not get the whole wait. */
+const NOTADB_ATTEMPTS = 3;
 
 export class CredentialLockTimeoutError extends Error {
   readonly path: string;
@@ -86,20 +88,81 @@ function sqliteCode(err: unknown): string {
   return typeof code === "string" ? code : "";
 }
 
-/** Another connection holds the database, or the file is not a database yet. */
+/** Another connection holds the database. A file that is not a database is handled separately. */
 function isRetryableLockError(err: unknown): boolean {
   const code = sqliteCode(err);
   if (
     code === "SQLITE_BUSY" ||
     code === "SQLITE_BUSY_RECOVERY" ||
     code === "SQLITE_BUSY_SNAPSHOT" ||
-    code === "SQLITE_LOCKED" ||
-    code === "SQLITE_NOTADB"
+    code === "SQLITE_LOCKED"
   ) {
     return true;
   }
   const message = err instanceof Error ? err.message : String(err);
-  return /database is locked|SQLITE_BUSY|not a database/i.test(message);
+  return /database is locked|SQLITE_BUSY/i.test(message);
+}
+
+function isNotADatabase(err: unknown): boolean {
+  if (sqliteCode(err) === "SQLITE_NOTADB") return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /not a database/i.test(message);
+}
+
+function corruptLockError(path: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  const error = new Error(
+    `Credential lock database is corrupt and could not be recovered (${path}): ${detail}`,
+  );
+  error.name = "CredentialLockCorruptError";
+  (error as Error & { cause?: unknown }).cause = cause;
+  return error;
+}
+
+/** Empty or non-database files can be deleted once. A real SQLite file is left alone. */
+function lockFileIsReplaceable(path: string): boolean {
+  let fd: number | undefined;
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return false;
+    if (stat.size === 0) return true;
+    fd = openSync(path, "r");
+    const header = Buffer.alloc(16);
+    const n = readSync(fd, header, 0, 16, 0);
+    return !header.subarray(0, n).toString("utf8").startsWith("SQLite format 3");
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+  }
+}
+
+interface NotADatabaseState {
+  streak: number;
+  recreated: boolean;
+}
+
+/**
+ * Retry a few times for a file another process is still creating.
+ * Then delete an empty or non-database file once and try again.
+ * A further failure, or a file we cannot replace, throws.
+ */
+function recoverNotADatabase(path: string, err: unknown, state: NotADatabaseState): void {
+  state.streak += 1;
+  if (state.streak <= NOTADB_ATTEMPTS) return;
+  if (!state.recreated && lockFileIsReplaceable(path)) {
+    state.recreated = true;
+    state.streak = 0;
+    try {
+      unlinkSync(path);
+    } catch (unlinkErr) {
+      throw corruptLockError(path, unlinkErr);
+    }
+    return;
+  }
+  throw corruptLockError(path, err);
 }
 
 function isContention(err: unknown): boolean {
@@ -229,6 +292,7 @@ function pollMsOf(pollMs: number | undefined): number {
 export function acquireSync(path: string, opts: AcquireSyncOptions): CredentialLock {
   const waitMs = Math.min(MAX_SYNC_WAIT_MS, Math.max(0, Math.trunc(opts.waitMs) || 0));
   const deadline = Date.now() + waitMs;
+  const notadb: NotADatabaseState = { streak: 0, recreated: false };
   for (;;) {
     if (held.has(path)) {
       if (Date.now() >= deadline) throw new CredentialLockTimeoutError(path);
@@ -239,9 +303,13 @@ export function acquireSync(path: string, opts: AcquireSyncOptions): CredentialL
     try {
       return hold(path, beginImmediate(path, remaining));
     } catch (err) {
+      if (isNotADatabase(err)) {
+        recoverNotADatabase(path, err, notadb);
+        sleepSync(20);
+        continue;
+      }
       if (!isRetryableLockError(err)) throw err;
-      // busy_timeout already waited out a real SQLITE_BUSY. A half-created
-      // database (SQLITE_NOTADB) did not, so keep trying until the deadline.
+      // busy_timeout already waited out a real SQLITE_BUSY.
       if (isContention(err) || Date.now() >= deadline) throw new CredentialLockTimeoutError(path);
       sleepSync(Math.min(20, Math.max(1, deadline - Date.now())));
     }
@@ -252,13 +320,18 @@ async function acquireFromOs(path: string, opts: AcquireAsyncOptions): Promise<C
   const waitMs = Math.min(MAX_ASYNC_WAIT_MS, Math.max(0, Math.trunc(opts.waitMs) || 0));
   const pollMs = pollMsOf(opts.pollMs);
   const deadline = Date.now() + waitMs;
+  const notadb: NotADatabaseState = { streak: 0, recreated: false };
   for (;;) {
     if (opts.signal?.aborted) throw abortError(opts.signal);
     if (!held.has(path)) {
       try {
         return hold(path, beginImmediate(path, 0));
       } catch (err) {
-        if (!isRetryableLockError(err)) throw err;
+        if (isNotADatabase(err)) {
+          recoverNotADatabase(path, err, notadb);
+        } else if (!isRetryableLockError(err)) {
+          throw err;
+        }
       }
     }
     if (Date.now() >= deadline) throw new CredentialLockTimeoutError(path);

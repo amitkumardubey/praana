@@ -132,11 +132,16 @@ export function withCredentialStoreLockSync<T>(fn: () => T): T {
  * stays free while another session refreshes. Returns false when `waitMs` elapses.
  * The rotated credential is persisted before the caller releases this lock.
  */
-export async function waitForProviderRefreshLock(provider: string, waitMs: number): Promise<boolean> {
+export async function waitForProviderRefreshLock(
+  provider: string,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
   try {
     const lock = await acquireAsync(refreshLockPath(provider), {
       waitMs,
       pollMs: REFRESH_LOCK_POLL_MS,
+      signal,
     });
     heldRefreshLocks.set(provider, lock);
     return true;

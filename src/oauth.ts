@@ -28,7 +28,42 @@ const REFRESH_SKEW_MS = 60_000;
 const REFRESH_HEADERS_TIMEOUT_MS = 15_000;
 const REFRESH_BODY_TIMEOUT_MS = 60_000;
 
-const oauthRefreshInflight = new Map<string, Promise<ModelAuth | null>>();
+class RefreshWaitGate {
+  private controller = new AbortController();
+  private active = 0;
+  readonly signal = this.controller.signal;
+
+  /** Leave when this caller stops waiting. The lock wait aborts only when nobody is left. */
+  enter(signal?: AbortSignal): () => void {
+    this.active += 1;
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      signal?.removeEventListener("abort", onAbort);
+      this.active -= 1;
+      if (this.active <= 0 && !this.controller.signal.aborted) {
+        const err = new Error("The operation was aborted.");
+        err.name = "AbortError";
+        this.controller.abort(err);
+      }
+    };
+    const onAbort = () => leave();
+    if (signal?.aborted) {
+      leave();
+      return () => {};
+    }
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    return leave;
+  }
+}
+
+interface InflightRefresh {
+  promise: Promise<ModelAuth | null>;
+  gate: RefreshWaitGate;
+}
+
+const oauthRefreshInflight = new Map<string, InflightRefresh>();
 
 export class OAuthRefreshError extends Error {
   readonly provider: string;
@@ -491,20 +526,24 @@ function storedTokenStillValid(token: StoredOAuthCredential | undefined): token 
 async function refreshOAuthCredential(
   provider: string,
   oauth: OAuthAuth,
+  signal?: AbortSignal,
 ): Promise<ModelAuth | null> {
-  let acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
-  if (!acquired) {
-    const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
-    if (storedTokenStillValid(latest)) return useCurrentAfterBusyWait(provider, oauth, latest);
-    acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs());
-    if (!acquired) {
-      const after = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
-      if (storedTokenStillValid(after)) return useCurrentAfterBusyWait(provider, oauth, after);
-      if (!after) return null;
-      throw new OAuthRefreshBusyError(provider);
-    }
-  }
+  let acquired = false;
   try {
+    acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs(), signal);
+    if (signal?.aborted) throw abortError(signal);
+    if (!acquired) {
+      const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+      if (storedTokenStillValid(latest)) return useCurrentAfterBusyWait(provider, oauth, latest);
+      acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs(), signal);
+      if (signal?.aborted) throw abortError(signal);
+      if (!acquired) {
+        const after = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+        if (storedTokenStillValid(after)) return useCurrentAfterBusyWait(provider, oauth, after);
+        if (!after) return null;
+        throw new OAuthRefreshBusyError(provider);
+      }
+    }
     const stored = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
     if (!stored) return null;
     if (stored.expires > Date.now() + REFRESH_SKEW_MS) {
@@ -569,7 +608,7 @@ async function refreshOAuthCredential(
       clearTimeout(timer);
     }
   } finally {
-    releaseProviderRefreshLock(provider);
+    if (acquired) releaseProviderRefreshLock(provider);
   }
 }
 
@@ -586,10 +625,12 @@ export async function resolveOAuthModelAuth(
   if (signal?.aborted) throw abortError(signal);
 
   let shared = oauthRefreshInflight.get(provider);
-  if (!shared) {
-    shared = (async () => {
+  if (!shared || shared.gate.signal.aborted) {
+    const gate = new RefreshWaitGate();
+    const leave = gate.enter(signal);
+    const promise = (async () => {
       try {
-        return await refreshOAuthCredential(provider, oauth);
+        return await refreshOAuthCredential(provider, oauth, gate.signal);
       } catch (err) {
         if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError || isAbortError(err)) {
           throw err;
@@ -609,12 +650,15 @@ export async function resolveOAuthModelAuth(
         return oauth.toAuth(toOAuthCredential(latest));
       }
     })();
+    shared = { promise, gate };
     oauthRefreshInflight.set(provider, shared);
-    void shared.finally(() => {
+    void promise.finally(() => {
       if (oauthRefreshInflight.get(provider) === shared) oauthRefreshInflight.delete(provider);
     }).catch(() => {});
+    return raceWithSignal(promise, signal).finally(leave);
   }
-  return raceWithSignal(shared, signal);
+  const leave = shared.gate.enter(signal);
+  return raceWithSignal(shared.promise, signal).finally(leave);
 }
 
 export function resetOAuthProvidersForTests(

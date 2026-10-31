@@ -221,7 +221,10 @@ session expiry and it does not say to run `/login` again.
 The lock is held by the operating system for the life of the process that took
 it. When that process exits, crashes, or is killed, the system releases the lock
 at once. PRAANA does not decide that a lock has gone stale, and it does not
-replace a lock another live process still holds.
+replace a lock another live process still holds. A lock file that is empty or
+not a database is retried a few times, then replaced once. If it is still not a
+database, or it cannot be replaced, the wait fails with that error instead of
+retrying until the timeout.
 
 A save re-reads the credentials file under the lock before writing, edits a copy,
 and replaces the in-memory cache only after that write succeeds. If the update
@@ -229,9 +232,12 @@ throws, or the read fails (the file is unreadable, not valid JSON, or only partl
 written), PRAANA leaves both the file and the cache unchanged. A missing file is
 still created.
 
-Cancelling one request does not cancel the refresh for anyone else. Once a refresh
-request has started, PRAANA finishes it and saves the new token even if every
-caller cancels. The 15-second limit applies until response headers arrive. Reading
+Cancelling one request does not cancel the refresh for anyone else. Aborting
+while still waiting for another session's refresh lock stops that wait only;
+the session that holds the lock is left alone, and any other waiter keeps
+waiting. Once a refresh request has started, PRAANA finishes it and saves the
+new token even if every caller cancels. The 15-second limit applies until
+response headers arrive. Reading
 the body may then take up to 60 seconds, so a slow body does not discard a refresh
 token the provider has already rotated. A logout or a newer login that lands before
 the refreshed token is saved is left as it is.
