@@ -19,8 +19,15 @@
 //! discard that connection's committed frames. A failed swap before
 //! publication restores the original and fsyncs the directory before the
 //! write lock is released. When the main file cannot be restored, the
-//! remaining live-named sidecars are moved beside the aside database, so the
-//! next open cannot pair them with the rebuilt file it promotes.
+//! remaining live-named sidecars are moved beside the aside database, so a
+//! later open does not pair them with a rebuilt file it promotes.
+//!
+//! Those recovery guarantees cover graceful in-process failures. They do not
+//! cover a process crash between the main-file rename and the `-wal` / `-shm`
+//! renames: `complete_interrupted_rename` only renames `history.db.rebuild`
+//! into place and does not inspect sidecars, so a stale live-named `-wal` /
+//! `-shm` can remain beside the promoted file. That crash window is tracked as
+//! issue #670 and is not closed here.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -265,9 +272,11 @@ fn fail_swap(
                 &format!("the restored original was not synced: {sync}"),
             ),
         },
-        // Nothing could be restored: history.db is missing. Live-named sidecars
-        // must not stay beside it, because the next open promotes
-        // `history.db.rebuild` and would replay those frames into it.
+        // Nothing could be restored: history.db is missing. On this graceful
+        // failure path, live-named sidecars must not stay beside it, because
+        // the next open promotes `history.db.rebuild` and would replay those
+        // frames into it. (A process crash between the main-file rename and
+        // the sidecar renames is not covered; see issue #670.)
         Ok(()) => match quarantine_orphan_sidecars(db_path, bad_path) {
             Ok(()) => recovery_error(db_path, bad_path, "history.db was not restored"),
             Err(quarantine) => merge_errors(
@@ -290,7 +299,9 @@ fn fail_swap(
 /// Move live-named `-wal` / `-shm` beside the aside database when the main
 /// file could not be restored. Those files belong to the old database, and a
 /// missing `history.db` with a live-named WAL would be paired with the rebuilt
-/// file by the next open's interrupted-rename recovery.
+/// file by the next open's interrupted-rename recovery. This runs on the
+/// graceful in-process failure path only; a crash between the main-file rename
+/// and the sidecar renames can still leave stale sidecars (issue #670).
 fn quarantine_orphan_sidecars(db_path: &Path, bad_path: &Path) -> Result<(), ArtifactError> {
     if db_path.exists() {
         return Ok(());
@@ -569,6 +580,10 @@ fn unique_bad_path(db_path: &Path) -> Result<PathBuf, ArtifactError> {
 /// is already aside and only the rebuilt file remains. Called from database
 /// open before any creation, so a crashed rebuild can never strand a session
 /// without a database.
+///
+/// This only promotes the main file. It does not move sidecars, so a crash
+/// between the main-file rename and the `-wal` / `-shm` renames can leave a
+/// stale live-named sidecar beside the promoted file (issue #670).
 pub(crate) fn complete_interrupted_rename(db_path: &Path) -> Result<bool, ArtifactError> {
     if db_path.exists() {
         return Ok(false);
