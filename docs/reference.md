@@ -6,13 +6,15 @@ Install options, configuration, commands and known limitations for the current r
 
 ### Installer scripts (no Bun)
 
-**Linux / macOS** (bash, zsh, WSL):
+**Linux / macOS** (POSIX `sh`; works from bash, zsh and WSL):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 ```
 
-**Windows** (PowerShell — use this instead of `curl | bash`):
+The installer needs `curl`, `tar` and the standard POSIX tools (`sha256sum` or `shasum`) on `PATH` (bare Debian/Ubuntu: `apt-get install -y curl tar coreutils`). Alpine/musl is not supported on this path; use `bun add -g praana` instead.
+
+**Windows** (PowerShell — use this instead of `curl | sh`):
 
 ```powershell
 irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex
@@ -24,7 +26,7 @@ From **cmd.exe**:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex"
 ```
 
-Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
+Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version.
 
 Upgrade later with `praana upgrade` (alias `praana update`) — it re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
 
