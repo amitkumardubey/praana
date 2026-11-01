@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadAgentsContext, isAgentsTruncationNotice, AGENTS_TRUNCATION_MARKER, AGENTS_TRUNCATION_LOG_LINE } from "../src/session.js";
@@ -101,5 +101,24 @@ describe("AGENTS.md truncation notice", () => {
     );
     expect(AGENTS_TRUNCATION_NOTICE_TEXT).toContain("AGENTS.md");
     expect(AGENTS_TRUNCATION_NOTICE_TEXT).not.toContain("logger");
+  });
+});
+
+describe("loadAgentsContext doc attachment", () => {
+  it("the load-order/16000-char doc comment stays attached to the function", () => {
+    const src = readFileSync(new URL("../src/session.ts", import.meta.url), "utf8");
+    const decl = "export function loadAgentsContext(";
+    const fnIdx = src.indexOf(decl);
+    expect(fnIdx).toBeGreaterThan(-1);
+    const prefix = src.slice(0, fnIdx);
+    const decls = [...prefix.matchAll(/^export (?:function|const)\b/gm)];
+    expect(decls.length).toBeGreaterThan(0);
+    // Everything after the last exported declaration is the tail that should
+    // contain the JSDoc describing loadAgentsContext — if another export slips
+    // between the docs and the function, they detach and hover docs are lost.
+    const afterLastDecl = prefix.slice(decls[decls.length - 1].index ?? 0);
+    expect(afterLastDecl).toContain(
+      "Load project context from AGENTS.md / CLAUDE.md files.",
+    );
   });
 });

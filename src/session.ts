@@ -1713,23 +1713,6 @@ async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): 
 }
 
 /**
- * Load project context from AGENTS.md / CLAUDE.md files.
- *
- * Load order (all non-empty results are merged):
- *   1. ~/.praana/AGENTS.md — global personal instructions
- *   2. <git root>/AGENTS.md    — project-wide context
- *   3. <cwd>/AGENTS.md         — subdirectory context (if cwd ≠ git root)
- *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
- *
- * Combined content is capped at ~4000 tokens (16000 chars).
- *
- * When truncation happens, the notice is emitted through `opts.logger`
- * (the session logger, when provided) so one code path handles both the
- * TUI capture hook and the historical headless stderr write; the log-file
- * entry is kept either way.
- */
-
-/**
  * Shared marker for the AGENTS.md truncation notice. The producer
  * (session.ts) composes its log/capture lines from it and the consumer
  * (app-controller.ts) matches with `isAgentsTruncationNotice`, so a
@@ -1750,6 +1733,22 @@ export function isAgentsTruncationNotice(line: string): boolean {
   return line.includes(AGENTS_TRUNCATION_MARKER);
 }
 
+/**
+ * Load project context from AGENTS.md / CLAUDE.md files.
+ *
+ * Load order (all non-empty results are merged):
+ *   1. ~/.praana/AGENTS.md — global personal instructions
+ *   2. <git root>/AGENTS.md    — project-wide context
+ *   3. <cwd>/AGENTS.md         — subdirectory context (if cwd ≠ git root)
+ *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
+ *
+ * Combined content is capped at ~4000 tokens (16000 chars).
+ *
+ * When truncation happens, the notice is emitted through `opts.logger`
+ * (the session logger, when provided) so one code path handles both the
+ * TUI capture hook and the historical headless stderr write; the log-file
+ * entry is kept either way.
+ */
 export function loadAgentsContext(
   cwd: string,
   opts?: {
