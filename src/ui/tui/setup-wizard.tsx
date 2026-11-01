@@ -194,8 +194,12 @@ export function SetupWizard(props: SetupWizardProps) {
   };
   let settled = false;
   let oauthAbort: AbortController | undefined;
-  /** True once Esc has stepped the wizard back from an OAuth screen; the login's settle must not pop again. */
-  let oauthCancelPopped = false;
+  /**
+   * Login attempts whose Esc already stepped the wizard back. Tracked per attempt: a flag shared by
+   * every attempt would let a slow old login, settling after the user started a new one, pop the new
+   * attempt's screen.
+   */
+  const oauthStepped = new WeakSet<AbortController>();
   let keyVerifyAbort: AbortController | undefined;
   /** Memory-question answer; recorded only when the final confirmation is accepted. */
   let pendingConsent: EmbedderConsent | null = null;
@@ -347,7 +351,6 @@ export function SetupWizard(props: SetupWizardProps) {
   const startOAuth = async (provider: string) => {
     const abort = new AbortController();
     oauthAbort = abort;
-    oauthCancelPopped = false;
     setOauthContext([]);
     setMessage(`Starting OAuth for ${provider}…`);
     setStep("oauth-status");
@@ -383,7 +386,7 @@ export function SetupWizard(props: SetupWizardProps) {
             setStep("oauth-select");
           }),
       });
-      if (oauthCancelPopped) return;
+      if (oauthStepped.has(abort)) return;
       if (!abort.signal.aborted) {
         state.keySaved = true;
         setStep("fetch-models");
@@ -400,7 +403,7 @@ export function SetupWizard(props: SetupWizardProps) {
       }
     } catch (error) {
       // Esc already stepped the wizard back; this settle is only cleanup.
-      if (oauthCancelPopped) return;
+      if (oauthStepped.has(abort)) return;
       // Esc aborts with OAuthUserCancelledError (select resolves undefined;
       // paste, text, and the device-code screen abort the login signal with
       // that reason). A fetch in flight may surface a plain AbortError; the
@@ -421,9 +424,13 @@ export function SetupWizard(props: SetupWizardProps) {
         setStep("oauth-error");
       }
     } finally {
-      if (oauthAbort === abort) oauthAbort = undefined;
-      resolveOAuthText = undefined;
-      resolveOAuthSelect = undefined;
+      // Only the current attempt may clear the shared prompt resolvers; a stale one would take them
+      // from the attempt the user started after cancelling this one.
+      if (oauthAbort === abort) {
+        oauthAbort = undefined;
+        resolveOAuthText = undefined;
+        resolveOAuthSelect = undefined;
+      }
     }
   };
 
@@ -446,9 +453,10 @@ export function SetupWizard(props: SetupWizardProps) {
       // pending callback or paste) can take seconds to settle, so waiting for
       // its rejection would make Esc look dead. Abort the login too so
       // in-flight work stops; its catch/finally must not pop a second time.
-      oauthAbort?.abort(new OAuthUserCancelledError());
-      if (!oauthCancelPopped) {
-        oauthCancelPopped = true;
+      const attempt = oauthAbort;
+      attempt?.abort(new OAuthUserCancelledError());
+      if (!attempt || !oauthStepped.has(attempt)) {
+        if (attempt) oauthStepped.add(attempt);
         const target = popStep(history, current);
         if (target !== "none") {
           setMessage("");

@@ -244,4 +244,45 @@ describe("setup wizard OAuth cancel", () => {
       await teardown();
     }
   });
+
+  it("a stale login settling after Esc does not pop a login the user started afterwards", async () => {
+    let attempt = 0;
+    let failFirst!: (reason: unknown) => void;
+    const firstGate = new Promise<never>((_, reject) => { failFirst = reject; });
+    const secondGate = new Promise<never>(() => {});
+    const { setup, done, unhandled, teardown } = await renderAnthropicOAuth(async () => {
+      attempt += 1;
+      await (attempt === 1 ? firstGate : secondGate);
+    });
+    const waitFor = async (text: string) => {
+      let frame = "";
+      for (let i = 0; i < 60 && !frame.includes(text); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await setup.renderOnce();
+        frame = setup.captureCharFrame();
+      }
+      return frame;
+    };
+    try {
+      await settle(setup, (frame) => frame.includes("Starting OAuth for anthropic…"));
+      // Esc steps back at once; the first login is still unsettled (it ignores the abort).
+      setup.mockInput.pressEscape();
+      expect(await waitFor("Selected: anthropic")).toContain("Selected: anthropic");
+      // Start a second login from the same screen.
+      setup.mockInput.pressEnter();
+      expect(await waitFor("Starting OAuth for anthropic…")).toContain("Starting OAuth for anthropic…");
+      expect(attempt).toBe(2);
+      // Now the stale first login settles with its cancel reason.
+      failFirst(new OAuthUserCancelledError());
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await setup.renderOnce();
+      const after = setup.captureCharFrame();
+      expect(after).toContain("Starting OAuth for anthropic…");
+      expect(after).not.toContain("OAuth failed");
+      expect(done).toBeUndefined();
+      expect(unhandled).toEqual([]);
+    } finally {
+      await teardown();
+    }
+  });
 });
