@@ -194,6 +194,8 @@ export function SetupWizard(props: SetupWizardProps) {
   };
   let settled = false;
   let oauthAbort: AbortController | undefined;
+  /** True once Esc has stepped the wizard back from an OAuth screen; the login's settle must not pop again. */
+  let oauthCancelPopped = false;
   let keyVerifyAbort: AbortController | undefined;
   /** Memory-question answer; recorded only when the final confirmation is accepted. */
   let pendingConsent: EmbedderConsent | null = null;
@@ -345,6 +347,7 @@ export function SetupWizard(props: SetupWizardProps) {
   const startOAuth = async (provider: string) => {
     const abort = new AbortController();
     oauthAbort = abort;
+    oauthCancelPopped = false;
     setOauthContext([]);
     setMessage(`Starting OAuth for ${provider}…`);
     setStep("oauth-status");
@@ -380,11 +383,24 @@ export function SetupWizard(props: SetupWizardProps) {
             setStep("oauth-select");
           }),
       });
+      if (oauthCancelPopped) return;
       if (!abort.signal.aborted) {
         state.keySaved = true;
         setStep("fetch-models");
+      } else if (abort.signal.reason instanceof OAuthUserCancelledError) {
+        // The login settled (callback or token exchange won) just as Esc
+        // landed, so no rejection ever reaches the catch. Step back exactly
+        // once, like the cancel path — otherwise the wizard sticks on the
+        // status screen with oauthAbort already cleared.
+        const target = popStep(history, step());
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
       }
     } catch (error) {
+      // Esc already stepped the wizard back; this settle is only cleanup.
+      if (oauthCancelPopped) return;
       // Esc aborts with OAuthUserCancelledError (select resolves undefined;
       // paste, text, and the device-code screen abort the login signal with
       // that reason). A fetch in flight may surface a plain AbortError; the
@@ -417,10 +433,28 @@ export function SetupWizard(props: SetupWizardProps) {
       resolveOAuthSelect?.(undefined);
       return;
     }
-    if (current === "oauth-text" || current === "oauth-status") {
+    if (current === "oauth-text") {
       // Same abort listener as a signal abort. The reason is what makes Esc
-      // a quiet step back; a bare abort() must not navigate.
+      // a quiet step back; a bare abort() must not navigate. The text prompt
+      // dismisses itself back to the status step and the login's settle then
+      // steps the wizard back once.
       oauthAbort?.abort(new OAuthUserCancelledError());
+      return;
+    }
+    if (current === "oauth-status") {
+      // Step back immediately: the login promise (device-code polling, a
+      // pending callback or paste) can take seconds to settle, so waiting for
+      // its rejection would make Esc look dead. Abort the login too so
+      // in-flight work stops; its catch/finally must not pop a second time.
+      oauthAbort?.abort(new OAuthUserCancelledError());
+      if (!oauthCancelPopped) {
+        oauthCancelPopped = true;
+        const target = popStep(history, current);
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
+      }
       return;
     }
     if (current === "fetch-models") return;
