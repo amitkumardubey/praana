@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getConfigWarnings } from "./config.js";
-import { getAppLogger, initAppLogFile } from "./logger.js";
+import { getAppLogger, initAppLogFile, setAppLogger } from "./logger.js";
 import { parseCliArgs } from "./cli-args.js";
 import { printHelp, APP_VERSION, formatSessionEndEpilogue } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
@@ -248,6 +248,10 @@ export async function main() {
     console.error("");
     process.exit(1);
   }
+
+  // The TUI owns the terminal from here on. Keep app-level log lines in the
+  // log files instead of painting raw JSON/stack traces over the interface.
+  setAppLogger(getAppLogger().withStderrSuppressed());
 
   const controller = new AppController({ cwd, config, parsed });
 
