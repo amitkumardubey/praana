@@ -25,12 +25,14 @@
   "files": [
     "bin",
     "src",
+    "scripts/postinstall.js",
     "praana.config.example.toml"
   ],
   "engines": {
     "bun": ">=1.4"
   },
   "scripts": {
+    "postinstall": "node scripts/postinstall.js || exit 0",
     "typecheck": "tsc",
     "start": "bun src/main.ts",
     "dev": "bun src/main.ts",

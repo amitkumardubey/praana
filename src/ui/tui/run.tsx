@@ -3,6 +3,7 @@
  *
  * Solid owns App shell, Prompt, chrome, toast, spinner, transcript, and overlays.
  */
+import { spawn } from "node:child_process";
 import {
   createCliRenderer,
   ConsolePosition,
@@ -46,6 +47,15 @@ import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
 import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
+import {
+  copyOutcomeOf,
+  createCopyRunState,
+  decideCtrlC,
+  defaultToolLookup,
+  isModalOverlay,
+  runGuardedCopy,
+  shouldClearSelectionAfterCopy,
+} from "./clipboard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -55,13 +65,23 @@ interface GlobalKeyBindingsProps {
   onF9: () => void;
   onCtrlC: () => void;
   onToggleConsole: () => void;
+  /** Deactivates the global Ctrl+C while a modal overlay owns Ctrl+C itself. */
+  ctrlCEnabled: () => boolean;
 }
 
 function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
   useBindings(() => ({
+    // Above the overlay layers (all default priority 0), so the single copy /
+    // interrupt decision here wins for non-modal overlays; the modal overlays
+    // disable this binding via `ctrlCEnabled` and keep their own Ctrl+C.
+    priority: 1,
     bindings: [
       { key: "f9", cmd: () => props.onF9() },
-      { key: "ctrl+c", cmd: () => props.onCtrlC() },
+      {
+        key: "ctrl+c",
+        enabled: props.ctrlCEnabled,
+        cmd: () => props.onCtrlC(),
+      },
       { key: "`", cmd: () => props.onToggleConsole() },
     ],
   }));
@@ -187,6 +207,10 @@ export async function runTui(
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
   let turnStartedAt = 0;
+  // True while controller.runUserTurn is awaited; lets the Ctrl+C decision
+  // interrupt a running turn even when a non-modal overlay (palette/model) is
+  // open without a selection.
+  let turnRunning = false;
   let ready = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
   let updateAvailable = false;
@@ -475,6 +499,7 @@ export async function runTui(
       hasSession: Boolean(session),
     });
     setSpinnerSink();
+    offSlashCtrlCHook();
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
@@ -582,6 +607,64 @@ export async function runTui(
     renderer.requestRender();
   };
 
+  let offSlashCtrlCHook: () => void = () => {};
+
+  const ctrlCCopyState = createCopyRunState();
+  // The text of the in-flight copy, so settle can tell whether the selection
+  // that exists now is still the one that was copied.
+  let pendingCopyText: string | null = null;
+
+  const startCopy = (text: string): { started: boolean } =>
+    runGuardedCopy(
+      text,
+      {
+        spawn,
+        env: process.env,
+        platform: process.platform,
+        lookup: defaultToolLookup,
+        isOsc52Supported: () => renderer.isOsc52Supported(),
+        osc52: (t) => renderer.copyToClipboardOSC52(t),
+      },
+      ctrlCCopyState,
+      {
+        onStarted: () => {
+          pendingCopyText = text;
+        },
+        onSettled: (result, copiedText) => {
+          const outcome = copyOutcomeOf(result, copiedText);
+          // Clear the selection only when it still holds exactly the copied
+          // text; a selection made or changed while the copy was in flight is
+          // not the copy's to clear.
+          if (
+            pendingCopyText !== null &&
+            shouldClearSelectionAfterCopy(pendingCopyText, {
+              hasSelection: renderer.hasSelection,
+              text: renderer.getSelection()?.getSelectedText() ?? "",
+            })
+          ) {
+            renderer.clearSelection();
+          }
+          pendingCopyText = null;
+          ui.toast.show(outcome.toast, outcome.tone);
+          renderer.requestRender();
+        },
+      },
+    );
+
+  // Slash overlays dismiss on ANY key via a key intercept (host.tsx), so the
+  // global Ctrl+C binding never sees the event there. Priority 1 keeps this
+  // hook ahead of the slash overlay's own (priority 0) intercept: when a
+  // selection exists we copy it without consuming the event, so the overlay
+  // still dismisses as usual for any key.
+  offSlashCtrlCHook = keymap.intercept("key", (ctx) => {
+    if (!ctx.event.ctrl || ctx.event.name !== "c") return;
+    if (overlay.kind() !== "slash") return;
+    if (!renderer.hasSelection) return;
+    const text = renderer.getSelection()?.getSelectedText() ?? "";
+    if ([...text].length === 0) return;
+    startCopy(text);
+  }, { priority: 1 });
+
   const handleSubmit = async (rawInput: string) => {
     if (!openTuiSink || !ready || !session) return;
     let input = rawInput.trim();
@@ -606,10 +689,12 @@ export async function runTui(
     openTuiSink.appendUser(input);
     ui.spinner.start("thinking…");
     turnStartedAt = Date.now();
+    turnRunning = true;
 
     try {
       await controller.runUserTurn(input, openTuiSink);
     } finally {
+      turnRunning = false;
       ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
@@ -621,6 +706,7 @@ export async function runTui(
     () => (
       <KeymapProvider keymap={keymap}>
         <GlobalKeyBindings
+          ctrlCEnabled={() => !isModalOverlay(overlay.kind())}
           onF9={() => {
             transcript.setFocused(true);
             // Blur the prompt so its focus-scoped keymap layer deactivates and
@@ -633,6 +719,39 @@ export async function runTui(
             renderer.requestRender();
           }}
           onCtrlC={() => {
+            const ctrlC = decideCtrlC(
+              renderer.hasSelection,
+              renderer.getSelection()?.getSelectedText() ?? "",
+              overlay.kind(),
+              turnRunning,
+            );
+            if (ctrlC.action === "copy") {
+              // Re-entrancy guard: a second Ctrl+C while a copy is in flight is
+              // ignored; a Ctrl+C with no selection still takes the normal path.
+              startCopy(ctrlC.text);
+              return;
+            }
+            if (ctrlC.action === "cancel_overlay") {
+              if (ctrlC.overlay === "palette") {
+                handlePaletteCancel();
+              } else {
+                dismissOverlay();
+                focusPrompt();
+              }
+              renderer.requestRender();
+              return;
+            }
+            if (ctrlC.action === "defer") return;
+            // An interrupting Ctrl+C closes an open non-modal overlay too, like
+            // Escape would; the turn interrupt below still applies when a turn
+            // is running (decideCtrlC returns interrupt for palette/model with
+            // no selection while turnRunning is set).
+            if (overlay.kind() === "palette") {
+              handlePaletteCancel();
+            } else if (overlay.kind() === "model") {
+              dismissOverlay();
+              focusPrompt();
+            }
             if (!session) {
               void doShutdown(setupOutcome);
               return;
