@@ -149,6 +149,31 @@ async function mainResponsesDriver(): Promise<OpenAIResponsesDriver> {
   }
 }
 
+interface GoldenCase { key: string; provider: string; sse: string }
+
+// Output of the plain OpenAI Responses path as it was on main before the Codex work. Stored as a fixture
+// so the comparison does not need git history (CI checks out a shallow merge ref with no local main).
+// Regenerate only from a checkout whose local main is the intended baseline:
+//   PRAANA_UPDATE_RESPONSES_GOLDEN=1 bun test tests/responses-driver.test.ts
+const GOLDEN_PATH = join(import.meta.dir, "fixtures/openai-responses-main-golden.json");
+
+async function expectMatchesMainGolden(cases: GoldenCase[]): Promise<void> {
+  const current = new OpenAIResponsesDriver();
+  if (process.env.PRAANA_UPDATE_RESPONSES_GOLDEN === "1") {
+    const mainDriver = await mainResponsesDriver();
+    let golden: Record<string, string> = {};
+    try { golden = JSON.parse(readFileSync(GOLDEN_PATH, "utf8")) as Record<string, string>; } catch { /* first write */ }
+    for (const item of cases) golden[item.key] = await streamEvents(mainDriver, item.sse, item.provider);
+    const sorted = Object.fromEntries(Object.entries(golden).sort(([a], [b]) => a.localeCompare(b)));
+    writeFileSync(GOLDEN_PATH, `${JSON.stringify(sorted, null, 2)}\n`);
+  }
+  const golden = JSON.parse(readFileSync(GOLDEN_PATH, "utf8")) as Record<string, string>;
+  for (const item of cases) {
+    expect(golden[item.key], `missing golden for ${item.key}`).toBeDefined();
+    expect(await streamEvents(current, item.sse, item.provider), item.key).toBe(golden[item.key]!);
+  }
+}
+
 const OPENAI_MAIN_STREAMS = [
   "incomplete-length.sse",
   "incomplete-content-filter.sse",
@@ -379,33 +404,26 @@ describe("Responses stream termination", () => {
   });
 
   it("plain OpenAI response.done and [DONE] match main byte for byte", async () => {
-    const mainDriver = await mainResponsesDriver();
-    const current = new OpenAIResponsesDriver();
     const streams = [
       `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hi" })}\n\ndata: ${JSON.stringify({ type: "response.done", response: { status: "completed" } })}\n\n`,
       `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hi" })}\n\ndata: [DONE]\n\n`,
     ];
+    const cases: GoldenCase[] = [];
     for (const provider of ["openai", "openai-responses"]) {
-      for (const sse of streams) {
-        const mainBytes = await streamEvents(mainDriver, sse, provider);
-        const currentBytes = await streamEvents(current, sse, provider);
-        expect(currentBytes, provider).toBe(mainBytes);
-      }
+      streams.forEach((sse, index) => cases.push({ key: `${provider} inline-${index}`, provider, sse }));
     }
+    await expectMatchesMainGolden(cases);
   });
 
   it("plain OpenAI incomplete and unterminated streams match main byte for byte", async () => {
-    const mainDriver = await mainResponsesDriver();
-    const current = new OpenAIResponsesDriver();
     const root = join(import.meta.dir, "../tests/fixtures/rust-v2/providers/v1/openai-responses/streams");
+    const cases: GoldenCase[] = [];
     for (const provider of ["openai", "openai-responses"]) {
       for (const name of OPENAI_MAIN_STREAMS) {
-        const sse = readFileSync(join(root, name), "utf8");
-        const mainBytes = await streamEvents(mainDriver, sse, provider);
-        const currentBytes = await streamEvents(current, sse, provider);
-        expect(currentBytes, `${provider} ${name}`).toBe(mainBytes);
+        cases.push({ key: `${provider} ${name}`, provider, sse: readFileSync(join(root, name), "utf8") });
       }
     }
+    await expectMatchesMainGolden(cases);
   });
 
   it("reads usage nested under response.completed and response.incomplete", async () => {

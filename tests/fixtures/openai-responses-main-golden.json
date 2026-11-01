@@ -1,0 +1,18 @@
+{
+  "openai disconnect-after-reasoning.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n",
+  "openai disconnect-before-created.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n",
+  "openai incomplete-content-filter.sse": "{\"type\":\"text_delta\",\"delta\":\"x\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"x\"}}\n",
+  "openai incomplete-length.sse": "{\"type\":\"text_delta\",\"delta\":\"partial\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"partial\"}}\n",
+  "openai incomplete-tool-arguments.sse": "{\"type\":\"tool_call_start\",\"id\":\"call_01\",\"name\":\"read_file\"}\n{\"type\":\"tool_call_end\",\"toolCall\":{\"id\":\"call_01\",\"name\":\"read_file\",\"args\":{},\"rawArgs\":\"{\"}}\n{\"type\":\"done\",\"reason\":\"tool_use\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"toolCalls\":[{\"id\":\"call_01\",\"name\":\"read_file\",\"args\":{},\"rawArgs\":\"{\"}]}}\n",
+  "openai inline-0": "{\"type\":\"text_delta\",\"delta\":\"Hi\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"}}\n",
+  "openai inline-1": "{\"type\":\"text_delta\",\"delta\":\"Hi\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"}}\n",
+  "openai response-failed.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n",
+  "openai-responses disconnect-after-reasoning.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n",
+  "openai-responses disconnect-before-created.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n",
+  "openai-responses incomplete-content-filter.sse": "{\"type\":\"text_delta\",\"delta\":\"x\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"x\"}}\n",
+  "openai-responses incomplete-length.sse": "{\"type\":\"text_delta\",\"delta\":\"partial\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"partial\"}}\n",
+  "openai-responses incomplete-tool-arguments.sse": "{\"type\":\"tool_call_start\",\"id\":\"call_01\",\"name\":\"read_file\"}\n{\"type\":\"tool_call_end\",\"toolCall\":{\"id\":\"call_01\",\"name\":\"read_file\",\"args\":{},\"rawArgs\":\"{\"}}\n{\"type\":\"done\",\"reason\":\"tool_use\",\"message\":{\"role\":\"assistant\",\"content\":\"\",\"toolCalls\":[{\"id\":\"call_01\",\"name\":\"read_file\",\"args\":{},\"rawArgs\":\"{\"}]}}\n",
+  "openai-responses inline-0": "{\"type\":\"text_delta\",\"delta\":\"Hi\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"}}\n",
+  "openai-responses inline-1": "{\"type\":\"text_delta\",\"delta\":\"Hi\"}\n{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"}}\n",
+  "openai-responses response-failed.sse": "{\"type\":\"done\",\"reason\":\"stop\",\"message\":{\"role\":\"assistant\",\"content\":\"\"}}\n"
+}
