@@ -34,9 +34,36 @@ export interface OAuthUiSink {
   signal: AbortSignal;
 }
 
-/** AbortError carrying `signal.reason`, matching a cancelled text prompt. */
+/**
+ * Thrown when the user cancels an interactive OAuth prompt (Esc). The
+ * wizard treats this as a quiet cancel back to the previous step — never
+ * as a failed login.
+ */
+export class OAuthUserCancelledError extends Error {
+  constructor() {
+    super("cancelled");
+    this.name = "OAuthUserCancelledError";
+  }
+}
+
+/**
+ * Map a select-prompt outcome to the chosen option id, treating a
+ * cancelled (undefined) selection as a user cancel.
+ */
+export function resolveOAuthSelectSelection(selected: string | undefined): string {
+  if (selected === undefined) throw new OAuthUserCancelledError();
+  return selected;
+}
+
+/**
+ * Error for a text prompt whose AbortSignal fired.
+ * User Esc aborts with {@link OAuthUserCancelledError}; that reason is
+ * returned unchanged so the wizard can step back. Every other abort is an
+ * AbortError carrying `signal.reason`.
+ */
 export function oauthPromptAbortError(signal: AbortSignal): Error {
   const reason = signal.reason;
+  if (reason instanceof OAuthUserCancelledError) return reason;
   if (reason instanceof Error) {
     if (reason.name === "AbortError") return reason;
     const error = new Error(reason.message, { cause: reason });
@@ -50,9 +77,11 @@ export function oauthPromptAbortError(signal: AbortSignal): Error {
 }
 
 /**
- * Single-line OAuth prompt. Abort rejects with {@link oauthPromptAbortError}.
- * A Codex manual-prompt abort (callback already won) still rejects here; the
- * login caller swallows only that abort so the overall login can finish.
+ * Single-line OAuth prompt. The abort listener is the only dismissal path:
+ * user Esc rejects with {@link OAuthUserCancelledError}, and every other
+ * signal abort rejects with {@link oauthPromptAbortError}. A Codex
+ * manual-prompt abort (callback already won) still rejects here; the login
+ * caller swallows only that abort so the overall login can finish.
  */
 export function createOAuthTextPrompt(options: {
   signal: AbortSignal;
@@ -229,10 +258,7 @@ export async function runOAuthLoginWithUi(
     prompt: async (prompt: AuthPrompt) => {
       if (prompt.type === "select") {
         const selected = await ui.promptSelect(prompt.message, prompt.options);
-        if (selected === undefined) {
-          throw new Error("cancelled");
-        }
-        return selected;
+        return resolveOAuthSelectSelection(selected);
       }
       // manual_code / text / secret — keep auth URL visible above the input.
       const context =

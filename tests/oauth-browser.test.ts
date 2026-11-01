@@ -4,6 +4,17 @@ import type { ChildProcess, spawn } from "node:child_process";
 import { openBrowserUrl } from "../src/oauth-browser.js";
 
 describe("OAuth browser opener", () => {
+  it("does not spawn a browser when a test opts out", async () => {
+    const previous = process.env.PRAANA_OPEN_BROWSER;
+    process.env.PRAANA_OPEN_BROWSER = "0";
+    try {
+      expect(await openBrowserUrl("https://example.invalid/oauth")).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PRAANA_OPEN_BROWSER;
+      else process.env.PRAANA_OPEN_BROWSER = previous;
+    }
+  });
+
   it.each([1, 2, 3])("falls through asynchronous WSL spawn errors (success at %s)", async (successAt) => {
     const calls: Array<[string, string[], unknown]> = [];
     const unref = mock(() => {});

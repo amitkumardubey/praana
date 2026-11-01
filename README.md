@@ -16,7 +16,7 @@
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex
@@ -24,6 +24,8 @@ irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | i
 # Or with Bun (>= 1.4)
 bun add -g praana
 ```
+
+The installer needs `curl`, `tar` and the standard POSIX tools (`sha256sum` or `shasum`) — no Bun. Alpine/musl is not supported by the standalone binary; use `bun add -g praana` there.
 
 Then set a provider key and start:
 

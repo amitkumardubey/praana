@@ -29,6 +29,11 @@ function powershellStartCommand(url: string): string {
  * The URL is never passed through cmd.exe, which would split on `&`.
  */
 export async function openBrowserUrl(url: string, deps: BrowserOpenerDeps = {}): Promise<boolean> {
+  if (
+    deps.spawn === undefined
+    && process.env.NODE_ENV === "test"
+    && process.env.PRAANA_OPEN_BROWSER === "0"
+  ) return false;
   const spawnChild = deps.spawn ?? spawn;
   const platform = deps.platform ?? process.platform;
   const isWsl = deps.isWsl ?? Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);

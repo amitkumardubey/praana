@@ -7,6 +7,8 @@ import {
   createOAuthTextPrompt,
   formatOAuthManualPrompt,
   oauthManualPromptFits,
+  OAuthUserCancelledError,
+  resolveOAuthSelectSelection,
   runOAuthLoginWithUi,
   wrapUrlForDisplay,
 } from "../src/ui/tui/oauth-login-ui.js";
@@ -21,6 +23,8 @@ describe("wrapUrlForDisplay", () => {
   });
 
   it("does not insert newlines into a long url", () => {
+    // Hard wraps are real line breaks and break paste. The overlay soft-wraps
+    // with wrapMode="char", so a long URL stays one copyable string.
     const url = "https://example.com/" + "a".repeat(100);
     expect(wrapUrlForDisplay(url, 40)).toEqual([url]);
   });
@@ -360,6 +364,67 @@ it("completes Codex login when the callback wins and the manual prompt rejects",
     resetCredentialStoreForTests();
     if (previousHome === undefined) delete process.env.PRAANA_HOME;
     else process.env.PRAANA_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+describe("OAuth select cancel", () => {
+  it("undismissed select is a user cancel, not a failed login", () => {
+    expect(resolveOAuthSelectSelection("device-flow")).toBe("device-flow");
+    expect(() => resolveOAuthSelectSelection(undefined)).toThrow(
+      OAuthUserCancelledError,
+    );
+    expect(() => resolveOAuthSelectSelection(undefined)).toThrow(/cancelled/);
+  });
+});
+
+it("rejects an Esc abort of the Codex paste prompt with OAuthUserCancelledError", async () => {
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-esc-"));
+  const previousHome = process.env.PRAANA_HOME;
+  const previousBrowser = process.env.PRAANA_OPEN_BROWSER;
+  process.env.PRAANA_HOME = home;
+  process.env.PRAANA_OPEN_BROWSER = "0";
+  resetCredentialStoreForTests();
+  const overall = new AbortController();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  resetOAuthProvidersForTests({
+    fetch: (async () => { throw new Error("token endpoint should not be called"); }) as typeof fetch,
+    callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+  });
+  try {
+    const login = runOAuthLoginWithUi("openai-codex", {
+      signal: overall.signal,
+      showStatus() {},
+      promptSelect: async () => "browser",
+      promptText: (_message, _placeholder, _context, promptSignal) =>
+        createOAuthTextPrompt({
+          signal: overall.signal,
+          promptSignal,
+          present: () => {
+            queueMicrotask(() => overall.abort(new OAuthUserCancelledError()));
+          },
+        }),
+    }, () => {});
+    const result = await Promise.race([
+      login.then(() => "resolved" as const, (error: unknown) => error),
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 300)),
+    ]);
+    if (result === "hung" || result === "resolved") throw new Error(`login ${result}`);
+    expect(result).toBeInstanceOf(OAuthUserCancelledError);
+    expect(overall.signal.aborted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(unhandled).toEqual([]);
+  } finally {
+    overall.abort();
+    process.off("unhandledRejection", onUnhandled);
+    resetOAuthProvidersForTests();
+    resetCredentialStoreForTests();
+    if (previousHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = previousHome;
+    if (previousBrowser === undefined) delete process.env.PRAANA_OPEN_BROWSER;
+    else process.env.PRAANA_OPEN_BROWSER = previousBrowser;
     rmSync(home, { recursive: true, force: true });
   }
 });

@@ -104,12 +104,17 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 async function withSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  // Promise.race does not handle the loser. A paste-prompt rejection and a
+  // signal abort can settle in the same turn; attach a handler so the loser
+  // is not an unhandled rejection. The race result is unchanged.
+  promise.catch(() => {});
   signal.throwIfAborted();
   let onAbort!: () => void;
   const aborted = new Promise<never>((_, reject) => {
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+  aborted.catch(() => {});
   try { return await Promise.race([promise, aborted]); }
   finally { signal.removeEventListener("abort", onAbort); }
 }

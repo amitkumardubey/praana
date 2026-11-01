@@ -11,19 +11,40 @@ export interface PaletteItem {
   argumentHint?: string;
   aliases: string[];
   category: string;
+  /** Copied from slash-command metadata. Session-ending / state-wiping commands. */
+  destructive?: true;
+}
+
+function isDestructive(item: PaletteItem): boolean {
+  return item.destructive === true;
+}
+
+/** Stable partition: non-destructive commands first, destructive ones last.
+ *  A list with nothing to protect is returned untouched. */
+export function orderPaletteItems(items: PaletteItem[]): PaletteItem[] {
+  const safe: PaletteItem[] = [];
+  const destructive: PaletteItem[] = [];
+  for (const item of items) {
+    (isDestructive(item) ? destructive : safe).push(item);
+  }
+  if (safe.length === 0) return items;
+  return [...safe, ...destructive];
 }
 
 /** One palette item per canonical command; aliases are folded into the item. */
 export function buildPaletteItems(
   metadata: readonly SlashCommandMeta[],
 ): PaletteItem[] {
-  return metadata.map((m) => ({
-    name: m.name,
-    description: m.description,
-    argumentHint: m.argumentHint,
-    aliases: m.aliases ?? [],
-    category: m.category,
-  }));
+  return orderPaletteItems(
+    metadata.map((m) => ({
+      name: m.name,
+      description: m.description,
+      argumentHint: m.argumentHint,
+      aliases: m.aliases ?? [],
+      category: m.category,
+      ...(m.destructive ? { destructive: m.destructive } : {}),
+    })),
+  );
 }
 
 /** Bare query preserves curated metadata order; otherwise fuzzy over name + aliases.

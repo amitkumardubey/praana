@@ -107,7 +107,7 @@ function Get-ReleaseFile([string] $Base, [string] $Name, [string] $Dest) {
   }
   $uri = "$Base/$Name"
   # PS 5.1 `curl` is an alias for Invoke-WebRequest. Use curl.exe so GitHub's
-  # latest → tag → release-assets.githubusercontent.com redirects succeed.
+  # latest -> tag -> release-assets.githubusercontent.com redirects succeed.
   $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
   if ($curl) {
     & curl.exe -fsSL --retry 3 -A "praana-install" -o $Dest $uri
@@ -157,6 +157,17 @@ function Invoke-InstalledExe {
   # PS 5.1 + ErrorAction Stop treats native stderr as NativeCommandError.
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
+  # Windows PowerShell decodes native stdout with [Console]::OutputEncoding,
+  # which is the ANSI/OEM code page (cp437/cp1252), not UTF-8 - that mangles
+  # the check-mark and warning glyphs in `praana doctor` output. Decode as
+  # UTF-8 for the capture.
+  $prevEncoding = $null
+  try {
+    $prevEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  } catch {
+    $prevEncoding = $null
+  }
   try {
     $output = & $Exe @ExeArgs 2>&1 | Out-String
     $code = 0
@@ -164,6 +175,9 @@ function Invoke-InstalledExe {
     return @{ ExitCode = $code; Output = $output }
   } finally {
     $ErrorActionPreference = $prev
+    if ($null -ne $prevEncoding) {
+      try { [Console]::OutputEncoding = $prevEncoding } catch { }
+    }
   }
 }
 
@@ -190,7 +204,7 @@ $tmpdir = Join-Path ([System.IO.Path]::GetTempPath()) ("praana-install-" + [guid
 New-Item -ItemType Directory -Path $tmpdir -Force | Out-Null
 
 try {
-  Write-Host "Downloading $ArchiveName …"
+  Write-Host "Downloading $ArchiveName ..."
   $sumsPath = Join-Path $tmpdir "SHA256SUMS"
   $archivePath = Join-Path $tmpdir $ArchiveName
   Get-ReleaseFile -Base $base -Name "SHA256SUMS" -Dest $sumsPath
@@ -246,13 +260,28 @@ try {
   if ($ver.ExitCode -ne 0) {
     Write-Err "smoke --version failed after install"
   }
-  $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  # The self-check must not touch the user's real ~/.praana: run `doctor` with a
+  # throwaway PRAANA_HOME under $tmpdir and delete it right after.
+  $selfCheckHome = Join-Path $tmpdir "selfcheck-home"
+  New-Item -ItemType Directory -Path $selfCheckHome -Force | Out-Null
+  $prevPraanaHome = [Environment]::GetEnvironmentVariable("PRAANA_HOME")
+  [Environment]::SetEnvironmentVariable("PRAANA_HOME", $selfCheckHome)
+  try {
+    $doc = Invoke-InstalledExe -Exe $installedExe -ExeArgs @("doctor")
+  } finally {
+    [Environment]::SetEnvironmentVariable("PRAANA_HOME", $prevPraanaHome)
+    Remove-Item -LiteralPath $selfCheckHome -Recurse -Force -ErrorAction SilentlyContinue
+  }
   $docOut = [string]$doc.Output
-  if ($docOut -notmatch "✓ native:") {
+  # Match the capability words, not the check-mark glyph: the console code page
+  # can mangle the glyph without changing the report. Keep this file ASCII-only:
+  # Windows PowerShell 5.1 decodes a BOM-less .ps1 as the ANSI code page and
+  # treats cp1252 0x93 as a smart quote, which breaks parsing of a literal glyph.
+  if ($docOut -notmatch "native:\s+available") {
     Write-Host $docOut
     Write-Host "warning: doctor did not report native capability (this GitHub Release may predate @praana/natives 0.3)"
   }
-  if ($docOut -notmatch "✓ search:") {
+  if ($docOut -notmatch "search:\s+native grep available") {
     Write-Host "warning: doctor did not report search capability (this GitHub Release may predate native grep; merge/release 0.15+)"
   }
   Write-Host "Run: praana --version"

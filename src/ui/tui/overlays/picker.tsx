@@ -28,6 +28,13 @@ export interface PaletteListProps {
   maxVisible?: number;
   emptyLabel?: string;
   initialQuery?: string;
+  /**
+   * Replaces the default "esc close" behaviour token in the picker footer
+   * (e.g. "esc back · ctrl+c quit" inside the setup wizard). The footer
+   * stays one consistent line; callers whose Esc does something other than
+   * close must pass the accurate description.
+   */
+  footerHint?: string;
 }
 
 export function PaletteList(props: PaletteListProps) {
@@ -147,7 +154,8 @@ export function PaletteList(props: PaletteListProps) {
       </box>
       <text>
         <span style={TUI_STYLE.muted}>
-          ↑↓ navigate · ↵ select · esc close · {filtered().length} shown
+          ↑↓ navigate · ↵ select · {props.footerHint ?? "esc close"} ·{" "}
+          {filtered().length} shown
         </span>
       </text>
     </box>

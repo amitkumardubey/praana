@@ -1,6 +1,20 @@
 {
-  "fixture_schema_version": 1,
   "fixture_kind": "legacy-typescript-safety",
+  "fixture_schema_version": 1,
+  "fixture_sha256_by_file": {
+    "README.md": "a739a227a711866703c7a00ebe1b5c64cb67357e3aac62ce0e42b41104a20b9e",
+    "legacy-ts/pipeline/circuit-block.json": "9251bd21564e3b6f2d4c9c28ff12f0bf8d7c285fbd3105961f4fb876ce6aa165",
+    "legacy-ts/pipeline/plan-block.json": "2afe41e1752cac41d8026bc35465e0f9d821c517cf38627a70abd925d9494721",
+    "legacy-ts/pipeline/post-enrich-redact-release.json": "fa3c615fc9778b25cbf4c1bceb5323bdf7e2c8d4db36b8648ba024baf96f7b1e",
+    "legacy-ts/pipeline/risk-decline.json": "3052c77b02bdc3169f17d8d2bcac1b6d47965708c309a140bc2cc146f728f6f5",
+    "legacy-ts/pipeline/success.json": "64807ef2f934ce96a9c05014dcc2d4b9fa157e94d3730d2088399984f1b2875a",
+    "legacy-ts/pipeline/validation-block.json": "f465ad9191238af4a20524c8c3e15a2b53a70c13814489f8ec65841b68555691",
+    "legacy-ts/pipeline/write-conflict.json": "c7357b8f1f6019923d3102a6b45ca58def518a5c6bdd9a5f7719e00be68a482f",
+    "legacy-ts/tool-results/enriched-error-redacted.json": "6c50de67582380e6ec89396b8c67a7c6878a7213cd456350a179d859c1e6f3d4",
+    "legacy-ts/tool-results/post-handler-throw.json": "f46ca4f2b6be2e77ed2de114fc85d39317b1d767360b04cab17817af5270b5db",
+    "legacy-ts/tool-results/pre-block-with-suggestions.json": "3817b1b51b4b2fdcad91f1fcf846731fbf9fec68efe42679f326d6b0141db150",
+    "legacy-ts/tool-results/success-redacted.json": "d296499d3f2905d7a689ebd37c55a26ca8c4dc130dc1e831ae8cf2776741362b"
+  },
   "oracle_sha256_by_file": {
     "src/circuit/loop-gate.ts": "5738f156b50795894fd6ff17749281063babccffd94fa5ce1461819ce0a7b33c",
     "src/hooks/block-result.ts": "20214cf0f1dd570185925a34020bebe3e258ab868ad918a9a1f5414b1f518373",
@@ -19,23 +33,9 @@
     "src/redact/secrets.ts": "b8883e7109f50ab064e71a88dd1c0b8fbc9d2683528890504401cbf02260e2f9",
     "src/risk/classes.ts": "41d5e1ac1533537b9cf230c55e498be241685776e21f92999accc0a18ee00571",
     "src/risk/classify.ts": "5782a3fd200920fe85407ce2914b4e25f2a8289ca2c052b4be3efed88b540725",
-    "src/session.ts": "c4cb7fd92d8f4c3ffc4091423f0704374fbb7fe12ff32324639b08296b5a596f",
+    "src/session.ts": "2d1e67e70af01e63e79c3d2de2a50f1d4a16f80061e289c5361565d780581070",
     "src/turn.ts": "be568e539d7b1289b1c5f554a5efb46aca672dc5f7e2227c30d7c37ee8c950c7",
     "src/validate/fuzzy-path.ts": "66a5631c604c792e0b36faf4abcdef3d6e85ca4fb865f6d5a31af3f9772ac3d4",
     "src/validate/shell-check.ts": "450a27ec9c73c07082eb46912e3ccf70327358df7cb840654e181d49bc508e43"
-  },
-  "fixture_sha256_by_file": {
-    "README.md": "a739a227a711866703c7a00ebe1b5c64cb67357e3aac62ce0e42b41104a20b9e",
-    "legacy-ts/pipeline/circuit-block.json": "9251bd21564e3b6f2d4c9c28ff12f0bf8d7c285fbd3105961f4fb876ce6aa165",
-    "legacy-ts/pipeline/plan-block.json": "2afe41e1752cac41d8026bc35465e0f9d821c517cf38627a70abd925d9494721",
-    "legacy-ts/pipeline/post-enrich-redact-release.json": "fa3c615fc9778b25cbf4c1bceb5323bdf7e2c8d4db36b8648ba024baf96f7b1e",
-    "legacy-ts/pipeline/risk-decline.json": "3052c77b02bdc3169f17d8d2bcac1b6d47965708c309a140bc2cc146f728f6f5",
-    "legacy-ts/pipeline/success.json": "64807ef2f934ce96a9c05014dcc2d4b9fa157e94d3730d2088399984f1b2875a",
-    "legacy-ts/pipeline/validation-block.json": "f465ad9191238af4a20524c8c3e15a2b53a70c13814489f8ec65841b68555691",
-    "legacy-ts/pipeline/write-conflict.json": "c7357b8f1f6019923d3102a6b45ca58def518a5c6bdd9a5f7719e00be68a482f",
-    "legacy-ts/tool-results/enriched-error-redacted.json": "6c50de67582380e6ec89396b8c67a7c6878a7213cd456350a179d859c1e6f3d4",
-    "legacy-ts/tool-results/post-handler-throw.json": "f46ca4f2b6be2e77ed2de114fc85d39317b1d767360b04cab17817af5270b5db",
-    "legacy-ts/tool-results/pre-block-with-suggestions.json": "3817b1b51b4b2fdcad91f1fcf846731fbf9fec68efe42679f326d6b0141db150",
-    "legacy-ts/tool-results/success-redacted.json": "d296499d3f2905d7a689ebd37c55a26ca8c4dc130dc1e831ae8cf2776741362b"
   }
 }
