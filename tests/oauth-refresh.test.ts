@@ -32,10 +32,12 @@ import { streamLlmResponse } from "../src/llm/stream.js";
 import type { StreamEvent } from "../src/llm/types.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import {
+  OAuthRefreshBusyError,
   resetOAuthProvidersForTests,
   resolveOAuthModelAuth,
   setRefreshLockWaitMsForTests,
 } from "../src/oauth.js";
+import { buildFullConversationHistory } from "../src/compile-classic.js";
 import { Session } from "../src/session.js";
 import { runTurn } from "../src/turn.js";
 import type { PraanaConfig } from "../src/types.js";
@@ -392,10 +394,65 @@ describe("serialized OAuth refresh", () => {
     expect(events.map((event) => event.type)).toEqual(["error"]);
     const error = events[0];
     expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.status).toBe(401);
     expect(error?.type === "error" && error.error.name).toBe("OAuthRefreshError");
     expect(error?.type === "error" && error.error.message).toBe(
       "OpenAI Codex session expired and could not be refreshed: token endpoint down. Run /login openai-codex again.",
     );
+  });
+
+  it("reports a busy refresh as retryable and not as a 401", async () => {
+    seedExpiredCodex();
+    const refreshLock = holdLock("refresh");
+    resetOAuthProvidersForTests({
+      fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
+    });
+    setRefreshLockWaitMsForTests(30);
+    try {
+      const events: StreamEvent[] = [];
+      for await (const event of streamLlmResponse({
+        provider: "openai-codex",
+        model: "gpt-6.1-sol",
+        messages: [{ role: "user", content: "hi" }],
+      })) events.push(event);
+      expect(events).toHaveLength(1);
+      const error = events[0];
+      expect(error?.type === "error" && error.error).toBeInstanceOf(OAuthRefreshBusyError);
+      expect(error?.type === "error" && error.retryable).toBe(true);
+      expect(error?.type === "error" && error.status).toBeUndefined();
+    } finally {
+      refreshLock.release();
+    }
+  });
+
+  it("does not return an expired access token when a refresh rotates only the refresh token", async () => {
+    seedExpiredCodex("refresh-old", jwt("stale-account"));
+    resetOAuthProvidersForTests({
+      fetch: (async () => Response.json({ refresh_token: "refresh-new" })) as typeof fetch,
+    });
+    await expect(resolveOAuthModelAuth("openai-codex")).rejects.toThrow(/could not be refreshed/);
+    expect(getOAuthToken("openai-codex")).toMatchObject({
+      access: jwt("stale-account"),
+      refresh: "refresh-new",
+    });
+  });
+
+  it("uses a newer unexpired token saved while this refresh was failing", async () => {
+    seedExpiredCodex();
+    const replacement = jwt("other-session");
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        setOAuthToken("openai-codex", {
+          access: replacement,
+          refresh: "refresh-other",
+          expires: Date.now() + 3_600_000,
+          accountId: "other-session",
+        });
+        throw new Error("lost the race");
+      }) as typeof fetch,
+    });
+    const auth = await resolveOAuthModelAuth("openai-codex");
+    expect(auth?.apiKey).toBe(replacement);
   });
 
   it("keeps using an unexpired token when refresh fails and warns", async () => {
@@ -469,13 +526,17 @@ describe("serialized OAuth refresh", () => {
       expect(text).not.toContain("token endpoint down");
       expect(errors).toEqual([failure]);
       expect(fallbacks).toEqual([]);
-      expect(session.getTurnCount()).toBe(turnsBefore + 1);
-      expect(postTurns).toBe(1);
+      expect(session.getTurnCount()).toBe(turnsBefore);
+      expect(postTurns).toBe(0);
+      expect(session.getInputTokens()).toBe(0);
+      expect(session.scorecard.getCounters().totalTurns).toBe(0);
       const messages = session.eventLog.readAll().filter((event) => event.kind === "agent_message");
       expect(messages).toHaveLength(0);
       expect(session.contextEngine).not.toBeNull();
-      expect(session.contextEngine!.ledger.list().length).toBe(1);
-      expect(session.contextEngine!.ledger.list()[0]?.assistantMessage ?? "").not.toContain("token endpoint down");
+      expect(session.contextEngine!.ledger.list()).toHaveLength(0);
+      expect(session.eventLog.readAll().some((event) => event.kind === "user_message")).toBe(true);
+      const history = buildFullConversationHistory(session.eventLog.readAllUncompressed());
+      expect(history).not.toContain("hello");
     } finally {
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }

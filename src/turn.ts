@@ -1374,15 +1374,27 @@ export async function runTurn(
   }
 
   if (credentialError) {
-    // Shown as an error line only. Storing it as the assistant reply replays
-    // the credential text to the model on the next turn.
+    // Shown as an error line only. The model never ran, so this is not a turn:
+    // do not charge tokens, record a ledger row, or advance the turn count.
+    // Leave the user message out of the next prompt so it is not a dangling turn.
     s.onError?.({
       level: "error",
       domain: "credentials",
       message: credentialError,
       code: "UNKNOWN",
     });
-  } else if (!fullResponse.trim()) {
+    const events = session.eventLog.readAll();
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i];
+      if (event?.kind === "user_message" && event.payload.text === userInput) {
+        session.eventLog.markEventsAsCompressed([event.event_id]);
+        break;
+      }
+    }
+    return "";
+  }
+
+  if (!fullResponse.trim()) {
     const code =
       lastStreamReason === "error"
         ? "LLM_STREAM_ERROR"
@@ -1419,14 +1431,12 @@ export async function runTurn(
     }
   }
 
-  // 6. Append agent_message. A credential failure is not the assistant's reply.
-  if (!credentialError) {
-    session.eventLog.append({
-      kind: "agent_message",
-      actor: "agent",
-      payload: { text: fullResponse },
-    });
-  }
+  // 6. Append agent_message.
+  session.eventLog.append({
+    kind: "agent_message",
+    actor: "agent",
+    payload: { text: fullResponse },
+  });
 
   const turnInputTokens = providerUsage?.input ?? promptMetrics.totalTokens;
   const turnOutputTokens = providerUsage?.output ?? estimateTokens(fullResponse);

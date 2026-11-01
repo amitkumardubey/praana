@@ -212,33 +212,75 @@ describe("Responses stream termination", () => {
     expect(last?.type === "error" && last.error.message).toBe("Backend unavailable");
   });
 
-  it("Codex keeps reason length when a finished tool call is followed by a text cutoff", async () => {
-    const events = await run(req, { bearerToken: jwt() }, [
-      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "" } },
-      { type: "response.function_call_arguments.done", output_index: 0 },
-      { type: "response.output_text.delta", delta: "partial" },
-      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
-    ]);
-    const done = events.at(-1);
-    expect(done?.type).toBe("done");
-    if (done?.type === "done") expect(done.reason).toBe("length");
-    expect(events.some((event) => event.type === "error")).toBe(false);
-  });
-
-  it("does not leave a tool call on the length-capped message when tool_call_end was skipped", async () => {
+  it("publishes a finished tool call when a later text cutoff hits the output limit", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } },
       { type: "response.function_call_arguments.done", output_index: 0 },
       { type: "response.output_text.delta", delta: "partial" },
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
     ]);
-    expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    const ended = events.find((event) => event.type === "tool_call_end");
+    expect(ended?.type === "tool_call_end" && ended.toolCall.name).toBe("read_file");
     const done = events.at(-1);
     expect(done?.type).toBe("done");
     if (done?.type === "done") {
-      expect(done.reason).toBe("length");
-      expect(done.message.toolCalls).toBeUndefined();
+      expect(done.reason).toBe("tool_use");
+      expect(done.message.toolCalls?.[0]?.name).toBe("read_file");
+      expect(done.message.content).toBe("partial");
     }
+  });
+
+  it("Codex applies the output-limit cutoff to response.done and response.completed", async () => {
+    for (const frame of [
+      { type: "response.done", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+      { type: "response.completed", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]) {
+      const events = await run(req, { bearerToken: jwt() }, [
+        { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{" } },
+        frame,
+      ]);
+      expect(events.map((event) => event.type)).toEqual(["tool_call_start", "error"]);
+      const error = events[1];
+      expect(error?.type === "error" && error.error.message).toBe("The response was cut off while the model was calling a tool");
+    }
+  });
+
+  it("Codex errors when response.done is incomplete for a reason other than the output limit", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.done", response: { status: "incomplete", incomplete_details: { reason: "content_filter" } } },
+    ]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const last = events.at(-1);
+    expect(last?.type === "error" && last.error.message).toBe("content_filter");
+  });
+
+  it("does not close a still-streaming call when a done event omits output_index", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc-a", call_id: "call-a", name: "read_file", arguments: "{" } },
+      { type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: "fc-b", call_id: "call-b", name: "shell", arguments: "" } },
+      { type: "response.function_call_arguments.done", output_index: 1 },
+      { type: "response.function_call_arguments.done" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events.map((event) => event.type)).toEqual(["tool_call_start", "tool_call_start", "error"]);
+    const error = events.at(-1);
+    expect(error?.type === "error" && error.error.message).toBe("The response was cut off while the model was calling a tool");
+  });
+
+  it("closes each finished call by id when output_index is missing", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", item: { type: "function_call", id: "fc-a", call_id: "call-a", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } },
+      { type: "response.output_item.added", item: { type: "function_call", id: "fc-b", call_id: "call-b", name: "shell", arguments: "{\"cmd\":\"ls\"}" } },
+      { type: "response.output_item.done", item: { type: "function_call", id: "fc-a", call_id: "call-a" } },
+      { type: "response.output_item.done", item: { type: "function_call", id: "fc-b", call_id: "call-b" } },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.filter((event) => event.type === "tool_call_end")).toHaveLength(2);
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.reason).toBe("tool_use");
   });
 
   it.each(["content_filter", "server_error"])("Codex errors on incomplete reason %s", async (reason) => {

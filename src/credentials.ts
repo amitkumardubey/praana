@@ -24,8 +24,11 @@
 
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   statSync,
@@ -84,8 +87,16 @@ interface CredentialsFile {
   [providerId: string]: StoredCredential;
 }
 
+interface CredentialFileIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
 let memoryCache: CredentialsFile | null = null;
-let credentialsMtimeMs: number | null = null;
+let credentialsIdentity: CredentialFileIdentity | null = null;
 let credentialContentReads = 0;
 /**
  * Reentrancy for the store lock only. The counter is safe because the critical
@@ -129,7 +140,8 @@ export function withCredentialStoreLockSync<T>(fn: () => T): T {
 
 /**
  * Per-provider refresh lock. Waiters sleep asynchronously so the event loop
- * stays free while another session refreshes. Returns false when `waitMs` elapses.
+ * stays free while another session refreshes. Returns false when `waitMs` elapses,
+ * including when another refresh in this process still holds the lock.
  * The rotated credential is persisted before the caller releases this lock.
  */
 export async function waitForProviderRefreshLock(
@@ -161,9 +173,34 @@ function cloneCredentials(creds: CredentialsFile): CredentialsFile {
   return structuredClone(creds);
 }
 
+function quarantineCorruptCredentials(credPath: string): void {
+  const backup = `${credPath}.corrupt-${Date.now()}`;
+  renameSync(credPath, backup);
+  getAppLogger().child("credentials").warn(
+    `Moved a corrupt credentials file to ${backup} and started a new store`,
+    { code: "CREDENTIALS_READ_FAILED" },
+  );
+}
+
+/** Invalid JSON is moved aside so login can start fresh. Other read errors still throw. */
+function readCredentialsForMutation(): CredentialsFile {
+  try {
+    return readCredentialsFromDisk();
+  } catch (err) {
+    if (!(err instanceof Error) || err.name !== "CredentialStoreReadError") throw err;
+    const cause = (err as { cause?: unknown }).cause;
+    if (!(cause instanceof SyntaxError)) throw err;
+    const credPath = credentialsFilePath();
+    quarantineCorruptCredentials(credPath);
+    memoryCache = {};
+    credentialsIdentity = null;
+    return memoryCache;
+  }
+}
+
 function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
   return withStoreLockSync(() => {
-    const creds = cloneCredentials(readCredentialsFromDisk());
+    const creds = cloneCredentials(readCredentialsForMutation());
     const result = mutator(creds);
     persistCredentials(creds);
     return result;
@@ -221,11 +258,23 @@ function sanitizeCredentials(parsed: unknown): CredentialsFile {
   return out;
 }
 
-function rememberCredentialsMtime(): void {
+function identityOf(stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): CredentialFileIdentity {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+}
+
+function sameCredentialFile(left: CredentialFileIdentity, right: CredentialFileIdentity): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function rememberCredentialsIdentity(): void {
   try {
-    credentialsMtimeMs = statSync(credentialsFilePath()).mtimeMs;
+    credentialsIdentity = identityOf(statSync(credentialsFilePath()));
   } catch {
-    credentialsMtimeMs = null;
+    credentialsIdentity = null;
   }
 }
 
@@ -240,19 +289,20 @@ export function credentialDiskReadCountForTests(): number {
 
 /**
  * Memory-cache lookup that does not read file contents.
- * `unchanged` is false when the cache is cold or the file mtime moved.
+ * `unchanged` is false when the cache is cold or the file's device, inode,
+ * size, or timestamps differ from the read that filled the cache.
  */
 export function readCachedOAuthIfUnchanged(
   provider: string,
 ): { unchanged: true; token: StoredOAuthCredential | undefined } | { unchanged: false } {
-  if (memoryCache === null || credentialsMtimeMs === null) return { unchanged: false };
-  let mtime: number;
+  if (memoryCache === null || credentialsIdentity === null) return { unchanged: false };
+  let identity: CredentialFileIdentity;
   try {
-    mtime = statSync(credentialsFilePath()).mtimeMs;
+    identity = identityOf(statSync(credentialsFilePath()));
   } catch {
     return { unchanged: false };
   }
-  if (mtime !== credentialsMtimeMs) return { unchanged: false };
+  if (!sameCredentialFile(credentialsIdentity, identity)) return { unchanged: false };
   const entry = memoryCache[provider];
   if (!entry || !isOAuthEntry(entry)) return { unchanged: true, token: undefined };
   return { unchanged: true, token: entry };
@@ -273,25 +323,37 @@ function readCredentialsFromDisk(): CredentialsFile {
   const credPath = credentialsFilePath();
   if (!existsSync(credPath)) {
     memoryCache = {};
-    credentialsMtimeMs = null;
+    credentialsIdentity = null;
     return memoryCache;
   }
-  let raw: string;
+  let fd: number | undefined;
   try {
-    raw = readFileSync(credPath, "utf-8");
+    fd = openSync(credPath, "r");
+    const identity = identityOf(fstatSync(fd));
+    const raw = readFileSync(fd, "utf-8");
+    noteCredentialContentRead();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch (err) {
+      throw credentialStoreReadError(err);
+    }
+    memoryCache = sanitizeCredentials(parsed);
+    credentialsIdentity = identity;
+    return memoryCache;
   } catch (err) {
+    if (err instanceof Error && err.name === "CredentialStoreReadError") throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      memoryCache = {};
+      credentialsIdentity = null;
+      return memoryCache;
+    }
     throw credentialStoreReadError(err);
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
   }
-  noteCredentialContentRead();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw) as unknown;
-  } catch (err) {
-    throw credentialStoreReadError(err);
-  }
-  memoryCache = sanitizeCredentials(parsed);
-  rememberCredentialsMtime();
-  return memoryCache;
 }
 
 /** Disk read of one OAuth entry. Does not take the credential lock. */
@@ -311,7 +373,7 @@ function loadCredentials(): CredentialsFile {
       { cause: err instanceof Error ? err : new Error(String(err)), code: "CREDENTIALS_READ_FAILED" },
     );
     memoryCache = {};
-    credentialsMtimeMs = null;
+    credentialsIdentity = null;
     return memoryCache;
   }
 }
@@ -338,7 +400,7 @@ function persistCredentials(creds: CredentialsFile): void {
   }
 
   memoryCache = creds;
-  rememberCredentialsMtime();
+  rememberCredentialsIdentity();
 }
 
 /**
@@ -530,7 +592,7 @@ export function ensureCredentialsFileMode(): void {
 /** Test helper — reset in-memory cache so the next read hits disk. */
 export function resetCredentialStoreForTests(): void {
   memoryCache = null;
-  credentialsMtimeMs = null;
+  credentialsIdentity = null;
   credentialContentReads = 0;
   storeLockDepth = 0;
   for (const lock of heldRefreshLocks.values()) lock.release();

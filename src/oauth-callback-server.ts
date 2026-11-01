@@ -5,6 +5,14 @@ export interface OAuthCallbackServer {
   close(): void;
 }
 
+/** The provider rejected the redirect (for example `error=access_denied`). Login should stop. */
+export class OAuthCallbackDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OAuthCallbackDeniedError";
+  }
+}
+
 export interface OAuthCallbackOptions {
   state: string;
   signal: AbortSignal;
@@ -68,7 +76,7 @@ export async function startOAuthCallbackServer(
     } else if (url.searchParams.has("error")) {
       const message = `OpenAI Codex authorization failed: ${url.searchParams.get("error_description") || url.searchParams.get("error")}`;
       page(400, message);
-      finish(undefined, new Error(message));
+      finish(undefined, new OAuthCallbackDeniedError(message));
     } else {
       const code = url.searchParams.get("code");
       if (!code) {

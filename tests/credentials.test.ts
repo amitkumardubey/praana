@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFileSync, readFileSync, chmodSync, mkdirSync } from "node:fs";
@@ -20,6 +20,7 @@ import {
   getCredentialsFilePath,
   ensureCredentialsFileMode,
   mutateCredentialsForTests,
+  readCachedOAuthIfUnchanged,
   resetCredentialStoreForTests,
   type StoredOAuthCredential,
 } from "../src/credentials.js";
@@ -221,6 +222,48 @@ describe("credential store", () => {
       apiKey: "codex-token",
       expires: expect.any(Number),
     });
+  });
+
+  it("re-reads when a replacement file keeps the same mtime", () => {
+    setOAuthToken("openai-codex", sampleOAuth({ access: "old-access", refresh: "old-refresh" }));
+    const path = getCredentialsFilePath();
+    expect(readCachedOAuthIfUnchanged("openai-codex")).toMatchObject({
+      unchanged: true,
+      token: { access: "old-access" },
+    });
+    const before = statSync(path);
+    const tmp = `${path}.next`;
+    writeFileSync(tmp, JSON.stringify({
+      "openai-codex": {
+        type: "oauth",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: Date.now() + 60_000,
+        savedAt: 1,
+      },
+    }), { mode: 0o600 });
+    renameSync(tmp, path);
+    const seconds = before.mtimeMs / 1000;
+    utimesSync(path, seconds, seconds);
+    expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
+    expect(statSync(path).ino).not.toBe(before.ino);
+    expect(readCachedOAuthIfUnchanged("openai-codex").unchanged).toBe(false);
+  });
+
+  it("does not replace a credentials file it cannot read", () => {
+    const path = getCredentialsFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    const bytes = Buffer.from("{\"openrouter\":{\"type\":\"api_key\",\"key\":\"sk-keep\",\"savedAt\":1}}");
+    writeFileSync(path, bytes, { mode: 0o600 });
+    chmodSync(path, 0o000);
+    resetCredentialStoreForTests();
+    try {
+      expect(() => setApiKey("openrouter", "sk-new")).toThrow(/left it unchanged/);
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path)).some((name) => name.startsWith("credentials.json.corrupt-"))).toBe(false);
   });
 });
 

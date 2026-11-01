@@ -119,13 +119,36 @@ function corruptLockError(path: string, cause: unknown): Error {
   return error;
 }
 
-/** Empty or non-database files can be deleted once. A real SQLite file is left alone. */
-function lockFileIsReplaceable(path: string): boolean {
+interface LockFileIdentity {
+  dev: number;
+  ino: number;
+}
+
+function lockFileIdentity(path: string): LockFileIdentity | undefined {
+  try {
+    const stat = statSync(path);
+    if (!stat.isFile()) return undefined;
+    return { dev: stat.dev, ino: stat.ino };
+  } catch {
+    return undefined;
+  }
+}
+
+function sameLockFile(left: LockFileIdentity | undefined, right: LockFileIdentity | undefined): boolean {
+  return left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino;
+}
+
+/**
+ * A non-database file can be deleted once, and only if it is still the file
+ * that failed to open. An empty file is a valid SQLite database being created.
+ */
+function lockFileIsReplaceable(path: string, seen: LockFileIdentity | undefined): boolean {
   let fd: number | undefined;
   try {
     const stat = statSync(path);
     if (!stat.isFile()) return false;
-    if (stat.size === 0) return true;
+    if (seen && (stat.dev !== seen.dev || stat.ino !== seen.ino)) return false;
+    if (stat.size === 0) return false;
     fd = openSync(path, "r");
     const header = Buffer.alloc(16);
     const n = readSync(fd, header, 0, 16, 0);
@@ -139,6 +162,11 @@ function lockFileIsReplaceable(path: string): boolean {
   }
 }
 
+/** @internal */
+export function lockFileIsReplaceableForTests(path: string, seen?: LockFileIdentity): boolean {
+  return lockFileIsReplaceable(path, seen);
+}
+
 interface NotADatabaseState {
   streak: number;
   recreated: boolean;
@@ -146,13 +174,23 @@ interface NotADatabaseState {
 
 /**
  * Retry a few times for a file another process is still creating.
- * Then delete an empty or non-database file once and try again.
+ * Then delete a non-database file once, if it is still the same file, and try again.
  * A further failure, or a file we cannot replace, throws.
  */
-function recoverNotADatabase(path: string, err: unknown, state: NotADatabaseState): void {
+function recoverNotADatabase(
+  path: string,
+  err: unknown,
+  state: NotADatabaseState,
+  seen: LockFileIdentity | undefined,
+): void {
   state.streak += 1;
   if (state.streak <= NOTADB_ATTEMPTS) return;
-  if (!state.recreated && lockFileIsReplaceable(path)) {
+  const current = lockFileIdentity(path);
+  if (seen && current && !sameLockFile(seen, current)) {
+    state.streak = 0;
+    return;
+  }
+  if (!state.recreated && lockFileIsReplaceable(path, seen) && sameLockFile(seen, lockFileIdentity(path))) {
     state.recreated = true;
     state.streak = 0;
     try {
@@ -184,7 +222,7 @@ function slotFor(path: string): LockSlot {
  * In-process queue. The next async acquire does not open a connection until
  * the previous async holder has released.
  */
-function acquireSlot(path: string, signal?: AbortSignal): Promise<() => void> {
+function acquireSlot(path: string, signal: AbortSignal | undefined, deadline: number): Promise<() => void> {
   if (signal?.aborted) return Promise.reject(abortError(signal));
   const slot = slotFor(path);
   const release = () => {
@@ -196,22 +234,32 @@ function acquireSlot(path: string, signal?: AbortSignal): Promise<() => void> {
     slot.held = true;
     return Promise.resolve(release);
   }
+  if (Date.now() >= deadline) return Promise.reject(new CredentialLockTimeoutError(path));
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      settle();
+    };
     const waiter = {
-      grant: () => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve(release);
-      },
-      reject: (err: Error) => {
-        signal?.removeEventListener("abort", onAbort);
-        reject(err);
-      },
+      grant: () => finish(() => resolve(release)),
+      reject: (err: Error) => finish(() => reject(err)),
     };
     const onAbort = () => {
       const index = slot.waiters.indexOf(waiter);
       if (index >= 0) slot.waiters.splice(index, 1);
       waiter.reject(abortError(signal!));
     };
+    const onTimeout = () => {
+      const index = slot.waiters.indexOf(waiter);
+      if (index >= 0) slot.waiters.splice(index, 1);
+      waiter.reject(new CredentialLockTimeoutError(path));
+    };
+    timer = setTimeout(onTimeout, Math.max(1, deadline - Date.now()));
     slot.waiters.push(waiter);
     if (signal) {
       if (signal.aborted) onAbort();
@@ -300,11 +348,12 @@ export function acquireSync(path: string, opts: AcquireSyncOptions): CredentialL
       continue;
     }
     const remaining = Math.max(0, deadline - Date.now());
+    const seen = lockFileIdentity(path);
     try {
       return hold(path, beginImmediate(path, remaining));
     } catch (err) {
       if (isNotADatabase(err)) {
-        recoverNotADatabase(path, err, notadb);
+        recoverNotADatabase(path, err, notadb, seen);
         sleepSync(20);
         continue;
       }
@@ -324,11 +373,12 @@ async function acquireFromOs(path: string, opts: AcquireAsyncOptions): Promise<C
   for (;;) {
     if (opts.signal?.aborted) throw abortError(opts.signal);
     if (!held.has(path)) {
+      const seen = lockFileIdentity(path);
       try {
         return hold(path, beginImmediate(path, 0));
       } catch (err) {
         if (isNotADatabase(err)) {
-          recoverNotADatabase(path, err, notadb);
+          recoverNotADatabase(path, err, notadb, seen);
         } else if (!isRetryableLockError(err)) {
           throw err;
         }
@@ -344,9 +394,11 @@ async function acquireFromOs(path: string, opts: AcquireAsyncOptions): Promise<C
  * the wait sleeps without blocking the event loop.
  */
 export async function acquireAsync(path: string, opts: AcquireAsyncOptions): Promise<CredentialLock> {
-  const releaseSlot = await acquireSlot(path, opts.signal);
+  const waitMs = Math.min(MAX_ASYNC_WAIT_MS, Math.max(0, Math.trunc(opts.waitMs) || 0));
+  const deadline = Date.now() + waitMs;
+  const releaseSlot = await acquireSlot(path, opts.signal, deadline);
   try {
-    const lock = await acquireFromOs(path, opts);
+    const lock = await acquireFromOs(path, { ...opts, waitMs: Math.max(0, deadline - Date.now()) });
     let released = false;
     return {
       release() {

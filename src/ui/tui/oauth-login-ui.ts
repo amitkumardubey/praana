@@ -161,6 +161,13 @@ function authUrlContext(
   ];
 }
 
+function openBrowserBestEffort(
+  openBrowser: (url: string) => void | Promise<boolean>,
+  url: string,
+): void {
+  void Promise.resolve(openBrowser(url)).catch(() => {});
+}
+
 function deviceCodeContext(
   provider: string,
   verificationUri: string,
@@ -194,7 +201,7 @@ export async function runOAuthLoginWithUi(
         case "auth_url":
           lastContext = authUrlContext(provider, event.url, event.instructions);
           ui.showStatus(lastContext);
-          void openBrowser(event.url);
+          openBrowserBestEffort(openBrowser, event.url);
           break;
         case "device_code":
           lastContext = deviceCodeContext(
@@ -203,7 +210,7 @@ export async function runOAuthLoginWithUi(
             event.userCode,
           );
           ui.showStatus(lastContext);
-          void openBrowser(event.verificationUri);
+          openBrowserBestEffort(openBrowser, event.verificationUri);
           break;
         case "progress":
         case "info":

@@ -160,15 +160,16 @@ model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
   mode. Any other bind failure is reported with its error code and still allows
   paste. If the listener fails after it has started, PRAANA reports that failure
   and keeps waiting for a paste. That error does not cancel login while paste can
-  still finish it. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
+  still finish it. A provider rejection in the redirect, such as `access_denied`,
+  ends the login immediately with the provider's message. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
   rejected. When login finishes or is cancelled, PRAANA closes the listener and
   drops open connections so port 1455 can be used again immediately. Browser
   authorization and exchange have a 10-minute overall timeout.
 - **Device-code login:** open the displayed verification URL on any browser and
   enter the displayed code. No localhost callback is needed. PRAANA polls for up to
   15 minutes. HTTP 429, 502, 503, and 504 (including a non-JSON body) are retried
-  until that deadline, waiting the poll interval or `Retry-After` seconds when
-  present, capped at 30 seconds. A network failure while polling (connection
+  until that deadline, waiting at least the poll interval, or `Retry-After`
+  when that is longer, capped at 30 seconds. A network failure while polling (connection
   reset, DNS, timeout) is retried the same way. Ten of those failures in a row
   stop the login and report that error. Any other unexpected status stops the login.
   If the server does not offer device authorization, use browser login.
@@ -213,7 +214,8 @@ process has rewritten it. If the access token is still outside the 60-second
 refresh window, that token is used immediately and the refresh lock is not
 taken. Other sessions wait for the refresh lock only when a refresh is actually
 needed. They wait without freezing, checking a few times a second for up to 30
-seconds. When the lock is free they re-read the saved token. If another session
+seconds, including when another refresh in this process already holds the lock.
+When the lock is free they re-read the saved token. If another session
 already refreshed it, they use that token and do not send a second refresh. If
 the wait runs out and the access token is still usable, PRAANA uses it and does
 not ask you to log in again. If the access token is already expired, PRAANA
@@ -224,16 +226,19 @@ session expiry and it does not say to run `/login` again.
 The lock is held by the operating system for the life of the process that took
 it. When that process exits, crashes, or is killed, the system releases the lock
 at once. PRAANA does not decide that a lock has gone stale, and it does not
-replace a lock another live process still holds. A lock file that is empty or
-not a database is retried a few times, then replaced once. If it is still not a
-database, or it cannot be replaced, the wait fails with that error instead of
-retrying until the timeout.
+replace a lock another live process still holds. A lock file that is not a
+database is retried a few times, then replaced once if it is still the same file.
+An empty file is left alone, because SQLite treats it as a new database. If it
+is still not a database, or it cannot be replaced, the wait fails with that
+error instead of retrying until the timeout.
 
 A save re-reads the credentials file under the lock before writing, edits a copy,
-and replaces the in-memory cache only after that write succeeds. If the update
-throws, or the read fails (the file is unreadable, not valid JSON, or only partly
-written), PRAANA leaves both the file and the cache unchanged. A missing file is
-still created.
+and replaces the in-memory cache only after that write succeeds. If the file
+cannot be read, PRAANA leaves it unchanged and the save fails. If the file is
+not valid JSON, PRAANA moves it aside to `credentials.json.corrupt-<timestamp>`
+and saves a new store. A missing file is
+still created. The cache treats the file as unchanged only when the device,
+inode, size, and timestamps still match the read that filled it.
 
 Cancelling one request does not cancel the refresh for anyone else. Aborting
 while still waiting for another session's refresh lock stops that wait only;
@@ -248,8 +253,10 @@ the refreshed token is saved is left as it is.
 If refresh fails and the stored access token is already expired, the turn stops
 and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
 Run /login openai-codex again.` once, as an error line. That text is not saved as
-the assistant's reply and is not sent back to the model on the next turn. If the
-access token is not yet expired, PRAANA keeps using it and logs a warning.
+the assistant's reply. The turn is not counted, no tokens are charged, and that
+user message is left out of the next prompt. A refresh that saves a new refresh
+token but leaves an expired access token does not hand that access token to the
+model. If the access token is not yet expired, PRAANA keeps using it and logs a warning.
 
 Codex requests identify PRAANA and the ChatGPT account saved with the
 credential. When that saved account id is present, PRAANA sends it even if the
@@ -265,8 +272,9 @@ status is `failed` or `cancelled`, or that carries an error, is a failure, the
 same as `response.failed`. A `max_output_tokens` cutoff of
 plain text finishes with the partial output and reason `length`. A cutoff while a
 tool call is still being sent is an error: `The response was cut off while the
-model was calling a tool.` A length cutoff does not leave that in-flight tool
-call on the assistant message. Other Responses providers keep the previous stream
+model was calling a tool.` That check is the same for `response.incomplete`,
+`response.done`, and `response.completed` when the status is incomplete.
+A tool call that has already finished is still published. Other Responses providers keep the previous stream
 behaviour.
 
 ## Slash commands

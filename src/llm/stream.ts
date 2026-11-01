@@ -81,7 +81,15 @@ export async function* streamLlmResponse(
         };
       }
     } catch (err) {
-      if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
+      if (err instanceof OAuthRefreshBusyError) {
+        yield {
+          type: "error",
+          error: err,
+          retryable: true,
+        };
+        return;
+      }
+      if (err instanceof OAuthRefreshError) {
         yield {
           type: "error",
           error: err,

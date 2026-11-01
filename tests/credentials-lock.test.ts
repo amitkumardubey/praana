@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import {
   acquireAsync,
   acquireSync,
   CredentialLockTimeoutError,
+  lockFileIsReplaceableForTests,
   type CredentialLock,
 } from "../src/credential-lock.js";
 import {
@@ -181,6 +182,32 @@ describe("credential advisory locks", () => {
     }
   }, { timeout: 60_000 });
 
+  it("does not treat an empty or replaced lock file as replaceable", () => {
+    const path = pathFor("refresh");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+    const empty = statSync(path);
+    expect(lockFileIsReplaceableForTests(path, { dev: empty.dev, ino: empty.ino })).toBe(false);
+    writeFileSync(path, "this is not a sqlite database");
+    const corrupt = statSync(path);
+    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino })).toBe(true);
+    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino + 1 })).toBe(false);
+  });
+
+  it("times out an in-process waiter when waitMs elapses", async () => {
+    const path = pathFor("refresh");
+    const first = await acquireAsync(path, { waitMs: 0, pollMs: 100 });
+    try {
+      const outcome = await Promise.race([
+        acquireAsync(path, { waitMs: 40, pollMs: 100 }).then(() => "acquired" as const, (err: unknown) => err),
+        Bun.sleep(300).then(() => "pending" as const),
+      ]);
+      expect(outcome).toBeInstanceOf(CredentialLockTimeoutError);
+    } finally {
+      first.release();
+    }
+  });
+
   it("recreates a corrupt lock database instead of waiting out the timeout", () => {
     const path = pathFor("refresh");
     mkdirSync(dirname(path), { recursive: true });
@@ -208,16 +235,18 @@ describe("credential advisory locks", () => {
     }
   });
 
-  it("leaves a corrupt credentials file byte-identical when setApiKey cannot read it", () => {
+  it("moves a corrupt credentials file aside so a later save can start fresh", () => {
     const path = getCredentialsFilePath();
     mkdirSync(join(path, ".."), { recursive: true });
     const bytes = Buffer.from("{not-json");
     writeFileSync(path, bytes, { mode: 0o600 });
     resetCredentialStoreForTests();
-    expect(() => setApiKey("openrouter", "sk-new")).toThrow(/left it unchanged/);
-    expect(readFileSync(path)).toEqual(bytes);
-    expect(getApiKey("openrouter")).toBeUndefined();
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    setApiKey("openrouter", "sk-new");
+    expect(getApiKey("openrouter")).toBe("sk-new");
+    expect(readFileSync(path, "utf8")).toContain("sk-new");
+    const backups = readdirSync(join(path, "..")).filter((name) => name.startsWith("credentials.json.corrupt-"));
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(path, "..", backups[0]!))).toEqual(bytes);
     const lock = acquireSync(credentialLockPathForTests("store"), { waitMs: 0 });
     lock.release();
   });

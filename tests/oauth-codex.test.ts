@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { request as httpRequest, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { buildAuthorizeUrl, createOpenAICodexOAuth, extractAccountId, generatePKCE, parseManualInput } from "../src/oauth-codex.js";
+import { OAuthCallbackDeniedError } from "../src/oauth-callback-server.js";
 import { startOAuthCallbackServer, type OAuthCallbackServer } from "../src/oauth-callback-server.js";
 import type { AuthEvent, AuthInteraction, OAuthCredential } from "../src/oauth.js";
 
@@ -179,6 +180,29 @@ describe("Codex browser exchange and refresh", () => {
     expect(notices.some((message) => message.includes("callback unavailable"))).toBe(true);
     expect(notices.some((message) => message.includes("EADDRINUSE"))).toBe(false);
   });
+  it("fails immediately when the provider denies the browser redirect", async () => {
+    const fake = fakeServer();
+    const abort = new AbortController();
+    const oauth = createOpenAICodexOAuth({
+      callbackServer: async (options) => {
+        const server = await startOAuthCallbackServer(options, fake.factory);
+        fake.send(`/auth/callback?state=${options.state}&error=access_denied`);
+        return server;
+      },
+    });
+    const outcome = await Promise.race([
+      oauth.login({
+        signal: abort.signal,
+        notify() {},
+        prompt: async (prompt) => prompt.type === "select" ? "browser" : new Promise<string>(() => {}),
+      }).then(() => "settled" as const, (error: unknown) => error),
+      Bun.sleep(400).then(() => "pending" as const),
+    ]);
+    abort.abort();
+    expect(outcome).toBeInstanceOf(OAuthCallbackDeniedError);
+    expect(outcome instanceof Error && outcome.message).toContain("access_denied");
+  });
+
   it("reports the error code and still accepts a paste when bind fails", async () => {
     const denied = fakeServer("EACCES");
     const notices: string[] = [];
@@ -648,6 +672,19 @@ describe("Codex device poll transient retries", () => {
     });
     expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
     expect(waits).toEqual([5000, 30_000]);
+  });
+
+  it("waits at least one poll interval when Retry-After is 0", async () => {
+    const waits: number[] = [];
+    const oauth = deviceOauth({
+      waits,
+      polls: [
+        new Response("", { status: 429, headers: { "Retry-After": "0" } }),
+        Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" }),
+      ],
+    });
+    expect((await oauth.login(interaction("device_code"))).accountId).toBe("account-1");
+    expect(waits).toEqual([2000]);
   });
 
   it("retries a rejected device poll twice and then succeeds", async () => {

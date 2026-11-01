@@ -1,6 +1,6 @@
 import { createHash, randomBytes as cryptoRandomBytes } from "node:crypto";
 import type { AuthInteraction, OAuthAuth, OAuthCredential } from "./oauth.js";
-import { startOAuthCallbackServer, type CallbackServerFactory, type OAuthCallbackServer } from "./oauth-callback-server.js";
+import { OAuthCallbackDeniedError, startOAuthCallbackServer, type CallbackServerFactory, type OAuthCallbackServer } from "./oauth-callback-server.js";
 import { extractAccountId } from "./llm/jwt.js";
 
 export { extractAccountId };
@@ -232,6 +232,7 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
       const callbackTask = callback
         ? callback.wait().catch((error: unknown) => {
             if (ignoreCallbackError) return new Promise<string>(() => {});
+            if (error instanceof OAuthCallbackDeniedError) throw error;
             const code = (error as { code?: string }).code;
             const detail = code || (error instanceof Error ? error.message : String(error));
             interaction.notify({
@@ -340,7 +341,7 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
             } else if (error !== "deviceauth_authorization_pending") {
               if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
                 const retry = retryAfterMs(response);
-                if (retry !== undefined) waitMs = retry;
+                if (retry !== undefined) waitMs = Math.max(intervalMs, retry);
               } else {
                 throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
               }

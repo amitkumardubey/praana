@@ -578,8 +578,10 @@ async function refreshOAuthCredential(
           });
         }
         const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
-        if (!latest || latest.refresh !== refreshToken) {
-          return latest ? oauth.toAuth(toOAuthCredential(latest)) : null;
+        if (!latest) return null;
+        if (latest.refresh !== refreshToken) {
+          if (latest.expires > Date.now()) return oauth.toAuth(toOAuthCredential(latest));
+          throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
         }
         if (latest.expires <= Date.now()) {
           throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));

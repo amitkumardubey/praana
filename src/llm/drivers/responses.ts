@@ -195,8 +195,9 @@ export class OpenAIResponsesDriver implements LlmDriver {
     let itemIndex = 0;
     const codex = req.provider === "openai-codex";
     let terminalReceived = false;
-    let cappedByLength = false;
     const openFunctionCalls = new Set<number | string>();
+    const functionCallIndexById = new Map<string, number | string>();
+    const toolCutoffMessage = "The response was cut off while the model was calling a tool";
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
       const resp = parsed.response as {
         error?: { message?: string };
@@ -241,20 +242,19 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (codex && (type === "error" || type === "response.failed")) {
           throw new Error(responsesErrorMessage(parsed, type));
         }
+        const applyCodexIncomplete = (): "cutoff" | "length" | "error" => {
+          const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
+          if (details?.reason !== "max_output_tokens") return "error";
+          terminalReceived = true;
+          if (openFunctionCalls.size > 0) return "cutoff";
+          finishReason = "length";
+          return "length";
+        };
         let toolCutoff = false;
         if (codex && type === "response.incomplete") {
-          const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
-          if (details?.reason === "max_output_tokens") {
-            terminalReceived = true;
-            if (openFunctionCalls.size > 0) {
-              toolCutoff = true;
-            } else {
-              finishReason = "length";
-              cappedByLength = true;
-            }
-          } else {
-            throw new Error(responsesErrorMessage(parsed, type));
-          }
+          const outcome = applyCodexIncomplete();
+          if (outcome === "cutoff") toolCutoff = true;
+          else if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
         }
 
         const usage = readResponsesUsage(parsed, latestUsage);
@@ -265,7 +265,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (toolCutoff) {
           yield {
             type: "error",
-            error: new Error("The response was cut off while the model was calling a tool"),
+            error: new Error(toolCutoffMessage),
             retryable: false,
           };
           return;
@@ -295,6 +295,8 @@ export class OpenAIResponsesDriver implements LlmDriver {
             });
             if (res.started) {
               openFunctionCalls.add(index);
+              if (typeof item.call_id === "string" && item.call_id) functionCallIndexById.set(item.call_id, index);
+              if (typeof item.id === "string" && item.id) functionCallIndexById.set(item.id, index);
               yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
             }
           }
@@ -302,10 +304,23 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (type === "response.function_call_arguments.done" || type === "response.output_item.done") {
-          const item = parsed.item as { type?: string } | undefined;
+          const item = parsed.item as { type?: string; id?: string; call_id?: string } | undefined;
           if (type === "response.function_call_arguments.done" || item?.type === "function_call") {
-            const index = (parsed.output_index as number | undefined) ?? 0;
-            openFunctionCalls.delete(index);
+            const explicit = parsed.output_index;
+            if (typeof explicit === "number") {
+              openFunctionCalls.delete(explicit);
+            } else {
+              const itemId = typeof parsed.item_id === "string" ? parsed.item_id : undefined;
+              const keys = [itemId, item?.id, item?.call_id];
+              for (const key of keys) {
+                if (!key) continue;
+                const index = functionCallIndexById.get(key);
+                if (index !== undefined) {
+                  openFunctionCalls.delete(index);
+                  break;
+                }
+              }
+            }
           }
         }
 
@@ -328,19 +343,37 @@ export class OpenAIResponsesDriver implements LlmDriver {
             throw new Error(responsesErrorMessage(parsed, type));
           }
           terminalReceived = true;
-          if (status === "incomplete") finishReason = "length";
+          if (status === "incomplete") {
+            const outcome = applyCodexIncomplete();
+            if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
+            if (outcome === "cutoff") {
+              yield { type: "error", error: new Error(toolCutoffMessage), retryable: false };
+              return;
+            }
+          }
         } else if (type === "response.completed") {
-          if (codex) terminalReceived = true;
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = String(resp?.status ?? "");
-          if (status === "incomplete") finishReason = "length";
+          if (codex) {
+            terminalReceived = true;
+            if (status === "incomplete") {
+              const outcome = applyCodexIncomplete();
+              if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
+              if (outcome === "cutoff") {
+                yield { type: "error", error: new Error(toolCutoffMessage), retryable: false };
+                return;
+              }
+            }
+          } else if (status === "incomplete") {
+            finishReason = "length";
+          }
         }
       }
 
       if (codex && !terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
 
       const completedToolCalls = accumulator.flush();
-      const publishToolCalls = completedToolCalls.length > 0 && !cappedByLength;
+      const publishToolCalls = completedToolCalls.length > 0;
       if (publishToolCalls) {
         finishReason = "tool_use";
         for (const tc of completedToolCalls) {
