@@ -2,10 +2,10 @@
  * Slash-command result overlay.
  *
  * Up/Down/PageUp/PageDown scroll when the text is taller than the frame.
- * Scroll keys are consumed here (higher priority than OverlayHost) whether or
- * not they actually scroll, so they never reach the host's dismiss-on-any-key
- * handler; Esc/Enter/any other key still closes the overlay. A footer hint
- * shows only while the content overflows.
+ * Scroll keys are consumed here (higher priority than OverlayHost) only when
+ * they actually scroll; when nothing overflows they fall through to the
+ * host's dismiss-on-any-key handler like any other key. A footer hint shows
+ * only while the content overflows.
  *
  * Overflow is measured from layout events, not a poll: we re-measure on every
  * completed frame (content changes, the scrollbox mounting, and terminal
@@ -25,7 +25,7 @@ const SCROLL_KEYS = new Set(["up", "down", "pageup", "pagedown"]);
 export const SLASH_FRAME_CHROME_ROWS = 4;
 /** Footer hint row rendered only while overflowing. */
 export const SLASH_HINT_ROWS = 1;
-/** Maximum frame height, matching the <OverlayFrame maxHeight={18} /> prop. */
+/** Maximum frame height, matching the <OverlayFrame> cap. */
 export const SLASH_FRAME_MAX_HEIGHT = 18;
 /** Minimum frame height, matching OverlayFrame's floor. */
 export const SLASH_FRAME_MIN_TERM_HEIGHT = 8;
@@ -105,16 +105,17 @@ export function SlashResultOverlay(props: { lines: string[] }) {
       (ctx) => {
         const name = ctx.event.name;
         if (!isSlashScrollKey(name)) return;
-        // Scroll keys must never reach OverlayHost's dismiss-on-any-key
-        // handler — even before overflow is measured or with Shift held.
         if (scroller && scrollRange() > 0.5) {
           if (name === "up") scroller.scrollBy(-1);
           else if (name === "down") scroller.scrollBy(1);
           else if (name === "pageup") scroller.scrollBy(-0.5, "viewport");
           else scroller.scrollBy(0.5, "viewport");
           renderer.requestRender();
+          ctx.consume();
         }
-        ctx.consume();
+        // Nothing overflows: leave the key unconsumed so it falls through to
+        // OverlayHost's dismiss-on-any-key handler, matching the hint (which
+        // is hidden while there is no overflow).
       },
       { priority: 100 },
     );
@@ -125,7 +126,10 @@ export function SlashResultOverlay(props: { lines: string[] }) {
     computeSlashScrollBoxHeight(dimensions().height, overflow());
 
   return (
-    <OverlayFrame width={72} maxHeight={SLASH_FRAME_MAX_HEIGHT}>
+    <OverlayFrame
+      width={72}
+      maxHeight={computeSlashFrameMaxHeight(dimensions().height)}
+    >
       <scrollbox
         ref={(el: ScrollBoxRenderable) => {
           scroller = el;
