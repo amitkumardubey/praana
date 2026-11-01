@@ -325,6 +325,12 @@ export class PraanaLogger {
     return new PraanaLogger({ ...this.options, domain });
   }
 
+  /** Copy of this logger that keeps its file streams but stops writing to stderr.
+   *  Used while the full TUI owns the terminal. */
+  withStderrSuppressed(): PraanaLogger {
+    return new PraanaLogger({ ...this.options, suppressStderr: true });
+  }
+
   log(entry: LogEntry): void {
     const fields: Record<string, unknown> = {
       ...(entry.code ? { code: entry.code } : {}),

@@ -13,6 +13,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   PraanaLogger,
@@ -207,6 +208,44 @@ describe("logger", () => {
       expect(writes.join("")).not.toContain("keyword-only");
     } finally {
       process.stderr.write = origWrite;
+    }
+  });
+
+  it("withStderrSuppressed keeps file output but silences stderr", () => {
+    const prevVitest = process.env.VITEST;
+    delete process.env.VITEST;
+    const fileLines: string[] = [];
+    const fileStream = new Writable({
+      write(chunk, _encoding, callback) {
+        fileLines.push(String(chunk));
+        callback();
+      },
+    });
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr.write as typeof process.stderr.write) = ((
+      chunk: string | Uint8Array,
+      encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+      cb?: (err?: Error | null) => void,
+    ) => {
+      stderrWrites.push(String(chunk));
+      if (typeof encodingOrCb === "function") encodingOrCb();
+      else cb?.();
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const logger = new PraanaLogger({ domain: "app", appFileStream: fileStream });
+      logger
+        .withStderrSuppressed()
+        .warn("Failed to open memory db", { cause: new Error("boom") });
+
+      expect(stderrWrites.join("")).toBe("");
+      expect(fileLines.join("")).toContain("Failed to open memory db");
+    } finally {
+      process.stderr.write = origWrite;
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+      else delete process.env.VITEST;
     }
   });
 
