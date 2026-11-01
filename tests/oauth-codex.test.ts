@@ -180,6 +180,39 @@ describe("Codex browser exchange and refresh", () => {
     expect(notices.some((message) => message.includes("callback unavailable"))).toBe(true);
     expect(notices.some((message) => message.includes("EADDRINUSE"))).toBe(false);
   });
+  it("does not surface a local-callback-failed notice when the login aborts during the callback wait", async () => {
+    const abort = new AbortController();
+    const notices: string[] = [];
+    const oauth = createOpenAICodexOAuth({
+      fetch: fakeFetch(() => { throw new Error("token endpoint should not be called"); }),
+      callbackServer: async ({ signal }) => ({
+        wait: () => new Promise<string>((_, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(signal.reason instanceof Error ? signal.reason : new Error("cancelled"));
+          }, { once: true });
+        }),
+        close() {},
+      }),
+    });
+    const outcomePromise = oauth.login({
+      signal: abort.signal,
+      notify: (event) => { if (event.type === "info") notices.push(event.message); },
+      prompt: async (prompt) => prompt.type === "select" ? "browser" : new Promise<string>(() => {}),
+    }).then(() => "settled" as const, (error: unknown) => error);
+    // Let the login reach the callback wait, then abort it.
+    await Bun.sleep(20);
+    abort.abort(new Error("cancelled"));
+    const outcome = await Promise.race([
+      outcomePromise,
+      Bun.sleep(400).then(() => "pending" as const),
+    ]);
+    // Teardown rejection, not a real callback failure: no paste notice.
+    expect(outcome).toBeInstanceOf(Error);
+    expect(outcome instanceof Error && outcome.message).toContain("cancelled");
+    expect(notices.some((message) => message.includes("Local callback failed"))).toBe(false);
+    expect(notices.some((message) => message.includes("paste the redirect URL"))).toBe(false);
+  });
+
   it("fails immediately when the provider denies the browser redirect", async () => {
     const fake = fakeServer();
     const abort = new AbortController();
@@ -322,6 +355,35 @@ describe("Codex browser exchange and refresh", () => {
     expect(notices.some((message) => message.includes("state mismatch"))).toBe(true);
   });
 
+  it("carries the last paste error into the next manual_code prompt message", async () => {
+    const messages: string[] = [];
+    const inputs = ["code=abc&state=bad", "good-code"];
+    const oauth = createOpenAICodexOAuth({
+      now: () => 1000,
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      fetch: fakeFetch((_url, init) => {
+        expect((init.body as URLSearchParams).get("code")).toBe("good-code");
+        return tokenResponse();
+      }),
+      callbackServer: async () => ({ wait: () => new Promise<string>(() => {}), close() {} }),
+    });
+    const cred = await oauth.login({
+      notify() {},
+      prompt: async (prompt) => {
+        if (prompt.type === "select") return "browser";
+        messages.push(prompt.message);
+        return inputs.shift()!;
+      },
+    });
+    expect(cred.accountId).toBe("account-1");
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toBe("Paste the redirect URL or authorization code (or finish in your browser):");
+    // The retry prompt must explain why the field reappeared.
+    expect(messages[1]).not.toBe(messages[0]);
+    expect(messages[1]).toContain("state mismatch");
+    expect(messages[1]).toContain("or finish in your browser");
+  });
+
   it("re-prompts the same way when there is no callback server", async () => {
     const notices: string[] = [];
     const inputs = ["", "manual-code"];
@@ -384,7 +446,13 @@ describe("Codex browser exchange and refresh", () => {
     })).rejects.toThrow(/state mismatch/);
     expect(prompts).toBe(5);
     expect(messages.every((message) => message.includes("or finish in your browser"))).toBe(false);
-    expect(messages.every((message) => message.startsWith("Paste the redirect URL or authorization code"))).toBe(true);
+    // The first prompt itself carries the callback-unavailable notice; later
+    // retries carry the last paste error.
+    expect(messages[0]).toBe("Local callback unavailable (127.0.0.1:1455). Paste the redirect URL or authorization code:");
+    for (let i = 1; i < messages.length; i++) {
+      expect(messages[i]).toContain("state mismatch");
+      expect(messages[i]).toContain("Paste the redirect URL or authorization code:");
+    }
     expect(notices.filter((message) => message.includes("state mismatch"))).toHaveLength(5);
   });
 

@@ -193,19 +193,25 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
         bindFailure = code || (error instanceof Error ? error.message : String(error));
       }
       interaction.notify({ type: "auth_url", url: buildAuthorizeUrl(challenge, state), instructions: NOTICE });
+      // The callback-unavailable notice is carried into the first paste prompt
+      // itself: the wizard/login overlay render the message channel only on the
+      // status step, so a notice fired while the paste prompt is open would
+      // never be seen.
+      let lastError: string | undefined;
       if (!callback) {
+        const unavailable = bindFailure
+          ? `Local callback unavailable (${bindFailure})`
+          : "Local callback unavailable (127.0.0.1:1455)";
         interaction.notify({
           type: "info",
-          message: bindFailure
-            ? `Local callback unavailable (${bindFailure}); paste the redirect URL or authorization code below.`
-            : "Local callback unavailable (127.0.0.1:1455); paste the redirect URL or authorization code below.",
+          message: `${unavailable}; paste the redirect URL or authorization code below.`,
         });
+        lastError = unavailable;
       }
       const manualMessage = callback
         ? "Paste the redirect URL or authorization code (or finish in your browser):"
         : "Paste the redirect URL or authorization code:";
       const manual = async () => {
-        let lastError: Error | undefined;
         // A live callback can still win, so a bad paste must not exhaust the login.
         const attemptLimit = callback ? Number.POSITIVE_INFINITY : 5;
         for (let attempt = 1; attempt <= attemptLimit; attempt++) {
@@ -213,7 +219,10 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
           let input: string;
           try {
             input = await interaction.prompt({
-              type: "manual_code", message: manualMessage,
+              type: "manual_code",
+              // Carry the last paste error into this prompt so the retry screen
+              // explains why the field reappeared.
+              message: lastError ? `${lastError}. ${manualMessage}` : manualMessage,
               signal: manualAbort.signal,
             });
           } catch (error) {
@@ -228,15 +237,18 @@ export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
             // The callback can abort this prompt after a stale paste resolves.
             if (error instanceof CodexManualPromptSuperseded) throw error;
             if (manualAbort.signal.aborted && !signal.aborted) throw new CodexManualPromptSuperseded();
-            lastError = error instanceof Error ? error : new Error(String(error));
-            interaction.notify({ type: "info", message: lastError.message });
+            lastError = error instanceof Error ? error.message : String(error);
+            interaction.notify({ type: "info", message: lastError });
           }
         }
-        throw lastError ?? new Error("Missing OpenAI Codex authorization code");
+        throw new Error(lastError ?? "Missing OpenAI Codex authorization code");
       };
       const callbackTask = callback
         ? callback.wait().catch((error: unknown) => {
-            if (ignoreCallbackError) return new Promise<string>(() => {});
+            // Esc and the 10-minute timeout abort the callback server before
+            // ignoreCallbackError is set; that teardown rejection is not a
+            // local callback failure and must not surface a paste notice.
+            if (ignoreCallbackError || signal.aborted) return new Promise<string>(() => {});
             if (error instanceof OAuthCallbackDeniedError) throw error;
             const code = (error as { code?: string }).code;
             const detail = code || (error instanceof Error ? error.message : String(error));
