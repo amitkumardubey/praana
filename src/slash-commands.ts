@@ -77,32 +77,42 @@ export interface SlashCommandMeta {
   argumentHint?: string;
   aliases?: string[];
   category: SlashCommandCategory;
+  /** Session-ending or state-wiping. The palette reads this instead of a name list. */
+  destructive?: true;
 }
 
+/**
+ * Curated palette order. Frequently useful, non-destructive commands come
+ * first (the palette's initial highlight is the first entry, so `/` + Enter
+ * must be harmless); session-ending / state-wiping commands are last. Keep the
+ * category on every entry — grouping is by usefulness, not by category.
+ * `destructive: true` is what the palette uses to keep that tail last.
+ */
 export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
-  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session" },
-  { name: "/state", description: "List working-memory state objects", category: "Insight" },
-  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
-  { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
-  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
-  { name: "/events", description: "Show recent event-log entries", category: "Insight" },
-  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/help", description: "Show all commands", category: "Insight" },
   { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>", category: "Model & Config" },
   { name: "/sessions", description: "List past sessions", category: "Session" },
-  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
-  { name: "/debug", description: "Toggle debug mode", category: "Tools" },
+  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
+  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
+  { name: "/state", description: "List working-memory state objects", category: "Insight" },
+  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
+  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/events", description: "Show recent event-log entries", category: "Insight" },
+  { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
+  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
   { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off", category: "Model & Config" },
   { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh", category: "Model & Config" },
-  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
-  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go", category: "Tools" },
-  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
+  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
+  { name: "/debug", description: "Toggle debug mode", category: "Tools" },
+  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/clear", description: "Reset in-session context", category: "Session" },
-  { name: "/new", description: "Start a new session", category: "Session" },
-  { name: "/help", description: "Show all commands", category: "Insight" },
+  // Destructive / session-ending commands — always last in the palette.
+  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config", destructive: true },
+  { name: "/new", description: "Start a new session", category: "Session", destructive: true },
+  { name: "/clear", description: "Reset in-session context", category: "Session", destructive: true },
+  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session", destructive: true },
 ];
 
 const HELP_LINE_WIDTH = 66;

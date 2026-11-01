@@ -6,13 +6,15 @@ Install options, configuration, commands and known limitations for the current r
 
 ### Installer scripts (no Bun)
 
-**Linux / macOS** (bash, zsh, WSL):
+**Linux / macOS** (POSIX `sh`; works from bash, zsh and WSL):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 ```
 
-**Windows** (PowerShell — use this instead of `curl | bash`):
+The installer needs `curl`, `tar` and the standard POSIX tools (`sha256sum` or `shasum`) on `PATH` (bare Debian/Ubuntu: `apt-get install -y curl tar coreutils`). Alpine/musl is not supported on this path; use `bun add -g praana` instead.
+
+**Windows** (PowerShell — use this instead of `curl | sh`):
 
 ```powershell
 irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex
@@ -24,7 +26,7 @@ From **cmd.exe**:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex"
 ```
 
-Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version. Linux musl (Alpine) is not supported on this path; use `bun add -g praana` instead.
+Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version.
 
 Upgrade later with `praana upgrade` (alias `praana update`) — it re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
 
@@ -57,6 +59,8 @@ tar xzf praana-linux-x64.tar.gz
 ./praana --version
 praana doctor   # native: available (…)
 ```
+
+`praana doctor` exits non-zero when a check fails or configuration warnings were printed. A run where every check passes but some printed a `⚠` (for example embedder weights not downloaded yet) ends with `All checks passed (N warnings).` N counts every warning line, indented or not. Configuration warnings are indented (`  ⚠ …`) and fail the run, so that summary stays `Some checks failed.`
 
 ### PATH for global install
 
@@ -129,6 +133,14 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+## Slash command palette
+
+Typing `/` in the prompt opens the palette. With an empty query it lists commands by usefulness, not alphabetically: `/help`, `/model`, `/sessions`, `/settings`, `/stats`, … first, and the session-ending or state-wiping commands (`/logout`, `/new`, `/clear`, `/exit`/`/quit`) last — so `/` + Enter never quits or wipes anything. Typing a query ranks by match quality instead (typing `exit` still puts `/exit` first).
+
+## Exit codes
+
+A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a session exists, including the first session created by the first-run setup wizard, and when setup was not needed. Exit code `1` is used only when shutdown happens with no session and setup was cancelled, failed, pending, or succeeded but the session never started.
+
 ## Slash commands
 
 | Command | Purpose |
@@ -176,7 +188,8 @@ Unknown ids resolve against the bundled pi-ai catalog first, then against the pr
 - A trailing **`\` + Enter** — continue the line on the next line, but only when the caret is at the end of the current line (end of the buffer, or immediately before a newline). An odd run of trailing backslashes continues the line (one backslash is dropped and a real newline inserted); an even run — for example type two to send a literal trailing backslash — submits with all backslashes kept. A backslash elsewhere mid-line is submitted literally.
 - **Esc** — close autocomplete, leave transcript focus, or dismiss an overlay
 - **`!<command>`** — run a shell command directly, the same as `/shell <command>` (a bare `!` shows `Usage: !<command>`)
-- **Ctrl+C** — abort a running turn; when idle, clear the input, or exit if the input is already empty
+- **Mouse** — clicking or drag-selecting text in the transcript never takes the keyboard away from the prompt: you can keep typing (and paste) right after a selection. `F9` is the deliberate exception: it hands the keyboard to the transcript for entry navigation until `Esc`.
+- **Ctrl+C** — copies the selected text when something is selected (any non-empty selection counts, including whitespace-only selections). It uses a native clipboard tool when one is available (wl-copy/xclip/xsel on Linux, pbcopy on macOS, clip.exe on Windows/WSL) and otherwise falls back to the terminal clipboard via OSC 52 — which depends on your terminal supporting it; in that case the toast says “Sent N characters to the terminal clipboard (OSC 52)”. Without a selection it interrupts a running turn, clears the input, or exits when idle with an empty input. A selection copies in the palette, model, and slash overlays too; in the palette and model overlays Ctrl+C with no selection closes the overlay (like Escape) and additionally interrupts a running turn when one is in progress; the modal setup / consent / login / logout screens keep their own Ctrl+C (cancel).
 - **F9** — focus the transcript (Up/Down move the selection, Enter expands a tool row, Esc returns to the prompt)
 
 `/help` prints this same key list. The result overlay scrolls with Up/Down/PageUp/PageDown when the text is taller than the frame (`↑↓ scroll · enter/esc close`); scroll keys never dismiss the overlay — only Esc/Enter or any other key does.
