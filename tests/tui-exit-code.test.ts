@@ -60,4 +60,22 @@ describe("resolveShutdownExitCode", () => {
       resolveShutdownExitCode({ setupOutcome: "cancelled", hasSession: true }),
     ).toBe(0);
   });
+
+  it("exits 0 when a session exists though setup never completed", () => {
+    expect(
+      resolveShutdownExitCode({ setupOutcome: "pending", hasSession: true }),
+    ).toBe(0);
+  });
+
+  it("exits 0 when a session exists despite failed setup", () => {
+    expect(
+      resolveShutdownExitCode({ setupOutcome: "failed", hasSession: true }),
+    ).toBe(0);
+  });
+
+  it("exits 0 when a session exists despite a failed start", () => {
+    expect(
+      resolveShutdownExitCode({ setupOutcome: "start-failed", hasSession: true }),
+    ).toBe(0);
+  });
 });
