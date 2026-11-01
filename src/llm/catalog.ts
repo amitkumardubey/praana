@@ -162,6 +162,65 @@ export const CURATED_MODELS: Record<string, ModelCatalogEntry[]> = {
       contextWindow: 200_000,
     },
   ],
+  // Codex CLI cache order. gpt-reserve and codex-auto-review are omitted.
+  "openai-codex": [
+    {
+      id: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      provider: "openai-codex",
+      contextWindow: 500_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-6-astra",
+      name: "GPT-6 Astra",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-6.1-terra",
+      name: "GPT-6.1 Terra",
+      provider: "openai-codex",
+      contextWindow: 500_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-6-sol",
+      name: "GPT-6 Sol",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-5.6-sol",
+      name: "GPT-5.6 Sol",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-5.6-terra",
+      name: "GPT-5.6 Terra",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+    {
+      id: "gpt-5.6-luna",
+      name: "GPT-5.6 Luna",
+      provider: "openai-codex",
+      contextWindow: 272_000,
+      reasoning: true,
+    },
+  ],
   ollama: [
     {
       id: "llama3.3",

@@ -23,19 +23,32 @@
 // Legacy entries without `type` and with a non-empty `key` are treated as api_key.
 
 import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
   chmodSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
   renameSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { appHomePath } from "./app-identity.js";
+import {
+  acquireAsync,
+  acquireSync,
+  CredentialLockTimeoutError,
+  resetCredentialLocksForTests,
+  type CredentialLock,
+} from "./credential-lock.js";
 import { getAppLogger } from "./logger.js";
 
 const FILE_MODE = 0o600;
+/** Store-lock wait. Holders only rewrite the file synchronously, so the wait stays short. */
+const STORE_LOCK_WAIT_MS = 2_000;
+const REFRESH_LOCK_POLL_MS = 100;
 
 /**
  * Resolve the credentials file path lazily on each call so that
@@ -74,7 +87,148 @@ interface CredentialsFile {
   [providerId: string]: StoredCredential;
 }
 
+interface CredentialFileIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+}
+
 let memoryCache: CredentialsFile | null = null;
+/** @internal One-shot failure injected before persistCredentials replaces the file. */
+let persistFailureForTests: Error | null = null;
+let credentialsIdentity: CredentialFileIdentity | null = null;
+let credentialContentReads = 0;
+/**
+ * Reentrancy for the store lock only. The counter is safe because the critical
+ * section is synchronous: no other turn can run until it returns. It must never
+ * stay raised across an await.
+ */
+let storeLockDepth = 0;
+const heldRefreshLocks = new Map<string, CredentialLock>();
+
+function credentialsLockPath(): string {
+  return join(dirname(credentialsFilePath()), "credentials.lock.db");
+}
+
+function refreshLockPath(provider: string): string {
+  const safe = provider.replace(/[^A-Za-z0-9._-]/g, "_");
+  return join(dirname(credentialsFilePath()), `credentials.refresh-${safe}.lock.db`);
+}
+
+/**
+ * Store lock. Synchronous on purpose: the caller must not await while it is
+ * held. Waiters block at most 2 seconds because a holder only reads and
+ * rewrites credentials.json. The operating system drops the lock if this
+ * process dies.
+ */
+function withStoreLockSync<T>(fn: () => T): T {
+  if (storeLockDepth > 0) return fn();
+  const lock = acquireSync(credentialsLockPath(), { waitMs: STORE_LOCK_WAIT_MS });
+  storeLockDepth += 1;
+  try {
+    return fn();
+  } finally {
+    storeLockDepth -= 1;
+    lock.release();
+  }
+}
+
+/** Short critical section around a credentials.json read or rewrite. Never await inside `fn`. */
+export function withCredentialStoreLockSync<T>(fn: () => T): T {
+  return withStoreLockSync(fn);
+}
+
+/**
+ * Per-provider refresh lock. Waiters sleep asynchronously so the event loop
+ * stays free while another session refreshes. Returns false when `waitMs` elapses,
+ * including when another refresh in this process still holds the lock.
+ * The rotated credential is persisted before the caller releases this lock.
+ */
+export async function waitForProviderRefreshLock(
+  provider: string,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    const lock = await acquireAsync(refreshLockPath(provider), {
+      waitMs,
+      pollMs: REFRESH_LOCK_POLL_MS,
+      signal,
+    });
+    heldRefreshLocks.set(provider, lock);
+    return true;
+  } catch (err) {
+    if (err instanceof CredentialLockTimeoutError) return false;
+    throw err;
+  }
+}
+
+export function releaseProviderRefreshLock(provider: string): void {
+  const lock = heldRefreshLocks.get(provider);
+  heldRefreshLocks.delete(provider);
+  lock?.release();
+}
+
+function cloneCredentials(creds: CredentialsFile): CredentialsFile {
+  return structuredClone(creds);
+}
+
+/** Copy the corrupt bytes. The original path stays until a later successful save. */
+function copyCorruptCredentials(credPath: string): void {
+  const backup = `${credPath}.corrupt-${Date.now()}`;
+  writeFileSync(backup, readFileSync(credPath), { mode: FILE_MODE });
+  try {
+    chmodSync(backup, FILE_MODE);
+  } catch {
+    // chmod can fail on some platforms (e.g. Windows). Best-effort.
+  }
+  getAppLogger().child("credentials").warn(
+    `Copied a corrupt credentials file to ${backup}`,
+    { code: "CREDENTIALS_READ_FAILED" },
+  );
+}
+
+/**
+ * Invalid JSON is an empty store for this mutation. Other read errors still throw.
+ * The cache is not cleared here.
+ */
+function readCredentialsForMutation(): { creds: CredentialsFile; corruptPath: string | null } {
+  try {
+    return { creds: readCredentialsFromDisk(), corruptPath: null };
+  } catch (err) {
+    if (!(err instanceof Error) || err.name !== "CredentialStoreReadError") throw err;
+    const cause = (err as { cause?: unknown }).cause;
+    if (!(cause instanceof SyntaxError)) throw err;
+    return { creds: {}, corruptPath: credentialsFilePath() };
+  }
+}
+
+/**
+ * Invalid JSON is an empty store for this mutation. After the mutator returns,
+ * the corrupt bytes are copied to `credentials.json.corrupt-<timestamp>` (mode
+ * 0600). The original path is replaced only by the atomic rename inside
+ * persistCredentials. If the mutator throws, nothing is copied and the cache
+ * and the file stay as they were. If persisting the new store throws, the
+ * original path is untouched and the cache is unchanged; the backup copy is
+ * left in place. Other read errors still throw.
+ */
+function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
+  return withStoreLockSync(() => {
+    const loaded = readCredentialsForMutation();
+    const creds = cloneCredentials(loaded.creds);
+    const result = mutator(creds);
+    if (loaded.corruptPath) copyCorruptCredentials(loaded.corruptPath);
+    persistCredentials(creds);
+    return result;
+  });
+}
+
+/** @internal A throw leaves the original credentials file and the cache unchanged. */
+export function mutateCredentialsForTests(mutator: (creds: CredentialsFile) => void): void {
+  runCredentialMutation(mutator);
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -122,30 +276,137 @@ function sanitizeCredentials(parsed: unknown): CredentialsFile {
   return out;
 }
 
-function loadCredentials(): CredentialsFile {
-  if (memoryCache) return memoryCache;
+function identityOf(stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): CredentialFileIdentity {
+  return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs };
+}
 
+function sameCredentialFile(left: CredentialFileIdentity, right: CredentialFileIdentity): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs
+    && left.ctimeMs === right.ctimeMs;
+}
+
+function rememberCredentialsIdentity(): void {
+  try {
+    credentialsIdentity = identityOf(statSync(credentialsFilePath()));
+  } catch {
+    credentialsIdentity = null;
+  }
+}
+
+function noteCredentialContentRead(): void {
+  credentialContentReads += 1;
+}
+
+/** How many times this process has read credentials.json contents. */
+export function credentialDiskReadCountForTests(): number {
+  return credentialContentReads;
+}
+
+/**
+ * Memory-cache lookup that does not read file contents.
+ * `unchanged` is false when the cache is cold or the file's device, inode,
+ * size, or timestamps differ from the read that filled the cache.
+ */
+export function readCachedOAuthIfUnchanged(
+  provider: string,
+): { unchanged: true; token: StoredOAuthCredential | undefined } | { unchanged: false } {
+  if (memoryCache === null || credentialsIdentity === null) return { unchanged: false };
+  let identity: CredentialFileIdentity;
+  try {
+    identity = identityOf(statSync(credentialsFilePath()));
+  } catch {
+    return { unchanged: false };
+  }
+  if (!sameCredentialFile(credentialsIdentity, identity)) return { unchanged: false };
+  const entry = memoryCache[provider];
+  if (!entry || !isOAuthEntry(entry)) return { unchanged: true, token: undefined };
+  return { unchanged: true, token: entry };
+}
+
+function credentialStoreReadError(err: unknown): Error {
+  const code = (err as NodeJS.ErrnoException).code;
+  const error = new Error(
+    `Failed to read the credentials store${code ? ` (${code})` : ""}; left it unchanged`,
+  );
+  error.name = "CredentialStoreReadError";
+  (error as Error & { cause?: unknown }).cause = err;
+  return error;
+}
+
+/** Always read the file. Locked mutations must not trust memoryCache. Throws when the file cannot be read. */
+function readCredentialsFromDisk(): CredentialsFile {
   const credPath = credentialsFilePath();
   if (!existsSync(credPath)) {
     memoryCache = {};
+    credentialsIdentity = null;
     return memoryCache;
   }
-
+  let fd: number | undefined;
   try {
-    const raw = readFileSync(credPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
+    fd = openSync(credPath, "r");
+    const identity = identityOf(fstatSync(fd));
+    const raw = readFileSync(fd, "utf-8");
+    noteCredentialContentRead();
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch (err) {
+      throw credentialStoreReadError(err);
+    }
     memoryCache = sanitizeCredentials(parsed);
+    credentialsIdentity = identity;
+    return memoryCache;
+  } catch (err) {
+    if (err instanceof Error && err.name === "CredentialStoreReadError") throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      memoryCache = {};
+      credentialsIdentity = null;
+      return memoryCache;
+    }
+    throw credentialStoreReadError(err);
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+  }
+}
+
+/** Disk read of one OAuth entry. Does not take the credential lock. */
+export function readOAuthTokenFromDisk(provider: string): StoredOAuthCredential | undefined {
+  const entry = readCredentialsFromDisk()[provider];
+  if (!entry || !isOAuthEntry(entry)) return undefined;
+  return entry;
+}
+
+function loadCredentials(): CredentialsFile {
+  if (memoryCache) return memoryCache;
+  try {
+    return readCredentialsFromDisk();
   } catch (err) {
     getAppLogger().child("credentials").warn(
       "Failed to read credentials store, treating as empty",
-      { cause: err as Error, code: "CREDENTIALS_READ_FAILED" },
+      { cause: err instanceof Error ? err : new Error(String(err)), code: "CREDENTIALS_READ_FAILED" },
     );
     memoryCache = {};
+    credentialsIdentity = null;
+    return memoryCache;
   }
-  return memoryCache;
+}
+
+/** @internal The next persistCredentials call throws and does not replace the file. */
+export function failNextCredentialPersistForTests(error: Error): void {
+  persistFailureForTests = error;
 }
 
 function persistCredentials(creds: CredentialsFile): void {
+  if (persistFailureForTests) {
+    const error = persistFailureForTests;
+    persistFailureForTests = null;
+    throw error;
+  }
   const credPath = credentialsFilePath();
   const dir = dirname(credPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -167,6 +428,7 @@ function persistCredentials(creds: CredentialsFile): void {
   }
 
   memoryCache = creds;
+  rememberCredentialsIdentity();
 }
 
 /**
@@ -185,10 +447,10 @@ export function getApiKey(provider: string): string | undefined {
  * (including replacing a prior oauth bundle).
  */
 export function setApiKey(provider: string, key: string): void {
-  const creds = loadCredentials();
-  // Trim paste noise (leading/trailing whitespace / newlines) that breaks auth.
-  creds[provider] = { type: "api_key", key: key.trim(), savedAt: Date.now() };
-  persistCredentials(creds);
+  runCredentialMutation((creds) => {
+    // Trim paste noise (leading/trailing whitespace / newlines) that breaks auth.
+    creds[provider] = { type: "api_key", key: key.trim(), savedAt: Date.now() };
+  });
 }
 
 /** Store an OAuth token bundle for a provider (overwrites any prior entry). */
@@ -203,31 +465,31 @@ export function setOAuthToken(
     [key: string]: unknown;
   },
 ): void {
-  const creds = loadCredentials();
-  const access = String(credsBundle.access);
-  const refresh = String(credsBundle.refresh);
-  const expires = Number(credsBundle.expires);
-  const entry: StoredOAuthCredential = {
-    type: "oauth",
-    access,
-    refresh,
-    expires,
-    savedAt: Date.now(),
-  };
-  for (const [k, v] of Object.entries(credsBundle)) {
-    if (
-      k === "type" ||
-      k === "access" ||
-      k === "refresh" ||
-      k === "expires" ||
-      k === "savedAt"
-    ) {
-      continue;
+  runCredentialMutation((creds) => {
+    const access = String(credsBundle.access);
+    const refresh = String(credsBundle.refresh);
+    const expires = Number(credsBundle.expires);
+    const entry: StoredOAuthCredential = {
+      type: "oauth",
+      access,
+      refresh,
+      expires,
+      savedAt: Date.now(),
+    };
+    for (const [k, v] of Object.entries(credsBundle)) {
+      if (
+        k === "type" ||
+        k === "access" ||
+        k === "refresh" ||
+        k === "expires" ||
+        k === "savedAt"
+      ) {
+        continue;
+      }
+      entry[k] = v;
     }
-    entry[k] = v;
-  }
-  creds[provider] = entry;
-  persistCredentials(creds);
+    creds[provider] = entry;
+  });
 }
 
 /** Get the OAuth token bundle for a provider, if present. */
@@ -248,11 +510,11 @@ export function hasOAuthToken(provider: string): boolean {
  * Returns true if an entry was removed, false if none existed.
  */
 export function removeCredentials(provider: string): boolean {
-  const creds = loadCredentials();
-  if (!(provider in creds)) return false;
-  delete creds[provider];
-  persistCredentials(creds);
-  return true;
+  return runCredentialMutation((creds) => {
+    if (!(provider in creds)) return false;
+    delete creds[provider];
+    return true;
+  });
 }
 
 /** @deprecated Alias for {@link removeCredentials}. */
@@ -357,5 +619,17 @@ export function ensureCredentialsFileMode(): void {
 
 /** Test helper — reset in-memory cache so the next read hits disk. */
 export function resetCredentialStoreForTests(): void {
+  persistFailureForTests = null;
   memoryCache = null;
+  credentialsIdentity = null;
+  credentialContentReads = 0;
+  storeLockDepth = 0;
+  for (const lock of heldRefreshLocks.values()) lock.release();
+  heldRefreshLocks.clear();
+  resetCredentialLocksForTests();
+}
+
+/** @internal Lock database path for store or refresh locks. */
+export function credentialLockPathForTests(kind: "store" | "refresh", provider = "openai-codex"): string {
+  return kind === "store" ? credentialsLockPath() : refreshLockPath(provider);
 }

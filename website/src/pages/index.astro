@@ -14,7 +14,7 @@ const faq = [
   },
   {
     q: "How do I install?",
-    a: "No Bun: Linux/macOS — curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash. Windows (PowerShell) — irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex. With Bun: bun add -g praana or bunx praana.",
+    a: "No Bun: Linux/macOS — curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh. Windows (PowerShell) — irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex. With Bun: bun add -g praana or bunx praana.",
   },
   {
     q: "What do I need to run it?",
@@ -54,7 +54,7 @@ const faqStructuredData = {
     </p>
     <div class="install-block">
       <pre><code># Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh | sh
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | iex</code></pre>
@@ -63,7 +63,7 @@ irm https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1 | i
       <span class="install-or">or with Bun</span>
       <pre><code>bun add -g praana</code></pre>
     </div>
-    <p class="prereq">Installers: no Bun needed. <code>bun add -g</code>: <a href="https://bun.sh/install">Bun ≥ 1.4</a></p>
+    <p class="prereq">Installers: no Bun needed, but need <code>curl</code>, <code>tar</code> and the standard POSIX tools (<code>sha256sum</code> or <code>shasum</code>); Alpine/musl is not supported by the standalone binary. <code>bun add -g</code>: <a href="https://bun.sh/install">Bun ≥ 1.4</a></p>
   </section>
 
   <div class="prose">

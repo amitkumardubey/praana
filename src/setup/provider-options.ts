@@ -116,19 +116,43 @@ export function resolveStoredProviderHint(
   return {};
 }
 
-/** Build pi-tui select items for the provider picker (detected providers first). */
+/**
+ * Curated "popular hosted" group, in this fixed order. Kept ahead of the
+ * alphabetical tail so new users see familiar names first; only providers
+ * present in the registry are shown, and ones that are already available
+ * stay in the available group ahead of this list.
+ */
+export const POPULAR_PROVIDER_ORDER: readonly string[] = [
+  "openai",
+  "anthropic",
+  "google",
+  "openrouter",
+  "deepseek",
+  "groq",
+  "mistral",
+];
+
+/**
+ * Build pi-tui select items for the provider picker.
+ * Order: already-available providers (alphabetical) → curated popular hosted
+ * group (fixed order) → remaining providers (alphabetical) → custom endpoint.
+ */
 export function buildProviderSelectItems(): SelectItem[] {
   const all = listKnownProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p));
   const availableSet = new Set(
     listAvailableProviders().filter((p) => !SETUP_UNSUPPORTED_PROVIDERS.has(p)),
   );
 
-  const sorted = [...all].sort((a, b) => {
-    const aAvail = availableSet.has(a);
-    const bAvail = availableSet.has(b);
-    if (aAvail !== bAvail) return aAvail ? -1 : 1;
-    return a.localeCompare(b);
-  });
+  const available = [...all]
+    .filter((p) => availableSet.has(p))
+    .sort((a, b) => a.localeCompare(b));
+  const popular = POPULAR_PROVIDER_ORDER.filter(
+    (p) => all.includes(p) && !availableSet.has(p),
+  );
+  const rest = [...all]
+    .filter((p) => !availableSet.has(p) && !POPULAR_PROVIDER_ORDER.includes(p))
+    .sort((a, b) => a.localeCompare(b));
+  const sorted = [...available, ...popular, ...rest];
 
   const items: SelectItem[] = sorted.map((provider) => {
     const envKey = getProviderEnvKey(provider);
@@ -173,16 +197,15 @@ export function buildProviderSelectItems(): SelectItem[] {
     };
   });
 
-  // Prepend the custom OpenAI-compatible provider option.
-  return [
-    {
-      value: CUSTOM_PROVIDER_VALUE,
-      label: "Custom OpenAI-compatible endpoint",
-      description: "vLLM, LM Studio, Ollama, local llama.cpp, etc.",
-      aliases: ["custom", "vllm", "lmstudio", "ollama", "llamacpp", "compatible"],
-    },
-    ...items,
-  ];
+  // The custom OpenAI-compatible endpoint stays last: it targets local or
+  // self-hosted servers, so hosted providers take precedence in the list.
+  items.push({
+    value: CUSTOM_PROVIDER_VALUE,
+    label: "Custom OpenAI-compatible endpoint",
+    description: "Local or self-hosted server (Ollama, LM Studio, vLLM, llama.cpp)",
+    aliases: ["custom", "vllm", "lmstudio", "ollama", "llamacpp", "compatible"],
+  });
+  return items;
 }
 
 /** Providers with a usable key (credential store or env), excluding setup-unsupported ones. */
