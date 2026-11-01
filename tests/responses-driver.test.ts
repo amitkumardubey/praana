@@ -192,15 +192,69 @@ describe("Responses stream termination", () => {
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
 
-  it("Codex errors when a delta-only tool call is cut off and publishes no tool call", async () => {
+  it("rejects a function-call arguments delta when no call was announced", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
-      { type: "response.function_call_arguments.delta", delta: '{"path":"a.t' },
+      { type: "response.function_call_arguments.delta", delta: '{"path":"a.ts"}' },
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
     ]);
-    expect(events.map((event) => event.type)).toEqual(["tool_call_start", "tool_call_delta", "error"]);
-    const error = events[2];
-    expect(error?.type === "error" && error.error.message).toBe("The response was cut off while the model was calling a tool");
-    expect(events.some((event) => event.type === "tool_call_end" || event.type === "done")).toBe(false);
+    expect(events.map((event) => event.type)).toEqual(["error"]);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toBe(
+      "OpenAI Responses stream received function call arguments without an open call",
+    );
+    expect(events.some((event) => event.type === "tool_call_start" || event.type === "tool_call_end" || event.type === "done")).toBe(false);
+  });
+
+  it("applies item_id-only deltas to the call opened without output_index", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", item: { type: "function_call", id: "fc-0", call_id: "call-0", name: "shell", arguments: "{\"cmd\":\"true\"}" } },
+      { type: "response.output_item.added", item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file", arguments: "" } },
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '{"path":' },
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '"a.ts"}' },
+      completed,
+    ]);
+    const shell = { id: "call-0", name: "shell", args: { cmd: "true" }, rawArgs: '{"cmd":"true"}' };
+    const read = { id: "call-1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' };
+    expect(events).toEqual([
+      { type: "tool_call_start", id: "call-0", name: "shell" },
+      { type: "tool_call_start", id: "call-1", name: "read_file" },
+      { type: "tool_call_delta", id: "call-1", argsDelta: '{"path":' },
+      { type: "tool_call_delta", id: "call-1", argsDelta: '"a.ts"}' },
+      { type: "tool_call_end", toolCall: shell },
+      { type: "tool_call_end", toolCall: read },
+      { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [shell, read] } },
+    ]);
+  });
+
+  it("publishes one call when item_id deltas follow an announced call that is not at index 0", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file", arguments: "" } },
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '{"path":' },
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '"a.ts"}' },
+      completed,
+    ]);
+    const read = { id: "call-1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' };
+    expect(events.filter((event) => event.type === "tool_call_start")).toEqual([
+      { type: "tool_call_start", id: "call-1", name: "read_file" },
+    ]);
+    expect(events.filter((event) => event.type === "tool_call_end")).toEqual([
+      { type: "tool_call_end", toolCall: read },
+    ]);
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.message.toolCalls).toEqual([read]);
+  });
+
+  it("ignores an empty arguments delta for an open call", async () => {
+    const added = { type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } };
+    const withoutEmpty = await run(req, { bearerToken: jwt() }, [added, completed]);
+    const withEmpty = await run(req, { bearerToken: jwt() }, [
+      added,
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: "" },
+      completed,
+    ]);
+    expect(withEmpty).toEqual(withoutEmpty);
+    expect(withEmpty.some((event) => event.type === "error")).toBe(false);
   });
 
   it.each(["failed", "cancelled"] as const)("Codex treats response.done status %s as a failure", async (status) => {

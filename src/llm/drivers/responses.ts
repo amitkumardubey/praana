@@ -198,6 +198,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     const openFunctionCalls = new Set<number | string>();
     const functionCallIndexById = new Map<string, number | string>();
     const toolCutoffMessage = "The response was cut off while the model was calling a tool";
+    const unannouncedToolDeltaMessage = "OpenAI Responses stream received function call arguments without an open call";
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
       const resp = parsed.response as {
         error?: { message?: string };
@@ -325,17 +326,25 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (type === "response.function_call_arguments.delta") {
-          const index = (parsed.output_index as number | undefined) ?? 0;
-          const res = accumulator.processChunk({
-            index,
-            argsDelta: String(parsed.delta ?? ""),
-          });
-          // A delta can open a call without output_item.added. Track it so an
-          // incomplete response cannot flush a repaired, never-closed call.
-          if (res.started) {
-            openFunctionCalls.add(index);
-            yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+          const explicit = parsed.output_index;
+          const itemId = typeof parsed.item_id === "string" ? parsed.item_id : undefined;
+          const index = typeof explicit === "number"
+            ? explicit
+            : itemId !== undefined
+              ? functionCallIndexById.get(itemId)
+              : undefined;
+          // A delta may only extend a call output_item.added already opened.
+          if (index === undefined || !openFunctionCalls.has(index)) {
+            yield {
+              type: "error",
+              error: new Error(unannouncedToolDeltaMessage),
+              retryable: false,
+            };
+            return;
           }
+          const argsDelta = typeof parsed.delta === "string" ? parsed.delta : "";
+          if (argsDelta === "") continue;
+          const res = accumulator.processChunk({ index, argsDelta });
           if (res.delta) {
             yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
           }
