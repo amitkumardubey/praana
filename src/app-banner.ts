@@ -210,7 +210,7 @@ const SLASH_COMMANDS_HELP_BLOCK = [
   "  /new                     Start a new session (reload config)",
   "",
   "  Status bar (above prompt): model, context, mode, repo, memory tiers, skills, task",
-  "  Ctrl+C                   Interrupt a running turn (idle: clear input or exit)",
+  "  Ctrl+C                   Copy the selection; else interrupt a turn (idle: clear input or exit)",
   "  /help                    Show this help",
   "",
   "  Tip: ~/.praana/AGENTS.md — global personal instructions loaded every session",

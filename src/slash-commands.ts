@@ -156,7 +156,7 @@ export function buildInAppHelpLines(): string[] {
     "  Esc — close autocomplete, overlays, or transcript focus",
     "  !<command> — run a shell command directly (same as /shell <command>)",
     "    A command is required after !; bare ! shows Usage: !<command>",
-    "  Ctrl+C — abort a running turn",
+    "  Ctrl+C — copy the selection; otherwise abort a running turn, clear the input, or exit when idle",
     "    Idle: clear the input, or exit when it is empty",
     "  F9 — focus the transcript",
     "    Up/Down move, Enter expands, Esc returns",
