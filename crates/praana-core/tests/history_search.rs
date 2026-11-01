@@ -5689,13 +5689,14 @@ fn fence_t5_seeded_writer_stress() {
                 let stop = Arc::clone(&stop);
                 let records = Arc::clone(&records);
                 scope.spawn(move || {
-                    let mut made = 0usize;
-                    // The cap only bounds a pathological run. It is high enough
-                    // that the writers are still alive when the rebuild takes
-                    // the write lock, so at least one attempt is queued behind
-                    // the swap instead of every writer exiting first.
-                    while !stop.load(Ordering::SeqCst) && made < 500 {
-                        made += 1;
+                    // Writers run until the test sets `stop`, which it does only
+                    // after a writer has observed HISTORY_FILE_REPLACED. A count
+                    // cap is not safe here: on a slow runner the writers could
+                    // use every attempt before the rebuild reaches the rename
+                    // window, leaving none to queue behind the swap. The
+                    // wall-clock deadline only bounds a pathological run.
+                    let started = Instant::now();
+                    while !stop.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(30) {
                         let id = OperationId(ulid::Ulid::generate());
                         let command = turn_submit_command(id);
                         let outcome = match reserve_operation_sync(&ledger, &command, history) {
