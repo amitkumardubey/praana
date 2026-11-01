@@ -20,6 +20,7 @@ import {
   getCredentialsFilePath,
   ensureCredentialsFileMode,
   mutateCredentialsForTests,
+  failNextCredentialPersistForTests,
   readCachedOAuthIfUnchanged,
   resetCredentialStoreForTests,
   type StoredOAuthCredential,
@@ -345,6 +346,27 @@ describe("resolveApiKey precedence", () => {
     })).toThrow("boom");
     expect(readFileSync(path)).toEqual(bytes);
     expect(readdirSync(dirname(path)).some((name) => name.includes(".corrupt-"))).toBe(false);
+    expect(getApiKey("openrouter")).toBe("sk-keep");
+  });
+
+  it("a failed save of a corrupt credentials file leaves the original file and cache unchanged", () => {
+    setApiKey("openrouter", "sk-keep");
+    const path = getCredentialsFilePath();
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes, { mode: 0o600 });
+    const error = new Error("no space left on device");
+    (error as NodeJS.ErrnoException).code = "ENOSPC";
+    failNextCredentialPersistForTests(error);
+    expect(() => mutateCredentialsForTests((creds) => {
+      creds["openrouter"] = { type: "api_key", key: "sk-new", savedAt: 1 };
+    })).toThrow("no space left on device");
+    expect(readFileSync(path)).toEqual(bytes);
+    const backups = readdirSync(dirname(path)).filter((name) => name.startsWith("credentials.json.corrupt-"));
+    expect(backups).toHaveLength(1);
+    const backupPath = join(dirname(path), backups[0]!);
+    expect(readFileSync(backupPath)).toEqual(bytes);
+    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".tmp"))).toBe(false);
     expect(getApiKey("openrouter")).toBe("sk-keep");
   });
 });

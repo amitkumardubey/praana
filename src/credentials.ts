@@ -96,6 +96,8 @@ interface CredentialFileIdentity {
 }
 
 let memoryCache: CredentialsFile | null = null;
+/** @internal One-shot failure injected before persistCredentials replaces the file. */
+let persistFailureForTests: Error | null = null;
 let credentialsIdentity: CredentialFileIdentity | null = null;
 let credentialContentReads = 0;
 /**
@@ -173,19 +175,24 @@ function cloneCredentials(creds: CredentialsFile): CredentialsFile {
   return structuredClone(creds);
 }
 
-function quarantineCorruptCredentials(credPath: string): void {
+/** Copy the corrupt bytes. The original path stays until a later successful save. */
+function copyCorruptCredentials(credPath: string): void {
   const backup = `${credPath}.corrupt-${Date.now()}`;
-  renameSync(credPath, backup);
+  writeFileSync(backup, readFileSync(credPath), { mode: FILE_MODE });
+  try {
+    chmodSync(backup, FILE_MODE);
+  } catch {
+    // chmod can fail on some platforms (e.g. Windows). Best-effort.
+  }
   getAppLogger().child("credentials").warn(
-    `Moved a corrupt credentials file to ${backup} and started a new store`,
+    `Copied a corrupt credentials file to ${backup}`,
     { code: "CREDENTIALS_READ_FAILED" },
   );
 }
 
 /**
- * Invalid JSON is an empty store for this mutation. The unreadable file is
- * moved aside only after the mutator returns, so a throw leaves the cache
- * and the file in place. Other read errors still throw.
+ * Invalid JSON is an empty store for this mutation. Other read errors still throw.
+ * The cache is not cleared here.
  */
 function readCredentialsForMutation(): { creds: CredentialsFile; corruptPath: string | null } {
   try {
@@ -198,18 +205,27 @@ function readCredentialsForMutation(): { creds: CredentialsFile; corruptPath: st
   }
 }
 
+/**
+ * Invalid JSON is an empty store for this mutation. After the mutator returns,
+ * the corrupt bytes are copied to `credentials.json.corrupt-<timestamp>` (mode
+ * 0600). The original path is replaced only by the atomic rename inside
+ * persistCredentials. If the mutator throws, nothing is copied and the cache
+ * and the file stay as they were. If persisting the new store throws, the
+ * original path is untouched and the cache is unchanged; the backup copy is
+ * left in place. Other read errors still throw.
+ */
 function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
   return withStoreLockSync(() => {
     const loaded = readCredentialsForMutation();
     const creds = cloneCredentials(loaded.creds);
     const result = mutator(creds);
-    if (loaded.corruptPath) quarantineCorruptCredentials(loaded.corruptPath);
+    if (loaded.corruptPath) copyCorruptCredentials(loaded.corruptPath);
     persistCredentials(creds);
     return result;
   });
 }
 
-/** @internal A throw must leave the cache and the file unchanged. */
+/** @internal A throw leaves the original credentials file and the cache unchanged. */
 export function mutateCredentialsForTests(mutator: (creds: CredentialsFile) => void): void {
   runCredentialMutation(mutator);
 }
@@ -380,7 +396,17 @@ function loadCredentials(): CredentialsFile {
   }
 }
 
+/** @internal The next persistCredentials call throws and does not replace the file. */
+export function failNextCredentialPersistForTests(error: Error): void {
+  persistFailureForTests = error;
+}
+
 function persistCredentials(creds: CredentialsFile): void {
+  if (persistFailureForTests) {
+    const error = persistFailureForTests;
+    persistFailureForTests = null;
+    throw error;
+  }
   const credPath = credentialsFilePath();
   const dir = dirname(credPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -593,6 +619,7 @@ export function ensureCredentialsFileMode(): void {
 
 /** Test helper — reset in-memory cache so the next read hits disk. */
 export function resetCredentialStoreForTests(): void {
+  persistFailureForTests = null;
   memoryCache = null;
   credentialsIdentity = null;
   credentialContentReads = 0;

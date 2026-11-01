@@ -235,9 +235,12 @@ error instead of retrying until the timeout.
 A save re-reads the credentials file under the lock before writing, edits a copy,
 and replaces the in-memory cache only after that write succeeds. If the file
 cannot be read, PRAANA leaves it unchanged and the save fails. If the file is
-not valid JSON, PRAANA moves it aside to `credentials.json.corrupt-<timestamp>`
-and saves a new store. A missing file is
-still created. The cache treats the file as unchanged only when the device,
+not valid JSON, PRAANA copies it to `credentials.json.corrupt-<timestamp>`
+(mode 0600) and then replaces the original with the new store. The original
+path changes only when that save succeeds. If the save fails, the original
+file and the cached credentials stay as they were, and the backup copy is
+left beside them. A missing file is still created. The cache treats the file
+as unchanged only when the device,
 inode, size, and timestamps still match the read that filled it.
 
 Cancelling one request does not cancel the refresh for anyone else. Aborting
