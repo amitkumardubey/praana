@@ -15,7 +15,7 @@ import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
-import { resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
+import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 
 /**
  * Execute a streaming LLM response using the appropriate protocol driver.
@@ -70,7 +70,7 @@ export async function* streamLlmResponse(
     }
   } else if (!req.apiKey && !req.bearerToken) {
     try {
-      const oauth = await resolveOAuthModelAuth(req.provider);
+      const oauth = await resolveOAuthModelAuth(req.provider, req.signal);
       if (oauth?.apiKey) {
         auth = {
           ...auth,
@@ -80,8 +80,32 @@ export async function* streamLlmResponse(
           baseUrl: oauth.baseUrl ?? auth.baseUrl,
         };
       }
-    } catch {
-      // Fall through with stored/env credentials.
+    } catch (err) {
+      if (err instanceof OAuthRefreshBusyError) {
+        yield {
+          type: "error",
+          error: err,
+          retryable: true,
+        };
+        return;
+      }
+      if (err instanceof OAuthRefreshError) {
+        yield {
+          type: "error",
+          error: err,
+          status: 401,
+          retryable: false,
+        };
+        return;
+      }
+      if (err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message))) {
+        yield {
+          type: "done",
+          reason: "abort",
+          message: { role: "assistant", content: "" },
+        };
+        return;
+      }
     }
   }
 

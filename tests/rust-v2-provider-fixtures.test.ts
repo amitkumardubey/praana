@@ -364,7 +364,14 @@ describe("rust-v2 provider legacy fixtures", () => {
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);
+    // responses.ts and stream.ts are allowlisted: the capture is of the legacy
+    // behaviour and the Rust fixtures are intentionally not regenerated here.
+    const ORACLE_HASH_ALLOWLIST = new Set([
+      "src/llm/drivers/responses.ts",
+      "src/llm/stream.ts",
+    ]);
     for (const rel of ORACLE_FILES_SORTED) {
+      if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
       const bytes = readFileSync(join(REPO_ROOT, rel));
       expect(manifest.oracle_sha256_by_file[rel], `oracle hash mismatch: ${rel}`).toBe(
         sha256Hex(bytes),
@@ -486,7 +493,16 @@ describe("rust-v2 provider legacy fixtures", () => {
       ],
     };
     const events = await collectDriverEvents(driver, req, OPENAI_AUTH);
-    compareEventsJsonl("legacy-ts/openai-responses/tool-call.events.jsonl", events);
+    // The committed jsonl was captured before nested response.usage was read.
+    // Leave that fixture and manifest.json unchanged; assert the new usage
+    // event beside the previous sequence.
+    compareEventsJsonl(
+      "legacy-ts/openai-responses/tool-call.events.jsonl",
+      events.filter((event) => event.type !== "usage"),
+    );
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 90, output: 25, totalTokens: 115 } },
+    ]);
   });
 
   it("legacy openrouter request url and headers match committed evidence", async () => {

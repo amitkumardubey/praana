@@ -129,9 +129,162 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | OpenRouter | `OPENROUTER_API_KEY` |
 | Amazon Bedrock | AWS credentials (`AWS_ACCESS_KEY_ID` / `AWS_PROFILE` / role) or `AWS_BEARER_TOKEN_BEDROCK` / Bedrock API key via `/login`. Optional `llm.region`. |
 | Ollama | *(local — no key needed)* |
-| GitHub Copilot, OpenAI Codex | Sign in with `/login github-copilot` or `/login openai-codex` (OAuth) |
+| GitHub Copilot | Sign in with `/login github-copilot` (OAuth) |
+| OpenAI Codex | ChatGPT subscription sign-in with `/login openai-codex`: browser (default) or device code |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
+
+### ChatGPT subscription login
+
+Run `/login openai-codex` and choose a method. After sign-in, the default
+model is `gpt-6.1-sol`. `/model` lists the curated Codex models (`gpt-6.1-sol`,
+`gpt-6-astra`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`). There is no bare `gpt-5.6` id.
+`gpt-reserve` and `codex-auto-review` are not listed.
+
+- **Browser login (default):** PRAANA opens the authorization URL and listens only
+  on `127.0.0.1:1455`. The registered redirect is
+  `http://localhost:1455/auth/callback`. Finish in the browser or paste the redirect
+  URL, `code#state`, a query string containing `code=`, or a bare authorization code.
+  A supplied state must match this login. The URL stays visible while paste input
+  waits, as one copyable string (the overlay soft-wraps it; it is not broken with
+  blank lines). The paste field stays on screen. Receiving the callback dismisses
+  that input without cancelling login. Dismissing the paste prompt on its own
+  rejects that prompt with a dedicated error instead of leaving it pending.
+  Login continues when the browser callback can still finish it. When paste is
+  the only path, that error ends the login.
+  Closing the paste prompt, the method list, or the device-code screen with Esc
+  cancels login and does not replace a saved credential. In the setup wizard,
+  Esc returns to the previous step and does not show a failed login.
+  A blank paste is refused. An invalid paste (typo, state mismatch, or empty code)
+  is reported and asked for again. While the callback listener is running, a bad
+  paste does not end the login. Cancelling still ends the login. When the callback
+  port is unavailable and paste is the only path, PRAANA stops after five bad
+  pastes. The paste prompt mentions finishing in the browser only when that
+  listener is running.
+  If the port is occupied (for example by Codex CLI), PRAANA reports manual-only
+  mode. Any other bind failure is reported with its error code and still allows
+  paste. If the listener fails after it has started, PRAANA reports that failure
+  and keeps waiting for a paste. That error does not cancel login while paste can
+  still finish it. A provider rejection in the redirect, such as `access_denied`,
+  ends the login immediately with the provider's message. Requests whose `Host` is not `localhost:1455` or `127.0.0.1:1455` are
+  rejected. When login finishes or is cancelled, PRAANA closes the listener and
+  drops open connections so port 1455 can be used again immediately. Browser
+  authorization and exchange have a 10-minute overall timeout.
+- **Device-code login:** open the displayed verification URL on any browser and
+  enter the displayed code. No localhost callback is needed. PRAANA polls for up to
+  15 minutes. HTTP 429, 502, 503, and 504 (including a non-JSON body) are retried
+  until that deadline, waiting at least the poll interval, or `Retry-After`
+  when that is longer, capped at 30 seconds. A network failure while polling (connection
+  reset, DNS, timeout) is retried the same way. Ten of those failures in a row
+  stop the login and report that error. Any other unexpected status stops the login.
+  If the server does not offer device authorization, use browser login.
+
+Signs in with your ChatGPT account via the Codex CLI sign-in.
+PRAANA uses PKCE, validates the token's ChatGPT account id, and rotates refresh
+tokens. A refresh response is saved even when the new access token is not a JWT
+or has no account id: the stored account id is kept, and a missing `refresh_token`
+keeps the previous refresh token. Those fields are written before a refresh is
+reported as failed, because the provider has already rotated the token. An
+authorization-code exchange still requires an access token, a refresh token, a
+numeric expiry, and an account id inside the access token. A previously pasted
+credential is used as-is while it is unexpired if
+the access token is a JWT that contains the ChatGPT account id. An opaque
+pasted token, or a legacy credential that actually needs a refresh (no account
+id, or the refresh token equals the access token), still requires
+**`/login openai-codex` again**.
+
+**WSL / SSH:** the browser must be able to reach the machine running PRAANA at the
+localhost redirect above. WSL tries `wslview`, then
+`powershell.exe -NoProfile -NonInteractive -Command Start-Process`, then `xdg-open`
+if an opener fails to spawn. Windows uses `rundll32 url.dll,FileProtocolHandler`
+so `&` in the authorize URL is not treated as a command separator. If opening fails
+or the browser cannot reach the callback,
+copy the visible URL and paste the final redirect, or choose device-code login.
+Keep the listener on `127.0.0.1:1455`; do not expose it on `0.0.0.0`.
+
+PRAANA refreshes an access token that is expired or inside 60 seconds of expiry
+before a Codex request. Refresh tokens rotate, so overlapping refreshes for the
+same sign-in share one request.
+
+Saving a credential and refreshing a token are separate. A save (a new key, a
+login, or a logout) is a short update: PRAANA locks the credentials file, re-reads
+it, writes, and releases the lock before any network call. Another save waits at
+most 2 seconds for that lock. The wait is short because the lock is never held
+during a refresh.
+
+A refresh takes its own lock for that provider and holds it while the refresh
+request runs. PRAANA reads the saved token under the short credentials lock
+first, including when this process has not cached the file yet or another
+process has rewritten it. If the access token is still outside the 60-second
+refresh window, that token is used immediately and the refresh lock is not
+taken. Other sessions wait for the refresh lock only when a refresh is actually
+needed. They wait without freezing, checking a few times a second for up to 30
+seconds, including when another refresh in this process already holds the lock.
+When the lock is free they re-read the saved token. If another session
+already refreshed it, they use that token and do not send a second refresh. If
+the wait runs out and the access token is still usable, PRAANA uses it and does
+not ask you to log in again. If the access token is already expired, PRAANA
+waits for that same bound once more. If it is still expired, PRAANA reports
+`another PRAANA session is refreshing; try again in a moment`. That is not a
+session expiry and it does not say to run `/login` again.
+
+The lock is held by the operating system for the life of the process that took
+it. When that process exits, crashes, or is killed, the system releases the lock
+at once. PRAANA does not decide that a lock has gone stale, and it does not
+replace a lock another live process still holds. A lock file that is not a
+database is retried a few times, then replaced once if it is still the same file.
+An empty file is left alone, because SQLite treats it as a new database. If it
+is still not a database, or it cannot be replaced, the wait fails with that
+error instead of retrying until the timeout.
+
+A save re-reads the credentials file under the lock before writing, edits a copy,
+and replaces the in-memory cache only after that write succeeds. If the file
+cannot be read, PRAANA leaves it unchanged and the save fails. If the file is
+not valid JSON, PRAANA copies it to `credentials.json.corrupt-<timestamp>`
+(mode 0600) and then replaces the original with the new store. The original
+path changes only when that save succeeds. If the save fails, the original
+file and the cached credentials stay as they were, and the backup copy is
+left beside them. A missing file is still created. The cache treats the file
+as unchanged only when the device,
+inode, size, and timestamps still match the read that filled it.
+
+Cancelling one request does not cancel the refresh for anyone else. Aborting
+while still waiting for another session's refresh lock stops that wait only;
+the session that holds the lock is left alone, and any other waiter keeps
+waiting. Once a refresh request has started, PRAANA finishes it and saves the
+new token even if every caller cancels. The 15-second limit applies until
+response headers arrive. Reading
+the body may then take up to 60 seconds, so a slow body does not discard a refresh
+token the provider has already rotated. A logout or a newer login that lands before
+the refreshed token is saved is left as it is.
+
+If refresh fails and the stored access token is already expired, the turn stops
+and reports `OpenAI Codex session expired and could not be refreshed: <reason>.
+Run /login openai-codex again.` once, as an error line. That text is not saved as
+the assistant's reply. The turn is not counted, no tokens are charged, and that
+user message is left out of the next prompt. A refresh that saves a new refresh
+token but leaves an expired access token does not hand that access token to the
+model. If the access token is not yet expired, PRAANA keeps using it and logs a warning.
+
+Codex requests identify PRAANA and the ChatGPT account saved with the
+credential. When that saved account id is present, PRAANA sends it even if the
+access token's own account id is missing or different. A different token supplied
+for one request, and no account id with it, uses the account id inside that
+token. Codex requests disable response
+storage (`store: false`), and omit `max_output_tokens` and `temperature`. Codex
+streams report backend failures, an incomplete response for any reason other than
+`max_output_tokens`, or a missing terminal event as errors. A finished Codex
+answer is terminal on `response.completed`, `response.incomplete`,
+`response.done`, or a final `data: [DONE]` line. A `response.done` whose payload
+status is `failed` or `cancelled`, or that carries an error, is a failure, the
+same as `response.failed`. A `max_output_tokens` cutoff of
+plain text finishes with the partial output and reason `length`. A cutoff while a
+tool call is still being sent is an error: `The response was cut off while the
+model was calling a tool.` That check is the same for `response.incomplete`,
+`response.done`, and `response.completed` when the status is incomplete.
+A tool call that has already finished is still published. Other Responses providers keep the previous stream
+behaviour.
 
 ## Slash command palette
 

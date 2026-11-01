@@ -16,8 +16,10 @@
  * normal app runs are unaffected.
  */
 import { plugin } from "bun";
+import { ensureSolidTransformPlugin } from "@opentui/solid/bun-plugin";
 
 if (process.env.NODE_ENV === "test") {
+  ensureSolidTransformPlugin();
   plugin({
     name: "solid-client-build",
     setup(build) {

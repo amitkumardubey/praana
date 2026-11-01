@@ -36,6 +36,17 @@ praana
 
 On first run without a config file, `praana` opens a short setup wizard. Update later with `praana upgrade`.
 
+ChatGPT subscription: `/login openai-codex` offers browser sign-in by default
+(localhost callback with paste fallback) or device-code sign-in. Signs in with your
+ChatGPT account via the Codex CLI sign-in. The default model is `gpt-6.1-sol`.
+On WSL/SSH, keep the listener on
+`127.0.0.1:1455`; use device code or paste the redirect if your browser cannot reach
+it. An old pasted Codex credential still works when its access token is a JWT
+with a ChatGPT account id; an opaque paste, or one that needs a refresh, requires
+signing in again. An expired session that cannot be refreshed asks you to run
+`/login openai-codex` again.
+See [ChatGPT subscription login](./docs/reference.md#chatgpt-subscription-login).
+
 ## Status
 
 v0.16.0 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).
