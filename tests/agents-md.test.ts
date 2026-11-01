@@ -18,8 +18,8 @@ const PATH_PREFIXES = [
 ];
 
 describe("AGENTS.md", () => {
-  test("is <= 16000 characters (fits the system-prompt load cap)", () => {
-    expect(AGENTS.length).toBeLessThanOrEqual(16_000);
+  test("is <= 14500 characters (fits the system-prompt load cap)", () => {
+    expect(AGENTS.length).toBeLessThanOrEqual(14_500);
   });
 
   test("contains no stale 'pi-ai' references", () => {
