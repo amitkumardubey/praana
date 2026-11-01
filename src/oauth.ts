@@ -114,6 +114,30 @@ function abortError(signal: AbortSignal): Error {
   return err;
 }
 
+/** Sleep that rejects immediately when `signal` aborts (used by device-code polls). */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const rejectReason = () => {
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : abortError(signal!));
+    };
+    if (signal?.aborted) {
+      rejectReason();
+      return;
+    }
+    const fail = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      rejectReason();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      signal?.removeEventListener("abort", fail);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", fail, { once: true });
+  });
+}
+
 function raceWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
   if (signal.aborted) return Promise.reject(abortError(signal));
@@ -326,7 +350,9 @@ const githubCopilotOAuth: OAuthAuth = {
       if (interaction.signal?.aborted) {
         throw new Error("OAuth login aborted");
       }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      // Watch the signal during the poll sleep so Esc is not delayed by the
+      // (>= 5s) interval; the rejection carries the signal reason.
+      await sleepAbortable(intervalMs, interaction.signal);
       const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
         method: "POST",
         headers: {

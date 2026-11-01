@@ -17,6 +17,7 @@ import {
   resetOAuthProvidersForTests,
   resolveOAuthModelAuth,
 } from "../src/oauth.js";
+import { OAuthUserCancelledError } from "../src/ui/tui/oauth-login-ui.js";
 
 describe("oauth facade", () => {
   let praanaHome: string;
@@ -85,6 +86,43 @@ describe("oauth facade", () => {
     expect(manualSignal?.aborted).toBe(true);
     expect(result).toMatchObject({ type: "oauth", access, refresh: "rotated-refresh", expires: 3_601_000, accountId: "synthetic-account" });
     expect(getOAuthToken("openai-codex")).toEqual(result);
+  });
+
+  it("aborts the GitHub Copilot device-code poll sleep immediately", async () => {
+    const originalFetch = globalThis.fetch;
+    const controller = new AbortController();
+    const urls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const target = String(url);
+      urls.push(target);
+      if (target === "https://github.com/login/device/code") {
+        return Response.json({
+          device_code: "dc",
+          user_code: "uc",
+          verification_uri: "https://github.com/login/device",
+          interval: 1,
+        });
+      }
+      return Response.json({ error: "authorization_pending" });
+    }) as typeof fetch;
+    try {
+      const started = Date.now();
+      const pending = runOAuthLogin("github-copilot", {
+        signal: controller.signal,
+        notify() {},
+        prompt: async () => { throw new Error("prompt should not run"); },
+      });
+      // Let the login reach the device-code poll sleep (interval >= 5s).
+      await Bun.sleep(20);
+      controller.abort(new OAuthUserCancelledError());
+      await expect(pending).rejects.toBeInstanceOf(OAuthUserCancelledError);
+      // The abortable sleep rejects immediately instead of sleeping out the
+      // whole interval.
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(urls).toEqual(["https://github.com/login/device/code"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("runOAuthLogin rejects unknown providers", async () => {
