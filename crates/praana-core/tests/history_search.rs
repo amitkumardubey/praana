@@ -5696,7 +5696,9 @@ fn fence_t5_seeded_writer_stress() {
                     // window, leaving none to queue behind the swap. The
                     // wall-clock deadline only bounds a pathological run.
                     let started = Instant::now();
-                    while !stop.load(Ordering::SeqCst) && started.elapsed() < Duration::from_secs(30) {
+                    while !stop.load(Ordering::SeqCst)
+                        && started.elapsed() < Duration::from_secs(30)
+                    {
                         let id = OperationId(ulid::Ulid::generate());
                         let command = turn_submit_command(id);
                         let outcome = match reserve_operation_sync(&ledger, &command, history) {
