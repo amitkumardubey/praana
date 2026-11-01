@@ -10,7 +10,7 @@ import { IdentityBar, GlanceBar } from "./chrome/bars.js";
 import { ToastHost } from "./toast-host.js";
 import { SpinnerHost } from "./spinner-host.js";
 import { LaunchCanvas } from "./launch-canvas.js";
-import { TranscriptView } from "./transcript/view.js";
+import { TranscriptView, shouldRestorePromptFocus } from "./transcript/view.js";
 import { OverlayHost } from "./overlays/host.js";
 import type { OverlayUi } from "./overlays/state.js";
 import type { TranscriptStoreApi } from "./transcript/store.js";
@@ -81,8 +81,32 @@ export function App(props: AppProps) {
 
   const showLaunch = createMemo(() => props.transcript.entries.length === 0);
 
+  /**
+   * Safety net for the prompt focus papercut: OpenTUI auto-focuses the nearest
+   * focusable renderable under the pointer on mouse-down. The transcript opts
+   * out of being focusable, but a future focusable renderable (or a scrollbar)
+   * must not be able to leave typing dead — if a mouse interaction ends with no
+   * text editor focused, hand focus back to the prompt. An active selection is
+   * renderer-owned, so it survives this refocus until the next key press.
+   */
+  const handleMouseUp = () => {
+    const restore = shouldRestorePromptFocus({
+      overlayOpen: props.overlay.kind() !== "none",
+      transcriptFocusMode: props.transcript.focusMode(),
+      editorFocused: renderer.currentFocusedEditor !== null,
+    });
+    if (!restore) return;
+    promptApi?.focus();
+  };
+
   return (
-    <box id="tui-root" flexDirection="column" width="100%" height="100%">
+    <box
+      id="tui-root"
+      flexDirection="column"
+      width="100%"
+      height="100%"
+      onMouseUp={handleMouseUp}
+    >
       <box id="body" flexGrow={1} flexDirection="column" minHeight={1}>
         <Show
           when={showLaunch()}

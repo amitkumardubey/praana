@@ -101,6 +101,30 @@ export interface TuiLaunchOptions {
   needsEmbedderConsent?: boolean;
 }
 
+/** Where the first-run setup landed for this process. */
+export type SetupOutcome =
+  | "not-needed"
+  | "pending"
+  | "completed"
+  | "cancelled"
+  | "failed"
+  | "start-failed";
+
+export interface ShutdownExitContext {
+  setupOutcome: SetupOutcome;
+  hasSession: boolean;
+}
+
+/**
+ * Exit code for a TUI shutdown. A live session is 0. With no session, exit 1
+ * unless setup was not needed — a stale `completed` (wizard succeeded, session
+ * never started) is a failure, same as cancelled, failed, or start-failed.
+ */
+export function resolveShutdownExitCode(ctx: ShutdownExitContext): 0 | 1 {
+  if (ctx.hasSession) return 0;
+  return ctx.setupOutcome === "not-needed" ? 0 : 1;
+}
+
 export async function runTui(
   controller: AppController,
   info: StartupInfo | undefined,
@@ -111,6 +135,9 @@ export async function runTui(
   const useUnicode = config.ui.tool_icons === "unicode";
   let bootOnboarding = Boolean(launch.needsOnboarding);
   let bootConsent = Boolean(launch.needsEmbedderConsent);
+  // Passed into doShutdown, which is the only reader. "completed" is set only
+  // after startSessionFromOverlay returns true (see resolveShutdownExitCode).
+  let setupOutcome: SetupOutcome = launch.needsOnboarding ? "pending" : "not-needed";
 
   const launchMeta = session
     ? formatLaunchCanvasMeta({ session, version: APP_VERSION })
@@ -265,7 +292,8 @@ export async function runTui(
       return;
     }
     if (bootOnboarding && !session && kind === "setup") {
-      void doShutdown(1);
+      setupOutcome = "cancelled";
+      void doShutdown(setupOutcome);
       return;
     }
     focusPrompt();
@@ -420,12 +448,17 @@ export async function runTui(
     overlay.dismiss();
     if (!session) {
       if (!result.success) {
-        void doShutdown(1);
+        setupOutcome = "failed";
+        void doShutdown(setupOutcome);
         return;
       }
-      void startSessionFromOverlay();
+      void (async () => {
+        const started = await startSessionFromOverlay();
+        setupOutcome = started ? "completed" : "start-failed";
+      })();
       return;
     }
+    setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
     focusPrompt();
   };
@@ -460,7 +493,11 @@ export async function runTui(
     renderer.requestRender();
   };
 
-  async function doShutdown(exitCode = 0): Promise<void> {
+  async function doShutdown(outcome: SetupOutcome): Promise<void> {
+    const exitCode = resolveShutdownExitCode({
+      setupOutcome: outcome,
+      hasSession: Boolean(session),
+    });
     setSpinnerSink();
     offSlashCtrlCHook();
     transcript.dispose();
@@ -517,7 +554,7 @@ export async function runTui(
     }
 
     if (result.action === "exit") {
-      await doShutdown();
+      await doShutdown(setupOutcome);
       return;
     }
     if (result.action === "clear_transcript") {
@@ -716,7 +753,7 @@ export async function runTui(
               focusPrompt();
             }
             if (!session) {
-              void doShutdown(bootOnboarding ? 1 : 0);
+              void doShutdown(setupOutcome);
               return;
             }
             const action = controller.handleUserInterrupt(
@@ -734,7 +771,7 @@ export async function runTui(
               return;
             }
             if (action === "exit") {
-              void doShutdown();
+              void doShutdown(setupOutcome);
               return;
             }
           }}

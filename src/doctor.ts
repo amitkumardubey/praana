@@ -10,6 +10,11 @@ import { loadNative, formatNativeStatus, tryGetNative } from "./native/index.js"
 import { openMemoryDb, upsertEmbedding, searchByVector } from "./memory/db.js";
 import type { PraanaConfig } from "./types.js";
 
+/** Warning lines as printed. Leading whitespace does not hide an indented `⚠`. */
+export function countPrintedWarnings(lines: readonly string[]): number {
+  return lines.filter((line) => line.trimStart().startsWith("⚠")).length;
+}
+
 export async function handleDoctor(
   config: PraanaConfig,
 ): Promise<{ success: boolean; lines: string[] }> {
@@ -133,7 +138,20 @@ export async function handleDoctor(
   }
 
   lines.push("");
-  lines.push(success ? "All checks passed." : "Some checks failed.");
+  // A passing run can still carry warnings (e.g. embedder weights not
+  // downloaded). Count every printed warning line, indented or not. Configuration
+  // warnings are indented and already set success = false, so they keep the
+  // failure summary instead of being folded into this passing tally.
+  const warningCount = countPrintedWarnings(lines);
+  if (!success) {
+    lines.push("Some checks failed.");
+  } else if (warningCount > 0) {
+    lines.push(
+      `All checks passed (${warningCount} warning${warningCount === 1 ? "" : "s"}).`,
+    );
+  } else {
+    lines.push("All checks passed.");
+  }
 
   return { success, lines };
 }
