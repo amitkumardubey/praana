@@ -20,6 +20,7 @@ import {
   defaultToolLookup,
   isModalOverlay,
   isSshEnv,
+  memoizeReadProcVersion,
   nativeToolCandidates,
   runGuardedCopy,
   shouldClearSelectionAfterCopy,
@@ -27,6 +28,7 @@ import {
   writeClipboardText,
   type SpawnedProcess,
 } from "../src/ui/tui/clipboard.js";
+import type { OverlayKind } from "../src/ui/tui/overlays/state.js";
 
 type FakeExitMode = "ok" | "fail" | "spawn-error" | "timeout";
 
@@ -549,7 +551,7 @@ describe("Ctrl+C decision — overlay kind precedence", () => {
   });
 
   it("modal overlays (setup/consent/login/logout) defer to their own Ctrl+C handling", () => {
-    for (const kind of ["setup", "consent", "login", "logout"]) {
+    for (const kind of ["setup", "consent", "login", "logout"] as const) {
       expect(decideCtrlC(true, "sel", kind)).toEqual({ action: "defer" });
       expect(decideCtrlC(false, "", kind)).toEqual({ action: "defer" });
       expect(isModalOverlay(kind)).toBe(true);
@@ -601,19 +603,19 @@ describe("copy selection identity clearing after settle", () => {
 });
 
 describe("copy outcome — toast text, tone, and selection clearing", () => {
-  it("native tool success → info toast 'Copied N characters', clears selection", () => {
-    expect(copyOutcomeOf({ ok: true, method: "xclip" }, "some text")).toEqual({
+  it("native tool success → info toast 'Copied N characters', no clearSelection flag", () => {
+    const outcome = copyOutcomeOf({ ok: true, method: "xclip" }, "some text");
+    expect(outcome).toEqual({
       toast: "Copied 9 characters",
       tone: "info",
-      clearSelection: true,
     });
+    expect(outcome).not.toHaveProperty("clearSelection");
   });
 
   it("OSC 52 success → info toast 'Sent N characters … (OSC 52)', counts code points", () => {
     expect(copyOutcomeOf({ ok: true, method: "osc52" }, "a😀b")).toEqual({
       toast: "Sent 3 characters to the terminal clipboard (OSC 52)",
       tone: "info",
-      clearSelection: true,
     });
     expect(copyToastMessage({ ok: true, method: "osc52" }, "a😀b")).toBe(
       "Sent 3 characters to the terminal clipboard (OSC 52)",
@@ -621,12 +623,13 @@ describe("copy outcome — toast text, tone, and selection clearing", () => {
     expect(copyToastMessage({ ok: true, method: "xclip" }, "a😀b")).toBe("Copied 3 characters");
   });
 
-  it("failed copy → warn toast AND still clears the selection (trap fix)", () => {
-    expect(copyOutcomeOf({ ok: false, method: "none" }, "sel")).toEqual({
+  it("failed copy → warn toast, no clearSelection flag (selection clearing is the caller's call)", () => {
+    const outcome = copyOutcomeOf({ ok: false, method: "none" }, "sel");
+    expect(outcome).toEqual({
       toast: "Could not copy: no clipboard available",
       tone: "warn",
-      clearSelection: true,
     });
+    expect(outcome).not.toHaveProperty("clearSelection");
   });
 });
 
@@ -740,4 +743,210 @@ describe("in-flight copy guard", () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(settled).toEqual(["one", "three"]);
   });
+});
+
+describe("clipboard writer — lookup failures", () => {
+  it("a lookup that throws is treated as a miss and falls through to OSC 52", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("text", {
+      spawn: spawnState.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async () => {
+        throw new Error("lookup boom");
+      },
+      readProcVersion: () => NON_WSL_PROC_VERSION,
+      isOsc52Supported: () => true,
+      osc52: () => true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("osc52");
+    expect(spawnState.calls).toHaveLength(0);
+  });
+
+  it("a lookup that throws on the first tool still tries the next tool", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("text", {
+      spawn: spawnState.spawnFn,
+      env: envWith(LINUX_DISPLAY),
+      platform: "linux",
+      lookup: async (cmd) => {
+        if (cmd === "wl-copy") throw new Error("lookup boom");
+        return cmd;
+      },
+      readProcVersion: () => NON_WSL_PROC_VERSION,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("xclip");
+    expect(spawnState.calls.map((c) => c.command)).toEqual(["xclip"]);
+  });
+});
+
+describe("WSL native candidates — Linux fallback", () => {
+  it("WSL appends display-gated Linux candidates after clip.exe", () => {
+    expect(
+      nativeToolCandidates(
+        envWith({ WSL_DISTRO_NAME: "Ubuntu", WAYLAND_DISPLAY: "wayland-0" }),
+        "linux",
+        () => NON_WSL_PROC_VERSION,
+      ).map((c) => c.id),
+    ).toEqual(["clip", "wl-copy"]);
+    expect(
+      nativeToolCandidates(
+        envWith({ WSL_DISTRO_NAME: "Ubuntu", DISPLAY: ":0" }),
+        "linux",
+        () => NON_WSL_PROC_VERSION,
+      ).map((c) => c.id),
+    ).toEqual(["clip", "xclip", "xsel"]);
+    expect(
+      nativeToolCandidates(
+        envWith({
+          WSL_DISTRO_NAME: "Ubuntu",
+          WAYLAND_DISPLAY: "wayland-0",
+          DISPLAY: ":0",
+        }),
+        "linux",
+        () => NON_WSL_PROC_VERSION,
+      ).map((c) => c.id),
+    ).toEqual(["clip", "wl-copy", "xclip", "xsel"]);
+  });
+
+  it("WSL without display-server env still prefers clip.exe alone", () => {
+    expect(
+      nativeToolCandidates(envWith({ WSL_DISTRO_NAME: "Ubuntu" }), "linux").map((c) => c.id),
+    ).toEqual(["clip"]);
+  });
+
+  it("WSL falls back to wl-copy when clip.exe is missing (interop disabled)", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("text", {
+      spawn: spawnState.spawnFn,
+      env: envWith({ WSL_DISTRO_NAME: "Ubuntu", WAYLAND_DISPLAY: "wayland-0" }),
+      platform: "linux",
+      lookup: async (cmd) => (cmd === "clip.exe" ? null : cmd),
+      isOsc52Supported: () => false,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("wl-copy");
+    expect(spawnState.calls.map((c) => c.command)).toEqual(["wl-copy"]);
+  });
+
+  it("WSL keeps clip.exe first when it is available", async () => {
+    const spawnState = makeFakeSpawn(["ok"]);
+    const result = await writeClipboardText("text", {
+      spawn: spawnState.spawnFn,
+      env: envWith({ WSL_DISTRO_NAME: "Ubuntu", WAYLAND_DISPLAY: "wayland-0" }),
+      platform: "linux",
+      lookup: async (cmd) => cmd,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.method).toBe("clip");
+    expect(spawnState.calls.map((c) => c.command)).toEqual(["clip.exe"]);
+  });
+});
+
+describe("/proc/version caching", () => {
+  it("memoizeReadProcVersion calls the underlying reader once", () => {
+    let calls = 0;
+    const read = memoizeReadProcVersion(() => {
+      calls += 1;
+      return "Linux version 6.1.90.1-microsoft-standard-WSL2";
+    });
+    expect(read()).toBe("Linux version 6.1.90.1-microsoft-standard-WSL2");
+    expect(read()).toBe("Linux version 6.1.90.1-microsoft-standard-WSL2");
+    expect(calls).toBe(1);
+  });
+
+  it("memoizeReadProcVersion caches null results too", () => {
+    let calls = 0;
+    const read = memoizeReadProcVersion(() => {
+      calls += 1;
+      return null;
+    });
+    expect(read()).toBeNull();
+    expect(read()).toBeNull();
+    expect(calls).toBe(1);
+  });
+});
+
+describe("copy guard — callback resilience", () => {
+  const guardDeps = {
+    spawn: () => {
+      throw new Error("unused");
+    },
+    env: envWith(LINUX_DISPLAY),
+    platform: "linux",
+    lookup: async (cmd: string) => cmd,
+    readProcVersion: () => NON_WSL_PROC_VERSION,
+  };
+
+  it("a throwing onStarted releases the guard and reports not-started", () => {
+    const state = createCopyRunState();
+    const first = runGuardedCopy("one", guardDeps, state, {
+      onStarted: () => {
+        throw new Error("onStarted boom");
+      },
+    });
+    expect(first.started).toBe(false);
+    expect(state.inFlight).toBe(false);
+
+    // A later copy is not blocked.
+    const deferred = makeDeferredSpawn();
+    const second = runGuardedCopy("two", { ...guardDeps, spawn: deferred.spawnFn }, state);
+    expect(second.started).toBe(true);
+    expect(state.inFlight).toBe(true);
+  });
+
+  it("a throwing onSettled does not become an unhandled rejection and releases the guard", async () => {
+    let unhandled: unknown = null;
+    const onUnhandled = (reason: unknown) => {
+      unhandled = reason;
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const deferred = makeDeferredSpawn();
+      const state = createCopyRunState();
+      runGuardedCopy("one", { ...guardDeps, spawn: deferred.spawnFn }, state, {
+        onSettled: () => {
+          throw new Error("onSettled boom");
+        },
+      });
+      await new Promise((r) => setTimeout(r, 0));
+      deferred.close(0);
+      await new Promise((r) => setTimeout(r, 25));
+      expect(unhandled).toBeNull();
+      expect(state.inFlight).toBe(false);
+
+      const again = runGuardedCopy("two", { ...guardDeps, spawn: deferred.spawnFn }, state);
+      expect(again.started).toBe(true);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("overlay kind typing — reflects the real overlay state", () => {
+  it("isModalOverlay and decideCtrlC accept every kind from the real overlay state", () => {
+    const expected = new Map<OverlayKind, { modal: boolean; decision: unknown }>([
+      ["none", { modal: false, decision: { action: "interrupt" } }],
+      ["slash", { modal: false, decision: { action: "interrupt" } }],
+      ["model", { modal: false, decision: { action: "cancel_overlay", overlay: "model" } }],
+      ["login", { modal: true, decision: { action: "defer" } }],
+      ["logout", { modal: true, decision: { action: "defer" } }],
+      ["palette", { modal: false, decision: { action: "cancel_overlay", overlay: "palette" } }],
+      ["setup", { modal: true, decision: { action: "defer" } }],
+      ["consent", { modal: true, decision: { action: "defer" } }],
+    ]);
+    for (const [kind, { modal, decision }] of expected) {
+      expect(isModalOverlay(kind)).toBe(modal);
+      expect(decideCtrlC(false, "", kind)).toEqual(decision);
+    }
+  });
+
+  // Compile-time guards: an overlay kind outside the shared union must be a
+  // type error (enforced by tsc/IDEs; bun runs them as inert expressions).
+  // @ts-expect-error non-modal overlay kinds are rejected at compile time
+  isModalOverlay("bogus");
+  // @ts-expect-error unknown overlay kinds are rejected at compile time
+  decideCtrlC(false, "", "bogus");
 });
