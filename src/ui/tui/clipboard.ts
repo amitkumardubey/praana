@@ -14,6 +14,7 @@
  */
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import type { OverlayKind } from "./overlays/state.js";
 
 export interface ClipboardWriteResult {
   ok: boolean;
@@ -84,16 +85,33 @@ function utf8(text: string): Uint8Array {
 }
 
 /**
- * Default /proc/version reader: the file header line, or null when the file
- * is absent or unreadable (non-Linux hosts, sandboxes).
+ * Memoizes a /proc/version reader: the kernel version cannot change within a
+ * process, so the file is read at most once no matter how many copies run.
  */
-export function defaultReadProcVersion(): string | null {
+export function memoizeReadProcVersion(
+  read: () => string | null,
+): () => string | null {
+  let cached: string | null | undefined;
+  return () => {
+    if (cached === undefined) cached = read();
+    return cached;
+  };
+}
+
+function readProcVersionOnce(): string | null {
   try {
     return readFileSync("/proc/version", "utf8");
   } catch {
     return null;
   }
 }
+
+/**
+ * Default /proc/version reader: the file header line, or null when the file
+ * is absent or unreadable (non-Linux hosts, sandboxes). Memoized.
+ */
+export const defaultReadProcVersion: () => string | null =
+  memoizeReadProcVersion(readProcVersionOnce);
 
 /**
  * Native clipboard tools for the current environment, in priority order.
@@ -112,7 +130,7 @@ export function nativeToolCandidates(
   const isWsl =
     Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP) ||
     (platform === "linux" && /microsoft/i.test(readProcVersion() ?? ""));
-  if (isWsl || platform === "win32") {
+  if (platform === "win32") {
     return [{ id: "clip", command: "clip.exe", args: [], encode: utf16leWithBom }];
   }
   if (platform === "darwin") {
@@ -120,8 +138,7 @@ export function nativeToolCandidates(
   }
   if (platform === "linux") {
     // Gate X11/Wayland tools on the display server actually being present; a
-    // tool spawned without a display can only fail (or hang). WSL is handled
-    // above via clip.exe and is unaffected by this gate.
+    // tool spawned without a display can only fail (or hang).
     const candidates: NativeToolCandidate[] = [];
     if (env.WAYLAND_DISPLAY) {
       candidates.push({ id: "wl-copy", command: "wl-copy", args: [], encode: utf8 });
@@ -139,6 +156,15 @@ export function nativeToolCandidates(
         args: ["--clipboard", "--input"],
         encode: utf8,
       });
+    }
+    // Under WSL the Windows clipboard (clip.exe) is preferred; if interop is
+    // disabled or clip.exe is missing, the WSLg Linux tools are the next best
+    // option before giving up to OSC 52.
+    if (isWsl) {
+      return [
+        { id: "clip", command: "clip.exe", args: [], encode: utf16leWithBom },
+        ...candidates,
+      ];
     }
     return candidates;
   }
@@ -229,9 +255,18 @@ export async function writeClipboardText(
     deps.platform,
     deps.readProcVersion,
   )) {
-    const resolved = deps.lookup
-      ? await deps.lookup(candidate.command)
-      : candidate.command;
+    let resolved: string | null;
+    if (deps.lookup) {
+      try {
+        resolved = await deps.lookup(candidate.command);
+      } catch {
+        // A lookup failure is treated like a miss: skip this tool and keep
+        // walking the fallback chain.
+        continue;
+      }
+    } else {
+      resolved = candidate.command;
+    }
     if (!resolved) continue;
     const wrote = await runSpawnWrite(
       deps.spawn as SpawnFn,
@@ -250,26 +285,15 @@ export async function writeClipboardText(
   return { ok: false, method: "none" };
 }
 
-/** Overlay kinds reported by the TUI overlay state (`overlays/state.ts`). */
-export type TuiOverlayKind =
-  | "none"
-  | "slash"
-  | "model"
-  | "login"
-  | "logout"
-  | "palette"
-  | "setup"
-  | "consent";
-
 /**
  * Modal overlays take over the whole screen and own Ctrl+C themselves (cancel).
  * The global Ctrl+C binding deactivates while one of these is open so the
  * overlay's own handler always wins.
  */
-const MODAL_OVERLAY_KINDS: readonly TuiOverlayKind[] = ["setup", "consent", "login", "logout"];
+const MODAL_OVERLAY_KINDS: readonly OverlayKind[] = ["setup", "consent", "login", "logout"];
 
-export function isModalOverlay(kind: string): boolean {
-  return MODAL_OVERLAY_KINDS.includes(kind as TuiOverlayKind);
+export function isModalOverlay(kind: OverlayKind): boolean {
+  return MODAL_OVERLAY_KINDS.includes(kind);
 }
 
 export type CtrlCCopyDecision =
@@ -294,7 +318,7 @@ export type CtrlCCopyDecision =
 export function decideCtrlC(
   hasSelection: boolean,
   getSelectedText: string,
-  overlayKind: string = "none",
+  overlayKind: OverlayKind = "none",
   turnRunning: boolean = false,
 ): CtrlCCopyDecision {
   if (isModalOverlay(overlayKind)) {
@@ -316,8 +340,6 @@ export function decideCtrlC(
 export interface CopyOutcome {
   toast: string;
   tone: "info" | "warn";
-  /** The selection must always be cleared after a copy attempt (success or failure). */
-  clearSelection: boolean;
 }
 
 /**
@@ -358,7 +380,6 @@ export function copyOutcomeOf(result: ClipboardWriteResult, text: string): CopyO
   return {
     toast: copyToastMessage(result, text),
     tone: result.ok ? "info" : "warn",
-    clearSelection: true,
   };
 }
 
@@ -400,7 +421,13 @@ export function runGuardedCopy(
     return { started: false };
   }
   state.inFlight = true;
-  callbacks.onStarted?.();
+  try {
+    callbacks.onStarted?.();
+  } catch {
+    // A throwing onStarted must not leave the guard permanently engaged.
+    state.inFlight = false;
+    return { started: false };
+  }
   void (async () => {
     let result: ClipboardWriteResult = { ok: false, method: "none" };
     try {
@@ -409,7 +436,12 @@ export function runGuardedCopy(
       result = { ok: false, method: "none" };
     } finally {
       state.inFlight = false;
-      callbacks.onSettled?.(result, text);
+      try {
+        callbacks.onSettled?.(result, text);
+      } catch {
+        // The copy has already settled; a throwing observer must not surface
+        // as an unhandled rejection or disturb the outcome.
+      }
     }
   })();
   return { started: true };
